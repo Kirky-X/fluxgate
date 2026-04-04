@@ -1,0 +1,46 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+path = "./data/llm_proxy.db"
+pool_size = 5
+
+[[vendors]]
+id = "openai"
+name = "OpenAI"
+type_ = "openai"
+api_key_env = "OPENAI_API_KEY"
+api_base = "https://api.openai.com/v1"
+enabled = true
+concurrency = { requests_per_second = 100 }
+rate_limit = { type = "token", max_tokens = 10000000 }
+
+[[vendors.models]]
+model_id = "gpt-3.5-turbo"
+enabled = true
+weight = 1.0
+
+[[vendors.models]]
+model_id = "gpt-4"
+enabled = true
+weight = 1.0
+
+[[vendors]]
+id = "anthropic"
+name = "Anthropic"
+type_ = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+api_base = "https://api.anthropic.com/v1"
+enabled = true
+concurrency = { requests_per_second = 100 }
+rate_limit = { type = "token", max_tokens = 10000000 }
+
+[[vendors.models]]
+model_id = "claude-3-opus-20240229"
+enabled = true
+weight = 1.0
+
+[global_model]
+enabled = true
+strategy = "weighted"

@@ -1,0 +1,93 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+path = "./data/llm_proxy.db"
+pool_size = 5
+
+# API Key Authentication
+[auth]
+enabled = true
+# API keys are hashed SHA256, add your keys here
+# Use command: echo -n "your-api-key" | sha256sum
+api_keys = [
+    # "example-key-hash-1234567890abcdef..."
+]
+
+[auth.header]
+name = "Authorization"
+prefix = "Bearer"
+
+# CORS Configuration
+[cors]
+enabled = true
+allowed_origins = ["*"]
+allowed_methods = ["GET", "POST", "OPTIONS", "PUT", "DELETE"]
+allowed_headers = ["*"]
+allow_credentials = false
+max_age = 86400
+
+# Rate Limiting Configuration
+[rate_limit]
+enabled = true
+requests_per_second = 100
+burst_size = 200
+window_seconds = 60
+
+# Per-endpoint rate limits
+[[rate_limit.endpoints]]
+path = "/v1/chat/completions"
+requests_per_minute = 1000
+
+[[rate_limit.endpoints]]
+path = "/v1/embeddings"
+requests_per_minute = 500
+
+[[rate_limit.endpoints]]
+path = "/admin/*"
+requests_per_minute = 100
+
+[[vendors]]
+id = "mock-openai"
+name = "Mock OpenAI"
+type_ = "openai"
+api_key_env = "MOCK_OPENAI_KEY"
+api_base = "http://127.0.0.1:8001/v1"
+enabled = true
+concurrency = { requests_per_second = 100 }
+rate_limit = { type = "token", max_tokens = 10000000 }
+
+[[vendors.models]]
+model_id = "gpt-3.5-turbo"
+enabled = true
+weight = 1.0
+
+[[vendors.models]]
+model_id = "gpt-4"
+enabled = true
+weight = 1.0
+
+[[vendors]]
+id = "mock-anthropic"
+name = "Mock Anthropic"
+type_ = "anthropic"
+api_key_env = "MOCK_ANTHROPIC_KEY"
+api_base = "http://127.0.0.1:8001/v1"
+enabled = true
+concurrency = { requests_per_second = 100 }
+rate_limit = { type = "token", max_tokens = 10000000 }
+
+[[vendors.models]]
+model_id = "claude-2"
+enabled = true
+weight = 1.0
+
+[[vendors.models]]
+model_id = "claude-3-opus"
+enabled = true
+weight = 1.0
+
+[global_model]
+enabled = true
+strategy = "weighted"

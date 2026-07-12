@@ -30,7 +30,6 @@ pub enum ProxyError {
     Timeout { vendor: String },
 
     #[error("限流: {vendor}")]
-    #[allow(dead_code)]
     RateLimited { vendor: String },
 
     #[error("数据库错误: {message}")]

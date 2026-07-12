@@ -19,15 +19,15 @@ pub use error::NexusFlowError;
 pub use api::ApiState;
 pub use vendor::VendorManager;
 pub use database::Database;
-pub use middleware::auth::ApiAuthState;
+pub use middleware::ApiAuthState;
 
-// Re-export infrastructure traits and implementations
+// Re-export infrastructure traits and supporting types only (interfaces, not implementations).
+// Concrete implementations (Oxcache/Confers/Dbnexus) are intentionally NOT re-exported here:
+// callers should depend on the traits (Cache/Config/Database) and construct implementations
+// via the infrastructure module or its builder API.
 // Import directly from infrastructure module to avoid private trait import errors
 pub use infrastructure::Cache;
 pub use infrastructure::Config as InfrastructureConfig;
 pub use infrastructure::Database as InfrastructureDatabase;
 pub use infrastructure::Row;
 pub use infrastructure::DbError;
-pub use infrastructure::cache::Oxcache;
-pub use infrastructure::config::Confers;
-pub use infrastructure::database::Dbnexus;

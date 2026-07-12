@@ -1,58 +1,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use axum::{routing::{post, get}, Router};
-use tower_http::trace::TraceLayer;
-use std::sync::Arc;
-use crate::{ConfigManager, VendorManager, Database};
-use crate::protocol::ProtocolConverter;
-use crate::router::Router as RouterTrait;
-use reqwest::Client;
-
-#[derive(Clone)]
-pub struct ApiState {
-    #[allow(dead_code)]
-    pub config: Arc<ConfigManager>,
-    pub vendor_manager: Arc<VendorManager>,
-    pub router: Arc<RouterTrait>,
-    #[allow(dead_code)]
-    pub client: Client,
-    pub openai_converter: Arc<dyn ProtocolConverter>,
-    pub anthropic_converter: Arc<dyn ProtocolConverter>,
-    pub database: Arc<Database>,
-}
-
-impl std::fmt::Debug for ApiState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ApiState")
-            .field("config", &"ConfigManager")
-            .field("vendor_manager", &"VendorManager")
-            .field("router", &"Router")
-            .field("client", &"Client")
-            .field("openai_converter", &"ProtocolConverter")
-            .field("anthropic_converter", &"ProtocolConverter")
-            .field("database", &"Database")
-            .finish()
-    }
-}
-
-pub fn create_router(state: Arc<ApiState>) -> Router {
-    Router::new()
-        .route("/v1/chat/completions", post(openai::chat_completions))
-        .route("/v1/embeddings", post(openai::embeddings))
-        .route("/v1/messages", post(anthropic::messages))
-        .route("/admin/logs", get(admin::logs))
-        .route("/admin/logs/search", get(admin::search_logs))
-        .route("/admin/stats/tokens", get(admin::token_stats))
-        .route("/admin/vendors", get(admin::vendors))
-        .route("/admin/vendors/:id/status", get(admin::vendor_status))
-        .route("/admin/vendors/:id/reset", post(admin::reset_vendor))
-        .route("/admin/config", get(admin::get_config).post(admin::update_config))
-        .route("/admin/models", get(admin::get_models))
-        .route("/admin/models/:id", post(admin::update_model))
-        .with_state(state)
-        .layer(TraceLayer::new_for_http())
-}
+//! API 层模块
+//!
+//! 提供 REST 端点定义、状态共享和路由构建。
 
 pub mod openai;
 pub mod anthropic;
@@ -63,6 +14,11 @@ pub mod openai_sdforge;
 pub mod anthropic_sdforge;
 pub mod global_state;
 pub mod routing_hints;
+pub mod state;
+pub mod router_builder;
+
+pub use state::ApiState;
+pub use router_builder::create_router;
 
 pub use openai::{chat_completions, embeddings};
 pub use anthropic::messages;

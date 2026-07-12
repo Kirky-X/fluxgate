@@ -2,8 +2,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use crate::error::NexusFlowError;
-use crate::protocol::unified::*;
-use crate::protocol::{Protocol, ProtocolConverter};
+use super::*;
 use serde_json::{json, Value};
 
 #[allow(dead_code)]

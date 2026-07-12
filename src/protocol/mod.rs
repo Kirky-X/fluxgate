@@ -11,11 +11,13 @@ pub mod unified;
 pub use anthropic_converter::AnthropicConverter;
 #[allow(dead_code)]
 pub use embedding_converter::{AnthropicEmbeddingConverter, OpenAIEmbeddingConverter};
+pub use embedding_converter::{embedding_request_to_openai, embedding_response_from_openai};
 pub use openai_converter::OpenAIConverter;
 pub use unified::{
-    MessageContent, Role, StreamChunk, Tool, ToolCall, ToolCallFunction, ToolChoice,
-    ToolChoiceFunction, ToolFunction, ToolParameters, ToolParameterProperty, ToolResult,
-    UnifiedRequest, UnifiedResponse,
+    Choice, ContentBlock, EmbeddingData, EmbeddingUsage, ImageSource, Message, MessageContent,
+    Role, StreamChunk, Tool, ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction,
+    ToolFunction, ToolParameters, ToolParameterProperty, ToolResult, TokenUsage,
+    UnifiedEmbeddingResponse, UnifiedRequest, UnifiedResponse,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

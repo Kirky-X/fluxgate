@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use crate::config::{ConfigManager, VendorConfig};
-use crate::protocol::unified::{UnifiedRequest, UnifiedResponse};
+use crate::protocol::{UnifiedRequest, UnifiedResponse};
 use crate::protocol::{ProtocolConverter, OpenAIConverter, AnthropicConverter};
 use crate::error::NexusFlowError;
 use crate::utils::retry::{ErrorCategory, RetryStrategy, extract_status_code, is_retryable_error};

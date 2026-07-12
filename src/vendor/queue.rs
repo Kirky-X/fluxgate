@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use async_channel::{Receiver, Sender, bounded};
-use crate::protocol::unified::{UnifiedRequest, UnifiedResponse};
+use crate::protocol::{UnifiedRequest, UnifiedResponse};
 use crate::error::NexusFlowError;
 use std::sync::Arc;
 

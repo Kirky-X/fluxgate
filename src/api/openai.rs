@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use crate::{ApiState, error::NexusFlowError, router::RoutingDecision};
 use crate::database::RequestLog;
-use crate::protocol::embedding_converter::embedding_request_to_openai;
-use crate::api::routing_hints::RoutingHints;
+use crate::protocol::embedding_request_to_openai;
+use crate::api::RoutingHints;
 use futures::StreamExt;
 
 #[axum::debug_handler]

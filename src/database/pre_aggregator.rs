@@ -6,7 +6,7 @@
 //! 按小时聚合 Token 使用统计，减少数据库查询压力。
 
 use crate::database::Repository;
-use crate::protocol::unified::TokenUsage;
+use crate::protocol::TokenUsage;
 use chrono::Timelike;
 use std::collections::HashMap;
 use std::sync::Arc;

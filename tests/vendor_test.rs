@@ -1,8 +1,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-#[cfg(test)]
-mod tests {
+mod status {
     use nexusflow::vendor::{VendorState, VendorStatus};
 
     #[test]
@@ -119,5 +118,71 @@ mod tests {
         assert_eq!(VendorStatus::from_u8(2), VendorStatus::Throttled);
         assert_eq!(VendorStatus::from_u8(3), VendorStatus::Unavailable);
         assert_eq!(VendorStatus::from_u8(99), VendorStatus::Available);
+    }
+}
+
+mod rate_limiter {
+    use nexusflow::vendor::TokenBucket;
+
+    #[tokio::test]
+    async fn test_token_bucket_new() {
+        let bucket = TokenBucket::new(10, 5);
+        assert_eq!(bucket.remaining(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_token_bucket_try_acquire() {
+        let bucket = TokenBucket::new(2, 10);
+
+        // First two acquires should succeed
+        assert!(bucket.try_acquire());
+        assert!(bucket.try_acquire());
+
+        // Third should fail
+        assert!(!bucket.try_acquire());
+    }
+
+    #[tokio::test]
+    async fn test_token_bucket_remaining() {
+        let bucket = TokenBucket::new(5, 10);
+
+        assert_eq!(bucket.remaining(), 5);
+
+        bucket.try_acquire();
+        assert_eq!(bucket.remaining(), 4);
+
+        bucket.try_acquire();
+        assert_eq!(bucket.remaining(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_token_bucket_reset() {
+        let bucket = TokenBucket::new(5, 10);
+
+        // Acquire all tokens
+        assert!(bucket.try_acquire());
+        assert!(bucket.try_acquire());
+        assert!(bucket.try_acquire());
+        assert!(bucket.try_acquire());
+        assert!(bucket.try_acquire());
+        // Now should be empty
+        assert!(!bucket.try_acquire());
+
+        bucket.reset();
+        assert_eq!(bucket.remaining(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_token_bucket_zero_capacity() {
+        let bucket = TokenBucket::new(0, 10);
+        assert!(!bucket.try_acquire());
+    }
+
+    #[tokio::test]
+    async fn test_token_bucket_single_request() {
+        let bucket = TokenBucket::new(1, 1);
+
+        assert!(bucket.try_acquire());
+        assert!(!bucket.try_acquire());
     }
 }

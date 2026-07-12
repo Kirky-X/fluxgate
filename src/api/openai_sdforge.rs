@@ -201,7 +201,7 @@ pub async fn embeddings(body: sdforge::axum::extract::Json<Value>) -> Result<Val
             uuid::Uuid::new_v4().to_string(),
         ))?;
 
-    let openai_body = crate::protocol::embedding_converter::embedding_request_to_openai(body.0.clone())
+    let openai_body = crate::protocol::embedding_request_to_openai(body.0.clone())
         .map_err(|_| ApiError::internal_error("Failed to convert embedding request", uuid::Uuid::new_v4().to_string()))?;
 
     let api_base = if decision.vendor.api_base.is_empty() {

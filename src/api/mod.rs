@@ -19,6 +19,7 @@ pub mod router_builder;
 
 pub use state::ApiState;
 pub use router_builder::create_router;
+pub use routing_hints::RoutingHints;
 
 pub use openai::{chat_completions, embeddings};
 pub use anthropic::messages;

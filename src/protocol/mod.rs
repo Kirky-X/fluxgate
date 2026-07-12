@@ -2,8 +2,6 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use crate::error::NexusFlowError;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 pub mod anthropic_converter;
 pub mod embedding_converter;
@@ -59,30 +57,3 @@ pub trait ProtocolConverter: Send + Sync {
     }
 }
 
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct ConverterRegistry {
-    converters: Arc<HashMap<Protocol, Box<dyn ProtocolConverter>>>,
-}
-
-impl ConverterRegistry {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self {
-            converters: Arc::new(HashMap::new()),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn register<C: ProtocolConverter + 'static>(&mut self, converter: C) {
-        let converter: Box<dyn ProtocolConverter> = Box::new(converter);
-        let mut map = HashMap::new();
-        map.insert(converter.input_protocol(), converter);
-        self.converters = Arc::new(map);
-    }
-
-    #[allow(dead_code)]
-    pub fn get(&self, protocol: Protocol) -> Option<&dyn ProtocolConverter> {
-        self.converters.get(&protocol).map(|c| c.as_ref())
-    }
-}

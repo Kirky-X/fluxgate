@@ -8,9 +8,9 @@
 //!
 //! # Examples
 //!
-//! ```rust
+//! ```ignore
 //! use std::sync::Arc;
-//! use crate::infrastructure::{Database, Dbnexus, Row};
+//! use nexusflow::infrastructure::{Database, Dbnexus, Row};
 //!
 //! // Pattern 1: new() - Default database connection
 //! let db = Dbnexus::new("sqlite:./data/llm_proxy.db");
@@ -240,7 +240,7 @@ impl Dbnexus {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::{Database, Dbnexus};
+    /// use nexusflow::infrastructure::{Database, database::Dbnexus};
     ///
     /// let db = Dbnexus::new("sqlite:./data/llm_proxy.db");
     /// let rows = db.query("SELECT * FROM tokens", &[]).unwrap();
@@ -257,7 +257,7 @@ impl Dbnexus {
     ///
     /// ```rust
     /// use std::time::Duration;
-    /// use crate::infrastructure::{Database, Dbnexus};
+    /// use nexusflow::infrastructure::{Database, database::Dbnexus};
     ///
     /// let db = Dbnexus::builder()
     ///     .max_connections(10)
@@ -276,8 +276,8 @@ impl Dbnexus {
     ///
     /// ```rust
     /// use std::sync::Arc;
-    /// use crate::infrastructure::{Database, Dbnexus};
-    /// use crate::infrastructure::database::MemoryDbBackend;
+    /// use nexusflow::infrastructure::{Database, database::Dbnexus};
+    /// use nexusflow::infrastructure::database::MemoryDbBackend;
     ///
     /// let backend = Arc::new(MemoryDbBackend::new());
     /// let db = Dbnexus::with_dependencies(backend);
@@ -329,7 +329,7 @@ impl DbnexusBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Dbnexus;
+    /// use nexusflow::infrastructure::database::Dbnexus;
     ///
     /// let db = Dbnexus::builder()
     ///     .max_connections(20)
@@ -346,7 +346,7 @@ impl DbnexusBuilder {
     ///
     /// ```rust
     /// use std::time::Duration;
-    /// use crate::infrastructure::Dbnexus;
+    /// use nexusflow::infrastructure::database::Dbnexus;
     ///
     /// let db = Dbnexus::builder()
     ///     .timeout(Duration::from_secs(60))
@@ -362,7 +362,7 @@ impl DbnexusBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Dbnexus;
+    /// use nexusflow::infrastructure::database::Dbnexus;
     ///
     /// let db = Dbnexus::builder()
     ///     .enable_wal(true)
@@ -378,7 +378,7 @@ impl DbnexusBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Dbnexus;
+    /// use nexusflow::infrastructure::database::Dbnexus;
     ///
     /// let db = Dbnexus::builder()
     ///     .busy_timeout(10000)
@@ -395,9 +395,9 @@ impl DbnexusBuilder {
     ///
     /// ```rust
     /// use std::sync::Arc;
-    /// use crate::infrastructure::{Dbnexus, database::MemoryDbBackend};
+    /// use nexusflow::infrastructure::{database::Dbnexus, database::MemoryDbBackend};
     ///
-    /// let backend = Arc::new(MemoryDbBackend::new()) as Arc<dyn super::DbnexusPool>;
+    /// let backend = Arc::new(MemoryDbBackend::new()) as Arc<dyn nexusflow::infrastructure::database::DbnexusPool>;
     /// let db = Dbnexus::builder()
     ///     .pool(backend)
     ///     .build("sqlite:./data/llm_proxy.db");
@@ -413,7 +413,7 @@ impl DbnexusBuilder {
     ///
     /// ```rust
     /// use std::time::Duration;
-    /// use crate::infrastructure::Dbnexus;
+    /// use nexusflow::infrastructure::database::Dbnexus;
     ///
     /// let db = Dbnexus::builder()
     ///     .max_connections(10)

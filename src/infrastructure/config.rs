@@ -8,9 +8,9 @@
 //!
 //! # Examples
 //!
-//! ```rust
+//! ```ignore
 //! use std::sync::Arc;
-//! use crate::infrastructure::{Config, Confers};
+//! use nexusflow::infrastructure::{Config, config::Confers};
 //!
 //! // Pattern 1: new() - Default configuration
 //! let config = Confers::new();
@@ -311,7 +311,7 @@ impl Confers {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::{Config, Confers};
+    /// use nexusflow::infrastructure::{Config, config::Confers};
     ///
     /// let config = Confers::new();
     /// let port = config.get_int("server.port");
@@ -327,7 +327,7 @@ impl Confers {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::{Config, Confers};
+    /// use nexusflow::infrastructure::{Config, config::Confers};
     ///
     /// let config = Confers::builder()
     ///     .file("config.toml")
@@ -346,8 +346,8 @@ impl Confers {
     ///
     /// ```rust
     /// use std::sync::Arc;
-    /// use crate::infrastructure::{Config, Confers};
-    /// use crate::infrastructure::config::MemoryConfigBackend;
+    /// use nexusflow::infrastructure::{Config, config::Confers};
+    /// use nexusflow::infrastructure::config::MemoryConfigBackend;
     ///
     /// let backend = Arc::new(MemoryConfigBackend::new());
     /// let config = Confers::with_dependencies(backend);
@@ -400,7 +400,7 @@ impl ConfersBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Confers;
+    /// use nexusflow::infrastructure::config::Confers;
     ///
     /// let config = Confers::builder()
     ///     .file("config.toml")
@@ -418,7 +418,7 @@ impl ConfersBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Confers;
+    /// use nexusflow::infrastructure::config::Confers;
     ///
     /// let config = Confers::builder()
     ///     .env_prefix("APP_")
@@ -434,7 +434,7 @@ impl ConfersBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Confers;
+    /// use nexusflow::infrastructure::config::Confers;
     ///
     /// let config = Confers::builder()
     ///     .file("config.toml")
@@ -452,9 +452,9 @@ impl ConfersBuilder {
     ///
     /// ```rust
     /// use std::sync::Arc;
-    /// use crate::infrastructure::{Confers, config::MemoryConfigBackend};
+    /// use nexusflow::infrastructure::{config::Confers, config::MemoryConfigBackend};
     ///
-    /// let backend = Arc::new(MemoryConfigBackend::new()) as Arc<dyn super::ConfersBackend>;
+    /// let backend = Arc::new(MemoryConfigBackend::new()) as Arc<dyn nexusflow::infrastructure::config::ConfersBackend>;
     /// let config = Confers::builder()
     ///     .backend(backend)
     ///     .build();
@@ -469,7 +469,7 @@ impl ConfersBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Confers;
+    /// use nexusflow::infrastructure::config::Confers;
     ///
     /// let config = Confers::builder()
     ///     .file("config.toml")

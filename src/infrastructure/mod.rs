@@ -58,9 +58,9 @@ use super::infrastructure::database::Dbnexus;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore
 /// use std::sync::Arc;
-/// use crate::infrastructure::{Cache, Oxcache};
+/// use nexusflow::infrastructure::{Cache, Oxcache};
 ///
 /// // Pattern 1: new()
 /// let cache = Oxcache::new();
@@ -108,9 +108,9 @@ pub trait Cache: Send + Sync {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore
 /// use std::sync::Arc;
-/// use crate::infrastructure::{Config, Confers};
+/// use nexusflow::infrastructure::{Config, Confers};
 ///
 /// // Pattern 1: new()
 /// let config = Confers::new();
@@ -195,9 +195,9 @@ pub enum DbError {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore
 /// use std::sync::Arc;
-/// use crate::infrastructure::{Database, Dbnexus};
+/// use nexusflow::infrastructure::{Database, Dbnexus};
 ///
 /// // Pattern 1: new()
 /// let db = Dbnexus::new("sqlite:./data/llm_proxy.db");

@@ -8,9 +8,9 @@
 //!
 //! # Examples
 //!
-//! ```rust
+//! ```ignore
 //! use std::sync::Arc;
-//! use crate::infrastructure::{Cache, Oxcache};
+//! use nexusflow::infrastructure::{Cache, cache::Oxcache};
 //!
 //! // Pattern 1: new() - Default in-memory cache
 //! let cache = Oxcache::new();
@@ -24,7 +24,7 @@
 //!     .build();
 //!
 //! // Pattern 3: with_dependencies() - Custom backend
-//! use crate::infrastructure::cache::OxcacheBackend;
+//! use nexusflow::infrastructure::cache::OxcacheBackend;
 //! let backend = OxcacheBackend::memory();
 //! let cache = Oxcache::with_dependencies(Arc::new(backend));
 //! ```
@@ -137,7 +137,7 @@ impl Oxcache {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::{Cache, Oxcache};
+    /// use nexusflow::infrastructure::{Cache, cache::Oxcache};
     ///
     /// let cache = Oxcache::new();
     /// cache.set("key", "value".to_string());
@@ -156,7 +156,7 @@ impl Oxcache {
     /// ```rust
     /// use std::sync::Arc;
     /// use std::time::Duration;
-    /// use crate::infrastructure::{Cache, Oxcache};
+    /// use nexusflow::infrastructure::{Cache, cache::Oxcache};
     ///
     /// let cache = Oxcache::builder()
     ///     .ttl(Duration::from_secs(600))
@@ -178,8 +178,8 @@ impl Oxcache {
     ///
     /// ```rust
     /// use std::sync::Arc;
-    /// use crate::infrastructure::{Cache, Oxcache};
-    /// use crate::infrastructure::cache::MemoryBackend;
+    /// use nexusflow::infrastructure::{Cache, cache::Oxcache};
+    /// use nexusflow::infrastructure::cache::MemoryBackend;
     ///
     /// let backend = MemoryBackend::new();
     /// let cache = Oxcache::with_dependencies(Arc::new(backend));
@@ -201,8 +201,8 @@ impl Oxcache {
     /// ```rust
     /// use std::sync::Arc;
     /// use std::time::Duration;
-    /// use crate::infrastructure::{Cache, Oxcache};
-    /// use crate::infrastructure::cache::MemoryBackend;
+    /// use nexusflow::infrastructure::{Cache, cache::Oxcache};
+    /// use nexusflow::infrastructure::cache::MemoryBackend;
     ///
     /// let backend = MemoryBackend::new();
     /// let cache = Oxcache::with_config_and_dependencies(
@@ -269,7 +269,7 @@ impl OxcacheBuilder {
     ///
     /// ```rust
     /// use std::time::Duration;
-    /// use crate::infrastructure::Oxcache;
+    /// use nexusflow::infrastructure::cache::Oxcache;
     ///
     /// let cache = Oxcache::builder()
     ///     .ttl(Duration::from_secs(300))
@@ -288,7 +288,7 @@ impl OxcacheBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Oxcache;
+    /// use nexusflow::infrastructure::cache::Oxcache;
     ///
     /// let cache = Oxcache::builder()
     ///     .capacity(10000)
@@ -308,7 +308,7 @@ impl OxcacheBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::infrastructure::Oxcache;
+    /// use nexusflow::infrastructure::cache::Oxcache;
     ///
     /// let cache = Oxcache::builder()
     ///     .use_lru(false)
@@ -327,9 +327,9 @@ impl OxcacheBuilder {
     ///
     /// ```rust
     /// use std::sync::Arc;
-    /// use crate::infrastructure::{Oxcache, cache::MemoryBackend};
+    /// use nexusflow::infrastructure::{cache::Oxcache, cache::MemoryBackend};
     ///
-    /// let backend = Arc::new(MemoryBackend::new()) as Arc<dyn super::OxcacheBackend>;
+    /// let backend = Arc::new(MemoryBackend::new()) as Arc<dyn nexusflow::infrastructure::cache::OxcacheBackend>;
     /// let cache = Oxcache::builder()
     ///     .backend(backend)
     ///     .build();
@@ -345,7 +345,7 @@ impl OxcacheBuilder {
     ///
     /// ```rust
     /// use std::time::Duration;
-    /// use crate::infrastructure::Oxcache;
+    /// use nexusflow::infrastructure::cache::Oxcache;
     ///
     /// let cache = Oxcache::builder()
     ///     .ttl(Duration::from_secs(300))

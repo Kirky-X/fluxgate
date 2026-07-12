@@ -14,23 +14,29 @@ pub struct Database {
 impl Database {
     pub async fn new(path: &str, pool_size: u32) -> Result<Self, NexusFlowError> {
         if let Some(parent) = std::path::Path::new(path).parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| NexusFlowError::Database { message: format!("创建数据库目录失败: {}", e) })?;
+            std::fs::create_dir_all(parent).map_err(|e| NexusFlowError::Database {
+                message: format!("创建数据库目录失败: {}", e),
+            })?;
         }
 
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(pool_size)
             .connect(path)
             .await
-            .map_err(|e| NexusFlowError::Database { message: format!("连接数据库失败: {}", e) })?;
+            .map_err(|e| NexusFlowError::Database {
+                message: format!("连接数据库失败: {}", e),
+            })?;
 
         // 初始化 schema
         let schema = include_str!("schema.sql");
         for statement in schema.split(';') {
             let trimmed = statement.trim();
             if !trimmed.is_empty() {
-                sqlx::query(trimmed).execute(&pool).await
-                    .map_err(|e| NexusFlowError::Database { message: format!("初始化 schema 失败: {}", e) })?;
+                sqlx::query(trimmed).execute(&pool).await.map_err(|e| {
+                    NexusFlowError::Database {
+                        message: format!("初始化 schema 失败: {}", e),
+                    }
+                })?;
             }
         }
 

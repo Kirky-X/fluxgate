@@ -65,7 +65,9 @@ impl IntoResponse for NexusFlowError {
         let status = match self {
             NexusFlowError::Validation { .. } => axum::http::StatusCode::BAD_REQUEST,
             NexusFlowError::VendorUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            NexusFlowError::AllVendorsUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            NexusFlowError::AllVendorsUnavailable { .. } => {
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            }
             NexusFlowError::Timeout { .. } => axum::http::StatusCode::GATEWAY_TIMEOUT,
             NexusFlowError::RateLimited { .. } => axum::http::StatusCode::TOO_MANY_REQUESTS,
             NexusFlowError::Config { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,

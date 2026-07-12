@@ -3,23 +3,23 @@
 
 // Smart LLM Proxy - Core Library
 
-pub mod config;
 pub mod api;
+pub mod config;
+pub mod database;
+pub mod error;
+pub mod infrastructure;
+pub mod middleware;
 pub mod protocol;
 pub mod router;
-pub mod vendor;
-pub mod database;
 pub mod utils;
-pub mod error;
-pub mod middleware;
-pub mod infrastructure; // New: Infrastructure layer for DI-compliant components
+pub mod vendor; // New: Infrastructure layer for DI-compliant components
 
-pub use config::{ConfigManager, Config, ServerConfig, DatabaseConfig, VendorConfig, ModelConfig};
-pub use error::NexusFlowError;
 pub use api::ApiState;
-pub use vendor::VendorManager;
+pub use config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig, VendorConfig};
 pub use database::Database;
+pub use error::NexusFlowError;
 pub use middleware::ApiAuthState;
+pub use vendor::VendorManager;
 
 // Re-export infrastructure traits and supporting types only (interfaces, not implementations).
 // Concrete implementations (Oxcache/Confers/Dbnexus) are intentionally NOT re-exported here:
@@ -29,5 +29,5 @@ pub use middleware::ApiAuthState;
 pub use infrastructure::Cache;
 pub use infrastructure::Config as InfrastructureConfig;
 pub use infrastructure::Database as InfrastructureDatabase;
-pub use infrastructure::Row;
 pub use infrastructure::DbError;
+pub use infrastructure::Row;

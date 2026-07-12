@@ -4,21 +4,24 @@
 mod endpoints {
     use axum::{
         body::Body,
-        routing::{post, get},
-        Router,
         http::Request,
+        routing::{get, post},
+        Router,
     };
     use nexusflow::{
         api::{chat_completions, messages},
-        config::{ConfigManager, ServerConfig, DatabaseConfig, VendorConfig, ModelConfig, GlobalModelConfig, Config},
-        protocol::{OpenAIConverter, AnthropicConverter, ProtocolConverter},
-        vendor::VendorManager,
+        config::{
+            Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig,
+            VendorConfig,
+        },
         database::Database,
+        protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter},
+        vendor::VendorManager,
         ApiState,
     };
-    use std::sync::Arc;
     use serde_json::json;
     use sqlx::SqlitePool;
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     fn create_test_config() -> Config {
@@ -39,14 +42,12 @@ mod endpoints {
                     api_key_env: "OPENAI_API_KEY".to_string(),
                     api_base: "".to_string(),
                     enabled: true,
-                    models: vec![
-                        ModelConfig {
-                            model_id: "gpt-4".to_string(),
-                            abstract_id: Some("gpt-4".to_string()),
-                            weight: 1.0,
-                            enabled: true,
-                        },
-                    ],
+                    models: vec![ModelConfig {
+                        model_id: "gpt-4".to_string(),
+                        abstract_id: Some("gpt-4".to_string()),
+                        weight: 1.0,
+                        enabled: true,
+                    }],
                     rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
                     concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 10,
@@ -59,14 +60,12 @@ mod endpoints {
                     api_key_env: "ANTHROPIC_API_KEY".to_string(),
                     api_base: "".to_string(),
                     enabled: true,
-                    models: vec![
-                        ModelConfig {
-                            model_id: "claude-3-5-sonnet-20241022".to_string(),
-                            abstract_id: Some("claude-3.5-sonnet".to_string()),
-                            weight: 1.0,
-                            enabled: true,
-                        },
-                    ],
+                    models: vec![ModelConfig {
+                        model_id: "claude-3-5-sonnet-20241022".to_string(),
+                        abstract_id: Some("claude-3.5-sonnet".to_string()),
+                        weight: 1.0,
+                        enabled: true,
+                    }],
                     rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
                     concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 10,
@@ -95,7 +94,7 @@ mod endpoints {
 
         let router = Arc::new(nexusflow::router::Router::new(
             config_manager.clone(),
-            vendor_manager.clone()
+            vendor_manager.clone(),
         ));
 
         Arc::new(ApiState {
@@ -123,7 +122,12 @@ mod endpoints {
         let app = create_app(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -146,7 +150,7 @@ mod endpoints {
                     .uri("/v1/chat/completions")
                     .header("Content-Type", "application/json")
                     .body(Body::from(request_body.to_string()))
-                    .unwrap()
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -167,7 +171,7 @@ mod endpoints {
                     .uri("/v1/chat/completions")
                     .header("Content-Type", "application/json")
                     .body(Body::from("{invalid json}"))
-                    .unwrap()
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -192,7 +196,7 @@ mod endpoints {
                     .uri("/v1/messages")
                     .header("Content-Type", "application/json")
                     .body(Body::from(request_body.to_string()))
-                    .unwrap()
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -252,17 +256,17 @@ mod endpoints {
             object: "chat.completion".to_string(),
             created: 1234567890,
             model: "gpt-4".to_string(),
-            choices: vec![
-                nexusflow::protocol::unified::Choice {
-                    index: 0,
-                    message: Some(nexusflow::protocol::unified::Message {
-                        role: nexusflow::protocol::unified::Role::Assistant,
-                        content: nexusflow::protocol::unified::MessageContent::Text("Hello!".to_string()),
-                    }),
-                    finish_reason: Some("stop".to_string()),
-                    logprobs: None,
-                }
-            ],
+            choices: vec![nexusflow::protocol::unified::Choice {
+                index: 0,
+                message: Some(nexusflow::protocol::unified::Message {
+                    role: nexusflow::protocol::unified::Role::Assistant,
+                    content: nexusflow::protocol::unified::MessageContent::Text(
+                        "Hello!".to_string(),
+                    ),
+                }),
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
             usage: nexusflow::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
@@ -319,7 +323,7 @@ mod endpoints {
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
         let router = Arc::new(nexusflow::router::Router::new(
             config_manager.clone(),
-            vendor_manager.clone()
+            vendor_manager.clone(),
         ));
 
         // claude-3.5-sonnet should fail because vendor is disabled
@@ -336,7 +340,7 @@ mod endpoints {
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
         let router = Arc::new(nexusflow::router::Router::new(
             config_manager.clone(),
-            vendor_manager.clone()
+            vendor_manager.clone(),
         ));
 
         // gpt-4 should fail because model is disabled
@@ -347,14 +351,17 @@ mod endpoints {
 
 mod integration {
     use nexusflow::api::ApiState;
-    use nexusflow::config::{ConfigManager, ServerConfig, DatabaseConfig, VendorConfig, ModelConfig, GlobalModelConfig, Config};
-    use nexusflow::protocol::{OpenAIConverter, AnthropicConverter, ProtocolConverter};
-    use nexusflow::vendor::VendorManager;
+    use nexusflow::config::{
+        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig,
+        VendorConfig,
+    };
     use nexusflow::database::Database;
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
     use nexusflow::router::Router;
-    use std::sync::Arc;
+    use nexusflow::vendor::VendorManager;
     use serde_json::json;
     use sqlx::SqlitePool;
+    use std::sync::Arc;
 
     fn create_test_config() -> Config {
         Config {
@@ -366,28 +373,24 @@ mod integration {
                 path: "./test.db".to_string(),
                 pool_size: 5,
             },
-            vendors: vec![
-                VendorConfig {
-                    id: "openai_main".to_string(),
-                    name: "OpenAI Main".to_string(),
-                    type_: "openai".to_string(),
-                    api_key_env: "OPENAI_API_KEY".to_string(),
-                    api_base: "".to_string(),
+            vendors: vec![VendorConfig {
+                id: "openai_main".to_string(),
+                name: "OpenAI Main".to_string(),
+                type_: "openai".to_string(),
+                api_key_env: "OPENAI_API_KEY".to_string(),
+                api_base: "".to_string(),
+                enabled: true,
+                models: vec![ModelConfig {
+                    model_id: "gpt-4".to_string(),
+                    abstract_id: Some("gpt-4".to_string()),
+                    weight: 1.0,
                     enabled: true,
-                    models: vec![
-                        ModelConfig {
-                            model_id: "gpt-4".to_string(),
-                            abstract_id: Some("gpt-4".to_string()),
-                            weight: 1.0,
-                            enabled: true,
-                        },
-                    ],
-                    rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
-                    concurrency: nexusflow::config::ConcurrencyConfig {
-                        requests_per_second: 10,
-                    },
+                }],
+                rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                concurrency: nexusflow::config::ConcurrencyConfig {
+                    requests_per_second: 10,
                 },
-            ],
+            }],
             global_model: Some(GlobalModelConfig {
                 enabled: true,
                 strategy: "weighted".to_string(),
@@ -401,10 +404,7 @@ mod integration {
 
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
 
-        let router = Arc::new(Router::new(
-            config_manager.clone(),
-            vendor_manager.clone()
-        ));
+        let router = Arc::new(Router::new(config_manager.clone(), vendor_manager.clone()));
 
         let database = Arc::new(Database {
             pool: SqlitePool::connect_lazy(":memory:").unwrap(),
@@ -543,17 +543,17 @@ mod integration {
             object: "chat.completion".to_string(),
             created: 1234567890,
             model: "gpt-4".to_string(),
-            choices: vec![
-                nexusflow::protocol::unified::Choice {
-                    index: 0,
-                    message: Some(nexusflow::protocol::unified::Message {
-                        role: nexusflow::protocol::unified::Role::Assistant,
-                        content: nexusflow::protocol::unified::MessageContent::Text("Hello!".to_string()),
-                    }),
-                    finish_reason: Some("stop".to_string()),
-                    logprobs: None,
-                }
-            ],
+            choices: vec![nexusflow::protocol::unified::Choice {
+                index: 0,
+                message: Some(nexusflow::protocol::unified::Message {
+                    role: nexusflow::protocol::unified::Role::Assistant,
+                    content: nexusflow::protocol::unified::MessageContent::Text(
+                        "Hello!".to_string(),
+                    ),
+                }),
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
             usage: nexusflow::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,

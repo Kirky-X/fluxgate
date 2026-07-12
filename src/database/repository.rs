@@ -26,14 +26,16 @@ impl Repository {
     }
 
     pub async fn log_request(&self, log: &RequestLog) -> Result<(), sqlx::Error> {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             INSERT INTO request_logs (
                 request_id, timestamp, endpoint, input_format,
                 abstract_model, messages, actual_vendor, actual_model,
                 routing_strategy, status_code, response, error_message,
                 prompt_tokens, completion_tokens, total_tokens, duration_ms
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#)
+        "#,
+        )
         .bind(&log.request_id)
         .bind(log.timestamp)
         .bind(&log.endpoint)
@@ -50,7 +52,8 @@ impl Repository {
         .bind(log.completion_tokens)
         .bind(log.total_tokens)
         .bind(log.duration_ms)
-        .execute(&self.pool).await?;
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -94,41 +97,57 @@ impl Repository {
         Ok(rows)
     }
 
-    pub async fn search_logs(&self, keyword: &str, limit: u32) -> Result<Vec<RequestLog>, sqlx::Error> {
+    pub async fn search_logs(
+        &self,
+        keyword: &str,
+        limit: u32,
+    ) -> Result<Vec<RequestLog>, sqlx::Error> {
         let pattern = format!("%{}%", keyword);
-        let rows = sqlx::query_as::<_, RequestLog>(r#"
+        let rows = sqlx::query_as::<_, RequestLog>(
+            r#"
             SELECT * FROM request_logs
             WHERE messages LIKE ? OR error_message LIKE ?
             ORDER BY timestamp DESC
             LIMIT ?
-        "#)
+        "#,
+        )
         .bind(&pattern)
         .bind(&pattern)
         .bind(limit as i64)
-        .fetch_all(&self.pool).await?;
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows)
     }
 
     #[allow(dead_code)]
-    pub async fn get_token_stats(&self, vendor: Option<&str>) -> Result<Vec<TokenUsage>, sqlx::Error> {
+    pub async fn get_token_stats(
+        &self,
+        vendor: Option<&str>,
+    ) -> Result<Vec<TokenUsage>, sqlx::Error> {
         if let Some(v) = vendor {
             let rows = sqlx::query_as::<_, TokenUsage>(
-                "SELECT * FROM token_usage WHERE vendor = ? ORDER BY date DESC, hour DESC"
-            ).bind(v).fetch_all(&self.pool).await?;
+                "SELECT * FROM token_usage WHERE vendor = ? ORDER BY date DESC, hour DESC",
+            )
+            .bind(v)
+            .fetch_all(&self.pool)
+            .await?;
             Ok(rows)
         } else {
             let rows = sqlx::query_as::<_, TokenUsage>(
-                "SELECT * FROM token_usage ORDER BY date DESC, hour DESC"
-            ).fetch_all(&self.pool).await?;
+                "SELECT * FROM token_usage ORDER BY date DESC, hour DESC",
+            )
+            .fetch_all(&self.pool)
+            .await?;
             Ok(rows)
         }
     }
 
     #[allow(dead_code)]
     pub async fn get_all_vendor_status(&self) -> Result<Vec<VendorStatusRecord>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, VendorStatusRecord>(
-            "SELECT * FROM vendor_status ORDER BY vendor"
-        ).fetch_all(&self.pool).await?;
+        let rows =
+            sqlx::query_as::<_, VendorStatusRecord>("SELECT * FROM vendor_status ORDER BY vendor")
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows)
     }
 }

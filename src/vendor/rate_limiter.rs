@@ -1,10 +1,10 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::config::RateLimitConfig;
 use chrono::{Local, NaiveTime};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct TokenBucket {
     capacity: usize,
@@ -23,7 +23,7 @@ impl TokenBucket {
             last_refill: AtomicU64::new(0),
         }
     }
-    
+
     pub fn try_acquire(&self) -> bool {
         self.refill();
         let current = self.tokens.load(Ordering::Relaxed);
@@ -34,18 +34,18 @@ impl TokenBucket {
             false
         }
     }
-    
+
     #[allow(dead_code)]
     pub async fn acquire(&self) {
         while !self.try_acquire() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
-    
+
     fn refill(&self) {
         let now = SystemTime::now();
         let last = self.last_refill.load(Ordering::Relaxed);
-        
+
         if last == 0 {
             self.last_refill.store(
                 now.duration_since(UNIX_EPOCH).unwrap().as_secs(),
@@ -53,17 +53,13 @@ impl TokenBucket {
             );
             return;
         }
-        
-        let elapsed = now
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - last;
-        
+
+        let elapsed = now.duration_since(UNIX_EPOCH).unwrap().as_secs() - last;
+
         if elapsed == 0 {
             return;
         }
-        
+
         let refill = (elapsed as usize * self.refill_rate) / 60;
         if refill > 0 {
             let current = self.tokens.load(Ordering::Relaxed);
@@ -75,13 +71,13 @@ impl TokenBucket {
             );
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn remaining(&self) -> usize {
         self.refill();
         self.tokens.load(Ordering::Relaxed)
     }
-    
+
     #[allow(dead_code)]
     pub fn reset(&self) {
         self.tokens.store(self.capacity, Ordering::Relaxed);
@@ -103,14 +99,18 @@ impl ConcurrencyLimiter {
             _max_concurrency: max_concurrency,
         }
     }
-    
+
     #[allow(dead_code)]
     pub async fn acquire(&self) -> ConcurrencyPermit {
-        let permit = self.semaphore.clone().acquire_owned().await
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
             .expect("Semaphore closed");
         ConcurrencyPermit { _permit: permit }
     }
-    
+
     #[allow(dead_code)]
     pub fn try_acquire(&self) -> Option<ConcurrencyPermit> {
         match self.semaphore.clone().try_acquire_owned() {
@@ -118,7 +118,7 @@ impl ConcurrencyLimiter {
             Err(_) => None,
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn available(&self) -> usize {
         self.semaphore.available_permits()
@@ -152,22 +152,33 @@ impl AdvancedRateLimiter {
     pub fn new(config: &RateLimitConfig) -> Self {
         match config {
             RateLimitConfig::TimeWindow { start, end } => {
-                let start_time = NaiveTime::parse_from_str(start, "%H:%M").unwrap_or_else(|_| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-                let end_time = NaiveTime::parse_from_str(end, "%H:%M").unwrap_or_else(|_| NaiveTime::from_hms_opt(23, 59, 59).unwrap());
-                Self::TimeWindow { start: start_time, end: end_time }
-            },
-            RateLimitConfig::Interval { hours } => {
-                Self::Interval {
-                    interval_secs: hours * 3600,
-                    last_reset: AtomicU64::new(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()),
+                let start_time = NaiveTime::parse_from_str(start, "%H:%M")
+                    .unwrap_or_else(|_| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                let end_time = NaiveTime::parse_from_str(end, "%H:%M")
+                    .unwrap_or_else(|_| NaiveTime::from_hms_opt(23, 59, 59).unwrap());
+                Self::TimeWindow {
+                    start: start_time,
+                    end: end_time,
                 }
+            }
+            RateLimitConfig::Interval { hours } => Self::Interval {
+                interval_secs: hours * 3600,
+                last_reset: AtomicU64::new(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                ),
             },
-            RateLimitConfig::Token { max_tokens } => {
-                Self::Token {
-                    max_tokens: *max_tokens,
-                    used_tokens: AtomicU64::new(0),
-                    last_reset: AtomicU64::new(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()),
-                }
+            RateLimitConfig::Token { max_tokens } => Self::Token {
+                max_tokens: *max_tokens,
+                used_tokens: AtomicU64::new(0),
+                last_reset: AtomicU64::new(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                ),
             },
         }
     }
@@ -177,9 +188,15 @@ impl AdvancedRateLimiter {
             Self::TimeWindow { start, end } => {
                 let now = Local::now().time();
                 now >= *start && now < *end
-            },
-            Self::Interval { interval_secs, last_reset } => {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            }
+            Self::Interval {
+                interval_secs,
+                last_reset,
+            } => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
                 let last = last_reset.load(Ordering::Relaxed);
                 if now - last >= *interval_secs {
                     // 应该重置，但这通常由后台任务做，或者懒惰重置。
@@ -193,10 +210,12 @@ impl AdvancedRateLimiter {
                 } else {
                     true
                 }
-            },
-            Self::Token { max_tokens, used_tokens, .. } => {
-                used_tokens.load(Ordering::Relaxed) < *max_tokens
-            },
+            }
+            Self::Token {
+                max_tokens,
+                used_tokens,
+                ..
+            } => used_tokens.load(Ordering::Relaxed) < *max_tokens,
             Self::None => true,
         }
     }
@@ -206,29 +225,51 @@ impl AdvancedRateLimiter {
             used_tokens.fetch_add(tokens, Ordering::Relaxed);
         }
     }
-    
+
     pub fn reset(&self) {
         match self {
             Self::Interval { last_reset, .. } => {
-                last_reset.store(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(), Ordering::Relaxed);
-            },
-            Self::Token { used_tokens, last_reset, .. } => {
+                last_reset.store(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    Ordering::Relaxed,
+                );
+            }
+            Self::Token {
+                used_tokens,
+                last_reset,
+                ..
+            } => {
                 used_tokens.store(0, Ordering::Relaxed);
-                last_reset.store(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(), Ordering::Relaxed);
-            },
+                last_reset.store(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    Ordering::Relaxed,
+                );
+            }
             _ => {}
         }
     }
-    
+
     // Check if should reset (for Interval type mostly)
     pub fn should_reset(&self) -> bool {
         match self {
-             Self::Interval { interval_secs, last_reset } => {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            Self::Interval {
+                interval_secs,
+                last_reset,
+            } => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
                 let last = last_reset.load(Ordering::Relaxed);
                 now - last >= *interval_secs
-            },
-            _ => false
+            }
+            _ => false,
         }
     }
 }

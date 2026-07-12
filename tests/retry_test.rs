@@ -10,8 +10,8 @@
 mod tests {
     use nexusflow::error::NexusFlowError;
     use nexusflow::utils::{
-        BackoffStrategy, ErrorCategory, RetryStrategy, extract_status_code, is_retryable_error,
-        with_retry,
+        extract_status_code, is_retryable_error, with_retry, BackoffStrategy, ErrorCategory,
+        RetryStrategy,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -180,7 +180,10 @@ mod tests {
     fn test_extract_status_code_with_paren_format() {
         assert_eq!(extract_status_code("anthropic_1 (429: Rate limit)"), 429);
         assert_eq!(extract_status_code("vendor (500: Internal error)"), 500);
-        assert_eq!(extract_status_code("vendor (503: Service Unavailable)"), 503);
+        assert_eq!(
+            extract_status_code("vendor (503: Service Unavailable)"),
+            503
+        );
     }
 
     #[test]
@@ -281,11 +284,8 @@ mod tests {
             vendor: "vendor (400: Bad Request)".into(),
         };
 
-        let result: Result<i32, NexusFlowError> = with_retry(
-            || async { Ok::<i32, NexusFlowError>(42) },
-            Some(initial),
-        )
-        .await;
+        let result: Result<i32, NexusFlowError> =
+            with_retry(|| async { Ok::<i32, NexusFlowError>(42) }, Some(initial)).await;
 
         assert!(result.is_err());
         match result {

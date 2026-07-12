@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 mod converter {
-    use nexusflow::protocol::{OpenAIConverter, AnthropicConverter, Protocol, ProtocolConverter};
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter, Protocol, ProtocolConverter};
     use serde_json::json;
 
     #[tokio::test]
@@ -413,8 +413,8 @@ mod converter {
 }
 
 mod embedding {
-    use serde_json::json;
     use nexusflow::protocol::{embedding_request_to_openai, embedding_response_from_openai};
+    use serde_json::json;
 
     #[test]
     fn test_embedding_request_to_openai_string_input() {

@@ -1,8 +1,8 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::error::NexusFlowError;
 use super::*;
+use crate::error::NexusFlowError;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -47,11 +47,7 @@ impl ProtocolConverter for OpenAIConverter {
         let tools = body
             .get("tools")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| parse_openai_tool(t))
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|t| parse_openai_tool(t)).collect())
             .unwrap_or_default();
 
         // 解析工具选择策略
@@ -413,27 +409,19 @@ fn parse_openai_message(json: &Value) -> Result<Message, NexusFlowError> {
                 if !tool_calls.is_empty() {
                     MessageContent::ToolCalls(tool_calls)
                 } else {
-                    let blocks = arr
-                        .iter()
-                        .filter_map(parse_content_block)
-                        .collect();
+                    let blocks = arr.iter().filter_map(parse_content_block).collect();
                     MessageContent::MultiModal(blocks)
                 }
             } else {
-                let blocks = arr
-                    .iter()
-                    .filter_map(parse_content_block)
-                    .collect();
+                let blocks = arr.iter().filter_map(parse_content_block).collect();
                 MessageContent::MultiModal(blocks)
             }
         }
         None | Some(Value::Null) => {
             // content 字段缺失或为 null，检查是否有 tool_calls
             if let Some(tool_calls_arr) = json.get("tool_calls").and_then(|v| v.as_array()) {
-                let tool_calls: Vec<ToolCall> = tool_calls_arr
-                    .iter()
-                    .filter_map(parse_tool_call)
-                    .collect();
+                let tool_calls: Vec<ToolCall> =
+                    tool_calls_arr.iter().filter_map(parse_tool_call).collect();
                 if !tool_calls.is_empty() {
                     MessageContent::ToolCalls(tool_calls)
                 } else {
@@ -490,36 +478,45 @@ fn message_to_openai(msg: Message) -> Value {
     let (content, tool_call_id) = match msg.content {
         MessageContent::Text(s) => (Value::String(s), None),
         MessageContent::MultiModal(blocks) => {
-            let arr: Vec<Value> = blocks.iter().map(|block| match block {
-                ContentBlock::Text { text } => json!({
-                    "type": "text",
-                    "text": text,
-                }),
-                ContentBlock::Image { source, detail } => json!({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": format!("data:{};base64,{}", source.media_type, source.data),
-                        "detail": detail.clone().unwrap_or_else(|| "auto".into()),
-                    },
-                }),
-                _ => json!({}),
-            }).collect();
+            let arr: Vec<Value> = blocks
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text } => json!({
+                        "type": "text",
+                        "text": text,
+                    }),
+                    ContentBlock::Image { source, detail } => json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", source.media_type, source.data),
+                            "detail": detail.clone().unwrap_or_else(|| "auto".into()),
+                        },
+                    }),
+                    _ => json!({}),
+                })
+                .collect();
             (Value::Array(arr), None)
         }
         MessageContent::ToolCalls(tool_calls) => {
-            let tool_calls_arr: Vec<Value> = tool_calls.iter().map(|tc| {
-                json!({
-                    "id": tc.id,
-                    "type": tc.call_type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    }
+            let tool_calls_arr: Vec<Value> = tool_calls
+                .iter()
+                .map(|tc| {
+                    json!({
+                        "id": tc.id,
+                        "type": tc.call_type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        }
+                    })
                 })
-            }).collect();
+                .collect();
             (Value::Array(tool_calls_arr), None)
         }
-        MessageContent::ToolResult(result) => (Value::String(result.content.clone()), Some(result.tool_call_id)),
+        MessageContent::ToolResult(result) => (
+            Value::String(result.content.clone()),
+            Some(result.tool_call_id),
+        ),
         MessageContent::TextWithToolCalls { text, tool_calls } => {
             let mut arr: Vec<Value> = vec![json!({
                 "type": "text",
@@ -586,7 +583,11 @@ fn parse_tool_call(json: &Value) -> Option<ToolCall> {
 
     Some(ToolCall {
         id: obj.get("id")?.as_str()?.to_string(),
-        call_type: obj.get("type").and_then(|t| t.as_str()).unwrap_or("function").to_string(),
+        call_type: obj
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("function")
+            .to_string(),
         function: ToolCallFunction {
             name: func.get("name")?.as_str()?.to_string(),
             arguments: func.get("arguments")?.to_string(),
@@ -600,56 +601,69 @@ fn parse_openai_tool(json: &Value) -> Option<Tool> {
     let func = obj.get("function")?.as_object()?;
 
     // 解析参数
-    let parameters = func.get("parameters").and_then(|p| p.as_object()).map(|params| {
-        let properties: HashMap<String, ToolParameterProperty> = params
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .map(|props| {
-                props
-                    .iter()
-                    .filter_map(|(name, prop)| {
-                        let prop_obj = prop.as_object()?;
-                        Some((
-                            name.clone(),
-                            ToolParameterProperty {
-                                param_type: prop_obj.get("type")?.as_str()?.to_string(),
-                                description: prop_obj
-                                    .get("description")
-                                    .and_then(|d| d.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                enum_values: prop_obj
-                                    .get("enum")
-                                    .and_then(|e| e.as_array())
-                                    .map(|arr| {
-                                        arr.iter()
-                                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                            .collect()
-                                    })
-                                    .unwrap_or_default(),
-                            },
-                        ))
-                    })
-                    .collect()
-            }).unwrap_or_default();
-
-        ToolParameters {
-            param_type: params.get("type").and_then(|t| t.as_str()).unwrap_or("object").to_string(),
-            properties,
-            required: params
-                .get("required")
-                .and_then(|r| r.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+    let parameters = func
+        .get("parameters")
+        .and_then(|p| p.as_object())
+        .map(|params| {
+            let properties: HashMap<String, ToolParameterProperty> = params
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .map(|props| {
+                    props
+                        .iter()
+                        .filter_map(|(name, prop)| {
+                            let prop_obj = prop.as_object()?;
+                            Some((
+                                name.clone(),
+                                ToolParameterProperty {
+                                    param_type: prop_obj.get("type")?.as_str()?.to_string(),
+                                    description: prop_obj
+                                        .get("description")
+                                        .and_then(|d| d.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    enum_values: prop_obj
+                                        .get("enum")
+                                        .and_then(|e| e.as_array())
+                                        .map(|arr| {
+                                            arr.iter()
+                                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default(),
+                                },
+                            ))
+                        })
                         .collect()
                 })
-                .unwrap_or_default(),
-        }
-    }).unwrap_or_default();
+                .unwrap_or_default();
+
+            ToolParameters {
+                param_type: params
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("object")
+                    .to_string(),
+                properties,
+                required: params
+                    .get("required")
+                    .and_then(|r| r.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            }
+        })
+        .unwrap_or_default();
 
     Some(Tool {
-        tool_type: obj.get("type").and_then(|t| t.as_str()).unwrap_or("function").to_string(),
+        tool_type: obj
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("function")
+            .to_string(),
         function: ToolFunction {
             name: func.get("name")?.as_str()?.to_string(),
             description: func
@@ -711,9 +725,17 @@ fn parse_tool_choice(json: &Value) -> ToolChoice {
         Value::Object(obj) => {
             if let Some(func) = obj.get("function").and_then(|f| f.as_object()) {
                 ToolChoice::Specific {
-                    choice_type: obj.get("type").and_then(|t| t.as_str()).unwrap_or("function").to_string(),
+                    choice_type: obj
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("function")
+                        .to_string(),
                     function: ToolChoiceFunction {
-                        name: func.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                        name: func
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                     },
                 }
             } else {
@@ -728,7 +750,10 @@ fn parse_tool_choice(json: &Value) -> ToolChoice {
 fn tool_choice_to_openai(tool_choice: ToolChoice) -> Value {
     match tool_choice {
         ToolChoice::Strategy(s) => Value::String(s),
-        ToolChoice::Specific { choice_type, function } => json!({
+        ToolChoice::Specific {
+            choice_type,
+            function,
+        } => json!({
             "type": choice_type,
             "function": {
                 "name": function.name,

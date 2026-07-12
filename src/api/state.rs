@@ -1,11 +1,11 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use std::sync::Arc;
-use reqwest::Client;
-use crate::{ConfigManager, VendorManager, Database};
 use crate::protocol::ProtocolConverter;
 use crate::router::Router as RouterTrait;
+use crate::{ConfigManager, Database, VendorManager};
+use reqwest::Client;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ApiState {

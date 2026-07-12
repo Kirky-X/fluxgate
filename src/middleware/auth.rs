@@ -53,14 +53,14 @@ fn extract_api_key(headers: &axum::http::HeaderMap) -> Option<String> {
             return Some(value.to_string());
         }
     }
-    
+
     // 尝试从 x-api-key header 提取
     if let Some(key) = headers.get("x-api-key") {
         if let Ok(value) = key.to_str() {
             return Some(value.to_string());
         }
     }
-    
+
     None
 }
 
@@ -73,18 +73,18 @@ pub async fn api_auth_middleware(
     if !auth_state.enabled {
         return Ok(next.run(request).await);
     }
-    
+
     // 排除健康检查端点
     let path = request.uri().path();
     if path == "/health" || path == "/" {
         return Ok(next.run(request).await);
     }
-    
+
     // 排除 Admin 端点 (内部使用)
     if path.starts_with("/admin/") {
         return Ok(next.run(request).await);
     }
-    
+
     // 提取并验证 API key
     let api_key = match extract_api_key(request.headers()) {
         Some(key) => key,
@@ -92,30 +92,34 @@ pub async fn api_auth_middleware(
             return Ok(Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .header("Content-Type", "application/json")
-                .body(Body::from(json!({
-                    "error": {
-                        "message": "Missing API key",
-                        "type": "authentication_error"
-                    }
-                }).to_string()))
-                .unwrap()
-            );
+                .body(Body::from(
+                    json!({
+                        "error": {
+                            "message": "Missing API key",
+                            "type": "authentication_error"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap());
         }
     };
-    
+
     if !auth_state.validate_key(&api_key) {
         return Ok(Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header("Content-Type", "application/json")
-            .body(Body::from(json!({
-                "error": {
-                    "message": "Invalid API key",
-                    "type": "authentication_error"
-                }
-            }).to_string()))
-            .unwrap()
-        );
+            .body(Body::from(
+                json!({
+                    "error": {
+                        "message": "Invalid API key",
+                        "type": "authentication_error"
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap());
     }
-    
+
     Ok(next.run(request).await)
 }

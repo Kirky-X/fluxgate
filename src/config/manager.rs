@@ -1,11 +1,11 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use super::{Config, VendorConfig, ModelConfig, GlobalModelConfig};
+use super::{Config, GlobalModelConfig, ModelConfig, VendorConfig};
+use crate::error::NexusFlowError;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
-use crate::error::NexusFlowError;
 
 #[derive(Clone)]
 pub struct ConfigManager {
@@ -32,15 +32,17 @@ impl ConfigManager {
         // In real impl, we should write to config.toml
 
         // Simple file write
-        let content = toml::to_string(&new_config)
-            .map_err(|e| NexusFlowError::Config { message: format!("Failed to serialize config: {}", e) })?;
+        let content = toml::to_string(&new_config).map_err(|e| NexusFlowError::Config {
+            message: format!("Failed to serialize config: {}", e),
+        })?;
 
         // Assuming we know the config path. For now hardcode or just update memory.
         // But to be persistent we should write it.
         // Let's try writing to "config.toml" in CWD
 
-        std::fs::write("config.toml", content)
-            .map_err(|e| NexusFlowError::Config { message: format!("Failed to write config file: {}", e) })?;
+        std::fs::write("config.toml", content).map_err(|e| NexusFlowError::Config {
+            message: format!("Failed to write config file: {}", e),
+        })?;
 
         let mut guard = self.config.write().unwrap();
         *guard = new_config;

@@ -1,12 +1,12 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-pub mod status;
-pub mod rate_limiter;
-pub mod queue;
 pub mod manager;
+pub mod queue;
+pub mod rate_limiter;
+pub mod status;
 
-pub use status::{VendorStatus, VendorState};
-pub use rate_limiter::{TokenBucket, ConcurrencyLimiter, AdvancedRateLimiter};
-pub use queue::{VendorQueue, QueueManager, PendingRequest};
 pub use manager::{VendorManager, WindowInfo};
+pub use queue::{PendingRequest, QueueManager, VendorQueue};
+pub use rate_limiter::{AdvancedRateLimiter, ConcurrencyLimiter, TokenBucket};
+pub use status::{VendorState, VendorStatus};

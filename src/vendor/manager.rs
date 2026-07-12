@@ -1,19 +1,22 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
+use super::{
+    AdvancedRateLimiter, ConcurrencyLimiter, PendingRequest, QueueManager, TokenBucket,
+    VendorQueue, VendorState, VendorStatus,
+};
 use crate::config::{ConfigManager, VendorConfig};
-use crate::protocol::{UnifiedRequest, UnifiedResponse};
-use crate::protocol::{ProtocolConverter, OpenAIConverter, AnthropicConverter};
 use crate::error::NexusFlowError;
-use crate::utils::retry::{ErrorCategory, RetryStrategy, extract_status_code, is_retryable_error};
-use super::{VendorState, VendorStatus, VendorQueue, QueueManager, TokenBucket, ConcurrencyLimiter, PendingRequest, AdvancedRateLimiter};
+use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
+use crate::protocol::{UnifiedRequest, UnifiedResponse};
+use crate::utils::retry::{extract_status_code, is_retryable_error, ErrorCategory, RetryStrategy};
+use bytes::Bytes;
+use reqwest;
+use serde_json::Value;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use bytes::Bytes;
-use reqwest;
-use serde_json::Value;
 
 /// 窗口信息
 #[derive(Debug, Clone)]
@@ -102,14 +105,14 @@ impl VendorManager {
             anthropic_converter: Arc::new(AnthropicConverter::new()),
         }
     }
-    
+
     #[allow(dead_code)]
     pub async fn initialize(&self) -> Result<(), NexusFlowError> {
         let vendors = self.config.get_enabled_vendors();
         for vendor in &vendors {
             self.get_or_create_instance(vendor);
         }
-        
+
         // Start background reset worker
         let instances = self.instances.clone();
         tokio::spawn(async move {
@@ -124,38 +127,38 @@ impl VendorManager {
                 }
             }
         });
-        
+
         Ok(())
     }
-    
+
     fn get_or_create_instance(&self, vendor: &VendorConfig) -> Arc<VendorInstance> {
         let mut guard = self.instances.write().unwrap();
-        
+
         if let Some(instance) = guard.get(&vendor.id) {
             return instance.clone();
         }
-        
+
         let queue_size = 100;
         let rps = vendor.concurrency.requests_per_second;
-        
+
         let instance = Arc::new(VendorInstance::new(vendor.clone(), queue_size, rps));
         guard.insert(vendor.id.clone(), instance.clone());
-        
+
         // Spawn worker
         let instance_clone = instance.clone();
         let client_clone = self.client.clone();
         let openai = self.openai_converter.clone();
         let anthropic = self.anthropic_converter.clone();
-        
+
         tokio::spawn(async move {
             Self::process_vendor_queue(instance_clone, client_clone, openai, anthropic).await;
         });
-        
+
         instance
     }
 
     async fn process_vendor_queue(
-        instance: Arc<VendorInstance>, 
+        instance: Arc<VendorInstance>,
         client: reqwest::Client,
         openai: Arc<OpenAIConverter>,
         anthropic: Arc<AnthropicConverter>,
@@ -163,42 +166,45 @@ impl VendorManager {
         loop {
             // 1. Wait for rate limiter (RPS)
             instance.rate_limiter.acquire().await;
-            
+
             // 2. Get request from queue
             if let Some(pending) = instance.queue.recv().await {
                 // Check Advanced Rate Limiter
                 if !instance.advanced_limiter.check() {
-                    let _ = pending.response_tx.send(Err(NexusFlowError::RateLimited { 
-                        vendor: instance.config.id.clone() 
+                    let _ = pending.response_tx.send(Err(NexusFlowError::RateLimited {
+                        vendor: instance.config.id.clone(),
                     }));
                     continue;
                 }
 
                 // 3. Acquire concurrency permit
                 let permit_result = instance.concurrency_limiter.acquire().await;
-                
+
                 let client = client.clone();
                 let instance = instance.clone();
                 let openai = openai.clone();
                 let anthropic = anthropic.clone();
-                
+
                 tokio::spawn(async move {
                     // Hold permit
                     let _permit = permit_result;
-                    
+
                     let result = Self::perform_http_request(
-                        &client, 
-                        &instance.config, 
+                        &client,
+                        &instance.config,
                         pending.request,
                         &openai,
-                        &anthropic
-                    ).await;
-                    
+                        &anthropic,
+                    )
+                    .await;
+
                     // Update Token Usage if successful
                     if let Ok(ref response) = result {
-                        instance.advanced_limiter.consume_tokens(response.usage.total_tokens as u64);
+                        instance
+                            .advanced_limiter
+                            .consume_tokens(response.usage.total_tokens as u64);
                     }
-                    
+
                     let _ = pending.response_tx.send(result);
                 });
             } else {
@@ -206,7 +212,7 @@ impl VendorManager {
             }
         }
     }
-    
+
     async fn perform_http_request(
         client: &reqwest::Client,
         config: &VendorConfig,
@@ -217,7 +223,11 @@ impl VendorManager {
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
             "openai" => openai,
             "anthropic" => anthropic,
-            _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
+            _ => {
+                return Err(NexusFlowError::Config {
+                    message: "Unknown vendor type".into(),
+                })
+            }
         };
 
         // Convert UnifiedRequest to Vendor Request (JSON)
@@ -238,7 +248,11 @@ impl VendorManager {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
-                _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
+                _ => {
+                    return Err(NexusFlowError::Config {
+                        message: "Unknown vendor type".into(),
+                    })
+                }
             }
         } else {
             &config.api_base
@@ -268,21 +282,26 @@ impl VendorManager {
 
             if config.type_ == "anthropic" {
                 builder = builder
-                    .header("x-api-key", std::env::var(&config.api_key_env).unwrap_or_default())
+                    .header(
+                        "x-api-key",
+                        std::env::var(&config.api_key_env).unwrap_or_default(),
+                    )
                     .header("anthropic-version", "2023-06-01")
                     .header("content-type", "application/json");
             } else {
                 builder = builder
-                    .header("Authorization", format!("Bearer {}", std::env::var(&config.api_key_env).unwrap_or_default()))
+                    .header(
+                        "Authorization",
+                        format!(
+                            "Bearer {}",
+                            std::env::var(&config.api_key_env).unwrap_or_default()
+                        ),
+                    )
                     .header("content-type", "application/json");
             }
 
             // 发送请求
-            let response = match builder
-                .json(&request_body)
-                .send()
-                .await
-            {
+            let response = match builder.json(&request_body).send().await {
                 Ok(resp) => resp,
                 Err(e) => {
                     // 网络错误 - 判断是否可重试
@@ -292,7 +311,9 @@ impl VendorManager {
                         tokio::time::sleep(Duration::from_millis(500 * retry_count as u64)).await;
                         continue;
                     }
-                    return Err(NexusFlowError::VendorUnavailable { vendor: config.id.clone() });
+                    return Err(NexusFlowError::VendorUnavailable {
+                        vendor: config.id.clone(),
+                    });
                 }
             };
 
@@ -302,7 +323,7 @@ impl VendorManager {
             if !status.is_success() {
                 let text = response.text().await.unwrap_or_default();
                 let error = NexusFlowError::VendorUnavailable {
-                    vendor: format!("{} ({}: {})", config.id, status, text)
+                    vendor: format!("{} ({}: {})", config.id, status, text),
                 };
 
                 // 根据状态码判断错误分类
@@ -336,7 +357,7 @@ impl VendorManager {
                 Ok(json) => json,
                 Err(e) => {
                     return Err(NexusFlowError::VendorUnavailable {
-                        vendor: format!("Parse error: {}", e)
+                        vendor: format!("Parse error: {}", e),
                     });
                 }
             };
@@ -345,7 +366,7 @@ impl VendorManager {
             return converter.parse_response(response_json);
         }
     }
-    
+
     pub fn get_status(&self, vendor_id: &str) -> VendorStatus {
         if let Some(vendor) = self.config.get_vendor(vendor_id) {
             if !vendor.enabled {
@@ -367,13 +388,14 @@ impl VendorManager {
             VendorStatus::Unavailable
         }
     }
-    
+
     pub fn get_queue_length(&self, vendor_id: &str) -> usize {
-        self.queue_manager.get(vendor_id)
+        self.queue_manager
+            .get(vendor_id)
             .map(|q| q.len())
             .unwrap_or(0)
     }
-    
+
     pub async fn execute_request(
         &self,
         vendor_id: &str,
@@ -381,23 +403,31 @@ impl VendorManager {
     ) -> Result<UnifiedResponse, NexusFlowError> {
         let instance = {
             let guard = self.instances.read().unwrap();
-            guard.get(vendor_id)
-                .ok_or(NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?
+            guard
+                .get(vendor_id)
+                .ok_or(NexusFlowError::VendorUnavailable {
+                    vendor: vendor_id.to_string(),
+                })?
                 .clone()
         };
-        
+
         // Remove direct rate limiter check, as it's handled by worker
-        
+
         let (response_tx, response_rx) = oneshot::channel();
-        
-        let pending = PendingRequest { request, response_tx };
-        
+
+        let pending = PendingRequest {
+            request,
+            response_tx,
+        };
+
         instance.queue.send(pending).await?;
-        
+
         let timeout_duration = Duration::from_secs(60);
         timeout(timeout_duration, response_rx)
             .await
-            .map_err(|_| NexusFlowError::Timeout { vendor: vendor_id.to_string() })?
+            .map_err(|_| NexusFlowError::Timeout {
+                vendor: vendor_id.to_string(),
+            })?
             .map_err(|e| e)?
     }
 
@@ -427,7 +457,8 @@ impl VendorManager {
                 (weight, vendor, model)
             })
             .collect();
-        sorted_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        sorted_candidates
+            .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut last_error_msg = String::new();
 
@@ -455,7 +486,10 @@ impl VendorManager {
                         NexusFlowError::Protocol { source, .. } => {
                             // 协议错误可能是暂时性的，也可能是永久性的
                             // 检查是否包含明确不可重试的错误
-                            if source.contains("401") || source.contains("403") || source.contains("404") {
+                            if source.contains("401")
+                                || source.contains("403")
+                                || source.contains("404")
+                            {
                                 // 永久性错误，标记厂商不可用
                                 self.mark_vendor_unavailable(&vendor.id);
                             }
@@ -500,38 +534,51 @@ impl VendorManager {
     ) -> Result<impl futures::Stream<Item = Result<Bytes, reqwest::Error>>, NexusFlowError> {
         let instance = {
             let guard = self.instances.read().unwrap();
-            guard.get(vendor_id)
-                .ok_or(NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?
+            guard
+                .get(vendor_id)
+                .ok_or(NexusFlowError::VendorUnavailable {
+                    vendor: vendor_id.to_string(),
+                })?
                 .clone()
         };
-        
+
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check() {
-            return Err(NexusFlowError::RateLimited { vendor: vendor_id.to_string() });
+            return Err(NexusFlowError::RateLimited {
+                vendor: vendor_id.to_string(),
+            });
         }
 
         // Enforce limits manually for stream requests
         instance.rate_limiter.acquire().await;
         let permit = instance.concurrency_limiter.acquire().await; // Hold permit?
-        
+
         let config = &instance.config;
         let api_base = if config.api_base.is_empty() {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
-                _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
+                _ => {
+                    return Err(NexusFlowError::Config {
+                        message: "Unknown vendor type".into(),
+                    })
+                }
             }
         } else {
             &config.api_base
         };
-        
+
         // Need to convert request here too!
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
             "openai" => &*self.openai_converter,
             "anthropic" => &*self.anthropic_converter,
-            _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
+            _ => {
+                return Err(NexusFlowError::Config {
+                    message: "Unknown vendor type".into(),
+                })
+            }
         };
-        
+
         let request_body = converter.request_to_external(request)?;
 
         let url = if config.type_ == "anthropic" {
@@ -541,35 +588,48 @@ impl VendorManager {
                 format!("{}/v1/messages", api_base)
             }
         } else {
-             if api_base.ends_with("/v1") {
+            if api_base.ends_with("/v1") {
                 format!("{}/chat/completions", api_base)
             } else {
                 format!("{}/v1/chat/completions", api_base)
             }
         };
-        
-        let mut request_builder = self.client
-            .post(&url);
-            
+
+        let mut request_builder = self.client.post(&url);
+
         if config.type_ == "anthropic" {
             request_builder = request_builder
-                .header("x-api-key", std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config { message: format!("API key env {} not set", config.api_key_env) })?)
+                .header(
+                    "x-api-key",
+                    std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config {
+                        message: format!("API key env {} not set", config.api_key_env),
+                    })?,
+                )
                 .header("anthropic-version", "2023-06-01");
         } else {
-            request_builder = request_builder
-                .header("Authorization", format!("Bearer {}", std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config { message: format!("API key env {} not set", config.api_key_env) })?));
+            request_builder = request_builder.header(
+                "Authorization",
+                format!(
+                    "Bearer {}",
+                    std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config {
+                        message: format!("API key env {} not set", config.api_key_env)
+                    })?
+                ),
+            );
         }
-        
+
         let response = request_builder
             .json(&request_body)
             .send()
             .await
-            .map_err(|_e| NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?;
-        
+            .map_err(|_e| NexusFlowError::VendorUnavailable {
+                vendor: vendor_id.to_string(),
+            })?;
+
         // We need to keep permit alive if we want real concurrency limit.
         // For now, we drop it.
         drop(permit);
-            
+
         Ok(response.bytes_stream())
     }
 
@@ -582,8 +642,11 @@ impl VendorManager {
     ) -> Result<Value, NexusFlowError> {
         let instance = {
             let guard = self.instances.read().unwrap();
-            guard.get(vendor_id)
-                .ok_or(NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?
+            guard
+                .get(vendor_id)
+                .ok_or(NexusFlowError::VendorUnavailable {
+                    vendor: vendor_id.to_string(),
+                })?
                 .clone()
         };
 
@@ -592,7 +655,9 @@ impl VendorManager {
 
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check() {
-            return Err(NexusFlowError::RateLimited { vendor: vendor_id.to_string() });
+            return Err(NexusFlowError::RateLimited {
+                vendor: vendor_id.to_string(),
+            });
         }
 
         let permit = instance.concurrency_limiter.acquire().await;
@@ -603,7 +668,11 @@ impl VendorManager {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
-                _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
+                _ => {
+                    return Err(NexusFlowError::Config {
+                        message: "Unknown vendor type".into(),
+                    })
+                }
             }
         } else {
             &config.api_base
@@ -627,31 +696,45 @@ impl VendorManager {
 
         if config.type_ == "anthropic" {
             builder = builder
-                .header("x-api-key", std::env::var(&config.api_key_env).unwrap_or_default())
+                .header(
+                    "x-api-key",
+                    std::env::var(&config.api_key_env).unwrap_or_default(),
+                )
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json");
         } else {
             builder = builder
-                .header("Authorization", format!("Bearer {}", std::env::var(&config.api_key_env).unwrap_or_default()))
+                .header(
+                    "Authorization",
+                    format!(
+                        "Bearer {}",
+                        std::env::var(&config.api_key_env).unwrap_or_default()
+                    ),
+                )
                 .header("content-type", "application/json");
         }
 
-        let response = builder
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|_| NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?;
+        let response = builder.json(&request_body).send().await.map_err(|_| {
+            NexusFlowError::VendorUnavailable {
+                vendor: vendor_id.to_string(),
+            }
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             return Err(NexusFlowError::VendorUnavailable {
-                vendor: format!("{} ({}: {})", vendor_id, status, text)
+                vendor: format!("{} ({}: {})", vendor_id, status, text),
             });
         }
 
-        let response_json: Value = response.json().await
-            .map_err(|e| NexusFlowError::VendorUnavailable { vendor: format!("Parse error: {}", e) })?;
+        let response_json: Value =
+            response
+                .json()
+                .await
+                .map_err(|e| NexusFlowError::VendorUnavailable {
+                    vendor: format!("Parse error: {}", e),
+                })?;
 
         // 更新 Token 使用统计
         if let Some(usage) = response_json.get("usage") {
@@ -671,8 +754,11 @@ impl VendorManager {
     ) -> Result<impl futures::Stream<Item = Result<Bytes, reqwest::Error>>, NexusFlowError> {
         let instance = {
             let guard = self.instances.read().unwrap();
-            guard.get(vendor_id)
-                .ok_or(NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?
+            guard
+                .get(vendor_id)
+                .ok_or(NexusFlowError::VendorUnavailable {
+                    vendor: vendor_id.to_string(),
+                })?
                 .clone()
         };
 
@@ -681,7 +767,9 @@ impl VendorManager {
 
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check() {
-            return Err(NexusFlowError::RateLimited { vendor: vendor_id.to_string() });
+            return Err(NexusFlowError::RateLimited {
+                vendor: vendor_id.to_string(),
+            });
         }
 
         let permit = instance.concurrency_limiter.acquire().await;
@@ -692,7 +780,11 @@ impl VendorManager {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
-                _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
+                _ => {
+                    return Err(NexusFlowError::Config {
+                        message: "Unknown vendor type".into(),
+                    })
+                }
             }
         } else {
             &config.api_base
@@ -716,18 +808,26 @@ impl VendorManager {
 
         if config.type_ == "anthropic" {
             builder = builder
-                .header("x-api-key", std::env::var(&config.api_key_env).unwrap_or_default())
+                .header(
+                    "x-api-key",
+                    std::env::var(&config.api_key_env).unwrap_or_default(),
+                )
                 .header("anthropic-version", "2023-06-01");
         } else {
-            builder = builder
-                .header("Authorization", format!("Bearer {}", std::env::var(&config.api_key_env).unwrap_or_default()));
+            builder = builder.header(
+                "Authorization",
+                format!(
+                    "Bearer {}",
+                    std::env::var(&config.api_key_env).unwrap_or_default()
+                ),
+            );
         }
 
-        let response = builder
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|_| NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?;
+        let response = builder.json(&request_body).send().await.map_err(|_| {
+            NexusFlowError::VendorUnavailable {
+                vendor: vendor_id.to_string(),
+            }
+        })?;
 
         Ok(response.bytes_stream())
     }
@@ -739,7 +839,7 @@ impl VendorManager {
             instance.state.set_status(status);
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn mark_busy(&self, vendor_id: &str) {
         let guard = self.instances.read().unwrap();
@@ -747,7 +847,7 @@ impl VendorManager {
             instance.state.mark_busy();
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn mark_available(&self, vendor_id: &str) {
         let guard = self.instances.read().unwrap();
@@ -755,7 +855,7 @@ impl VendorManager {
             instance.state.mark_available();
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn mark_throttled(&self, vendor_id: &str, backoff: Duration) {
         let guard = self.instances.read().unwrap();
@@ -763,15 +863,16 @@ impl VendorManager {
             instance.state.mark_throttled(backoff);
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn inc_error(&self, vendor_id: &str) -> u8 {
         let guard = self.instances.read().unwrap();
-        guard.get(vendor_id)
+        guard
+            .get(vendor_id)
             .map(|i| i.state.inc_error())
             .unwrap_or(0)
     }
-    
+
     #[allow(dead_code)]
     pub fn reset_status(&self, vendor_id: &str) {
         let guard = self.instances.read().unwrap();
@@ -781,15 +882,13 @@ impl VendorManager {
             instance.rate_limiter.reset();
         }
     }
-    
+
     pub fn get_all_status(&self) -> Vec<(String, VendorStatus, usize)> {
         let guard = self.instances.read().unwrap();
         let mut status = Vec::new();
 
         for (id, instance) in guard.iter() {
-            let queue_len = self.queue_manager.get(id)
-                .map(|q| q.len())
-                .unwrap_or(0);
+            let queue_len = self.queue_manager.get(id).map(|q| q.len()).unwrap_or(0);
             status.push((id.clone(), instance.state.get_status(), queue_len));
         }
 
@@ -815,11 +914,18 @@ impl VendorManager {
                             .and_local_timezone(chrono::Local)
                             .single()
                             .unwrap_or_else(|| now_local);
-                        let end_dt = Instant::now() + end_datetime.signed_duration_since(now_local).to_std().unwrap_or_default();
+                        let end_dt = Instant::now()
+                            + end_datetime
+                                .signed_duration_since(now_local)
+                                .to_std()
+                                .unwrap_or_default();
                         (None, Some(end_dt))
                     }
                 }
-                super::AdvancedRateLimiter::Interval { interval_secs, last_reset } => {
+                super::AdvancedRateLimiter::Interval {
+                    interval_secs,
+                    last_reset,
+                } => {
                     let last = last_reset.load(std::sync::atomic::Ordering::Relaxed);
                     let elapsed = SystemTime::now()
                         .duration_since(UNIX_EPOCH)

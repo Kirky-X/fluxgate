@@ -1,9 +1,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::config::{ConfigManager, VendorConfig, ModelConfig};
-use crate::vendor::{VendorManager, VendorStatus, WindowInfo};
+use crate::config::{ConfigManager, ModelConfig, VendorConfig};
 use crate::error::NexusFlowError;
+use crate::vendor::{VendorManager, VendorStatus, WindowInfo};
 use rand::prelude::*;
 use std::sync::Arc;
 
@@ -31,7 +31,10 @@ pub struct Router {
 
 impl Router {
     pub fn new(config: Arc<ConfigManager>, vendor_manager: Arc<VendorManager>) -> Self {
-        Self { config, vendor_manager }
+        Self {
+            config,
+            vendor_manager,
+        }
     }
 
     pub async fn route(&self, abstract_model: &str) -> Result<RoutingDecision, NexusFlowError> {
@@ -90,7 +93,11 @@ impl Router {
         self.route(abstract_model).await
     }
 
-    async fn try_vendor_route(&self, vendor_id: &str, model_hint: Option<&str>) -> Option<RoutingDecision> {
+    async fn try_vendor_route(
+        &self,
+        vendor_id: &str,
+        model_hint: Option<&str>,
+    ) -> Option<RoutingDecision> {
         let vendor = self.config.get_vendor(vendor_id)?;
         if !vendor.enabled {
             return None;
@@ -104,12 +111,18 @@ impl Router {
         // 如果有模型提示，查找匹配的模型
         if let Some(model_id) = model_hint {
             let normalized = model_id.to_lowercase();
-            if let Some(model) = vendor.models.iter().find(|m| {
-                m.enabled && (
-                    m.model_id.to_lowercase() == normalized ||
-                    m.abstract_id.as_ref().map_or(false, |a| a.to_lowercase() == normalized)
-                )
-            }).cloned() {
+            if let Some(model) = vendor
+                .models
+                .iter()
+                .find(|m| {
+                    m.enabled
+                        && (m.model_id.to_lowercase() == normalized
+                            || m.abstract_id
+                                .as_ref()
+                                .map_or(false, |a| a.to_lowercase() == normalized))
+                })
+                .cloned()
+            {
                 return Some(RoutingDecision {
                     vendor,
                     model,
@@ -140,11 +153,21 @@ impl Router {
             return None;
         }
 
-        let model = vendor.models.iter()
-            .find(|m| m.enabled && (m.model_id == model_id || m.abstract_id.as_ref().map_or(false, |a| a == model_id)))?
+        let model = vendor
+            .models
+            .iter()
+            .find(|m| {
+                m.enabled
+                    && (m.model_id == model_id
+                        || m.abstract_id.as_ref().map_or(false, |a| a == model_id))
+            })?
             .clone();
 
-        Some(RoutingDecision { vendor, model, strategy: RoutingStrategy::Direct })
+        Some(RoutingDecision {
+            vendor,
+            model,
+            strategy: RoutingStrategy::Direct,
+        })
     }
 
     async fn try_abstract_route(&self, abstract_id: &str) -> Option<RoutingDecision> {

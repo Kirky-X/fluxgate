@@ -5,26 +5,26 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber;
 
-use nexusflow::error::NexusFlowError;
-use nexusflow::config::ConfigManager;
+use nexusflow::api::{init_global_state, ApiState};
 use nexusflow::config::loader::ConfigLoader;
-use nexusflow::api::{ApiState, init_global_state};
-use nexusflow::protocol::OpenAIConverter;
+use nexusflow::config::ConfigManager;
+use nexusflow::database::Database;
+use nexusflow::error::NexusFlowError;
 use nexusflow::protocol::AnthropicConverter;
+use nexusflow::protocol::OpenAIConverter;
 use nexusflow::router::Router as RouterStruct;
 use nexusflow::vendor::VendorManager;
-use nexusflow::database::Database;
 
 #[tokio::main]
 async fn main() -> Result<(), NexusFlowError> {
     println!("Starting NexusFlow with sdforge...");
     tracing_subscriber::fmt::init();
-    
+
     let config_path = std::env::args().nth(1).unwrap_or("config.toml".to_string());
     println!("Loading config from: {}", config_path);
     let config_manager = Arc::new(ConfigLoader::new(Some(config_path)).load()?);
     println!("Config loaded successfully");
-    
+
     let db_config = {
         let config = config_manager.read();
         config.database.clone()
@@ -32,13 +32,13 @@ async fn main() -> Result<(), NexusFlowError> {
     println!("Initializing database at: {}", db_config.path);
     let database = Arc::new(Database::new(&db_config.path, db_config.pool_size).await?);
     println!("Database initialized");
-    
+
     let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
     vendor_manager.initialize().await?;
     println!("Vendor manager initialized");
-    
+
     let router = RouterStruct::new(config_manager.clone(), vendor_manager.clone());
-    
+
     let api_state = Arc::new(ApiState {
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
@@ -48,10 +48,10 @@ async fn main() -> Result<(), NexusFlowError> {
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: database.clone(),
     });
-    
+
     init_global_state(api_state);
     println!("Global state initialized");
-    
+
     // Build app with sdforge's configuration
     let sdforge_config = {
         let config_ref = config_manager.read();
@@ -79,26 +79,29 @@ async fn main() -> Result<(), NexusFlowError> {
 
         config
     };
-    
+
     let app = sdforge::http::build_with_config(&sdforge_config)?;
-    
+
     let server_config = {
         let config = config_manager.read();
         config.server.clone()
     };
-    
-    let addr = SocketAddr::from((server_config.host.parse::<std::net::Ipv4Addr>().unwrap(), server_config.port));
-    
+
+    let addr = SocketAddr::from((
+        server_config.host.parse::<std::net::Ipv4Addr>().unwrap(),
+        server_config.port,
+    ));
+
     tracing::info!("Starting server: {}", addr);
     println!("Server listening on {} (sdforge powered)", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let result = axum::serve(listener, app).await;
-    
+
     match result {
         Ok(_) => println!("Server stopped successfully"),
         Err(e) => println!("Server stopped with error: {}", e),
     }
-    
+
     Ok(())
 }

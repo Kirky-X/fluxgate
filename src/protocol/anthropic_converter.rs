@@ -1,8 +1,8 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::error::NexusFlowError;
 use super::*;
+use crate::error::NexusFlowError;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -47,31 +47,29 @@ impl ProtocolConverter for AnthropicConverter {
         let tools = body
             .get("tools")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| parse_anthropic_tool(t))
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|t| parse_anthropic_tool(t)).collect())
             .unwrap_or_default();
 
         // Anthropic 的 tool_choice 映射到统一格式
-        let tool_choice = body.get("tool_choice").map(|tc| {
-            match tc {
-                Value::String(s) => ToolChoice::Strategy(s.clone()),
-                Value::Object(obj) => {
-                    if let Some(func) = obj.get("function").and_then(|f| f.as_object()) {
-                        ToolChoice::Specific {
-                            choice_type: "function".to_string(),
-                            function: ToolChoiceFunction {
-                                name: func.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
-                            },
-                        }
-                    } else {
-                        ToolChoice::Strategy("auto".to_string())
+        let tool_choice = body.get("tool_choice").map(|tc| match tc {
+            Value::String(s) => ToolChoice::Strategy(s.clone()),
+            Value::Object(obj) => {
+                if let Some(func) = obj.get("function").and_then(|f| f.as_object()) {
+                    ToolChoice::Specific {
+                        choice_type: "function".to_string(),
+                        function: ToolChoiceFunction {
+                            name: func
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        },
                     }
+                } else {
+                    ToolChoice::Strategy("auto".to_string())
                 }
-                _ => ToolChoice::Strategy("auto".to_string()),
             }
+            _ => ToolChoice::Strategy("auto".to_string()),
         });
 
         Ok(UnifiedRequest {
@@ -217,9 +215,9 @@ impl ProtocolConverter for AnthropicConverter {
         let message = match content {
             Value::Array(arr) if !arr.is_empty() => {
                 // Check if this is a tool_use response
-                let has_tool_use = arr.iter().any(|item| {
-                    item.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                });
+                let has_tool_use = arr
+                    .iter()
+                    .any(|item| item.get("type").and_then(|t| t.as_str()) == Some("tool_use"));
 
                 if has_tool_use {
                     // Parse tool calls
@@ -230,7 +228,8 @@ impl ProtocolConverter for AnthropicConverter {
                         let item_type = item.get("type").and_then(|t| t.as_str());
                         match item_type {
                             Some("tool_use") => {
-                                let id = item.get("id")
+                                let id = item
+                                    .get("id")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
@@ -239,7 +238,8 @@ impl ProtocolConverter for AnthropicConverter {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let input = item.get("input")
+                                let input = item
+                                    .get("input")
                                     .map(|v| serde_json::to_string(v).unwrap_or_default())
                                     .unwrap_or_default();
 
@@ -372,8 +372,12 @@ impl ProtocolConverter for AnthropicConverter {
                         })
                         .collect(),
                     MessageContent::ToolCalls(_) => vec![json!({"type": "text", "text": ""})],
-                    MessageContent::ToolResult(result) => vec![json!({"type": "tool_result", "content": result.content})],
-                    MessageContent::TextWithToolCalls { text, .. } => vec![json!({"type": "text", "text": text})],
+                    MessageContent::ToolResult(result) => {
+                        vec![json!({"type": "tool_result", "content": result.content})]
+                    }
+                    MessageContent::TextWithToolCalls { text, .. } => {
+                        vec![json!({"type": "text", "text": text})]
+                    }
                 };
 
                 Ok(json!({
@@ -544,7 +548,8 @@ fn parse_anthropic_tool(json: &Value) -> Option<Tool> {
         .to_string();
 
     // 解析输入模式
-    let parameters = obj.get("input_schema")
+    let parameters = obj
+        .get("input_schema")
         .and_then(|s| s.as_object())
         .map(|schema| {
             let properties: HashMap<String, ToolParameterProperty> = schema
@@ -577,10 +582,15 @@ fn parse_anthropic_tool(json: &Value) -> Option<Tool> {
                             ))
                         })
                         .collect()
-                }).unwrap_or_default();
+                })
+                .unwrap_or_default();
 
             ToolParameters {
-                param_type: schema.get("type").and_then(|t| t.as_str()).unwrap_or("object").to_string(),
+                param_type: schema
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("object")
+                    .to_string(),
                 properties,
                 required: schema
                     .get("required")
@@ -592,7 +602,8 @@ fn parse_anthropic_tool(json: &Value) -> Option<Tool> {
                     })
                     .unwrap_or_default(),
             }
-        }).unwrap_or_default();
+        })
+        .unwrap_or_default();
 
     Some(Tool {
         tool_type: "function".to_string(),

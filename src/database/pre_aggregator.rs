@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! Token 使用预聚合器
 //!
 //! 按小时聚合 Token 使用统计，减少数据库查询压力。

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! 路由提示提取器
 //!
 //! 从 HTTP 请求头提取路由信息：

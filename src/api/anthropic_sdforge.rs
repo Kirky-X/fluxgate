@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! Anthropic API handlers migrated to sdforge
 //!
 //! This module contains Anthropic-compatible endpoints migrated to sdforge.

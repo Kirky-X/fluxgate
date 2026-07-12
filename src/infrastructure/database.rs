@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! Dbnexus implementation for the unified Database trait.
 //!
 //! This module provides an implementation of the [`Database`] trait using the dbnexus library.

@@ -1,3 +1,5 @@
+> ⚠️ 9 个 PRD gap 任务在 v0.1.0-stabilization Phase 4 实施。请勿在此文件继续编辑。
+
 # PRD 缺口修复实现计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

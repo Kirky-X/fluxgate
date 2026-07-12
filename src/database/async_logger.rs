@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! 异步日志写入器
 //!
 //! 使用专用 channel 实现异步批量日志写入，提高性能。

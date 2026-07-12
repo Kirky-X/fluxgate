@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 use axum::{routing::{post, get}, Router};
 use tower_http::trace::TraceLayer;
 use std::sync::Arc;

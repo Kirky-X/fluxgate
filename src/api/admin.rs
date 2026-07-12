@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 use axum::{Json, extract::{Query, Path, State}, response::IntoResponse};
 use serde_json::Value;
 use std::sync::Arc;

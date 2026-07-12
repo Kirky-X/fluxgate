@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! Confers implementation for the unified Config trait.
 //!
 //! This module provides an implementation of the [`Config`] trait using the confers library.

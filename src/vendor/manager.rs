@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 use crate::config::{ConfigManager, VendorConfig};
 use crate::protocol::unified::{UnifiedRequest, UnifiedResponse};
 use crate::protocol::{ProtocolConverter, OpenAIConverter, AnthropicConverter};

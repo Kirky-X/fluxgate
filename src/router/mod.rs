@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 use crate::config::{ConfigManager, VendorConfig, ModelConfig};
 use crate::vendor::{VendorManager, VendorStatus, WindowInfo};
 use crate::error::ProxyError;

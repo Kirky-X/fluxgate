@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! Infrastructure Layer - Core dependency abstractions
 //!
 //! This module provides unified trait interfaces for cache, config, and database operations

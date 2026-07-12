@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! 智能重试机制模块
 //!
 //! 根据 PRD 设计，实现按状态码分类的重试策略：

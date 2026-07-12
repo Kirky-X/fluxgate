@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber;

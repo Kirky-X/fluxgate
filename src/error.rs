@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 // 错误处理模块
 use axum::response::IntoResponse;
 use serde_json::json;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 use crate::error::ProxyError;
 use crate::protocol::unified::*;
 use crate::protocol::{Protocol, ProtocolConverter};

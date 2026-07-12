@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! Oxcache implementation for the unified Cache trait.
 //!
 //! This module provides an implementation of the [`Cache`] trait using the oxcache library.

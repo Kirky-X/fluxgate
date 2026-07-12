@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! Admin API handlers migrated to sdforge
 //!
 //! This module contains admin endpoints that have been migrated from axum to sdforge's

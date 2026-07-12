@@ -1,3 +1,6 @@
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! Global state holder for sdforge handlers
 //!
 //! Since sdforge's #[service_api] macro doesn't support Axum's State extractor,

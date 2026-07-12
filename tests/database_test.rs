@@ -3,17 +3,23 @@
 
 #[cfg(test)]
 mod tests {
+    use dbnexus::{DbConfig, DbPool};
     use nexusflow::database::{Database, LogFilter, Repository, RequestLog};
-    use sqlx::SqlitePool;
     use std::sync::Arc;
 
-    fn create_test_pool() -> SqlitePool {
-        SqlitePool::connect_lazy(":memory:").unwrap()
+    async fn create_test_pool() -> DbPool {
+        let config = DbConfig {
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        };
+        DbPool::with_config(config).await.unwrap()
     }
 
     #[tokio::test]
     async fn test_repository_new() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool);
         repository.initialize().await.unwrap();
         repository.initialize().await.unwrap();
@@ -22,7 +28,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_log_request() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool);
         repository.initialize().await.unwrap();
         repository.initialize().await.unwrap();
@@ -53,7 +59,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_query_logs_by_vendor() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool.clone());
         repository.initialize().await.unwrap();
 
@@ -100,7 +106,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_query_logs_by_time_range() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool.clone());
         repository.initialize().await.unwrap();
 
@@ -148,7 +154,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_search_logs() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool.clone());
         repository.initialize().await.unwrap();
 
@@ -189,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_get_logs_limit() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool.clone());
         repository.initialize().await.unwrap();
 
@@ -236,7 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_get_logs_empty_result() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool);
         repository.initialize().await.unwrap();
 
@@ -256,7 +262,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_database_new() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let _database = Database {
             pool: pool.clone(),
             repository: Arc::new(Repository::new(pool)),
@@ -266,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_database_close() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let database = Database {
             pool: pool.clone(),
             repository: Arc::new(Repository::new(pool)),
@@ -278,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_database_clone() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let database = Database {
             pool: pool.clone(),
             repository: Arc::new(Repository::new(pool)),
@@ -290,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_batch_insert() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool.clone());
         repository.initialize().await.unwrap();
         let now = chrono::Utc::now().timestamp();
@@ -323,7 +329,7 @@ mod tests {
         }
 
         // Wait for all inserts
-        let results: Vec<Result<(), sqlx::Error>> = futures::future::join_all(handles)
+        let results: Vec<Result<(), dbnexus::DbError>> = futures::future::join_all(handles)
             .await
             .into_iter()
             .map(|r| r.unwrap())
@@ -434,7 +440,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_search_no_results() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool);
         repository.initialize().await.unwrap();
 
@@ -446,7 +452,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_repository_query_logs_by_model() {
-        let pool = create_test_pool();
+        let pool = create_test_pool().await;
         let repository = Repository::new(pool);
         repository.initialize().await.unwrap();
 

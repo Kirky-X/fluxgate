@@ -8,6 +8,7 @@ mod endpoints {
         routing::{get, post},
         Router,
     };
+    use dbnexus::{DbConfig, DbPool};
     use nexusflow::{
         api::{chat_completions, messages},
         config::{
@@ -20,7 +21,6 @@ mod endpoints {
         ApiState,
     };
     use serde_json::json;
-    use sqlx::SqlitePool;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -79,17 +79,24 @@ mod endpoints {
         }
     }
 
-    fn create_api_state() -> Arc<ApiState> {
+    async fn create_api_state() -> Arc<ApiState> {
         let config = create_test_config();
         let config_manager = Arc::new(ConfigManager::new(config.clone()));
 
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
 
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
         let database = Arc::new(Database {
-            pool: SqlitePool::connect_lazy(":memory:").unwrap(),
-            repository: Arc::new(nexusflow::database::Repository::new(
-                SqlitePool::connect_lazy(":memory:").unwrap(),
-            )),
+            pool: pool.clone(),
+            repository: Arc::new(nexusflow::database::Repository::new(pool)),
         });
 
         let router = Arc::new(nexusflow::router::Router::new(
@@ -118,7 +125,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_health_endpoint() {
-        let state = create_api_state();
+        let state = create_api_state().await;
         let app = create_app(state);
 
         let response = app
@@ -136,7 +143,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_openai_chat_completions_missing_model() {
-        let state = create_api_state();
+        let state = create_api_state().await;
         let app = create_app(state);
 
         let request_body = json!({
@@ -161,7 +168,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_openai_chat_completions_invalid_json() {
-        let state = create_api_state();
+        let state = create_api_state().await;
         let app = create_app(state);
 
         let response = app
@@ -182,7 +189,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_anthropic_messages_missing_model() {
-        let state = create_api_state();
+        let state = create_api_state().await;
         let app = create_app(state);
 
         let request_body = json!({
@@ -207,7 +214,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_openai_converter_to_unified() {
-        let state = create_api_state();
+        let state = create_api_state().await;
         let request = json!({
             "model": "gpt-4",
             "messages": [
@@ -230,7 +237,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_anthropic_converter_to_unified() {
-        let state = create_api_state();
+        let state = create_api_state().await;
         let request = json!({
             "model": "claude-3-5-sonnet-20241022",
             "messages": [
@@ -249,7 +256,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_unified_to_openai_response() {
-        let state = create_api_state();
+        let state = create_api_state().await;
 
         let unified_response = nexusflow::protocol::unified::UnifiedResponse {
             id: "test-123".to_string(),
@@ -284,7 +291,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_model_routing_openai() {
-        let state = create_api_state();
+        let state = create_api_state().await;
 
         let decision = state.router.route("gpt-4").await;
         assert!(decision.is_ok());
@@ -296,7 +303,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_model_routing_anthropic() {
-        let state = create_api_state();
+        let state = create_api_state().await;
 
         let decision = state.router.route("claude-3.5-sonnet").await;
         assert!(decision.is_ok());
@@ -308,7 +315,7 @@ mod endpoints {
 
     #[tokio::test]
     async fn test_model_routing_not_found() {
-        let state = create_api_state();
+        let state = create_api_state().await;
 
         let decision = state.router.route("nonexistent-model").await;
         assert!(decision.is_err());
@@ -350,6 +357,7 @@ mod endpoints {
 }
 
 mod integration {
+    use dbnexus::{DbConfig, DbPool};
     use nexusflow::api::ApiState;
     use nexusflow::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig,
@@ -360,7 +368,6 @@ mod integration {
     use nexusflow::router::Router;
     use nexusflow::vendor::VendorManager;
     use serde_json::json;
-    use sqlx::SqlitePool;
     use std::sync::Arc;
 
     fn create_test_config() -> Config {
@@ -398,7 +405,7 @@ mod integration {
         }
     }
 
-    fn create_mock_api_state() -> Arc<ApiState> {
+    async fn create_mock_api_state() -> Arc<ApiState> {
         let config = create_test_config();
         let config_manager = Arc::new(ConfigManager::new(config));
 
@@ -406,11 +413,18 @@ mod integration {
 
         let router = Arc::new(Router::new(config_manager.clone(), vendor_manager.clone()));
 
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
         let database = Arc::new(Database {
-            pool: SqlitePool::connect_lazy(":memory:").unwrap(),
-            repository: Arc::new(nexusflow::database::Repository::new(
-                SqlitePool::connect_lazy(":memory:").unwrap(),
-            )),
+            pool: pool.clone(),
+            repository: Arc::new(nexusflow::database::Repository::new(pool)),
         });
 
         Arc::new(ApiState {
@@ -426,7 +440,7 @@ mod integration {
 
     #[tokio::test]
     async fn test_openai_chat_completions_request_parsing() {
-        let state = create_mock_api_state();
+        let state = create_mock_api_state().await;
 
         let request = json!({
             "model": "gpt-4",
@@ -486,7 +500,7 @@ mod integration {
 
     #[tokio::test]
     async fn test_anthropic_messages_request_parsing() {
-        let state = create_mock_api_state();
+        let state = create_mock_api_state().await;
 
         let request = json!({
             "model": "claude-3-5-sonnet-20241022",

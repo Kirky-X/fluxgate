@@ -87,10 +87,10 @@ impl IntoResponse for NexusFlowError {
     }
 }
 
-impl From<sqlx::Error> for NexusFlowError {
-    fn from(e: sqlx::Error) -> Self {
+impl From<dbnexus::DbError> for NexusFlowError {
+    fn from(e: dbnexus::DbError) -> Self {
         NexusFlowError::Database {
-            message: format!("SQLite error: {}", e),
+            message: format!("Database error: {}", e),
         }
     }
 }

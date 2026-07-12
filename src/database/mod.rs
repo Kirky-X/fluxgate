@@ -16,7 +16,7 @@ pub mod repository;
 pub use database::Database;
 pub use repository::Repository;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestLog {
     pub id: Option<i64>,
     pub request_id: String,
@@ -37,7 +37,7 @@ pub struct RequestLog {
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub id: Option<i64>,
     pub vendor: String,
@@ -50,7 +50,7 @@ pub struct TokenUsage {
     pub completion_tokens: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VendorStatusRecord {
     pub vendor: String,
     pub status: String,

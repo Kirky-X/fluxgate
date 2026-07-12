@@ -8,6 +8,7 @@
 use crate::database::Repository;
 use crate::protocol::TokenUsage;
 use chrono::Timelike;
+use sea_orm::ConnectionTrait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,7 +105,7 @@ impl TokenPreAggregator {
     }
 
     /// 刷新缓冲区到数据库
-    pub async fn flush(&self) -> Result<(), sqlx::Error> {
+    pub async fn flush(&self) -> Result<(), dbnexus::DbError> {
         let entries: Vec<(AggregationKey, AggregationValue)> = {
             let mut guard = self.buffer.lock().await;
             guard.drain().collect()
@@ -114,30 +115,38 @@ impl TokenPreAggregator {
             return Ok(());
         }
 
+        let sql = r#"
+            INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(vendor, model, date, hour)
+            DO UPDATE SET
+                request_count = request_count + excluded.request_count,
+                total_tokens = total_tokens + excluded.total_tokens,
+                prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+                completion_tokens = completion_tokens + excluded.completion_tokens
+        "#;
+
         for (key, value) in entries {
-            // UPSERT 到数据库
-            sqlx::query(
-                r#"
-                INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(vendor, model, date, hour)
-                DO UPDATE SET
-                    request_count = request_count + excluded.request_count,
-                    total_tokens = total_tokens + excluded.total_tokens,
-                    prompt_tokens = prompt_tokens + excluded.prompt_tokens,
-                    completion_tokens = completion_tokens + excluded.completion_tokens
-                "#,
-            )
-            .bind(&key.vendor)
-            .bind(&key.model)
-            .bind(&key.date)
-            .bind(key.hour as i32)
-            .bind(value.request_count as i64)
-            .bind(value.total_tokens as i64)
-            .bind(value.prompt_tokens as i64)
-            .bind(value.completion_tokens as i64)
-            .execute(&self.repository.pool)
-            .await?;
+            let values: Vec<sea_orm::Value> = vec![
+                key.vendor.as_str().into(),
+                key.model.as_str().into(),
+                key.date.as_str().into(),
+                (key.hour as i32).into(),
+                (value.request_count as i64).into(),
+                (value.total_tokens as i64).into(),
+                (value.prompt_tokens as i64).into(),
+                (value.completion_tokens as i64).into(),
+            ];
+
+            let stmt = sea_orm::Statement::from_sql_and_values(
+                sea_orm::DatabaseBackend::Sqlite,
+                sql,
+                values,
+            );
+
+            let session = self.repository.pool.get_session("admin").await?;
+            let conn = session.connection()?;
+            conn.execute_raw(stmt).await?;
         }
 
         Ok(())

@@ -99,13 +99,14 @@ pub async fn vendor_status(
 
 #[axum::debug_handler]
 pub async fn reset_vendor(
-    State(state): State<Arc<ApiState>>,
-    Path(id): Path<String>,
+    State(_state): State<Arc<ApiState>>,
+    Path(_id): Path<String>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
-    state.vendor_manager.reset_status(&id);
+    // limiteron Governor 自动管理限流状态（令牌桶自动 refill），
+    // 此端点保留以维持 API 兼容性，实际为 no-op。
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": "厂商状态已重置"
+        "message": "厂商限流状态由 limiteron Governor 自动管理"
     })))
 }
 

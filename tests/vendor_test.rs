@@ -122,67 +122,60 @@ mod status {
 }
 
 mod rate_limiter {
-    use nexusflow::vendor::TokenBucket;
+    use nexusflow::vendor::{ConcurrencyLimiter, TokenBucket};
+    use std::time::Duration;
 
     #[tokio::test]
-    async fn test_token_bucket_new() {
-        let bucket = TokenBucket::new(10, 5);
-        assert_eq!(bucket.remaining(), 10);
-    }
-
-    #[tokio::test]
-    async fn test_token_bucket_try_acquire() {
-        let bucket = TokenBucket::new(2, 10);
-
-        // First two acquires should succeed
-        assert!(bucket.try_acquire());
-        assert!(bucket.try_acquire());
-
-        // Third should fail
-        assert!(!bucket.try_acquire());
-    }
-
-    #[tokio::test]
-    async fn test_token_bucket_remaining() {
+    async fn test_token_bucket_acquire_succeeds() {
         let bucket = TokenBucket::new(5, 10);
-
-        assert_eq!(bucket.remaining(), 5);
-
-        bucket.try_acquire();
-        assert_eq!(bucket.remaining(), 4);
-
-        bucket.try_acquire();
-        assert_eq!(bucket.remaining(), 3);
+        // Should succeed immediately — bucket starts full
+        let result = tokio::time::timeout(Duration::from_millis(100), bucket.acquire()).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn test_token_bucket_reset() {
-        let bucket = TokenBucket::new(5, 10);
-
-        // Acquire all tokens
-        assert!(bucket.try_acquire());
-        assert!(bucket.try_acquire());
-        assert!(bucket.try_acquire());
-        assert!(bucket.try_acquire());
-        assert!(bucket.try_acquire());
-        // Now should be empty
-        assert!(!bucket.try_acquire());
-
-        bucket.reset();
-        assert_eq!(bucket.remaining(), 5);
+    async fn test_token_bucket_acquires_until_exhausted() {
+        let bucket = TokenBucket::new(3, 1);
+        // Consume all 3 tokens
+        for _ in 0..3 {
+            let result = tokio::time::timeout(Duration::from_millis(100), bucket.acquire()).await;
+            assert!(result.is_ok(), "acquire should succeed within timeout");
+        }
+        // 4th acquire should block (no tokens left, refill rate is 1/sec)
+        let result = tokio::time::timeout(Duration::from_millis(50), bucket.acquire()).await;
+        assert!(result.is_err(), "acquire should timeout when bucket is empty");
     }
 
     #[tokio::test]
-    async fn test_token_bucket_zero_capacity() {
-        let bucket = TokenBucket::new(0, 10);
-        assert!(!bucket.try_acquire());
+    async fn test_token_bucket_refills_over_time() {
+        let bucket = TokenBucket::new(1, 100); // 100 tokens/sec refill
+        // Consume the only token
+        bucket.acquire().await;
+        // Wait for refill
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Should succeed now
+        let result = tokio::time::timeout(Duration::from_millis(100), bucket.acquire()).await;
+        assert!(result.is_ok(), "acquire should succeed after refill");
     }
 
     #[tokio::test]
-    async fn test_token_bucket_single_request() {
-        let bucket = TokenBucket::new(1, 1);
+    async fn test_concurrency_limiter_acquire() {
+        let limiter = ConcurrencyLimiter::new(2);
+        let _p1 = limiter.acquire().await;
+        let _p2 = limiter.acquire().await;
+        // 3rd acquire should block
+        let result = tokio::time::timeout(Duration::from_millis(50), limiter.acquire()).await;
+        assert!(result.is_err(), "3rd acquire should block");
+    }
 
-        assert!(bucket.try_acquire());
-        assert!(!bucket.try_acquire());
+    #[tokio::test]
+    async fn test_concurrency_limiter_release_on_drop() {
+        let limiter = ConcurrencyLimiter::new(1);
+        {
+            let _permit = limiter.acquire().await;
+        }
+        // After permit dropped, should be able to acquire again
+        let result = tokio::time::timeout(Duration::from_millis(100), limiter.acquire()).await;
+        assert!(result.is_ok(), "acquire should succeed after permit dropped");
     }
 }

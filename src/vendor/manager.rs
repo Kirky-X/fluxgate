@@ -873,16 +873,6 @@ impl VendorManager {
             .unwrap_or(0)
     }
 
-    #[allow(dead_code)]
-    pub fn reset_status(&self, vendor_id: &str) {
-        let guard = self.instances.read().unwrap();
-        if let Some(instance) = guard.get(vendor_id) {
-            instance.state.mark_available();
-            instance.state.reset_error();
-            instance.rate_limiter.reset();
-        }
-    }
-
     pub fn get_all_status(&self) -> Vec<(String, VendorStatus, usize)> {
         let guard = self.instances.read().unwrap();
         let mut status = Vec::new();

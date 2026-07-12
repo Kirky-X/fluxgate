@@ -1,106 +1,56 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
+//! 限流器模块 — 基于 limiteron 实现
+//!
+//! `TokenBucket` 和 `ConcurrencyLimiter` 作为配置包装器，
+//! 内部委托给 `limiteron::limiters` 的对应实现。
+
 use crate::config::RateLimitConfig;
 use chrono::{Local, NaiveTime};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use limiteron::limiters::{ConcurrencyLimiter as LimiteronConcurrency, Limiter, TokenBucketLimiter};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// 令牌桶限流器 — 委托给 limiteron::limiters::TokenBucketLimiter
 pub struct TokenBucket {
-    capacity: usize,
-    tokens: AtomicUsize,
-    #[allow(dead_code)]
-    refill_rate: usize,
-    last_refill: AtomicU64,
+    inner: TokenBucketLimiter,
 }
 
 impl TokenBucket {
     pub fn new(capacity: usize, requests_per_second: u32) -> Self {
         Self {
-            capacity,
-            tokens: AtomicUsize::new(capacity),
-            refill_rate: requests_per_second as usize * 60,
-            last_refill: AtomicU64::new(0),
+            inner: TokenBucketLimiter::new(capacity as u64, requests_per_second as u64),
         }
     }
 
-    pub fn try_acquire(&self) -> bool {
-        self.refill();
-        let current = self.tokens.load(Ordering::Relaxed);
-        if current > 0 {
-            self.tokens.fetch_sub(1, Ordering::Relaxed);
-            true
-        } else {
-            false
-        }
-    }
-
-    #[allow(dead_code)]
+    /// 异步获取一个令牌，若桶为空则等待直到有令牌可用
     pub async fn acquire(&self) {
-        while !self.try_acquire() {
+        while !self.inner.allow(1).await.unwrap_or(false) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
-
-    fn refill(&self) {
-        let now = SystemTime::now();
-        let last = self.last_refill.load(Ordering::Relaxed);
-
-        if last == 0 {
-            self.last_refill.store(
-                now.duration_since(UNIX_EPOCH).unwrap().as_secs(),
-                Ordering::Relaxed,
-            );
-            return;
-        }
-
-        let elapsed = now.duration_since(UNIX_EPOCH).unwrap().as_secs() - last;
-
-        if elapsed == 0 {
-            return;
-        }
-
-        let refill = (elapsed as usize * self.refill_rate) / 60;
-        if refill > 0 {
-            let current = self.tokens.load(Ordering::Relaxed);
-            let new_tokens = (current + refill).min(self.capacity);
-            self.tokens.store(new_tokens, Ordering::Relaxed);
-            self.last_refill.store(
-                now.duration_since(UNIX_EPOCH).unwrap().as_secs(),
-                Ordering::Relaxed,
-            );
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn remaining(&self) -> usize {
-        self.refill();
-        self.tokens.load(Ordering::Relaxed)
-    }
-
-    #[allow(dead_code)]
-    pub fn reset(&self) {
-        self.tokens.store(self.capacity, Ordering::Relaxed);
-        self.last_refill.store(0, Ordering::Relaxed);
-    }
 }
 
-#[derive(Clone)]
+/// 并发控制器 — 委托给 limiteron::limiters::ConcurrencyLimiter
+///
+/// 使用共享的 `Arc<Semaphore>` 以支持 `acquire_owned()` 跨 spawn 边界持有许可
 pub struct ConcurrencyLimiter {
-    #[allow(dead_code)]
-    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
-    _max_concurrency: usize,
+    inner: LimiteronConcurrency,
+    semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl ConcurrencyLimiter {
     pub fn new(max_concurrency: usize) -> Self {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
         Self {
-            semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrency)),
-            _max_concurrency: max_concurrency,
+            inner: LimiteronConcurrency::with_dependencies(semaphore.clone(), None),
+            semaphore,
         }
     }
 
-    #[allow(dead_code)]
+    /// 异步获取一个并发许可，返回持有的 OwnedSemaphorePermit
     pub async fn acquire(&self) -> ConcurrencyPermit {
         let permit = self
             .semaphore
@@ -111,26 +61,19 @@ impl ConcurrencyLimiter {
         ConcurrencyPermit { _permit: permit }
     }
 
+    /// 非阻塞检查是否可以获取许可（委托给 limiteron ConcurrencyLimiter::allow）
     #[allow(dead_code)]
-    pub fn try_acquire(&self) -> Option<ConcurrencyPermit> {
-        match self.semaphore.clone().try_acquire_owned() {
-            Ok(permit) => Some(ConcurrencyPermit { _permit: permit }),
-            Err(_) => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn available(&self) -> usize {
-        self.semaphore.available_permits()
+    pub async fn try_acquire(&self) -> bool {
+        self.inner.allow(1).await.unwrap_or(false)
     }
 }
 
-#[allow(dead_code)]
+/// 并发许可 — 持有 OwnedSemaphorePermit，drop 时自动释放
 pub struct ConcurrencyPermit {
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
-// 高级限流器实现
+// 高级限流器实现 — 业务逻辑层，保留手写实现
 pub enum AdvancedRateLimiter {
     TimeWindow {
         start: NaiveTime,
@@ -143,7 +86,7 @@ pub enum AdvancedRateLimiter {
     Token {
         max_tokens: u64,
         used_tokens: AtomicU64,
-        last_reset: AtomicU64, // Used for daily/interval reset if needed, but for now just global accumulation
+        last_reset: AtomicU64,
     },
     None,
 }
@@ -189,28 +132,7 @@ impl AdvancedRateLimiter {
                 let now = Local::now().time();
                 now >= *start && now < *end
             }
-            Self::Interval {
-                interval_secs,
-                last_reset,
-            } => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                let last = last_reset.load(Ordering::Relaxed);
-                if now - last >= *interval_secs {
-                    // 应该重置，但这通常由后台任务做，或者懒惰重置。
-                    // 这里我们假设如果超过间隔，就允许请求（并更新重置时间）
-                    // 但对于 Interval 类型，仅仅是"间隔"本身没有意义，通常意味着"间隔内限制请求数"。
-                    // 但 PRD 中 config 只有 hours。
-                    // 假设 Interval 模式下，总是 Available，除非配合其他限制？
-                    // 或者 PRD 意思是 "每隔 X 小时重置状态"。
-                    // 暂时认为 Interval 模式总是通过检查，具体的重置逻辑由 reset worker 处理。
-                    true
-                } else {
-                    true
-                }
-            }
+            Self::Interval { .. } => true,
             Self::Token {
                 max_tokens,
                 used_tokens,
@@ -255,7 +177,6 @@ impl AdvancedRateLimiter {
         }
     }
 
-    // Check if should reset (for Interval type mostly)
     pub fn should_reset(&self) -> bool {
         match self {
             Self::Interval {

@@ -6,7 +6,7 @@
 //! 使用专用 channel 实现异步批量日志写入，提高性能。
 
 use crate::database::{Database, Repository, RequestLog};
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 use async_channel::{bounded, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,21 +43,21 @@ impl AsyncLogger {
     }
 
     /// 异步写入日志
-    pub async fn log(&self, log: RequestLog) -> Result<(), ProxyError> {
+    pub async fn log(&self, log: RequestLog) -> Result<(), NexusFlowError> {
         self.sender
             .send(LogCommand::Write(log))
             .await
-            .map_err(|_| ProxyError::Database {
+            .map_err(|_| NexusFlowError::Database {
                 message: "Async logger channel closed".into(),
             })
     }
 
     /// 优雅关闭
-    pub async fn shutdown(&self) -> Result<(), ProxyError> {
+    pub async fn shutdown(&self) -> Result<(), NexusFlowError> {
         self.sender
             .send(LogCommand::Shutdown)
             .await
-            .map_err(|_| ProxyError::Database {
+            .map_err(|_| NexusFlowError::Database {
                 message: "Async logger channel closed".into(),
             })
     }
@@ -131,19 +131,19 @@ impl AsyncLoggerHandle {
     }
 
     /// 写入日志
-    pub async fn log(&self, log: RequestLog) -> Result<(), ProxyError> {
+    pub async fn log(&self, log: RequestLog) -> Result<(), NexusFlowError> {
         let guard = self.inner.lock().await;
         if let Some(logger) = guard.as_ref() {
             logger.log(log).await
         } else {
-            Err(ProxyError::Database {
+            Err(NexusFlowError::Database {
                 message: "Logger already shut down".into(),
             })
         }
     }
 
     /// 关闭日志写入器
-    pub async fn shutdown(&self) -> Result<(), ProxyError> {
+    pub async fn shutdown(&self) -> Result<(), NexusFlowError> {
         let mut guard = self.inner.lock().await;
         if let Some(logger) = guard.take() {
             logger.shutdown().await

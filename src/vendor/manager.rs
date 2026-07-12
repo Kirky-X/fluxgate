@@ -4,7 +4,7 @@
 use crate::config::{ConfigManager, VendorConfig};
 use crate::protocol::unified::{UnifiedRequest, UnifiedResponse};
 use crate::protocol::{ProtocolConverter, OpenAIConverter, AnthropicConverter};
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 use crate::utils::retry::{ErrorCategory, RetryStrategy, extract_status_code, is_retryable_error};
 use super::{VendorState, VendorStatus, VendorQueue, QueueManager, TokenBucket, ConcurrencyLimiter, PendingRequest, AdvancedRateLimiter};
 use std::sync::{Arc, RwLock};
@@ -104,7 +104,7 @@ impl VendorManager {
     }
     
     #[allow(dead_code)]
-    pub async fn initialize(&self) -> Result<(), ProxyError> {
+    pub async fn initialize(&self) -> Result<(), NexusFlowError> {
         let vendors = self.config.get_enabled_vendors();
         for vendor in &vendors {
             self.get_or_create_instance(vendor);
@@ -168,7 +168,7 @@ impl VendorManager {
             if let Some(pending) = instance.queue.recv().await {
                 // Check Advanced Rate Limiter
                 if !instance.advanced_limiter.check() {
-                    let _ = pending.response_tx.send(Err(ProxyError::RateLimited { 
+                    let _ = pending.response_tx.send(Err(NexusFlowError::RateLimited { 
                         vendor: instance.config.id.clone() 
                     }));
                     continue;
@@ -213,11 +213,11 @@ impl VendorManager {
         request: UnifiedRequest,
         openai: &OpenAIConverter,
         anthropic: &AnthropicConverter,
-    ) -> Result<UnifiedResponse, ProxyError> {
+    ) -> Result<UnifiedResponse, NexusFlowError> {
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
             "openai" => openai,
             "anthropic" => anthropic,
-            _ => return Err(ProxyError::Config { message: "Unknown vendor type".into() }),
+            _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
         };
 
         // Convert UnifiedRequest to Vendor Request (JSON)
@@ -233,12 +233,12 @@ impl VendorManager {
         config: &VendorConfig,
         request_body: Value,
         converter: &dyn ProtocolConverter,
-    ) -> Result<UnifiedResponse, ProxyError> {
+    ) -> Result<UnifiedResponse, NexusFlowError> {
         let api_base = if config.api_base.is_empty() {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
-                _ => return Err(ProxyError::Config { message: "Unknown vendor type".into() }),
+                _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
             }
         } else {
             &config.api_base
@@ -292,7 +292,7 @@ impl VendorManager {
                         tokio::time::sleep(Duration::from_millis(500 * retry_count as u64)).await;
                         continue;
                     }
-                    return Err(ProxyError::VendorUnavailable { vendor: config.id.clone() });
+                    return Err(NexusFlowError::VendorUnavailable { vendor: config.id.clone() });
                 }
             };
 
@@ -301,7 +301,7 @@ impl VendorManager {
             // 判断响应状态并决定是否重试
             if !status.is_success() {
                 let text = response.text().await.unwrap_or_default();
-                let error = ProxyError::VendorUnavailable {
+                let error = NexusFlowError::VendorUnavailable {
                     vendor: format!("{} ({}: {})", config.id, status, text)
                 };
 
@@ -335,7 +335,7 @@ impl VendorManager {
             let response_json: Value = match response.json().await {
                 Ok(json) => json,
                 Err(e) => {
-                    return Err(ProxyError::VendorUnavailable {
+                    return Err(NexusFlowError::VendorUnavailable {
                         vendor: format!("Parse error: {}", e)
                     });
                 }
@@ -378,11 +378,11 @@ impl VendorManager {
         &self,
         vendor_id: &str,
         request: UnifiedRequest,
-    ) -> Result<UnifiedResponse, ProxyError> {
+    ) -> Result<UnifiedResponse, NexusFlowError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard.get(vendor_id)
-                .ok_or(ProxyError::VendorUnavailable { vendor: vendor_id.to_string() })?
+                .ok_or(NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?
                 .clone()
         };
         
@@ -397,7 +397,7 @@ impl VendorManager {
         let timeout_duration = Duration::from_secs(60);
         timeout(timeout_duration, response_rx)
             .await
-            .map_err(|_| ProxyError::Timeout { vendor: vendor_id.to_string() })?
+            .map_err(|_| NexusFlowError::Timeout { vendor: vendor_id.to_string() })?
             .map_err(|e| e)?
     }
 
@@ -408,13 +408,13 @@ impl VendorManager {
         &self,
         abstract_model: &str,
         request: UnifiedRequest,
-    ) -> Result<UnifiedResponse, ProxyError> {
+    ) -> Result<UnifiedResponse, NexusFlowError> {
         // 获取模型对应的所有厂商（resolve_model 定义在 ConfigManager 上）
         let candidates: Vec<(VendorConfig, crate::config::ModelConfig)> =
             self.config.resolve_model(abstract_model);
 
         if candidates.is_empty() {
-            return Err(ProxyError::Validation {
+            return Err(NexusFlowError::Validation {
                 field: format!("模型 {} 未找到", abstract_model),
             });
         }
@@ -448,11 +448,11 @@ impl VendorManager {
 
                     // 根据错误类型决定是否标记厂商不可用
                     match &e {
-                        ProxyError::RateLimited { .. } | ProxyError::Timeout { .. } => {
+                        NexusFlowError::RateLimited { .. } | NexusFlowError::Timeout { .. } => {
                             // 暂时性错误，可以重试当前厂商或继续下一厂商
                             continue;
                         }
-                        ProxyError::Protocol { source, .. } => {
+                        NexusFlowError::Protocol { source, .. } => {
                             // 协议错误可能是暂时性的，也可能是永久性的
                             // 检查是否包含明确不可重试的错误
                             if source.contains("401") || source.contains("403") || source.contains("404") {
@@ -461,7 +461,7 @@ impl VendorManager {
                             }
                             continue;
                         }
-                        ProxyError::VendorUnavailable { .. } => {
+                        NexusFlowError::VendorUnavailable { .. } => {
                             // 厂商不可用
                             continue;
                         }
@@ -476,12 +476,12 @@ impl VendorManager {
 
         // 所有厂商都失败了
         if !last_error_msg.is_empty() {
-            Err(ProxyError::Protocol {
+            Err(NexusFlowError::Protocol {
                 source: last_error_msg,
                 inner: None,
             })
         } else {
-            Err(ProxyError::AllVendorsUnavailable)
+            Err(NexusFlowError::AllVendorsUnavailable)
         }
     }
 
@@ -497,17 +497,17 @@ impl VendorManager {
         &self,
         vendor_id: &str,
         request: UnifiedRequest,
-    ) -> Result<impl futures::Stream<Item = Result<Bytes, reqwest::Error>>, ProxyError> {
+    ) -> Result<impl futures::Stream<Item = Result<Bytes, reqwest::Error>>, NexusFlowError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard.get(vendor_id)
-                .ok_or(ProxyError::VendorUnavailable { vendor: vendor_id.to_string() })?
+                .ok_or(NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?
                 .clone()
         };
         
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check() {
-            return Err(ProxyError::RateLimited { vendor: vendor_id.to_string() });
+            return Err(NexusFlowError::RateLimited { vendor: vendor_id.to_string() });
         }
 
         // Enforce limits manually for stream requests
@@ -519,7 +519,7 @@ impl VendorManager {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
-                _ => return Err(ProxyError::Config { message: "Unknown vendor type".into() }),
+                _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
             }
         } else {
             &config.api_base
@@ -529,7 +529,7 @@ impl VendorManager {
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
             "openai" => &*self.openai_converter,
             "anthropic" => &*self.anthropic_converter,
-            _ => return Err(ProxyError::Config { message: "Unknown vendor type".into() }),
+            _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
         };
         
         let request_body = converter.request_to_external(request)?;
@@ -553,18 +553,18 @@ impl VendorManager {
             
         if config.type_ == "anthropic" {
             request_builder = request_builder
-                .header("x-api-key", std::env::var(&config.api_key_env).map_err(|_| ProxyError::Config { message: format!("API key env {} not set", config.api_key_env) })?)
+                .header("x-api-key", std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config { message: format!("API key env {} not set", config.api_key_env) })?)
                 .header("anthropic-version", "2023-06-01");
         } else {
             request_builder = request_builder
-                .header("Authorization", format!("Bearer {}", std::env::var(&config.api_key_env).map_err(|_| ProxyError::Config { message: format!("API key env {} not set", config.api_key_env) })?));
+                .header("Authorization", format!("Bearer {}", std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config { message: format!("API key env {} not set", config.api_key_env) })?));
         }
         
         let response = request_builder
             .json(&request_body)
             .send()
             .await
-            .map_err(|_e| ProxyError::VendorUnavailable { vendor: vendor_id.to_string() })?;
+            .map_err(|_e| NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?;
         
         // We need to keep permit alive if we want real concurrency limit.
         // For now, we drop it.
@@ -579,11 +579,11 @@ impl VendorManager {
         &self,
         vendor_id: &str,
         request_body: Value,
-    ) -> Result<Value, ProxyError> {
+    ) -> Result<Value, NexusFlowError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard.get(vendor_id)
-                .ok_or(ProxyError::VendorUnavailable { vendor: vendor_id.to_string() })?
+                .ok_or(NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?
                 .clone()
         };
 
@@ -592,7 +592,7 @@ impl VendorManager {
 
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check() {
-            return Err(ProxyError::RateLimited { vendor: vendor_id.to_string() });
+            return Err(NexusFlowError::RateLimited { vendor: vendor_id.to_string() });
         }
 
         let permit = instance.concurrency_limiter.acquire().await;
@@ -603,7 +603,7 @@ impl VendorManager {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
-                _ => return Err(ProxyError::Config { message: "Unknown vendor type".into() }),
+                _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
             }
         } else {
             &config.api_base
@@ -640,18 +640,18 @@ impl VendorManager {
             .json(&request_body)
             .send()
             .await
-            .map_err(|_| ProxyError::VendorUnavailable { vendor: vendor_id.to_string() })?;
+            .map_err(|_| NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(ProxyError::VendorUnavailable {
+            return Err(NexusFlowError::VendorUnavailable {
                 vendor: format!("{} ({}: {})", vendor_id, status, text)
             });
         }
 
         let response_json: Value = response.json().await
-            .map_err(|e| ProxyError::VendorUnavailable { vendor: format!("Parse error: {}", e) })?;
+            .map_err(|e| NexusFlowError::VendorUnavailable { vendor: format!("Parse error: {}", e) })?;
 
         // 更新 Token 使用统计
         if let Some(usage) = response_json.get("usage") {
@@ -668,11 +668,11 @@ impl VendorManager {
         &self,
         vendor_id: &str,
         request_body: Value,
-    ) -> Result<impl futures::Stream<Item = Result<Bytes, reqwest::Error>>, ProxyError> {
+    ) -> Result<impl futures::Stream<Item = Result<Bytes, reqwest::Error>>, NexusFlowError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard.get(vendor_id)
-                .ok_or(ProxyError::VendorUnavailable { vendor: vendor_id.to_string() })?
+                .ok_or(NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?
                 .clone()
         };
 
@@ -681,7 +681,7 @@ impl VendorManager {
 
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check() {
-            return Err(ProxyError::RateLimited { vendor: vendor_id.to_string() });
+            return Err(NexusFlowError::RateLimited { vendor: vendor_id.to_string() });
         }
 
         let permit = instance.concurrency_limiter.acquire().await;
@@ -692,7 +692,7 @@ impl VendorManager {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
-                _ => return Err(ProxyError::Config { message: "Unknown vendor type".into() }),
+                _ => return Err(NexusFlowError::Config { message: "Unknown vendor type".into() }),
             }
         } else {
             &config.api_base
@@ -727,7 +727,7 @@ impl VendorManager {
             .json(&request_body)
             .send()
             .await
-            .map_err(|_| ProxyError::VendorUnavailable { vendor: vendor_id.to_string() })?;
+            .map_err(|_| NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() })?;
 
         Ok(response.bytes_stream())
     }

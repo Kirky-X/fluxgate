@@ -1,7 +1,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 use crate::protocol::unified::*;
 use crate::protocol::{Protocol, ProtocolConverter};
 use serde_json::{json, Value};
@@ -25,11 +25,11 @@ impl ProtocolConverter for OpenAIConverter {
         Protocol::OpenAI
     }
 
-    fn to_unified(&self, body: Value) -> Result<UnifiedRequest, ProxyError> {
+    fn to_unified(&self, body: Value) -> Result<UnifiedRequest, NexusFlowError> {
         let model = body
             .get("model")
             .and_then(|v| v.as_str())
-            .ok_or(ProxyError::Validation {
+            .ok_or(NexusFlowError::Validation {
                 field: "model".into(),
             })?
             .to_lowercase();
@@ -37,7 +37,7 @@ impl ProtocolConverter for OpenAIConverter {
         let messages = body
             .get("messages")
             .and_then(|v| v.as_array())
-            .ok_or(ProxyError::Validation {
+            .ok_or(NexusFlowError::Validation {
                 field: "messages".into(),
             })?
             .iter()
@@ -101,7 +101,7 @@ impl ProtocolConverter for OpenAIConverter {
         })
     }
 
-    fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, ProxyError> {
+    fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, NexusFlowError> {
         // 将 UnifiedRequest 转换为 OpenAI 格式
         let messages: Vec<Value> = request
             .messages
@@ -153,7 +153,7 @@ impl ProtocolConverter for OpenAIConverter {
         Ok(body)
     }
 
-    fn from_unified(&self, response: UnifiedResponse) -> Result<Value, ProxyError> {
+    fn from_unified(&self, response: UnifiedResponse) -> Result<Value, NexusFlowError> {
         let choices = response
             .choices
             .into_iter()
@@ -180,7 +180,7 @@ impl ProtocolConverter for OpenAIConverter {
         }))
     }
 
-    fn parse_response(&self, response: Value) -> Result<UnifiedResponse, ProxyError> {
+    fn parse_response(&self, response: Value) -> Result<UnifiedResponse, NexusFlowError> {
         // Check for error response
         if let Some(error_obj) = response.get("error").and_then(|v| v.as_object()) {
             let message = error_obj
@@ -193,7 +193,7 @@ impl ProtocolConverter for OpenAIConverter {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            return Err(ProxyError::Protocol {
+            return Err(NexusFlowError::Protocol {
                 source: format!("OpenAI error: {} - {}", error_type, message),
                 inner: None,
             });
@@ -304,7 +304,7 @@ impl ProtocolConverter for OpenAIConverter {
         })
     }
 
-    fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<Value, ProxyError> {
+    fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<Value, NexusFlowError> {
         match chunk {
             StreamChunk::Content {
                 index,
@@ -342,11 +342,11 @@ impl ProtocolConverter for OpenAIConverter {
     }
 }
 
-fn parse_openai_message(json: &Value) -> Result<Message, ProxyError> {
+fn parse_openai_message(json: &Value) -> Result<Message, NexusFlowError> {
     let role = json
         .get("role")
         .and_then(|v| v.as_str())
-        .ok_or(ProxyError::Validation {
+        .ok_or(NexusFlowError::Validation {
             field: "role".into(),
         })?;
 
@@ -356,7 +356,7 @@ fn parse_openai_message(json: &Value) -> Result<Message, ProxyError> {
         "assistant" => Role::Assistant,
         "tool" => Role::Tool,
         _ => {
-            return Err(ProxyError::Validation {
+            return Err(NexusFlowError::Validation {
                 field: "role".into(),
             })
         }
@@ -445,7 +445,7 @@ fn parse_openai_message(json: &Value) -> Result<Message, ProxyError> {
             }
         }
         _ => {
-            return Err(ProxyError::Validation {
+            return Err(NexusFlowError::Validation {
                 field: "content".into(),
             })
         }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 
 pub mod loader;
 
@@ -164,13 +164,13 @@ impl ConfigManager {
         self.read().clone()
     }
     
-    pub fn update_config(&self, new_config: Config) -> Result<(), ProxyError> {
+    pub fn update_config(&self, new_config: Config) -> Result<(), NexusFlowError> {
         // Save to file (assuming file based config, but for now just update memory)
         // In real impl, we should write to config.toml
         
         // Simple file write
         let content = toml::to_string(&new_config)
-            .map_err(|e| ProxyError::Config { message: format!("Failed to serialize config: {}", e) })?;
+            .map_err(|e| NexusFlowError::Config { message: format!("Failed to serialize config: {}", e) })?;
             
         // Assuming we know the config path. For now hardcode or just update memory.
         // Let's just update memory for this exercise as file path is not stored in ConfigManager
@@ -178,7 +178,7 @@ impl ConfigManager {
         // Let's try writing to "config.toml" in CWD
         
         std::fs::write("config.toml", content)
-            .map_err(|e| ProxyError::Config { message: format!("Failed to write config file: {}", e) })?;
+            .map_err(|e| NexusFlowError::Config { message: format!("Failed to write config file: {}", e) })?;
         
         let mut guard = self.config.write().unwrap();
         *guard = new_config;

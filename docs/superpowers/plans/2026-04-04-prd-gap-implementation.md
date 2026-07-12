@@ -39,7 +39,7 @@ mod utils;
 mod error;
 mod middleware;
 
-use error::ProxyError;
+use error::NexusFlowError;
 use config::ConfigManager;
 use config::loader::ConfigLoader;
 use api::{ApiState, init_global_state};
@@ -50,7 +50,7 @@ use vendor::VendorManager;
 use database::Database;
 
 #[tokio::main]
-async fn main() -> Result<(), ProxyError> {
+async fn main() -> Result<(), NexusFlowError> {
     tracing_subscriber::fmt::init();
 
     let config_path = std::env::args().nth(1).unwrap_or_else(|| "config.toml".to_string());
@@ -89,7 +89,7 @@ async fn main() -> Result<(), ProxyError> {
         let config_ref = config_manager.read();
 
         let host: std::net::Ipv4Addr = config_ref.server.host.parse()
-            .map_err(|e: std::net::AddrParseError| ProxyError::Config {
+            .map_err(|e: std::net::AddrParseError| NexusFlowError::Config {
                 message: format!("Invalid host address: {}", e),
             })?;
 
@@ -120,7 +120,7 @@ async fn main() -> Result<(), ProxyError> {
     };
 
     let host: std::net::Ipv4Addr = server_config.host.parse()
-        .map_err(|e: std::net::AddrParseError| ProxyError::Config {
+        .map_err(|e: std::net::AddrParseError| NexusFlowError::Config {
             message: format!("Invalid host address '{}': {}", server_config.host, e),
         })?;
     let addr = SocketAddr::from((host, server_config.port));
@@ -128,7 +128,7 @@ async fn main() -> Result<(), ProxyError> {
     tracing::info!("Starting server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await
-        .map_err(|e| ProxyError::Config {
+        .map_err(|e| NexusFlowError::Config {
             message: format!("Failed to bind to {}: {}", addr, e),
         })?;
 
@@ -143,7 +143,7 @@ async fn main() -> Result<(), ProxyError> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal)
         .await
-        .map_err(|e| ProxyError::Config {
+        .map_err(|e| NexusFlowError::Config {
             message: format!("Server error: {}", e),
         })?;
 
@@ -550,7 +550,7 @@ use crate::utils::metrics::global_metrics;
         &self,
         vendor_id: &str,
         request: UnifiedRequest,
-    ) -> Result<UnifiedResponse, ProxyError> {
+    ) -> Result<UnifiedResponse, NexusFlowError> {
         global_metrics().record_request();
 
         let instance = {
@@ -561,7 +561,7 @@ use crate::utils::metrics::global_metrics;
 
         let result = timeout(timeout_duration, response_rx)
             .await
-            .map_err(|_| ProxyError::Timeout { vendor: vendor_id.to_string() })?
+            .map_err(|_| NexusFlowError::Timeout { vendor: vendor_id.to_string() })?
             .map_err(|e| e)?;
 
         match &result {
@@ -584,7 +584,7 @@ use crate::utils::metrics::global_metrics;
         &self,
         vendor_id: &str,
         request: UnifiedRequest,
-    ) -> Result<UnifiedResponse, ProxyError> {
+    ) -> Result<UnifiedResponse, NexusFlowError> {
         global_metrics().record_request();
 
         let instance = {
@@ -592,7 +592,7 @@ use crate::utils::metrics::global_metrics;
             guard.get(vendor_id)
                 .ok_or_else(|| {
                     global_metrics().record_error();
-                    ProxyError::VendorUnavailable { vendor: vendor_id.to_string() }
+                    NexusFlowError::VendorUnavailable { vendor: vendor_id.to_string() }
                 })?
                 .clone()
         };
@@ -611,7 +611,7 @@ use crate::utils::metrics::global_metrics;
             .await
             .map_err(|_| {
                 global_metrics().record_error();
-                ProxyError::Timeout { vendor: vendor_id.to_string() }
+                NexusFlowError::Timeout { vendor: vendor_id.to_string() }
             })?
             .map_err(|e| {
                 global_metrics().record_error();
@@ -716,7 +716,7 @@ Create `tests/queue_test.rs`：
 ```rust
 use smart_llm_proxy::vendor::{VendorQueue, QueueManager, PendingRequest};
 use smart_llm_proxy::protocol::unified::{UnifiedRequest, Message, MessageContent, Role};
-use smart_llm_proxy::error::ProxyError;
+use smart_llm_proxy::error::NexusFlowError;
 
 fn make_test_request() -> UnifiedRequest {
     UnifiedRequest {

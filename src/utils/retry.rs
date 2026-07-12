@@ -9,7 +9,7 @@
 //! - 500, 502, 503: 重试 3 次，间隔 1s
 //! - 网络超时: 重试 2 次
 
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 use std::time::Duration;
 
 /// 错误分类
@@ -149,14 +149,14 @@ pub fn extract_status_code(error: &str) -> u16 {
 }
 
 /// 判断错误是否可重试
-pub fn is_retryable_error(error: &ProxyError) -> bool {
+pub fn is_retryable_error(error: &NexusFlowError) -> bool {
     match error {
-        ProxyError::VendorUnavailable { vendor, .. } => {
+        NexusFlowError::VendorUnavailable { vendor, .. } => {
             let code = extract_status_code(vendor);
             let category = ErrorCategory::from_status_code(code);
             category.is_retryable()
         }
-        ProxyError::Timeout { .. } => true,
+        NexusFlowError::Timeout { .. } => true,
         _ => false,
     }
 }
@@ -164,17 +164,17 @@ pub fn is_retryable_error(error: &ProxyError) -> bool {
 /// 执行带重试的请求
 pub async fn with_retry<F, Fut, T>(
     mut f: F,
-    initial_error: Option<ProxyError>,
-) -> Result<T, ProxyError>
+    initial_error: Option<NexusFlowError>,
+) -> Result<T, NexusFlowError>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, ProxyError>>,
+    Fut: std::future::Future<Output = Result<T, NexusFlowError>>,
 {
     // 确定初始错误类别
     let initial_category = if let Some(ref err) = initial_error {
         match err {
-            ProxyError::Timeout { .. } => ErrorCategory::RetryableShort,
-            ProxyError::VendorUnavailable { vendor, .. } => {
+            NexusFlowError::Timeout { .. } => ErrorCategory::RetryableShort,
+            NexusFlowError::VendorUnavailable { vendor, .. } => {
                 let code = extract_status_code(vendor);
                 ErrorCategory::from_status_code(code)
             }
@@ -187,7 +187,7 @@ where
     let strategy = RetryStrategy::for_category(initial_category);
 
     if strategy.max_retries == 0 {
-        return Err(initial_error.unwrap_or(ProxyError::Protocol {
+        return Err(initial_error.unwrap_or(NexusFlowError::Protocol {
             source: "Unknown error".into(),
             inner: None,
         }));
@@ -215,7 +215,7 @@ where
         }
     }
 
-    Err(last_error.unwrap_or(ProxyError::Protocol {
+    Err(last_error.unwrap_or(NexusFlowError::Protocol {
         source: "Max retries exceeded".into(),
         inner: None,
     }))

@@ -4,7 +4,7 @@
 use axum::{Json, extract::State, response::IntoResponse, http::HeaderMap};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use crate::{ApiState, error::ProxyError, router::RoutingDecision};
+use crate::{ApiState, error::NexusFlowError, router::RoutingDecision};
 use crate::database::RequestLog;
 use futures::StreamExt;
 
@@ -13,13 +13,13 @@ pub async fn messages(
     State(state): State<Arc<ApiState>>,
     _headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, ProxyError> {
+) -> Result<impl IntoResponse, NexusFlowError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
 
     let model = body.get("model")
         .and_then(|v| v.as_str())
-        .ok_or(ProxyError::Validation { field: "model".into() })?;
+        .ok_or(NexusFlowError::Validation { field: "model".into() })?;
 
     let stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 

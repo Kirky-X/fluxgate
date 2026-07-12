@@ -6,7 +6,7 @@ mod tests {
     use nexusflow::config::{ConfigManager, VendorConfig, ModelConfig, Config, ServerConfig, DatabaseConfig, GlobalModelConfig};
     use nexusflow::router::{Router, RoutingDecision, RoutingStrategy};
     use nexusflow::vendor::VendorManager;
-    use nexusflow::error::ProxyError;
+    use nexusflow::error::NexusFlowError;
     use std::sync::Arc;
 
     fn create_router_test_config() -> Config {

@@ -3,7 +3,7 @@
 
 use crate::config::{ConfigManager, VendorConfig, ModelConfig};
 use crate::vendor::{VendorManager, VendorStatus, WindowInfo};
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 use rand::prelude::*;
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ impl Router {
         Self { config, vendor_manager }
     }
     
-    pub async fn route(&self, abstract_model: &str) -> Result<RoutingDecision, ProxyError> {
+    pub async fn route(&self, abstract_model: &str) -> Result<RoutingDecision, NexusFlowError> {
         let normalized = abstract_model.to_lowercase();
         let is_auto = normalized == "auto";
 
@@ -55,7 +55,7 @@ impl Router {
             }
         }
 
-        Err(ProxyError::Validation {
+        Err(NexusFlowError::Validation {
             field: format!("模型 {} 未找到", abstract_model),
         })
     }
@@ -66,14 +66,14 @@ impl Router {
         abstract_model: &str,
         preferred_vendor: Option<&str>,
         preferred_model: Option<&str>,
-    ) -> Result<RoutingDecision, ProxyError> {
+    ) -> Result<RoutingDecision, NexusFlowError> {
         // 如果指定了厂商，尝试直接路由到该厂商
         if let Some(vendor_id) = preferred_vendor {
             if let Some(decision) = self.try_vendor_route(vendor_id, preferred_model).await {
                 return Ok(decision);
             }
             // 如果指定的厂商不可用或找不到，返回错误
-            return Err(ProxyError::Validation {
+            return Err(NexusFlowError::Validation {
                 field: format!("指定的厂商 {} 不可用或未配置", vendor_id),
             });
         }

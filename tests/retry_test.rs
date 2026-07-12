@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 mod tests {
-    use nexusflow::error::ProxyError;
+    use nexusflow::error::NexusFlowError;
     use nexusflow::utils::{
         BackoffStrategy, ErrorCategory, RetryStrategy, extract_status_code, is_retryable_error,
         with_retry,
@@ -200,11 +200,11 @@ mod tests {
         assert_eq!(extract_status_code("error ()"), 500);
     }
 
-    // -------- is_retryable_error(&ProxyError) --------
+    // -------- is_retryable_error(&NexusFlowError) --------
 
     #[test]
     fn test_is_retryable_error_timeout_variant() {
-        let err = ProxyError::Timeout {
+        let err = NexusFlowError::Timeout {
             vendor: "test_vendor".into(),
         };
         assert!(is_retryable_error(&err));
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_is_retryable_error_vendor_unavailable_with_429() {
-        let err = ProxyError::VendorUnavailable {
+        let err = NexusFlowError::VendorUnavailable {
             vendor: "test_vendor (429: Rate limit exceeded)".into(),
         };
         assert!(is_retryable_error(&err));
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_is_retryable_error_vendor_unavailable_with_500() {
-        let err = ProxyError::VendorUnavailable {
+        let err = NexusFlowError::VendorUnavailable {
             vendor: "test_vendor (500: Internal server error)".into(),
         };
         assert!(is_retryable_error(&err));
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_is_retryable_error_vendor_unavailable_with_400_is_fatal() {
-        let err = ProxyError::VendorUnavailable {
+        let err = NexusFlowError::VendorUnavailable {
             vendor: "test_vendor (400: Bad Request)".into(),
         };
         assert!(!is_retryable_error(&err));
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_is_retryable_error_vendor_unavailable_with_401_is_fatal() {
-        let err = ProxyError::VendorUnavailable {
+        let err = NexusFlowError::VendorUnavailable {
             vendor: "test_vendor (401: Unauthorized)".into(),
         };
         assert!(!is_retryable_error(&err));
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_is_retryable_error_other_variants_are_not_retryable() {
-        let config_err = ProxyError::Config {
+        let config_err = NexusFlowError::Config {
             message: "missing field".into(),
         };
         assert!(!is_retryable_error(&config_err));
@@ -257,7 +257,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let result: Result<i32, ProxyError> = with_retry(
+        let result: Result<i32, NexusFlowError> = with_retry(
             || {
                 let count = call_count_clone.clone();
                 async move {
@@ -277,19 +277,19 @@ mod tests {
     #[tokio::test]
     async fn test_with_retry_returns_initial_error_when_fatal() {
         // Fatal category → max_retries = 0 → should return initial_error immediately
-        let initial = ProxyError::VendorUnavailable {
+        let initial = NexusFlowError::VendorUnavailable {
             vendor: "vendor (400: Bad Request)".into(),
         };
 
-        let result: Result<i32, ProxyError> = with_retry(
-            || async { Ok::<i32, ProxyError>(42) },
+        let result: Result<i32, NexusFlowError> = with_retry(
+            || async { Ok::<i32, NexusFlowError>(42) },
             Some(initial),
         )
         .await;
 
         assert!(result.is_err());
         match result {
-            Err(ProxyError::VendorUnavailable { vendor }) => {
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
                 assert!(vendor.contains("400"));
             }
             _ => panic!("expected VendorUnavailable error"),
@@ -299,21 +299,21 @@ mod tests {
     #[tokio::test]
     async fn test_with_retry_succeeds_after_retryable_failures() {
         // Use Timeout error → RetryableShort category → max_retries = 2
-        let initial = ProxyError::Timeout {
+        let initial = NexusFlowError::Timeout {
             vendor: "test_vendor".into(),
         };
 
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let result: Result<i32, ProxyError> = with_retry(
+        let result: Result<i32, NexusFlowError> = with_retry(
             || {
                 let count = call_count_clone.clone();
                 async move {
                     let n = count.fetch_add(1, Ordering::SeqCst);
                     if n < 1 {
                         // First retry: still timeout
-                        Err(ProxyError::Timeout {
+                        Err(NexusFlowError::Timeout {
                             vendor: "test_vendor".into(),
                         })
                     } else {
@@ -335,20 +335,20 @@ mod tests {
     #[tokio::test]
     async fn test_with_retry_stops_on_non_retryable_error() {
         // Start with retryable Timeout, but closure returns non-retryable error
-        let initial = ProxyError::Timeout {
+        let initial = NexusFlowError::Timeout {
             vendor: "test_vendor".into(),
         };
 
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let result: Result<i32, ProxyError> = with_retry(
+        let result: Result<i32, NexusFlowError> = with_retry(
             || {
                 let count = call_count_clone.clone();
                 async move {
                     count.fetch_add(1, Ordering::SeqCst);
                     // Return a non-retryable error (400 → Fatal)
-                    Err(ProxyError::VendorUnavailable {
+                    Err(NexusFlowError::VendorUnavailable {
                         vendor: "vendor (400: Bad Request)".into(),
                     })
                 }
@@ -365,19 +365,19 @@ mod tests {
     #[tokio::test]
     async fn test_with_retry_exhausts_retries_on_persistent_timeout() {
         // Timeout → RetryableShort → max_retries = 2
-        let initial = ProxyError::Timeout {
+        let initial = NexusFlowError::Timeout {
             vendor: "test_vendor".into(),
         };
 
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let result: Result<i32, ProxyError> = with_retry(
+        let result: Result<i32, NexusFlowError> = with_retry(
             || {
                 let count = call_count_clone.clone();
                 async move {
                     count.fetch_add(1, Ordering::SeqCst);
-                    Err(ProxyError::Timeout {
+                    Err(NexusFlowError::Timeout {
                         vendor: "test_vendor".into(),
                     })
                 }

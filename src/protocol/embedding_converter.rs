@@ -1,7 +1,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 use crate::protocol::unified::*;
 use crate::protocol::{Protocol, ProtocolConverter};
 use serde_json::{json, Value};
@@ -26,39 +26,39 @@ impl ProtocolConverter for OpenAIEmbeddingConverter {
         Protocol::OpenAI
     }
 
-    fn to_unified(&self, _body: Value) -> Result<UnifiedRequest, ProxyError> {
+    fn to_unified(&self, _body: Value) -> Result<UnifiedRequest, NexusFlowError> {
         // Embeddings don't map to UnifiedRequest directly in this context,
         // as they are handled separately.
-        Err(ProxyError::Protocol {
+        Err(NexusFlowError::Protocol {
             source: "Embeddings cannot be converted to UnifiedRequest".into(),
             inner: None,
         })
     }
 
-    fn request_to_external(&self, _request: UnifiedRequest) -> Result<Value, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn request_to_external(&self, _request: UnifiedRequest) -> Result<Value, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "UnifiedRequest cannot be converted to Embedding request".into(),
             inner: None,
         })
     }
 
-    fn from_unified(&self, _response: UnifiedResponse) -> Result<Value, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn from_unified(&self, _response: UnifiedResponse) -> Result<Value, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "UnifiedResponse cannot be converted to Embedding response".into(),
             inner: None,
         })
     }
 
-    fn parse_response(&self, _response: Value) -> Result<UnifiedResponse, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn parse_response(&self, _response: Value) -> Result<UnifiedResponse, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "Embedding response cannot be parsed to UnifiedResponse".into(),
             inner: None,
         })
     }
 
     #[allow(dead_code)]
-    fn stream_chunk_to_external(&self, _chunk: StreamChunk) -> Result<Value, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn stream_chunk_to_external(&self, _chunk: StreamChunk) -> Result<Value, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "Embedding does not support streaming".into(),
             inner: None,
         })
@@ -85,37 +85,37 @@ impl ProtocolConverter for AnthropicEmbeddingConverter {
         Protocol::Anthropic
     }
 
-    fn to_unified(&self, _body: Value) -> Result<UnifiedRequest, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn to_unified(&self, _body: Value) -> Result<UnifiedRequest, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "Anthropic doesn't support embeddings".into(),
             inner: None,
         })
     }
 
-    fn request_to_external(&self, _request: UnifiedRequest) -> Result<Value, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn request_to_external(&self, _request: UnifiedRequest) -> Result<Value, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "Anthropic doesn't support embeddings".into(),
             inner: None,
         })
     }
 
-    fn from_unified(&self, _response: UnifiedResponse) -> Result<Value, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn from_unified(&self, _response: UnifiedResponse) -> Result<Value, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "Anthropic doesn't support embeddings".into(),
             inner: None,
         })
     }
 
-    fn parse_response(&self, _response: Value) -> Result<UnifiedResponse, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn parse_response(&self, _response: Value) -> Result<UnifiedResponse, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "Anthropic doesn't support embeddings".into(),
             inner: None,
         })
     }
 
     #[allow(dead_code)]
-    fn stream_chunk_to_external(&self, _chunk: StreamChunk) -> Result<Value, ProxyError> {
-        Err(ProxyError::Protocol {
+    fn stream_chunk_to_external(&self, _chunk: StreamChunk) -> Result<Value, NexusFlowError> {
+        Err(NexusFlowError::Protocol {
             source: "Anthropic doesn't support embeddings".into(),
             inner: None,
         })
@@ -123,11 +123,11 @@ impl ProtocolConverter for AnthropicEmbeddingConverter {
 }
 
 /// OpenAI Embedding 请求转换
-pub fn embedding_request_to_openai(body: Value) -> Result<Value, ProxyError> {
+pub fn embedding_request_to_openai(body: Value) -> Result<Value, NexusFlowError> {
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
-        .ok_or(ProxyError::Validation {
+        .ok_or(NexusFlowError::Validation {
             field: "model".into(),
         })?;
 
@@ -172,7 +172,7 @@ pub fn embedding_request_to_openai(body: Value) -> Result<Value, ProxyError> {
 #[allow(dead_code)]
 pub fn embedding_response_from_openai(
     response: Value,
-) -> Result<UnifiedEmbeddingResponse, ProxyError> {
+) -> Result<UnifiedEmbeddingResponse, NexusFlowError> {
     let id = response
         .get("id")
         .and_then(|v| v.as_str())

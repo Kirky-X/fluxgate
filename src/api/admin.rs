@@ -4,7 +4,7 @@
 use axum::{Json, extract::{Query, Path, State}, response::IntoResponse};
 use serde_json::Value;
 use std::sync::Arc;
-use crate::{ApiState, error::ProxyError};
+use crate::{ApiState, error::NexusFlowError};
 use crate::database::LogFilter;
 use crate::config::{Config, VendorConfig, GlobalModelConfig};
 
@@ -21,7 +21,7 @@ pub struct LogQuery {
 pub async fn logs(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<LogQuery>,
-) -> Result<Json<Value>, ProxyError> {
+) -> Result<Json<Value>, NexusFlowError> {
     let filter = LogFilter {
         start_time: params.start_time,
         end_time: params.end_time,
@@ -38,7 +38,7 @@ pub async fn logs(
 pub async fn search_logs(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<LogQuery>,
-) -> Result<Json<Value>, ProxyError> {
+) -> Result<Json<Value>, NexusFlowError> {
     let keyword = params.vendor.unwrap_or_default();
     let limit = params.limit.unwrap_or(100);
     
@@ -50,7 +50,7 @@ pub async fn search_logs(
 pub async fn token_stats(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<LogQuery>,
-) -> Result<Json<Value>, ProxyError> {
+) -> Result<Json<Value>, NexusFlowError> {
     let vendor = params.vendor.as_deref();
     let stats = state.database.repository().get_token_stats(vendor).await?;
     Ok(Json(serde_json::json!(stats)))
@@ -59,7 +59,7 @@ pub async fn token_stats(
 #[axum::debug_handler]
 pub async fn vendors(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Value>, ProxyError> {
+) -> Result<Json<Value>, NexusFlowError> {
     let statuses = state.vendor_manager.get_all_status();
     
     let vendors: Vec<Value> = statuses
@@ -78,7 +78,7 @@ pub async fn vendors(
 pub async fn vendor_status(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, ProxyError> {
+) -> Result<Json<Value>, NexusFlowError> {
     let status = state.vendor_manager.get_status(&id);
     let queue_len = state.vendor_manager.get_queue_length(&id);
     
@@ -93,7 +93,7 @@ pub async fn vendor_status(
 pub async fn reset_vendor(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, ProxyError> {
+) -> Result<impl IntoResponse, NexusFlowError> {
     state.vendor_manager.reset_status(&id);
     Ok(Json(serde_json::json!({
         "success": true,
@@ -105,7 +105,7 @@ pub async fn reset_vendor(
 #[axum::debug_handler]
 pub async fn get_config(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Config>, ProxyError> {
+) -> Result<Json<Config>, NexusFlowError> {
     let config = state.config.get_config();
     Ok(Json(config))
 }
@@ -114,7 +114,7 @@ pub async fn get_config(
 pub async fn update_config(
     State(state): State<Arc<ApiState>>,
     Json(config): Json<Config>,
-) -> Result<impl IntoResponse, ProxyError> {
+) -> Result<impl IntoResponse, NexusFlowError> {
     state.config.update_config(config)?;
     Ok(Json(serde_json::json!({
         "success": true,
@@ -125,7 +125,7 @@ pub async fn update_config(
 #[axum::debug_handler]
 pub async fn get_vendors(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Vec<VendorConfig>>, ProxyError> {
+) -> Result<Json<Vec<VendorConfig>>, NexusFlowError> {
     let config = state.config.get_config();
     Ok(Json(config.vendors))
 }
@@ -136,7 +136,7 @@ pub async fn update_vendor(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
     Json(vendor): Json<VendorConfig>,
-) -> Result<impl IntoResponse, ProxyError> {
+) -> Result<impl IntoResponse, NexusFlowError> {
     let mut config = state.config.get_config();
     if let Some(idx) = config.vendors.iter().position(|v| v.id == id) {
         config.vendors[idx] = vendor;
@@ -146,14 +146,14 @@ pub async fn update_vendor(
             "message": "Vendor updated"
         })))
     } else {
-        Err(ProxyError::Config { message: format!("Vendor {} not found", id) })
+        Err(NexusFlowError::Config { message: format!("Vendor {} not found", id) })
     }
 }
 
 #[axum::debug_handler]
 pub async fn get_models(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Vec<GlobalModelConfig>>, ProxyError> {
+) -> Result<Json<Vec<GlobalModelConfig>>, NexusFlowError> {
     let config = state.config.get_config();
     // Config only has Option<GlobalModelConfig> (singular)
     // But API expects Vec for extensibility or maybe misunderstanding?
@@ -171,7 +171,7 @@ pub async fn update_model(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
     Json(model): Json<GlobalModelConfig>,
-) -> Result<impl IntoResponse, ProxyError> {
+) -> Result<impl IntoResponse, NexusFlowError> {
     let mut config = state.config.get_config();
     // Currently only one global model supported?
     // PRD says "Global Model Mapping" but Config struct has `global_model: Option<GlobalModelConfig>`
@@ -231,6 +231,6 @@ pub async fn update_model(
             "message": "Global model config updated"
         })))
     } else {
-        Err(ProxyError::Config { message: "Only 'global' model config is supported".into() })
+        Err(NexusFlowError::Config { message: "Only 'global' model config is supported".into() })
     }
 }

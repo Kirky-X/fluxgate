@@ -4,7 +4,7 @@
 use axum::{Json, extract::State, response::IntoResponse, http::HeaderMap};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use crate::{ApiState, error::ProxyError, router::RoutingDecision};
+use crate::{ApiState, error::NexusFlowError, router::RoutingDecision};
 use crate::database::RequestLog;
 use crate::protocol::embedding_converter::embedding_request_to_openai;
 use crate::api::routing_hints::RoutingHints;
@@ -15,13 +15,13 @@ pub async fn chat_completions(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, ProxyError> {
+) -> Result<impl IntoResponse, NexusFlowError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
 
     let model = body.get("model")
         .and_then(|v| v.as_str())
-        .ok_or(ProxyError::Validation { field: "model".into() })?;
+        .ok_or(NexusFlowError::Validation { field: "model".into() })?;
 
     let stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -161,20 +161,20 @@ async fn log_chat_request(
 pub async fn embeddings(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, ProxyError> {
+) -> Result<impl IntoResponse, NexusFlowError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
     
     // 路由决策 - embedding 使用特殊路由
     let model = body.get("model")
         .and_then(|v| v.as_str())
-        .ok_or(ProxyError::Validation { field: "model".into() })?;
+        .ok_or(NexusFlowError::Validation { field: "model".into() })?;
     
     let decision = state.router.route(model).await?;
     
     // 只支持 OpenAI vendor
     if decision.vendor.type_ != "openai" {
-        return Err(ProxyError::Protocol {
+        return Err(NexusFlowError::Protocol {
             source: "Embeddings only supported for OpenAI vendors".into(),
             inner: None,
         });
@@ -182,7 +182,7 @@ pub async fn embeddings(
     
     // 获取 API key
     let api_key = std::env::var(&decision.vendor.api_key_env)
-        .map_err(|_| ProxyError::Config { message: format!("API key env {} not set", decision.vendor.api_key_env) })?;
+        .map_err(|_| NexusFlowError::Config { message: format!("API key env {} not set", decision.vendor.api_key_env) })?;
     
     // 转换为 OpenAI 格式
     let openai_body = embedding_request_to_openai(body.clone())?;
@@ -202,21 +202,21 @@ pub async fn embeddings(
         .json(&openai_body)
         .send()
         .await
-        .map_err(|e| ProxyError::VendorUnavailable { vendor: decision.vendor.id.clone() })?;
+        .map_err(|e| NexusFlowError::VendorUnavailable { vendor: decision.vendor.id.clone() })?;
     
     if !response.status().is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        return Err(ProxyError::Protocol { 
+        return Err(NexusFlowError::Protocol { 
             source: format!("OpenAI Embeddings API error: {}", error_text), 
             inner: None 
         });
     }
     
     let bytes = response.bytes().await
-        .map_err(|e| ProxyError::Protocol { source: format!("Failed to read response: {}", e), inner: None })?;
+        .map_err(|e| NexusFlowError::Protocol { source: format!("Failed to read response: {}", e), inner: None })?;
     
     let response_json: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| ProxyError::Protocol { source: format!("Invalid JSON: {}", e), inner: None })?;
+        .map_err(|e| NexusFlowError::Protocol { source: format!("Invalid JSON: {}", e), inner: None })?;
     
     // 记录日志
     let duration_ms = start_time.elapsed().as_millis() as i64;

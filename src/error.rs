@@ -8,10 +8,10 @@ use std::result;
 use thiserror::Error;
 
 #[allow(dead_code)]
-pub type Result<T> = result::Result<T, ProxyError>;
+pub type Result<T> = result::Result<T, NexusFlowError>;
 
 #[derive(Error, Debug)]
-pub enum ProxyError {
+pub enum NexusFlowError {
     #[error("配置错误: {message}")]
     Config { message: String },
 
@@ -46,32 +46,32 @@ pub enum ProxyError {
     Routing { message: String },
 }
 
-impl ProxyError {
+impl NexusFlowError {
     /// 检查错误是否可重试
     #[allow(dead_code)]
     pub fn is_retryable(&self) -> bool {
         match self {
-            ProxyError::Timeout { .. } => true,
-            ProxyError::RateLimited { .. } => true,
-            ProxyError::VendorUnavailable { .. } => false,
-            ProxyError::Protocol { .. } => true,
+            NexusFlowError::Timeout { .. } => true,
+            NexusFlowError::RateLimited { .. } => true,
+            NexusFlowError::VendorUnavailable { .. } => false,
+            NexusFlowError::Protocol { .. } => true,
             _ => false,
         }
     }
 }
 
-impl IntoResponse for ProxyError {
+impl IntoResponse for NexusFlowError {
     fn into_response(self) -> axum::response::Response {
         let status = match self {
-            ProxyError::Validation { .. } => axum::http::StatusCode::BAD_REQUEST,
-            ProxyError::VendorUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            ProxyError::AllVendorsUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            ProxyError::Timeout { .. } => axum::http::StatusCode::GATEWAY_TIMEOUT,
-            ProxyError::RateLimited { .. } => axum::http::StatusCode::TOO_MANY_REQUESTS,
-            ProxyError::Config { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ProxyError::Protocol { .. } => axum::http::StatusCode::BAD_GATEWAY,
-            ProxyError::Database { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ProxyError::Routing { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            NexusFlowError::Validation { .. } => axum::http::StatusCode::BAD_REQUEST,
+            NexusFlowError::VendorUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            NexusFlowError::AllVendorsUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            NexusFlowError::Timeout { .. } => axum::http::StatusCode::GATEWAY_TIMEOUT,
+            NexusFlowError::RateLimited { .. } => axum::http::StatusCode::TOO_MANY_REQUESTS,
+            NexusFlowError::Config { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            NexusFlowError::Protocol { .. } => axum::http::StatusCode::BAD_GATEWAY,
+            NexusFlowError::Database { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            NexusFlowError::Routing { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         let body = json!({
@@ -85,33 +85,33 @@ impl IntoResponse for ProxyError {
     }
 }
 
-impl From<sqlx::Error> for ProxyError {
+impl From<sqlx::Error> for NexusFlowError {
     fn from(e: sqlx::Error) -> Self {
-        ProxyError::Database {
+        NexusFlowError::Database {
             message: format!("SQLite error: {}", e),
         }
     }
 }
 
-impl From<std::io::Error> for ProxyError {
+impl From<std::io::Error> for NexusFlowError {
     fn from(e: std::io::Error) -> Self {
-        ProxyError::Database {
+        NexusFlowError::Database {
             message: format!("IO error: {}", e),
         }
     }
 }
 
-impl From<tokio::sync::oneshot::error::RecvError> for ProxyError {
+impl From<tokio::sync::oneshot::error::RecvError> for NexusFlowError {
     fn from(_e: tokio::sync::oneshot::error::RecvError) -> Self {
-        ProxyError::Timeout {
+        NexusFlowError::Timeout {
             vendor: "unknown".to_string(),
         }
     }
 }
 
-impl From<sdforge::config::ConfigError> for ProxyError {
+impl From<sdforge::config::ConfigError> for NexusFlowError {
     fn from(e: sdforge::config::ConfigError) -> Self {
-        ProxyError::Config {
+        NexusFlowError::Config {
             message: e.to_string(),
         }
     }

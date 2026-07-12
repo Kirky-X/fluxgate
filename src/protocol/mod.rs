@@ -1,7 +1,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -32,15 +32,15 @@ pub trait ProtocolConverter: Send + Sync {
     fn input_protocol(&self) -> Protocol;
     #[allow(dead_code)]
     fn output_protocol(&self) -> Protocol;
-    fn to_unified(&self, body: serde_json::Value) -> Result<UnifiedRequest, ProxyError>;
+    fn to_unified(&self, body: serde_json::Value) -> Result<UnifiedRequest, NexusFlowError>;
     /// 将 UnifiedRequest 转换为外部 API 请求格式 (如 Anthropic → OpenAI)
     fn request_to_external(&self, request: UnifiedRequest)
-        -> Result<serde_json::Value, ProxyError>;
-    fn from_unified(&self, response: UnifiedResponse) -> Result<serde_json::Value, ProxyError>;
-    fn parse_response(&self, response: serde_json::Value) -> Result<UnifiedResponse, ProxyError>;
+        -> Result<serde_json::Value, NexusFlowError>;
+    fn from_unified(&self, response: UnifiedResponse) -> Result<serde_json::Value, NexusFlowError>;
+    fn parse_response(&self, response: serde_json::Value) -> Result<UnifiedResponse, NexusFlowError>;
     #[allow(dead_code)]
     fn stream_chunk_to_external(&self, chunk: StreamChunk)
-        -> Result<serde_json::Value, ProxyError>;
+        -> Result<serde_json::Value, NexusFlowError>;
 
     /// 检查是否可以透传（同格式直接转发）
     fn can_passthrough(&self, output_protocol: Protocol) -> bool {
@@ -49,12 +49,12 @@ pub trait ProtocolConverter: Send + Sync {
 
     /// 透传请求体（零拷贝优化）
     /// 当入站协议与出站协议相同时，直接返回原始请求体，避免序列化/反序列化开销
-    fn passthrough_request(&self, body: serde_json::Value) -> Result<serde_json::Value, ProxyError> {
+    fn passthrough_request(&self, body: serde_json::Value) -> Result<serde_json::Value, NexusFlowError> {
         Ok(body)
     }
 
     /// 透传响应体（零拷贝优化）
-    fn passthrough_response(&self, response: serde_json::Value) -> Result<serde_json::Value, ProxyError> {
+    fn passthrough_response(&self, response: serde_json::Value) -> Result<serde_json::Value, NexusFlowError> {
         Ok(response)
     }
 }

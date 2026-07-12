@@ -14,7 +14,7 @@ mod database;
 mod utils;
 mod error;
 
-use error::ProxyError;
+use error::NexusFlowError;
 use config::ConfigManager;
 use config::loader::ConfigLoader;
 use api::{ApiState, init_global_state};
@@ -25,7 +25,7 @@ use vendor::VendorManager;
 use database::Database;
 
 #[tokio::main]
-async fn main() -> Result<(), ProxyError> {
+async fn main() -> Result<(), NexusFlowError> {
     println!("Starting NexusFlow with sdforge...");
     tracing_subscriber::fmt::init();
     

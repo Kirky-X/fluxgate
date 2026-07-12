@@ -3,12 +3,12 @@
 
 use async_channel::{Receiver, Sender, bounded};
 use crate::protocol::unified::{UnifiedRequest, UnifiedResponse};
-use crate::error::ProxyError;
+use crate::error::NexusFlowError;
 use std::sync::Arc;
 
 pub struct PendingRequest {
     pub request: UnifiedRequest,
-    pub response_tx: tokio::sync::oneshot::Sender<Result<UnifiedResponse, ProxyError>>,
+    pub response_tx: tokio::sync::oneshot::Sender<Result<UnifiedResponse, NexusFlowError>>,
 }
 
 #[derive(Clone)]
@@ -25,10 +25,10 @@ impl VendorQueue {
         Self { sender, receiver, queue_size: capacity }
     }
     
-    pub async fn send(&self, request: PendingRequest) -> Result<(), ProxyError> {
+    pub async fn send(&self, request: PendingRequest) -> Result<(), NexusFlowError> {
         self.sender.send(request)
             .await
-            .map_err(|_| ProxyError::VendorUnavailable { vendor: "queue_closed".into() })
+            .map_err(|_| NexusFlowError::VendorUnavailable { vendor: "queue_closed".into() })
     }
     
     pub async fn recv(&self) -> Option<PendingRequest> {

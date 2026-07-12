@@ -15,7 +15,7 @@ pub mod middleware;
 pub mod infrastructure; // New: Infrastructure layer for DI-compliant components
 
 pub use config::{ConfigManager, Config, ServerConfig, DatabaseConfig, VendorConfig, ModelConfig};
-pub use error::ProxyError;
+pub use error::NexusFlowError;
 pub use api::ApiState;
 pub use vendor::VendorManager;
 pub use database::Database;

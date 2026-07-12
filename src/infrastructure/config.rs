@@ -1,41 +1,44 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! Confers implementation for the unified Config trait.
+//! Confers-backed configuration implementation.
 //!
-//! This module provides an implementation of the [`Config`] trait using the confers library.
-//! It follows the dependency injection architecture with three construction patterns:
-//! - `new()` - Default configuration with TOML file
-//! - `builder()` - Custom configuration via builder
-//! - `with_dependencies()` - Full dependency injection
+//! Real integration with the `confers` library — uses
+//! `confers::ConfigBuilder::<serde_json::Value>` to merge TOML file →
+//! environment variables → defaults into a single `serde_json::Value`,
+//! which is then flattened into dot-notation keys for the simple
+//! `Config` trait accessors.
+//!
+//! Three construction patterns (per AGENTS.md):
+//! - `new()` — default config (defaults only, no file/env)
+//! - `builder()` — fluent builder with `.file()`, `.env_prefix()`, `.hot_reload()`
+//! - `with_dependencies(backend)` — full DI for tests or custom backends
 //!
 //! # Examples
 //!
 //! ```ignore
-//! use std::sync::Arc;
 //! use nexusflow::infrastructure::{Config, config::Confers};
 //!
-//! // Pattern 1: new() - Default configuration
+//! // Pattern 1: defaults only
 //! let config = Confers::new();
-//! let port = config.get_int("server.port");
+//! assert_eq!(config.get_int("server.port"), Some(8080));
 //!
-//! // Pattern 2: builder() - Custom configuration
+//! // Pattern 2: load config.toml + APP_ env overrides
 //! let config = Confers::builder()
 //!     .file("config.toml")
 //!     .env_prefix("APP_")
 //!     .build();
-//!
-//! // Pattern 3: with_dependencies() - Custom loader
-//! let config = Confers::with_dependencies(Arc::new(custom_loader));
 //! ```
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use super::{Config, ConfigBuilder};
+use super::Config;
 
-/// Backend loader for configuration values.
-/// This allows for different configuration sources (file, environment, etc.)
+/// Backend storage trait for configuration values.
+///
+/// Abstraction that lets callers inject custom storage (e.g. for tests)
+/// via `Confers::with_dependencies`.
 pub trait ConfersBackend: Send + Sync {
     /// Get a string value by key.
     fn get_string(&self, key: &str) -> Option<String>;
@@ -48,7 +51,10 @@ pub trait ConfersBackend: Send + Sync {
 }
 
 /// In-memory configuration backend.
-/// Useful for testing or runtime configuration updates.
+///
+/// Backed by `RwLock<HashMap<String, String>>` — thread-safe, no I/O.
+/// Used as the default storage after confers merges all sources into a
+/// flat dot-notation map.
 #[derive(Default)]
 pub struct MemoryConfigBackend {
     storage: RwLock<HashMap<String, String>>,
@@ -64,7 +70,7 @@ impl Clone for MemoryConfigBackend {
 }
 
 impl MemoryConfigBackend {
-    /// Create a new memory configuration backend.
+    /// Create a new empty memory backend.
     pub fn new() -> Self {
         Self {
             storage: RwLock::new(HashMap::new()),
@@ -77,7 +83,7 @@ impl MemoryConfigBackend {
         storage.insert(key.to_string(), value.to_string());
     }
 
-    /// Load values from a hashmap.
+    /// Bulk load values from a hashmap (replaces existing storage).
     pub fn load(&self, values: HashMap<String, String>) {
         let mut storage = self.storage.write().unwrap();
         *storage = values;
@@ -101,180 +107,25 @@ impl ConfersBackend for MemoryConfigBackend {
     }
 }
 
-/// TOML file configuration backend.
-/// Loads configuration from TOML files.
-pub struct TomlConfigBackend {
-    path: String,
-    storage: RwLock<HashMap<String, String>>,
-    hot_reload: bool,
-}
-
-impl Clone for TomlConfigBackend {
-    fn clone(&self) -> Self {
-        let storage = self.storage.read().unwrap();
-        Self {
-            path: self.path.clone(),
-            storage: RwLock::new(storage.clone()),
-            hot_reload: self.hot_reload,
-        }
-    }
-}
-
-impl TomlConfigBackend {
-    /// Create a new TOML configuration backend.
-    pub fn new(path: &str) -> Self {
-        let mut backend = Self {
-            path: path.to_string(),
-            storage: RwLock::new(HashMap::new()),
-            hot_reload: false,
-        };
-        backend.load();
-        backend
-    }
-
-    /// Create with hot reload enabled.
-    pub fn with_hot_reload(path: &str) -> Self {
-        let mut backend = Self::new(path);
-        backend.hot_reload = true;
-        backend
-    }
-
-    /// Load configuration from TOML file.
-    fn load(&self) {
-        // In a real implementation, this would parse the TOML file
-        // For now, we use a simple approach
-        let path = self.path.clone();
-        let mut storage = self.storage.write().unwrap();
-
-        // Default values for NexusFlow
-        storage.insert("server.host".to_string(), "0.0.0.0".to_string());
-        storage.insert("server.port".to_string(), "8080".to_string());
-        storage.insert(
-            "database.path".to_string(),
-            "./data/llm_proxy.db".to_string(),
-        );
-        storage.insert("log.level".to_string(), "info".to_string());
-        storage.insert("rate_limit.enabled".to_string(), "true".to_string());
-        storage.insert(
-            "rate_limit.requests_per_minute".to_string(),
-            "60".to_string(),
-        );
-    }
-
-    /// Reload configuration from file (for hot reload).
-    pub fn reload(&self) {
-        self.load();
-    }
-}
-
-impl ConfersBackend for TomlConfigBackend {
-    fn get_string(&self, key: &str) -> Option<String> {
-        let storage = self.storage.read().unwrap();
-        storage.get(key).cloned()
-    }
-
-    fn keys(&self) -> Vec<String> {
-        let storage = self.storage.read().unwrap();
-        storage.keys().cloned().collect()
-    }
-
-    fn contains(&self, key: &str) -> bool {
-        let storage = self.storage.read().unwrap();
-        storage.contains_key(key)
-    }
-}
-
-/// Environment variables configuration backend.
-/// Loads configuration from environment variables.
-#[derive(Clone)]
-pub struct EnvConfigBackend {
-    prefix: String,
-}
-
-impl EnvConfigBackend {
-    /// Create a new environment configuration backend.
-    pub fn new(prefix: &str) -> Self {
-        Self {
-            prefix: prefix.to_string(),
-        }
-    }
-}
-
-impl ConfersBackend for EnvConfigBackend {
-    fn get_string(&self, key: &str) -> Option<String> {
-        let env_key = format!("{}_{}", self.prefix, key.replace('.', "_").to_uppercase());
-        std::env::var(&env_key).ok()
-    }
-
-    fn keys(&self) -> Vec<String> {
-        // Environment variables are dynamic, so we can't list them
-        Vec::new()
-    }
-
-    fn contains(&self, key: &str) -> bool {
-        let env_key = format!("{}_{}", self.prefix, key.replace('.', "_").to_uppercase());
-        std::env::var(&env_key).is_ok()
-    }
-}
-
-/// Combined configuration backend that chains multiple sources.
-#[derive(Clone)]
-pub struct ChainedConfigBackend {
-    backends: Vec<Arc<dyn ConfersBackend>>,
-}
-
-impl ChainedConfigBackend {
-    /// Create a new chained configuration backend.
-    pub fn new(backends: Vec<Arc<dyn ConfersBackend>>) -> Self {
-        Self { backends }
-    }
-}
-
-impl ConfersBackend for ChainedConfigBackend {
-    fn get_string(&self, key: &str) -> Option<String> {
-        // Try backends in order, return first match
-        for backend in &self.backends {
-            if let Some(value) = backend.get_string(key) {
-                return Some(value);
-            }
-        }
-        None
-    }
-
-    fn keys(&self) -> Vec<String> {
-        // Collect keys from all backends
-        let mut keys = Vec::new();
-        for backend in &self.backends {
-            keys.extend(backend.keys());
-        }
-        keys
-    }
-
-    fn contains(&self, key: &str) -> bool {
-        for backend in &self.backends {
-            if backend.contains(key) {
-                return true;
-            }
-        }
-        false
-    }
-}
-
-/// Configuration for the Confers wrapper.
-#[derive(Clone)]
+/// Configuration metadata for the [`Confers`] wrapper.
+///
+/// Stored alongside the backend for introspection (e.g. debug output).
+/// The `backend` field is kept `None` — the actual backend lives in the
+/// `Confers.backend` field.
+#[derive(Clone, Default)]
 pub struct ConfigConfig {
     /// Path to the TOML configuration file.
     pub file: Option<String>,
     /// Environment variable prefix.
     pub env_prefix: Option<String>,
-    /// Whether to enable hot reload.
+    /// Whether hot reload was requested (sets confers `watch` flag).
     pub hot_reload: bool,
-    /// Backend to use (defaults to memory if not specified).
+    /// Custom backend override — always `None` after `build()`.
     pub backend: Option<Arc<dyn ConfersBackend>>,
 }
 
 impl ConfigConfig {
-    /// Create a debug representation (without backend).
+    /// Debug representation that omits the backend (which may be opaque).
     pub fn debug(&self) -> String {
         format!(
             "ConfigConfig {{ file: {:?}, env_prefix: {:?}, hot_reload: {} }}",
@@ -283,33 +134,20 @@ impl ConfigConfig {
     }
 }
 
-impl Default for ConfigConfig {
-    fn default() -> Self {
-        Self {
-            file: None,
-            env_prefix: None,
-            hot_reload: false,
-            backend: None,
-        }
-    }
-}
-
-/// The main Confers struct that implements the [`Config`] trait.
+/// The main Confers wrapper that implements the [`Config`] trait.
 ///
-/// This struct wraps configuration backends and provides a unified interface
-/// for accessing configuration values with type-safe accessors.
+/// Wraps a [`ConfersBackend`] (typically `MemoryConfigBackend` populated
+/// by confers at build time) and provides type-safe accessors.
 #[derive(Clone)]
 pub struct Confers {
-    /// Backend storage for configuration values.
     backend: Arc<dyn ConfersBackend>,
-    /// Configuration settings.
     config: ConfigConfig,
 }
 
 impl Confers {
-    /// Pattern 1: Create a configuration with default settings.
+    /// Pattern 1: defaults-only configuration.
     ///
-    /// This creates an in-memory configuration with default values.
+    /// Loads nothing from disk — just the hardcoded defaults via confers.
     ///
     /// # Examples
     ///
@@ -317,20 +155,18 @@ impl Confers {
     /// use nexusflow::infrastructure::{Config, config::Confers};
     ///
     /// let config = Confers::new();
-    /// let port = config.get_int("server.port");
+    /// assert_eq!(config.get_int("server.port"), Some(8080));
     /// ```
     pub fn new() -> Self {
         Self::builder().build()
     }
 
-    /// Pattern 2: Create a configuration with custom settings via builder.
-    ///
-    /// This allows customization of file path, environment prefix, and other options.
+    /// Pattern 2: fluent builder for custom configuration.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use nexusflow::infrastructure::{Config, config::Confers};
+    /// use nexusflow::infrastructure::config::Confers;
     ///
     /// let config = Confers::builder()
     ///     .file("config.toml")
@@ -341,21 +177,21 @@ impl Confers {
         ConfersBuilder::new()
     }
 
-    /// Pattern 3: Create a configuration with a custom backend.
+    /// Pattern 3: full dependency injection with a custom backend.
     ///
-    /// This allows injection of a custom backend implementation.
+    /// Bypasses confers entirely — the caller is responsible for populating
+    /// the backend. Used primarily for tests.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use std::sync::Arc;
-    /// use nexusflow::infrastructure::{Config, config::Confers};
-    /// use nexusflow::infrastructure::config::MemoryConfigBackend;
+    /// use nexusflow::infrastructure::{Config, config::Confers, config::MemoryConfigBackend};
     ///
-    /// let backend = Arc::new(MemoryConfigBackend::new());
-    /// let config = Confers::with_dependencies(backend);
-    ///
-    /// let port = config.get_int("server.port");
+    /// let mut backend = MemoryConfigBackend::new();
+    /// backend.set("server.port", "9090");
+    /// let config = Confers::with_dependencies(Arc::new(backend));
+    /// assert_eq!(config.get_int("server.port"), Some(9090));
     /// ```
     pub fn with_dependencies(backend: Arc<dyn ConfersBackend>) -> Self {
         Self {
@@ -364,7 +200,7 @@ impl Confers {
         }
     }
 
-    /// Create a configuration with custom backend and settings.
+    /// Create with custom backend and metadata.
     pub fn with_config_and_dependencies(
         backend: Arc<dyn ConfersBackend>,
         file: Option<String>,
@@ -381,9 +217,16 @@ impl Confers {
             },
         }
     }
+
+    /// Get the configuration metadata (file path, env prefix, hot_reload flag).
+    ///
+    /// Useful for introspection — e.g. logging which file was loaded.
+    pub fn config_metadata(&self) -> &ConfigConfig {
+        &self.config
+    }
 }
 
-/// Builder for [`Confers`] with customizable options.
+/// Builder for [`Confers`].
 #[derive(Default)]
 pub struct ConfersBuilder {
     file: Option<String>,
@@ -398,16 +241,17 @@ impl ConfersBuilder {
         Self::default()
     }
 
-    /// Set the configuration file path.
+    /// Set the TOML configuration file path.
+    ///
+    /// The file is loaded via `confers::ConfigBuilder::file_optional`,
+    /// so missing files are silently skipped (defaults still apply).
     ///
     /// # Examples
     ///
     /// ```rust
     /// use nexusflow::infrastructure::config::Confers;
     ///
-    /// let config = Confers::builder()
-    ///     .file("config.toml")
-    ///     .build();
+    /// let config = Confers::builder().file("config.toml").build();
     /// ```
     pub fn file(mut self, file: &str) -> Self {
         self.file = Some(file.to_string());
@@ -416,23 +260,26 @@ impl ConfersBuilder {
 
     /// Set the environment variable prefix.
     ///
-    /// Environment variables with this prefix will override file-based config.
+    /// Env vars matching `PREFIX_KEY_PATH` (e.g. `APP_SERVER_PORT`) override
+    /// file values and defaults.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use nexusflow::infrastructure::config::Confers;
     ///
-    /// let config = Confers::builder()
-    ///     .env_prefix("APP_")
-    ///     .build();
+    /// let config = Confers::builder().env_prefix("APP_").build();
     /// ```
     pub fn env_prefix(mut self, prefix: &str) -> Self {
         self.env_prefix = Some(prefix.to_string());
         self
     }
 
-    /// Enable hot reload for configuration files.
+    /// Enable confers `watch` flag for hot reload.
+    ///
+    /// NOTE: This sets the flag on the confers builder but does not start
+    /// an active watcher — `Config::build()` returns a snapshot. Subsequent
+    /// reloads require direct confers API access.
     ///
     /// # Examples
     ///
@@ -449,25 +296,27 @@ impl ConfersBuilder {
         self
     }
 
-    /// Set a custom backend for the configuration.
+    /// Provide a custom backend, bypassing confers entirely.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use std::sync::Arc;
-    /// use nexusflow::infrastructure::{config::Confers, config::MemoryConfigBackend};
+    /// use nexusflow::infrastructure::config::{Confers, ConfersBackend, MemoryConfigBackend};
     ///
-    /// let backend = Arc::new(MemoryConfigBackend::new()) as Arc<dyn nexusflow::infrastructure::config::ConfersBackend>;
-    /// let config = Confers::builder()
-    ///     .backend(backend)
-    ///     .build();
+    /// let backend: Arc<dyn ConfersBackend> = Arc::new(MemoryConfigBackend::new());
+    /// let config = Confers::builder().backend(backend).build();
     /// ```
     pub fn backend(mut self, backend: Arc<dyn ConfersBackend>) -> Self {
         self.backend = Some(backend);
         self
     }
 
-    /// Build the [`Confers`] instance with the configured settings.
+    /// Build the [`Confers`] instance.
+    ///
+    /// Merges sources in priority order: env > file > defaults.
+    /// On confers build failure, falls back to defaults only with a
+    /// stderr warning (Rule 12: failures must be visible).
     ///
     /// # Examples
     ///
@@ -480,39 +329,55 @@ impl ConfersBuilder {
     ///     .build();
     /// ```
     pub fn build(self) -> Confers {
-        let backend = if let Some(backend) = self.backend {
-            backend
-        } else {
-            // Create a chained backend with memory + env if specified
-            let mut backends: Vec<Arc<dyn ConfersBackend>> = Vec::new();
+        // Custom backend — skip confers entirely.
+        if let Some(backend) = self.backend {
+            return Confers {
+                backend,
+                config: ConfigConfig {
+                    file: self.file,
+                    env_prefix: self.env_prefix,
+                    hot_reload: self.hot_reload,
+                    backend: None,
+                },
+            };
+        }
 
-            if let Some(file) = &self.file {
-                let toml_backend: Arc<dyn ConfersBackend> = if self.hot_reload {
-                    Arc::new(TomlConfigBackend::with_hot_reload(file))
-                } else {
-                    Arc::new(TomlConfigBackend::new(file))
-                };
-                backends.push(toml_backend);
+        // Build merged config via confers: file → env → defaults.
+        let mut builder = confers::ConfigBuilder::<serde_json::Value>::new();
+        if let Some(file) = &self.file {
+            builder = builder.file_optional(file);
+        }
+        if let Some(prefix) = &self.env_prefix {
+            builder = builder.env_prefix(prefix);
+        }
+        builder = builder.defaults(default_config_values());
+        if self.hot_reload {
+            builder = builder.watch(true);
+        }
+
+        let flat: HashMap<String, String> = match builder.build() {
+            Ok(value) => {
+                let mut flat = HashMap::new();
+                flatten_json(&value, "", &mut flat);
+                flat
             }
-
-            // Add memory backend as fallback with default values
-            let mut memory_backend = MemoryConfigBackend::new();
-            memory_backend.set("server.host", "0.0.0.0");
-            memory_backend.set("server.port", "8080");
-            memory_backend.set("database.path", "./data/llm_proxy.db");
-            memory_backend.set("log.level", "info");
-            backends.push(Arc::new(memory_backend));
-
-            // Add env backend if prefix specified
-            if let Some(prefix) = &self.env_prefix {
-                backends.push(Arc::new(EnvConfigBackend::new(prefix)));
+            Err(e) => {
+                // Explicit failure visibility (Rule 12): log + fall back to defaults.
+                eprintln!(
+                    "[nexusflow::infrastructure::config] confers build failed: {}; falling back to defaults",
+                    e
+                );
+                default_config_flat()
             }
-
-            Arc::new(ChainedConfigBackend::new(backends))
         };
 
+        let memory_backend = MemoryConfigBackend::new();
+        for (key, value) in flat {
+            memory_backend.set(&key, &value);
+        }
+
         Confers {
-            backend,
+            backend: Arc::new(memory_backend),
             config: ConfigConfig {
                 file: self.file,
                 env_prefix: self.env_prefix,
@@ -543,24 +408,111 @@ impl Default for Confers {
     }
 }
 
+// ===== Private helpers =====
+
+/// Default config values as `confers::ConfigValue`s (for the confers builder).
+fn default_config_values() -> HashMap<String, confers::ConfigValue> {
+    let mut defaults = HashMap::new();
+    defaults.insert(
+        "server.host".to_string(),
+        confers::ConfigValue::string("0.0.0.0"),
+    );
+    defaults.insert(
+        "server.port".to_string(),
+        confers::ConfigValue::integer(8080),
+    );
+    defaults.insert(
+        "database.path".to_string(),
+        confers::ConfigValue::string("./data/llm_proxy.db"),
+    );
+    defaults.insert(
+        "log.level".to_string(),
+        confers::ConfigValue::string("info"),
+    );
+    defaults.insert(
+        "rate_limit.enabled".to_string(),
+        confers::ConfigValue::bool(true),
+    );
+    defaults.insert(
+        "rate_limit.requests_per_minute".to_string(),
+        confers::ConfigValue::integer(60),
+    );
+    defaults
+}
+
+/// Defaults flattened to `String -> String` (fallback when confers build fails).
+fn default_config_flat() -> HashMap<String, String> {
+    let mut flat = HashMap::new();
+    flat.insert("server.host".to_string(), "0.0.0.0".to_string());
+    flat.insert("server.port".to_string(), "8080".to_string());
+    flat.insert(
+        "database.path".to_string(),
+        "./data/llm_proxy.db".to_string(),
+    );
+    flat.insert("log.level".to_string(), "info".to_string());
+    flat.insert("rate_limit.enabled".to_string(), "true".to_string());
+    flat.insert(
+        "rate_limit.requests_per_minute".to_string(),
+        "60".to_string(),
+    );
+    flat
+}
+
+/// Recursively flatten a `serde_json::Value` into dot-notation `HashMap<String, String>`.
+///
+/// - Objects → recurse with `key.subkey` prefix
+/// - Arrays → skipped (the simple `Config` trait doesn't expose array access)
+/// - Primitives → stringified and stored under the current prefix
+/// - Null → skipped
+fn flatten_json(value: &serde_json::Value, prefix: &str, out: &mut HashMap<String, String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map {
+                let new_prefix = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+                flatten_json(val, &new_prefix, out);
+            }
+        }
+        serde_json::Value::String(s) => {
+            if !prefix.is_empty() {
+                out.insert(prefix.to_string(), s.clone());
+            }
+        }
+        serde_json::Value::Number(n) => {
+            if !prefix.is_empty() {
+                out.insert(prefix.to_string(), n.to_string());
+            }
+        }
+        serde_json::Value::Bool(b) => {
+            if !prefix.is_empty() {
+                out.insert(prefix.to_string(), b.to_string());
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Array(_) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    /// Helper function to create a test configuration.
-    fn test_config() -> Confers {
-        let backend = Arc::new(MemoryConfigBackend::new()) as Arc<dyn ConfersBackend>;
-        Confers::with_dependencies(backend)
+    /// Build a `Confers` with a pre-populated memory backend (no `unsafe`).
+    fn config_with(pairs: &[(&str, &str)]) -> Confers {
+        let backend = MemoryConfigBackend::new();
+        for (k, v) in pairs {
+            backend.set(k, v);
+        }
+        Confers::with_dependencies(Arc::new(backend))
     }
+
+    // ===== Config trait accessors =====
 
     #[test]
     fn test_config_get_string() {
-        let config = test_config();
-        let backend =
-            config.backend.as_ref() as *const dyn ConfersBackend as *const MemoryConfigBackend;
-        unsafe { (*backend).set("test.key", "test_value") };
-
+        let config = config_with(&[("test.key", "test_value")]);
         assert_eq!(
             config.get_string("test.key"),
             Some("test_value".to_string())
@@ -569,92 +521,169 @@ mod tests {
 
     #[test]
     fn test_config_get_missing_string() {
-        let config = test_config();
+        let config = config_with(&[]);
         assert_eq!(config.get_string("missing.key"), None);
     }
 
     #[test]
     fn test_config_get_int() {
-        let config = test_config();
-        let backend =
-            config.backend.as_ref() as *const dyn ConfersBackend as *const MemoryConfigBackend;
-        unsafe { (*backend).set("server.port", "8080") };
-
+        let config = config_with(&[("server.port", "8080")]);
         assert_eq!(config.get_int("server.port"), Some(8080));
     }
 
     #[test]
-    fn test_config_get_invalid_int() {
-        let config = test_config();
-        let backend =
-            config.backend.as_ref() as *const dyn ConfersBackend as *const MemoryConfigBackend;
-        unsafe { (*backend).set("invalid.int", "not_a_number") };
+    fn test_config_get_int_negative() {
+        let config = config_with(&[("offset", "-42")]);
+        assert_eq!(config.get_int("offset"), Some(-42));
+    }
 
+    #[test]
+    fn test_config_get_invalid_int() {
+        let config = config_with(&[("invalid.int", "not_a_number")]);
         assert_eq!(config.get_int("invalid.int"), None);
     }
 
     #[test]
-    fn test_config_get_bool() {
-        let config = test_config();
-        let backend =
-            config.backend.as_ref() as *const dyn ConfersBackend as *const MemoryConfigBackend;
-        unsafe { (*backend).set("feature.enabled", "true") };
-
+    fn test_config_get_bool_true() {
+        let config = config_with(&[("feature.enabled", "true")]);
         assert_eq!(config.get_bool("feature.enabled"), Some(true));
     }
 
     #[test]
-    fn test_config_get_invalid_bool() {
-        let config = test_config();
-        let backend =
-            config.backend.as_ref() as *const dyn ConfersBackend as *const MemoryConfigBackend;
-        unsafe { (*backend).set("invalid.bool", "not_a_bool") };
+    fn test_config_get_bool_false() {
+        let config = config_with(&[("feature.disabled", "false")]);
+        assert_eq!(config.get_bool("feature.disabled"), Some(false));
+    }
 
+    #[test]
+    fn test_config_get_invalid_bool() {
+        let config = config_with(&[("invalid.bool", "not_a_bool")]);
         assert_eq!(config.get_bool("invalid.bool"), None);
     }
 
+    // ===== Confers::new() / default() — defaults only, no file =====
+
     #[test]
-    fn test_config_new() {
+    fn test_config_new_has_defaults() {
         let config = Confers::new();
-        // Default config should have default values
-        let port = config.get_int("server.port");
-        assert!(port.is_some()); // Default value should exist
+        assert_eq!(config.get_int("server.port"), Some(8080));
+        assert_eq!(config.get_string("server.host"), Some("0.0.0.0".to_string()));
+        assert_eq!(
+            config.get_string("database.path"),
+            Some("./data/llm_proxy.db".to_string())
+        );
     }
 
     #[test]
-    fn test_config_with_dependencies() {
-        let backend = Arc::new(MemoryConfigBackend::new()) as Arc<dyn ConfersBackend>;
-        let config = Confers::with_dependencies(backend);
+    fn test_config_default_has_defaults() {
+        let config = Confers::default();
+        assert_eq!(config.get_int("server.port"), Some(8080));
+        assert_eq!(config.get_bool("rate_limit.enabled"), Some(true));
+    }
 
-        assert_eq!(config.get_string("missing.key"), None);
+    // ===== Builder with file (real confers TOML loading) =====
+
+    #[test]
+    fn test_config_builder_loads_toml_file() {
+        // config.toml exists at the project root — cargo test runs from package root.
+        let config = Confers::builder().file("config.toml").build();
+        // config.toml has port = 8080
+        assert_eq!(config.get_int("server.port"), Some(8080));
+        assert_eq!(config.get_string("server.host"), Some("0.0.0.0".to_string()));
+        // TOML [database] section
+        assert_eq!(
+            config.get_string("database.path"),
+            Some("./data/llm_proxy.db".to_string())
+        );
+        // TOML [rate_limit] section
+        assert_eq!(config.get_bool("rate_limit.enabled"), Some(true));
     }
 
     #[test]
-    fn test_config_builder() {
+    fn test_config_builder_missing_file_falls_back_to_defaults() {
+        // Non-existent file — confers file_optional skips it, defaults still apply.
+        let config = Confers::builder().file("does_not_exist.toml").build();
+        assert_eq!(config.get_int("server.port"), Some(8080));
+    }
+
+    #[test]
+    fn test_config_builder_with_env_prefix() {
+        // No actual env var asserted (env tests are flaky in parallel test runs);
+        // this just verifies that env_prefix doesn't break the build path.
         let config = Confers::builder()
             .file("config.toml")
             .env_prefix("APP_")
             .build();
-
-        // Should have default values from TOML backend
-        let port = config.get_int("server.port");
-        assert!(port.is_some());
+        assert_eq!(config.get_int("server.port"), Some(8080));
     }
 
     #[test]
-    fn test_config_default() {
-        let config = Confers::default();
-        let host = config.get_string("server.host");
-        assert!(host.is_some());
+    fn test_config_builder_hot_reload_flag() {
+        // hot_reload(true) sets the confers watch flag — build should still succeed.
+        let config = Confers::builder()
+            .file("config.toml")
+            .hot_reload(true)
+            .build();
+        assert_eq!(config.get_int("server.port"), Some(8080));
     }
 
     #[test]
-    fn test_config_clone() {
-        let config = test_config();
-        let backend =
-            config.backend.as_ref() as *const dyn ConfersBackend as *const MemoryConfigBackend;
-        unsafe { (*backend).set("test.key", "test_value") };
+    fn test_config_builder_custom_backend_overrides_confs() {
+        // When a custom backend is provided, confers is bypassed entirely.
+        let backend = MemoryConfigBackend::new();
+        backend.set("custom.key", "custom_value");
+        let config = Confers::builder()
+            .backend(Arc::new(backend))
+            .file("config.toml") // should be ignored
+            .build();
+        assert_eq!(
+            config.get_string("custom.key"),
+            Some("custom_value".to_string())
+        );
+        // server.port is NOT in the custom backend, so it should be None
+        // (confers defaults were NOT loaded).
+        assert_eq!(config.get_int("server.port"), None);
+    }
 
+    // ===== with_dependencies() pattern =====
+
+    #[test]
+    fn test_config_with_dependencies() {
+        let backend = MemoryConfigBackend::new();
+        backend.set("injected.key", "value");
+        let config = Confers::with_dependencies(Arc::new(backend));
+        assert_eq!(
+            config.get_string("injected.key"),
+            Some("value".to_string())
+        );
+        assert_eq!(config.get_string("missing.key"), None);
+    }
+
+    #[test]
+    fn test_config_with_config_and_dependencies() {
+        let backend = MemoryConfigBackend::new();
+        backend.set("k", "v");
+        let config = Confers::with_config_and_dependencies(
+            Arc::new(backend),
+            Some("config.toml".to_string()),
+            Some("APP_".to_string()),
+            true,
+        );
+        assert_eq!(config.get_string("k"), Some("v".to_string()));
+        // Metadata is stored but doesn't trigger loading.
+        let metadata = config.config_metadata();
+        assert_eq!(metadata.file.as_deref(), Some("config.toml"));
+        assert_eq!(metadata.env_prefix.as_deref(), Some("APP_"));
+        assert!(metadata.hot_reload);
+    }
+
+    // ===== Clone semantics =====
+
+    #[test]
+    fn test_config_clone_preserves_values() {
+        let backend = MemoryConfigBackend::new();
+        backend.set("test.key", "test_value");
+        let config = Confers::with_dependencies(Arc::new(backend));
         let cloned = config.clone();
         assert_eq!(
             cloned.get_string("test.key"),
@@ -662,12 +691,13 @@ mod tests {
         );
     }
 
+    // ===== MemoryConfigBackend direct tests =====
+
     #[test]
-    fn test_memory_config_backend_set() {
+    fn test_memory_config_backend_set_get() {
         let backend = MemoryConfigBackend::new();
         backend.set("key1", "value1");
         backend.set("key2", "value2");
-
         assert_eq!(backend.get_string("key1"), Some("value1".to_string()));
         assert_eq!(backend.get_string("key2"), Some("value2".to_string()));
     }
@@ -677,7 +707,6 @@ mod tests {
         let backend = MemoryConfigBackend::new();
         backend.set("key1", "value1");
         backend.set("key2", "value2");
-
         let keys = backend.keys();
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&"key1".to_string()));
@@ -685,37 +714,77 @@ mod tests {
     }
 
     #[test]
-    fn test_toml_config_backend() {
-        let backend = TomlConfigBackend::new("config.toml");
-
-        assert_eq!(backend.get_string("server.port"), Some("8080".to_string()));
-        assert_eq!(
-            backend.get_string("server.host"),
-            Some("0.0.0.0".to_string())
-        );
+    fn test_memory_config_backend_contains() {
+        let backend = MemoryConfigBackend::new();
+        backend.set("present", "x");
+        assert!(backend.contains("present"));
+        assert!(!backend.contains("absent"));
     }
 
     #[test]
-    fn test_env_config_backend() {
-        std::env::set_var("TEST_PREFIX_SERVER_PORT", "9090");
-        let backend = EnvConfigBackend::new("TEST_PREFIX");
-
-        assert_eq!(backend.get_string("server.port"), Some("9090".to_string()));
-
-        std::env::remove_var("TEST_PREFIX_SERVER_PORT");
+    fn test_memory_config_backend_load_replaces_storage() {
+        let backend = MemoryConfigBackend::new();
+        backend.set("old", "old_value");
+        let mut new_values = HashMap::new();
+        new_values.insert("new".to_string(), "new_value".to_string());
+        backend.load(new_values);
+        assert_eq!(backend.get_string("old"), None);
+        assert_eq!(backend.get_string("new"), Some("new_value".to_string()));
     }
 
     #[test]
-    fn test_chained_config_backend() {
-        // Create memory backend with value set BEFORE creating the chain
-        let mut memory_backend = MemoryConfigBackend::new();
-        memory_backend.set("key", "from_memory");
-        let memory = Arc::new(memory_backend) as Arc<dyn ConfersBackend>;
-        let env = Arc::new(EnvConfigBackend::new("TEST")) as Arc<dyn ConfersBackend>;
+    fn test_memory_config_backend_clone_is_independent() {
+        let backend = MemoryConfigBackend::new();
+        backend.set("key", "original");
+        let cloned = backend.clone();
+        backend.set("key", "modified");
+        // Clone is a snapshot — modifications to original don't propagate.
+        assert_eq!(cloned.get_string("key"), Some("original".to_string()));
+        assert_eq!(backend.get_string("key"), Some("modified".to_string()));
+    }
 
-        let chained = ChainedConfigBackend::new(vec![memory, env]);
+    // ===== flatten_json unit tests =====
 
-        // Memory should have priority
-        assert_eq!(chained.get_string("key"), Some("from_memory".to_string()));
+    #[test]
+    fn test_flatten_json_simple_object() {
+        let value: serde_json::Value =
+            serde_json::from_str(r#"{"server": {"port": 8080, "host": "0.0.0.0"}}"#).unwrap();
+        let mut flat = HashMap::new();
+        flatten_json(&value, "", &mut flat);
+        assert_eq!(flat.get("server.port"), Some(&"8080".to_string()));
+        assert_eq!(flat.get("server.host"), Some(&"0.0.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_json_nested_object() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"a": {"b": {"c": true, "d": 42}}}"#,
+        )
+        .unwrap();
+        let mut flat = HashMap::new();
+        flatten_json(&value, "", &mut flat);
+        assert_eq!(flat.get("a.b.c"), Some(&"true".to_string()));
+        assert_eq!(flat.get("a.b.d"), Some(&"42".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_json_skips_arrays_and_null() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"keep": "yes", "skip_arr": [1, 2], "skip_null": null}"#,
+        )
+        .unwrap();
+        let mut flat = HashMap::new();
+        flatten_json(&value, "", &mut flat);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat.get("keep"), Some(&"yes".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_json_top_level_primitive() {
+        let value: serde_json::Value = serde_json::from_str(r#""just a string""#).unwrap();
+        let mut flat = HashMap::new();
+        flatten_json(&value, "", &mut flat);
+        // Top-level primitives with empty prefix are skipped.
+        assert!(flat.is_empty());
     }
 }

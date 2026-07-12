@@ -3,7 +3,6 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing_subscriber;
 
 use nexusflow::api::{init_global_state, ApiState};
 use nexusflow::config::loader::ConfigLoader;
@@ -18,7 +17,14 @@ use nexusflow::vendor::VendorManager;
 #[tokio::main]
 async fn main() -> Result<(), NexusFlowError> {
     println!("Starting NexusFlow with sdforge...");
-    tracing_subscriber::fmt::init();
+    let _logger = inklog::LoggerManager::builder()
+        .level("info")
+        .console(true)
+        .build()
+        .await
+        .map_err(|e| NexusFlowError::Config {
+            message: format!("Logger init failed: {}", e),
+        })?;
 
     let config_path = std::env::args().nth(1).unwrap_or("config.toml".to_string());
     println!("Loading config from: {}", config_path);

@@ -18,7 +18,7 @@ router = []
 protocol = []
 infrastructure = ["dep:oxcache", "dep:confers", "dep:trait-kit"]
 sdforge-integration = ["dep:sdforge"]
-logging = ["dep:inklog", "dep:tracing-subscriber"]
+logging = ["dep:inklog"]
 
 [dependencies]
 # Web 框架

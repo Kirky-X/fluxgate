@@ -3,7 +3,7 @@ name = "nexusflow"
 version = "0.1.0"
 edition = "2021"
 description = "智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度"
-authors = ["SmartLlmProxy"]
+authors = ["NexusFlow Contributors"]
 
 [lib]
 path = "src/lib.rs"

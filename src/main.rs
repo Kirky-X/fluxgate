@@ -5,24 +5,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber;
 
-mod config;
-mod api;
-mod protocol;
-mod router;
-mod vendor;
-mod database;
-mod utils;
-mod error;
-
-use error::NexusFlowError;
-use config::ConfigManager;
-use config::loader::ConfigLoader;
-use api::{ApiState, init_global_state};
-use protocol::OpenAIConverter;
-use protocol::AnthropicConverter;
-use router::Router as RouterStruct;
-use vendor::VendorManager;
-use database::Database;
+use nexusflow::error::NexusFlowError;
+use nexusflow::config::ConfigManager;
+use nexusflow::config::loader::ConfigLoader;
+use nexusflow::api::{ApiState, init_global_state};
+use nexusflow::protocol::OpenAIConverter;
+use nexusflow::protocol::AnthropicConverter;
+use nexusflow::router::Router as RouterStruct;
+use nexusflow::vendor::VendorManager;
+use nexusflow::database::Database;
 
 #[tokio::main]
 async fn main() -> Result<(), NexusFlowError> {

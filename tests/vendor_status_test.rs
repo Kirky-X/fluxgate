@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use smart_llm_proxy::vendor::{VendorState, VendorStatus};
+    use nexusflow::vendor::{VendorState, VendorStatus};
 
     #[test]
     fn test_vendor_state_new() {

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use smart_llm_proxy::protocol::{OpenAIConverter, AnthropicConverter, Protocol, ProtocolConverter};
+    use nexusflow::protocol::{OpenAIConverter, AnthropicConverter, Protocol, ProtocolConverter};
     use serde_json::json;
 
     #[tokio::test]
@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(unified.messages.len(), 3);
         // Check tool message
         let tool_msg = &unified.messages[2];
-        assert_eq!(tool_msg.role, smart_llm_proxy::protocol::Role::Tool);
+        assert_eq!(tool_msg.role, nexusflow::protocol::Role::Tool);
     }
 
     #[tokio::test]
@@ -338,7 +338,7 @@ mod tests {
         let msg = parsed.choices[0].message.as_ref().unwrap();
         // Verify tool call is parsed correctly
         match &msg.content {
-            smart_llm_proxy::protocol::MessageContent::ToolCalls(calls) => {
+            nexusflow::protocol::MessageContent::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].function.name, "get_weather");
             }
@@ -402,7 +402,7 @@ mod tests {
         let unified = converter.to_unified(request).unwrap();
 
         match &unified.tool_choice {
-            Some(smart_llm_proxy::protocol::ToolChoice::Specific { function, .. }) => {
+            Some(nexusflow::protocol::ToolChoice::Specific { function, .. }) => {
                 assert_eq!(function.name, "get_weather");
             }
             _ => panic!("Expected Specific tool_choice"),

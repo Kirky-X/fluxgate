@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use smart_llm_proxy::utils::{RetryConfig, is_retryable_error, retry, retry_with_config};
+    use nexusflow::utils::{RetryConfig, is_retryable_error, retry, retry_with_config};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 

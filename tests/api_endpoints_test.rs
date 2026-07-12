@@ -6,7 +6,7 @@ mod tests {
         Router,
         http::Request,
     };
-    use smart_llm_proxy::{
+    use nexusflow::{
         api::{openai::chat_completions, anthropic::messages},
         config::{ConfigManager, ServerConfig, DatabaseConfig, VendorConfig, ModelConfig, GlobalModelConfig, Config},
         protocol::{OpenAIConverter, AnthropicConverter, ProtocolConverter},
@@ -45,8 +45,8 @@ mod tests {
                             enabled: true,
                         },
                     ],
-                    rate_limit: smart_llm_proxy::config::RateLimitConfig::Interval { hours: 1 },
-                    concurrency: smart_llm_proxy::config::ConcurrencyConfig {
+                    rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                    concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 10,
                     },
                 },
@@ -65,8 +65,8 @@ mod tests {
                             enabled: true,
                         },
                     ],
-                    rate_limit: smart_llm_proxy::config::RateLimitConfig::Interval { hours: 1 },
-                    concurrency: smart_llm_proxy::config::ConcurrencyConfig {
+                    rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                    concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 10,
                     },
                 },
@@ -86,12 +86,12 @@ mod tests {
         
         let database = Arc::new(Database {
             pool: SqlitePool::connect_lazy(":memory:").unwrap(),
-            repository: Arc::new(smart_llm_proxy::database::Repository::new(
+            repository: Arc::new(nexusflow::database::Repository::new(
                 SqlitePool::connect_lazy(":memory:").unwrap(),
             )),
         });
         
-        let router = Arc::new(smart_llm_proxy::router::Router::new(
+        let router = Arc::new(nexusflow::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone()
         ));
@@ -245,23 +245,23 @@ mod tests {
     async fn test_unified_to_openai_response() {
         let state = create_api_state();
         
-        let unified_response = smart_llm_proxy::protocol::unified::UnifiedResponse {
+        let unified_response = nexusflow::protocol::unified::UnifiedResponse {
             id: "test-123".to_string(),
             object: "chat.completion".to_string(),
             created: 1234567890,
             model: "gpt-4".to_string(),
             choices: vec![
-                smart_llm_proxy::protocol::unified::Choice {
+                nexusflow::protocol::unified::Choice {
                     index: 0,
-                    message: Some(smart_llm_proxy::protocol::unified::Message {
-                        role: smart_llm_proxy::protocol::unified::Role::Assistant,
-                        content: smart_llm_proxy::protocol::unified::MessageContent::Text("Hello!".to_string()),
+                    message: Some(nexusflow::protocol::unified::Message {
+                        role: nexusflow::protocol::unified::Role::Assistant,
+                        content: nexusflow::protocol::unified::MessageContent::Text("Hello!".to_string()),
                     }),
                     finish_reason: Some("stop".to_string()),
                     logprobs: None,
                 }
             ],
-            usage: smart_llm_proxy::protocol::unified::TokenUsage {
+            usage: nexusflow::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
@@ -315,7 +315,7 @@ mod tests {
         
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
-        let router = Arc::new(smart_llm_proxy::router::Router::new(
+        let router = Arc::new(nexusflow::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone()
         ));
@@ -332,7 +332,7 @@ mod tests {
         
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
-        let router = Arc::new(smart_llm_proxy::router::Router::new(
+        let router = Arc::new(nexusflow::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone()
         ));

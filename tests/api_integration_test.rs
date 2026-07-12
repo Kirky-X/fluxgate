@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use smart_llm_proxy::api::ApiState;
-    use smart_llm_proxy::config::{ConfigManager, ServerConfig, DatabaseConfig, VendorConfig, ModelConfig, GlobalModelConfig, Config};
-    use smart_llm_proxy::protocol::{OpenAIConverter, AnthropicConverter, ProtocolConverter};
-    use smart_llm_proxy::vendor::VendorManager;
-    use smart_llm_proxy::database::Database;
-    use smart_llm_proxy::router::Router;
+    use nexusflow::api::ApiState;
+    use nexusflow::config::{ConfigManager, ServerConfig, DatabaseConfig, VendorConfig, ModelConfig, GlobalModelConfig, Config};
+    use nexusflow::protocol::{OpenAIConverter, AnthropicConverter, ProtocolConverter};
+    use nexusflow::vendor::VendorManager;
+    use nexusflow::database::Database;
+    use nexusflow::router::Router;
     use std::sync::Arc;
     use serde_json::json;
     use sqlx::SqlitePool;
@@ -36,8 +36,8 @@ mod tests {
                             enabled: true,
                         },
                     ],
-                    rate_limit: smart_llm_proxy::config::RateLimitConfig::Interval { hours: 1 },
-                    concurrency: smart_llm_proxy::config::ConcurrencyConfig {
+                    rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                    concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 10,
                     },
                 },
@@ -62,7 +62,7 @@ mod tests {
         
         let database = Arc::new(Database {
             pool: SqlitePool::connect_lazy(":memory:").unwrap(),
-            repository: Arc::new(smart_llm_proxy::database::Repository::new(
+            repository: Arc::new(nexusflow::database::Repository::new(
                 SqlitePool::connect_lazy(":memory:").unwrap(),
             )),
         });
@@ -192,23 +192,23 @@ mod tests {
     async fn test_unified_response_to_openai_format() {
         let converter = OpenAIConverter::new();
         
-        let unified_response = smart_llm_proxy::protocol::unified::UnifiedResponse {
+        let unified_response = nexusflow::protocol::unified::UnifiedResponse {
             id: "test-123".to_string(),
             object: "chat.completion".to_string(),
             created: 1234567890,
             model: "gpt-4".to_string(),
             choices: vec![
-                smart_llm_proxy::protocol::unified::Choice {
+                nexusflow::protocol::unified::Choice {
                     index: 0,
-                    message: Some(smart_llm_proxy::protocol::unified::Message {
-                        role: smart_llm_proxy::protocol::unified::Role::Assistant,
-                        content: smart_llm_proxy::protocol::unified::MessageContent::Text("Hello!".to_string()),
+                    message: Some(nexusflow::protocol::unified::Message {
+                        role: nexusflow::protocol::unified::Role::Assistant,
+                        content: nexusflow::protocol::unified::MessageContent::Text("Hello!".to_string()),
                     }),
                     finish_reason: Some("stop".to_string()),
                     logprobs: None,
                 }
             ],
-            usage: smart_llm_proxy::protocol::unified::TokenUsage {
+            usage: nexusflow::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,

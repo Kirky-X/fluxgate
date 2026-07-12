@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use smart_llm_proxy::database::{Database, Repository, RequestLog, LogFilter};
+    use nexusflow::database::{Database, Repository, RequestLog, LogFilter};
     use sqlx::SqlitePool;
     use std::sync::Arc;
 

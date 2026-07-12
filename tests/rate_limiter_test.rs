@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use smart_llm_proxy::vendor::TokenBucket;
+    use nexusflow::vendor::TokenBucket;
 
     #[tokio::test]
     async fn test_token_bucket_new() {

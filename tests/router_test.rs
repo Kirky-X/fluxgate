@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use smart_llm_proxy::config::{ConfigManager, VendorConfig, ModelConfig, Config, ServerConfig, DatabaseConfig, GlobalModelConfig};
-    use smart_llm_proxy::router::{Router, RoutingDecision, RoutingStrategy};
-    use smart_llm_proxy::vendor::VendorManager;
-    use smart_llm_proxy::error::ProxyError;
+    use nexusflow::config::{ConfigManager, VendorConfig, ModelConfig, Config, ServerConfig, DatabaseConfig, GlobalModelConfig};
+    use nexusflow::router::{Router, RoutingDecision, RoutingStrategy};
+    use nexusflow::vendor::VendorManager;
+    use nexusflow::error::ProxyError;
     use std::sync::Arc;
 
     fn create_router_test_config() -> Config {
@@ -38,8 +38,8 @@ mod tests {
                             enabled: true,
                         },
                     ],
-                    rate_limit: smart_llm_proxy::config::RateLimitConfig::Interval { hours: 1 },
-                    concurrency: smart_llm_proxy::config::ConcurrencyConfig {
+                    rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                    concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 10,
                     },
                 },
@@ -58,8 +58,8 @@ mod tests {
                             enabled: true,
                         },
                     ],
-                    rate_limit: smart_llm_proxy::config::RateLimitConfig::Interval { hours: 1 },
-                    concurrency: smart_llm_proxy::config::ConcurrencyConfig {
+                    rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                    concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 5,
                     },
                 },

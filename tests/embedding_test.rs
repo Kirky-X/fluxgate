@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use smart_llm_proxy::protocol::embedding_converter::{
+    use nexusflow::protocol::embedding_converter::{
         embedding_request_to_openai, embedding_response_from_openai,
     };
 

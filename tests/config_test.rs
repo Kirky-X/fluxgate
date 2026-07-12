@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use smart_llm_proxy::config::{
+    use nexusflow::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig,
         VendorConfig,
     };
@@ -37,8 +37,8 @@ mod tests {
                             enabled: true,
                         },
                     ],
-                    rate_limit: smart_llm_proxy::config::RateLimitConfig::Interval { hours: 1 },
-                    concurrency: smart_llm_proxy::config::ConcurrencyConfig {
+                    rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                    concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 10,
                     },
                 },
@@ -55,8 +55,8 @@ mod tests {
                         weight: 1.0,
                         enabled: true,
                     }],
-                    rate_limit: smart_llm_proxy::config::RateLimitConfig::Interval { hours: 1 },
-                    concurrency: smart_llm_proxy::config::ConcurrencyConfig {
+                    rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                    concurrency: nexusflow::config::ConcurrencyConfig {
                         requests_per_second: 5,
                     },
                 },

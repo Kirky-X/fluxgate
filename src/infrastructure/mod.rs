@@ -54,54 +54,52 @@ pub use database::Dbnexus;
 
 /// Unified Cache trait for all caching operations.
 ///
-/// This trait provides a simple interface for key-value caching with async support.
-/// All implementations must be thread-safe (`Send + Sync`).
+/// This trait provides an async interface for key-value caching, backed by
+/// oxcache's native async API. All implementations must be thread-safe
+/// (`Send + Sync`) and return `Send` futures (enforced by `#[async_trait]`).
 ///
 /// # Methods
 ///
-/// - `get(&self, key: &str) -> Option<String>` - Retrieve a value by key
-/// - `set(&self, key: &str, value: String)` - Store a key-value pair
-/// - `delete(&self, key: &str) -> bool` - Remove a key, returns true if existed
-/// - `exists(&self, key: &str) -> bool` - Check if a key exists
-/// - `clear(&self)` - Remove all entries
+/// - `async fn get(&self, key: &str) -> Option<String>` - Retrieve a value by key
+/// - `async fn set(&self, key: &str, value: String)` - Store a key-value pair
+/// - `async fn delete(&self, key: &str) -> bool` - Remove a key, returns true if existed
+/// - `async fn exists(&self, key: &str) -> bool` - Check if a key exists
+/// - `async fn clear(&self)` - Remove all entries
 ///
 /// # Examples
 ///
 /// ```ignore
-/// use std::sync::Arc;
 /// use nexusflow::infrastructure::{Cache, Oxcache};
 ///
-/// // Pattern 1: new()
-/// let cache = Oxcache::new();
-/// cache.set("key", "value".to_string());
-/// assert_eq!(cache.get("key"), Some("value".to_string()));
-///
-/// // Pattern 2: with_dependencies()
-/// let cache = Oxcache::with_dependencies(Arc::new(custom_backend));
+/// // async 构建 + async 操作（oxcache 原生 async API）
+/// let cache = Oxcache::new().await;
+/// cache.set("key", "value".to_string()).await;
+/// assert_eq!(cache.get("key").await, Some("value".to_string()));
 /// ```
+#[async_trait::async_trait]
 pub trait Cache: Send + Sync {
     /// Retrieve a value from the cache.
     ///
     /// Returns `Some(value)` if the key exists, `None` otherwise.
-    fn get(&self, key: &str) -> Option<String>;
+    async fn get(&self, key: &str) -> Option<String>;
 
     /// Store a key-value pair in the cache.
     ///
     /// If the key already exists, the value is overwritten.
-    fn set(&self, key: &str, value: String);
+    async fn set(&self, key: &str, value: String);
 
     /// Delete a key from the cache.
     ///
     /// Returns `true` if the key existed and was deleted, `false` otherwise.
-    fn delete(&self, key: &str) -> bool;
+    async fn delete(&self, key: &str) -> bool;
 
     /// Check if a key exists in the cache.
     ///
     /// Returns `true` if the key exists, `false` otherwise.
-    fn exists(&self, key: &str) -> bool;
+    async fn exists(&self, key: &str) -> bool;
 
     /// Clear all entries from the cache.
-    fn clear(&self);
+    async fn clear(&self);
 }
 
 /// Unified Config trait for configuration management.

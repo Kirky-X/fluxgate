@@ -35,8 +35,8 @@ impl CacheBuilder {
         self
     }
 
-    /// Build the cache with configured options.
-    pub fn build(self) -> Oxcache {
+    /// Build the cache with configured options (async — oxcache build is async).
+    pub async fn build(self) -> Oxcache {
         Oxcache::builder()
             .ttl(
                 self.ttl
@@ -44,6 +44,7 @@ impl CacheBuilder {
             )
             .capacity(self.capacity.unwrap_or(10000))
             .build()
+            .await
     }
 }
 

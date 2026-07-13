@@ -3,7 +3,7 @@ members = [".", "sdk"]
 resolver = "2"
 
 [workspace.dependencies]
-backon = { version = "1", default-features = false }
+backon = { version = "1", default-features = false, features = ["std", "tokio-sleep"] }
 arc-swap = { version = "1", default-features = false }
 eventsource-stream = { version = "0.2", default-features = false }
 dashmap = { version = "6", default-features = false }

@@ -3,15 +3,18 @@
 
 //! Integration tests for `nexusflow::utils::retry` module.
 //!
-//! Covers `ErrorCategory`, `RetryStrategy`, `BackoffStrategy`,
-//! `extract_status_code`, `is_retryable_error`, and `with_retry`.
+//! 测试覆盖：
+//! - `ErrorCategory`、`RetryStrategy`、`BackoffStrategy`、`extract_status_code`、
+//!   `is_retryable_error`（无 feature 门控，两套实现都适用）
+//! - `with_retry` 函数 — 用 `cfg(feature = "resilience")` 门控两套签名：
+//!   - 启用 `resilience`：新签名 `with_retry(f) -> Result<T, E>`（backon 实现）
+//!   - 未启用 `resilience`：旧签名 `with_retry(f, initial_error) -> Result<T, NexusFlowError>`
 
 #[cfg(test)]
 mod tests {
     use nexusflow::error::NexusFlowError;
     use nexusflow::utils::{
-        extract_status_code, is_retryable_error, with_retry, BackoffStrategy, ErrorCategory,
-        RetryStrategy,
+        extract_status_code, is_retryable_error, BackoffStrategy, ErrorCategory, RetryStrategy,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -162,7 +165,6 @@ mod tests {
         assert_eq!(backoff.delay(2), Duration::from_millis(4000));
         assert_eq!(backoff.delay(3), Duration::from_millis(8000));
         assert_eq!(backoff.delay(4), Duration::from_millis(16000));
-        // Capped at max_ms
         assert_eq!(backoff.delay(5), Duration::from_millis(16000));
         assert_eq!(backoff.delay(100), Duration::from_millis(16000));
     }
@@ -188,7 +190,6 @@ mod tests {
 
     #[test]
     fn test_extract_status_code_without_colon() {
-        // Format like "vendor (429 Rate limit exceeded)"
         assert_eq!(extract_status_code("vendor (429 Rate limit exceeded)"), 429);
     }
 
@@ -253,141 +254,254 @@ mod tests {
         assert!(!is_retryable_error(&config_err));
     }
 
-    // -------- with_retry --------
+    // -------- with_retry：v0.1 手写实现（未启用 resilience feature） --------
 
-    #[tokio::test]
-    async fn test_with_retry_success_first_attempt_no_initial_error() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
+    #[cfg(not(feature = "resilience"))]
+    mod v01_with_retry {
+        use super::*;
+        use nexusflow::utils::with_retry;
 
-        let result: Result<i32, NexusFlowError> = with_retry(
-            || {
+        #[tokio::test]
+        async fn test_with_retry_success_first_attempt_no_initial_error() {
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
+
+            let result: Result<i32, NexusFlowError> = with_retry(
+                || {
+                    let count = call_count_clone.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Ok(42)
+                    }
+                },
+                None,
+            )
+            .await;
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), 42);
+            assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        }
+
+        #[tokio::test]
+        async fn test_with_retry_returns_initial_error_when_fatal() {
+            let initial = NexusFlowError::VendorUnavailable {
+                vendor: "vendor (400: Bad Request)".into(),
+            };
+
+            let result: Result<i32, NexusFlowError> =
+                with_retry(|| async { Ok::<i32, NexusFlowError>(42) }, Some(initial)).await;
+
+            assert!(result.is_err());
+            match result {
+                Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                    assert!(vendor.contains("400"));
+                }
+                _ => panic!("expected VendorUnavailable error"),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_with_retry_succeeds_after_retryable_failures() {
+            let initial = NexusFlowError::Timeout {
+                vendor: "test_vendor".into(),
+            };
+
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
+
+            let result: Result<i32, NexusFlowError> = with_retry(
+                || {
+                    let count = call_count_clone.clone();
+                    async move {
+                        let n = count.fetch_add(1, Ordering::SeqCst);
+                        if n < 1 {
+                            Err(NexusFlowError::Timeout {
+                                vendor: "test_vendor".into(),
+                            })
+                        } else {
+                            Ok(42)
+                        }
+                    }
+                },
+                Some(initial),
+            )
+            .await;
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), 42);
+            assert!(call_count.load(Ordering::SeqCst) >= 1);
+        }
+
+        #[tokio::test]
+        async fn test_with_retry_stops_on_non_retryable_error() {
+            let initial = NexusFlowError::Timeout {
+                vendor: "test_vendor".into(),
+            };
+
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
+
+            let result: Result<i32, NexusFlowError> = with_retry(
+                || {
+                    let count = call_count_clone.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Err(NexusFlowError::VendorUnavailable {
+                            vendor: "vendor (400: Bad Request)".into(),
+                        })
+                    }
+                },
+                Some(initial),
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        }
+
+        #[tokio::test]
+        async fn test_with_retry_exhausts_retries_on_persistent_timeout() {
+            let initial = NexusFlowError::Timeout {
+                vendor: "test_vendor".into(),
+            };
+
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
+
+            let result: Result<i32, NexusFlowError> = with_retry(
+                || {
+                    let count = call_count_clone.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Err(NexusFlowError::Timeout {
+                            vendor: "test_vendor".into(),
+                        })
+                    }
+                },
+                Some(initial),
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert!(call_count.load(Ordering::SeqCst) <= 3);
+        }
+    }
+
+    // -------- with_retry：backon 实现（启用 resilience feature） --------
+
+    #[cfg(feature = "resilience")]
+    mod backon_with_retry {
+        use super::*;
+        use nexusflow::utils::with_retry;
+
+        /// 第一次尝试就成功 — 应只调用 1 次。
+        ///
+        /// 用 `start_paused = true` 让 tokio 自动推进时间，避免 backon 1s+2s+4s
+        /// 的真实延迟拖慢测试。
+        #[tokio::test(start_paused = true)]
+        async fn test_with_retry_success_first_attempt() {
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
+
+            let result: Result<i32, String> = with_retry(move || {
                 let count = call_count_clone.clone();
                 async move {
                     count.fetch_add(1, Ordering::SeqCst);
                     Ok(42)
                 }
-            },
-            None,
-        )
-        .await;
+            })
+            .await;
 
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42);
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_with_retry_returns_initial_error_when_fatal() {
-        // Fatal category → max_retries = 0 → should return initial_error immediately
-        let initial = NexusFlowError::VendorUnavailable {
-            vendor: "vendor (400: Bad Request)".into(),
-        };
-
-        let result: Result<i32, NexusFlowError> =
-            with_retry(|| async { Ok::<i32, NexusFlowError>(42) }, Some(initial)).await;
-
-        assert!(result.is_err());
-        match result {
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
-                assert!(vendor.contains("400"));
-            }
-            _ => panic!("expected VendorUnavailable error"),
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), 42);
+            assert_eq!(call_count.load(Ordering::SeqCst), 1);
         }
-    }
 
-    #[tokio::test]
-    async fn test_with_retry_succeeds_after_retryable_failures() {
-        // Use Timeout error → RetryableShort category → max_retries = 2
-        let initial = NexusFlowError::Timeout {
-            vendor: "test_vendor".into(),
-        };
+        /// 失败 2 次后第 3 次成功 — 应调用 3 次（1 次初试 + 2 次重试）。
+        #[tokio::test(start_paused = true)]
+        async fn test_with_retry_succeeds_after_two_failures() {
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
 
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
-
-        let result: Result<i32, NexusFlowError> = with_retry(
-            || {
+            let result: Result<i32, String> = with_retry(move || {
                 let count = call_count_clone.clone();
                 async move {
                     let n = count.fetch_add(1, Ordering::SeqCst);
-                    if n < 1 {
-                        // First retry: still timeout
-                        Err(NexusFlowError::Timeout {
-                            vendor: "test_vendor".into(),
-                        })
+                    if n < 2 {
+                        Err(format!("attempt {} failed", n))
                     } else {
-                        // Second attempt: success
                         Ok(42)
                     }
                 }
-            },
-            Some(initial),
-        )
-        .await;
+            })
+            .await;
 
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42);
-        // Initial call (in with_retry's first iteration) + 1 retry = 2 calls
-        assert!(call_count.load(Ordering::SeqCst) >= 1);
-    }
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), 42);
+            assert_eq!(call_count.load(Ordering::SeqCst), 3);
+        }
 
-    #[tokio::test]
-    async fn test_with_retry_stops_on_non_retryable_error() {
-        // Start with retryable Timeout, but closure returns non-retryable error
-        let initial = NexusFlowError::Timeout {
-            vendor: "test_vendor".into(),
-        };
+        /// backon 默认行为：所有错误都重试（不区分 Fatal/Retryable）。
+        /// 验证即便错误"看起来不可重试"也会被重试 3 次（共 4 次尝试）。
+        #[tokio::test(start_paused = true)]
+        async fn test_with_retry_retries_all_errors_by_default() {
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
 
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
-
-        let result: Result<i32, NexusFlowError> = with_retry(
-            || {
+            let result: Result<(), String> = with_retry(move || {
                 let count = call_count_clone.clone();
                 async move {
                     count.fetch_add(1, Ordering::SeqCst);
-                    // Return a non-retryable error (400 → Fatal)
-                    Err(NexusFlowError::VendorUnavailable {
-                        vendor: "vendor (400: Bad Request)".into(),
-                    })
+                    Err("fatal-looking error".to_string())
                 }
-            },
-            Some(initial),
-        )
-        .await;
+            })
+            .await;
 
-        assert!(result.is_err());
-        // Should be called once, then stop because 400 is not retryable
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-    }
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), "fatal-looking error");
+            // 共 4 次：1 次初试 + 3 次重试
+            assert_eq!(call_count.load(Ordering::SeqCst), 4);
+        }
 
-    #[tokio::test]
-    async fn test_with_retry_exhausts_retries_on_persistent_timeout() {
-        // Timeout → RetryableShort → max_retries = 2
-        let initial = NexusFlowError::Timeout {
-            vendor: "test_vendor".into(),
-        };
+        /// 最多重试 3 次（共 4 次尝试）— 验证 max_times 配置。
+        #[tokio::test(start_paused = true)]
+        async fn test_with_retry_max_three_retries() {
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
 
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
-
-        let result: Result<i32, NexusFlowError> = with_retry(
-            || {
+            let result: Result<(), String> = with_retry(move || {
                 let count = call_count_clone.clone();
                 async move {
                     count.fetch_add(1, Ordering::SeqCst);
-                    Err(NexusFlowError::Timeout {
-                        vendor: "test_vendor".into(),
-                    })
+                    Err("always fail".to_string())
                 }
-            },
-            Some(initial),
-        )
-        .await;
+            })
+            .await;
 
-        assert!(result.is_err());
-        // Should be called max_retries times (2 for RetryableShort)
-        assert!(call_count.load(Ordering::SeqCst) <= 3);
+            assert!(result.is_err());
+            // 1 + 3 = 4 次调用
+            assert_eq!(call_count.load(Ordering::SeqCst), 4);
+        }
+
+        /// 重试耗尽后返回最后一次错误。
+        #[tokio::test(start_paused = true)]
+        async fn test_with_retry_propagates_last_error() {
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
+
+            let result: Result<(), String> = with_retry(move || {
+                let count = call_count_clone.clone();
+                async move {
+                    let n = count.fetch_add(1, Ordering::SeqCst);
+                    Err(format!("error at attempt {}", n))
+                }
+            })
+            .await;
+
+            assert!(result.is_err());
+            // 最后一次调用是 attempt 3（0-indexed），返回 "error at attempt 3"
+            assert_eq!(result.unwrap_err(), "error at attempt 3");
+        }
     }
 }

@@ -8,6 +8,16 @@
 //! - 429: 指数回退重试（1s, 2s, 4s, 8s, 16s）
 //! - 500, 502, 503: 重试 3 次，间隔 1s
 //! - 网络超时: 重试 2 次
+//!
+//! # Feature 门控
+//!
+//! - 启用 `resilience` feature：`with_retry` 委托给 `crate::vendor::resilience::retry::with_retry`
+//!   （基于 backon，泛型 `Result<T, E>`，最多 3 次重试，启用 jitter）
+//! - 未启用 `resilience` feature：保留 v0.1 手写实现（按 `ErrorCategory` 分类，签名
+//!   `with_retry(f, initial_error)`，行为与 v0.1 完全一致）
+
+#[cfg(feature = "resilience")]
+pub use crate::vendor::resilience::retry::with_retry;
 
 use crate::error::NexusFlowError;
 use std::time::Duration;
@@ -162,6 +172,11 @@ pub fn is_retryable_error(error: &NexusFlowError) -> bool {
 }
 
 /// 执行带重试的请求
+///
+/// v0.1 手写实现 — 仅在未启用 `resilience` feature 时可用。
+/// 启用 `resilience` 后，使用 `crate::vendor::resilience::retry::with_retry`
+/// （backon 版本，签名不同：`with_retry(f) -> Result<T, E>`）。
+#[cfg(not(feature = "resilience"))]
 pub async fn with_retry<F, Fut, T>(
     mut f: F,
     initial_error: Option<NexusFlowError>,

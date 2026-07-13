@@ -11,10 +11,14 @@ use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
 use crate::protocol::{UnifiedRequest, UnifiedResponse};
 use crate::utils::metrics::GlobalMetrics;
 use crate::utils::retry::ErrorCategory;
+#[cfg(feature = "cost-tracking")]
+use crate::utils::CostTracker;
 #[cfg(feature = "resilience")]
 use crate::vendor::resilience::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError,
 };
+#[cfg(feature = "cost-tracking")]
+use super::CostCalculator;
 use bytes::Bytes;
 use reqwest;
 use serde_json::Value;
@@ -76,10 +80,20 @@ struct VendorInstance {
     advanced_limiter: AdvancedRateLimiter,
     #[cfg(feature = "resilience")]
     circuit_breaker: Arc<CircuitBreaker>,
+    #[cfg(feature = "cost-tracking")]
+    cost_tracker: Arc<CostTracker>,
+    #[cfg(feature = "cost-tracking")]
+    cost_calculator: Arc<CostCalculator>,
 }
 
 impl VendorInstance {
-    fn new(config: VendorConfig, queue_size: usize, rps: u32) -> Self {
+    fn new(
+        config: VendorConfig,
+        queue_size: usize,
+        rps: u32,
+        #[cfg(feature = "cost-tracking")] cost_tracker: Arc<CostTracker>,
+        #[cfg(feature = "cost-tracking")] cost_calculator: Arc<CostCalculator>,
+    ) -> Self {
         Self {
             advanced_limiter: AdvancedRateLimiter::new(&config.rate_limit),
             config: config.clone(),
@@ -89,6 +103,10 @@ impl VendorInstance {
             concurrency_limiter: ConcurrencyLimiter::new(queue_size),
             #[cfg(feature = "resilience")]
             circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
+            #[cfg(feature = "cost-tracking")]
+            cost_tracker,
+            #[cfg(feature = "cost-tracking")]
+            cost_calculator,
         }
     }
 }
@@ -105,10 +123,21 @@ pub struct VendorManager {
     #[cfg(feature = "resilience")]
     circuit_breakers:
         Arc<RwLock<std::collections::HashMap<String, Arc<CircuitBreaker>>>>,
+    #[cfg(feature = "cost-tracking")]
+    cost_tracker: Arc<CostTracker>,
+    #[cfg(feature = "cost-tracking")]
+    cost_calculator: Arc<CostCalculator>,
 }
 
 impl VendorManager {
     pub fn new(config: Arc<ConfigManager>) -> Self {
+        // 启用 cost-tracking 时从 config.pricing 构建定价表
+        #[cfg(feature = "cost-tracking")]
+        let cost_calculator = {
+            let pricing = config.read().pricing.clone();
+            Arc::new(CostCalculator::from_config(&pricing))
+        };
+
         Self {
             config,
             instances: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -119,12 +148,23 @@ impl VendorManager {
             metrics: Arc::new(GlobalMetrics::new()),
             #[cfg(feature = "resilience")]
             circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            #[cfg(feature = "cost-tracking")]
+            cost_tracker: Arc::new(CostTracker::new()),
+            #[cfg(feature = "cost-tracking")]
+            cost_calculator,
         }
     }
 
     /// 全局指标访问器 — 用于 /admin/metrics 端点
     pub fn metrics(&self) -> &Arc<GlobalMetrics> {
         &self.metrics
+    }
+
+    /// 全局成本追踪器访问器 — 用于 /admin/cost 端点。
+    /// 仅在启用 `cost-tracking` feature 时可用。
+    #[cfg(feature = "cost-tracking")]
+    pub fn cost_tracker(&self) -> &Arc<CostTracker> {
+        &self.cost_tracker
     }
 
     /// 读取 vendor 的 CircuitBreaker 当前状态（用于运维观测/测试断言）。
@@ -186,7 +226,15 @@ impl VendorManager {
         let queue_size = 100;
         let rps = vendor.concurrency.requests_per_second;
 
-        let instance = Arc::new(VendorInstance::new(vendor.clone(), queue_size, rps));
+        let instance = Arc::new(VendorInstance::new(
+            vendor.clone(),
+            queue_size,
+            rps,
+            #[cfg(feature = "cost-tracking")]
+            self.cost_tracker.clone(),
+            #[cfg(feature = "cost-tracking")]
+            self.cost_calculator.clone(),
+        ));
         guard.insert(vendor.id.clone(), instance.clone());
 
         // 同步注册到 manager 级 CB map（cfg-gated）
@@ -255,11 +303,28 @@ impl VendorManager {
                     )
                     .await;
 
-                    // Update Token Usage if successful
+                    // 成功路径：更新 token 使用统计 + 累加成本
                     if let Ok(ref response) = result {
                         instance
                             .advanced_limiter
                             .consume_tokens(response.usage.total_tokens as u64);
+
+                        // cost-tracking：按 (vendor, model) 计算 USD 并累加
+                        // 解析失败时 calculate 返回 0.0（CostTracker 静默 no-op）
+                        #[cfg(feature = "cost-tracking")]
+                        {
+                            let cost_usd = instance.cost_calculator.calculate(
+                                &instance.config.id,
+                                &response.model,
+                                response.usage.prompt_tokens,
+                                response.usage.completion_tokens,
+                            );
+                            instance.cost_tracker.record(
+                                &instance.config.id,
+                                &response.model,
+                                cost_usd,
+                            );
+                        }
                     }
 
                     let _ = pending.response_tx.send(result);

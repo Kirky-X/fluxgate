@@ -43,13 +43,16 @@ impl CostTracker {
     /// 记录一次成本（USD）。
     /// 内部转 u64（micro_usd）后原子累加。
     /// `cost_usd = 0.0` 时是 no-op，不修改任何计数。
+    ///
+    /// 注：用 `.round()` 而非 `as u64` 截断，避免 `0.00021 * 1e6 = 209.9999...`
+    /// 被截为 209 的精度损失（f64 表示 0.00021 略小于真实值）。
     pub fn record(&self, vendor: &str, model: &str, cost_usd: f64) {
         if cost_usd <= 0.0 {
             return;
         }
-        let micro_usd = (cost_usd * MICRO_PER_USD) as u64;
+        let micro_usd = (cost_usd * MICRO_PER_USD).round() as u64;
         if micro_usd == 0 {
-            // 极小 cost（如 1e-10 USD）被截断为 0 — 静默丢弃
+            // 极小 cost（如 1e-10 USD）四舍五入为 0 — 静默丢弃
             return;
         }
         self.total_micro_usd.fetch_add(micro_usd, Ordering::Relaxed);

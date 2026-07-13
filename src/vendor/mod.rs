@@ -5,6 +5,8 @@ pub mod manager;
 pub mod queue;
 pub mod rate_limiter;
 pub mod status;
+#[cfg(feature = "resilience")]
+pub mod resilience;
 
 pub use manager::{VendorManager, WindowInfo};
 pub use queue::{PendingRequest, QueueManager, VendorQueue};

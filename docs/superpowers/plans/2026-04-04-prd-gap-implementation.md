@@ -1,4 +1,6 @@
-> ⚠️ 9 个 PRD gap 任务在 v0.1.0-stabilization Phase 4 实施。请勿在此文件继续编辑。
+> ⚠️ 9 个 PRD gap 任务已在 v0.1.0-stabilization Phase 4 全部完成。
+> 实际实施可能与本文档的代码示例有差异（如 sqlx→dbnexus, tracing-subscriber→inklog）。
+> 以 prd.md 为权威需求源。请勿在此文件继续编辑。
 
 # PRD 缺口修复实现计划
 

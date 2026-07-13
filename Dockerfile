@@ -12,7 +12,7 @@ ARG RUST_VERSION=1.92
 FROM docker.io/library/rust:${RUST_VERSION}-alpine AS build
 
 # 重新声明构建参数
-ARG APP_NAME=smart_llm_proxy
+ARG APP_NAME=nexusflow
 ARG APP_VERSION=0.1.0
 
 # 设置工作目录
@@ -37,8 +37,8 @@ RUN --mount=type=bind,source=src,target=src \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     --mount=type=cache,target=/root/.cache/ \
-    cargo build --locked --release --bin smart_llm_proxy && \
-    cp ./target/release/smart_llm_proxy /bin/server
+    cargo build --locked --release --bin nexusflow && \
+    cp ./target/release/nexusflow /bin/server
 
 #------------------------------------------------------------------------------
 # 阶段 2: 运行阶段 (Runtime Stage)
@@ -47,16 +47,16 @@ RUN --mount=type=bind,source=src,target=src \
 FROM docker.io/library/alpine:3.21 AS final
 
 # 标签信息
-ARG APP_NAME=smart_llm_proxy
+ARG APP_NAME=nexusflow
 ARG APP_VERSION=0.1.0
 ARG BUILD_DATE
 ARG VCS_REF
 
-LABEL maintainer="SmartLlmProxy" \
+LABEL maintainer="NexusFlow" \
       name="${APP_NAME}" \
       version="${APP_VERSION}" \
       description="智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度" \
-      org.opencontainers.image.source="https://github.com/yourusername/smart_llm_proxy" \
+      org.opencontainers.image.source="https://github.com/nexusflow/nexusflow" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"

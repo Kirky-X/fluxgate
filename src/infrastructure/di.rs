@@ -50,7 +50,8 @@ fn minimal_flow_config() -> limiteron::config::FlowControlConfig {
     config
 }
 
-/// Construct a minimal in-memory `DbConfig` for the DI kit.
+/// Construct a minimal in-memory `DbConfig` for the DI kit (tests only).
+#[cfg(test)]
 fn memory_db_config() -> dbnexus::foundation::config::DbConfig {
     dbnexus::foundation::config::DbConfig {
         url: "sqlite::memory:".to_string(),
@@ -60,23 +61,30 @@ fn memory_db_config() -> dbnexus::foundation::config::DbConfig {
     }
 }
 
-/// Build the `AsyncKit` DI container with all four infrastructure modules.
+/// Build the `AsyncKit` DI container with all four infrastructure modules,
+/// using an externally-provided database configuration.
 ///
 /// Registers `OxcacheModule`, `LimiteronModule`, `DbNexusModule`, `InklogModule`
 /// and resolves them in topological order. The returned `AsyncKit<AsyncReady>`
 /// provides capabilities via `require::<M>()`.
+///
+/// `db_config` should point to the production database (e.g. `sqlite:./data/llm_proxy.db`).
+/// Cache config uses `OxcacheConfig::default()` (in-memory).
+/// Flow config uses a permissive default (100 capacity / 10 refill rate, all IPs).
 ///
 /// # Errors
 ///
 /// Returns `NexusFlowError::Config` if module registration or the topological
 /// build fails (missing dependency, cycle, or a module `build()` callback
 /// returning `Err`).
-pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, NexusFlowError> {
+pub async fn build_kit_with_config(
+    db_config: dbnexus::foundation::config::DbConfig,
+) -> Result<AsyncKit<AsyncReady>, NexusFlowError> {
     let mut kit = AsyncKit::new();
 
     kit.set_config(OxcacheConfig::default());
     kit.set_config(minimal_flow_config());
-    kit.set_config(memory_db_config());
+    kit.set_config(db_config);
 
     kit.register::<OxcacheModule>()
         .map_err(|e| NexusFlowError::Config {
@@ -100,6 +108,14 @@ pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, NexusFlowError> {
         .map_err(|e| NexusFlowError::Config {
             message: format!("DI kit build failed: {}", e),
         })
+}
+
+/// Test-only convenience: builds kit with an in-memory database and permissive
+/// defaults. Production code should call `build_kit_with_config` with a real
+/// `DbConfig` sourced from `config.toml`.
+#[cfg(test)]
+pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, NexusFlowError> {
+    build_kit_with_config(memory_db_config()).await
 }
 
 /// Verify that all four module capabilities resolve successfully.
@@ -145,23 +161,23 @@ mod tests {
         let cache: Arc<dyn oxcache::backend::CacheBackend + Send + Sync> = kit
             .require::<OxcacheModule>()
             .expect("OxcacheModule capability");
-        assert!(!Arc::as_ptr(&cache).is_null());
+        let _ = cache;
 
         let pool: Arc<dyn dbnexus::database::pool::ConnectionPool + Send + Sync> = kit
             .require::<DbNexusModule>()
             .expect("DbNexusModule capability");
-        assert!(!Arc::as_ptr(&pool).is_null());
+        let _ = pool;
 
         let provider: Arc<dyn inklog::LogDbProvider + Send + Sync> = kit
             .require::<InklogModule>()
             .expect("InklogModule capability");
-        assert!(!Arc::as_ptr(&provider).is_null());
+        let _ = provider;
 
         // DI chain 2: limiteron (standalone)
         let governor: Arc<limiteron::Governor> = kit
             .require::<LimiteronModule>()
             .expect("LimiteronModule capability");
-        assert!(!Arc::as_ptr(&governor).is_null());
+        let _ = governor;
     }
 
     #[tokio::test]
@@ -213,5 +229,17 @@ mod tests {
         assert!(kit.optional::<DbNexusModule>().is_some());
         assert!(kit.optional::<InklogModule>().is_some());
         assert!(kit.optional::<LimiteronModule>().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_verify_kit_returns_err_for_empty_kit() {
+        // An empty kit (no modules registered) should fail verification —
+        // verify_kit requires all four capabilities to resolve.
+        let kit = AsyncKit::new().build().await.expect("empty kit should build");
+        let result = verify_kit(&kit);
+        assert!(
+            result.is_err(),
+            "verify_kit must return Err when capabilities are missing"
+        );
     }
 }

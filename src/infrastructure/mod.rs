@@ -4,12 +4,16 @@
 //! Infrastructure Layer - Core dependency abstractions
 //!
 //! This module provides unified trait interfaces for cache, config, and database operations
-//! following the dependency injection architecture defined in `/home/dev/di.md`.
+//! following a dependency injection architecture.
 //!
 //! All traits require `Send + Sync` compliance and support three construction patterns:
 //! - `new()` - Default construction with sensible defaults
 //! - `builder()` - Custom configuration via builder pattern
 //! - `with_dependencies()` - Full dependency injection
+//!
+//! The `di` submodule (cfg-gated by `infrastructure` + `database` +
+//! `vendor-management` + `logging`) provides a trait-kit `AsyncKit`
+//! container assembling all four brother libs.
 //!
 //! # Architecture
 //!

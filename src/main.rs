@@ -27,21 +27,21 @@ async fn main() -> Result<(), NexusFlowError> {
         })?;
 
     let config_path = std::env::args().nth(1).unwrap_or("config.toml".to_string());
-    println!("Loading config from: {}", config_path);
+    tracing::info!("Loading config from: {}", config_path);
     let config_manager = Arc::new(ConfigLoader::new(Some(config_path)).load()?);
-    println!("Config loaded successfully");
+    tracing::info!("Config loaded successfully");
 
     let db_config = {
         let config = config_manager.read();
         config.database.clone()
     };
-    println!("Initializing database at: {}", db_config.path);
+    tracing::info!("Initializing database at: {}", db_config.path);
     let database = Arc::new(Database::new(&db_config.path, db_config.pool_size).await?);
-    println!("Database initialized");
+    tracing::info!("Database initialized");
 
     let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
     vendor_manager.initialize().await?;
-    println!("Vendor manager initialized");
+    tracing::info!("Vendor manager initialized");
 
     // Build trait-kit AsyncKit DI container: oxcache → dbnexus → inklog
     // chain + limiteron governor. Proves all 4 brother libs are DI-compatible.
@@ -52,10 +52,16 @@ async fn main() -> Result<(), NexusFlowError> {
         feature = "logging"
     ))]
     {
-        println!("Building trait-kit AsyncKit DI container...");
-        let kit = nexusflow::infrastructure::di::build_kit().await?;
+        tracing::info!("Building trait-kit AsyncKit DI container...");
+        let di_db_config = dbnexus::foundation::config::DbConfig {
+            url: format!("sqlite:{}", db_config.path),
+            max_connections: db_config.pool_size as u32,
+            min_connections: 1,
+            ..Default::default()
+        };
+        let kit = nexusflow::infrastructure::di::build_kit_with_config(di_db_config).await?;
         nexusflow::infrastructure::di::verify_kit(&kit)?;
-        println!("AsyncKit DI container built: 4/4 modules resolved");
+        tracing::info!("AsyncKit DI container built: 4/4 modules resolved");
     }
 
     let router = RouterStruct::new(config_manager.clone(), vendor_manager.clone());
@@ -71,7 +77,7 @@ async fn main() -> Result<(), NexusFlowError> {
     });
 
     init_global_state(api_state);
-    println!("Global state initialized");
+    tracing::info!("Global state initialized");
 
     // Build app with sdforge's configuration
     let sdforge_config = {
@@ -108,20 +114,27 @@ async fn main() -> Result<(), NexusFlowError> {
         config.server.clone()
     };
 
-    let addr = SocketAddr::from((
-        server_config.host.parse::<std::net::Ipv4Addr>().unwrap(),
-        server_config.port,
-    ));
+    let ipv4: std::net::Ipv4Addr = server_config.host.parse().map_err(|e| {
+        NexusFlowError::Config {
+            message: format!("invalid server host '{}': {}", server_config.host, e),
+        }
+    })?;
+    let addr = SocketAddr::from((ipv4, server_config.port));
 
     tracing::info!("Starting server: {}", addr);
-    println!("Server listening on {} (sdforge powered)", addr);
+    tracing::info!("Server listening on {} (sdforge powered)", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let result = axum::serve(listener, app).await;
 
     match result {
-        Ok(_) => println!("Server stopped successfully"),
-        Err(e) => println!("Server stopped with error: {}", e),
+        Ok(_) => tracing::info!("Server stopped successfully"),
+        Err(e) => {
+            tracing::error!("Server stopped with error: {}", e);
+            return Err(NexusFlowError::Config {
+                message: format!("server error: {}", e),
+            });
+        }
     }
 
     Ok(())

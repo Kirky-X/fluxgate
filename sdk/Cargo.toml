@@ -10,11 +10,12 @@ path = "src/lib.rs"
 
 [features]
 default = ["client"]
-client = ["dep:reqwest"]
+client = ["dep:reqwest", "dep:eventsource-stream"]
 pipeline = []
 
 [dependencies]
 reqwest = { workspace = true, optional = true }
+eventsource-stream = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

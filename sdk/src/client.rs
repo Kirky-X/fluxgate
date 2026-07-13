@@ -8,6 +8,7 @@ use url::Url;
 use crate::chat::{ChatRequest, ChatResponse};
 use crate::config::RequestConfig;
 use crate::error::NexusFlowSdkError;
+use crate::stream::ChatStream;
 
 /// NexusFlow 网关客户端。
 #[derive(Debug)]
@@ -152,5 +153,54 @@ impl NexusFlowClient {
                 .unwrap_or_default()
                 .to_string(),
         })
+    }
+
+    /// 发送流式 chat 请求。强制 `stream = true`，POST /v1/chat/completions，返回 ChatStream。
+    pub async fn chat_stream(&self, req: &ChatRequest) -> Result<ChatStream, NexusFlowSdkError> {
+        let mut merged = self.default_config.merge(&req.config);
+        merged.stream = true;
+
+        let mut body = merged.to_openai_json();
+        body["model"] = json!(req.model);
+        body["messages"] = json!(req.messages);
+
+        let url = self
+            .base_url
+            .join("v1/chat/completions")
+            .map_err(|e| NexusFlowSdkError::Config {
+                message: format!("invalid URL: {e}"),
+            })?;
+
+        let mut request = self
+            .http
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(&body);
+
+        if let Some(v) = &merged.vendor_hint {
+            request = request.header("X-Vendor", v);
+        }
+        if let Some(m) = &merged.model_hint {
+            request = request.header("X-Model", m);
+        }
+
+        let resp = request.send().await?;
+        let status = resp.status();
+
+        if status.as_u16() == 401 {
+            return Err(NexusFlowSdkError::Auth {
+                message: "unauthorized".into(),
+            });
+        }
+
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(NexusFlowSdkError::Server {
+                status: status.as_u16(),
+                message: text,
+            });
+        }
+
+        Ok(ChatStream::from_bytes_stream(resp.bytes_stream()))
     }
 }

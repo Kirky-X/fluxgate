@@ -155,9 +155,169 @@ impl AsyncLoggerHandle {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::database::LogFilter;
+    use dbnexus::{DbConfig, DbPool};
+    use std::time::Duration;
+
+    async fn setup_repository() -> Arc<Repository> {
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create memory DB pool");
+
+        let repository = Arc::new(Repository::new(pool));
+        repository
+            .initialize()
+            .await
+            .expect("Failed to initialize schema");
+        repository
+    }
+
+    fn sample_log() -> RequestLog {
+        RequestLog {
+            id: None,
+            request_id: "req-test-001".to_string(),
+            timestamp: 1_718_000_000,
+            endpoint: "/v1/chat/completions".to_string(),
+            input_format: "openai".to_string(),
+            abstract_model: Some("gpt-4".to_string()),
+            messages: "Hello, world!".to_string(),
+            actual_vendor: "openai_main".to_string(),
+            actual_model: "gpt-4".to_string(),
+            routing_strategy: "weighted".to_string(),
+            status_code: Some(200),
+            response: Some("Hi!".to_string()),
+            error_message: None,
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            total_tokens: Some(15),
+            duration_ms: Some(120),
+        }
+    }
+
     #[tokio::test]
-    async fn test_async_logger() {
-        // 测试日志写入
-        // 注意：实际测试需要模拟数据库连接
+    async fn test_async_logger_writes_log_on_shutdown() {
+        let repository = setup_repository().await;
+        let logger = AsyncLogger::new(
+            repository.clone(),
+            100,
+            Duration::from_secs(60),
+        );
+
+        logger.log(sample_log()).await.expect("Log write failed");
+        logger.shutdown().await.expect("Shutdown failed");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let filter = LogFilter {
+            vendor: Some("openai_main".to_string()),
+            limit: 10,
+            ..Default::default()
+        };
+
+        let logs = repository.query_logs(&filter).await.expect("Query failed");
+        assert_eq!(logs.len(), 1);
+        let log = &logs[0];
+        assert_eq!(log.request_id, "req-test-001");
+        assert_eq!(log.actual_model, "gpt-4");
+        assert_eq!(log.status_code, Some(200));
+        assert_eq!(log.total_tokens, Some(15));
+    }
+
+    #[tokio::test]
+    async fn test_async_logger_writes_log_on_buffer_full() {
+        let repository = setup_repository().await;
+        let logger = AsyncLogger::new(
+            repository.clone(),
+            200,
+            Duration::from_secs(60),
+        );
+
+        for i in 0..101 {
+            let mut log = sample_log();
+            log.request_id = format!("req-{:03}", i);
+            logger.log(log).await.expect("Log write failed");
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        logger.shutdown().await.expect("Shutdown failed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let logs = repository
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("Query failed");
+        assert_eq!(logs.len(), 101);
+    }
+
+    #[tokio::test]
+    async fn test_async_logger_writes_log_on_interval() {
+        let repository = setup_repository().await;
+        let logger = AsyncLogger::new(
+            repository.clone(),
+            100,
+            Duration::from_millis(20),
+        );
+
+        logger.log(sample_log()).await.expect("Log write failed");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let logs = repository
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("Query failed");
+        assert!(!logs.is_empty());
+
+        logger.shutdown().await.expect("Shutdown failed");
+    }
+
+    #[tokio::test]
+    async fn test_async_logger_handle_logs_and_shutdowns() {
+        let repository = setup_repository().await;
+        let logger = AsyncLogger::new(
+            repository.clone(),
+            100,
+            Duration::from_secs(60),
+        );
+        let handle = AsyncLoggerHandle::new(logger);
+
+        handle.log(sample_log()).await.expect("Log write failed");
+        handle.shutdown().await.expect("Shutdown failed");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let logs = repository
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("Query failed");
+        assert_eq!(logs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_async_logger_handle_after_shutdown_returns_error() {
+        let repository = setup_repository().await;
+        let logger = AsyncLogger::new(
+            repository.clone(),
+            100,
+            Duration::from_secs(60),
+        );
+        let handle = AsyncLoggerHandle::new(logger);
+
+        handle.shutdown().await.expect("Shutdown failed");
+
+        let result = handle.log(sample_log()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NexusFlowError::Database { message } => {
+                assert!(message.contains("shut down"));
+            }
+            other => panic!("Expected Database error, got {:?}", other),
+        }
     }
 }

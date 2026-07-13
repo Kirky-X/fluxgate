@@ -21,7 +21,7 @@ database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "protocol"]
 vendor-management = ["dep:reqwest", "dep:limiteron", "database"]
 router = ["vendor-management"]
 protocol = []
-infrastructure = ["dep:oxcache", "dep:confers", "dep:trait-kit"]
+infrastructure = ["dep:oxcache", "dep:trait-kit"]
 sdforge-integration = ["dep:sdforge"]
 logging = ["dep:inklog"]
 
@@ -49,9 +49,6 @@ limiteron = { path = "../limiteron", default-features = false, features = ["towe
 
 # 缓存 — path dep 确保 trait-kit 0.3 对齐
 oxcache = { path = "../oxcache", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
-
-# 配置
-confers = { version = "0.4", default-features = false, features = ["toml", "env", "watch", "validation"], optional = true }
 
 # DI — path dep（本地源码 0.3.0）
 trait-kit = { path = "../trait-kit", default-features = false, features = ["async"], optional = true }

@@ -41,13 +41,10 @@ pub use middleware::ApiAuthState;
 #[cfg(feature = "vendor-management")]
 pub use vendor::VendorManager;
 
-#[cfg(feature = "infrastructure")]
-pub use infrastructure::Cache;
-#[cfg(feature = "infrastructure")]
-pub use infrastructure::Config as InfrastructureConfig;
-#[cfg(feature = "infrastructure")]
-pub use infrastructure::Database as InfrastructureDatabase;
-#[cfg(feature = "infrastructure")]
-pub use infrastructure::DbError;
-#[cfg(feature = "infrastructure")]
-pub use infrastructure::Row;
+#[cfg(all(
+    feature = "infrastructure",
+    feature = "database",
+    feature = "vendor-management",
+    feature = "logging"
+))]
+pub use infrastructure::di;

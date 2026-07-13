@@ -79,17 +79,17 @@ fn test_vendor_module_available() {
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
-/// infrastructure feature：验证 trait 和类型可访问
-#[cfg(feature = "infrastructure")]
+/// infrastructure feature：验证 di 模块可访问
+#[cfg(all(
+    feature = "infrastructure",
+    feature = "database",
+    feature = "vendor-management",
+    feature = "logging"
+))]
 #[test]
 fn test_infrastructure_module_available() {
-    use nexusflow::{Cache, DbError, InfrastructureConfig, InfrastructureDatabase, Row};
-    let _ = std::marker::PhantomData::<Row>;
-    let _ = std::marker::PhantomData::<DbError>;
-    // trait 类型验证导入即可（编译器检查路径存在）
-    let _ = std::marker::PhantomData::<&dyn Cache>;
-    let _ = std::marker::PhantomData::<&dyn InfrastructureConfig>;
-    let _ = std::marker::PhantomData::<&dyn InfrastructureDatabase>;
+    // di 模块路径存在即表示 infrastructure feature 可用
+    let _ = nexusflow::di::build_kit_with_config;
 }
 
 /// web-server feature：验证 ApiState 类型可访问

@@ -64,6 +64,7 @@ impl IntoResponse for NexusFlowError {
     }
 }
 
+#[cfg(feature = "web-server")]
 impl NexusFlowError {
     /// 返回固定的错误类型代码字符串（不暴露内部枚举结构）
     fn error_code(&self) -> &'static str {

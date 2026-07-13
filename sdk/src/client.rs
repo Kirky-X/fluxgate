@@ -12,10 +12,10 @@ use crate::error::NexusFlowSdkError;
 /// NexusFlow 网关客户端。
 #[derive(Debug)]
 pub struct NexusFlowClient {
-    http: reqwest::Client,
-    base_url: Url,
-    api_key: String,
-    default_config: RequestConfig,
+    pub(crate) http: reqwest::Client,
+    pub(crate) base_url: Url,
+    pub(crate) api_key: String,
+    pub(crate) default_config: RequestConfig,
 }
 
 /// 客户端构建器。

@@ -9,8 +9,10 @@ fn default_stream_is_false() {
 #[test]
 fn merge_takes_other_priority() {
     let a = RequestConfig::default();
-    let mut b = RequestConfig::default();
-    b.temperature = Some(0.5);
+    let b = RequestConfig {
+        temperature: Some(0.5),
+        ..Default::default()
+    };
     let merged = a.merge(&b);
     assert_eq!(merged.temperature, Some(0.5));
 }

@@ -244,13 +244,8 @@ impl VendorManager {
         Self::execute_http_with_retry(client, config, request_body, converter).await
     }
 
-    /// 执行带重试的 HTTP 请求
-    async fn execute_http_with_retry(
-        client: &reqwest::Client,
-        config: &VendorConfig,
-        request_body: Value,
-        converter: &dyn ProtocolConverter,
-    ) -> Result<UnifiedResponse, NexusFlowError> {
+    /// 构建 vendor API URL（统一 4 处重复的 URL 拼接逻辑）
+    fn build_vendor_url(config: &VendorConfig) -> Result<String, NexusFlowError> {
         let api_base = if config.api_base.is_empty() {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
@@ -271,37 +266,61 @@ impl VendorManager {
             } else {
                 format!("{}/v1/messages", api_base)
             }
+        } else if api_base.ends_with("/v1") {
+            format!("{}/chat/completions", api_base)
         } else {
-            if api_base.ends_with("/v1") {
-                format!("{}/chat/completions", api_base)
-            } else {
-                format!("{}/v1/chat/completions", api_base)
-            }
+            format!("{}/v1/chat/completions", api_base)
         };
+
+        Ok(url)
+    }
+
+    /// 获取 API key 并构建带认证 header 的 RequestBuilder
+    fn build_authed_request(
+        client: &reqwest::Client,
+        config: &VendorConfig,
+        url: &str,
+        include_content_type: bool,
+    ) -> Result<reqwest::RequestBuilder, NexusFlowError> {
+        let api_key = std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config {
+            message: format!("API key env {} not set", config.api_key_env),
+        })?;
+
+        let mut builder = client.post(url);
+
+        if config.type_ == "anthropic" {
+            builder = builder
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01");
+            if include_content_type {
+                builder = builder.header("content-type", "application/json");
+            }
+        } else {
+            builder = builder.header("Authorization", format!("Bearer {}", api_key));
+            if include_content_type {
+                builder = builder.header("content-type", "application/json");
+            }
+        }
+
+        Ok(builder)
+    }
+
+    /// 执行带重试的 HTTP 请求
+    async fn execute_http_with_retry(
+        client: &reqwest::Client,
+        config: &VendorConfig,
+        request_body: Value,
+        converter: &dyn ProtocolConverter,
+    ) -> Result<UnifiedResponse, NexusFlowError> {
+        let url = Self::build_vendor_url(config)?;
 
         // 记录当前重试次数
         let mut retry_count = 0u32;
         let max_retries = 5u32;
 
         loop {
-            // 构建请求
-            let api_key = std::env::var(&config.api_key_env).map_err(|_| {
-                NexusFlowError::Config {
-                    message: format!("API key env {} not set", config.api_key_env),
-                }
-            })?;
-            let mut builder = client.post(&url);
-
-            if config.type_ == "anthropic" {
-                builder = builder
-                    .header("x-api-key", api_key)
-                    .header("anthropic-version", "2023-06-01")
-                    .header("content-type", "application/json");
-            } else {
-                builder = builder
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .header("content-type", "application/json");
-            }
+            // 构建带认证的请求
+            let builder = Self::build_authed_request(client, config, &url, true)?;
 
             // 发送请求
             let response = match builder.json(&request_body).send().await {
@@ -466,19 +485,7 @@ impl VendorManager {
         let permit = instance.concurrency_limiter.acquire().await; // Hold permit?
 
         let config = &instance.config;
-        let api_base = if config.api_base.is_empty() {
-            match config.type_.as_str() {
-                "anthropic" => "https://api.anthropic.com",
-                "openai" => "https://api.openai.com/v1",
-                _ => {
-                    return Err(NexusFlowError::Config {
-                        message: "Unknown vendor type".into(),
-                    })
-                }
-            }
-        } else {
-            &config.api_base
-        };
+        let url = Self::build_vendor_url(config)?;
 
         // Need to convert request here too!
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
@@ -493,42 +500,7 @@ impl VendorManager {
 
         let request_body = converter.request_to_external(request)?;
 
-        let url = if config.type_ == "anthropic" {
-            if api_base.ends_with("/v1") {
-                format!("{}/messages", api_base)
-            } else {
-                format!("{}/v1/messages", api_base)
-            }
-        } else {
-            if api_base.ends_with("/v1") {
-                format!("{}/chat/completions", api_base)
-            } else {
-                format!("{}/v1/chat/completions", api_base)
-            }
-        };
-
-        let mut request_builder = self.client.post(&url);
-
-        if config.type_ == "anthropic" {
-            request_builder = request_builder
-                .header(
-                    "x-api-key",
-                    std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config {
-                        message: format!("API key env {} not set", config.api_key_env),
-                    })?,
-                )
-                .header("anthropic-version", "2023-06-01");
-        } else {
-            request_builder = request_builder.header(
-                "Authorization",
-                format!(
-                    "Bearer {}",
-                    std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config {
-                        message: format!("API key env {} not set", config.api_key_env)
-                    })?
-                ),
-            );
-        }
+        let request_builder = Self::build_authed_request(&self.client, config, &url, true)?;
 
         let response = request_builder
             .json(&request_body)
@@ -596,51 +568,9 @@ impl VendorManager {
         let _permit = permit; // Hold permit during request
 
         let config = &instance.config;
-        let api_base = if config.api_base.is_empty() {
-            match config.type_.as_str() {
-                "anthropic" => "https://api.anthropic.com",
-                "openai" => "https://api.openai.com/v1",
-                _ => {
-                    return Err(NexusFlowError::Config {
-                        message: "Unknown vendor type".into(),
-                    })
-                }
-            }
-        } else {
-            &config.api_base
-        };
+        let url = Self::build_vendor_url(config)?;
 
-        let url = if config.type_ == "anthropic" {
-            if api_base.ends_with("/v1") {
-                format!("{}/messages", api_base)
-            } else {
-                format!("{}/v1/messages", api_base)
-            }
-        } else {
-            if api_base.ends_with("/v1") {
-                format!("{}/chat/completions", api_base)
-            } else {
-                format!("{}/v1/chat/completions", api_base)
-            }
-        };
-
-        let mut builder = self.client.post(&url);
-
-        let api_key = std::env::var(&config.api_key_env).map_err(|_| {
-            NexusFlowError::Config {
-                message: format!("API key env {} not set", config.api_key_env),
-            }
-        })?;
-        if config.type_ == "anthropic" {
-            builder = builder
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json");
-        } else {
-            builder = builder
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("content-type", "application/json");
-        }
+        let builder = Self::build_authed_request(&self.client, config, &url, true)?;
 
         let response = builder.json(&request_body).send().await.map_err(|_| {
             NexusFlowError::VendorUnavailable {
@@ -710,49 +640,9 @@ impl VendorManager {
         let _permit = permit;
 
         let config = &instance.config;
-        let api_base = if config.api_base.is_empty() {
-            match config.type_.as_str() {
-                "anthropic" => "https://api.anthropic.com",
-                "openai" => "https://api.openai.com/v1",
-                _ => {
-                    return Err(NexusFlowError::Config {
-                        message: "Unknown vendor type".into(),
-                    })
-                }
-            }
-        } else {
-            &config.api_base
-        };
+        let url = Self::build_vendor_url(config)?;
 
-        let url = if config.type_ == "anthropic" {
-            if api_base.ends_with("/v1") {
-                format!("{}/messages", api_base)
-            } else {
-                format!("{}/v1/messages", api_base)
-            }
-        } else {
-            if api_base.ends_with("/v1") {
-                format!("{}/chat/completions", api_base)
-            } else {
-                format!("{}/v1/chat/completions", api_base)
-            }
-        };
-
-        let mut builder = self.client.post(&url);
-
-        let api_key = std::env::var(&config.api_key_env).map_err(|_| {
-            NexusFlowError::Config {
-                message: format!("API key env {} not set", config.api_key_env),
-            }
-        })?;
-        if config.type_ == "anthropic" {
-            builder = builder
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01");
-        } else {
-            builder =
-                builder.header("Authorization", format!("Bearer {}", api_key));
-        }
+        let builder = Self::build_authed_request(&self.client, config, &url, false)?;
 
         let response = builder.json(&request_body).send().await.map_err(|_| {
             NexusFlowError::VendorUnavailable {

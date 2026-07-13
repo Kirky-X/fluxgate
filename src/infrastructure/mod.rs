@@ -41,6 +41,18 @@ pub mod config;
 pub mod database;
 pub mod types;
 
+/// trait-kit AsyncKit DI container — only available when all four
+/// infrastructure-level features are enabled (oxcache via `infrastructure`,
+/// dbnexus via `database`, limiteron via `vendor-management`, inklog via
+/// `logging`). The `kit` feature on each dep provides `integrations::kit`.
+#[cfg(all(
+    feature = "infrastructure",
+    feature = "database",
+    feature = "vendor-management",
+    feature = "logging"
+))]
+pub mod di;
+
 // Re-export helper types
 pub use types::{DatabaseSession, DbError, Row, ToSql};
 

@@ -43,6 +43,21 @@ async fn main() -> Result<(), NexusFlowError> {
     vendor_manager.initialize().await?;
     println!("Vendor manager initialized");
 
+    // Build trait-kit AsyncKit DI container: oxcache → dbnexus → inklog
+    // chain + limiteron governor. Proves all 4 brother libs are DI-compatible.
+    #[cfg(all(
+        feature = "infrastructure",
+        feature = "database",
+        feature = "vendor-management",
+        feature = "logging"
+    ))]
+    {
+        println!("Building trait-kit AsyncKit DI container...");
+        let kit = nexusflow::infrastructure::di::build_kit().await?;
+        nexusflow::infrastructure::di::verify_kit(&kit)?;
+        println!("AsyncKit DI container built: 4/4 modules resolved");
+    }
+
     let router = RouterStruct::new(config_manager.clone(), vendor_manager.clone());
 
     let api_state = Arc::new(ApiState {

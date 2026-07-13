@@ -27,29 +27,29 @@ tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.7", features = ["cors", "trace", "request-id"], optional = true }
 
-# 数据库
-dbnexus = { version = "0.3", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "permission", "sql-parser", "macros", "config-env", "with-time"], optional = true }
+# 数据库 — path dep 确保使用本地 trait-kit 0.3（kit feature 暴露 integrations::kit::DbNexusModule）
+dbnexus = { path = "/home/dev/projects/dbnexus", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "permission", "sql-parser", "macros", "config-env", "with-time", "kit"], optional = true }
 sea-orm = { version = "2.0.0-rc.42", default-features = false, optional = true }
 
-# 日志
-inklog = { version = "0.1", default-features = false, features = ["http", "cli", "sqlite"], optional = true }
+# 日志 — path dep 确保 oxcache/dbnexus/trait-kit 全部本地对齐
+inklog = { path = "/home/dev/projects/inklog", default-features = false, features = ["http", "cli", "sqlite", "kit"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", optional = true }
 
-# 流控
-limiteron = { version = "0.2", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control"], optional = true }
+# 流控 — path dep 确保 trait-kit 0.3 对齐
+limiteron = { path = "/home/dev/projects/limiteron", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "kit"], optional = true }
 
-# 缓存
-oxcache = { version = "0.3", default-features = false, features = ["minimal", "macros"], optional = true }
+# 缓存 — path dep 确保 trait-kit 0.3 对齐
+oxcache = { path = "/home/dev/projects/oxcache", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 
 # 配置
 confers = { version = "0.4", default-features = false, features = ["toml", "env", "watch", "validation"], optional = true }
 
-# DI
-trait-kit = { version = "0.3", default-features = false, features = ["async"], optional = true }
+# DI — path dep（本地源码 0.3.0）
+trait-kit = { path = "/home/dev/projects/trait-kit", default-features = false, features = ["async"], optional = true }
 
-# SDK 框架
-sdforge = { version = "=0.3.4", default-features = false, features = ["http", "security", "streaming"], optional = true }
+# SDK 框架 — path dep（本地 0.3.5 已修复 limiteron::FlowGuardError 不兼容问题）
+sdforge = { path = "/home/dev/projects/sdforge", default-features = false, features = ["http", "security", "streaming"], optional = true }
 
 # 序列化与核心
 serde = { version = "1", features = ["derive"] }

@@ -17,13 +17,61 @@ impl Repository {
 
     pub async fn initialize(&self) -> Result<(), DbError> {
         let schema = include_str!("schema.sql");
-        let session = self.pool.get_session("admin").await?;
-        for statement in schema.split(';') {
-            let trimmed = statement.trim();
-            if !trimmed.is_empty() {
-                session.execute_raw_ddl(trimmed).await?;
+        {
+            let session = self.pool.get_session("admin").await?;
+            for statement in schema.split(';') {
+                let trimmed = statement.trim();
+                if !trimmed.is_empty() {
+                    session.execute_raw_ddl(trimmed).await?;
+                }
             }
         }
+
+        // 旧库迁移：v0.1 数据库可能缺少 cost_usd 列。
+        // SQLite 不支持 ALTER TABLE ADD COLUMN IF NOT EXISTS 语法，
+        // 用 PRAGMA 检查列是否存在，不存在则 ALTER TABLE ADD COLUMN。
+        self.ensure_column_exists("request_logs", "cost_usd", "REAL DEFAULT 0.0")
+            .await?;
+        self.ensure_column_exists("token_usage", "cost_usd_sum", "REAL DEFAULT 0.0")
+            .await?;
+
+        Ok(())
+    }
+
+    /// 检查指定表是否已有某列，不存在则 ALTER TABLE ADD COLUMN。
+    /// SQLite 兼容的 IF NOT EXISTS 迁移方案。
+    async fn ensure_column_exists(
+        &self,
+        table: &str,
+        column: &str,
+        column_def: &str,
+    ) -> Result<(), DbError> {
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+
+        // PRAGMA table_info 返回所有列信息
+        let pragma_sql = format!("PRAGMA table_info({})", table);
+        let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, &pragma_sql, Vec::new());
+        let rows = conn.query_all_raw(stmt).await?;
+
+        let column_exists = rows.iter().any(|row| {
+            row.try_get::<String>("", "name")
+                .map(|name| name == column)
+                .unwrap_or(false)
+        });
+
+        if !column_exists {
+            let alter_sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def);
+            let stmt =
+                Statement::from_sql_and_values(DatabaseBackend::Sqlite, &alter_sql, Vec::new());
+            conn.execute_raw(stmt).await?;
+            tracing::info!(
+                table = table,
+                column = column,
+                "migrated: added missing column"
+            );
+        }
+
         Ok(())
     }
 
@@ -33,8 +81,9 @@ impl Repository {
                 request_id, timestamp, endpoint, input_format,
                 abstract_model, messages, actual_vendor, actual_model,
                 routing_strategy, status_code, response, error_message,
-                prompt_tokens, completion_tokens, total_tokens, duration_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                prompt_tokens, completion_tokens, total_tokens, duration_ms,
+                cost_usd
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#;
 
         let values: Vec<Value> = vec![
@@ -54,6 +103,7 @@ impl Repository {
             log.completion_tokens.into(),
             log.total_tokens.into(),
             log.duration_ms.into(),
+            log.cost_usd.into(),
         ];
 
         let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values);
@@ -178,6 +228,7 @@ fn map_request_log(row: &QueryResult) -> RequestLog {
         completion_tokens: row.try_get::<Option<i32>>("", "completion_tokens").unwrap_or(None),
         total_tokens: row.try_get::<Option<i32>>("", "total_tokens").unwrap_or(None),
         duration_ms: row.try_get::<Option<i64>>("", "duration_ms").unwrap_or(None),
+        cost_usd: row.try_get::<Option<f64>>("", "cost_usd").unwrap_or(None),
     }
 }
 
@@ -192,6 +243,7 @@ fn map_token_usage(row: &QueryResult) -> TokenUsage {
         total_tokens: row.try_get("", "total_tokens").unwrap_or_default(),
         prompt_tokens: row.try_get("", "prompt_tokens").unwrap_or_default(),
         completion_tokens: row.try_get("", "completion_tokens").unwrap_or_default(),
+        cost_usd_sum: row.try_get("", "cost_usd_sum").unwrap_or_default(),
     }
 }
 

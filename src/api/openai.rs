@@ -229,6 +229,7 @@ async fn log_chat_request(
             completion_tokens: None,
             total_tokens: None,
             duration_ms: Some(duration_ms),
+            cost_usd: None,
         })
         .await;
 }
@@ -336,6 +337,7 @@ pub async fn embeddings(
             completion_tokens: None,
             total_tokens: None,
             duration_ms: Some(duration_ms),
+            cost_usd: None,
         })
         .await;
 

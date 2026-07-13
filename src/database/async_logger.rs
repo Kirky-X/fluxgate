@@ -198,6 +198,7 @@ mod tests {
             completion_tokens: Some(5),
             total_tokens: Some(15),
             duration_ms: Some(120),
+            cost_usd: Some(0.001),
         }
     }
 

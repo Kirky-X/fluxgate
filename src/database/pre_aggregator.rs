@@ -42,6 +42,7 @@ struct AggregationValue {
     total_tokens: u64,
     prompt_tokens: u64,
     completion_tokens: u64,
+    cost_usd_sum: f64,
 }
 
 /// Token 使用预聚合器
@@ -61,8 +62,8 @@ impl TokenPreAggregator {
         }
     }
 
-    /// 记录 Token 使用
-    pub async fn record(&self, vendor: &str, model: &str, usage: &TokenUsage) {
+    /// 记录 Token 使用（含成本，单位 USD）
+    pub async fn record(&self, vendor: &str, model: &str, cost_usd: f64, usage: &TokenUsage) {
         let key = AggregationKey::new(vendor, model);
         let mut guard = self.buffer.lock().await;
 
@@ -71,9 +72,10 @@ impl TokenPreAggregator {
         entry.total_tokens += usage.total_tokens as u64;
         entry.prompt_tokens += usage.prompt_tokens as u64;
         entry.completion_tokens += usage.completion_tokens as u64;
+        entry.cost_usd_sum += cost_usd;
     }
 
-    /// 记录使用（使用原始数值）
+    /// 记录使用（使用原始数值，含成本，单位 USD）
     pub async fn record_raw(
         &self,
         vendor: &str,
@@ -81,6 +83,7 @@ impl TokenPreAggregator {
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
+        cost_usd: f64,
     ) {
         let key = AggregationKey::new(vendor, model);
         let mut guard = self.buffer.lock().await;
@@ -90,6 +93,7 @@ impl TokenPreAggregator {
         entry.total_tokens += total_tokens as u64;
         entry.prompt_tokens += prompt_tokens as u64;
         entry.completion_tokens += completion_tokens as u64;
+        entry.cost_usd_sum += cost_usd;
     }
 
     /// 定期刷新到数据库
@@ -116,14 +120,15 @@ impl TokenPreAggregator {
         }
 
         let sql = r#"
-            INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens, cost_usd_sum)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(vendor, model, date, hour)
             DO UPDATE SET
                 request_count = request_count + excluded.request_count,
                 total_tokens = total_tokens + excluded.total_tokens,
                 prompt_tokens = prompt_tokens + excluded.prompt_tokens,
-                completion_tokens = completion_tokens + excluded.completion_tokens
+                completion_tokens = completion_tokens + excluded.completion_tokens,
+                cost_usd_sum = cost_usd_sum + excluded.cost_usd_sum
         "#;
 
         for (key, value) in entries {
@@ -136,6 +141,7 @@ impl TokenPreAggregator {
                 (value.total_tokens as i64).into(),
                 (value.prompt_tokens as i64).into(),
                 (value.completion_tokens as i64).into(),
+                value.cost_usd_sum.into(),
             ];
 
             let stmt = sea_orm::Statement::from_sql_and_values(
@@ -165,12 +171,14 @@ impl TokenPreAggregatorHandle {
         Self { inner: aggregator }
     }
 
-    /// 记录 Token 使用
-    pub async fn record(&self, vendor: &str, model: &str, usage: &TokenUsage) {
-        self.inner.record(vendor, model, usage).await;
+    /// 记录 Token 使用（含成本，单位 USD）
+    pub async fn record(&self, vendor: &str, model: &str, cost_usd: f64, usage: &TokenUsage) {
+        self.inner
+            .record(vendor, model, cost_usd, usage)
+            .await;
     }
 
-    /// 记录使用（使用原始数值）
+    /// 记录使用（使用原始数值，含成本，单位 USD）
     pub async fn record_raw(
         &self,
         vendor: &str,
@@ -178,6 +186,7 @@ impl TokenPreAggregatorHandle {
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
+        cost_usd: f64,
     ) {
         self.inner
             .record_raw(
@@ -186,6 +195,7 @@ impl TokenPreAggregatorHandle {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                cost_usd,
             )
             .await;
     }

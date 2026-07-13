@@ -51,6 +51,7 @@ mod tests {
             completion_tokens: Some(50),
             total_tokens: Some(150),
             duration_ms: Some(150),
+            cost_usd: None,
         };
 
         let result = repository.log_request(&log).await;
@@ -85,6 +86,7 @@ mod tests {
                 completion_tokens: Some(50),
                 total_tokens: Some(150),
                 duration_ms: Some(150),
+                cost_usd: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -132,6 +134,7 @@ mod tests {
                 completion_tokens: Some(50),
                 total_tokens: Some(150),
                 duration_ms: Some(150),
+                cost_usd: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -183,6 +186,7 @@ mod tests {
                 completion_tokens: Some(50),
                 total_tokens: Some(150),
                 duration_ms: Some(150),
+                cost_usd: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -221,6 +225,7 @@ mod tests {
                 completion_tokens: Some(50),
                 total_tokens: Some(150),
                 duration_ms: Some(150),
+                cost_usd: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -323,6 +328,7 @@ mod tests {
                 completion_tokens: Some(50),
                 total_tokens: Some(150),
                 duration_ms: Some(150),
+                cost_usd: None,
             };
 
             handles.push(tokio::spawn(async move { repo.log_request(&log).await }));
@@ -371,6 +377,7 @@ mod tests {
             completion_tokens: Some(200),
             total_tokens: Some(300),
             duration_ms: Some(100),
+            cost_usd: None,
         };
 
         assert_eq!(log.request_id, "test-id");
@@ -431,6 +438,7 @@ mod tests {
             completion_tokens: Some(0),
             total_tokens: Some(0),
             duration_ms: Some(5000),
+            cost_usd: None,
         };
 
         assert_eq!(log.status_code, Some(429));
@@ -482,6 +490,7 @@ mod tests {
                 completion_tokens: Some(50),
                 total_tokens: Some(150),
                 duration_ms: Some(150),
+                cost_usd: None,
             };
 
             // Log each one individually

@@ -36,6 +36,7 @@ pub struct RequestLog {
     pub completion_tokens: Option<i32>,
     pub total_tokens: Option<i32>,
     pub duration_ms: Option<i64>,
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +50,7 @@ pub struct TokenUsage {
     pub total_tokens: i64,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    pub cost_usd_sum: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

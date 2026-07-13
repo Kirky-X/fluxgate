@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
     prompt_tokens INTEGER,
     completion_tokens INTEGER,
     total_tokens INTEGER,
-    duration_ms INTEGER
+    duration_ms INTEGER,
+    cost_usd REAL DEFAULT 0.0
 );
 
 -- Token 消耗统计表
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS token_usage (
     total_tokens INTEGER DEFAULT 0,
     prompt_tokens INTEGER DEFAULT 0,
     completion_tokens INTEGER DEFAULT 0,
+    cost_usd_sum REAL DEFAULT 0.0,
     UNIQUE(vendor, model, date, hour)
 );
 

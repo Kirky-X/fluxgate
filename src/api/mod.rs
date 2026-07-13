@@ -12,6 +12,7 @@ pub mod health;
 pub mod openai;
 pub mod router_builder;
 pub mod routing_hints;
+pub mod sse;
 pub mod state;
 
 pub use router_builder::create_router;

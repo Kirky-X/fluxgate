@@ -1,6 +1,61 @@
+# Rust
 /target
-openspec
-.qoder
+*.rs.bk
+# Cargo.lock 不忽略（bin 项目需提交）
+
+# 数据库运行时
+/data
+*.sqlite
+*.sqlite-*
+*.db-*
+
+# IDE
+.idea/
+.vscode/
+.fleet/
+.helix/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# 安全审计产物
+.tiangang-results*/
+.diting-results/
+.semgrep*/
+*.sarif
+cargo-audit.json
+
+# AI 辅助工具产物
+.claude/
+.qoder/
+.cursor/
+.aider*
+.trae*/
+
+# 工作目录
 specmark/
-.gitnexus
-.tiangang-results/
+.gitnexus/
+openspec/
+
+# 项目特定产物（已归档或被取代）
+prd.md
+docs/superpowers/
+python_mock_client/
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+# 日志
+*.log
+logs/

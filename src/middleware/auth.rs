@@ -50,7 +50,6 @@ fn extract_api_key(headers: &axum::http::HeaderMap) -> Option<String> {
             if let Some(stripped) = value.strip_prefix("Bearer ") {
                 return Some(stripped.to_string());
             }
-            return Some(value.to_string());
         }
     }
 
@@ -77,11 +76,6 @@ pub async fn api_auth_middleware(
     // 排除健康检查端点
     let path = request.uri().path();
     if path == "/health" || path == "/" {
-        return Ok(next.run(request).await);
-    }
-
-    // 排除 Admin 端点 (内部使用)
-    if path.starts_with("/admin/") {
         return Ok(next.run(request).await);
     }
 

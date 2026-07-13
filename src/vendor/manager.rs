@@ -285,25 +285,21 @@ impl VendorManager {
 
         loop {
             // 构建请求
+            let api_key = std::env::var(&config.api_key_env).map_err(|_| {
+                NexusFlowError::Config {
+                    message: format!("API key env {} not set", config.api_key_env),
+                }
+            })?;
             let mut builder = client.post(&url);
 
             if config.type_ == "anthropic" {
                 builder = builder
-                    .header(
-                        "x-api-key",
-                        std::env::var(&config.api_key_env).unwrap_or_default(),
-                    )
+                    .header("x-api-key", api_key)
                     .header("anthropic-version", "2023-06-01")
                     .header("content-type", "application/json");
             } else {
                 builder = builder
-                    .header(
-                        "Authorization",
-                        format!(
-                            "Bearer {}",
-                            std::env::var(&config.api_key_env).unwrap_or_default()
-                        ),
-                    )
+                    .header("Authorization", format!("Bearer {}", api_key))
                     .header("content-type", "application/json");
             }
 
@@ -329,8 +325,14 @@ impl VendorManager {
             // 判断响应状态并决定是否重试
             if !status.is_success() {
                 let text = response.text().await.unwrap_or_default();
+                tracing::warn!(
+                    vendor = %config.id,
+                    status = %status,
+                    body = %text,
+                    "upstream vendor returned non-success status"
+                );
                 let error = NexusFlowError::VendorUnavailable {
-                    vendor: format!("{} ({}: {})", config.id, status, text),
+                    vendor: format!("{} ({})", config.id, status),
                 };
 
                 // 根据状态码判断错误分类
@@ -624,23 +626,19 @@ impl VendorManager {
 
         let mut builder = self.client.post(&url);
 
+        let api_key = std::env::var(&config.api_key_env).map_err(|_| {
+            NexusFlowError::Config {
+                message: format!("API key env {} not set", config.api_key_env),
+            }
+        })?;
         if config.type_ == "anthropic" {
             builder = builder
-                .header(
-                    "x-api-key",
-                    std::env::var(&config.api_key_env).unwrap_or_default(),
-                )
+                .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json");
         } else {
             builder = builder
-                .header(
-                    "Authorization",
-                    format!(
-                        "Bearer {}",
-                        std::env::var(&config.api_key_env).unwrap_or_default()
-                    ),
-                )
+                .header("Authorization", format!("Bearer {}", api_key))
                 .header("content-type", "application/json");
         }
 
@@ -653,8 +651,14 @@ impl VendorManager {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
+            tracing::warn!(
+                vendor = %vendor_id,
+                status = %status,
+                body = %text,
+                "upstream vendor returned non-success status"
+            );
             return Err(NexusFlowError::VendorUnavailable {
-                vendor: format!("{} ({}: {})", vendor_id, status, text),
+                vendor: format!("{} ({})", vendor_id, status),
             });
         }
 
@@ -736,21 +740,18 @@ impl VendorManager {
 
         let mut builder = self.client.post(&url);
 
+        let api_key = std::env::var(&config.api_key_env).map_err(|_| {
+            NexusFlowError::Config {
+                message: format!("API key env {} not set", config.api_key_env),
+            }
+        })?;
         if config.type_ == "anthropic" {
             builder = builder
-                .header(
-                    "x-api-key",
-                    std::env::var(&config.api_key_env).unwrap_or_default(),
-                )
+                .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01");
         } else {
-            builder = builder.header(
-                "Authorization",
-                format!(
-                    "Bearer {}",
-                    std::env::var(&config.api_key_env).unwrap_or_default()
-                ),
-            );
+            builder =
+                builder.header("Authorization", format!("Bearer {}", api_key));
         }
 
         let response = builder.json(&request_body).send().await.map_err(|_| {

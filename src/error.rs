@@ -56,11 +56,27 @@ impl IntoResponse for NexusFlowError {
         let body = json!({
             "error": {
                 "message": self.to_string(),
-                "type": format!("{:?}", self),
+                "type": self.error_code(),
             }
         });
 
         (status, axum::Json(body)).into_response()
+    }
+}
+
+impl NexusFlowError {
+    /// 返回固定的错误类型代码字符串（不暴露内部枚举结构）
+    fn error_code(&self) -> &'static str {
+        match self {
+            NexusFlowError::Config { .. } => "config_error",
+            NexusFlowError::Protocol { .. } => "protocol_error",
+            NexusFlowError::VendorUnavailable { .. } => "vendor_unavailable",
+            NexusFlowError::Timeout { .. } => "timeout",
+            NexusFlowError::RateLimited { .. } => "rate_limited",
+            NexusFlowError::Database { .. } => "database_error",
+            NexusFlowError::Validation { .. } => "validation_error",
+            NexusFlowError::Routing { .. } => "routing_error",
+        }
     }
 }
 
@@ -201,13 +217,13 @@ mod tests {
         );
         // error.message 必须是字符串，且等于 to_string() 的输出
         assert_eq!(body["error"]["message"], "请求验证失败: model");
-        // error.type 必须是字符串，且包含变体名（Debug 格式）
+        // error.type 必须是固定的错误代码字符串（不暴露内部枚举结构）
         let type_str = body["error"]["type"]
             .as_str()
             .expect("error.type must be a string");
-        assert!(
-            type_str.contains("Validation"),
-            "error.type should contain the variant name, got: {}",
+        assert_eq!(
+            type_str, "validation_error",
+            "error.type should be the fixed error code, got: {}",
             type_str
         );
     }

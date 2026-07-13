@@ -198,6 +198,11 @@ mod manager {
     use std::sync::Arc;
     use std::time::Duration;
 
+    /// 确保测试所需的 API key 环境变量存在（map_err 修复后必须设置）
+    fn ensure_test_api_key() {
+        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
+    }
+
     /// 构造测试 vendor config
     fn make_vendor(
         id: &str,
@@ -206,11 +211,12 @@ mod manager {
         api_base: String,
         rate_limit: RateLimitConfig,
     ) -> VendorConfig {
+        ensure_test_api_key();
         VendorConfig {
             id: id.into(),
             name: format!("Test {}", id),
             type_: type_.into(),
-            // passthrough 路径用 unwrap_or_default；非 passthrough 仅在错误路径测试
+            // make_vendor() 会设置 NEXUSFLOW_TEST_KEY 环境变量
             api_key_env: "NEXUSFLOW_TEST_KEY".into(),
             api_base,
             enabled,

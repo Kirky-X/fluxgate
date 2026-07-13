@@ -90,8 +90,17 @@ async fn main() -> Result<(), NexusFlowError> {
                 request_timeout_secs: 300,
                 cors: Some(sdforge::config::CorsConfig {
                     allowed_origins: vec!["*".to_string()],
-                    allowed_methods: vec!["GET".to_string(), "POST".to_string()],
-                    allowed_headers: vec!["*".to_string()],
+                    allowed_methods: vec![
+                        "GET".to_string(),
+                        "POST".to_string(),
+                        "OPTIONS".to_string(),
+                    ],
+                    allowed_headers: vec![
+                        "Authorization".to_string(),
+                        "Content-Type".to_string(),
+                        "x-api-key".to_string(),
+                        "anthropic-version".to_string(),
+                    ],
                 }),
             },
             // Enable authentication

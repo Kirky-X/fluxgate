@@ -76,6 +76,7 @@ mod endpoints {
                 enabled: true,
                 strategy: "weighted".to_string(),
             }),
+            pricing: vec![],
         }
     }
 
@@ -402,6 +403,7 @@ mod integration {
                 enabled: true,
                 strategy: "weighted".to_string(),
             }),
+            pricing: vec![],
         }
     }
 
@@ -887,6 +889,7 @@ mod admin {
                 enabled: true,
                 strategy: "weighted".to_string(),
             }),
+            pricing: vec![],
         }
     }
 

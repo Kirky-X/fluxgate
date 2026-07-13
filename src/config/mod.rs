@@ -133,4 +133,16 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub vendors: Vec<VendorConfig>,
     pub global_model: Option<GlobalModelConfig>,
+    /// 价格表 — 用于成本计算。默认空 vec，未配置时 CostCalculator 全部返回 0.0
+    #[serde(default)]
+    pub pricing: Vec<PricingConfig>,
+}
+
+/// 单条定价配置 — vendor + model 维度的输入/输出 token 单价（每 1k tokens，USD）
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PricingConfig {
+    pub vendor_id: String,
+    pub model_id: String,
+    pub input_per_1k_tokens: f64,
+    pub output_per_1k_tokens: f64,
 }

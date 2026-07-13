@@ -26,7 +26,7 @@ pub mod api;
 #[cfg(feature = "web-server")]
 pub mod middleware;
 
-pub use config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig, VendorConfig};
+pub use config::{Config, ConfigManager, DatabaseConfig, ModelConfig, PricingConfig, ServerConfig, VendorConfig};
 pub use error::NexusFlowError;
 
 #[cfg(feature = "web-server")]

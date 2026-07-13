@@ -44,3 +44,17 @@ weight = 1.0
 [global_model]
 enabled = true
 strategy = "weighted"
+
+# Pricing — vendor + model 维度的输入/输出 token 单价（每 1k tokens，USD）
+# 未配置 [[pricing]] 时 CostCalculator 全部返回 0.0
+[[pricing]]
+vendor_id = "mock-openai"
+model_id = "gpt-4"
+input_per_1k_tokens = 0.03
+output_per_1k_tokens = 0.06
+
+[[pricing]]
+vendor_id = "mock-anthropic"
+model_id = "claude-3-opus-20240229"
+input_per_1k_tokens = 0.015
+output_per_1k_tokens = 0.075

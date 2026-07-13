@@ -67,6 +67,7 @@ fn make_config(vendors: Vec<VendorConfig>) -> Config {
             enabled: true,
             strategy: "weighted".into(),
         }),
+        pricing: vec![],
     }
 }
 

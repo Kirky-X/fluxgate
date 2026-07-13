@@ -253,6 +253,7 @@ mod manager {
                 enabled: true,
                 strategy: "weighted".into(),
             }),
+            pricing: vec![],
         }
     }
 

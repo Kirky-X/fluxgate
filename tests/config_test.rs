@@ -4,8 +4,8 @@
 #[cfg(test)]
 mod tests {
     use nexusflow::config::{
-        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig,
-        VendorConfig,
+        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, PricingConfig,
+        ServerConfig, VendorConfig,
     };
 
     fn create_test_config() -> Config {
@@ -68,6 +68,7 @@ mod tests {
                 enabled: true,
                 strategy: "weighted".to_string(),
             }),
+            pricing: vec![],
         }
     }
 
@@ -175,5 +176,104 @@ mod tests {
         // Clone should work since ConfigManager uses Arc
         let manager2 = manager.clone();
         assert!(manager2.read().server.port == 8080);
+    }
+
+    #[test]
+    fn test_pricing_config_deserialize_from_toml() {
+        let toml_str = r#"
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+path = "./data/llm_proxy.db"
+pool_size = 5
+
+[[vendors]]
+id = "openai_main"
+name = "OpenAI"
+type_ = "openai"
+api_key_env = "OPENAI_API_KEY"
+enabled = true
+concurrency = { requests_per_second = 100 }
+rate_limit = { type = "token", max_tokens = 1000000 }
+
+[[vendors.models]]
+model_id = "gpt-4"
+enabled = true
+weight = 1.0
+
+[[pricing]]
+vendor_id = "openai_main"
+model_id = "gpt-4"
+input_per_1k_tokens = 0.03
+output_per_1k_tokens = 0.06
+
+[[pricing]]
+vendor_id = "openai_main"
+model_id = "gpt-3.5-turbo"
+input_per_1k_tokens = 0.001
+output_per_1k_tokens = 0.002
+"#;
+        let config: Config = toml::from_str(toml_str).expect("TOML parse should succeed");
+        assert_eq!(config.pricing.len(), 2, "should parse 2 pricing entries");
+
+        let entry = &config.pricing[0];
+        assert_eq!(entry.vendor_id, "openai_main");
+        assert_eq!(entry.model_id, "gpt-4");
+        assert!((entry.input_per_1k_tokens - 0.03).abs() < f64::EPSILON);
+        assert!((entry.output_per_1k_tokens - 0.06).abs() < f64::EPSILON);
+
+        let entry2 = &config.pricing[1];
+        assert_eq!(entry2.model_id, "gpt-3.5-turbo");
+        assert!((entry2.input_per_1k_tokens - 0.001).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_pricing_defaults_to_empty_when_absent() {
+        // 关键属性：未配置 [[pricing]] 时 pricing 应为空 Vec（serde(default)）
+        let toml_str = r#"
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+path = "./data/llm_proxy.db"
+pool_size = 5
+
+[[vendors]]
+id = "openai_main"
+name = "OpenAI"
+type_ = "openai"
+api_key_env = "OPENAI_API_KEY"
+enabled = true
+concurrency = { requests_per_second = 100 }
+rate_limit = { type = "token", max_tokens = 1000000 }
+
+[[vendors.models]]
+model_id = "gpt-4"
+enabled = true
+weight = 1.0
+"#;
+        let config: Config = toml::from_str(toml_str).expect("TOML parse should succeed");
+        assert!(
+            config.pricing.is_empty(),
+            "missing [[pricing]] section should default to empty Vec"
+        );
+    }
+
+    #[test]
+    fn test_pricing_config_struct_construction() {
+        // 关键属性：PricingConfig 可独立构造与序列化
+        let entry = PricingConfig {
+            vendor_id: "anthropic".into(),
+            model_id: "claude-3-opus".into(),
+            input_per_1k_tokens: 0.015,
+            output_per_1k_tokens: 0.075,
+        };
+        assert_eq!(entry.vendor_id, "anthropic");
+        assert_eq!(entry.model_id, "claude-3-opus");
+        assert!((entry.input_per_1k_tokens - 0.015).abs() < f64::EPSILON);
+        assert!((entry.output_per_1k_tokens - 0.075).abs() < f64::EPSILON);
     }
 }

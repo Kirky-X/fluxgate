@@ -71,6 +71,7 @@ mod tests {
                 enabled: true,
                 strategy: "weighted".to_string(),
             }),
+            pricing: vec![],
         }
     }
 
@@ -192,6 +193,7 @@ mod tests {
             database: config.database.clone(),
             vendors,
             global_model: config.global_model.clone(),
+            pricing: config.pricing.clone(),
         };
 
         let config_manager = Arc::new(ConfigManager::new(disabled_config));
@@ -214,6 +216,7 @@ mod tests {
             database: config.database.clone(),
             vendors,
             global_model: config.global_model.clone(),
+            pricing: config.pricing.clone(),
         };
 
         let config_manager = Arc::new(ConfigManager::new(disabled_config));

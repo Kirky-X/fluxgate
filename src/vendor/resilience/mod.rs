@@ -8,7 +8,9 @@ pub mod fallback;
 pub mod pool;
 pub mod retry;
 
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, IsRetryable};
+pub use circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, IsRetryable, State,
+};
 pub use fallback::{FallbackChain, FallbackTarget, FallbackTrigger};
 pub use pool::ConnectionPool;
 pub use retry::with_retry;

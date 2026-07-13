@@ -11,6 +11,10 @@ use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
 use crate::protocol::{UnifiedRequest, UnifiedResponse};
 use crate::utils::metrics::GlobalMetrics;
 use crate::utils::retry::ErrorCategory;
+#[cfg(feature = "resilience")]
+use crate::vendor::resilience::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError,
+};
 use bytes::Bytes;
 use reqwest;
 use serde_json::Value;
@@ -70,6 +74,8 @@ struct VendorInstance {
     rate_limiter: TokenBucket,
     concurrency_limiter: ConcurrencyLimiter,
     advanced_limiter: AdvancedRateLimiter,
+    #[cfg(feature = "resilience")]
+    circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl VendorInstance {
@@ -81,6 +87,8 @@ impl VendorInstance {
             queue: Arc::new(VendorQueue::new(queue_size)),
             rate_limiter: TokenBucket::new(queue_size, rps),
             concurrency_limiter: ConcurrencyLimiter::new(queue_size),
+            #[cfg(feature = "resilience")]
+            circuit_breaker: Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default())),
         }
     }
 }
@@ -94,6 +102,9 @@ pub struct VendorManager {
     openai_converter: Arc<OpenAIConverter>,
     anthropic_converter: Arc<AnthropicConverter>,
     metrics: Arc<GlobalMetrics>,
+    #[cfg(feature = "resilience")]
+    circuit_breakers:
+        Arc<RwLock<std::collections::HashMap<String, Arc<CircuitBreaker>>>>,
 }
 
 impl VendorManager {
@@ -106,12 +117,39 @@ impl VendorManager {
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             metrics: Arc::new(GlobalMetrics::new()),
+            #[cfg(feature = "resilience")]
+            circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
     /// 全局指标访问器 — 用于 /admin/metrics 端点
     pub fn metrics(&self) -> &Arc<GlobalMetrics> {
         &self.metrics
+    }
+
+    /// 读取 vendor 的 CircuitBreaker 当前状态（用于运维观测/测试断言）。
+    /// 未启用 resilience feature 或 vendor 未初始化时返回 `None`。
+    #[cfg(feature = "resilience")]
+    pub fn get_circuit_state(
+        &self,
+        vendor_id: &str,
+    ) -> Option<crate::vendor::resilience::State> {
+        let guard = self.circuit_breakers.read().unwrap();
+        guard.get(vendor_id).map(|cb| cb.state())
+    }
+
+    /// 强制将指定 vendor 的 CircuitBreaker 切到 Open 状态。
+    /// 仅供集成测试使用 — 跳过"触发 5 次真实失败"的慢路径，避免
+    /// `tokio::time::pausable` runtime 与真实 mockito HTTP IO 交互时
+    /// 因 auto-advance 提前触发 execute_request 的 60s 超时。
+    /// 业务代码不应调用。
+    #[cfg(feature = "resilience")]
+    #[doc(hidden)]
+    pub fn force_circuit_open(&self, vendor_id: &str) {
+        let guard = self.circuit_breakers.read().unwrap();
+        if let Some(cb) = guard.get(vendor_id) {
+            cb.force_open();
+        }
     }
 
     pub async fn initialize(&self) -> Result<(), NexusFlowError> {
@@ -150,6 +188,16 @@ impl VendorManager {
 
         let instance = Arc::new(VendorInstance::new(vendor.clone(), queue_size, rps));
         guard.insert(vendor.id.clone(), instance.clone());
+
+        // 同步注册到 manager 级 CB map（cfg-gated）
+        #[cfg(feature = "resilience")]
+        {
+            let cb = instance.circuit_breaker.clone();
+            self.circuit_breakers
+                .write()
+                .unwrap()
+                .insert(vendor.id.clone(), cb);
+        }
 
         // Spawn worker
         let instance_clone = instance.clone();
@@ -202,6 +250,8 @@ impl VendorManager {
                         pending.request,
                         &openai,
                         &anthropic,
+                        #[cfg(feature = "resilience")]
+                        &instance.circuit_breaker,
                     )
                     .await;
 
@@ -226,6 +276,7 @@ impl VendorManager {
         request: UnifiedRequest,
         openai: &OpenAIConverter,
         anthropic: &AnthropicConverter,
+        #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker>,
     ) -> Result<UnifiedResponse, NexusFlowError> {
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
             "openai" => openai,
@@ -240,8 +291,16 @@ impl VendorManager {
         // Convert UnifiedRequest to Vendor Request (JSON)
         let request_body = converter.request_to_external(request)?;
 
-        // 执行带重试的请求
-        Self::execute_http_with_retry(client, config, request_body, converter).await
+        // 执行带重试的请求（resilience feature 启用时由 CircuitBreaker 包装）
+        Self::execute_http_with_retry(
+            client,
+            config,
+            request_body,
+            converter,
+            #[cfg(feature = "resilience")]
+            circuit_breaker,
+        )
+        .await
     }
 
     /// 构建 vendor API URL（统一 4 处重复的 URL 拼接逻辑）
@@ -305,8 +364,49 @@ impl VendorManager {
         Ok(builder)
     }
 
-    /// 执行带重试的 HTTP 请求
+    /// 执行带重试的 HTTP 请求。
+    ///
+    /// 启用 `resilience` feature 时由 `CircuitBreaker` 包装：
+    /// - Closed/HalfOpen 状态下放行至内部重试逻辑；
+    /// - Open 状态下直接返回 `VendorUnavailable`，无 HTTP 调用；
+    /// - 调用结果由 `IsRetryable` 决定是否计入失败计数。
     async fn execute_http_with_retry(
+        client: &reqwest::Client,
+        config: &VendorConfig,
+        request_body: Value,
+        converter: &dyn ProtocolConverter,
+        #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker>,
+    ) -> Result<UnifiedResponse, NexusFlowError> {
+        #[cfg(feature = "resilience")]
+        {
+            let vendor_id = config.id.clone();
+            let result = circuit_breaker
+                .call(|| async {
+                    Self::execute_http_with_retry_inner(
+                        client,
+                        config,
+                        request_body.clone(),
+                        converter,
+                    )
+                    .await
+                })
+                .await;
+            result.map_err(|e| match e {
+                CircuitBreakerError::Open => NexusFlowError::VendorUnavailable {
+                    vendor: format!("{} (circuit open)", vendor_id),
+                },
+                CircuitBreakerError::Inner(e) => e,
+            })
+        }
+        #[cfg(not(feature = "resilience"))]
+        {
+            Self::execute_http_with_retry_inner(client, config, request_body, converter).await
+        }
+    }
+
+    /// HTTP 请求 + 内部手写重试循环（v0.1 行为保留）。
+    /// 在 `resilience` feature 启用时由 `execute_http_with_retry` 经 CB 包装后调用。
+    async fn execute_http_with_retry_inner(
         client: &reqwest::Client,
         config: &VendorConfig,
         request_body: Value,

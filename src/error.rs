@@ -115,6 +115,13 @@ impl From<sdforge::config::ConfigError> for NexusFlowError {
     }
 }
 
+#[cfg(feature = "resilience")]
+impl crate::vendor::resilience::IsRetryable for NexusFlowError {
+    fn is_retryable(&self) -> bool {
+        crate::utils::retry::is_retryable_error(self)
+    }
+}
+
 #[cfg(all(test, feature = "web-server"))]
 mod tests {
     use super::*;

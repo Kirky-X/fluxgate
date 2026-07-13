@@ -3,16 +3,17 @@
 
 use crate::config::{ConfigManager, ModelConfig, VendorConfig};
 use crate::error::NexusFlowError;
-use crate::vendor::{VendorManager, VendorStatus, WindowInfo};
+use crate::vendor::{VendorManager, VendorStatus};
+// TODO T036: WindowInfo will be wired in 3D weight calculation
+#[allow(unused_imports)]
+use crate::vendor::WindowInfo;
 use rand::prelude::*;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct RoutingDecision {
     pub vendor: VendorConfig,
-    #[allow(dead_code)]
     pub model: ModelConfig,
-    #[allow(dead_code)]
     pub strategy: RoutingStrategy,
 }
 

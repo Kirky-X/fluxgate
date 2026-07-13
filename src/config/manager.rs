@@ -1,7 +1,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use super::{Config, GlobalModelConfig, ModelConfig, VendorConfig};
+use super::{Config, ModelConfig, VendorConfig};
 use crate::error::NexusFlowError;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -97,7 +97,6 @@ impl ConfigManager {
             .collect()
     }
 
-    #[allow(dead_code)]
     pub fn is_global_model_enabled(&self) -> bool {
         let config = self.read();
         config
@@ -107,7 +106,6 @@ impl ConfigManager {
             .unwrap_or(false)
     }
 
-    #[allow(dead_code)]
     pub fn get_all_model_mappings(&self) -> HashMap<String, Vec<(String, String)>> {
         let config = self.read();
         let mut mappings: HashMap<String, Vec<(String, String)>> = HashMap::new();

@@ -267,7 +267,7 @@ pub async fn embeddings(
         .json(&openai_body)
         .send()
         .await
-        .map_err(|e| NexusFlowError::VendorUnavailable {
+        .map_err(|_e| NexusFlowError::VendorUnavailable {
             vendor: decision.vendor.id.clone(),
         })?;
 

@@ -15,8 +15,6 @@ pub struct VendorState {
     status: AtomicU8,
     status_changed: AtomicU64,
     error_count: AtomicU8,
-    #[allow(dead_code)]
-    last_active: AtomicU64,
 }
 
 impl VendorState {
@@ -25,7 +23,6 @@ impl VendorState {
             status: AtomicU8::new(VendorStatus::Available as u8),
             status_changed: AtomicU64::new(0),
             error_count: AtomicU8::new(0),
-            last_active: AtomicU64::new(0),
         }
     }
 
@@ -44,52 +41,30 @@ impl VendorState {
         );
     }
 
-    #[allow(dead_code)]
     pub fn inc_error(&self) -> u8 {
         self.error_count.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    #[allow(dead_code)]
     pub fn reset_error(&self) {
         self.error_count.store(0, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)]
     pub fn get_error_count(&self) -> u8 {
         self.error_count.load(Ordering::Relaxed)
     }
 
-    #[allow(dead_code)]
-    pub fn update_active(&self) {
-        self.last_active.store(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            Ordering::Relaxed,
-        );
-    }
-
-    #[allow(dead_code)]
-    pub fn get_last_active(&self) -> u64 {
-        self.last_active.load(Ordering::Relaxed)
-    }
-
     pub fn mark_busy(&self) {
         self.set_status(VendorStatus::Busy);
-        self.update_active();
     }
 
     pub fn mark_available(&self) {
         self.set_status(VendorStatus::Available);
     }
 
-    #[allow(dead_code)]
     pub fn mark_throttled(&self, _backoff: std::time::Duration) {
         self.set_status(VendorStatus::Throttled);
     }
 
-    #[allow(dead_code)]
     pub fn mark_unavailable(&self) {
         self.set_status(VendorStatus::Unavailable);
     }

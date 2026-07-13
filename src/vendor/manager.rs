@@ -9,7 +9,7 @@ use crate::config::{ConfigManager, VendorConfig};
 use crate::error::NexusFlowError;
 use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
 use crate::protocol::{UnifiedRequest, UnifiedResponse};
-use crate::utils::retry::{extract_status_code, is_retryable_error, ErrorCategory, RetryStrategy};
+use crate::utils::retry::ErrorCategory;
 use bytes::Bytes;
 use reqwest;
 use serde_json::Value;
@@ -106,7 +106,6 @@ impl VendorManager {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn initialize(&self) -> Result<(), NexusFlowError> {
         let vendors = self.config.get_enabled_vendors();
         for vendor in &vendors {
@@ -431,102 +430,6 @@ impl VendorManager {
             .map_err(|e| e)?
     }
 
-    /// 使用降级机制执行请求
-    ///
-    /// 按权重顺序尝试可用的厂商，失败时自动切换到下一个
-    pub async fn request_with_fallback(
-        &self,
-        abstract_model: &str,
-        request: UnifiedRequest,
-    ) -> Result<UnifiedResponse, NexusFlowError> {
-        // 获取模型对应的所有厂商（resolve_model 定义在 ConfigManager 上）
-        let candidates: Vec<(VendorConfig, crate::config::ModelConfig)> =
-            self.config.resolve_model(abstract_model);
-
-        if candidates.is_empty() {
-            return Err(NexusFlowError::Validation {
-                field: format!("模型 {} 未找到", abstract_model),
-            });
-        }
-
-        // 按权重排序
-        let mut sorted_candidates: Vec<_> = candidates
-            .into_iter()
-            .map(|(vendor, model)| {
-                let weight = model.weight.max(0.1);
-                (weight, vendor, model)
-            })
-            .collect();
-        sorted_candidates
-            .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        let mut last_error_msg = String::new();
-
-        for (_, vendor, _model) in sorted_candidates {
-            // 检查厂商状态
-            let status = self.get_status(&vendor.id);
-            if status == crate::vendor::VendorStatus::Unavailable {
-                continue;
-            }
-
-            // 尝试执行请求
-            match self.execute_request(&vendor.id, request.clone()).await {
-                Ok(response) => {
-                    return Ok(response);
-                }
-                Err(e) => {
-                    last_error_msg = e.to_string();
-
-                    // 根据错误类型决定是否标记厂商不可用
-                    match &e {
-                        NexusFlowError::RateLimited { .. } | NexusFlowError::Timeout { .. } => {
-                            // 暂时性错误，可以重试当前厂商或继续下一厂商
-                            continue;
-                        }
-                        NexusFlowError::Protocol { source, .. } => {
-                            // 协议错误可能是暂时性的，也可能是永久性的
-                            // 检查是否包含明确不可重试的错误
-                            if source.contains("401")
-                                || source.contains("403")
-                                || source.contains("404")
-                            {
-                                // 永久性错误，标记厂商不可用
-                                self.mark_vendor_unavailable(&vendor.id);
-                            }
-                            continue;
-                        }
-                        NexusFlowError::VendorUnavailable { .. } => {
-                            // 厂商不可用
-                            continue;
-                        }
-                        _ => {
-                            // 其他错误，继续尝试下一厂商
-                            continue;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 所有厂商都失败了
-        if !last_error_msg.is_empty() {
-            Err(NexusFlowError::Protocol {
-                source: last_error_msg,
-                inner: None,
-            })
-        } else {
-            Err(NexusFlowError::AllVendorsUnavailable)
-        }
-    }
-
-    /// 标记厂商为不可用状态
-    fn mark_vendor_unavailable(&self, vendor_id: &str) {
-        let instances = self.instances.read().unwrap();
-        if let Some(instance) = instances.get(vendor_id) {
-            instance.state.mark_unavailable();
-        }
-    }
-
     pub async fn execute_stream_request(
         &self,
         vendor_id: &str,
@@ -832,7 +735,6 @@ impl VendorManager {
         Ok(response.bytes_stream())
     }
 
-    #[allow(dead_code)]
     pub fn update_status(&self, vendor_id: &str, status: VendorStatus) {
         let guard = self.instances.read().unwrap();
         if let Some(instance) = guard.get(vendor_id) {
@@ -840,7 +742,6 @@ impl VendorManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn mark_busy(&self, vendor_id: &str) {
         let guard = self.instances.read().unwrap();
         if let Some(instance) = guard.get(vendor_id) {
@@ -848,7 +749,6 @@ impl VendorManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn mark_available(&self, vendor_id: &str) {
         let guard = self.instances.read().unwrap();
         if let Some(instance) = guard.get(vendor_id) {
@@ -856,7 +756,6 @@ impl VendorManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn mark_throttled(&self, vendor_id: &str, backoff: Duration) {
         let guard = self.instances.read().unwrap();
         if let Some(instance) = guard.get(vendor_id) {
@@ -864,7 +763,6 @@ impl VendorManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn inc_error(&self, vendor_id: &str) -> u8 {
         let guard = self.instances.read().unwrap();
         guard

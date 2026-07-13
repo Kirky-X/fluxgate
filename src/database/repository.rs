@@ -15,7 +15,6 @@ impl Repository {
         Self { pool }
     }
 
-    #[allow(dead_code)]
     pub async fn initialize(&self) -> Result<(), DbError> {
         let schema = include_str!("schema.sql");
         let session = self.pool.get_session("admin").await?;
@@ -125,7 +124,6 @@ impl Repository {
         Ok(rows.iter().map(map_request_log).collect())
     }
 
-    #[allow(dead_code)]
     pub async fn get_token_stats(
         &self,
         vendor: Option<&str>,
@@ -150,7 +148,6 @@ impl Repository {
         Ok(rows.iter().map(map_token_usage).collect())
     }
 
-    #[allow(dead_code)]
     pub async fn get_all_vendor_status(&self) -> Result<Vec<VendorStatusRecord>, DbError> {
         let sql = "SELECT * FROM vendor_status ORDER BY vendor";
         let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, Vec::new());

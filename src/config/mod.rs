@@ -43,7 +43,6 @@ fn default_pool_size() -> u32 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct VendorConfig {
     pub id: String,
-    #[allow(dead_code)]
     pub name: String,
     pub type_: String,
     pub api_key_env: String,
@@ -53,7 +52,6 @@ pub struct VendorConfig {
     pub enabled: bool,
     #[serde(default = "Vec::new")]
     pub models: Vec<ModelConfig>,
-    #[allow(dead_code)]
     pub rate_limit: RateLimitConfig,
     pub concurrency: ConcurrencyConfig,
 }
@@ -90,19 +88,15 @@ fn default_model_enabled() -> bool {
 pub enum RateLimitConfig {
     #[serde(rename = "time_window")]
     TimeWindow {
-        #[allow(dead_code)]
         start: String,
-        #[allow(dead_code)]
         end: String,
     },
     #[serde(rename = "interval")]
     Interval {
-        #[allow(dead_code)]
         hours: u64,
     },
     #[serde(rename = "token")]
     Token {
-        #[allow(dead_code)]
         max_tokens: u64,
     },
 }
@@ -120,7 +114,6 @@ fn default_rps() -> u32 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GlobalModelConfig {
     #[serde(default = "default_global_enabled")]
-    #[allow(dead_code)]
     pub enabled: bool,
     #[serde(default = "default_strategy")]
     pub strategy: String,
@@ -139,6 +132,5 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub vendors: Vec<VendorConfig>,
-    #[allow(dead_code)]
     pub global_model: Option<GlobalModelConfig>,
 }

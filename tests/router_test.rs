@@ -7,8 +7,7 @@ mod tests {
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig,
         VendorConfig,
     };
-    use nexusflow::error::NexusFlowError;
-    use nexusflow::router::{Router, RoutingDecision, RoutingStrategy};
+    use nexusflow::router::{Router, RoutingStrategy};
     use nexusflow::vendor::VendorManager;
     use std::sync::Arc;
 

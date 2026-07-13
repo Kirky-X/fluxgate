@@ -20,6 +20,9 @@ infrastructure = ["dep:oxcache", "dep:confers", "dep:trait-kit"]
 sdforge-integration = ["dep:sdforge"]
 logging = ["dep:inklog"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
+
 [dependencies]
 # Web 框架
 axum = { version = "0.8", features = ["macros"], optional = true }

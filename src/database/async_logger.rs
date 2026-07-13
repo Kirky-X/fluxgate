@@ -5,7 +5,7 @@
 //!
 //! 使用专用 channel 实现异步批量日志写入，提高性能。
 
-use crate::database::{Database, Repository, RequestLog};
+use crate::database::{Repository, RequestLog};
 use crate::error::NexusFlowError;
 use async_channel::{bounded, Receiver, Sender};
 use std::sync::Arc;
@@ -155,8 +155,6 @@ impl AsyncLoggerHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[tokio::test]
     async fn test_async_logger() {
         // 测试日志写入

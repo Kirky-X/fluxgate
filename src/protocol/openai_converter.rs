@@ -549,7 +549,6 @@ fn message_to_openai(msg: Message) -> Value {
     obj
 }
 
-#[allow(dead_code)]
 fn delta_to_openai(delta: MessageContent) -> Value {
     match delta {
         MessageContent::Text(s) => json!({ "content": s }),

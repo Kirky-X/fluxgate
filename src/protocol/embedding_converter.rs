@@ -5,122 +5,6 @@ use super::*;
 use crate::error::NexusFlowError;
 use serde_json::{json, Value};
 
-#[allow(dead_code)]
-pub struct OpenAIEmbeddingConverter;
-
-impl OpenAIEmbeddingConverter {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait::async_trait]
-impl ProtocolConverter for OpenAIEmbeddingConverter {
-    fn input_protocol(&self) -> Protocol {
-        Protocol::OpenAI
-    }
-
-    fn output_protocol(&self) -> Protocol {
-        Protocol::OpenAI
-    }
-
-    fn to_unified(&self, _body: Value) -> Result<UnifiedRequest, NexusFlowError> {
-        // Embeddings don't map to UnifiedRequest directly in this context,
-        // as they are handled separately.
-        Err(NexusFlowError::Protocol {
-            source: "Embeddings cannot be converted to UnifiedRequest".into(),
-            inner: None,
-        })
-    }
-
-    fn request_to_external(&self, _request: UnifiedRequest) -> Result<Value, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "UnifiedRequest cannot be converted to Embedding request".into(),
-            inner: None,
-        })
-    }
-
-    fn from_unified(&self, _response: UnifiedResponse) -> Result<Value, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "UnifiedResponse cannot be converted to Embedding response".into(),
-            inner: None,
-        })
-    }
-
-    fn parse_response(&self, _response: Value) -> Result<UnifiedResponse, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "Embedding response cannot be parsed to UnifiedResponse".into(),
-            inner: None,
-        })
-    }
-
-    #[allow(dead_code)]
-    fn stream_chunk_to_external(&self, _chunk: StreamChunk) -> Result<Value, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "Embedding does not support streaming".into(),
-            inner: None,
-        })
-    }
-}
-
-#[allow(dead_code)]
-pub struct AnthropicEmbeddingConverter;
-
-impl AnthropicEmbeddingConverter {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait::async_trait]
-impl ProtocolConverter for AnthropicEmbeddingConverter {
-    fn input_protocol(&self) -> Protocol {
-        Protocol::Anthropic
-    }
-
-    fn output_protocol(&self) -> Protocol {
-        Protocol::Anthropic
-    }
-
-    fn to_unified(&self, _body: Value) -> Result<UnifiedRequest, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "Anthropic doesn't support embeddings".into(),
-            inner: None,
-        })
-    }
-
-    fn request_to_external(&self, _request: UnifiedRequest) -> Result<Value, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "Anthropic doesn't support embeddings".into(),
-            inner: None,
-        })
-    }
-
-    fn from_unified(&self, _response: UnifiedResponse) -> Result<Value, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "Anthropic doesn't support embeddings".into(),
-            inner: None,
-        })
-    }
-
-    fn parse_response(&self, _response: Value) -> Result<UnifiedResponse, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "Anthropic doesn't support embeddings".into(),
-            inner: None,
-        })
-    }
-
-    #[allow(dead_code)]
-    fn stream_chunk_to_external(&self, _chunk: StreamChunk) -> Result<Value, NexusFlowError> {
-        Err(NexusFlowError::Protocol {
-            source: "Anthropic doesn't support embeddings".into(),
-            inner: None,
-        })
-    }
-}
-
 /// OpenAI Embedding 请求转换
 pub fn embedding_request_to_openai(body: Value) -> Result<Value, NexusFlowError> {
     let model = body
@@ -168,7 +52,6 @@ pub fn embedding_request_to_openai(body: Value) -> Result<Value, NexusFlowError>
 }
 
 /// OpenAI Embedding 响应转换
-#[allow(dead_code)]
 pub fn embedding_response_from_openai(
     response: Value,
 ) -> Result<UnifiedEmbeddingResponse, NexusFlowError> {

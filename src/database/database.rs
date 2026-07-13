@@ -7,7 +7,6 @@ use dbnexus::{DbConfig, DbPool};
 
 #[derive(Clone)]
 pub struct Database {
-    #[allow(dead_code)]
     pub pool: DbPool,
     pub repository: std::sync::Arc<Repository>,
 }
@@ -67,7 +66,6 @@ impl Database {
         &self.repository
     }
 
-    #[allow(dead_code)]
     pub async fn close(&self) {
         // DbPool 在 Drop 时自动清理，无需显式关闭
     }

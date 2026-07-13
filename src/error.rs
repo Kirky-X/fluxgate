@@ -4,11 +4,7 @@
 // 错误处理模块
 use axum::response::IntoResponse;
 use serde_json::json;
-use std::result;
 use thiserror::Error;
-
-#[allow(dead_code)]
-pub type Result<T> = result::Result<T, NexusFlowError>;
 
 #[derive(Error, Debug)]
 pub enum NexusFlowError {
@@ -25,10 +21,6 @@ pub enum NexusFlowError {
     #[error("厂商不可用: {vendor}")]
     VendorUnavailable { vendor: String },
 
-    #[error("所有厂商均不可用")]
-    #[allow(dead_code)]
-    AllVendorsUnavailable,
-
     #[error("请求超时: {vendor}")]
     Timeout { vendor: String },
 
@@ -42,22 +34,7 @@ pub enum NexusFlowError {
     Validation { field: String },
 
     #[error("路由错误: {message}")]
-    #[allow(dead_code)]
     Routing { message: String },
-}
-
-impl NexusFlowError {
-    /// 检查错误是否可重试
-    #[allow(dead_code)]
-    pub fn is_retryable(&self) -> bool {
-        match self {
-            NexusFlowError::Timeout { .. } => true,
-            NexusFlowError::RateLimited { .. } => true,
-            NexusFlowError::VendorUnavailable { .. } => false,
-            NexusFlowError::Protocol { .. } => true,
-            _ => false,
-        }
-    }
 }
 
 impl IntoResponse for NexusFlowError {
@@ -65,9 +42,6 @@ impl IntoResponse for NexusFlowError {
         let status = match self {
             NexusFlowError::Validation { .. } => axum::http::StatusCode::BAD_REQUEST,
             NexusFlowError::VendorUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            NexusFlowError::AllVendorsUnavailable { .. } => {
-                axum::http::StatusCode::SERVICE_UNAVAILABLE
-            }
             NexusFlowError::Timeout { .. } => axum::http::StatusCode::GATEWAY_TIMEOUT,
             NexusFlowError::RateLimited { .. } => axum::http::StatusCode::TOO_MANY_REQUESTS,
             NexusFlowError::Config { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,

@@ -10,8 +10,6 @@ pub mod unified;
 
 pub use anthropic_converter::AnthropicConverter;
 pub use embedding_converter::{embedding_request_to_openai, embedding_response_from_openai};
-#[allow(dead_code)]
-pub use embedding_converter::{AnthropicEmbeddingConverter, OpenAIEmbeddingConverter};
 pub use openai_converter::OpenAIConverter;
 pub use unified::{
     Choice, ContentBlock, EmbeddingData, EmbeddingUsage, ImageSource, Message, MessageContent,
@@ -28,9 +26,7 @@ pub enum Protocol {
 
 #[async_trait::async_trait]
 pub trait ProtocolConverter: Send + Sync {
-    #[allow(dead_code)]
     fn input_protocol(&self) -> Protocol;
-    #[allow(dead_code)]
     fn output_protocol(&self) -> Protocol;
     fn to_unified(&self, body: serde_json::Value) -> Result<UnifiedRequest, NexusFlowError>;
     /// 将 UnifiedRequest 转换为外部 API 请求格式 (如 Anthropic → OpenAI)
@@ -43,7 +39,6 @@ pub trait ProtocolConverter: Send + Sync {
         &self,
         response: serde_json::Value,
     ) -> Result<UnifiedResponse, NexusFlowError>;
-    #[allow(dead_code)]
     fn stream_chunk_to_external(
         &self,
         chunk: StreamChunk,

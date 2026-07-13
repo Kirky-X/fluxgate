@@ -63,7 +63,6 @@ pub struct VendorStatusRecord {
 #[derive(Debug, Clone, Default)]
 pub struct LogFilter {
     pub start_time: Option<i64>,
-    #[allow(dead_code)]
     pub end_time: Option<i64>,
     pub vendor: Option<String>,
     pub model: Option<String>,

@@ -62,7 +62,6 @@ impl ConcurrencyLimiter {
     }
 
     /// 非阻塞检查是否可以获取许可（委托给 limiteron ConcurrencyLimiter::allow）
-    #[allow(dead_code)]
     pub async fn try_acquire(&self) -> bool {
         self.inner.allow(1).await.unwrap_or(false)
     }

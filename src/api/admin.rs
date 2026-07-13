@@ -140,7 +140,6 @@ pub async fn get_vendors(
 }
 
 #[axum::debug_handler]
-#[allow(dead_code)]
 pub async fn update_vendor(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,

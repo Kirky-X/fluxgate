@@ -9,11 +9,9 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ApiState {
-    #[allow(dead_code)]
     pub config: Arc<ConfigManager>,
     pub vendor_manager: Arc<VendorManager>,
     pub router: Arc<RouterTrait>,
-    #[allow(dead_code)]
     pub client: Client,
     pub openai_converter: Arc<dyn ProtocolConverter>,
     pub anthropic_converter: Arc<dyn ProtocolConverter>,

@@ -301,24 +301,8 @@ pub enum StreamChunk {
     Heartbeat,
 }
 
-/// 统一 Embedding 请求
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct UnifiedEmbeddingRequest {
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub input: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encoding_format: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dimensions: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-}
-
 /// 统一 Embedding 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct UnifiedEmbeddingResponse {
     pub id: String,
     #[serde(default)]
@@ -331,7 +315,6 @@ pub struct UnifiedEmbeddingResponse {
 
 /// Embedding 数据项
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct EmbeddingData {
     pub index: u32,
     #[serde(rename = "object")]
@@ -341,7 +324,6 @@ pub struct EmbeddingData {
 
 /// Embedding 使用统计
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct EmbeddingUsage {
     #[serde(default, rename = "prompt_tokens")]
     pub prompt_tokens: u32,

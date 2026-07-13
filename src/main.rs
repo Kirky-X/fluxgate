@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use nexusflow::api::{init_global_state, ApiState};
 use nexusflow::config::loader::ConfigLoader;
-use nexusflow::config::ConfigManager;
 use nexusflow::database::Database;
 use nexusflow::error::NexusFlowError;
 use nexusflow::protocol::AnthropicConverter;

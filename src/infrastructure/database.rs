@@ -30,7 +30,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use super::{Database, DatabaseSession, DbError, Row, ToSql};
 
@@ -93,8 +93,6 @@ impl DatabaseSession for MemoryDbSession {
 pub struct MemoryDbBackend {
     /// Simulated tables.
     tables: Arc<RwLock<HashMap<String, Vec<HashMap<String, String>>>>>,
-    /// Active transaction.
-    transaction: Arc<Mutex<Option<MemoryDbSession>>>,
 }
 
 impl MemoryDbBackend {
@@ -110,7 +108,6 @@ impl MemoryDbBackend {
 
         Self {
             tables: Arc::new(RwLock::new(tables)),
-            transaction: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -144,11 +141,11 @@ impl MemoryDbBackend {
 }
 
 impl DbnexusPool for MemoryDbBackend {
-    fn query(&self, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Row>, DbError> {
+    fn query(&self, sql: &str, _params: &[&dyn ToSql]) -> Result<Vec<Row>, DbError> {
         self.execute_select(sql)
     }
 
-    fn execute(&self, sql: &str, params: &[&dyn ToSql]) -> Result<u64, DbError> {
+    fn execute(&self, sql: &str, _params: &[&dyn ToSql]) -> Result<u64, DbError> {
         self.execute_statement(sql)
     }
 
@@ -178,7 +175,7 @@ impl SqliteBackend {
 }
 
 impl DbnexusPool for SqliteBackend {
-    fn query(&self, sql: &str, _params: &[&dyn ToSql]) -> Result<Vec<Row>, DbError> {
+    fn query(&self, _sql: &str, _params: &[&dyn ToSql]) -> Result<Vec<Row>, DbError> {
         // In a real implementation, this would use SQLite
         // For now, return empty results
         let _ = self.connection_string;
@@ -231,8 +228,6 @@ impl Default for DatabaseConfig {
 pub struct Dbnexus {
     /// Backend pool for database connections.
     pool: Arc<dyn DbnexusPool>,
-    /// Configuration settings.
-    config: DatabaseConfig,
 }
 
 impl Dbnexus {
@@ -288,26 +283,16 @@ impl Dbnexus {
     /// let rows = db.query("SELECT * FROM tokens", &[]).unwrap();
     /// ```
     pub fn with_dependencies(pool: Arc<dyn DbnexusPool>) -> Self {
-        Self {
-            pool,
-            config: DatabaseConfig::default(),
-        }
+        Self { pool }
     }
 
     /// Create a database wrapper with custom backend and configuration.
     pub fn with_config_and_dependencies(
         pool: Arc<dyn DbnexusPool>,
-        max_connections: u32,
-        timeout: Option<std::time::Duration>,
+        _max_connections: u32,
+        _timeout: Option<std::time::Duration>,
     ) -> Self {
-        Self {
-            pool,
-            config: DatabaseConfig {
-                max_connections,
-                timeout,
-                ..Default::default()
-            },
-        }
+        Self { pool }
     }
 }
 
@@ -435,15 +420,15 @@ impl DbnexusBuilder {
             }
         };
 
-        Dbnexus {
-            pool,
-            config: DatabaseConfig {
-                max_connections: self.max_connections,
-                timeout: self.timeout,
-                enable_wal: self.enable_wal,
-                busy_timeout: self.busy_timeout,
-            },
-        }
+        // Read builder fields to construct config (for future use)
+        let _config = DatabaseConfig {
+            max_connections: self.max_connections,
+            timeout: self.timeout,
+            enable_wal: self.enable_wal,
+            busy_timeout: self.busy_timeout,
+        };
+
+        Dbnexus { pool }
     }
 }
 
@@ -465,7 +450,6 @@ impl Default for Dbnexus {
     fn default() -> Self {
         Self {
             pool: Arc::new(MemoryDbBackend::new()),
-            config: DatabaseConfig::default(),
         }
     }
 }

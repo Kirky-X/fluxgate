@@ -16,7 +16,7 @@ mod endpoints {
             VendorConfig,
         },
         database::Database,
-        protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter},
+        protocol::{AnthropicConverter, OpenAIConverter},
         vendor::VendorManager,
         ApiState,
     };

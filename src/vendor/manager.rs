@@ -9,6 +9,7 @@ use crate::config::{ConfigManager, VendorConfig};
 use crate::error::NexusFlowError;
 use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
 use crate::protocol::{UnifiedRequest, UnifiedResponse};
+use crate::utils::metrics::GlobalMetrics;
 use crate::utils::retry::ErrorCategory;
 use bytes::Bytes;
 use reqwest;
@@ -92,6 +93,7 @@ pub struct VendorManager {
     client: reqwest::Client,
     openai_converter: Arc<OpenAIConverter>,
     anthropic_converter: Arc<AnthropicConverter>,
+    metrics: Arc<GlobalMetrics>,
 }
 
 impl VendorManager {
@@ -103,7 +105,13 @@ impl VendorManager {
             client: reqwest::Client::new(),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
+            metrics: Arc::new(GlobalMetrics::new()),
         }
+    }
+
+    /// 全局指标访问器 — 用于 /admin/metrics 端点
+    pub fn metrics(&self) -> &Arc<GlobalMetrics> {
+        &self.metrics
     }
 
     pub async fn initialize(&self) -> Result<(), NexusFlowError> {
@@ -539,6 +547,26 @@ impl VendorManager {
     /// 执行零拷贝透传请求
     /// 当入站协议与出站协议相同时使用，避免序列化/反序列化开销
     pub async fn execute_passthrough_request(
+        &self,
+        vendor_id: &str,
+        request_body: Value,
+    ) -> Result<Value, NexusFlowError> {
+        let start = Instant::now();
+        let result = self
+            .execute_passthrough_request_inner(vendor_id, request_body)
+            .await;
+        let duration = start.elapsed();
+        match &result {
+            Ok(_) => self.metrics.record_request(vendor_id, true, duration),
+            Err(e) => {
+                self.metrics.record_request(vendor_id, false, duration);
+                self.metrics.record_error(vendor_id, &e.to_string());
+            }
+        }
+        result
+    }
+
+    async fn execute_passthrough_request_inner(
         &self,
         vendor_id: &str,
         request_body: Value,

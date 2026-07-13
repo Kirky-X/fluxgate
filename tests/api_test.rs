@@ -1056,4 +1056,44 @@ mod admin {
             Ok(_) => panic!("update_model should fail for non-global id"),
         }
     }
+
+    #[tokio::test]
+    async fn test_admin_metrics_empty() {
+        let state = create_api_state().await;
+        let result = admin::metrics(State(state)).await;
+        assert!(result.is_ok());
+        let value = result.unwrap().0;
+        assert_eq!(value["total_requests"], 0);
+        assert_eq!(value["successful_requests"], 0);
+        assert_eq!(value["failed_requests"], 0);
+        assert!((value["error_rate"].as_f64().unwrap() - 0.0).abs() < 1e-9);
+        assert!((value["avg_duration_ms"].as_f64().unwrap() - 0.0).abs() < 1e-9);
+        assert!(value["vendors"].is_array());
+        assert!(value["vendors"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_admin_metrics_after_recorded_request() {
+        let state = create_api_state().await;
+        // 注入一次失败请求并验证快照反映
+        state
+            .vendor_manager
+            .metrics()
+            .record_request("openai_main", false, std::time::Duration::from_millis(120));
+
+        let result = admin::metrics(State(state.clone())).await;
+        assert!(result.is_ok());
+        let value = result.unwrap().0;
+        assert_eq!(value["total_requests"], 1);
+        assert_eq!(value["failed_requests"], 1);
+        assert_eq!(value["successful_requests"], 0);
+        assert!((value["error_rate"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        // avg_duration_ms ≈ 120.0
+        assert!((value["avg_duration_ms"].as_f64().unwrap() - 120.0).abs() < 1e-3);
+
+        let vendors = value["vendors"].as_array().unwrap();
+        assert_eq!(vendors.len(), 1);
+        assert_eq!(vendors[0]["vendor"], "openai_main");
+        assert_eq!(vendors[0]["failures"], 1);
+    }
 }

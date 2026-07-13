@@ -57,6 +57,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route("/admin/logs", get(admin::logs))
         .route("/admin/logs/search", get(admin::search_logs))
         .route("/admin/stats/tokens", get(admin::token_stats))
+        .route("/admin/metrics", get(admin::metrics))
         .route("/admin/vendors", get(admin::vendors))
         .route("/admin/vendors/:id/status", get(admin::vendor_status))
         .route("/admin/vendors/:id/reset", post(admin::reset_vendor))

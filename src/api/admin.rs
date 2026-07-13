@@ -64,6 +64,13 @@ pub async fn token_stats(
     Ok(Json(serde_json::json!(stats)))
 }
 
+/// 全局指标快照 — 返回请求计数、错误率、平均延迟与各厂商细分指标
+#[axum::debug_handler]
+pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, NexusFlowError> {
+    let snapshot = state.vendor_manager.metrics().snapshot();
+    Ok(Json(serde_json::json!(snapshot)))
+}
+
 #[axum::debug_handler]
 pub async fn vendors(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, NexusFlowError> {
     let statuses = state.vendor_manager.get_all_status();

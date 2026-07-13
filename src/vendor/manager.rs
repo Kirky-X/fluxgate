@@ -847,3 +847,196 @@ impl VendorManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! `WindowInfo` 单元测试 — 纯逻辑无 IO，覆盖三个公开方法的边界与典型场景。
+    //!
+    //! 测试设计原则（规则9）：每个用例断言具体值或具体行为，
+    //! 而非"调用未 panic"。包括 None 分支、边界（恰好等于阈值）、
+    //! 异常输入（max=0、used > max）和数值精度。
+
+    use super::*;
+    use std::time::Duration;
+
+    // ============ is_ending_soon ============
+
+    #[test]
+    fn test_is_ending_soon_returns_false_when_no_window_end() {
+        // 无结束时间 → 永久窗口，永远不会"即将结束"
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 0,
+            window_end: None,
+        };
+        assert_eq!(info.is_ending_soon(), false);
+    }
+
+    #[test]
+    fn test_is_ending_soon_false_when_far_in_future() {
+        // 窗口结束时间在远未来（10 分钟后）→ 不算即将结束
+        let info = WindowInfo {
+            max_tokens: None,
+            used_tokens: 0,
+            window_end: Some(Instant::now() + Duration::from_secs(600)),
+        };
+        assert_eq!(info.is_ending_soon(), false);
+    }
+
+    #[test]
+    fn test_is_ending_soon_true_when_within_5_minutes() {
+        // 窗口剩余 60 秒（< 300 秒阈值）→ 即将结束
+        let info = WindowInfo {
+            max_tokens: None,
+            used_tokens: 0,
+            window_end: Some(Instant::now() + Duration::from_secs(60)),
+        };
+        assert_eq!(info.is_ending_soon(), true);
+    }
+
+    #[test]
+    fn test_is_ending_soon_true_when_window_already_passed() {
+        // 窗口结束时间已过去 → duration_since 饱和到 0，0 < 300 = true
+        // 此为现有实现行为，断言之以锁定语义
+        let info = WindowInfo {
+            max_tokens: None,
+            used_tokens: 0,
+            window_end: Some(Instant::now() - Duration::from_secs(60)),
+        };
+        assert_eq!(info.is_ending_soon(), true);
+    }
+
+    // ============ has_budget ============
+
+    #[test]
+    fn test_has_budget_true_when_no_limit() {
+        // max_tokens=None → 无限制，无论 used 多少都有预算
+        let info = WindowInfo {
+            max_tokens: None,
+            used_tokens: 1_000_000,
+            window_end: None,
+        };
+        assert_eq!(info.has_budget(), true);
+    }
+
+    #[test]
+    fn test_has_budget_true_when_partial_usage() {
+        // 500 < 1000 → true
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 500,
+            window_end: None,
+        };
+        assert_eq!(info.has_budget(), true);
+    }
+
+    #[test]
+    fn test_has_budget_false_when_exactly_at_limit() {
+        // used == max → 严格小于失败 → false（边界）
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 1000,
+            window_end: None,
+        };
+        assert_eq!(info.has_budget(), false);
+    }
+
+    #[test]
+    fn test_has_budget_false_when_over_limit() {
+        // used > max → false
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 2000,
+            window_end: None,
+        };
+        assert_eq!(info.has_budget(), false);
+    }
+
+    // ============ budget_percentage ============
+
+    #[test]
+    fn test_budget_percentage_one_when_no_limit() {
+        // 无限制 → 满预算 1.0
+        let info = WindowInfo {
+            max_tokens: None,
+            used_tokens: 0,
+            window_end: None,
+        };
+        assert_eq!(info.budget_percentage(), 1.0);
+    }
+
+    #[test]
+    fn test_budget_percentage_one_when_nothing_used() {
+        // max=Some(1000), used=0 → 1.0
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 0,
+            window_end: None,
+        };
+        assert_eq!(info.budget_percentage(), 1.0);
+    }
+
+    #[test]
+    fn test_budget_percentage_half_when_half_used() {
+        // used=500, max=1000 → 1 - 0.5 = 0.5
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 500,
+            window_end: None,
+        };
+        let pct = info.budget_percentage();
+        assert!(
+            (pct - 0.5).abs() < 1e-9,
+            "expected 0.5, got {}",
+            pct
+        );
+    }
+
+    #[test]
+    fn test_budget_percentage_zero_when_fully_used() {
+        // used=max → 1 - 1.0 = 0.0
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 1000,
+            window_end: None,
+        };
+        assert_eq!(info.budget_percentage(), 0.0);
+    }
+
+    #[test]
+    fn test_budget_percentage_clamped_to_zero_when_over_used() {
+        // used > max → (1 - 2.0).max(0.0) = 0.0（不允许负数）
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 2000,
+            window_end: None,
+        };
+        assert_eq!(info.budget_percentage(), 0.0);
+    }
+
+    #[test]
+    fn test_budget_percentage_zero_when_max_is_zero() {
+        // max_tokens=Some(0) → 防除零特判 → 0.0
+        let info = WindowInfo {
+            max_tokens: Some(0),
+            used_tokens: 0,
+            window_end: None,
+        };
+        assert_eq!(info.budget_percentage(), 0.0);
+    }
+
+    #[test]
+    fn test_window_info_debug_clone_roundtrip() {
+        // 验证 Debug + Clone 派生行为，确保 WindowInfo 可跨任务克隆传递
+        let info = WindowInfo {
+            max_tokens: Some(1000),
+            used_tokens: 500,
+            window_end: Some(Instant::now() + Duration::from_secs(60)),
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.max_tokens, info.max_tokens);
+        assert_eq!(cloned.used_tokens, info.used_tokens);
+        // Debug 不 panic
+        let _ = format!("{:?}", info);
+    }
+}

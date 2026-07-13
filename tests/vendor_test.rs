@@ -179,3 +179,628 @@ mod rate_limiter {
         assert!(result.is_ok(), "acquire should succeed after permit dropped");
     }
 }
+
+mod manager {
+    //! `VendorManager` 集成测试 — 覆盖状态方法（无 IO）和 HTTP 请求方法（mockito mock）。
+    //!
+    //! 测试设计原则（规则9）：
+    //! - 状态测试断言具体状态值、计数、字段值，而非"调用未 panic"
+    //! - HTTP 测试断言响应 JSON 内容、错误类型字段、副作用（token 消耗）
+    //! - 包含端到端集成场景（execute_request 经 worker 执行完整 HTTP 流程）
+
+    use nexusflow::config::{
+        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
+        RateLimitConfig, ServerConfig, VendorConfig,
+    };
+    use nexusflow::error::NexusFlowError;
+    use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
+    use nexusflow::vendor::{VendorManager, VendorStatus};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// 构造测试 vendor config
+    fn make_vendor(
+        id: &str,
+        type_: &str,
+        enabled: bool,
+        api_base: String,
+        rate_limit: RateLimitConfig,
+    ) -> VendorConfig {
+        VendorConfig {
+            id: id.into(),
+            name: format!("Test {}", id),
+            type_: type_.into(),
+            // passthrough 路径用 unwrap_or_default；非 passthrough 仅在错误路径测试
+            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+            api_base,
+            enabled,
+            models: vec![ModelConfig {
+                model_id: "gpt-4".into(),
+                abstract_id: Some("gpt-4".into()),
+                weight: 1.0,
+                enabled: true,
+            }],
+            rate_limit,
+            // rps=100 让 TokenBucket 立即放行，避免 acquire 阻塞
+            concurrency: ConcurrencyConfig {
+                requests_per_second: 100,
+            },
+        }
+    }
+
+    fn token_limit(max: u64) -> RateLimitConfig {
+        RateLimitConfig::Token { max_tokens: max }
+    }
+
+    fn make_config(vendors: Vec<VendorConfig>) -> Config {
+        Config {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            database: DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+            },
+            vendors,
+            global_model: Some(GlobalModelConfig {
+                enabled: true,
+                strategy: "weighted".into(),
+            }),
+        }
+    }
+
+    fn make_unified_request() -> UnifiedRequest {
+        UnifiedRequest {
+            model: "gpt-4".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hello".into()),
+            }],
+            temperature: None,
+            max_tokens: Some(10),
+            stream: false,
+            stop: vec![],
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logit_bias: Default::default(),
+            user: None,
+            tools: vec![],
+            tool_choice: None,
+        }
+    }
+
+    // ============ 状态方法测试（无 IO） ============
+
+    #[tokio::test]
+    async fn test_get_status_nonexistent_vendor_returns_unavailable() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+        assert_eq!(manager.get_status("nonexistent"), VendorStatus::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn test_get_status_disabled_vendor_returns_unavailable() {
+        // disabled vendor 在 config 中存在但 enabled=false
+        let v = make_vendor("disabled-1", "openai", false, String::new(), token_limit(1000));
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+        // get_status 在 vendor.enabled=false 时直接返回 Unavailable
+        assert_eq!(manager.get_status("disabled-1"), VendorStatus::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn test_get_status_default_available_after_initialize() {
+        let v = make_vendor("openai-1", "openai", true, String::new(), token_limit(1000));
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+        assert_eq!(manager.get_status("openai-1"), VendorStatus::Available);
+    }
+
+    #[tokio::test]
+    async fn test_mark_busy_changes_status() {
+        let v = make_vendor("v-busy", "openai", true, String::new(), token_limit(1000));
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        manager.mark_busy("v-busy");
+        assert_eq!(manager.get_status("v-busy"), VendorStatus::Busy);
+    }
+
+    #[tokio::test]
+    async fn test_mark_available_restores_status() {
+        let v = make_vendor("v-avail", "openai", true, String::new(), token_limit(1000));
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        manager.mark_busy("v-avail");
+        manager.mark_available("v-avail");
+        assert_eq!(manager.get_status("v-avail"), VendorStatus::Available);
+    }
+
+    #[tokio::test]
+    async fn test_mark_throttled_changes_status() {
+        let v = make_vendor(
+            "v-throttle",
+            "openai",
+            true,
+            String::new(),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        manager.mark_throttled("v-throttle", Duration::from_secs(30));
+        assert_eq!(manager.get_status("v-throttle"), VendorStatus::Throttled);
+    }
+
+    #[tokio::test]
+    async fn test_update_status_directly_sets_state() {
+        let v = make_vendor("v-update", "openai", true, String::new(), token_limit(1000));
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        manager.update_status("v-update", VendorStatus::Unavailable);
+        assert_eq!(manager.get_status("v-update"), VendorStatus::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn test_inc_error_increments_sequentially() {
+        let v = make_vendor("v-err", "openai", true, String::new(), token_limit(1000));
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        // inc_error 返回递增后的值
+        assert_eq!(manager.inc_error("v-err"), 1);
+        assert_eq!(manager.inc_error("v-err"), 2);
+        assert_eq!(manager.inc_error("v-err"), 3);
+    }
+
+    #[tokio::test]
+    async fn test_inc_error_nonexistent_returns_zero() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+        // 不存在的 vendor → 返回 0（unwrap_or(0)）
+        assert_eq!(manager.inc_error("ghost"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_queue_length_nonexistent_returns_zero() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+        assert_eq!(manager.get_queue_length("ghost"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_status_empty_when_no_instances() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+        let all = manager.get_all_status();
+        assert!(all.is_empty(), "expected empty status list, got {:?}", all);
+    }
+
+    #[tokio::test]
+    async fn test_get_all_status_lists_initialized_vendors() {
+        let v1 = make_vendor("v1", "openai", true, String::new(), token_limit(1000));
+        let v2 = make_vendor(
+            "v2",
+            "anthropic",
+            true,
+            String::new(),
+            RateLimitConfig::Interval { hours: 1 },
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v1, v2])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let all = manager.get_all_status();
+        assert_eq!(all.len(), 2, "expected 2 vendors, got {:?}", all);
+        let ids: Vec<&str> = all.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert!(ids.contains(&"v1"), "v1 missing: {:?}", ids);
+        assert!(ids.contains(&"v2"), "v2 missing: {:?}", ids);
+        // 初始状态都是 Available，队列为空
+        for (_, status, queue_len) in &all {
+            assert_eq!(*status, VendorStatus::Available, "expected Available");
+            assert_eq!(*queue_len, 0, "expected empty queue");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_window_info_nonexistent_returns_none() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+        assert!(manager.get_window_info("ghost").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_window_info_token_limiter_initial_state() {
+        let v = make_vendor(
+            "v-token",
+            "openai",
+            true,
+            String::new(),
+            token_limit(500),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let info = manager.get_window_info("v-token").expect("window info");
+        assert_eq!(info.max_tokens, Some(500), "max_tokens should be 500");
+        assert_eq!(info.used_tokens, 0, "used_tokens should be 0 initially");
+        assert!(info.window_end.is_none(), "Token limiter has no window_end");
+        assert!(info.has_budget(), "should have budget at 0/500");
+        assert!(
+            (info.budget_percentage() - 1.0).abs() < 1e-9,
+            "should be 100% budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_window_info_interval_limiter_has_no_max() {
+        let v = make_vendor(
+            "v-interval",
+            "openai",
+            true,
+            String::new(),
+            RateLimitConfig::Interval { hours: 1 },
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let info = manager.get_window_info("v-interval").expect("window info");
+        assert!(info.max_tokens.is_none(), "Interval limiter has no max_tokens");
+        assert_eq!(info.used_tokens, 0);
+        // window_end 依赖当前时间（窗口内为 Some，窗口外为 None），不强断言
+    }
+
+    #[tokio::test]
+    async fn test_mark_methods_on_nonexistent_vendor_do_not_panic() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+        // 所有 mark 方法对不存在的 vendor 静默无操作（无 panic）
+        manager.mark_busy("ghost");
+        manager.mark_available("ghost");
+        manager.mark_throttled("ghost", Duration::from_secs(10));
+        manager.update_status("ghost", VendorStatus::Busy);
+    }
+
+    // ============ HTTP mock 测试（mockito） ============
+
+    #[tokio::test]
+    async fn test_execute_passthrough_request_nonexistent_vendor_errors() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+
+        let result = manager
+            .execute_passthrough_request("ghost", serde_json::json!({}))
+            .await;
+        assert!(result.is_err(), "expected error for nonexistent vendor");
+        match result.unwrap_err() {
+            NexusFlowError::VendorUnavailable { vendor } => {
+                assert_eq!(vendor, "ghost");
+            }
+            other => panic!("expected VendorUnavailable, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_passthrough_request_success_returns_json() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[]}"#)
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "openai-mock",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let result = manager
+            .execute_passthrough_request("openai-mock", serde_json::json!({"model":"gpt-4"}))
+            .await;
+
+        assert!(result.is_ok(), "expected success: {:?}", result.err());
+        let response = result.unwrap();
+        assert_eq!(
+            response["id"], "chatcmpl-test",
+            "response: {:?}",
+            response
+        );
+        assert_eq!(response["object"], "chat.completion");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_execute_passthrough_request_http_500_errors_with_status() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_body("internal server error")
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "openai-500",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let result = manager
+            .execute_passthrough_request("openai-500", serde_json::json!({}))
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NexusFlowError::VendorUnavailable { vendor } => {
+                // vendor 字符串包含 vendor id 和状态码 500
+                assert!(vendor.contains("openai-500"), "vendor: {}", vendor);
+                assert!(vendor.contains("500"), "vendor should contain 500: {}", vendor);
+            }
+            other => panic!("expected VendorUnavailable, got {:?}", other),
+        }
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_execute_passthrough_request_non_json_body_errors() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/plain")
+            .with_body("not a json body")
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "openai-badjson",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let result = manager
+            .execute_passthrough_request("openai-badjson", serde_json::json!({}))
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NexusFlowError::VendorUnavailable { vendor } => {
+                assert!(
+                    vendor.contains("Parse error"),
+                    "vendor: {}",
+                    vendor
+                );
+            }
+            other => panic!("expected VendorUnavailable with parse error, got {:?}", other),
+        }
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_execute_passthrough_request_with_usage_consumes_tokens() {
+        // 端到端集成测试：响应包含 usage.total_tokens → 触发 consume_tokens 副作用
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}"#,
+            )
+            .create_async()
+            .await;
+
+        // max_tokens=10 → 一次 consume(10) 后恰好用尽预算
+        let v = make_vendor(
+            "openai-usage",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(10),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        // 第一次请求成功 + 消耗 10 tokens
+        let r1 = manager
+            .execute_passthrough_request("openai-usage", serde_json::json!({}))
+            .await;
+        assert!(r1.is_ok(), "first request should succeed: {:?}", r1.err());
+
+        // 验证 used_tokens 已更新到 10
+        let info = manager.get_window_info("openai-usage").expect("window info");
+        assert_eq!(info.used_tokens, 10, "used_tokens should be 10 after consume");
+        assert!(!info.has_budget(), "should be at limit (10 >= 10)");
+        assert_eq!(info.budget_percentage(), 0.0, "budget should be 0%");
+
+        // get_status 应返回 Throttled（advanced_limiter.check() 返回 false）
+        assert_eq!(
+            manager.get_status("openai-usage"),
+            VendorStatus::Throttled,
+            "should be Throttled after limit reached"
+        );
+
+        // 第二次请求 → RateLimited 错误（execute 内部检查 advanced_limiter.check()）
+        let r2 = manager
+            .execute_passthrough_request("openai-usage", serde_json::json!({}))
+            .await;
+        assert!(r2.is_err(), "second request should fail (rate limited)");
+        match r2.unwrap_err() {
+            NexusFlowError::RateLimited { vendor } => {
+                assert_eq!(vendor, "openai-usage");
+            }
+            other => panic!("expected RateLimited, got {:?}", other),
+        }
+        // mock 只应该被调用一次（第二次请求在 HTTP 前就被限流拒绝）
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_execute_passthrough_stream_request_nonexistent_vendor_errors() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+
+        let result = manager
+            .execute_passthrough_stream_request("ghost", serde_json::json!({}))
+            .await;
+        // 注意：Ok 类型是 impl Stream（未实现 Debug），不能使用 unwrap_err
+        match result {
+            Ok(_) => panic!("expected error for nonexistent vendor"),
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert_eq!(vendor, "ghost");
+            }
+            Err(other) => panic!("expected VendorUnavailable, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_passthrough_stream_request_yields_bytes() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"chatcmpl-stream","choices":[]}"#)
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "openai-stream",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let stream = manager
+            .execute_passthrough_stream_request("openai-stream", serde_json::json!({}))
+            .await;
+        assert!(stream.is_ok(), "stream creation failed: {:?}", stream.err());
+
+        use futures_util::StreamExt;
+        let mut stream = stream.unwrap();
+        let mut collected = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.expect("chunk should not error");
+            collected.extend_from_slice(&bytes);
+        }
+        let text = String::from_utf8(collected).expect("response should be utf8");
+        assert!(
+            text.contains("chatcmpl-stream"),
+            "body should contain id: {}",
+            text
+        );
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_execute_request_nonexistent_vendor_errors() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+
+        let result = manager.execute_request("ghost", make_unified_request()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NexusFlowError::VendorUnavailable { vendor } => {
+                assert_eq!(vendor, "ghost");
+            }
+            other => panic!("expected VendorUnavailable, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_request_via_worker_success() {
+        // 端到端集成测试：execute_request → queue → worker → HTTP → response
+        // 使用 multi_thread 以确保后台 worker 调度
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}"#,
+            )
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "openai-queue",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        // 用 timeout 包装避免 worker 死锁导致测试卡死
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("openai-queue", make_unified_request()),
+        )
+        .await;
+        assert!(result.is_ok(), "should not timeout");
+        let inner = result.unwrap();
+        assert!(inner.is_ok(), "request should succeed: {:?}", inner.err());
+        let response = inner.unwrap();
+        assert_eq!(response.id, "chatcmpl-1");
+        assert_eq!(response.model, "gpt-4");
+        assert_eq!(response.usage.total_tokens, 6);
+        // 验证 worker 路径也消费了 tokens
+        let info = manager.get_window_info("openai-queue").expect("window info");
+        assert_eq!(info.used_tokens, 6, "worker should consume 6 tokens");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_execute_stream_request_nonexistent_vendor_errors() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+
+        let result = manager
+            .execute_stream_request("ghost", make_unified_request())
+            .await;
+        // Ok 类型是 impl Stream（未实现 Debug），不能用 unwrap_err
+        match result {
+            Ok(_) => panic!("expected error for nonexistent vendor"),
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert_eq!(vendor, "ghost");
+            }
+            Err(other) => panic!("expected VendorUnavailable, got {:?}", other),
+        }
+    }
+}

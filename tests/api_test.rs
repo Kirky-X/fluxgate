@@ -648,3 +648,412 @@ mod integration {
         assert!(!unified.stream);
     }
 }
+
+mod auth {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware::from_fn,
+        routing::get,
+        Router,
+    };
+    use nexusflow::middleware::auth::api_auth_middleware;
+    use nexusflow::middleware::ApiAuthState;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    /// 构建带 auth 中间件的测试路由
+    fn build_test_router(auth_state: Arc<ApiAuthState>) -> Router {
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .route("/health", get(|| async { "OK" }))
+            .route("/admin/panel", get(|| async { "admin" }))
+            .route_layer(from_fn(move |req, next| {
+                let state = auth_state.clone();
+                async move { api_auth_middleware(req, next, state).await }
+            }))
+    }
+
+    #[test]
+    fn test_api_auth_state_disabled() {
+        let state = ApiAuthState::new(false);
+        assert!(state.validate_key("any-key"));
+        assert!(state.validate_key(""));
+    }
+
+    #[test]
+    fn test_api_auth_state_enabled_no_keys() {
+        let state = ApiAuthState::new(true);
+        assert!(!state.validate_key("some-key"));
+    }
+
+    #[test]
+    fn test_api_auth_state_add_and_validate() {
+        let mut state = ApiAuthState::new(true);
+        state.add_api_key("secret-key".to_string());
+        assert!(state.validate_key("secret-key"));
+        assert!(!state.validate_key("wrong-key"));
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_middleware_disabled() {
+        let auth_state = Arc::new(ApiAuthState::new(false));
+        let app = build_test_router(auth_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_middleware_health_path() {
+        let auth_state = Arc::new(ApiAuthState::new(true));
+        let app = build_test_router(auth_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_middleware_admin_path() {
+        let auth_state = Arc::new(ApiAuthState::new(true));
+        let app = build_test_router(auth_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/panel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_middleware_missing_key() {
+        let auth_state = Arc::new(ApiAuthState::new(true));
+        let app = build_test_router(auth_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["message"], "Missing API key");
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_middleware_invalid_key() {
+        let mut auth_state = ApiAuthState::new(true);
+        auth_state.add_api_key("valid-key".to_string());
+        let app = build_test_router(Arc::new(auth_state));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", "Bearer wrong-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["message"], "Invalid API key");
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_middleware_valid_key_bearer() {
+        let mut auth_state = ApiAuthState::new(true);
+        auth_state.add_api_key("secret-token".to_string());
+        let app = build_test_router(Arc::new(auth_state));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_middleware_valid_key_x_api_key() {
+        let mut auth_state = ApiAuthState::new(true);
+        auth_state.add_api_key("api-key-123".to_string());
+        let app = build_test_router(Arc::new(auth_state));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("x-api-key", "api-key-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+mod admin {
+    use axum::extract::{Path, State};
+    use axum::Json;
+    use dbnexus::{DbConfig, DbPool};
+    use nexusflow::api::admin;
+    use nexusflow::api::ApiState;
+    use nexusflow::config::{
+        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig,
+        VendorConfig,
+    };
+    use nexusflow::database::Database;
+    use nexusflow::error::NexusFlowError;
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
+    use nexusflow::router::Router;
+    use nexusflow::vendor::VendorManager;
+    use std::sync::Arc;
+
+    fn create_test_config() -> Config {
+        Config {
+            server: ServerConfig {
+                host: "0.0.0.0".to_string(),
+                port: 8080,
+            },
+            database: DatabaseConfig {
+                path: "./test.db".to_string(),
+                pool_size: 5,
+            },
+            vendors: vec![VendorConfig {
+                id: "openai_main".to_string(),
+                name: "OpenAI Main".to_string(),
+                type_: "openai".to_string(),
+                api_key_env: "OPENAI_API_KEY".to_string(),
+                api_base: "".to_string(),
+                enabled: true,
+                models: vec![ModelConfig {
+                    model_id: "gpt-4".to_string(),
+                    abstract_id: Some("gpt-4".to_string()),
+                    weight: 1.0,
+                    enabled: true,
+                }],
+                rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+                concurrency: nexusflow::config::ConcurrencyConfig {
+                    requests_per_second: 10,
+                },
+            }],
+            global_model: Some(GlobalModelConfig {
+                enabled: true,
+                strategy: "weighted".to_string(),
+            }),
+        }
+    }
+
+    async fn create_api_state() -> Arc<ApiState> {
+        let config = create_test_config();
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        // 初始化厂商实例，使 get_all_status() 能返回数据
+        vendor_manager.initialize().await.unwrap();
+
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let database = Arc::new(Database {
+            pool: pool.clone(),
+            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+        });
+
+        let router = Arc::new(Router::new(config_manager.clone(), vendor_manager.clone()));
+        let openai_converter: Arc<dyn ProtocolConverter> = Arc::new(OpenAIConverter::new());
+        let anthropic_converter: Arc<dyn ProtocolConverter> = Arc::new(AnthropicConverter::new());
+
+        Arc::new(ApiState {
+            config: config_manager,
+            vendor_manager,
+            router,
+            client: reqwest::Client::new(),
+            openai_converter,
+            anthropic_converter,
+            database,
+        })
+    }
+
+    #[tokio::test]
+    async fn test_admin_vendors_returns_list() {
+        let state = create_api_state().await;
+        let result = admin::vendors(State(state)).await;
+        assert!(result.is_ok());
+        let value = result.unwrap().0;
+        assert!(value.is_array(), "vendors should return a JSON array");
+        let arr = value.as_array().unwrap();
+        assert_eq!(arr.len(), 1, "should have one vendor");
+        assert_eq!(arr[0]["id"], "openai_main");
+        assert!(arr[0]["status"].is_string(), "status must be a string");
+        assert!(arr[0]["queue_length"].is_number(), "queue_length must be a number");
+    }
+
+    #[tokio::test]
+    async fn test_admin_vendor_status_known() {
+        let state = create_api_state().await;
+        let result = admin::vendor_status(State(state), Path("openai_main".to_string())).await;
+        assert!(result.is_ok());
+        let value = result.unwrap().0;
+        assert_eq!(value["id"], "openai_main");
+        assert!(value["status"].is_string());
+        assert!(value["queue_length"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_admin_vendor_status_unknown() {
+        let state = create_api_state().await;
+        let result = admin::vendor_status(State(state), Path("nonexistent".to_string())).await;
+        assert!(result.is_ok());
+        let value = result.unwrap().0;
+        assert_eq!(value["id"], "nonexistent");
+        // get_status 对未知 vendor 返回 Unavailable
+        assert_eq!(value["status"], "Unavailable");
+    }
+
+    #[tokio::test]
+    async fn test_admin_reset_vendor() {
+        let state = create_api_state().await;
+        let result = admin::reset_vendor(State(state), Path("openai_main".to_string())).await;
+        assert!(result.is_ok(), "reset_vendor should succeed for any vendor id");
+    }
+
+    #[tokio::test]
+    async fn test_admin_get_config() {
+        let state = create_api_state().await;
+        let result = admin::get_config(State(state)).await;
+        assert!(result.is_ok());
+        let config = result.unwrap().0;
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.vendors.len(), 1);
+        assert_eq!(config.vendors[0].id, "openai_main");
+    }
+
+    #[tokio::test]
+    async fn test_admin_get_vendors() {
+        let state = create_api_state().await;
+        let result = admin::get_vendors(State(state)).await;
+        assert!(result.is_ok());
+        let vendors = result.unwrap().0;
+        assert_eq!(vendors.len(), 1);
+        assert_eq!(vendors[0].id, "openai_main");
+        assert!(vendors[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn test_admin_get_models() {
+        let state = create_api_state().await;
+        let result = admin::get_models(State(state)).await;
+        assert!(result.is_ok());
+        let models = result.unwrap().0;
+        // Config 有 global_model: Some(...)
+        assert_eq!(models.len(), 1);
+        assert!(models[0].enabled);
+        assert_eq!(models[0].strategy, "weighted");
+    }
+
+    #[tokio::test]
+    async fn test_admin_update_vendor_not_found() {
+        let state = create_api_state().await;
+        let vendor = VendorConfig {
+            id: "nonexistent".to_string(),
+            name: "Test".to_string(),
+            type_: "openai".to_string(),
+            api_key_env: "TEST_KEY".to_string(),
+            api_base: "".to_string(),
+            enabled: true,
+            models: vec![],
+            rate_limit: nexusflow::config::RateLimitConfig::Interval { hours: 1 },
+            concurrency: nexusflow::config::ConcurrencyConfig {
+                requests_per_second: 10,
+            },
+        };
+        let result =
+            admin::update_vendor(State(state), Path("nonexistent".to_string()), Json(vendor))
+                .await;
+        match result {
+            Err(NexusFlowError::Config { message }) => {
+                assert!(
+                    message.contains("not found"),
+                    "message should mention 'not found': {}",
+                    message
+                );
+            }
+            Err(_) => panic!("Expected Config error for nonexistent vendor"),
+            Ok(_) => panic!("update_vendor should fail for nonexistent vendor"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_admin_update_model_invalid_id() {
+        let state = create_api_state().await;
+        let model = GlobalModelConfig {
+            enabled: true,
+            strategy: "weighted".to_string(),
+        };
+        let result =
+            admin::update_model(State(state), Path("non-global".to_string()), Json(model)).await;
+        match result {
+            Err(NexusFlowError::Config { message }) => {
+                assert!(
+                    message.contains("global"),
+                    "message should mention 'global': {}",
+                    message
+                );
+            }
+            Err(_) => panic!("Expected Config error for non-global model id"),
+            Ok(_) => panic!("update_model should fail for non-global id"),
+        }
+    }
+}

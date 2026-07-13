@@ -34,6 +34,9 @@ use std::sync::{Arc, RwLock};
 
 use super::{Database, DatabaseSession, DbError, Row, ToSql};
 
+/// Type alias for the in-memory table representation.
+type DbTables = HashMap<String, Vec<HashMap<String, String>>>;
+
 /// Backend pool for database connections.
 /// This allows for different database implementations.
 pub trait DbnexusPool: Send + Sync {
@@ -49,7 +52,7 @@ pub trait DbnexusPool: Send + Sync {
 
 /// Memory database session for transactions.
 struct MemoryDbSession {
-    backend: Arc<RwLock<HashMap<String, Vec<HashMap<String, String>>>>>,
+    backend: Arc<RwLock<DbTables>>,
     committed: bool,
 }
 
@@ -92,7 +95,13 @@ impl DatabaseSession for MemoryDbSession {
 #[derive(Clone)]
 pub struct MemoryDbBackend {
     /// Simulated tables.
-    tables: Arc<RwLock<HashMap<String, Vec<HashMap<String, String>>>>>,
+    tables: Arc<RwLock<DbTables>>,
+}
+
+impl Default for MemoryDbBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemoryDbBackend {

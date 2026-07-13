@@ -281,7 +281,7 @@ mod endpoints {
             },
         };
 
-        let external = state.openai_converter.from_unified(unified_response);
+        let external = state.openai_converter.response_to_external(unified_response);
         assert!(external.is_ok());
         let external = external.unwrap();
 
@@ -575,7 +575,7 @@ mod integration {
             },
         };
 
-        let external = converter.from_unified(unified_response);
+        let external = converter.response_to_external(unified_response);
         assert!(external.is_ok());
         let external = external.unwrap();
 

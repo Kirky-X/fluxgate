@@ -30,7 +30,7 @@ impl AggregationKey {
             vendor: vendor.to_string(),
             model: model.to_string(),
             date: now.format("%Y-%m-%d").to_string(),
-            hour: now.hour() as u32,
+            hour: now.hour(),
         }
     }
 }

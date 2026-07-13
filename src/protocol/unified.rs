@@ -88,7 +88,7 @@ impl Default for Tool {
 }
 
 /// 函数工具定义
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolFunction {
     /// 函数名称
     pub name: String,
@@ -97,16 +97,6 @@ pub struct ToolFunction {
     /// 函数参数 (JSON Schema 格式)
     #[serde(default)]
     pub parameters: ToolParameters,
-}
-
-impl Default for ToolFunction {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            description: String::new(),
-            parameters: ToolParameters::default(),
-        }
-    }
 }
 
 /// 函数参数定义

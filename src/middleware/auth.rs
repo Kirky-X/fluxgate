@@ -47,8 +47,8 @@ fn extract_api_key(headers: &axum::http::HeaderMap) -> Option<String> {
     // 尝试从 Authorization header 提取
     if let Some(auth) = headers.get("authorization") {
         if let Ok(value) = auth.to_str() {
-            if value.starts_with("Bearer ") {
-                return Some(value[7..].to_string());
+            if let Some(stripped) = value.strip_prefix("Bearer ") {
+                return Some(stripped.to_string());
             }
             return Some(value.to_string());
         }

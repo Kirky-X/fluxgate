@@ -34,7 +34,7 @@ pub trait ProtocolConverter: Send + Sync {
         &self,
         request: UnifiedRequest,
     ) -> Result<serde_json::Value, NexusFlowError>;
-    fn from_unified(&self, response: UnifiedResponse) -> Result<serde_json::Value, NexusFlowError>;
+    fn response_to_external(&self, response: UnifiedResponse) -> Result<serde_json::Value, NexusFlowError>;
     fn parse_response(
         &self,
         response: serde_json::Value,

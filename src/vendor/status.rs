@@ -17,6 +17,12 @@ pub struct VendorState {
     error_count: AtomicU8,
 }
 
+impl Default for VendorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VendorState {
     pub fn new() -> Self {
         Self {

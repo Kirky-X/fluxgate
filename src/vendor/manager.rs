@@ -343,7 +343,7 @@ impl VendorManager {
                     let delay = match category {
                         ErrorCategory::RetryableExponential => {
                             // 指数后退: 1s, 2s, 4s, 8s, 16s
-                            Duration::from_millis(1000 * 2u64.pow(retry_count.min(4) as u32))
+                            Duration::from_millis(1000 * 2u64.pow(retry_count.min(4)))
                         }
                         ErrorCategory::RetryableFixed => {
                             // 固定间隔: 1s
@@ -434,8 +434,7 @@ impl VendorManager {
             .await
             .map_err(|_| NexusFlowError::Timeout {
                 vendor: vendor_id.to_string(),
-            })?
-            .map_err(|e| e)?
+            })??
     }
 
     pub async fn execute_stream_request(
@@ -829,7 +828,7 @@ impl VendorManager {
                             .and_time(*end)
                             .and_local_timezone(chrono::Local)
                             .single()
-                            .unwrap_or_else(|| now_local);
+                            .unwrap_or(now_local);
                         let end_dt = Instant::now()
                             + end_datetime
                                 .signed_duration_since(now_local)
@@ -897,7 +896,7 @@ mod tests {
             used_tokens: 0,
             window_end: None,
         };
-        assert_eq!(info.is_ending_soon(), false);
+        assert!(!info.is_ending_soon());
     }
 
     #[test]
@@ -908,7 +907,7 @@ mod tests {
             used_tokens: 0,
             window_end: Some(Instant::now() + Duration::from_secs(600)),
         };
-        assert_eq!(info.is_ending_soon(), false);
+        assert!(!info.is_ending_soon());
     }
 
     #[test]
@@ -919,7 +918,7 @@ mod tests {
             used_tokens: 0,
             window_end: Some(Instant::now() + Duration::from_secs(60)),
         };
-        assert_eq!(info.is_ending_soon(), true);
+        assert!(info.is_ending_soon());
     }
 
     #[test]
@@ -931,7 +930,7 @@ mod tests {
             used_tokens: 0,
             window_end: Some(Instant::now() - Duration::from_secs(60)),
         };
-        assert_eq!(info.is_ending_soon(), true);
+        assert!(info.is_ending_soon());
     }
 
     // ============ has_budget ============
@@ -944,7 +943,7 @@ mod tests {
             used_tokens: 1_000_000,
             window_end: None,
         };
-        assert_eq!(info.has_budget(), true);
+        assert!(info.has_budget());
     }
 
     #[test]
@@ -955,7 +954,7 @@ mod tests {
             used_tokens: 500,
             window_end: None,
         };
-        assert_eq!(info.has_budget(), true);
+        assert!(info.has_budget());
     }
 
     #[test]
@@ -966,7 +965,7 @@ mod tests {
             used_tokens: 1000,
             window_end: None,
         };
-        assert_eq!(info.has_budget(), false);
+        assert!(!info.has_budget());
     }
 
     #[test]
@@ -977,7 +976,7 @@ mod tests {
             used_tokens: 2000,
             window_end: None,
         };
-        assert_eq!(info.has_budget(), false);
+        assert!(!info.has_budget());
     }
 
     // ============ budget_percentage ============

@@ -8,6 +8,12 @@ use std::collections::HashMap;
 
 pub struct OpenAIConverter;
 
+impl Default for OpenAIConverter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OpenAIConverter {
     pub fn new() -> Self {
         Self
@@ -47,11 +53,11 @@ impl ProtocolConverter for OpenAIConverter {
         let tools = body
             .get("tools")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|t| parse_openai_tool(t)).collect())
+            .map(|arr| arr.iter().filter_map(parse_openai_tool).collect())
             .unwrap_or_default();
 
         // 解析工具选择策略
-        let tool_choice = body.get("tool_choice").map(|tc| parse_tool_choice(tc));
+        let tool_choice = body.get("tool_choice").map(parse_tool_choice);
 
         Ok(UnifiedRequest {
             model,
@@ -148,14 +154,14 @@ impl ProtocolConverter for OpenAIConverter {
         Ok(body)
     }
 
-    fn from_unified(&self, response: UnifiedResponse) -> Result<Value, NexusFlowError> {
+    fn response_to_external(&self, response: UnifiedResponse) -> Result<Value, NexusFlowError> {
         let choices = response
             .choices
             .into_iter()
             .map(|choice| {
                 json!({
                     "index": choice.index,
-                    "message": choice.message.map(|m| message_to_openai(m)),
+                    "message": choice.message.map(message_to_openai),
                     "finish_reason": choice.finish_reason,
                 })
             })
@@ -262,7 +268,7 @@ impl ProtocolConverter for OpenAIConverter {
                 fn empty_map() -> &'static serde_json::Map<String, serde_json::Value> {
                     static EMPTY: std::sync::OnceLock<serde_json::Map<String, serde_json::Value>> =
                         std::sync::OnceLock::new();
-                    EMPTY.get_or_init(|| serde_json::Map::new())
+                    EMPTY.get_or_init(serde_json::Map::new)
                 }
                 empty_map()
             });

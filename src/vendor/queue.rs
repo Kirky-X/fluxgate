@@ -39,11 +39,21 @@ impl VendorQueue {
     pub fn len(&self) -> usize {
         self.receiver.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.receiver.is_empty()
+    }
 }
 
 #[derive(Clone)]
 pub struct QueueManager {
     queues: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<VendorQueue>>>>,
+}
+
+impl Default for QueueManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl QueueManager {

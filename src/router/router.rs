@@ -117,7 +117,7 @@ impl Router {
                         && (m.model_id.to_lowercase() == normalized
                             || m.abstract_id
                                 .as_ref()
-                                .map_or(false, |a| a.to_lowercase() == normalized))
+                                .is_some_and(|a| a.to_lowercase() == normalized))
                 })
                 .cloned()
             {
@@ -157,7 +157,7 @@ impl Router {
             .find(|m| {
                 m.enabled
                     && (m.model_id == model_id
-                        || m.abstract_id.as_ref().map_or(false, |a| a == model_id))
+                        || m.abstract_id.as_ref().is_some_and(|a| a == model_id))
             })?
             .clone();
 

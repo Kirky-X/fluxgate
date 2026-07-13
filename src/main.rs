@@ -82,8 +82,7 @@ async fn main() -> Result<(), NexusFlowError> {
     let sdforge_config = {
         let config_ref = config_manager.read();
 
-        // Build basic config with all required fields
-        let config = sdforge::config::AppConfig {
+        sdforge::config::AppConfig {
             // Override server config with required fields
             server: sdforge::config::ServerConfig {
                 host: config_ref.server.host.clone(),
@@ -101,9 +100,7 @@ async fn main() -> Result<(), NexusFlowError> {
                 prefix: "Bearer".to_string(),
             },
             timeout: Some(sdforge::config::TimeoutConfig::default()),
-        };
-
-        config
+        }
     };
 
     let app = sdforge::http::build_with_config(&sdforge_config)?;

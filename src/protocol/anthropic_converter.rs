@@ -8,6 +8,12 @@ use std::collections::HashMap;
 
 pub struct AnthropicConverter;
 
+impl Default for AnthropicConverter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnthropicConverter {
     pub fn new() -> Self {
         Self
@@ -47,7 +53,7 @@ impl ProtocolConverter for AnthropicConverter {
         let tools = body
             .get("tools")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|t| parse_anthropic_tool(t)).collect())
+            .map(|arr| arr.iter().filter_map(parse_anthropic_tool).collect())
             .unwrap_or_default();
 
         // Anthropic 的 tool_choice 映射到统一格式
@@ -153,7 +159,7 @@ impl ProtocolConverter for AnthropicConverter {
         Ok(body)
     }
 
-    fn from_unified(&self, response: UnifiedResponse) -> Result<Value, NexusFlowError> {
+    fn response_to_external(&self, response: UnifiedResponse) -> Result<Value, NexusFlowError> {
         let choice = response.choices.first().ok_or(NexusFlowError::Validation {
             field: "choices".into(),
         })?;
@@ -161,7 +167,7 @@ impl ProtocolConverter for AnthropicConverter {
         let content = choice
             .message
             .as_ref()
-            .map(|m| message_to_anthropic(m))
+            .map(message_to_anthropic)
             .unwrap_or_else(|| json!({ "content": "" }));
 
         Ok(json!({
@@ -423,7 +429,7 @@ fn parse_anthropic_message(json: &Value) -> Result<Message, NexusFlowError> {
         Some(Value::Array(arr)) => {
             let blocks = arr
                 .iter()
-                .filter_map(|block| parse_anthropic_block(block))
+                .filter_map(parse_anthropic_block)
                 .collect();
             MessageContent::MultiModal(blocks)
         }

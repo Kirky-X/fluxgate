@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod async_logger;
+#[allow(clippy::module_inception)]
 pub mod database;
 pub mod pre_aggregator;
 pub mod repository;

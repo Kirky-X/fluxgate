@@ -13,6 +13,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// 日志写入命令
+#[allow(clippy::large_enum_variant)]
 enum LogCommand {
     /// 写入日志
     Write(RequestLog),

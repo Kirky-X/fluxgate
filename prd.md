@@ -127,7 +127,7 @@ enum MessageContent {
 
 ```rust
 trait ProtocolConverter {
-    fn from_unified(&self, req: UnifiedRequest) -> Result<HttpRequest>;
+    fn response_to_external(&self, req: UnifiedRequest) -> Result<HttpRequest>;
     fn to_unified(&self, resp: HttpResponse) -> Result<UnifiedResponse>;
 }
 

@@ -45,7 +45,7 @@ pub async fn messages(
 
             let body_stream = axum::body::Body::from_stream(
                 stream_response
-                    .map(|res| res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+                    .map(|res| res.map_err(std::io::Error::other)),
             );
 
             let duration_ms = start_time.elapsed().as_millis() as i64;
@@ -103,7 +103,7 @@ pub async fn messages(
 
         let body_stream = axum::body::Body::from_stream(
             stream_response
-                .map(|res| res.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+                .map(|res| res.map_err(std::io::Error::other)),
         );
 
         // 记录流式请求日志
@@ -137,7 +137,7 @@ pub async fn messages(
         .await?;
 
     // 将统一响应转换回 Anthropic 格式
-    let response = state.anthropic_converter.from_unified(unified_response)?;
+    let response = state.anthropic_converter.response_to_external(unified_response)?;
 
     // 记录日志
     let duration_ms = start_time.elapsed().as_millis() as i64;

@@ -117,10 +117,26 @@ pub async fn chat_completions(
             .execute_stream_request(&decision.vendor.id, unified_request)
             .await?;
 
-        let body_stream = axum::body::Body::from_stream(
-            stream_response
-                .map(|res| res.map_err(std::io::Error::other)),
-        );
+        // 用 SSE 编码器包装每个上游 chunk，流结束发送 [DONE]，错误发送 error 事件
+        let sse_stream = stream_response
+            .map(|res| match res {
+                Ok(bytes) => {
+                    let chunk_str = String::from_utf8_lossy(&bytes);
+                    let encoded = crate::api::sse::encode_sse_event(&chunk_str, None);
+                    Ok::<bytes::Bytes, std::io::Error>(encoded.into())
+                }
+                Err(e) => {
+                    let encoded = crate::api::sse::encode_sse_error(&e.to_string());
+                    Ok(encoded.into_bytes().into())
+                }
+            })
+            .chain(futures::stream::once(async {
+                Ok::<bytes::Bytes, std::io::Error>(
+                    crate::api::sse::encode_sse_done().into(),
+                )
+            }));
+
+        let body_stream = axum::body::Body::from_stream(sse_stream);
 
         // 记录流式请求日志 (简化)
         let duration_ms = start_time.elapsed().as_millis() as i64;

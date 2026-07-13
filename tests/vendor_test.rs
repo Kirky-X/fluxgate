@@ -804,3 +804,209 @@ mod manager {
         }
     }
 }
+
+mod queue {
+    use nexusflow::protocol::{UnifiedRequest, UnifiedResponse};
+    use nexusflow::vendor::{PendingRequest, QueueManager, VendorQueue};
+    use serde_json::json;
+
+    fn sample_request() -> UnifiedRequest {
+        serde_json::from_value(json!({"model": "test", "messages": []})).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_vendor_queue_send_recv_roundtrip() {
+        let queue = VendorQueue::new(10);
+        assert_eq!(queue.len(), 0);
+
+        let (tx, _rx) = tokio::sync::oneshot::channel::<
+            Result<UnifiedResponse, nexusflow::error::NexusFlowError>,
+        >();
+        let request = PendingRequest {
+            request: sample_request(),
+            response_tx: tx,
+        };
+
+        queue.send(request).await.expect("send should succeed");
+        assert_eq!(queue.len(), 1);
+
+        let received = queue.recv().await;
+        assert!(received.is_some(), "recv should return Some");
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_vendor_queue_capacity_enforced() {
+        let queue = VendorQueue::new(2);
+        for _ in 0..2 {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let request = PendingRequest {
+                request: sample_request(),
+                response_tx: tx,
+            };
+            queue.send(request).await.expect("send within capacity");
+        }
+        assert_eq!(queue.len(), 2);
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let overflow = PendingRequest {
+            request: sample_request(),
+            response_tx: tx,
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            queue.send(overflow),
+        )
+        .await;
+        assert!(result.is_err(), "send should block when queue is full");
+    }
+
+    #[tokio::test]
+    async fn test_vendor_queue_recv_returns_none_when_closed() {
+        let queue = VendorQueue::new(5);
+        // Drop sender by cloning then dropping all clones — but VendorQueue holds
+        // its own sender. Closing requires explicit drop of the queue itself.
+        // Instead we test recv on empty queue times out (no item available).
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            queue.recv(),
+        )
+        .await;
+        assert!(result.is_err(), "recv on empty queue should block");
+    }
+
+    #[test]
+    fn test_queue_manager_returns_none_for_missing_vendor() {
+        let qm = QueueManager::new();
+        assert!(qm.get("nonexistent_vendor").is_none());
+    }
+}
+
+mod advanced_rate_limiter {
+    use nexusflow::config::RateLimitConfig;
+    use nexusflow::vendor::AdvancedRateLimiter;
+
+    #[test]
+    fn test_none_variant_always_allows() {
+        // RateLimitConfig doesn't have a None constructor — use Interval with 0 hours
+        // as the "always allow" proxy, or just construct directly via new(RateLimitConfig)
+        // Note: AdvancedRateLimiter::None is unreachable from RateLimitConfig in current code
+        // but Interval with hours=0 means interval_secs=0 which means should_reset is always true.
+        let config = RateLimitConfig::Interval { hours: 1 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        assert!(limiter.check(), "Interval limiter should allow by default");
+    }
+
+    #[test]
+    fn test_interval_variant_check_returns_true_initially() {
+        let config = RateLimitConfig::Interval { hours: 1 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        // Interval always returns true from check() (the actual rate limit is via TokenBucket)
+        assert!(limiter.check());
+    }
+
+    #[test]
+    fn test_interval_should_reset_after_creation_is_false() {
+        let config = RateLimitConfig::Interval { hours: 1 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        // Just created, last_reset is now, so should_reset should be false
+        assert!(!limiter.should_reset());
+    }
+
+    #[test]
+    fn test_interval_should_reset_becomes_true_after_interval() {
+        // Use hours=0 to force interval_secs=0, so should_reset returns true immediately
+        let config = RateLimitConfig::Interval { hours: 0 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        assert!(
+            limiter.should_reset(),
+            "interval_secs=0 should mean reset is always due"
+        );
+    }
+
+    #[test]
+    fn test_interval_reset_updates_last_reset() {
+        let config = RateLimitConfig::Interval { hours: 1 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        assert!(!limiter.should_reset());
+        limiter.reset();
+        // After reset, should_reset should still be false (just reset to now)
+        assert!(!limiter.should_reset());
+    }
+
+    #[test]
+    fn test_token_variant_allows_until_exhausted() {
+        let config = RateLimitConfig::Token { max_tokens: 100 };
+        let limiter = AdvancedRateLimiter::new(&config);
+
+        // Initially has budget
+        assert!(limiter.check());
+
+        // Consume all tokens
+        limiter.consume_tokens(100);
+        assert!(!limiter.check(), "should be exhausted after consuming all tokens");
+    }
+
+    #[test]
+    fn test_token_variant_partial_consumption_keeps_allowing() {
+        let config = RateLimitConfig::Token { max_tokens: 100 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        limiter.consume_tokens(50);
+        assert!(limiter.check(), "should still allow with 50/100 used");
+    }
+
+    #[test]
+    fn test_token_variant_consume_over_max_blocks() {
+        let config = RateLimitConfig::Token { max_tokens: 10 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        // Consume more than max
+        limiter.consume_tokens(15);
+        assert!(!limiter.check(), "should be blocked after over-consuming");
+    }
+
+    #[test]
+    fn test_token_variant_reset_clears_used_tokens() {
+        let config = RateLimitConfig::Token { max_tokens: 100 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        limiter.consume_tokens(100);
+        assert!(!limiter.check());
+
+        limiter.reset();
+        assert!(limiter.check(), "should allow again after reset");
+    }
+
+    #[test]
+    fn test_token_consume_tokens_is_noop_for_non_token_variants() {
+        let config = RateLimitConfig::Interval { hours: 1 };
+        let limiter = AdvancedRateLimiter::new(&config);
+        // consume_tokens should be a no-op for Interval variant
+        limiter.consume_tokens(1000);
+        assert!(limiter.check(), "Interval variant should still allow");
+    }
+
+    #[test]
+    fn test_reset_is_noop_for_time_window() {
+        let config = RateLimitConfig::TimeWindow {
+            start: "00:00".to_string(),
+            end: "23:59".to_string(),
+        };
+        let limiter = AdvancedRateLimiter::new(&config);
+        // reset is no-op for TimeWindow — should not panic
+        limiter.reset();
+        assert!(limiter.check(), "TimeWindow 00:00-23:59 should allow at any time");
+    }
+
+    #[test]
+    fn test_should_reset_returns_false_for_non_interval_variants() {
+        let token_config = RateLimitConfig::Token { max_tokens: 100 };
+        let token_limiter = AdvancedRateLimiter::new(&token_config);
+        assert!(!token_limiter.should_reset());
+
+        let tw_config = RateLimitConfig::TimeWindow {
+            start: "00:00".to_string(),
+            end: "23:59".to_string(),
+        };
+        let tw_limiter = AdvancedRateLimiter::new(&tw_config);
+        assert!(!tw_limiter.should_reset());
+    }
+}

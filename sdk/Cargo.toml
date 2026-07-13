@@ -1,0 +1,31 @@
+[package]
+name = "nexusflow-sdk"
+version = "0.2.0"
+edition = "2021"
+description = "NexusFlow Rust SDK — 通过 Rust 接口与 NexusFlow 网关交互"
+authors = ["NexusFlow Contributors"]
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["client"]
+client = ["dep:reqwest"]
+pipeline = []
+
+[dependencies]
+reqwest = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+mockito = "1"
+tokio-test = "0.4"

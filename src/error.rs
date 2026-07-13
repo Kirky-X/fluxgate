@@ -2,7 +2,9 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 // 错误处理模块
+#[cfg(feature = "web-server")]
 use axum::response::IntoResponse;
+#[cfg(feature = "web-server")]
 use serde_json::json;
 use thiserror::Error;
 
@@ -37,6 +39,7 @@ pub enum NexusFlowError {
     Routing { message: String },
 }
 
+#[cfg(feature = "web-server")]
 impl IntoResponse for NexusFlowError {
     fn into_response(self) -> axum::response::Response {
         let status = match self {
@@ -61,6 +64,7 @@ impl IntoResponse for NexusFlowError {
     }
 }
 
+#[cfg(feature = "database")]
 impl From<dbnexus::DbError> for NexusFlowError {
     fn from(e: dbnexus::DbError) -> Self {
         NexusFlowError::Database {
@@ -85,6 +89,7 @@ impl From<tokio::sync::oneshot::error::RecvError> for NexusFlowError {
     }
 }
 
+#[cfg(feature = "sdforge-integration")]
 impl From<sdforge::config::ConfigError> for NexusFlowError {
     fn from(e: sdforge::config::ConfigError) -> Self {
         NexusFlowError::Config {
@@ -93,7 +98,7 @@ impl From<sdforge::config::ConfigError> for NexusFlowError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "web-server"))]
 mod tests {
     use super::*;
     use axum::body::to_bytes;
@@ -269,6 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "sdforge-integration")]
     async fn test_error_from_config_error() {
         let cfg_err = sdforge::config::ConfigError::FileNotFound {
             path: "/etc/config.toml".to_string(),

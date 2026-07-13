@@ -3,31 +3,51 @@
 
 // Smart LLM Proxy - Core Library
 
-pub mod api;
 pub mod config;
-pub mod database;
 pub mod error;
-pub mod infrastructure;
-pub mod middleware;
 pub mod protocol;
-pub mod router;
 pub mod utils;
-pub mod vendor; // New: Infrastructure layer for DI-compliant components
 
-pub use api::ApiState;
+#[cfg(feature = "database")]
+pub mod database;
+
+#[cfg(feature = "vendor-management")]
+pub mod vendor;
+
+#[cfg(feature = "infrastructure")]
+pub mod infrastructure;
+
+#[cfg(feature = "router")]
+pub mod router;
+
+#[cfg(feature = "web-server")]
+pub mod api;
+
+#[cfg(feature = "web-server")]
+pub mod middleware;
+
 pub use config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig, VendorConfig};
-pub use database::Database;
 pub use error::NexusFlowError;
+
+#[cfg(feature = "web-server")]
+pub use api::ApiState;
+
+#[cfg(feature = "database")]
+pub use database::Database;
+
+#[cfg(feature = "web-server")]
 pub use middleware::ApiAuthState;
+
+#[cfg(feature = "vendor-management")]
 pub use vendor::VendorManager;
 
-// Re-export infrastructure traits and supporting types only (interfaces, not implementations).
-// Concrete implementations (Oxcache/Confers/Dbnexus) are intentionally NOT re-exported here:
-// callers should depend on the traits (Cache/Config/Database) and construct implementations
-// via the infrastructure module or its builder API.
-// Import directly from infrastructure module to avoid private trait import errors
+#[cfg(feature = "infrastructure")]
 pub use infrastructure::Cache;
+#[cfg(feature = "infrastructure")]
 pub use infrastructure::Config as InfrastructureConfig;
+#[cfg(feature = "infrastructure")]
 pub use infrastructure::Database as InfrastructureDatabase;
+#[cfg(feature = "infrastructure")]
 pub use infrastructure::DbError;
+#[cfg(feature = "infrastructure")]
 pub use infrastructure::Row;

@@ -8,13 +8,18 @@ authors = ["NexusFlow Contributors"]
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "nexusflow"
+path = "src/main.rs"
+required-features = ["full"]
+
 [features]
 default = ["full"]
 full = ["web-server", "database", "vendor-management", "router", "protocol", "infrastructure", "sdforge-integration", "logging"]
-web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream"]
-database = ["dep:dbnexus", "dep:sea-orm"]
-vendor-management = ["dep:reqwest", "dep:async-channel", "dep:limiteron"]
-router = []
+web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "router", "sdforge-integration"]
+database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "protocol"]
+vendor-management = ["dep:reqwest", "dep:limiteron", "database"]
+router = ["vendor-management"]
 protocol = []
 infrastructure = ["dep:oxcache", "dep:confers", "dep:trait-kit"]
 sdforge-integration = ["dep:sdforge"]

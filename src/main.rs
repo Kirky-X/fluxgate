@@ -124,7 +124,11 @@ async fn main() -> Result<(), NexusFlowError> {
     tracing::info!("Server listening on {} (sdforge powered)", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    let result = axum::serve(listener, app).await;
+    tracing::info!("Press Ctrl+C to initiate graceful shutdown");
+
+    let result = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await;
 
     match result {
         Ok(_) => tracing::info!("Server stopped successfully"),
@@ -137,4 +141,30 @@ async fn main() -> Result<(), NexusFlowError> {
     }
 
     Ok(())
+}
+
+/// 监听终止信号触发优雅停机：先收到 SIGTERM/Ctrl+C 后 axum 会停止接受新连接，
+/// 等待 in-flight 请求完成再退出。
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sig = signal(SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        sig.recv().await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("Received Ctrl+C, initiating graceful shutdown"),
+        _ = terminate => tracing::info!("Received SIGTERM, initiating graceful shutdown"),
+    }
 }

@@ -1,8 +1,6 @@
 #![cfg(feature = "vendor-management")]
-// Copyright (c) 2026 NexusFlow Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
-//! T046 — CostCalculator 单元测试。
+//! CostCalculator 单元测试。
 //!
 //! 测试属性（规则9）：
 //! 1. 命中 pricing entry 时按公式计算 USD 成本

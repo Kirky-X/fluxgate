@@ -3,6 +3,7 @@
 
 use super::{validate_config, Config, ModelConfig, VendorConfig};
 use crate::error::NexusFlowError;
+use crate::i18n::{t, t_args};
 use confers::dynamic::DynamicField;
 use confers::snapshot::{SnapshotConfig, SnapshotFormat, SnapshotManager};
 use confers::types::SourceId;
@@ -29,7 +30,7 @@ fn snapshot_current_config(manager: &ConfigManager, config_path: &Path) {
     }
     let old = manager.get_config();
     let Ok(content) = toml::to_string_pretty(&old) else {
-        tracing::warn!("配置快照跳过：旧配置序列化失败");
+        tracing::warn!("{}", t("config-snapshot-serialize-failed"));
         return;
     };
     let dir = config_path
@@ -47,8 +48,17 @@ fn snapshot_current_config(manager: &ConfigManager, config_path: &Path) {
     let saved = confers::loader::parse_toml(&content, SourceId::from("nexusflow-config"), None)
         .and_then(|annotated| snapshots.save_blocking(&annotated, SNAPSHOT_REDACT_PATHS));
     match saved {
-        Ok(p) => tracing::debug!("已留配置快照 {}", p.display()),
-        Err(e) => tracing::warn!("配置快照失败（不阻塞更新）: {e}"),
+        Ok(p) => tracing::debug!(
+            "{}",
+            t_args(
+                "config-snapshot-saved",
+                &[("path", p.display().to_string())]
+            )
+        ),
+        Err(e) => tracing::warn!(
+            "{}",
+            t_args("config-snapshot-failed", &[("error", e.to_string())])
+        ),
     }
 }
 
@@ -138,16 +148,14 @@ impl ConfigManager {
 
         // 2. 序列化先行 — 序列化失败不触碰磁盘与内存
         let content = toml::to_string_pretty(&new_config).map_err(|e| NexusFlowError::Config {
-            message: format!("Failed to serialize config: {}", e),
+            message: t_args("config-serialize-failed", &[("error", e.to_string())]),
         })?;
 
         // 3. 原子写：同目录唯一临时文件 + rename（POSIX 原子替换）。
         //    唯一名（pid+序号）避免固定 "config.toml.tmp" 被并发/多进程实例
         //    互踩：一方 rename 走后另一方拿到 ENOENT 或覆盖内容错乱。
         let path = self.path().ok_or(NexusFlowError::Config {
-            message: "config path unknown: ConfigManager not created via ConfigLoader; \
-                      refusing to persist update"
-                .to_string(),
+            message: t("config-path-unknown"),
         })?;
         let parent = path
             .parent()
@@ -170,17 +178,25 @@ impl ConfigManager {
         snapshot_current_config(self, &path);
 
         std::fs::write(&tmp_path, content).map_err(|e| NexusFlowError::Config {
-            message: format!(
-                "Failed to write config tmp file {}: {}",
-                tmp_path.display(),
-                e
+            message: t_args(
+                "config-tmp-write-failed",
+                &[
+                    ("path", tmp_path.display().to_string()),
+                    ("error", e.to_string()),
+                ],
             ),
         })?;
         if let Err(e) = std::fs::rename(&tmp_path, &path) {
             // rename 失败时清理临时文件，避免残留
             let _ = std::fs::remove_file(&tmp_path);
             return Err(NexusFlowError::Config {
-                message: format!("Failed to atomically replace {}: {}", path.display(), e),
+                message: t_args(
+                    "config-atomic-replace-failed",
+                    &[
+                        ("path", path.display().to_string()),
+                        ("error", e.to_string()),
+                    ],
+                ),
             });
         }
 

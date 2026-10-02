@@ -1,7 +1,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! T035a 集成测试 — CircuitBreaker（limiteron::circuit）接入 VendorManager。
+//! 集成测试 — CircuitBreaker（limiteron::circuit）接入 VendorManager。
 //!
 //! recId=2 后 `force_circuit_open` 已删除（limiteron 公开面无 force API），
 //! 测试改为 mockito 预置失败响应自然驱动熔断（failure_threshold=5）：

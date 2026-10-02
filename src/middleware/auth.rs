@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use crate::config::{AuthSection, AuthTier, ConfigManager};
+use crate::i18n::t;
 
 /// 计算 SHA256 hex 摘要（64 个小写 hex 字符）
 fn sha256_hex(input: &str) -> String {
@@ -194,7 +195,7 @@ pub async fn api_auth_middleware(
                 .body(Body::from(
                     json!({
                         "error": {
-                            "message": "Missing API key",
+                            "message": t("middleware-missing-api-key"),
                             "type": "authentication_error"
                         }
                     })
@@ -211,7 +212,7 @@ pub async fn api_auth_middleware(
             .body(Body::from(
                 json!({
                     "error": {
-                        "message": "Invalid API key",
+                        "message": t("middleware-invalid-api-key"),
                         "type": "authentication_error"
                     }
                 })

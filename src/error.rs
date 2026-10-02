@@ -8,34 +8,38 @@ use axum::response::IntoResponse;
 use serde_json::json;
 use thiserror::Error;
 
+use crate::i18n::t_args;
+
+/// 错误双轨：`#[error]` Display 恒英文规范串（日志 / 错误链），HTTP 展示
+/// 走 [`NexusFlowError::user_message()`]（FTL，随 locale，见 i18n 基线 §4）。
 #[derive(Error, Debug)]
 pub enum NexusFlowError {
-    #[error("配置错误: {message}")]
+    #[error("Configuration error: {message}")]
     Config { message: String },
 
-    #[error("协议转换错误: {source}")]
+    #[error("Protocol conversion error: {source}")]
     Protocol {
         source: String,
         #[source]
         inner: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    #[error("厂商不可用: {vendor}")]
+    #[error("Vendor unavailable: {vendor}")]
     VendorUnavailable { vendor: String },
 
-    #[error("请求超时: {vendor}")]
+    #[error("Request timeout: {vendor}")]
     Timeout { vendor: String },
 
-    #[error("限流: {vendor}")]
+    #[error("Rate limited: {vendor}")]
     RateLimited { vendor: String },
 
-    #[error("数据库错误: {message}")]
+    #[error("Database error: {message}")]
     Database { message: String },
 
-    #[error("请求验证失败: {field}")]
+    #[error("Request validation failed: {field}")]
     Validation { field: String },
 
-    #[error("路由错误: {message}")]
+    #[error("Routing error: {message}")]
     Routing { message: String },
 
     /// recId=19(c)：换路 fallback 耗尽且全部候选因限流被排除 —
@@ -43,7 +47,7 @@ pub enum NexusFlowError {
     /// IntoResponse 映射 429 + Retry-After 头（reset 秒数取各 vendor
     /// 窗口重置剩余的 min）。默认开关关闭时永不产生本变体（原错误
     /// 冒泡保持 503 语义）。
-    #[error("全部候选厂商被限流: 预计 {retry_after_secs}s 后可重试")]
+    #[error("All candidate vendors rate limited: retry after {retry_after_secs}s")]
     AllVendorsThrottled { retry_after_secs: u64 },
 }
 
@@ -69,7 +73,7 @@ impl IntoResponse for NexusFlowError {
 
         let body = json!({
             "error": {
-                "message": self.to_string(),
+                "message": self.user_message(),
                 "type": self.error_code(),
             }
         });
@@ -88,6 +92,41 @@ impl IntoResponse for NexusFlowError {
 
 #[cfg(feature = "web-server")]
 impl NexusFlowError {
+    /// 本地化用户消息（展示轨道）：随 locale 查 FTL 目录；与英文规范
+    /// Display 分轨，写入 HTTP 响应体 `error.message`。
+    fn user_message(&self) -> String {
+        match self {
+            NexusFlowError::Config { message } => {
+                t_args("error-config", &[("message", message.clone())])
+            }
+            NexusFlowError::Protocol { source, .. } => {
+                t_args("error-protocol", &[("source", source.clone())])
+            }
+            NexusFlowError::VendorUnavailable { vendor } => {
+                t_args("error-vendor-unavailable", &[("vendor", vendor.clone())])
+            }
+            NexusFlowError::Timeout { vendor } => {
+                t_args("error-timeout", &[("vendor", vendor.clone())])
+            }
+            NexusFlowError::RateLimited { vendor } => {
+                t_args("error-rate-limited", &[("vendor", vendor.clone())])
+            }
+            NexusFlowError::Database { message } => {
+                t_args("error-database", &[("message", message.clone())])
+            }
+            NexusFlowError::Validation { field } => {
+                t_args("error-validation", &[("field", field.clone())])
+            }
+            NexusFlowError::Routing { message } => {
+                t_args("error-routing", &[("message", message.clone())])
+            }
+            NexusFlowError::AllVendorsThrottled { retry_after_secs } => t_args(
+                "error-all-vendors-throttled",
+                &[("retry_after_secs", retry_after_secs.to_string())],
+            ),
+        }
+    }
+
     /// 返回固定的错误类型代码字符串（不暴露内部枚举结构）
     fn error_code(&self) -> &'static str {
         match self {
@@ -108,7 +147,7 @@ impl NexusFlowError {
 impl From<dbnexus::DbError> for NexusFlowError {
     fn from(e: dbnexus::DbError) -> Self {
         NexusFlowError::Database {
-            message: format!("Database error: {}", e),
+            message: t_args("error-database-source", &[("error", e.to_string())]),
         }
     }
 }
@@ -116,7 +155,7 @@ impl From<dbnexus::DbError> for NexusFlowError {
 impl From<std::io::Error> for NexusFlowError {
     fn from(e: std::io::Error) -> Self {
         NexusFlowError::Database {
-            message: format!("IO error: {}", e),
+            message: t_args("error-io-source", &[("error", e.to_string())]),
         }
     }
 }
@@ -254,12 +293,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_user_message_uses_ftl_catalog() {
+        // 键必须在 FTL 目录注册（缺键时 t_args 回退返回键名本身）；
+        // 占位符必须被实参替换。断言与进程 locale 无关（en/zh 均成立）。
+        let message = NexusFlowError::Config {
+            message: "bad key".to_string(),
+        }
+        .user_message();
+        assert_ne!(
+            message, "error-config",
+            "键 'error-config' 未注册进 FTL 目录"
+        );
+        assert!(
+            message.contains("bad key"),
+            "占位符 $message 必须被替换: {message}"
+        );
+
+        let throttled = NexusFlowError::AllVendorsThrottled {
+            retry_after_secs: 7,
+        }
+        .user_message();
+        assert_ne!(
+            throttled, "error-all-vendors-throttled",
+            "键 'error-all-vendors-throttled' 未注册进 FTL 目录"
+        );
+        assert!(
+            throttled.contains('7'),
+            "占位符 $retry_after_secs 必须被替换: {throttled}"
+        );
+    }
+
     #[tokio::test]
     async fn test_error_response_body_structure() {
-        let response = NexusFlowError::Validation {
+        let err = NexusFlowError::Validation {
             field: "model".to_string(),
-        }
-        .into_response();
+        };
+        // error.message 走本地化轨道：必须等于 user_message() 的输出
+        let expected_message = err.user_message();
+        let response = err.into_response();
         let body = extract_body(response).await;
 
         // 顶层必须包含 error 对象
@@ -267,8 +339,7 @@ mod tests {
             body["error"].is_object(),
             "response body must contain an 'error' object"
         );
-        // error.message 必须是字符串，且等于 to_string() 的输出
-        assert_eq!(body["error"]["message"], "请求验证失败: model");
+        assert_eq!(body["error"]["message"], expected_message);
         // error.type 必须是固定的错误代码字符串（不暴露内部枚举结构）
         let type_str = body["error"]["type"]
             .as_str()
@@ -283,6 +354,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_from_dbnexus_error() {
         let db_err = dbnexus::DbError::Config("table missing".to_string());
+        let rendered = db_err.to_string();
         let err: NexusFlowError = db_err.into();
         match err {
             NexusFlowError::Database { message } => {
@@ -291,10 +363,11 @@ mod tests {
                     "message should contain the original error text: {}",
                     message
                 );
-                assert!(
-                    message.contains("Database error"),
-                    "message should be prefixed with 'Database error': {}",
-                    message
+                // 前缀经 FTL 模板（随 locale），与直接查表结果一致
+                assert_eq!(
+                    message,
+                    t_args("error-database-source", &[("error", rendered)]),
+                    "message must be the localized 'error-database-source' template"
                 );
             }
             _ => panic!("From<DbError> should produce Database variant"),
@@ -304,6 +377,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_from_io_error() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file gone");
+        let rendered = io_err.to_string();
         let err: NexusFlowError = io_err.into();
         match err {
             NexusFlowError::Database { message } => {
@@ -312,10 +386,11 @@ mod tests {
                     "message should contain the original error text: {}",
                     message
                 );
-                assert!(
-                    message.contains("IO error"),
-                    "message should be prefixed with 'IO error': {}",
-                    message
+                // 前缀经 FTL 模板（随 locale），与直接查表结果一致
+                assert_eq!(
+                    message,
+                    t_args("error-io-source", &[("error", rendered)]),
+                    "message must be the localized 'error-io-source' template"
                 );
             }
             _ => panic!("From<io::Error> should produce Database variant"),

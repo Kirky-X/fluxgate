@@ -17,7 +17,7 @@ use crate::utils::retry::{retry_delay_for, ErrorCategory, RetryDelayPolicy};
 use crate::utils::CostTracker;
 #[cfg(feature = "resilience")]
 use crate::vendor::resilience::error_map::{
-    from_limiteron, to_limiteron, NexusFlowErrorClassifier,
+    from_circuit_call_error, to_limiteron, NexusFlowErrorClassifier,
 };
 use bytes::Bytes;
 #[cfg(feature = "resilience")]
@@ -250,7 +250,10 @@ impl VendorManager {
         self.config
             .get_vendor(vendor_id)
             .ok_or_else(|| NexusFlowError::VendorUnavailable {
-                vendor: format!("{} (removed from config)", vendor_id),
+                vendor: crate::i18n::t_args(
+                    "vendor-removed-from-config",
+                    &[("vendor", vendor_id.to_string())],
+                ),
             })
     }
 
@@ -412,7 +415,10 @@ impl VendorManager {
             let config = config_manager
                 .get_vendor(&instance.vendor_id)
                 .ok_or_else(|| NexusFlowError::VendorUnavailable {
-                    vendor: format!("{} (removed from config)", instance.vendor_id),
+                    vendor: crate::i18n::t_args(
+                        "vendor-removed-from-config",
+                        &[("vendor", instance.vendor_id.clone())],
+                    ),
                 });
 
             let config = match config {
@@ -516,7 +522,8 @@ impl VendorManager {
                             tracing::warn!(
                                 vendor = %instance.vendor_id,
                                 tokens,
-                                "token quota underflow: usage not accounted (would exceed window cap)"
+                                "{}",
+                                crate::i18n::t("vendor-token-quota-underflow")
                             );
                         }
                     }
@@ -567,7 +574,7 @@ impl VendorManager {
             "anthropic" => anthropic,
             _ => {
                 return Err(NexusFlowError::Config {
-                    message: "Unknown vendor type".into(),
+                    message: crate::i18n::t("vendor-unknown-type"),
                 })
             }
         };
@@ -606,7 +613,7 @@ impl VendorManager {
                 "openai" => "https://api.openai.com/v1",
                 _ => {
                     return Err(NexusFlowError::Config {
-                        message: "Unknown vendor type".into(),
+                        message: crate::i18n::t("vendor-unknown-type"),
                     })
                 }
             }
@@ -641,7 +648,10 @@ impl VendorManager {
         include_content_type: bool,
     ) -> Result<reqwest::RequestBuilder, NexusFlowError> {
         let api_key = std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config {
-            message: format!("API key env {} not set", config.api_key_env),
+            message: crate::i18n::t_args(
+                "vendor-api-key-env-not-set",
+                &[("env", config.api_key_env.clone())],
+            ),
         })?;
 
         let mut builder = client.post(url);
@@ -731,7 +741,7 @@ impl VendorManager {
                     .map_err(|e| to_limiteron(&e))
                 })
                 .await;
-            result.map_err(|e| from_limiteron(e, &vendor_id))
+            result.map_err(|e| from_circuit_call_error(e, &vendor_id))
         }
         #[cfg(not(feature = "resilience"))]
         {
@@ -838,10 +848,17 @@ impl VendorManager {
                     vendor = %config.id,
                     status = %status,
                     body = %text,
-                    "upstream vendor returned non-success status"
+                    "{}",
+                    crate::i18n::t("vendor-upstream-non-success")
                 );
                 let error = NexusFlowError::VendorUnavailable {
-                    vendor: format!("{} ({})", config.id, status),
+                    vendor: crate::i18n::t_args(
+                        "vendor-upstream-status",
+                        &[
+                            ("vendor", config.id.clone()),
+                            ("status", status.to_string()),
+                        ],
+                    ),
                 };
 
                 // 可重试集合进配置：状态码在集合内才参与分类（集合外一律 Fatal）
@@ -889,7 +906,10 @@ impl VendorManager {
                 }
                 Err(e) => {
                     return Err(NexusFlowError::VendorUnavailable {
-                        vendor: format!("Parse error: {}", e),
+                        vendor: crate::i18n::t_args(
+                            "vendor-parse-error",
+                            &[("error", e.to_string())],
+                        ),
                     });
                 }
             };
@@ -1113,7 +1133,8 @@ impl VendorManager {
             vendor = %vendor_id,
             status = %status,
             body = %text,
-            "streaming upstream returned non-success status"
+            "{}",
+            crate::i18n::t("vendor-stream-upstream-non-success")
         );
         let duration = start.elapsed();
         self.metrics.record_request(vendor_id, false, duration);
@@ -1127,7 +1148,13 @@ impl VendorManager {
             }
         } else {
             NexusFlowError::VendorUnavailable {
-                vendor: format!("{} ({})", vendor_id, status),
+                vendor: crate::i18n::t_args(
+                    "vendor-upstream-status",
+                    &[
+                        ("vendor", vendor_id.to_string()),
+                        ("status", status.to_string()),
+                    ],
+                ),
             }
         };
         self.metrics.record_error(vendor_id, &error.to_string());
@@ -1164,7 +1191,10 @@ impl VendorManager {
                 // reqwest 0.13 RequestBuilder 无 Clone（try_clone：body 为
                 // 流时 None）—— 此处 body 尚未附加，必为 Some
                 let builder = builder.try_clone().ok_or_else(|| NexusFlowError::Config {
-                    message: format!("request builder not cloneable for vendor {}", vendor_id),
+                    message: crate::i18n::t_args(
+                        "vendor-builder-not-cloneable",
+                        &[("vendor", vendor_id.to_string())],
+                    ),
                 })?;
                 match timeout(
                     Duration::from_millis(config.stream_ttft_ms),
@@ -1182,7 +1212,10 @@ impl VendorManager {
                 }
             } else {
                 let builder = builder.try_clone().ok_or_else(|| NexusFlowError::Config {
-                    message: format!("request builder not cloneable for vendor {}", vendor_id),
+                    message: crate::i18n::t_args(
+                        "vendor-builder-not-cloneable",
+                        &[("vendor", vendor_id.to_string())],
+                    ),
                 })?;
                 builder.json(request_body).send().await.map_err(|_e| {
                     NexusFlowError::VendorUnavailable {
@@ -1201,7 +1234,7 @@ impl VendorManager {
                     let result = circuit_breaker
                         .execute(|| async { send().await.map_err(|e| to_limiteron(&e)) })
                         .await;
-                    return result.map_err(|e| from_limiteron(e, vendor_id));
+                    return result.map_err(|e| from_circuit_call_error(e, vendor_id));
                 }
             }
         }
@@ -1269,7 +1302,7 @@ impl VendorManager {
             "anthropic" => self.anthropic_converter.clone(),
             _ => {
                 return Err(NexusFlowError::Config {
-                    message: "Unknown vendor type".into(),
+                    message: crate::i18n::t("vendor-unknown-type"),
                 })
             }
         };
@@ -1360,11 +1393,16 @@ impl VendorManager {
                         if frame.is_error() {
                             // recId=14②：上游中流错误 → 语义化 Err 提前终止
                             let detail = frame.data.unwrap_or_else(|| {
-                                frame.event.unwrap_or_else(|| "upstream error".into())
+                                frame
+                                    .event
+                                    .unwrap_or_else(|| crate::i18n::t("vendor-upstream-error"))
                             });
                             return Some((
                                 Err(NexusFlowError::VendorUnavailable {
-                                    vendor: format!("{} (stream error: {})", vendor, detail),
+                                    vendor: crate::i18n::t_args(
+                                        "vendor-stream-error",
+                                        &[("vendor", vendor.clone()), ("detail", detail)],
+                                    ),
                                 }),
                                 (parser, bytes, true, vendor, converter),
                             ));
@@ -1384,14 +1422,25 @@ impl VendorManager {
                     match futures::StreamExt::next(&mut bytes).await {
                         Some(Ok(b)) => parser.feed(&b),
                         Some(Err(e)) => {
-                            tracing::warn!(vendor = %vendor, error = %e, "upstream stream interrupted");
+                            tracing::warn!(
+                                vendor = %vendor,
+                                error = %e,
+                                "{}",
+                                crate::i18n::t("vendor-upstream-stream-interrupted")
+                            );
                             // recId=4（W2）：上游错误已统一为 NexusFlowError ——
                             // idle 超时（Timeout）原样透传（api 层转 SSE error
                             // 事件终止）；其余 IO 错误保持既有包装语义
                             let err = match e {
                                 NexusFlowError::Timeout { .. } => e,
                                 other => NexusFlowError::VendorUnavailable {
-                                    vendor: format!("{} (stream interrupted: {})", vendor, other),
+                                    vendor: crate::i18n::t_args(
+                                        "vendor-stream-interrupted",
+                                        &[
+                                            ("vendor", vendor.clone()),
+                                            ("detail", other.to_string()),
+                                        ],
+                                    ),
                                 },
                             };
                             return Some((Err(err), (parser, bytes, true, vendor, converter)));
@@ -1517,7 +1566,7 @@ impl VendorManager {
                             .map_err(|e| to_limiteron(&e))
                         })
                         .await;
-                    return result.map_err(|e| from_limiteron(e, vendor_id));
+                    return result.map_err(|e| from_circuit_call_error(e, vendor_id));
                 }
             }
         }
@@ -1582,10 +1631,17 @@ impl VendorManager {
                 vendor = %vendor_id,
                 status = %status,
                 body = %text,
-                "upstream vendor returned non-success status"
+                "{}",
+                crate::i18n::t("vendor-upstream-non-success")
             );
             return Err(NexusFlowError::VendorUnavailable {
-                vendor: format!("{} ({})", vendor_id, status),
+                vendor: crate::i18n::t_args(
+                    "vendor-upstream-status",
+                    &[
+                        ("vendor", vendor_id.to_string()),
+                        ("status", status.to_string()),
+                    ],
+                ),
             });
         }
 
@@ -1600,7 +1656,7 @@ impl VendorManager {
             }
             Err(e) => {
                 return Err(NexusFlowError::VendorUnavailable {
-                    vendor: format!("Parse error: {}", e),
+                    vendor: crate::i18n::t_args("vendor-parse-error", &[("error", e.to_string())]),
                 });
             }
         };
@@ -1616,7 +1672,8 @@ impl VendorManager {
                         tracing::warn!(
                             vendor = %vendor_id,
                             total,
-                            "token quota underflow: usage not accounted (would exceed window cap)"
+                            "{}",
+                            crate::i18n::t("vendor-token-quota-underflow")
                         );
                     }
                 }
@@ -2056,10 +2113,14 @@ mod tests {
         let cb = CircuitBreaker::new(nexusflow_circuit_config());
 
         for i in 0..3 {
-            let result: Result<u32, limiteron::error::LimiteronError> = cb
+            // execute 返回包装错误：Ok = 调用被执行且成功（Open 态为 Err(CircuitCallError::Open)）
+            let result: Result<
+                u32,
+                limiteron::error::CircuitCallError<limiteron::error::LimiteronError>,
+            > = cb
                 .execute(|| async {
                     tokio::time::sleep(Duration::from_millis(800)).await;
-                    Ok(1)
+                    Ok::<u32, limiteron::error::LimiteronError>(1)
                 })
                 .await;
             assert!(result.is_ok(), "slow call {} should succeed", i);

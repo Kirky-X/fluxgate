@@ -1,8 +1,6 @@
 #![cfg(feature = "vendor-management")]
-// Copyright (c) 2026 NexusFlow Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
-//! T043 — ConnectionPool 单元测试。
+//! ConnectionPool 单元测试。
 //!
 //! 测试属性（规则9）：
 //! 1. max_concurrent=2 时，第三个 acquire() 阻塞等待，drop 第一个后第三个成功

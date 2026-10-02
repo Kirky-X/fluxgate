@@ -1,8 +1,6 @@
 #![cfg(feature = "vendor-management")]
-// Copyright (c) 2026 NexusFlow Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
-//! T051a — VendorManager × CostTracker 集成测试。
+//! VendorManager × CostTracker 集成测试。
 //!
 //! 验证属性（规则9）：
 //! 1. mock 200 + usage 响应后 CostTracker::total_usd() > 0.0

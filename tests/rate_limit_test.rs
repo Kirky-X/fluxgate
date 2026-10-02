@@ -1,6 +1,4 @@
 #![cfg(feature = "web-server")]
-// Copyright (c) 2026 NexusFlow Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! recId=3（W2）：入站限流落地测试。
 //!

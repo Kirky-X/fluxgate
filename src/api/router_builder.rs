@@ -21,8 +21,9 @@ use tower_http::trace::TraceLayer;
 
 use super::response_cache::cache_api_key_hash;
 use super::state::ApiState;
-use super::{admin, anthropic, openai};
+use super::{admin, anthropic, health, openai};
 use crate::config::{RateLimitRule, RateLimitSection};
+use crate::i18n::t;
 use crate::middleware::admission::{tier_for_request, AdmissionState};
 use crate::middleware::auth_middleware;
 
@@ -196,7 +197,7 @@ async fn rate_limit_middleware(
                 return (
                     axum::http::StatusCode::TOO_MANY_REQUESTS,
                     [("Retry-After", reset_secs.to_string())],
-                    "Rate limit exceeded",
+                    t("router-rate-limit-exceeded"),
                 )
                     .into_response();
             }
@@ -230,18 +231,18 @@ async fn rate_limit_middleware(
                 Err(retry_after) => (
                     axum::http::StatusCode::TOO_MANY_REQUESTS,
                     [("Retry-After", retry_after.to_string())],
-                    "Admission rejected (congestion)",
+                    t("router-admission-rejected"),
                 )
                     .into_response(),
             }
         }
         Ok(Decision::Rejected(_)) => (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "Rate limit exceeded",
+            t("router-rate-limit-exceeded"),
         )
             .into_response(),
         Ok(Decision::Banned(_)) => {
-            (axum::http::StatusCode::FORBIDDEN, "Access denied").into_response()
+            (axum::http::StatusCode::FORBIDDEN, t("router-access-denied")).into_response()
         }
     }
 }
@@ -274,9 +275,14 @@ async fn build_inbound_limits(
 
     if global_rules.is_empty() {
         // limiteron 0.3 rc.5 起 `Governor::new()` 返回 `Result`（旧版内部
-        // expect、返回 Self）。保持旧的失败即 panic 行为，用 expect 解包。
+        // expect、返回 Self）。保持旧的失败即 panic 行为，unwrap_or_else 内
+        // panic 解包（翻译只在失败路径求值，clippy expect_fun_call）。
         return Ok((
-            Arc::new(Governor::new().await.expect("Governor init failed")),
+            Arc::new(
+                Governor::new()
+                    .await
+                    .unwrap_or_else(|e| panic!("{}: {e:?}", t("router-governor-init-failed"))),
+            ),
             endpoint_table,
         ));
     }
@@ -329,12 +335,14 @@ async fn build_inbound_limits(
 /// （api/health.rs:10，宏加版本前缀），此处不重复注册，避免 merge 时
 /// axum duplicate-route panic。
 pub async fn create_router(state: Arc<ApiState>) -> Router {
+    // forge 端点描述翻译注册进 sdforge（建站期一次性；见 health.rs）
+    health::register_forge_i18n();
     // recId=3：[rate_limit] 段消费点（此前该段被 serde 静默丢弃，中间件
     // 恒跑 Governor 库内置默认兜底规则）
     let rate_limit = state.config.read().rate_limit.clone();
     let (governor, endpoint_table) = build_inbound_limits(&rate_limit)
         .await
-        .expect("inbound rate limit init failed");
+        .unwrap_or_else(|e| panic!("{}: {e:?}", t("router-inbound-rate-limit-init-failed")));
     // recId=16：准入状态常驻构造（轻量；[admission].enabled 默认 false
     // 时判定旁路——热开开关立即生效，无需重启）
     let admission = Arc::new(AdmissionState::new(

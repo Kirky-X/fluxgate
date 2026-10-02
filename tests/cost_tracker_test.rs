@@ -1,7 +1,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! T050 — CostTracker 单元测试。
+//! CostTracker 单元测试。
 //!
 //! 测试属性（规则9）：
 //! 1. 并发 1000 次 record(0.01) 后 total_usd ≈ 10.0（容差 0.01）

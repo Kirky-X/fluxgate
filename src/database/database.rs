@@ -3,6 +3,7 @@
 
 use crate::database::Repository;
 use crate::error::NexusFlowError;
+use crate::i18n::t_args;
 use dbnexus::{DbConfig, DbPool};
 
 #[derive(Clone)]
@@ -16,7 +17,7 @@ impl Database {
         if let Some(parent) = std::path::Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).map_err(|e| NexusFlowError::Database {
-                    message: format!("创建数据库目录失败: {}", e),
+                    message: t_args("database-create-dir", &[("error", e.to_string())]),
                 })?;
             }
         }
@@ -39,7 +40,7 @@ impl Database {
         let pool = DbPool::with_config(config)
             .await
             .map_err(|e| NexusFlowError::Database {
-                message: format!("连接数据库失败: {}", e),
+                message: t_args("database-connect", &[("error", e.to_string())]),
             })?;
 
         // 初始化 schema
@@ -48,7 +49,7 @@ impl Database {
             .get_session("admin")
             .await
             .map_err(|e| NexusFlowError::Database {
-                message: format!("获取数据库会话失败: {}", e),
+                message: t_args("database-session", &[("error", e.to_string())]),
             })?;
 
         for statement in schema.split(';') {
@@ -58,7 +59,7 @@ impl Database {
                     .execute_raw_ddl(trimmed)
                     .await
                     .map_err(|e| NexusFlowError::Database {
-                        message: format!("初始化 schema 失败: {}", e),
+                        message: t_args("database-init-schema", &[("error", e.to_string())]),
                     })?;
             }
         }

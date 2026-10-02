@@ -623,7 +623,8 @@ impl GlobalMetrics {
             tracing::warn!(
                 top1_share,
                 share_entropy,
-                "traffic concentration alert: routing may have collapsed onto a single vendor/model"
+                "{}",
+                crate::i18n::t("utils-metrics-concentration")
             );
         }
 
@@ -1487,7 +1488,7 @@ mod tests {
     #[test]
     fn rate_limited_counts_in_failure_window_but_not_circuit_breaker() {
         use crate::vendor::resilience::error_map::{to_limiteron, NexusFlowErrorClassifier};
-        use limiteron::circuit::ErrorClassifier as _;
+        use limiteron::circuit::FailureClassifier as _;
 
         let classifier = NexusFlowErrorClassifier;
         let encoded =

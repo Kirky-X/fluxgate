@@ -6,7 +6,7 @@
 //! 测试覆盖：
 //! - `ErrorCategory`、`RetryStrategy`、`BackoffStrategy`、`extract_status_code`、
 //!   `is_retryable_error`（无 feature 门控）
-//! - `with_retry`（v0.1 手写实现，重试延迟已迁 limiteron）
+//! - `with_retry`（手写实现，重试延迟已迁 limiteron）
 //! - recId=7①：`limiteron::retry::delay_for_attempt` 首试 1s（回归旧实现的
 //!   2s 起步偏移）
 //! - recId=7②：`retry_delay_for` 纯函数（Retry-After 覆盖 / 分类退避），
@@ -134,7 +134,7 @@ mod tests {
         }));
     }
 
-    // -------- with_retry（v0.1 手写实现，延迟计算已迁 limiteron） --------
+    // -------- with_retry（手写实现，延迟计算已迁 limiteron） --------
 
     #[tokio::test]
     async fn test_with_retry_success_first_attempt_no_initial_error() {

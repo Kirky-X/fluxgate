@@ -3,6 +3,7 @@
 
 use crate::api::RoutingHints;
 use crate::database::RequestLog;
+use crate::i18n::t_args;
 use crate::{error::NexusFlowError, router::RoutingDecision, ApiState};
 use axum::{extract::State, http::HeaderMap, response::IntoResponse, Json};
 use serde_json::{json, Value};
@@ -859,7 +860,10 @@ async fn log_request(
     // recId=9②：logger 未接线 = 降级为不落日志（不回退同步直写）
     if let Some(logger) = state.logger.as_ref() {
         if let Err(e) = logger.log(log) {
-            tracing::warn!("request log push rejected: {}", e);
+            tracing::warn!(
+                "{}",
+                t_args("api-log-push-rejected", &[("error", e.to_string())])
+            );
         }
     }
 }

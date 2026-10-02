@@ -3,6 +3,7 @@
 
 use crate::api::RoutingHints;
 use crate::database::RequestLog;
+use crate::i18n::{t, t_args};
 use crate::protocol::embedding_request_to_openai;
 use crate::{error::NexusFlowError, router::RoutingDecision, ApiState};
 use axum::{extract::State, http::HeaderMap, response::IntoResponse, Json};
@@ -907,7 +908,10 @@ async fn log_chat_request(
     if let Some(logger) = state.logger.as_ref() {
         // push 失败仅可能为 logger 已停机 — 记 warn，不影响响应
         if let Err(e) = logger.log(log) {
-            tracing::warn!("request log push rejected: {}", e);
+            tracing::warn!(
+                "{}",
+                t_args("api-log-push-rejected", &[("error", e.to_string())])
+            );
         }
     }
 }
@@ -971,7 +975,7 @@ pub async fn embeddings(
     // 只支持 OpenAI vendor
     if decision.vendor.type_ != "openai" {
         return Err(NexusFlowError::Protocol {
-            source: "Embeddings only supported for OpenAI vendors".into(),
+            source: t("api-embeddings-openai-only"),
             inner: None,
         });
     }
@@ -1104,7 +1108,10 @@ async fn push_embeddings_log(
 
     if let Some(logger) = state.logger.as_ref() {
         if let Err(e) = logger.log(log) {
-            tracing::warn!("request log push rejected: {}", e);
+            tracing::warn!(
+                "{}",
+                t_args("api-log-push-rejected", &[("error", e.to_string())])
+            );
         }
     }
 }

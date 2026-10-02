@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::error::NexusFlowError;
+use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -225,15 +226,18 @@ impl ProtocolConverter for AnthropicConverter {
             let message = error_obj
                 .get("message")
                 .and_then(|v| v.as_str())
-                .unwrap_or("Unknown error")
-                .to_string();
+                .map(String::from)
+                .unwrap_or_else(|| t("protocol-unknown-error"));
             let error_type = error_obj
                 .get("type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
             return Err(NexusFlowError::Protocol {
-                source: format!("Anthropic error: {} - {}", error_type, message),
+                source: t_args(
+                    "protocol-anthropic-error",
+                    &[("type", error_type), ("message", message)],
+                ),
                 inner: None,
             });
         }

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! T040 — FallbackChain 单元测试。
+//! FallbackChain 单元测试。
 //!
 //! 测试属性（规则9：验证有意义行为）：
 //! 1. primary 5xx 失败 → 返回 secondary（按 priority 升序）
@@ -330,8 +330,10 @@ mod build_fallback_chain {
 /// 3. mid_stream_error_does_not_failover     B 流中断 → SSE error 事件而非重派
 /// 4. cb_open_triggers_fallback              A 熔断 Open → 透传不再触达 A，B 接管
 /// 5. cb_open_rejects_passthrough_http       direct 路由绕过路由层过滤 → CB 在
-///                                           派发层拒绝（无 HTTP），证明一期 CB 包裹生效
+///    派发层拒绝（无 HTTP），证明一期 CB 包裹生效
+///
 /// 开关=false 对照组（防门控失效）：
+///
 /// 6/7. 单 vendor 失败行为与现网逐位一致 —— B 存在且健康但**零调用**
 #[cfg(all(feature = "resilience", feature = "web-server"))]
 mod cover_all_paths {

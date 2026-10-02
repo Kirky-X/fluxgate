@@ -8,6 +8,7 @@ use nexusflow::api::{init_global_state, ApiState};
 use nexusflow::config::loader::ConfigLoader;
 use nexusflow::database::Database;
 use nexusflow::error::NexusFlowError;
+use nexusflow::i18n::{t, t_args};
 use nexusflow::protocol::AnthropicConverter;
 use nexusflow::protocol::OpenAIConverter;
 use nexusflow::router::Router as RouterStruct;
@@ -15,32 +16,41 @@ use nexusflow::vendor::VendorManager;
 
 #[tokio::main]
 async fn main() -> Result<(), NexusFlowError> {
-    println!("Starting NexusFlow with sdforge...");
+    println!("{}", t("main-starting"));
     let _logger = inklog::LoggerManager::builder()
         .level("info")
         .console(true)
         .build()
         .await
         .map_err(|e| NexusFlowError::Config {
-            message: format!("Logger init failed: {}", e),
+            message: t_args("main-logger-init-failed", &[("error", e.to_string())]),
         })?;
 
     let config_path = std::env::args().nth(1).unwrap_or("config.toml".to_string());
-    tracing::info!("Loading config from: {}", config_path);
+    tracing::info!(
+        "{}",
+        t_args("main-loading-config", &[("path", config_path.clone())])
+    );
     let config_manager = Arc::new(ConfigLoader::new(Some(config_path)).load()?);
-    tracing::info!("Config loaded successfully");
+    tracing::info!("{}", t("main-config-loaded"));
 
     let db_config = {
         let config = config_manager.read();
         config.database.clone()
     };
-    tracing::info!("Initializing database at: {}", db_config.path);
+    tracing::info!(
+        "{}",
+        t_args(
+            "main-initializing-database",
+            &[("path", db_config.path.clone())]
+        )
+    );
     let database = Arc::new(Database::new(&db_config.path, db_config.pool_size).await?);
-    tracing::info!("Database initialized");
+    tracing::info!("{}", t("main-database-initialized"));
 
     let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
     vendor_manager.initialize().await?;
-    tracing::info!("Vendor manager initialized");
+    tracing::info!("{}", t("main-vendor-manager-initialized"));
 
     // recId=9②：日志管道构造 — AsyncLogger（异步批量落 request_logs）与
     // TokenPreAggregator（usage 小时预聚合）自 Database 的 repository 构造，
@@ -65,7 +75,7 @@ async fn main() -> Result<(), NexusFlowError> {
             pa.start_flush_worker(flag).await;
         });
     }
-    tracing::info!("Log pipeline initialized (async logger + token pre-aggregator)");
+    tracing::info!("{}", t("main-log-pipeline-initialized"));
 
     // Build trait-kit AsyncKit DI container: oxcache → dbnexus → inklog
     // chain + limiteron governor. Proves all 4 brother libs are DI-compatible.
@@ -76,7 +86,7 @@ async fn main() -> Result<(), NexusFlowError> {
         feature = "logging"
     ))]
     {
-        tracing::info!("Building trait-kit AsyncKit DI container...");
+        tracing::info!("{}", t("main-building-di-container"));
         let di_db_config = dbnexus::foundation::config::DbConfig {
             url: format!("sqlite:{}", db_config.path),
             pool_config: dbnexus::foundation::config::PoolConfig {
@@ -88,7 +98,7 @@ async fn main() -> Result<(), NexusFlowError> {
         };
         let kit = nexusflow::infrastructure::di::build_kit_with_config(di_db_config).await?;
         nexusflow::infrastructure::di::verify_kit(&kit)?;
-        tracing::info!("AsyncKit DI container built: 4/4 modules resolved");
+        tracing::info!("{}", t("main-di-container-built"));
     }
 
     let router = RouterStruct::new(config_manager.clone(), vendor_manager.clone());
@@ -119,9 +129,12 @@ async fn main() -> Result<(), NexusFlowError> {
     {
         let cache_enabled = config_manager.read().cache.enabled;
         tracing::info!(
-            "Response cache {} (recId=12, [cache].enabled={})",
-            if cache_enabled { "enabled" } else { "disabled" },
-            cache_enabled
+            "{}",
+            if cache_enabled {
+                t("main-response-cache-enabled")
+            } else {
+                t("main-response-cache-disabled")
+            }
         );
     }
 
@@ -144,7 +157,7 @@ async fn main() -> Result<(), NexusFlowError> {
     });
 
     init_global_state(api_state.clone());
-    tracing::info!("Global state initialized");
+    tracing::info!("{}", t("main-global-state-initialized"));
 
     // Build app with sdforge's configuration
     let sdforge_config = {
@@ -185,6 +198,9 @@ async fn main() -> Result<(), NexusFlowError> {
                 request_timeout_secs: 300,
                 max_body_size: 10 * 1024 * 1024,
                 cors,
+                // NexusFlow 不经 sdforge 终结 TLS（自建 axum 明文监听，
+                // TLS 由外部反代承担）
+                tls: None,
             },
             // 认证由自建 api_auth_middleware 承担（[auth] 段 SHA256 摘要 +
             // 常量时间比较，见 middleware/auth.rs）。sdforge 层显式禁用：
@@ -214,44 +230,71 @@ async fn main() -> Result<(), NexusFlowError> {
         server_config
             .host
             .parse()
-            .map_err(|e| NexusFlowError::Config {
-                message: format!("invalid server host '{}': {}", server_config.host, e),
+            .map_err(|e: std::net::AddrParseError| NexusFlowError::Config {
+                message: t_args(
+                    "main-invalid-server-host",
+                    &[
+                        ("host", server_config.host.clone()),
+                        ("error", e.to_string()),
+                    ],
+                ),
             })?;
     let addr = SocketAddr::from((ipv4, server_config.port));
 
-    tracing::info!("Starting server: {}", addr);
-    tracing::info!("Server listening on {} (sdforge powered)", addr);
+    tracing::info!(
+        "{}",
+        t_args("main-starting-server", &[("addr", addr.to_string())])
+    );
+    tracing::info!(
+        "{}",
+        t_args("main-server-listening", &[("addr", addr.to_string())])
+    );
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("Press Ctrl+C to initiate graceful shutdown");
+    tracing::info!("{}", t("main-press-ctrl-c"));
 
     let result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await;
 
     match result {
-        Ok(_) => tracing::info!("Server stopped successfully"),
+        Ok(_) => tracing::info!("{}", t("main-server-stopped")),
         Err(e) => {
-            tracing::error!("Server stopped with error: {}", e);
+            tracing::error!(
+                "{}",
+                t_args(
+                    "main-server-stopped-with-error",
+                    &[("error", e.to_string())]
+                )
+            );
             return Err(NexusFlowError::Config {
-                message: format!("server error: {}", e),
+                message: t_args("main-server-error", &[("error", e.to_string())]),
             });
         }
     }
 
     // recId=9：优雅停机 flush — serve 返回即 in-flight 请求已全部完成，
     // 此刻补最终 flush 保证缓冲中的日志与聚合数据不丢
-    tracing::info!("Flushing log pipeline...");
+    tracing::info!("{}", t("main-flushing-log-pipeline"));
     if let Err(e) = logger_handle.shutdown().await {
-        tracing::warn!("Async logger shutdown: {}", e);
+        tracing::warn!(
+            "{}",
+            t_args("main-async-logger-shutdown", &[("error", e.to_string())])
+        );
     }
     pa_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Err(e) = pre_aggregator.flush().await {
-        tracing::warn!("Token pre-aggregator final flush: {}", e);
+        tracing::warn!(
+            "{}",
+            t_args("main-pre-aggregator-flush", &[("error", e.to_string())])
+        );
     }
     tracing::info!(
-        "Log pipeline flushed (dropped_logs={})",
-        logger_handle.dropped_logs()
+        "{}",
+        t_args(
+            "main-log-pipeline-flushed",
+            &[("dropped", logger_handle.dropped_logs().to_string())]
+        )
     );
 
     Ok(())
@@ -263,13 +306,14 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
-            .expect("failed to install Ctrl+C handler");
+            .unwrap_or_else(|e| panic!("{}: {e:?}", t("main-ctrl-c-handler-failed")));
     };
 
     #[cfg(unix)]
     let terminate = async {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sig = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        let mut sig = signal(SignalKind::terminate())
+            .unwrap_or_else(|e| panic!("{}: {e:?}", t("main-sigterm-handler-failed")));
         sig.recv().await;
     };
 
@@ -277,7 +321,7 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => tracing::info!("Received Ctrl+C, initiating graceful shutdown"),
-        _ = terminate => tracing::info!("Received SIGTERM, initiating graceful shutdown"),
+        _ = ctrl_c => tracing::info!("{}", t("main-received-ctrl-c")),
+        _ = terminate => tracing::info!("{}", t("main-received-sigterm")),
     }
 }

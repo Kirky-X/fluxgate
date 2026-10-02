@@ -97,11 +97,23 @@ impl TokenPreAggregator {
     }
 
     /// 定期刷新到数据库
-    pub async fn start_flush_worker(self: Arc<Self>) {
+    ///
+    /// recId=9⑤：增加停机退出条件 —— `shutdown` 置 true 后补一次最终
+    /// flush 再退出（原实现 loop 无退出，停机时缓冲内的聚合数据丢失）。
+    /// main.rs 在 serve 结束后置位并做最终 flush。
+    pub async fn start_flush_worker(self: Arc<Self>, shutdown: Arc<std::sync::atomic::AtomicBool>) {
+        use std::sync::atomic::Ordering;
         let mut interval = tokio::time::interval(self.flush_interval);
 
         loop {
             interval.tick().await;
+            if shutdown.load(Ordering::Relaxed) {
+                // 停机：补最终 flush 后退出
+                if let Err(e) = self.flush().await {
+                    tracing::error!("Final token aggregation flush failed: {}", e);
+                }
+                break;
+            }
             if let Err(e) = self.flush().await {
                 tracing::error!("Failed to flush token aggregation: {}", e);
             }
@@ -173,9 +185,7 @@ impl TokenPreAggregatorHandle {
 
     /// 记录 Token 使用（含成本，单位 USD）
     pub async fn record(&self, vendor: &str, model: &str, cost_usd: f64, usage: &TokenUsage) {
-        self.inner
-            .record(vendor, model, cost_usd, usage)
-            .await;
+        self.inner.record(vendor, model, cost_usd, usage).await;
     }
 
     /// 记录使用（使用原始数值，含成本，单位 USD）
@@ -200,10 +210,10 @@ impl TokenPreAggregatorHandle {
             .await;
     }
 
-    /// 启动刷新任务
-    pub fn start_flush_worker(self) {
+    /// 启动刷新任务（recId=9⑤：带停机标志，置位后补最终 flush 并退出）
+    pub fn start_flush_worker(self, shutdown: Arc<std::sync::atomic::AtomicBool>) {
         tokio::spawn(async move {
-            self.inner.clone().start_flush_worker().await;
+            self.inner.clone().start_flush_worker(shutdown).await;
         });
     }
 }

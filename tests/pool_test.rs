@@ -1,3 +1,4 @@
+#![cfg(feature = "vendor-management")]
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
@@ -31,7 +32,10 @@ async fn test_third_acquire_waits_then_succeeds_after_drop() {
     let counter_clone = counter.clone();
     let pool_clone = pool.clone();
     let task = tokio::spawn(async move {
-        let _g3 = pool_clone.acquire().await.expect("third acquire after drop");
+        let _g3 = pool_clone
+            .acquire()
+            .await
+            .expect("third acquire after drop");
         counter_clone.fetch_add(1, Ordering::SeqCst);
     });
 

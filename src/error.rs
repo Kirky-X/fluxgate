@@ -37,12 +37,25 @@ pub enum NexusFlowError {
 
     #[error("路由错误: {message}")]
     Routing { message: String },
+
+    /// recId=19(c)：换路 fallback 耗尽且全部候选因限流被排除 —
+    /// `[routing].retry_after_hint` 开启时由 api 层收尾函数抛出，
+    /// IntoResponse 映射 429 + Retry-After 头（reset 秒数取各 vendor
+    /// 窗口重置剩余的 min）。默认开关关闭时永不产生本变体（原错误
+    /// 冒泡保持 503 语义）。
+    #[error("全部候选厂商被限流: 预计 {retry_after_secs}s 后可重试")]
+    AllVendorsThrottled { retry_after_secs: u64 },
 }
 
 #[cfg(feature = "web-server")]
 impl IntoResponse for NexusFlowError {
     fn into_response(self) -> axum::response::Response {
-        let status = match self {
+        // recId=19(c)：AllVendorsThrottled 额外携带 Retry-After 响应头
+        let retry_after_secs = match &self {
+            NexusFlowError::AllVendorsThrottled { retry_after_secs } => Some(*retry_after_secs),
+            _ => None,
+        };
+        let status = match &self {
             NexusFlowError::Validation { .. } => axum::http::StatusCode::BAD_REQUEST,
             NexusFlowError::VendorUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
             NexusFlowError::Timeout { .. } => axum::http::StatusCode::GATEWAY_TIMEOUT,
@@ -51,6 +64,7 @@ impl IntoResponse for NexusFlowError {
             NexusFlowError::Protocol { .. } => axum::http::StatusCode::BAD_GATEWAY,
             NexusFlowError::Database { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             NexusFlowError::Routing { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            NexusFlowError::AllVendorsThrottled { .. } => axum::http::StatusCode::TOO_MANY_REQUESTS,
         };
 
         let body = json!({
@@ -60,7 +74,15 @@ impl IntoResponse for NexusFlowError {
             }
         });
 
-        (status, axum::Json(body)).into_response()
+        let mut response = (status, axum::Json(body)).into_response();
+        if let Some(secs) = retry_after_secs {
+            if let Ok(value) = secs.to_string().parse() {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 
@@ -77,6 +99,7 @@ impl NexusFlowError {
             NexusFlowError::Database { .. } => "database_error",
             NexusFlowError::Validation { .. } => "validation_error",
             NexusFlowError::Routing { .. } => "routing_error",
+            NexusFlowError::AllVendorsThrottled { .. } => "all_vendors_throttled",
         }
     }
 }
@@ -112,13 +135,6 @@ impl From<sdforge::config::ConfigError> for NexusFlowError {
         NexusFlowError::Config {
             message: e.to_string(),
         }
-    }
-}
-
-#[cfg(feature = "resilience")]
-impl crate::vendor::resilience::IsRetryable for NexusFlowError {
-    fn is_retryable(&self) -> bool {
-        crate::utils::retry::is_retryable_error(self)
     }
 }
 
@@ -208,6 +224,34 @@ mod tests {
         }
         .into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_error_all_vendors_throttled_to_response_with_retry_after() {
+        // recId=19(c)：AllVendorsThrottled → 429 + Retry-After 头（秒数
+        // 原样带出）+ 固定错误代码
+        let response = NexusFlowError::AllVendorsThrottled {
+            retry_after_secs: 30,
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after = response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .expect("Retry-After header must be present")
+            .to_str()
+            .expect("Retry-After must be visible ASCII");
+        assert_eq!(retry_after, "30");
+
+        let body = extract_body(response).await;
+        assert_eq!(body["error"]["type"], "all_vendors_throttled");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("30"),
+            "message 应携带重试秒数"
+        );
     }
 
     #[tokio::test]

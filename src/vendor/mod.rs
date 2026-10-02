@@ -6,13 +6,15 @@ pub mod manager;
 pub mod pool;
 pub mod queue;
 pub mod rate_limiter;
-pub mod status;
 #[cfg(feature = "resilience")]
 pub mod resilience;
+pub mod status;
 
 pub use cost::{CostCalculator, PricingEntry};
-pub use manager::{VendorManager, WindowInfo};
+pub use manager::{
+    estimate_cost_json, estimate_cost_unified, TicketPolicy, VendorManager, WindowInfo,
+};
 pub use pool::{ConnectionPool, OwnedReqwestClient};
-pub use queue::{PendingRequest, QueueManager, VendorQueue};
-pub use rate_limiter::{AdvancedRateLimiter, ConcurrencyLimiter, TokenBucket};
+pub use queue::{PendingRequest, VendorQueue};
+pub use rate_limiter::{AdvancedRateLimiter, ConcurrencyLimiter, ConcurrencyPermit, TokenBucket};
 pub use status::{VendorState, VendorStatus};

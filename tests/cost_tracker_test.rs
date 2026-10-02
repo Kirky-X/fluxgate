@@ -97,8 +97,16 @@ fn test_snapshot_has_correct_fields() {
 
     let openai_usd = *snap.by_vendor.get("openai").expect("openai entry");
     let anthropic_usd = *snap.by_vendor.get("anthropic").expect("anthropic entry");
-    assert!((openai_usd - 0.5).abs() < 1e-9, "openai USD: {}", openai_usd);
-    assert!((anthropic_usd - 0.3).abs() < 1e-9, "anthropic USD: {}", anthropic_usd);
+    assert!(
+        (openai_usd - 0.5).abs() < 1e-9,
+        "openai USD: {}",
+        openai_usd
+    );
+    assert!(
+        (anthropic_usd - 0.3).abs() < 1e-9,
+        "anthropic USD: {}",
+        anthropic_usd
+    );
 }
 
 #[test]

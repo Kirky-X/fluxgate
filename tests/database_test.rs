@@ -1,3 +1,5 @@
+#![cfg(feature = "database")]
+
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
@@ -10,7 +12,11 @@ mod tests {
     async fn create_test_pool() -> DbPool {
         let config = DbConfig {
             url: "sqlite::memory:".to_string(),
-            max_connections: 1,
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
             admin_role: "admin".to_string(),
             ..Default::default()
         };
@@ -534,5 +540,106 @@ mod tests {
         let logs = result.unwrap();
         println!("Logs matching model 'gpt-4': {}", logs.len());
         assert_eq!(logs.len(), 3); // Only first 3 have actual_model = "gpt-4"
+    }
+}
+
+// ============ recId=9：单事务批量写入（Repository::log_requests_batch） ============
+
+#[cfg(test)]
+mod batch_tx {
+    use dbnexus::{DbConfig, DbPool};
+    use nexusflow::database::{Database, LogFilter, Repository, RequestLog};
+    use std::sync::Arc;
+
+    async fn create_test_pool() -> DbPool {
+        let config = DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        };
+        DbPool::with_config(config).await.unwrap()
+    }
+
+    fn sample_log(i: usize) -> RequestLog {
+        RequestLog {
+            id: None,
+            request_id: format!("tx-batch-{i:03}"),
+            timestamp: chrono::Utc::now().timestamp(),
+            endpoint: "/v1/chat/completions".to_string(),
+            input_format: "openai".to_string(),
+            abstract_model: Some("gpt-4".to_string()),
+            messages: format!(r#"{{"i":{i}}}"#),
+            actual_vendor: "openai_main".to_string(),
+            actual_model: "gpt-4".to_string(),
+            routing_strategy: "Abstract".to_string(),
+            status_code: Some(200),
+            response: Some(r#"{"ok":true}"#.to_string()),
+            error_message: None,
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            total_tokens: Some(15),
+            duration_ms: Some(20),
+            cost_usd: None,
+        }
+    }
+
+    /// recId=9 tests ①：批量 100 条单事务写入 → query_logs 恰 100 条
+    ///（N 次 INSERT 一次 commit：不丢条、不留半批）。
+    #[tokio::test]
+    async fn test_log_requests_batch_atomic_100() {
+        let pool = create_test_pool().await;
+        let repository = Arc::new(Repository::new(pool));
+        repository.initialize().await.unwrap();
+
+        let logs: Vec<RequestLog> = (0..100).map(sample_log).collect();
+        repository
+            .log_requests_batch(&logs)
+            .await
+            .expect("batch ok");
+
+        let all = repository
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("query ok");
+        assert_eq!(all.len(), 100, "事务批量必须整批落库");
+    }
+
+    /// 空批 no-op（writer_loop 的空缓冲快路径）。
+    #[tokio::test]
+    async fn test_log_requests_batch_empty_is_noop() {
+        let pool = create_test_pool().await;
+        let repository = Arc::new(Repository::new(pool));
+        repository.initialize().await.unwrap();
+        repository
+            .log_requests_batch(&[])
+            .await
+            .expect("empty batch ok");
+        let all = repository.query_logs(&LogFilter::default()).await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    /// 全新文件路径自举建库（mode=rwc 回归：sqlx 默认不创建不存在的库文件，
+    /// 此前仅 :memory: 测试覆盖不到该路径，实机首次启动在全新路径上失败）
+    #[tokio::test]
+    async fn test_database_new_creates_missing_file() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nx-db-create-{}-{nanos}", std::process::id()));
+        let db_path = dir.join("fresh").join("llm_proxy.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        assert!(!db_path.exists(), "前置：库文件尚不存在");
+
+        let db = Database::new(db_path.to_str().unwrap(), 1).await;
+
+        assert!(db.is_ok(), "全新路径应能自举建库: {:?}", db.err());
+        assert!(db_path.exists(), "Database::new 之后库文件应已创建");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

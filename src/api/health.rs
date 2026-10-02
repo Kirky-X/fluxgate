@@ -7,7 +7,7 @@ use serde_json::json;
 /// Health check endpoint
 ///
 /// Returns the current status of the API server.
-#[service_api(
+#[forge(
     name = "health_check",
     version = "v1",
     path = "/health",

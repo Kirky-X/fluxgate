@@ -1,3 +1,4 @@
+#![cfg(feature = "vendor-management")]
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
@@ -46,11 +47,7 @@ fn make_unified_request() -> UnifiedRequest {
 async fn setup_cost_test(
     response_body: &str,
     status: usize,
-) -> (
-    Arc<VendorManager>,
-    mockito::ServerGuard,
-    mockito::Mock,
-) {
+) -> (Arc<VendorManager>, mockito::ServerGuard, mockito::Mock) {
     std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
     let mut server = mockito::Server::new_async().await;
     let mock = server
@@ -62,12 +59,16 @@ async fn setup_cost_test(
         .await;
 
     let v = VendorConfig {
+        timeout_ms: 60_000,
+        stream_ttft_ms: 60_000,
+        stream_idle_ms: 30_000,
         id: "openai-cost".into(),
         name: "OpenAI Cost Test".into(),
         type_: "openai".into(),
         api_key_env: "NEXUSFLOW_TEST_KEY".into(),
         api_base: format!("{}/v1", server.url()),
         enabled: true,
+        priority: 1,
         models: vec![ModelConfig {
             model_id: "gpt-4".into(),
             abstract_id: Some("gpt-4".into()),
@@ -76,13 +77,21 @@ async fn setup_cost_test(
         }],
         rate_limit: RateLimitConfig::Token {
             max_tokens: 1_000_000,
+            window_hours: None,
+            sliding: false,
         },
         concurrency: ConcurrencyConfig {
             requests_per_second: 100,
+            max_concurrent_requests: None,
+            token_weighted: false,
+            token_ticket_min: 1,
+            token_ticket_max: 16384,
+            token_ticket_default: 4096,
         },
     };
 
     let config = Config {
+        rate_limit: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
@@ -102,6 +111,13 @@ async fn setup_cost_test(
             input_per_1k_tokens: 0.03,
             output_per_1k_tokens: 0.06,
         }],
+        auth: None,
+        cors: None,
+        retry: nexusflow::config::RetrySection::default(),
+        routing: nexusflow::config::RoutingSection::default(),
+        cache: nexusflow::config::CacheSection::default(),
+        admission: Default::default(),
+        resilience: nexusflow::config::ResilienceSection::default(),
     };
 
     let cm = Arc::new(ConfigManager::new(config));

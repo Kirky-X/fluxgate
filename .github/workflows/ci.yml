@@ -1,121 +1,221 @@
 #===============================================================================
-# 智能 LLM 路由代理系统 - GitHub Actions CI/CD Workflow
-# 基于 GitHub 官方 Rust 模板和 2026 年最佳实践
+# NexusFlow CI 质量门禁（对齐 confers 7 仓库统一基线）
+# fmt / clippy / check / test / coverage / security / docker
+#
+# 与 confers 基线的差异：
+#   - NexusFlow 通过 path 依赖集成 7 个兄弟库（Cargo.toml 中 ../<lib>），
+#     所有 cargo 作业先克隆兄弟库到仓库上级目录，否则依赖解析必然失败；
+#   - 本仓库无 Criterion 基准、无 deny.toml，故无 benchmarks 作业，
+#     security 作业仅跑 cargo audit（补 deny.toml 后再加 cargo deny check）；
+#   - 无 CodeQL（按安全门禁约定 CodeQL 为 opt-in，不进默认流程）。
 #===============================================================================
-
 name: CI/CD
 
-#------------------------------------------------------------------------------
-# 触发条件
-#------------------------------------------------------------------------------
 on:
   push:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
-  # 手动触发
   workflow_dispatch:
-  # 定时任务: 每日安全扫描
+  # 每日安全扫描：仅 security 作业响应 schedule，其余作业跳过
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '37 5 * * *'
 
-#------------------------------------------------------------------------------
-# 环境变量
-#------------------------------------------------------------------------------
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
   RUST_VERSION: '1.92'
-  APP_NAME: smart_llm_proxy
+  # path 依赖的 7 个兄弟库，克隆到 $GITHUB_WORKSPACE/../ 下满足 ../<lib> 解析
+  SIBLING_REPOS: 'confers dbnexus inklog limiteron oxcache sdforge trait-kit'
 
-#------------------------------------------------------------------------------
-# 作业定义
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# 兄弟库克隆说明：NexusFlow 的 Cargo.toml 以 ../<lib> path 依赖集成上列仓库，
+# 且 [patch.crates-io] 将自研库重定向到同级本地源码。CI 上必须先把它们
+# 克隆到仓库同级目录，cargo metadata 才能完成依赖解析。
+#-------------------------------------------------------------------------------
+
 jobs:
-  #------------------------------------------------------------------------------
-  # 作业 1: 代码质量检查 (快速反馈)
-  #------------------------------------------------------------------------------
-  quality-checks:
-    name: Quality Checks
+  #-----------------------------------------------------------------------------
+  # 格式检查
+  #-----------------------------------------------------------------------------
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name != 'schedule'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout sibling libraries (path dependencies)
+        run: |
+          set -euo pipefail
+          for repo in $SIBLING_REPOS; do
+            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
+          done
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          components: rustfmt, clippy
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Code Formatting Check
-        run: cargo fmt --check --all
-
-      - name: Clippy Linting
-        run: cargo clippy --all-features -- -D warnings
-
-      - name: Cargo Audit (Security)
-        uses: actions-rs/audit-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-  #------------------------------------------------------------------------------
-  # 作业 2: 单元测试和集成测试
-  #------------------------------------------------------------------------------
-  tests:
-    name: Tests
+  #-----------------------------------------------------------------------------
+  # Clippy 零告警
+  #-----------------------------------------------------------------------------
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
-    needs: quality-checks
+    timeout-minutes: 30
+    if: github.event_name != 'schedule'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout sibling libraries (path dependencies)
+        run: |
+          set -euo pipefail
+          for repo in $SIBLING_REPOS; do
+            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
+          done
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+  #-----------------------------------------------------------------------------
+  # 编译检查（默认特性 / 全特性）
+  #-----------------------------------------------------------------------------
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout sibling libraries (path dependencies)
+        run: |
+          set -euo pipefail
+          for repo in $SIBLING_REPOS; do
+            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
+          done
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-test-
-
-      - name: Run Tests
-        run: cargo test --all-features --all
-
-      - name: Upload Coverage Report
-        uses: codecov/codecov-action@v4
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
         with:
-          files: ./target/debug/lcov.info
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Check default features
+        run: cargo check --workspace
+      - name: Check full features
+        run: cargo check --workspace --all-features
+
+  #-----------------------------------------------------------------------------
+  # 测试（mockito/mockall 自包含，无外部服务依赖）
+  #-----------------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout sibling libraries (path dependencies)
+        run: |
+          set -euo pipefail
+          for repo in $SIBLING_REPOS; do
+            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
+          done
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Run tests
+        run: cargo test --workspace --all-features
+
+  #-----------------------------------------------------------------------------
+  # 覆盖率（生成 + 上传 Codecov）
+  # 注意：暂不设 --fail-under-lines 门禁——首次测量前不知道真实基线，
+  # 先采集数据，基线明确后再按 confers 基线加 ≥80% 行覆盖率门禁。
+  #-----------------------------------------------------------------------------
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout sibling libraries (path dependencies)
+        run: |
+          set -euo pipefail
+          for repo in $SIBLING_REPOS; do
+            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
+          done
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+      - name: Upload coverage
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: lcov.info
           fail_ci_if_error: false
 
-  #------------------------------------------------------------------------------
-  # 作业 3: Docker 构建和扫描
-  #------------------------------------------------------------------------------
+  #-----------------------------------------------------------------------------
+  # 供应链安全（每日 schedule 唯一响应者；cargo audit 只读 Cargo.lock，
+  # 无需兄弟库与编译）
+  #-----------------------------------------------------------------------------
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-audit
+      - name: cargo audit
+        run: cargo audit
+
+  #-----------------------------------------------------------------------------
+  # Docker 构建 + Trivy 扫描（main 推送；需要 DOCKERHUB_USERNAME /
+  # DOCKERHUB_TOKEN secrets，未配置时登录步骤显性失败）
+  #-----------------------------------------------------------------------------
   docker:
     name: Docker Build & Scan
     runs-on: ubuntu-latest
-    needs: tests
+    timeout-minutes: 60
+    needs: [test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -132,7 +232,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.APP_NAME }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/nexusflow
           tags: |
             type=sha,prefix=
             type=ref,event=branch
@@ -145,6 +245,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -152,85 +254,7 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.meta.outputs.tags }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v2
-        if: always()
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-  #------------------------------------------------------------------------------
-  # 作业 4: 多平台交叉编译 (可选)
-  #------------------------------------------------------------------------------
-  cross-compile:
-    name: Cross Compile
-    runs-on: ubuntu-latest
-    needs: tests
-    strategy:
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          targets: ${{ matrix.target }}
-
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-          key: ${{ runner.os }}-${{ matrix.target }}-cross-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cross-
-
-      - name: Build Binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Upload Binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/smart_llm_proxy
-
-  #------------------------------------------------------------------------------
-  # 作业 5: 发布 (仅在 tag 时运行)
-  #------------------------------------------------------------------------------
-  release:
-    name: Release
-    runs-on: ubuntu-latest
-    needs: [tests, cross-compile]
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            target/*/release/smart_llm_proxy
-            target/*/release/smart_llm_proxy.exe
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'

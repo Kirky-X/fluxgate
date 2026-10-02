@@ -1,0 +1,126 @@
+#===============================================================================
+# NexusFlow 发布流水线（对齐 confers 基线：推 v* tag 触发）
+#
+# 产物（NexusFlow 是应用，不发 crates.io——path 依赖决定其不可发布）：
+#   - nexusflow-<ver>-x86_64-unknown-linux-gnu.tar.gz
+#     ubuntu runner 编译，动态链接系统 libsqlite3（sqlx 走 pkg-config，非 bundled）
+#   - nexusflow-<ver>-x86_64-musl.tar.gz（静态，alpine 可直接运行）
+#     由 Dockerfile 的 alpine 构建阶段产出后从镜像提取，与发布镜像同源——
+#     musl 交叉编译需要 musl 版 libsqlite3，ubuntu runner 上不可行，
+#     借道 Docker 构建是唯一与镜像保持一致的路径
+#===============================================================================
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: '1.92'
+  BIN_NAME: nexusflow
+  SIBLING_REPOS: 'confers dbnexus inklog limiteron oxcache sdforge trait-kit'
+
+jobs:
+  #-----------------------------------------------------------------------------
+  # 创建 GitHub Release（自动生成变更说明；rc/beta/alpha 后缀标记预发布）
+  #-----------------------------------------------------------------------------
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+
+  #-----------------------------------------------------------------------------
+  # gnu 动态链接二进制（Ubuntu 基线）
+  #-----------------------------------------------------------------------------
+  build-gnu:
+    name: Build (${{ matrix.target }})
+    needs: create-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install system dependencies (sqlx links system libsqlite3)
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      - name: Checkout sibling libraries (path dependencies)
+        run: |
+          set -euo pipefail
+          for repo in $SIBLING_REPOS; do
+            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
+          done
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin ${{ env.BIN_NAME }}
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ASSET="${{ env.BIN_NAME }}-${VERSION}-${{ matrix.target }}.tar.gz"
+          tar -czf "$ASSET" -C "target/${{ matrix.target }}/release" "${{ env.BIN_NAME }}"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+      - name: Attach to release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          files: ${{ env.ASSET }}
+
+  #-----------------------------------------------------------------------------
+  # musl 静态二进制（复用 Dockerfile 的 alpine 构建阶段，与镜像同源）
+  #-----------------------------------------------------------------------------
+  build-musl:
+    name: Build (x86_64-musl via Docker)
+    needs: create-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (local only, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: nexusflow:release-build
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Extract binary from image
+        run: |
+          set -euo pipefail
+          cid=$(docker create nexusflow:release-build)
+          docker cp "$cid:/bin/server" ./nexusflow
+          docker rm "$cid"
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ASSET="${{ env.BIN_NAME }}-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          tar -czf "$ASSET" nexusflow
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+      - name: Attach to release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          files: ${{ env.ASSET }}

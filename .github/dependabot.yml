@@ -1,0 +1,49 @@
+# Dependabot 配置 — 7 仓库统一基线(见 base/CONFIG_BASELINE.md，与 confers 保持一致)
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+version: 2
+updates:
+  # Rust 依赖更新(Cargo.toml / Cargo.lock)— 包根
+  # 注：path 依赖的 7 个兄弟库不在版本更新范围，只更新 crates.io 依赖
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      # patch 版本更新合并为单个 PR
+      patch-updates:
+        update-types:
+          - "patch"
+      # minor 版本更新合并为单个 PR
+      minor-updates:
+        update-types:
+          - "minor"
+
+  # GitHub Actions 版本更新
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"

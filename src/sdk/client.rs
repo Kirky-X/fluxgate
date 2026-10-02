@@ -10,12 +10,23 @@ use crate::sdk::config::RequestConfig;
 use crate::sdk::error::NexusFlowSdkError;
 use crate::sdk::stream::ChatStream;
 
+/// 未显式设置 `timeout` 时的默认请求总超时。reqwest 默认无总超时，
+/// 挂起的网关会让调用方任务无限悬挂。
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 计算生效超时：显式值优先，否则落到 [`DEFAULT_REQUEST_TIMEOUT`]。
+fn effective_timeout(explicit: Option<Duration>) -> Duration {
+    explicit.unwrap_or(DEFAULT_REQUEST_TIMEOUT)
+}
+
 /// NexusFlow 网关客户端。
 pub struct NexusFlowClient {
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: Url,
     pub(crate) api_key: String,
     pub(crate) default_config: RequestConfig,
+    /// 生效的请求总超时（审计/测试用；实际执行由 `http` 承担）
+    pub(crate) effective_timeout: Duration,
 }
 
 // api_key 是 Bearer 凭证：手写 Debug 脱敏，不用 derive（会打印明文）
@@ -25,6 +36,7 @@ impl std::fmt::Debug for NexusFlowClient {
             .field("http", &self.http)
             .field("base_url", &self.base_url)
             .field("api_key", &"[REDACTED]")
+            .field("effective_timeout", &self.effective_timeout)
             .field("default_config", &self.default_config)
             .finish()
     }
@@ -33,6 +45,44 @@ impl std::fmt::Debug for NexusFlowClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 未显式设置 timeout 时必须有默认超时：reqwest 默认无总超时，
+    /// 挂起的网关会让调用方任务无限悬挂。
+    #[test]
+    fn default_timeout_applied_when_unset() {
+        assert_eq!(
+            effective_timeout(None),
+            DEFAULT_REQUEST_TIMEOUT,
+            "未设置 timeout 必须落到默认值"
+        );
+    }
+
+    #[test]
+    fn explicit_timeout_wins_over_default() {
+        let explicit = Duration::from_millis(250);
+        assert_eq!(effective_timeout(Some(explicit)), explicit);
+    }
+
+    /// 超时必须真的进 reqwest Client：默认构造 → DEFAULT_REQUEST_TIMEOUT，
+    /// 显式 timeout() → 该值（客户端存储的生效超时可审计）。
+    #[test]
+    fn builder_applies_effective_timeout_to_client() {
+        let default_client = NexusFlowClientBuilder::new()
+            .base_url("http://127.0.0.1:8080")
+            .api_key("k")
+            .build()
+            .unwrap();
+        assert_eq!(default_client.effective_timeout, DEFAULT_REQUEST_TIMEOUT);
+
+        let explicit = Duration::from_millis(250);
+        let tuned_client = NexusFlowClientBuilder::new()
+            .base_url("http://127.0.0.1:8080")
+            .api_key("k")
+            .timeout(explicit)
+            .build()
+            .unwrap();
+        assert_eq!(tuned_client.effective_timeout, explicit);
+    }
 
     /// api_key 是 Bearer 凭证：Debug 输出必须脱敏，{:?} 打印客户端
     /// （日志/调试）不得泄露明文 key。
@@ -101,9 +151,8 @@ impl NexusFlowClientBuilder {
         })?;
 
         let mut builder = reqwest::Client::builder();
-        if let Some(timeout) = self.timeout {
-            builder = builder.timeout(timeout);
-        }
+        let effective = effective_timeout(self.timeout);
+        builder = builder.timeout(effective);
         let http = builder.build()?;
 
         Ok(NexusFlowClient {
@@ -111,6 +160,7 @@ impl NexusFlowClientBuilder {
             base_url,
             api_key,
             default_config: self.default_config,
+            effective_timeout: effective,
         })
     }
 }

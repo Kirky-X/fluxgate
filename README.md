@@ -1,324 +1,409 @@
-[中文](README.md) | [English](README_EN.md)
+<div align="center">
 
-# NexusFlow
+<img src="docs/assets/NexusFlow.png" alt="NexusFlow Logo" width="180">
 
-智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度
+[![CI Status](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/NexusFlow)](https://github.com/Kirky-X/NexusFlow/releases) [![License](https://img.shields.io/github/license/Kirky-X/NexusFlow)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](https://www.rust-lang.org/)
 
-基于 Rust 2021 edition + Axum 0.8 + sdforge 构建，提供 OpenAI / Anthropic API 的统一网关。通过统一的协议转换层和智能路由调度，将多个上游 LLM 供应商抽象为单一接入点，支持加权路由、限流熔断、请求日志、Token 预聚合统计等生产级能力。
+**中文** | [English](README_EN.md)
 
-## 特性
+**智能 LLM 路由网关 —— 多厂商统一接入 · 协议互转 · 弹性调度**
 
-- 多厂商统一接入：OpenAI / Anthropic 协议互转，客户端可用任一格式访问任一供应商
-- 智能路由调度：基于 3D 权重公式 `model.weight × 0.4 + queue_factor × 0.3 + window_factor × 0.3` 加权随机选择
-- 零拷贝透传：入站协议与出站协议相同时直接转发，跳过转换开销
-- 智能重试：按状态码分类（429 指数回退、500 固定间隔）
-- 限流熔断：基于 limiteron 的 GCRA 令牌桶 + 熔断器，支持全局限流和按端点限流
-- 协议转换：OpenAI Chat / Embeddings ↔ Anthropic Messages 双向转换
-- 请求日志：异步批量写入 SQLite，支持时间/厂商/模型过滤查询
-- Token 预聚合：请求级 Token 使用统计聚合，避免全表扫描
-- 可观测性：全局指标（请求数 / 延迟 / 错误率）、厂商状态、模型列表管理
-- 配置热更新：通过 `/admin/config` 端点支持运行时配置变更
-- 安全：SHA256 API Key 认证、CORS、rate limit 三层防护
-- 生产就绪：Docker 多阶段构建、docker-compose 一键部署、GitHub Actions CI/CD
+[✨ 功能特性](#-功能特性) • [🚀 快速开始](#-快速开始) • [📚 文档](#-文档) • [🐳 Docker 部署](#-docker-部署) • [🤝 参与贡献](#-参与贡献)
 
-## 架构
+</div>
 
-```
-                          ┌─────────────────────────────────────────────┐
-                          │              NexusFlow Gateway              │
-                          │            (Axum 0.8 + sdforge)             │
-                          │                                             │
-   Client ──HTTP────────► │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-   (OpenAI /              │  │ Auth MW  │─►│ Rate MW  │─►│ Router   │  │
-    Anthropic             │  │ (SHA256) │  │(limiteron)│  │(3D权重)  │  │
-    格式)                 │  └──────────┘  └──────────┘  └────┬─────┘  │
-                          │                                   │       │
-                          │                ┌──────────────────┼─────┐ │
-                          │                ▼                  ▼     │ │
-                          │  ┌──────────────┐      ┌──────────────┐  │ │
-                          │  │ Protocol Conv│      │VendorManager │  │ │
-                          │  │  (零拷贝透传) │      │ (健康/重试)   │  │ │
-                          │  └──────┬───────┘      └──────┬───────┘  │ │
-                          └─────────┼─────────────────────┼──────────┘ │
-                                    │                     │            │
-                          ┌─────────▼─────────────────────▼──────────┐ │
-                          │           Database (dbnexus)              │ │
-                          │     ┌──────────────────────────────┐      │ │
-                          │     │ SQLite (sqlx/sea-orm)        │      │ │
-                          │     │ - request_logs (批量写入)     │      │ │
-                          │     │ - token_usage (预聚合)        │      │ │
-                          │     │ - vendor_stats               │      │ │
-                          │     └──────────────────────────────┘      │ │
-                          └────────────────────────────────────────────┘ │
-                                    │                     │            │
-                      ┌─────────────▼──────┐    ┌──────────▼─────────┐  │
-                      │  OpenAI Vendor     │    │  Anthropic Vendor   │  │
-                      │  (gpt-4, etc.)     │    │  (claude-3, etc.)   │  │
-                      └────────────────────┘    └─────────────────────┘  │
-```
+---
 
-## 快速开始
+<div align="center">
 
-### 环境要求
+### 🎯 一个接入点，多家上游
 
-- Rust 1.75+（edition 2021）
-- SQLite（系统库或通过 rustls 编译）
-- 兄弟库源码需与本项目同级目录（path 依赖）
+客户端用 OpenAI 或 Anthropic 任一格式请求，网关完成认证、限流、路由、协议转换与容错，把多个上游 LLM 供应商抽象为单一端点：
 
-### 编译运行
+<table style="width:100%; border-collapse: collapse">
+<tr>
+<td align="center" width="25%">🔄<br><b>协议互转</b><br><span style="color:#64748B">OpenAI ↔ Anthropic · 零拷贝透传</span></td>
+<td align="center" width="25%">🧭<br><b>智能路由</b><br><span style="color:#64748B">5 因子加权 · 会话亲和 · LinUCB</span></td>
+<td align="center" width="25%">🛡️<br><b>弹性容错</b><br><span style="color:#64748B">熔断 · 重试 · Fallback 链</span></td>
+<td align="center" width="25%">📊<br><b>可观测与成本</b><br><span style="color:#64748B">请求日志 · Token 预聚合 · 成本追踪</span></td>
+</tr>
+</table>
+
+</div>
+
+---
+
+## 📋 目录
+
+- [✨ 功能特性](#-功能特性)
+- [🚀 快速开始](#-快速开始)
+- [⚙️ 配置概览](#️-配置概览)
+- [📚 文档](#-文档)
+- [🏗️ 架构](#️-架构)
+- [🧪 测试](#-测试)
+- [⚡ 性能设计](#-性能设计)
+- [🔒 安全](#-安全)
+- [🗺️ 开发路线图](#️-开发路线图)
+- [🐳 Docker 部署](#-docker-部署)
+- [🤝 参与贡献](#-参与贡献)
+- [📋 更新日志](#-更新日志)
+- [📄 许可证](#-许可证)
+- [🙏 致谢](#-致谢)
+- [📞 联系与支持](#-联系与支持)
+- [⭐ Star 历史](#-star-历史)
+
+---
+
+## ✨ 功能特性
+
+<table style="width:100%; border-collapse: collapse">
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🔄 <b>协议互转</b><br><span style="color:#64748B">OpenAI Chat / Embeddings ↔ Anthropic Messages 双向转换，SSE 流式两端同支持；入站协议与目标厂商一致时零拷贝透传</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>智能路由</b><br><span style="color:#64748B">模型权重 × 队列 × 时间窗口（× 可选延迟 / 错误率）5 因子加权随机，温度平滑；可选 Power-of-Two-Choices、LinUCB 上下文老虎机、会话亲和、SLA 虚拟队列与 LPS 排队论前瞻</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>弹性容错</b><br><span style="color:#64748B">limiteron 熔断器（5 次失败开 30s，慢调用 60s 阈值防误判）、按状态码分类重试（429 尊重 Retry-After 展宽、5xx 指数退避）、priority 驱动的 Fallback 换路链（总尝试预算默认 8）</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>入站限流与准入</b><br><span style="color:#64748B">limiteron 滑动窗口全局限流 + <code>[[rate_limit.rules]]</code> 路径规则；拥塞感知优先级准入（按 API Key 档位 dedicated/guaranteed/elastic/spot 分级 shed）</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>安全认证</b><br><span style="color:#64748B">API Key 仅存 SHA256 摘要、常量时间比较；上游密钥只存环境变量名；吊销/轮换经配置热更新立即生效</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>响应缓存</b><br><span style="color:#64748B">精确响应缓存（oxcache 存储），租户 + 厂商 + 请求体指纹键，TTL 分级乘数与负载联动，<code>X-No-Cache: 1</code> 强制回源</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>请求日志与预聚合</b><br><span style="color:#64748B">异步批量写 SQLite（满载丢弃计数不阻塞响应），Token 用量按 (厂商, 模型, 日期, 小时) 预聚合 UPSERT</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[pricing]]</code> 配置输入/输出单价，微美元原子累积按厂商/模型分账，单价热更新立即生效</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；需重启的段在响应 <code>restart_required</code> 中显式提示</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">14 个方法端点：日志查询/搜索、Token 统计、全局指标（含亲和命中率、丢弃计数）、厂商状态、配置与模型管理、健康检查</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>国际化</b><br><span style="color:#64748B">Fluent 双语束（en/zh）覆盖全部业务消息与错误文案，<code>NEXUSFLOW_LANG</code> → 系统环境 → 回退 en 检测链</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>生产就绪</b><br><span style="color:#64748B">Docker 多阶段构建 + 非 root 运行、docker-compose 资源限制、GitHub Actions CI（fmt/clippy/test/audit/Trivy）与多平台交叉编译</span></td>
+</tr>
+</table>
+
+---
+
+## 🚀 快速开始
+
+### 📦 环境要求
+
+- Rust 1.92+（与 CI 锁定版本一致，edition 2021）
+- SQLite（运行时通过 rustls 编译，无系统依赖要求）
+- **7 个兄弟库源码需与本项目同级目录**（path 依赖）：`confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit`
+
+### 🔨 编译运行
 
 ```bash
-# 默认配置文件 config.toml
+# 默认读取工作目录 config.toml（可参考 config.example.toml）
 cargo run --release
 
 # 指定配置文件
 cargo run --release -- /path/to/config.toml
-
-# 服务器监听 0.0.0.0:8080
 ```
 
-### 首次请求
+### 💡 首次请求
 
 ```bash
-# 健康检查（无需认证）
-curl http://127.0.0.1:8080/health
+# 健康检查（无需认证；实际注册路径带 sdforge 版本前缀）
+curl http://127.0.0.1:8080/api/v1/health
 
 # OpenAI 兼容聊天补全
 curl -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
 
 # Anthropic 兼容消息
 curl -X POST http://127.0.0.1:8080/v1/messages \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-opus",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "max_tokens": 1024
-  }'
+  -d '{"model": "claude-3-opus", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-## 配置说明
+> 提示：裸 `/health` 未注册路由（会 404），但已加入认证与限流白名单；完整端点清单见 [📘 API 参考](docs/API_REFERENCE.md)。
 
-运行时配置文件 `config.toml`，关键配置项：
+---
+
+## ⚙️ 配置概览
+
+运行时配置为单个 `config.toml`，共 13 个顶层段：
+
+| 段 | 作用 | 热更新 |
+|----|------|--------|
+| `server` / `database` | 监听地址与 SQLite 路径/池大小 | ❌ 需重启 |
+| `vendors` / `global_model` | 厂商、模型、权重、限流三形态 | ✅ enabled 与权重即时生效 |
+| `auth` / `cors` | API Key 摘要与 CORS | auth ✅ / cors ❌ |
+| `routing` / `retry` / `resilience` | 路由系数与选择算法、重试策略、韧性覆盖面 | ✅ |
+| `cache` / `rate_limit` / `admission` | 响应缓存、入站限流、拥塞准入 | cache/admission ✅ / rate_limit ❌ |
+| `pricing` | 输入/输出 token 单价（成本计算） | ✅ |
 
 ```toml
-[server]
-host = "0.0.0.0"
-port = 8080
-
-[database]
-path = "./data/llm_proxy.db"
-pool_size = 5
-
-# 认证：API Key 以 SHA256 哈希存储
-# 生成方式：echo -n "your-api-key" | sha256sum
-[auth]
-enabled = true
-api_keys = []  # 填入 SHA256 哈希
-
-[auth.header]
-name = "Authorization"
-prefix = "Bearer"
-
-[cors]
-enabled = true
-allowed_origins = ["*"]
-allowed_methods = ["GET", "POST", "OPTIONS", "PUT", "DELETE"]
-
-[rate_limit]
-enabled = true
-requests_per_second = 100
-burst_size = 200
-window_seconds = 60
-
-# 按端点限流
-[[rate_limit.endpoints]]
-path = "/v1/chat/completions"
-requests_per_minute = 1000
-
-[[rate_limit.endpoints]]
-path = "/v1/embeddings"
-requests_per_minute = 500
-
-[[rate_limit.endpoints]]
-path = "/admin/*"
-requests_per_minute = 100
-
-# 厂商配置（支持多个）
 [[vendors]]
-id = "mock-openai"
-name = "Mock OpenAI"
+id = "openai"
 type_ = "openai"
-api_key_env = "MOCK_OPENAI_KEY"   # 从环境变量读取实际 key
-api_base = "http://127.0.0.1:8001/v1"
+api_key_env = "OPENAI_API_KEY"     # 上游密钥从环境变量读取
+api_base = "https://api.openai.com/v1"
 enabled = true
-concurrency = { requests_per_second = 100 }
-rate_limit = { type = "token", max_tokens = 10000000 }
 
 [[vendors.models]]
 model_id = "gpt-4"
-enabled = true
-weight = 1.0    # 路由权重，参与 3D 权重计算
+weight = 1.0                        # 参与路由加权
 
-[global_model]
-enabled = true
-strategy = "weighted"   # 全局加权路由策略
+[[pricing]]
+vendor_id = "openai"
+model_id = "gpt-4"
+input_per_1k_tokens = 0.03
+output_per_1k_tokens = 0.06
 ```
 
-环境变量：通过 `api_key_env` 字段指定的名称从环境变量读取上游厂商的 API Key，避免硬编码到配置文件。
+认证开启：将 API Key 的 SHA256 摘要填入 `[auth]` 段（`echo -n "your-key" | sha256sum`），完整字段说明、限流规则与准入配置见 [📖 用户指南](docs/USER_GUIDE.md)。
 
-## API 端点
+---
 
-共 14 个路由（`/admin/config` 单路由支持 GET + POST 两个方法）：
+## 📚 文档
 
-### 业务接口
+| 文档 | 说明 |
+|------|------|
+| [📖 用户指南](docs/USER_GUIDE.md) | 从配置、部署到运维的完整使用教程 |
+| [📘 API 参考](docs/API_REFERENCE.md) | 全部 14 个方法端点的参数、响应与错误码 |
+| [🏗️ 架构文档](docs/ARCHITECTURE.md) | 设计原则、路由决策体系、弹性与热更新机制 |
+| [🔒 安全文档](docs/SECURITY.md) | 安全设计、供应链门禁与漏洞处理流程 |
+| [❓ FAQ](docs/FAQ.md) | 常见问题与已知边界 |
+| [📋 更新日志](docs/CHANGELOG.md) | 版本变更记录（Keep a Changelog 格式） |
+| [🤝 贡献指南](docs/CONTRIBUTING.md) | 环境搭建、开发命令与提交规范 |
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/v1/chat/completions` | OpenAI 兼容聊天补全 |
-| POST | `/v1/embeddings` | OpenAI embeddings |
-| POST | `/v1/messages` | Anthropic 兼容消息 |
+---
 
-### 管理接口
+## 🏗️ 架构
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/admin/logs` | 请求日志查询（支持时间/厂商/模型过滤） |
-| GET | `/admin/logs/search` | 日志关键词搜索 |
-| GET | `/admin/stats/tokens` | Token 使用统计（预聚合） |
-| GET | `/admin/metrics` | 全局指标（请求数/延迟/错误率） |
-| GET | `/admin/vendors` | 厂商列表 |
-| GET | `/admin/vendors/:id/status` | 厂商状态 |
-| POST | `/admin/vendors/:id/reset` | 重置厂商（熔断器/限流器） |
-| GET | `/admin/config` | 获取当前配置 |
-| POST | `/admin/config` | 更新配置 |
-| GET | `/admin/models` | 模型列表 |
-| POST | `/admin/models/:id` | 更新模型配置 |
+NexusFlow 采用分层管线设计：入站请求经中间件管线（认证 → 限流 → 准入）进入 API 层，由路由决策器在合格厂商集合中选择目标（抽象模型 → `vendor.model` 直连 → `auto` 全局池三级决策），再经协议转换（或零拷贝透传）交由 VendorManager 携带熔断/重试执行出站调用；响应侧完成 SSE 分帧与协议回转，同时异步落日志、预聚合 Token、累积成本并回写亲和与 LinUCB 奖励。
 
-### 健康检查
+```mermaid
+flowchart TB
+    Client["客户端（OpenAI / Anthropic 任一格式）"]
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 服务健康检查（无需认证） |
+    subgraph GW["NexusFlow 网关（Axum 0.8 + sdforge）"]
+        direction LR
+        MW["中间件管线<br/>auth（SHA256）· 滑动窗口限流 · 拥塞准入"]
+        Handler["API 处理器<br/>路由提示提取 · 响应缓存"]
+        Router["路由决策<br/>5 因子加权 · 亲和 · LinUCB"]
+        Conv["协议转换<br/>OpenAI ↔ Anthropic · 零拷贝透传"]
+        Vendor["VendorManager<br/>熔断 · 重试 · 连接池 · Fallback"]
+        MW --> Handler --> Router --> Conv --> Vendor
+    end
 
-## Docker 部署
+    subgraph Store["持久化（dbnexus · SQLite）"]
+        Logs["request_logs（异步批量写）"]
+        Agg["token_usage（小时级预聚合）"]
+    end
+
+    UP1["OpenAI 兼容上游"]
+    UP2["Anthropic 兼容上游"]
+
+    Client --> MW
+    Vendor --> UP1
+    Vendor --> UP2
+    Vendor -.异步.-> Logs
+    Vendor -.异步.-> Agg
+```
+
+路由决策体系、弹性层状态机、配置热更新事务语义、DI 组装与 i18n 架构的完整说明见 [🏗️ 架构文档](docs/ARCHITECTURE.md)。
+
+---
+
+## 🧪 测试
+
+### 🎯 测试策略
+
+单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/`（20 个文件：路由、协议转换、厂商、熔断、重试、准入、SSE、成本、装配冒烟等），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
+
+### ▶️ 运行命令（与 CI 一致）
 
 ```bash
-# 构建镜像
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
+
+### 📊 测试规模
+
+截至当前版本：单元测试 196 个（`src/` 内联实测）、集成测试 454 个（`tests/` 20 个文件实测），合计 **650 个，0 ignored**。主要分布：
+
+| 测试域 | 用例数 | 覆盖范围 |
+|--------|--------|----------|
+| vendor_test | 79 | 厂商管理 / 限流 / 健康 |
+| protocol_test | 71 | OpenAI ↔ Anthropic 转换 / SSE 分帧 |
+| router_test | 63 | 加权选择 / 亲和 / 提示路由 / 边界 |
+| api_test | 62 | 端点集成 |
+| retry / sse / config / database | 26 / 24 / 20 / 20 | 重试分类 / 流分帧 / 配置加载 / 落库查询 |
+| fallback / admission / circuit_breaker | 17 / 15 / 13 | 换路链 / 准入 / 熔断（含 vendor 侧 4） |
+| cost / cost_tracker / feature_matrix 等 | 其余 | 成本链 / 特性矩阵 / 装配冒烟 |
+
+---
+
+## ⚡ 性能设计
+
+当前未发布官方基准数据（路线图已列入），以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 arc-swap 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
+
+---
+
+## 🔒 安全
+
+### 🛡️ 安全设计
+
+API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环境变量名、错误响应仅暴露固定 `error.type` 代码、配置快照自动打码密钥、CORS 与限流封禁（403）分层防护、Docker 非 root 运行。逐项机制见 [🔒 安全文档](docs/SECURITY.md)。
+
+### 🚨 报告安全漏洞
+
+请勿通过公开 issue 报告安全漏洞。请使用 GitHub [Security Advisories](https://github.com/Kirky-X/NexusFlow/security/advisories/new) 私密披露通道提交报告。项目承诺 48 小时内确认、7 天内给出初步评估。
+
+---
+
+## 🗺️ 开发路线图
+
+<table style="width:100%; border-collapse: collapse">
+<tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
+<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、14 个方法端点</td></tr>
+<tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层</td></tr>
+<tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
+<tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、pricing 成本追踪</td></tr>
+<tr><td align="center">✅</td><td>配置热更新</td><td>confers DynamicField 无锁热读、事务写路径、快照备份与 restart_required 提示</td></tr>
+<tr><td align="center">✅</td><td>国际化</td><td>Fluent en/zh 双语束覆盖全部业务消息</td></tr>
+<tr><td align="center">🔜</td><td>成本查询 API</td><td>请求级 / 聚合级成本落库与 <code>/admin/cost</code> 查询端点（CostTracker 当前仅内存累积）</td></tr>
+<tr><td align="center">🔜</td><td>Rust SDK</td><td><code>sdk/</code>（nexusflow-sdk）workspace 继承接通与发布</td></tr>
+<tr><td align="center">🔜</td><td>性能基准</td><td>建立 Criterion 基线（透传 / 转换 / 路由决策路径）</td></tr>
+<tr><td align="center">🔜</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤落 SQL（当前已知未生效，见 <a href="docs/FAQ.md">FAQ</a>）</td></tr>
+</table>
+
+---
+
+## 🐳 Docker 部署
+
+```bash
+# 构建镜像（多阶段：rust:1.92-alpine 构建 → alpine:3.21 运行，非 root）
 docker build -t nexusflow:latest .
 
-# 运行容器
+# 运行容器（SQLite 数据持久化于 /app/data）
 docker run -d -p 8080:8080 -v $(pwd)/data:/app/data nexusflow:latest
 
-# 或使用 docker-compose 一键部署
+# 或使用 docker-compose 一键部署（含资源限制与健康检查）
 docker-compose up -d
 ```
 
-数据持久化：SQLite 数据库文件挂载于 `/app/data` 目录，通过 `-v $(pwd)/data:/app/data` 映射到宿主机。
+> 健康检查：Dockerfile 与 docker-compose 的 HEALTHCHECK 均探测实际注册路径 `/api/v1/health`；docker-compose 自带资源限制（cpus 2 / 内存 512M）与非 root 运行时（详见 [📖 用户指南 · Docker 部署](docs/USER_GUIDE.md)）。
 
-## 开发指南
+---
 
-### 项目结构
+## 🤝 参与贡献
 
-```
-src/
-├── api/               # REST 端点（axum handlers）
-│   ├── admin.rs       # 管理接口
-│   ├── anthropic.rs   # Anthropic 消息端点
-│   ├── openai.rs      # OpenAI 聊天/embeddings 端点
-│   ├── health.rs      # 健康检查（sdforge #[service_api]）
-│   ├── router_builder.rs  # 路由构建 + 限流中间件
-│   └── state.rs       # 共享状态
-├── config/            # TOML 配置加载
-├── database/          # SQLite 持久化（dbnexus）
-├── middleware/         # 认证/CORS 中间件
-├── protocol/          # OpenAI ↔ Anthropic 协议转换
-├── router/            # 智能路由 + 3D 权重计算
-├── vendor/            # 供应商管理（rate limit, retry, health）
-├── infrastructure/    # DI 容器（trait-kit AsyncKit）
-└── utils/             # 工具函数
-```
+详细的贡献流程、开发命令与提交规范请参阅 [🤝 贡献指南](docs/CONTRIBUTING.md)。
 
-### Cargo Features
+### 🛠️ 开发环境
 
-默认启用 `full`，包含全部 8 个特性：
+工具链为 Rust 1.92（与 CI 一致）；提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。7 个兄弟库（confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit）需与本项目同级目录。
 
-| Feature | 依赖 | 说明 |
-|---------|------|------|
-| `web-server` | axum, tower, tower-http, async-stream | HTTP 服务器 |
-| `database` | dbnexus, sea-orm, async-channel | 数据库层 |
-| `vendor-management` | reqwest, limiteron | 供应商管理 |
-| `router` | - | 路由调度（依赖 vendor-management） |
-| `protocol` | - | 协议转换 |
-| `infrastructure` | oxcache, trait-kit | 缓存 + DI 容器 |
-| `sdforge-integration` | sdforge | HTTP 框架集成 |
-| `logging` | inklog | 结构化日志 |
+### 💖 贡献方式
 
-### 编译检查
+<table style="width:100%; border-collapse: collapse">
+<tr>
+<td width="33%" align="center" style="padding: 16px">
 
-```bash
-cargo clippy -- -D warnings   # 零告警检查（当前 0 warnings）
-cargo build --release         # 生产构建（LTO + opt-level 3）
-```
+### 🐛 报告 Bug
 
-### 代码规范
+发现问题？<br>
+<a href="https://github.com/Kirky-X/NexusFlow/issues/new">创建 Issue</a>
 
-- 错误处理：`anyhow` + `thiserror`，使用 `?` 操作符，错误必须显式传播
-- 异步：Tokio runtime，所有 I/O 必须 async
-- 命名：snake_case（Rust 惯例）
-- 测试：`tests/` 集成测试 + `#[cfg(test)]` 内联单元测试
+</td>
+<td width="33%" align="center" style="padding: 16px">
 
-## 测试
+### 💡 功能建议
 
-```bash
-# 运行所有测试
-cargo test
+有好想法？<br>
+<a href="https://github.com/Kirky-X/NexusFlow/discussions">开始讨论</a>
 
-# 基线：307 passed + 0 ignored + 0 failed
-# clippy：0 warnings
-```
+</td>
+<td width="33%" align="center" style="padding: 16px">
 
-测试覆盖：
+### 🔧 提交 PR
 
-| 模块 | 测试数 | 覆盖范围 |
-|------|--------|----------|
-| config | 8 | 配置加载/验证 |
-| protocol | 7 | OpenAI ↔ Anthropic 转换 |
-| vendor | 13 | rate limit / retry / health |
-| router | 11 | 3D 权重 / 加权选择 / 边界条件 |
-| database | 15 | 日志写入/查询/Token 聚合 |
-| api | 22 | 端点集成测试 |
-| middleware | - | 认证/CORS |
+想贡献代码？<br>
+<a href="https://github.com/Kirky-X/NexusFlow/pulls">Fork 并提交 PR</a>
 
-### 安全审查状态
+</td>
+</tr>
+</table>
 
-| 审查项 | 结果 |
-|--------|------|
-| diting 代码审查 | ✅ 0 Critical / 0 High |
-| tiangang SAST 扫描 | ✅ 0 CRITICAL 漏洞 |
-| cargo-audit | ✅ 0 漏洞 |
+---
 
-## 兄弟库生态
+## 📋 更新日志
 
-本项目通过 Cargo path 依赖集成以下本地源码库（需与 NexusFlow 同级目录）：
+完整版本历史见 [📋 更新日志](docs/CHANGELOG.md)（遵循 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 格式，语义化版本）。
 
-| 库 | 作用 | 替代 |
-|----|------|------|
-| [dbnexus](../dbnexus) | SQLite 数据库层（含 kit 集成） | sqlx 直接使用 |
-| [inklog](../inklog) | 结构化日志（HTTP/CLI/SQLite） | tracing-subscriber |
-| [limiteron](../limiteron) | 限流 / 熔断（GCRA + circuit breaker） | 手写限流 |
-| [oxcache](../oxcache) | 统一缓存 API（memory backend） | 手写缓存 |
-| [sdforge](../sdforge) | HTTP 服务器框架 + API 网关 | axum 裸用 |
-| [trait-kit](../trait-kit) | DI 容器（AsyncKit，异步依赖注入） | 手动 wiring |
+| 版本 | 日期 | 要点 |
+|------|------|------|
+| 0.1.0 | 2026-04-04 | 初始发布并持续迭代（63 commits）：协议互转网关、5 因子加权路由与可选智能层、limiteron 弹性体系、异步日志与预聚合、成本追踪、confers 热更新底座、i18n、35 项优化落地 |
 
-所有兄弟库通过 `trait-kit` 0.3 的 AsyncKit DI 容器统一组装，`main.rs` 启动时会构建并验证 `4/4 modules resolved`。
+---
 
-## License
+## 📄 许可证
 
-MIT License — 见源码文件头 `Licensed under the MIT License`。
+本项目采用 [MIT License](LICENSE)。
+
+---
+
+## 🙏 致谢
+
+### 🌟 核心依赖（兄弟库）
+
+NexusFlow 通过 Cargo path 依赖集成以下本地源码库（需同级目录，`[patch.crates-io]` 统一身份）：
+
+| 库 | 用途 |
+|----|------|
+| [confers](https://github.com/Kirky-X/confers) | 配置加载防护与热更新底座（DynamicField / SnapshotManager） |
+| [dbnexus](https://github.com/Kirky-X/dbnexus) | SQLite 持久化（连接池 / 批量事务 / kit 集成） |
+| [inklog](https://github.com/Kirky-X/inklog) | 结构化日志（HTTP / CLI / SQLite） |
+| [limiteron](https://github.com/Kirky-X/limiteron) | 限流 / 熔断 / 重试原语 |
+| [oxcache](https://github.com/Kirky-X/oxcache) | 统一缓存 API（会话亲和与响应缓存存储层） |
+| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP 服务框架（`#[service_api]` / 路由注册） |
+| [trait-kit](https://github.com/Kirky-X/trait-kit) | DI 容器（AsyncKit，4 module 拓扑组装） |
+
+### 💝 特别感谢
+
+感谢 Rust 社区与所有[贡献者](https://github.com/Kirky-X/NexusFlow/graphs/contributors)。
+
+---
+
+## 📞 联系与支持
+
+<table style="width:100%; max-width: 600px">
+<tr>
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NexusFlow/issues"><b style="color:#991B1B">Issues</b></a><br>
+<span style="color:#64748B">报告问题和 Bug</span>
+</td>
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NexusFlow/discussions"><b style="color:#1E40AF">讨论区</b></a><br>
+<span style="color:#64748B">提问和分享想法</span>
+</td>
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NexusFlow"><b style="color:#1E293B">GitHub</b></a><br>
+<span style="color:#64748B">查看源代码</span>
+</td>
+</tr>
+</table>
+
+---
+
+## ⭐ Star 历史
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/NexusFlow&type=Date)](https://star-history.com/#Kirky-X/NexusFlow&Date)
+
+如果这个项目对您有帮助，请考虑给它一个 ⭐️！
+
+**由 Kirky.X 构建**
+
+---
+
+<sub>© 2026 Kirky.X. 保留所有权利。</sub>

@@ -66,7 +66,23 @@ projects/
 |:----:|:-----|
 | **1. Fork 仓库** | 在 [github.com/Kirky-X/NexusFlow](https://github.com/Kirky-X/NexusFlow) 点击 "Fork" |
 | **2. Clone 本体与兄弟库** | 将 NexusFlow 与 7 个兄弟库克隆到同一父目录 |
-| **3. 构建验证** | `cargo build --all-features`（首次构建同时编译兄弟库，耗时较长） |
+| **3. 安装 Git 钩子** | `pip install pre-commit && pre-commit install --install-hooks`（见下节） |
+| **4. 构建验证** | `cargo build --all-features`（首次构建同时编译兄弟库，耗时较长） |
+
+### 🪝 Git 钩子（pre-commit）
+
+7 仓库统一基线（与 confers lefthook.yml 功能等价）。钩子装在本地 `.git/hooks/`，新克隆必须重新 install。
+
+| 钩子 | 作用 |
+|------|------|
+| 通用修复器 | 尾随空白、文件末尾换行（命中即自动改写并拦截提交，`git add` 后重提即可） |
+| `detect-private-key` | 私钥字节级检测（本仓上游凭证只存 `api_key_env` 环境变量名，无夹具排除） |
+| `detect-secrets` | 密钥扫描，基线 `.secrets.baseline` 内为已人工核实的误报（`api_key_env` 变量名、测试夹具、SHA256 摘要），基线外新发现会阻断 |
+| `typos` | 拼写检查（带自动改写），白名单在 `typos.toml`（测试夹具词 `abd`/`ot`/`ded`/`Hel`、mermaid 节点 `THR`、`out/` 产物目录） |
+| `cargo-fmt` / `cargo-check` / `cargo-clippy` | 与 CI 完全同口径（`--workspace` / `-D warnings`） |
+| `no-commit-to-branch` | 保护 `master`（本仓工作流在 `main` 上提交） |
+
+误报处理路径：typos 命中 → 核实语义后加入 `typos.toml` 词表；detect-secrets 新发现 → 人工核实为误报后 `detect-secrets scan --update .secrets.baseline` 更新基线并在 PR 说明。可选的 post-commit 编译产物清理阶段默认不启用（`pre-commit install -t post-commit` 自行开启）。
 
 ---
 

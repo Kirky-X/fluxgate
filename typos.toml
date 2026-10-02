@@ -1,0 +1,30 @@
+# typos 配置 — 词表白名单（修复 pre-commit 门禁摩擦，对齐 confers/oxcache/trait-kit 做法）
+#
+# 背景：pre-commit 的 typos 钩子（crate-ci/typos v1.28）默认带 `--write-changes`，
+# 命中即原地改写文件。本仓命中项全部为测试夹具与文档图表的有意内容，
+# 在此做词级放行；不放宽钩子 args、不删除钩子。
+# 干跑核对命令：typos --format brief --exclude out
+
+[default.extend-words]
+# 常量时间比较测试夹具（src/middleware/auth.rs）："abd" 与 "abc" 仅差一字节，
+# 断言两串不相等——是夹具不是 "and" 的笔误。
+abd = "abd"
+
+# 厂商 ID 夹具（tests/vendor_test.rs）："v-ot" 验证不存在厂商的失败路径。
+ot = "ot"
+
+# 厂商 ID 夹具（tests/admission_test.rs）："v-ded" 验证 shed 后的记账。
+ded = "ded"
+
+# SSE 分帧夹具（tests/protocol_test.rs）："Hel" 为流式 content 首个分片
+# （"Hello" 的截断），断言分片拼回完整文本。
+Hel = "Hel"
+hel = "hel"
+
+# mermaid 状态节点缩写（docs/ARCHITECTURE.md 熔断状态机 "THR" = Throttled）。
+THR = "THR"
+thr = "thr"
+
+[files]
+# out/ 为提交在库的研究报告工具产物（含大量有意缩写与英文笔误），非源码。
+extend-exclude = ["out"]

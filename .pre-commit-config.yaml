@@ -1,37 +1,87 @@
-# pre-commit 配置（pre-commit framework）。启用: uv tool install pre-commit && pre-commit install
-# 与 lefthook.yml 功能等价，二选一即可（切换前先卸载旧的）。
+# pre-commit 配置 — 7 仓库统一基线(见 base/CONFIG_BASELINE.md，与 confers lefthook.yml 功能等价，二选一)
+# 安装: pip install pre-commit && pre-commit install --install-hooks
+# 适配说明（相对 inklog 模板）:
+#   - 本仓无 deny.toml，不接 cargo-deny（补配置后在 CI/security 与钩子同步加入）;
+#   - fmt/clippy 使用本仓 CI 口径（--workspace，与 ci.yml 一致）;
+#   - detect-secrets 排除 tests/ 与 sdk/tests/（mock 厂商凭证夹具），基线记录
+#     其余误报（api_key_env 的环境变量名、测试 fixture 字面量、SHA256 摘要夹具）;
+#   - out/ 为提交在库的研究报告工具产物，各改写型钩子统一排除。
 repos:
-  # 通用质量 hooks（语言无关）
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: '^out/'
       - id: end-of-file-fixer
+        exclude: '^out/'
       - id: check-yaml
       - id: check-toml
-      - id: check-merge-conflict
       - id: check-added-large-files
-        args: ['--maxkb=1024']
+        args: ['--maxkb=1000']
       - id: detect-private-key
+        # 本仓无私钥测试夹具（上游凭证只存 api_key_env 环境变量名，
+        # 客户端 API Key 只存 SHA256 摘要），故无文件级排除
+      - id: check-merge-conflict
+        args: ['--assume-in-merge']
+      - id: no-commit-to-branch
+        # 本仓工作流在 main 上提交，故仅保护 master
+        args: ['--branch', 'master']
 
-  # 拼写检查
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        # --baseline: .secrets.baseline 记录已人工核实的误报；带 --baseline 时
+        # 基线内发现放行，基线外的新发现仍阻断。
+        args: [--baseline, .secrets.baseline, --exclude-files, tests/, --exclude-files, sdk/tests/, --exclude-files, out/]
+        # 自排除: 基线文件本身(内含凭证哈希)与锁文件不参与扫描
+        exclude: '^(Cargo\.lock|\.secrets\.baseline)$'
+
   - repo: https://github.com/crate-ci/typos
     rev: v1.28.0
     hooks:
       - id: typos
 
-  # Rust 专属（local，用本机 cargo）
   - repo: local
     hooks:
       - id: cargo-fmt
-        name: cargo fmt --check
-        entry: bash -c 'cargo fmt --all -- --check'
+        name: Format Rust code
+        description: Run rustfmt on Rust files
+        entry: cargo fmt --all -- --check
         language: system
         types: [rust]
         pass_filenames: false
+
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check --workspace
+        language: system
+        types: [rust]
+        pass_filenames: false
+
       - id: cargo-clippy
-        name: cargo clippy (-D warnings)
-        entry: bash -c 'cargo clippy --all-targets --all-features -- -D warnings'
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
+
+  # === 提交完成后清理本地编译产物（post-commit 阶段；启用: pre-commit install -t post-commit） ===
+  - repo: local
+    hooks:
+      - id: post-commit-clean
+        name: clean local build artifacts (cargo target)
+        entry: >-
+          bash -c 'cargo clean >/dev/null 2>&1;
+          find . -name node_modules -prune -o -type d -name target -prune -exec rm -rf {} +;
+          echo "[post-commit] 已清理 cargo target"'
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [post-commit]
+ci:
+  autoupdate_commit_msg: "chore: update pre-commit hooks"
+
+# 全局阶段约束
+default_stages: [pre-commit]  # 锁定未显式声明 stages 的 hook，避免污染 post-commit 等阶段

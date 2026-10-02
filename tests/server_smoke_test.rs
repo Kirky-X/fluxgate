@@ -15,7 +15,6 @@
 use axum::{
     body::Body,
     http::{Request, StatusCode},
-    Router,
 };
 use nexusflow::config::{
     AuthSection, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
@@ -96,7 +95,7 @@ fn test_config() -> Config {
 #[tokio::test]
 async fn build_app_serves_health_and_guards_chat() {
     let config_manager = Arc::new(ConfigManager::new(test_config()));
-    let app: Router = build_app(config_manager)
+    let (app, handle) = build_app(config_manager)
         .await
         .expect("build_app should assemble the full chain");
 
@@ -128,4 +127,8 @@ async fn build_app_serves_health_and_guards_chat() {
         .await
         .expect("oneshot should not fail");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "no key → 401");
+
+    // 停机收尾句柄：flush 管道置位 + 补刷；幂等（二次调用 no-op 不 panic）
+    handle.shutdown().await;
+    handle.shutdown().await;
 }

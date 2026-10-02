@@ -109,7 +109,7 @@ projects/
 
 | 位置 | 说明 |
 |:-----|:-----|
-| `src/server` | **服务器装配链**库模块（`all(web-server, logging)` 门控）：bootstrap / http / shutdown，`run()` 起服、`build_app()` 装配至 Router |
+| `src/server` | **服务器装配链**库模块（`all(web-server, logging)` 门控）：bootstrap / http / handle / shutdown，`run()` 起服、`build_app()` 返回 `(Router, ServerHandle)`（停机 flush 收尾，幂等；同进程二次装配 panic，见 `# Panics` 文档） |
 | `src/sdk` | **Rust 客户端 SDK** 模块（`sdk` feature 门控）：chat / embed / models / vendors / health，含 SSE 流式（原顶层 `sdk/` 独立 crate 已并入） |
 | `tests/` | **21 个集成测试文件**（HTTP 全链路 / 配置示例断言 / feature 组合矩阵等） |
 

@@ -16,22 +16,42 @@ use axum::Router;
 use crate::config::ConfigManager;
 use crate::error::NexusFlowError;
 use crate::i18n::{t, t_args};
-use crate::server::bootstrap::{self, Assembly};
+use crate::server::bootstrap;
+use crate::server::handle::ServerHandle;
 
 /// 装配至 Router 为止：bootstrap 全链装配 + sdforge 站点路由合并
 /// （原 main.rs:164-223）。供测试与嵌入式场景直接持有 Router。
-pub async fn build_app(config_manager: Arc<ConfigManager>) -> Result<Router, NexusFlowError> {
+///
+/// 返回的 [`ServerHandle`] 承载停机收尾（flush worker 停机位 +
+/// 日志/聚合补刷，幂等）：嵌入式进程退出前必须调用
+/// [`ServerHandle::shutdown`]，否则 flush worker 泄漏且缓冲数据丢失。
+///
+/// # Panics
+///
+/// 内部经 [`crate::api::init_global_state`] 注册 sdforge handler 全局态
+/// （OnceCell 一次性写入）：同进程**二次调用即 panic**
+/// （"Global state already initialized"）——重复装配是调用方 bug。
+pub async fn build_app(
+    config_manager: Arc<ConfigManager>,
+) -> Result<(Router, ServerHandle), NexusFlowError> {
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
-    assemble_router(&config_manager, &assembly).await
+    let handle = ServerHandle::from_assembly(&assembly);
+    let app = assemble_router(&config_manager, &assembly).await?;
+    Ok((app, handle))
 }
 
 /// 完整运行时：bootstrap 装配 + serve + 优雅停机 flush 收尾
 /// （原 main() 的 serve 主体与收尾，main.rs:225-302）。
+///
+/// # Panics
+///
+/// 同 [`build_app`]：同进程二次调用经 `init_global_state` panic。
 pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     // 进程级日志句柄：活到 run 返回（原 main.rs:22 的 main 作用域语义）
     let _logger = bootstrap::init_logger().await?;
     let config_manager = bootstrap::load_config(config_path)?;
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
+    let handle = ServerHandle::from_assembly(&assembly);
     let app = assemble_router(&config_manager, &assembly).await?;
 
     let server_config = {
@@ -86,31 +106,8 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
         }
     }
 
-    // recId=9：优雅停机 flush — serve 返回即 in-flight 请求已全部完成，
-    // 此刻补最终 flush 保证缓冲中的日志与聚合数据不丢
-    tracing::info!("{}", t("main-flushing-log-pipeline"));
-    if let Err(e) = assembly.logger_handle.shutdown().await {
-        tracing::warn!(
-            "{}",
-            t_args("main-async-logger-shutdown", &[("error", e.to_string())])
-        );
-    }
-    assembly
-        .pa_shutdown
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    if let Err(e) = assembly.pre_aggregator.flush().await {
-        tracing::warn!(
-            "{}",
-            t_args("main-pre-aggregator-flush", &[("error", e.to_string())])
-        );
-    }
-    tracing::info!(
-        "{}",
-        t_args(
-            "main-log-pipeline-flushed",
-            &[("dropped", assembly.logger_handle.dropped_logs().to_string())]
-        )
-    );
+    // recId=9：优雅停机 flush（序列与 build_app 句柄共用同一实现）
+    handle.shutdown().await;
 
     Ok(())
 }
@@ -176,7 +173,7 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
 /// 直接 merge（sdforge/src/http/http_impl.rs:274）。
 async fn assemble_router(
     config_manager: &Arc<ConfigManager>,
-    assembly: &Assembly,
+    assembly: &bootstrap::Assembly,
 ) -> Result<Router, NexusFlowError> {
     let sdforge_config = sdforge_config(config_manager);
     let mut app = sdforge::http::build_with_config(&sdforge_config)?;

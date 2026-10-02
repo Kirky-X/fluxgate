@@ -4,36 +4,48 @@
 
 ## OVERVIEW
 
-Rust 集成测试目录，包含 API 端点、数据库、协议转换、路由等核心功能的测试。
+Rust 集成测试目录，覆盖 API 端点、数据库、协议转换、路由、厂商管理、熔断/重试/准入、SSE、成本追踪与装配冒烟等功能域。当前 20 个文件、454 个集成用例（`grep -rE -c '#\[(tokio::)?test\b' .` 实测），加上 `src/` 内联单元测试 196 个，合计 650 个，0 ignored。
 
 ## STRUCTURE
 
 ```
 tests/
-├── api_endpoints_test.rs       # API 端点测试
-├── api_integration_test.rs     # API 集成测试
-├── config_test.rs              # 配置加载测试
-├── database_test.rs            # 数据库操作测试
-├── embedding_test.rs           # Embedding 相关测试
-├── protocol_converter_test.rs  # 协议转换测试
-├── rate_limiter_test.rs        # 速率限制测试
-├── retry_test.rs               # 重试机制测试
-├── router_test.rs              # 路由逻辑测试
-└── vendor_status_test.rs       # 供应商状态测试
+├── admission_test.rs              # 拥塞准入中间件
+├── api_test.rs                    # API 端点集成测试
+├── assembly_smoke_test.rs         # DI 装配冒烟（trait-kit 4 module）
+├── circuit_breaker_test.rs        # 熔断器（limiteron circuit）
+├── config_test.rs                 # 配置加载测试
+├── config_toml_example_test.rs    # config.example.toml 可解析性
+├── cost_test.rs                   # CostCalculator 定价计算
+├── cost_tracker_test.rs           # CostTracker 分片累积
+├── database_test.rs               # 数据库操作测试
+├── fallback_test.rs               # Fallback 换路链
+├── feature_matrix.rs              # feature 门控矩阵
+├── pool_test.rs                   # 出站连接池
+├── protocol_test.rs               # 协议转换测试
+├── rate_limit_test.rs             # 入站限流
+├── retry_test.rs                  # 重试分类与延迟
+├── router_test.rs                 # 路由决策测试
+├── sse_test.rs                    # SSE 分帧
+├── vendor_circuit_breaker_test.rs # vendor 侧熔断
+├── vendor_cost_integration_test.rs# 成本集成
+└── vendor_test.rs                 # 厂商管理测试
 ```
 
 ## WHERE TO LOOK
 
 | Task | File | Notes |
 |------|------|-------|
-| API 测试 | `api_endpoints_test.rs`, `api_integration_test.rs` | 完整的 API 流程测试 |
-| 数据库测试 | `database_test.rs` | SQLite 操作验证 |
-| 路由测试 | `router_test.rs` | 供应商选择逻辑 |
-| 协议测试 | `protocol_converter_test.rs` | OpenAI/Anthropic 格式转换 |
+| API 流程 | `api_test.rs` | 端点到响应的完整链路 |
+| 数据库 | `database_test.rs` | SQLite 写入/查询/迁移 |
+| 路由 | `router_test.rs` | 加权选择/亲和/提示路由 |
+| 协议 | `protocol_test.rs`, `sse_test.rs` | OpenAI/Anthropic 转换与流分帧 |
+| 韧性 | `circuit_breaker_test.rs`, `fallback_test.rs`, `retry_test.rs`, `rate_limit_test.rs`, `admission_test.rs` | 熔断/换路/重试/限流/准入 |
+| 成本 | `cost_test.rs`, `cost_tracker_test.rs`, `vendor_cost_integration_test.rs` | 定价/累积/集成 |
 
 ## CONVENTIONS
 
-- 使用 `cargo test` 运行所有测试
-- 测试文件位于 `tests/` 目录（集成测试）
-- 单元测试在源码文件内 `#[cfg(test)]`
-- Mock 依赖使用 `mockall` 库
+- 使用 `cargo test` 运行所有测试（CI 口径：`cargo test --all-features --all`）
+- 测试文件位于 `tests/` 目录（集成测试），单元测试在源码文件内 `#[cfg(test)]`
+- Mock 依赖使用 `mockall` / `mockito`
+- 时间敏感测试注入 limiteron `MockClock`（需 dev-dependencies 的 `test-clock` feature）

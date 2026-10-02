@@ -1,325 +1,409 @@
-[中文](README.md) | [English](README_EN.md)
+<div align="center">
 
-# NexusFlow
+<img src="docs/assets/NexusFlow.png" alt="NexusFlow Logo" width="180">
 
-Intelligent LLM Routing Proxy System - Multi-vendor unified management, format conversion, intelligent scheduling
+[![CI Status](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/NexusFlow)](https://github.com/Kirky-X/NexusFlow/releases) [![License](https://img.shields.io/github/license/Kirky-X/NexusFlow)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](https://www.rust-lang.org/)
 
-Built with Rust 2021 edition + Axum 0.8 + sdforge, providing a unified gateway for OpenAI / Anthropic APIs. Through a unified protocol conversion layer and intelligent routing scheduling, multiple upstream LLM vendors are abstracted into a single access point, supporting weighted routing, rate limiting and circuit breaking, request logging, token pre-aggregation statistics, and other production-grade capabilities.
+[中文](README.md) | **English**
 
-## Features
+**Intelligent LLM routing gateway — unified multi-provider access · protocol conversion · resilient scheduling**
 
-- Multi-vendor unified access: OpenAI / Anthropic protocol interconversion, clients can access any vendor using either format
-- Intelligent routing scheduling: weighted random selection based on the 3D weight formula `model.weight × 0.4 + queue_factor × 0.3 + window_factor × 0.3`
-- Zero-copy passthrough: directly forwards when inbound and outbound protocols match, skipping conversion overhead
-- Intelligent retry: classified by status code (429 exponential backoff, 500 fixed interval)
-- Rate limiting and circuit breaking: GCRA token bucket + circuit breaker based on limiteron, supporting global rate limiting and per-endpoint rate limiting
-- Protocol conversion: bidirectional conversion between OpenAI Chat / Embeddings ↔ Anthropic Messages
-- Request logging: asynchronous batch writes to SQLite, supporting time/vendor/model filter queries
-- Token pre-aggregation: request-level token usage statistics aggregation, avoiding full table scans
-- Observability: global metrics (request count / latency / error rate), vendor status, model list management
-- Hot configuration reload: runtime configuration changes via the `/admin/config` endpoint
-- Security: SHA256 API Key authentication, CORS, rate limit three-layer protection
-- Production-ready: Docker multi-stage build, docker-compose one-click deployment, GitHub Actions CI/CD
+[✨ Features](#-features) • [🚀 Quick Start](#-quick-start) • [📚 Documentation](#-documentation) • [🐳 Docker Deployment](#-docker-deployment) • [🤝 Contributing](#-contributing)
 
-## Architecture
+</div>
 
-```
-                          ┌─────────────────────────────────────────────┐
-                          │              NexusFlow Gateway              │
-                          │            (Axum 0.8 + sdforge)             │
-                          │                                             │
-   Client ──HTTP────────► │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-   (OpenAI /              │  │ Auth MW  │─►│ Rate MW  │─►│ Router   │  │
-    Anthropic             │  │ (SHA256) │  │(limiteron)│  │(3D weight)│  │
-    format)               │  └──────────┘  └──────────┘  └────┬─────┘  │
-                          │                                   │       │
-                          │                ┌──────────────────┼─────┐ │
-                          │                ▼                  ▼     │ │
-                          │  ┌──────────────┐      ┌──────────────┐  │ │
-                          │  │ Protocol Conv│      │VendorManager │  │ │
-                          │  │  (zero-copy  │      │ (health/     │  │ │
-                          │  │  passthrough)│      │  retry)      │  │ │
-                          │  └──────┬───────┘      └──────┬───────┘  │ │
-                          └─────────┼─────────────────────┼──────────┘ │
-                                    │                     │            │
-                          ┌─────────▼─────────────────────▼──────────┐ │
-                          │           Database (dbnexus)              │ │
-                          │     ┌──────────────────────────────┐      │ │
-                          │     │ SQLite (sqlx/sea-orm)        │      │ │
-                          │     │ - request_logs (batch write) │      │ │
-                          │     │ - token_usage (pre-aggregation)│     │ │
-                          │     │ - vendor_stats               │      │ │
-                          │     └──────────────────────────────┘      │ │
-                          └────────────────────────────────────────────┘ │
-                                    │                     │            │
-                      ┌─────────────▼──────┐    ┌──────────▼─────────┐  │
-                      │  OpenAI Vendor     │    │  Anthropic Vendor   │  │
-                      │  (gpt-4, etc.)     │    │  (claude-3, etc.)   │  │
-                      └────────────────────┘    └─────────────────────┘  │
-```
+---
 
-## Quick Start
+<div align="center">
 
-### Requirements
+### 🎯 One endpoint, many providers
 
-- Rust 1.75+ (edition 2021)
-- SQLite (system library or compiled via rustls)
-- Sister library source code must be in sibling directories (path dependencies)
+Clients call the gateway in either OpenAI or Anthropic format; the gateway handles auth, rate limiting, routing, protocol conversion and failover, abstracting multiple upstream LLM providers behind a single endpoint:
 
-### Build and Run
+<table style="width:100%; border-collapse: collapse">
+<tr>
+<td align="center" width="25%">🔄<br><b>Protocol conversion</b><br><span style="color:#64748B">OpenAI ↔ Anthropic · zero-copy passthrough</span></td>
+<td align="center" width="25%">🧭<br><b>Smart routing</b><br><span style="color:#64748B">5-factor weighting · session affinity · LinUCB</span></td>
+<td align="center" width="25%">🛡️<br><b>Resilience</b><br><span style="color:#64748B">circuit breaker · retry · fallback chain</span></td>
+<td align="center" width="25%">📊<br><b>Observability & cost</b><br><span style="color:#64748B">request logs · token pre-aggregation · cost tracking</span></td>
+</tr>
+</table>
+
+</div>
+
+---
+
+## 📋 Table of Contents
+
+- [✨ Features](#-features)
+- [🚀 Quick Start](#-quick-start)
+- [⚙️ Configuration Overview](#️-configuration-overview)
+- [📚 Documentation](#-documentation)
+- [🏗️ Architecture](#️-architecture)
+- [🧪 Testing](#-testing)
+- [⚡ Performance Design](#-performance-design)
+- [🔒 Security](#-security)
+- [🗺️ Roadmap](#️-roadmap)
+- [🐳 Docker Deployment](#-docker-deployment)
+- [🤝 Contributing](#-contributing)
+- [📋 Changelog](#-changelog)
+- [📄 License](#-license)
+- [🙏 Acknowledgments](#-acknowledgments)
+- [📞 Contact & Support](#-contact--support)
+- [⭐ Star History](#-star-history)
+
+---
+
+## ✨ Features
+
+<table style="width:100%; border-collapse: collapse">
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🔄 <b>Protocol conversion</b><br><span style="color:#64748B">Bidirectional OpenAI Chat / Embeddings ↔ Anthropic Messages conversion with SSE streaming on both sides; zero-copy passthrough when the inbound protocol matches the target vendor</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>Smart routing</b><br><span style="color:#64748B">Weighted-random selection over 5 factors (model weight × queue × time window, plus optional latency / error rate) with temperature smoothing; optional Power-of-Two-Choices, LinUCB contextual bandit, session affinity, SLA virtual queue and LPS queueing lookahead</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>Resilience</b><br><span style="color:#64748B">limiteron circuit breaker (opens after 5 failures for 30s, slow-call threshold 60s avoids false trips), status-classified retries (429 honors Retry-After with spread, 5xx exponential backoff), priority-driven fallback chain (total attempt budget defaults to 8)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>Inbound rate limiting & admission</b><br><span style="color:#64748B">limiteron sliding-window global limiter plus <code>[[rate_limit.rules]]</code> path rules; congestion-aware priority admission (per-key tiers dedicated/guaranteed/elastic/spot)</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>Secure auth</b><br><span style="color:#64748B">API keys stored only as SHA256 digests with constant-time comparison; upstream credentials referenced by environment variable name only; revocation/rotation takes effect immediately via hot reload</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>Response cache</b><br><span style="color:#64748B">Exact-match response cache (oxcache-backed) keyed by tenant + vendor + body fingerprint, tiered TTL multipliers with load linking, <code>X-No-Cache: 1</code> to force origin fetch</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Request logs & pre-aggregation</b><br><span style="color:#64748B">Asynchronous batched SQLite writes (drop-counting under backpressure, never blocks responses), token usage UPSERT pre-aggregated by (vendor, model, date, hour)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>Cost tracking</b><br><span style="color:#64748B"><code>[[pricing]]</code> configures input/output unit prices; micro-USD atomic accumulation per vendor/model; price changes take effect immediately via hot reload</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); restart-required sections are reported explicitly in the <code>restart_required</code> response field</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">14 method endpoints: log query/search, token stats, global metrics (affinity hit rate, drop counts), vendor status, config & model management, health check</span></td>
+</tr>
+<tr>
+<td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>NEXUSFLOW_LANG</code> → system locale → en fallback chain</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Production ready</b><br><span style="color:#64748B">Multi-stage Docker build with non-root runtime, docker-compose resource limits, GitHub Actions CI (fmt/clippy/test/audit/Trivy) and multi-platform cross compilation</span></td>
+</tr>
+</table>
+
+---
+
+## 🚀 Quick Start
+
+### 📦 Requirements
+
+- Rust 1.92+ (matches the CI-pinned toolchain, edition 2021)
+- SQLite (compiled via rustls, no system dependency required)
+- **7 sibling libraries must sit next to this project** (path dependencies): `confers`, `dbnexus`, `inklog`, `limiteron`, `oxcache`, `sdforge`, `trait-kit`
+
+### 🔨 Build & run
 
 ```bash
-# Default config file config.toml
+# Reads config.toml from the working directory by default (see config.example.toml)
 cargo run --release
 
-# Specify config file
+# Or specify a config file
 cargo run --release -- /path/to/config.toml
-
-# Server listens on 0.0.0.0:8080
 ```
 
-### First Request
+### 💡 First requests
 
 ```bash
-# Health check (no auth required)
-curl http://127.0.0.1:8080/health
+# Health check (no auth; the registered path carries the sdforge version prefix)
+curl http://127.0.0.1:8080/api/v1/health
 
 # OpenAI-compatible chat completion
 curl -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
 
-# Anthropic-compatible message
+# Anthropic-compatible messages
 curl -X POST http://127.0.0.1:8080/v1/messages \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-opus",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "max_tokens": 1024
-  }'
+  -d '{"model": "claude-3-opus", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-## Configuration
+> Note: the bare `/health` path is not a registered route (it 404s) but is included in the auth and rate-limit whitelists. See the [📘 API Reference](docs/API_REFERENCE.md) for the full endpoint list.
 
-Runtime configuration file `config.toml`, key configuration items:
+---
+
+## ⚙️ Configuration Overview
+
+Runtime configuration is a single `config.toml` with 13 top-level sections:
+
+| Section | Purpose | Hot reload |
+|---------|---------|------------|
+| `server` / `database` | Listen address, SQLite path / pool size | ❌ restart required |
+| `vendors` / `global_model` | Vendors, models, weights, rate-limit forms | ✅ enabled & weights apply immediately |
+| `auth` / `cors` | API key digests, CORS | auth ✅ / cors ❌ |
+| `routing` / `retry` / `resilience` | Routing coefficients & selection algorithm, retry policy, resilience coverage | ✅ |
+| `cache` / `rate_limit` / `admission` | Response cache, inbound rate limiting, congestion admission | cache/admission ✅ / rate_limit ❌ |
+| `pricing` | Input/output token unit prices (cost calculation) | ✅ |
 
 ```toml
-[server]
-host = "0.0.0.0"
-port = 8080
-
-[database]
-path = "./data/llm_proxy.db"
-pool_size = 5
-
-# Auth: API Key stored as SHA256 hash
-# Generate: echo -n "your-api-key" | sha256sum
-[auth]
-enabled = true
-api_keys = []  # Fill in SHA256 hashes
-
-[auth.header]
-name = "Authorization"
-prefix = "Bearer"
-
-[cors]
-enabled = true
-allowed_origins = ["*"]
-allowed_methods = ["GET", "POST", "OPTIONS", "PUT", "DELETE"]
-
-[rate_limit]
-enabled = true
-requests_per_second = 100
-burst_size = 200
-window_seconds = 60
-
-# Per-endpoint rate limiting
-[[rate_limit.endpoints]]
-path = "/v1/chat/completions"
-requests_per_minute = 1000
-
-[[rate_limit.endpoints]]
-path = "/v1/embeddings"
-requests_per_minute = 500
-
-[[rate_limit.endpoints]]
-path = "/admin/*"
-requests_per_minute = 100
-
-# Vendor configuration (supports multiple)
 [[vendors]]
-id = "mock-openai"
-name = "Mock OpenAI"
+id = "openai"
 type_ = "openai"
-api_key_env = "MOCK_OPENAI_KEY"   # Read actual key from environment variable
-api_base = "http://127.0.0.1:8001/v1"
+api_key_env = "OPENAI_API_KEY"     # upstream key read from the environment
+api_base = "https://api.openai.com/v1"
 enabled = true
-concurrency = { requests_per_second = 100 }
-rate_limit = { type = "token", max_tokens = 10000000 }
 
 [[vendors.models]]
 model_id = "gpt-4"
-enabled = true
-weight = 1.0    # Routing weight, participates in 3D weight calculation
+weight = 1.0                        # participates in routing weights
 
-[global_model]
-enabled = true
-strategy = "weighted"   # Global weighted routing strategy
+[[pricing]]
+vendor_id = "openai"
+model_id = "gpt-4"
+input_per_1k_tokens = 0.03
+output_per_1k_tokens = 0.06
 ```
 
-Environment variables: The name specified via the `api_key_env` field is used to read the upstream vendor's API Key from environment variables, avoiding hardcoding into the configuration file.
+To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`echo -n "your-key" | sha256sum`). Full field reference, rate-limit rules and admission settings: [📖 User Guide](docs/USER_GUIDE.md).
 
-## API Endpoints
+---
 
-14 routes total (`/admin/config` single route supports both GET + POST methods):
+## 📚 Documentation
 
-### Business Endpoints
+| Document | Description |
+|----------|-------------|
+| [📖 User Guide](docs/USER_GUIDE.md) | End-to-end tutorial: configuration, deployment, operations |
+| [📘 API Reference](docs/API_REFERENCE.md) | All 14 method endpoints: parameters, responses, error codes |
+| [🏗️ Architecture](docs/ARCHITECTURE.md) | Design principles, routing decision system, resilience & hot reload |
+| [🔒 Security](docs/SECURITY.md) | Security design, supply-chain gates, vulnerability handling |
+| [❓ FAQ](docs/FAQ.md) | Common questions and known limitations |
+| [📋 Changelog](docs/CHANGELOG.md) | Version history (Keep a Changelog format) |
+| [🤝 Contributing](docs/CONTRIBUTING.md) | Environment setup, development commands, commit conventions |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/v1/chat/completions` | OpenAI-compatible chat completion |
-| POST | `/v1/embeddings` | OpenAI embeddings |
-| POST | `/v1/messages` | Anthropic-compatible message |
+---
 
-### Admin Endpoints
+## 🏗️ Architecture
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/admin/logs` | Request log query (supports time/vendor/model filtering) |
-| GET | `/admin/logs/search` | Log keyword search |
-| GET | `/admin/stats/tokens` | Token usage statistics (pre-aggregated) |
-| GET | `/admin/metrics` | Global metrics (request count/latency/error rate) |
-| GET | `/admin/vendors` | Vendor list |
-| GET | `/admin/vendors/:id/status` | Vendor status |
-| POST | `/admin/vendors/:id/reset` | Reset vendor (circuit breaker/rate limiter) |
-| GET | `/admin/config` | Get current configuration |
-| POST | `/admin/config` | Update configuration |
-| GET | `/admin/models` | Model list |
-| POST | `/admin/models/:id` | Update model configuration |
+NexusFlow uses a layered pipeline: inbound requests pass through the middleware chain (auth → rate limit → admission), then the router picks a target from the eligible vendor set (three-level decision: abstract model → `vendor.model` direct → `auto` global pool), and the request is executed by the VendorManager with circuit breaking and retries, after protocol conversion (or zero-copy passthrough). On the response side, SSE framing and protocol back-conversion complete while logs, token aggregation, cost accumulation, affinity binding and LinUCB rewards are recorded asynchronously.
 
-### Health Check
+```mermaid
+flowchart TB
+    Client["Client (OpenAI / Anthropic format)"]
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Service health check (no auth required) |
+    subgraph GW["NexusFlow Gateway (Axum 0.8 + sdforge)"]
+        direction LR
+        MW["Middleware chain<br/>auth (SHA256) · sliding-window limiter · admission"]
+        Handler["API handlers<br/>routing hints · response cache"]
+        Router["Routing decision<br/>5-factor weighting · affinity · LinUCB"]
+        Conv["Protocol conversion<br/>OpenAI ↔ Anthropic · zero-copy passthrough"]
+        Vendor["VendorManager<br/>circuit · retry · pool · fallback"]
+        MW --> Handler --> Router --> Conv --> Vendor
+    end
 
-## Docker Deployment
+    subgraph Store["Persistence (dbnexus · SQLite)"]
+        Logs["request_logs (async batched writes)"]
+        Agg["token_usage (hourly pre-aggregation)"]
+    end
+
+    UP1["OpenAI-compatible upstream"]
+    UP2["Anthropic-compatible upstream"]
+
+    Client --> MW
+    Vendor --> UP1
+    Vendor --> UP2
+    Vendor -. async .-> Logs
+    Vendor -. async .-> Agg
+```
+
+The full routing decision system, resilience state machines, hot-reload transaction semantics, DI assembly and i18n design are documented in the [🏗️ Architecture guide](docs/ARCHITECTURE.md).
+
+---
+
+## 🧪 Testing
+
+### 🎯 Strategy
+
+Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by domain in `tests/` (20 files: routing, protocol conversion, vendors, circuit breaking, retries, admission, SSE, cost, assembly smoke, etc.). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
+
+### ▶️ Commands (CI-consistent)
 
 ```bash
-# Build image
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
+
+### 📊 Scale
+
+As of the current version: 196 unit tests (measured inline in `src/`) and 454 integration tests (measured across 20 files in `tests/`) — **650 total, 0 ignored**. Main distribution:
+
+| Test domain | Cases | Coverage |
+|-------------|-------|----------|
+| vendor_test | 79 | vendor management / rate limits / health |
+| protocol_test | 71 | OpenAI ↔ Anthropic conversion / SSE framing |
+| router_test | 63 | weighted selection / affinity / hint routing / edges |
+| api_test | 62 | endpoint integration |
+| retry / sse / config / database | 26 / 24 / 20 / 20 | retry classes / stream framing / config loading / persistence |
+| fallback / admission / circuit_breaker | 17 / 15 / 13 | fallback chain / admission / circuit (incl. 4 vendor-side) |
+| cost / cost_tracker / feature_matrix etc. | remainder | cost chain / feature matrix / assembly smoke |
+
+---
+
+## ⚡ Performance Design
+
+No official benchmarks have been published yet (tracked on the roadmap). Verified design points: zero-copy passthrough for same-protocol requests, lock-free O(1) config reads via arc-swap, fully asynchronous logging and pre-aggregation (batched transactions; backpressure drops are counted, never blocking), a single pooled reqwest client with a semaphore concurrency cap, and oxcache in-memory backends for session affinity and the response cache. Design details: [🏗️ Architecture · Performance design](docs/ARCHITECTURE.md).
+
+---
+
+## 🔒 Security
+
+### 🛡️ Design
+
+API keys stored as SHA256 digests with constant-time comparison, upstream credentials referenced by env var name only, error responses exposing fixed `error.type` codes only, secrets masked in config snapshots, layered CORS and rate-limit banning (403), non-root Docker runtime. See the [🔒 Security guide](docs/SECURITY.md) for details.
+
+### 🚨 Reporting a vulnerability
+
+Please do not report security vulnerabilities through public issues. Use the GitHub [Security Advisories](https://github.com/Kirky-X/NexusFlow/security/advisories/new) private disclosure channel instead. The project commits to acknowledging within 48 hours and providing an initial assessment within 7 days.
+
+---
+
+## 🗺️ Roadmap
+
+<table style="width:100%; border-collapse: collapse">
+<tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
+<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 14 method endpoints</td></tr>
+<tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers</td></tr>
+<tr><td align="center">✅</td><td>Resilience</td><td>limiteron circuit / retry / fallback chain, congestion-aware admission, key tiers</td></tr>
+<tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, pricing-based cost tracking</td></tr>
+<tr><td align="center">✅</td><td>Hot reload</td><td>confers DynamicField lock-free reads, transactional writes, snapshots with restart_required reporting</td></tr>
+<tr><td align="center">✅</td><td>Internationalization</td><td>Fluent en/zh bundles covering all business messages</td></tr>
+<tr><td align="center">🔜</td><td>Cost query API</td><td>Persist request-level / aggregated costs and expose a <code>/admin/cost</code> endpoint (CostTracker is in-memory only today)</td></tr>
+<tr><td align="center">🔜</td><td>Rust SDK</td><td>Wire up <code>sdk/</code> (nexusflow-sdk) workspace inheritance and publish</td></tr>
+<tr><td align="center">🔜</td><td>Performance baselines</td><td>Establish Criterion baselines (passthrough / conversion / routing decision paths)</td></tr>
+<tr><td align="center">🔜</td><td>Log query completion</td><td>Push <code>/admin/logs</code> end_time filtering into SQL (known gap, see the <a href="docs/FAQ.md">FAQ</a>)</td></tr>
+</table>
+
+---
+
+## 🐳 Docker Deployment
+
+```bash
+# Build (multi-stage: rust:1.92-alpine build → alpine:3.21 runtime, non-root)
 docker build -t nexusflow:latest .
 
-# Run container
+# Run (SQLite data persists under /app/data)
 docker run -d -p 8080:8080 -v $(pwd)/data:/app/data nexusflow:latest
 
-# Or use docker-compose for one-click deployment
+# Or one-command deployment with resource limits and health checks
 docker-compose up -d
 ```
 
-Data persistence: The SQLite database file is mounted in the `/app/data` directory, mapped to the host via `-v $(pwd)/data:/app/data`.
+> Health check: the HEALTHCHECK in both the Dockerfile and docker-compose probes the registered path `/api/v1/health`; docker-compose ships with resource limits (2 CPUs / 512M) and a non-root runtime (see [📖 User Guide · Docker](docs/USER_GUIDE.md)).
 
-## Development Guide
+---
 
-### Project Structure
+## 🤝 Contributing
 
-```
-src/
-├── api/               # REST endpoints (axum handlers)
-│   ├── admin.rs       # Admin endpoints
-│   ├── anthropic.rs   # Anthropic message endpoint
-│   ├── openai.rs      # OpenAI chat/embeddings endpoint
-│   ├── health.rs      # Health check (sdforge #[service_api])
-│   ├── router_builder.rs  # Route building + rate limit middleware
-│   └── state.rs       # Shared state
-├── config/            # TOML config loading
-├── database/          # SQLite persistence (dbnexus)
-├── middleware/         # Auth/CORS middleware
-├── protocol/          # OpenAI ↔ Anthropic protocol conversion
-├── router/            # Intelligent routing + 3D weight calculation
-├── vendor/            # Vendor management (rate limit, retry, health)
-├── infrastructure/    # DI container (trait-kit AsyncKit)
-└── utils/             # Utility functions
-```
+See the [🤝 Contributing guide](docs/CONTRIBUTING.md) for the full workflow, commands and commit conventions.
 
-### Cargo Features
+### 🛠️ Development environment
 
-Default enables `full`, including all 8 features:
+Toolchain is Rust 1.92 (CI-consistent); run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`). The 7 sibling libraries (confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit) must sit next to this project.
 
-| Feature | Dependencies | Description |
-|---------|--------------|-------------|
-| `web-server` | axum, tower, tower-http, async-stream | HTTP server |
-| `database` | dbnexus, sea-orm, async-channel | Database layer |
-| `vendor-management` | reqwest, limiteron | Vendor management |
-| `router` | - | Routing scheduling (depends on vendor-management) |
-| `protocol` | - | Protocol conversion |
-| `infrastructure` | oxcache, trait-kit | Cache + DI container |
-| `sdforge-integration` | sdforge | HTTP framework integration |
-| `logging` | inklog | Structured logging |
+### 💖 Ways to contribute
 
-### Compilation Check
+<table style="width:100%; border-collapse: collapse">
+<tr>
+<td width="33%" align="center" style="padding: 16px">
 
-```bash
-cargo clippy -- -D warnings   # Zero-warning check (currently 0 warnings)
-cargo build --release         # Production build (LTO + opt-level 3)
-```
+### 🐛 Report a bug
 
-### Code Conventions
+Found an issue?<br>
+<a href="https://github.com/Kirky-X/NexusFlow/issues/new">Open an issue</a>
 
-- Error handling: `anyhow` + `thiserror`, using `?` operator, errors must be explicitly propagated
-- Async: Tokio runtime, all I/O must be async
-- Naming: snake_case (Rust convention)
-- Testing: `tests/` integration tests + `#[cfg(test)]` inline unit tests
+</td>
+<td width="33%" align="center" style="padding: 16px">
 
-## Testing
+### 💡 Suggest a feature
 
-```bash
-# Run all tests
-cargo test
+Have an idea?<br>
+<a href="https://github.com/Kirky-X/NexusFlow/discussions">Start a discussion</a>
 
-# Baseline: 307 passed + 0 ignored + 0 failed
-# clippy: 0 warnings
-```
+</td>
+<td width="33%" align="center" style="padding: 16px">
 
-Test coverage:
+### 🔧 Submit a PR
 
-| Module | Test Count | Coverage |
-|--------|-----------|----------|
-| config | 8 | Config loading/validation |
-| protocol | 7 | OpenAI ↔ Anthropic conversion |
-| vendor | 13 | rate limit / retry / health |
-| router | 11 | 3D weight / weighted selection / boundary conditions |
-| database | 15 | Log write/query/Token aggregation |
-| api | 22 | Endpoint integration tests |
-| middleware | - | Auth/CORS |
+Want to contribute code?<br>
+<a href="https://github.com/Kirky-X/NexusFlow/pulls">Fork and open a PR</a>
 
-### Security Audit Status
+</td>
+</tr>
+</table>
 
-| Audit Item | Result |
-|------------|--------|
-| diting code review | ✅ 0 Critical / 0 High |
-| tiangang SAST scan | ✅ 0 CRITICAL vulnerabilities |
-| cargo-audit | ✅ 0 vulnerabilities |
+---
 
-## Sister Library Ecosystem
+## 📋 Changelog
 
-This project integrates the following local source libraries via Cargo path dependencies (must be in sibling directories with NexusFlow):
+The full version history lives in the [📋 Changelog](docs/CHANGELOG.md) (following [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), semantic versioning).
 
-| Library | Purpose | Alternative |
-|---------|---------|-------------|
-| [dbnexus](../dbnexus) | SQLite database layer (with kit integration) | Direct sqlx usage |
-| [inklog](../inklog) | Structured logging (HTTP/CLI/SQLite) | tracing-subscriber |
-| [limiteron](../limiteron) | Rate limiting / circuit breaking (GCRA + circuit breaker) | Hand-written rate limiting |
-| [oxcache](../oxcache) | Unified cache API (memory backend) | Hand-written cache |
-| [sdforge](../sdforge) | HTTP server framework + API gateway | Raw axum usage |
-| [trait-kit](../trait-kit) | DI container (AsyncKit, async dependency injection) | Manual wiring |
+| Version | Date | Highlights |
+|---------|------|------------|
+| 0.1.0 | 2026-04-04 | Initial release, continuously iterated (63 commits): protocol-converting gateway, 5-factor weighted routing with optional smart layers, limiteron resilience system, async logging & pre-aggregation, cost tracking, confers hot-reload foundation, i18n, 35 optimization recommendations landed |
 
-All sister libraries are assembled via the `trait-kit` 0.3 AsyncKit DI container. On `main.rs` startup, it builds and verifies `4/4 modules resolved`.
+---
 
-## License
+## 📄 License
 
-MIT License — see source file headers `Licensed under the MIT License`.
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
+## 🙏 Acknowledgments
+
+### 🌟 Core dependencies (sibling libraries)
+
+NexusFlow integrates the following local libraries via Cargo path dependencies (placed next to this project; `[patch.crates-io]` keeps identities unified):
+
+| Library | Purpose |
+|---------|---------|
+| [confers](https://github.com/Kirky-X/confers) | Config loading guards & hot-reload foundation (DynamicField / SnapshotManager) |
+| [dbnexus](https://github.com/Kirky-X/dbnexus) | SQLite persistence (pooling / batched transactions / kit integration) |
+| [inklog](https://github.com/Kirky-X/inklog) | Structured logging (HTTP / CLI / SQLite) |
+| [limiteron](https://github.com/Kirky-X/limiteron) | Rate limiting / circuit breaking / retry primitives |
+| [oxcache](https://github.com/Kirky-X/oxcache) | Unified cache API (storage for affinity & response cache) |
+| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP service framework (`#[service_api]` / route registration) |
+| [trait-kit](https://github.com/Kirky-X/trait-kit) | DI container (AsyncKit, 4-module topology) |
+
+### 💝 Special thanks
+
+Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/NexusFlow/graphs/contributors).
+
+---
+
+## 📞 Contact & Support
+
+<table style="width:100%; max-width: 600px">
+<tr>
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NexusFlow/issues"><b style="color:#991B1B">Issues</b></a><br>
+<span style="color:#64748B">Report problems and bugs</span>
+</td>
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NexusFlow/discussions"><b style="color:#1E40AF">Discussions</b></a><br>
+<span style="color:#64748B">Ask questions and share ideas</span>
+</td>
+<td align="center" width="33%">
+<a href="https://github.com/Kirky-X/NexusFlow"><b style="color:#1E293B">GitHub</b></a><br>
+<span style="color:#64748B">Browse the source</span>
+</td>
+</tr>
+</table>
+
+---
+
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/NexusFlow&type=Date)](https://star-history.com/#Kirky-X/NexusFlow&Date)
+
+If this project helps you, please consider giving it a ⭐️!
+
+**Built by Kirky.X**
+
+---
+
+<sub>© 2026 Kirky.X. All rights reserved.</sub>

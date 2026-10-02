@@ -1,8 +1,9 @@
 # NexusFlow REST API 文档
 
-**版本**: v1.0
-**Base URL**: `http://{host}:{port}` (默认 `http://0.0.0.0:8080`)
-**内容类型**: `application/json` (流式响应为 `text/event-stream`)
+**文档基线**: v0.1.0（以 Cargo.toml 为准）
+**Base URL**: `http://0.0.0.0:8080`（默认配置，实际以 `[server]` 段 host/port 为准）
+**内容类型**: `application/json`（流式响应为 `text/event-stream`）
+**内容协商**: 错误消息文案支持中英文（服务端 i18n，跟随 `NEXUSFLOW_LANG`/`LANG` 环境变量，检测链为 `NEXUSFLOW_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG`）
 
 ---
 
@@ -28,20 +29,21 @@
   - [GET /admin/models](#get-adminmodels)
   - [POST /admin/models/:id](#post-adminmodelsid)
 - [健康检查](#健康检查)
-  - [GET /health](#get-health)
+  - [GET /api/v1/health](#get-apiv1health)
+- [附录：路由提示请求头](#附录路由提示请求头)
 
 ---
 
 ## 认证
 
-除 `/health` 与 `/` 外的所有端点均要求认证。
+除健康检查与根路径外，所有端点均要求认证。
 
 | 项 | 值 |
 |---|---|
 | 认证方式 | Bearer Token (API Key) |
 | 请求头 | `Authorization: Bearer <api_key>` |
 | 备用请求头 | `x-api-key: <api_key>` |
-| 配置位置 | `config.toml` 的 `[auth]` 段 |
+| 配置位置 | `config.toml` 的 `[auth]` 段（`api_keys` 存 SHA256 hex 摘要，明文不落盘） |
 | 启用开关 | `auth.enabled` (`true` / `false`) |
 
 认证失败的统一响应：
@@ -55,9 +57,9 @@
 }
 ```
 
-HTTP 状态码：`401 Unauthorized`（`type` 可能为 `authentication_error`，无效 key 时 `message` 为 `"Invalid API key"`）。
+HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API key"`）。
 
-> `/health` 与 `/` 路径在认证中间件中被显式放行（见 `src/middleware/auth.rs`）。
+> 认证中间件的放行路径为代码事实（`src/middleware/auth.rs`）：`/health`、`/api/v1/health`、`/` 三个路径显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 裸路径未注册路由（请求会 404），但保留在白名单中。
 
 ---
 
@@ -78,7 +80,7 @@ HTTP 状态码：`401 Unauthorized`（`type` 可能为 `authentication_error`，
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `error.message` | string | 错误详细描述（来自 `thiserror` 的 `#[error(...)]`） |
+| `error.message` | string | 错误详细描述，走 i18n 本地化轨道（跟随 locale 输出中/英文案） |
 | `error.type` | string | 固定的错误类型代码，不暴露内部枚举结构 |
 
 ---
@@ -94,14 +96,18 @@ HTTP 状态码：`401 Unauthorized`（`type` 可能为 `authentication_error`，
 | `vendor_unavailable` | 503 Service Unavailable | 厂商不可用、网络请求失败 |
 | `timeout` | 504 Gateway Timeout | 请求超时、`oneshot` 通道接收失败 |
 | `rate_limited` | 429 Too Many Requests | 厂商侧限流 |
+| `all_vendors_throttled` | 429 Too Many Requests + `Retry-After` 头 | Fallback 换路后所有候选厂商仍被限流时抛出（需 `[routing].retry_after_hint` 开启；默认关闭时保持原错误语义不产生本码）；`Retry-After` 值取各候选厂商限流窗口重置剩余秒数的最小值 |
 | `config_error` | 500 Internal Server Error | 配置错误（如 API key 环境变量未设置） |
 | `database_error` | 500 Internal Server Error | 数据库操作失败、IO 错误 |
 | `routing_error` | 500 Internal Server Error | 路由决策失败（无可用厂商等） |
 
-> 限流中间件 `rate_limit_middleware`（基于 `limiteron::Governor`）独立于上述错误码：
-> - 超出速率限制 → `429 Too Many Requests`，body 为纯文本 `"Rate limit exceeded"`
-> - 被封禁 → `403 Forbidden`，body 为纯文本 `"Access denied"`
-> - `/health`、`/healthz`、`/ready` 路径放行，不进入限流检查
+> **限流与准入（网关侧，独立于上述错误码）**：
+>
+> - 入站限流中间件（`rate_limit_middleware`）由两层组成：`[[rate_limit.rules]]` 端点规则表（`path` 前缀匹配、按租户分桶）+ `limiteron::Governor` 全局规则层。
+> - 端点规则超限 → `429 Too Many Requests` + `Retry-After` 头（重置秒数），body 为 JSON，`error.message` 文案随 locale（zh `"已超过速率限制"` / en `"Rate limit exceeded"`）。
+> - 全局规则超速 → `429 Too Many Requests`，文案同上；被拉入封禁名单 → `403 Forbidden`，文案随 locale（zh `"访问被拒绝"` / en `"Access denied"`）。
+> - 限流白名单路径（不进入限流检查）：`/health`、`/healthz`、`/ready`、`/api/v1/health`。
+> - **准入层**（拥塞感知优先级准入，`src/middleware/admission.rs`）：`[admission].enabled`（默认 `false`）开启后，网关并发占用率（Σ 在途 / Σ 并发上限）达到 `congestion_threshold`（默认 `0.9`）时，优先级低于当前在途最小档位的请求被直接卸载（shed），返回 `429 Too Many Requests` + `Retry-After: 1`，文案随 locale（zh `"准入被拒绝（拥塞）"`）。请求档位（dedicated/guaranteed/elastic/spot）由 `[auth].keys` 子表按 API key 声明，未声明的 key 缺省 `elastic`。健康检查路径永不卸载。
 
 ---
 
@@ -121,6 +127,8 @@ OpenAI Chat Completions 兼容端点。根据请求体中的 `model` 字段进�
 | `Content-Type` | 是 | `application/json` |
 | `X-Vendor` | 否 | 路由提示：优先使用的厂商 ID |
 | `X-Model` | 否 | 路由提示：优先使用的模型 ID |
+| `X-Session-Id` | 否 | 会话亲和键；缺失时以 `messages[0]` 前缀哈希兜底（见[附录](#附录路由提示请求头)） |
+| `X-Weight` | 否 | 请求级权重（仅接受有限正数）；生效需服务端 `[routing].allow_request_weight` 开启 |
 
 **请求体** (`Json<Value>`, OpenAI 兼容):
 
@@ -184,7 +192,7 @@ OpenAI Chat Completions 兼容端点。根据请求体中的 `model` 字段进�
 
 `Content-Type: text/event-stream`，响应头额外包含 `Cache-Control: no-cache` 与 `Connection: keep-alive`。每个 chunk 为标准 OpenAI SSE 格式（`data: {...}\n\n`）。
 
-**错误码**: `validation_error`(400) | `routing_error`(500) | `vendor_unavailable`(503) | `timeout`(504) | `protocol_error`(502) | `rate_limited`(429)
+**错误码**: `validation_error`(400) | `routing_error`(500) | `vendor_unavailable`(503) | `timeout`(504) | `protocol_error`(502) | `rate_limited`(429)；`[routing].retry_after_hint` 开启且全部候选被限流时为 `all_vendors_throttled`(429 + `Retry-After` 头)
 
 **curl 示例**:
 
@@ -298,6 +306,10 @@ Anthropic Messages API 兼容端点。当目标厂商类型为 `anthropic` 时�
 | `Authorization` | 是 | `Bearer <api_key>` |
 | `Content-Type` | 是 | `application/json` |
 | `anthropic-version` | 否 | 透传给上游 Anthropic API |
+| `X-Vendor` | 否 | 路由提示：优先使用的厂商 ID |
+| `X-Model` | 否 | 路由提示：优先使用的模型 ID |
+| `X-Session-Id` | 否 | 会话亲和键；缺失时以 `messages[0]` 前缀哈希兜底 |
+| `X-Weight` | 否 | 请求级权重（仅接受有限正数）；生效需 `[routing].allow_request_weight` 开启 |
 
 **请求体** (`Json<Value>`, Anthropic 兼容):
 
@@ -347,7 +359,7 @@ Anthropic Messages API 兼容端点。当目标厂商类型为 `anthropic` 时�
 
 `Content-Type: text/event-stream`，标准 Anthropic SSE 事件流（`event: ...\ndata: {...}\n\n`）。
 
-**错误码**: `validation_error`(400) | `routing_error`(500) | `vendor_unavailable`(503) | `timeout`(504) | `protocol_error`(502) | `rate_limited`(429)
+**错误码**: `validation_error`(400) | `routing_error`(500) | `vendor_unavailable`(503) | `timeout`(504) | `protocol_error`(502) | `rate_limited`(429)；`[routing].retry_after_hint` 开启且全部候选被限流时为 `all_vendors_throttled`(429 + `Retry-After` 头)
 
 **curl 示例**:
 
@@ -366,7 +378,7 @@ curl -X POST http://localhost:8080/v1/messages \
 
 ## 管理端点
 
-所有 `/admin/*` 端点均要求 Bearer Token 认证，且受全局限流策略约束（`config.toml` 中 `[rate_limit.endpoints]` 的 `/admin/*` 规则）。
+所有 `/admin/*` 端点均要求 Bearer Token 认证，且受入站限流策略约束（`config.toml` 中 `[[rate_limit.rules]]` 的 `path` 前缀规则可覆盖 `/admin/*`；未配置时走 limiteron Governor 内置默认兜底）。
 
 ### GET /admin/logs
 
@@ -405,10 +417,13 @@ curl -X POST http://localhost:8080/v1/messages \
     "prompt_tokens": 1024,
     "completion_tokens": null,
     "total_tokens": null,
-    "duration_ms": 523
+    "duration_ms": 523,
+    "cost_usd": null
   }
 ]
 ```
+
+> `cost_usd` 字段当前恒为 `null`：请求路径构造日志时未写入成本（成本计算仅进内存指标，见 [GET /admin/stats/tokens](#get-adminstatstokens) 注记）。
 
 **错误码**: `database_error`(500)
 
@@ -476,10 +491,13 @@ curl "http://localhost:8080/admin/logs/search?vendor=Hello&limit=50" \
     "request_count": 42,
     "total_tokens": 12000,
     "prompt_tokens": 8000,
-    "completion_tokens": 4000
+    "completion_tokens": 4000,
+    "cost_usd_sum": 0.0
   }
 ]
 ```
+
+> `cost_usd_sum` 字段当前恒为 `0.0`（成本未落库）：API 层写入预聚合器时成本实参恒传 `0.0`，按 `[pricing]` 单价计算出的 USD 成本仅累计进内存指标，未进入 `token_usage` 表。
 
 **错误码**: `database_error`(500)
 
@@ -494,13 +512,13 @@ curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
 
 ### GET /admin/metrics
 
-返回全局指标快照（来自 `GlobalMetrics`，包含总请求数、错误率、平均延迟及各厂商细分指标）。
+返回全局指标快照（来自 `GlobalMetrics`，包含请求计数、错误率、平均延迟、各厂商细分指标、会话亲和命中率与流量分布熵），并附加日志背压丢弃计数。
 
 **认证**: 需要 Bearer Token
 
 **Query 参数**: 无
 
-**响应**: `MetricsSnapshot`
+**响应**: `MetricsSnapshot`（另加 `dropped_logs` 字段）
 
 ```json
 {
@@ -517,11 +535,42 @@ curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
       "failures": 20,
       "total_duration_ns": 224000000000,
       "last_request_at": 1700000000,
-      "last_error": "Connection reset"
+      "last_error": "Connection reset",
+      "ewma_latency_ms": 320.0,
+      "ewma_error_rate": 0.02,
+      "ewma_samples": 700,
+      "ewma_ttft_ms": 210.0,
+      "ewma_e2e_ms": 318.0,
+      "ewma_queue_ms": 2.5,
+      "ttft_samples": 350,
+      "e2e_samples": 690,
+      "queue_samples": 690
     }
-  ]
+  ],
+  "affinity_hits": 420,
+  "affinity_misses": 580,
+  "affinity_hit_rate": 0.42,
+  "top1_share": 0.7,
+  "share_entropy": 0.88,
+  "dropped_logs": 0
 }
 ```
+
+顶层字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `total_requests` | integer | 总请求数 |
+| `successful_requests` | integer | 成功请求数 |
+| `failed_requests` | integer | 失败请求数 |
+| `error_rate` | number | 错误率 |
+| `avg_duration_ms` | number | 平均耗时（毫秒） |
+| `vendors` | array | 各厂商细分指标 |
+| `affinity_hits` / `affinity_misses` | integer | 会话亲和命中 / 未命中次数 |
+| `affinity_hit_rate` | number | 亲和命中率（[0,1]，无样本为 0.0） |
+| `top1_share` | number | 滑窗 top-1 厂商流量占比（[0,1]） |
+| `share_entropy` | number | 流量份额 Shannon 熵（归一 [0,1]） |
+| `dropped_logs` | integer | 日志通道满被丢弃的日志条数 |
 
 `vendors` 数组中每个元素的字段：
 
@@ -534,6 +583,13 @@ curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
 | `total_duration_ns` | integer | 累计耗时（纳秒） |
 | `last_request_at` | integer \| null | 最近请求 Unix 时间戳 |
 | `last_error` | string \| null | 最近错误描述 |
+| `ewma_latency_ms` | number | EWMA 延迟（毫秒，e2e 口径） |
+| `ewma_error_rate` | number | EWMA 错误率（[0,1]） |
+| `ewma_samples` | integer | EWMA 样本数（0 = 尚无观测） |
+| `ewma_ttft_ms` | number | 流式 TTFT EWMA（毫秒，上游响应头近似） |
+| `ewma_e2e_ms` | number | 非流式端到端 EWMA（毫秒，含排队） |
+| `ewma_queue_ms` | number | 排队段 EWMA（毫秒） |
+| `ttft_samples` / `e2e_samples` / `queue_samples` | integer | 三道各自的样本数 |
 
 **错误码**: 无业务错误（仅可能的限流 429/403）
 
@@ -573,6 +629,8 @@ curl http://localhost:8080/admin/metrics \
 
 `status` 为 `VendorStatus` 枚举的 `Debug` 输出，可能值：`Available` | `Busy` | `Throttled` | `Unavailable`。
 
+状态判定为实时计算：厂商被限流窗口挡住时表现为 `Throttled`；熔断器（`[resilience]` 特性）处于 Open 且探测窗口未到时表现为 `Unavailable`（探测窗口已过则放行探测流量）；厂商 ID 不存在或 `enabled = false` 同样表现为 `Unavailable`。
+
 **错误码**: 无业务错误
 
 **curl 示例**:
@@ -606,7 +664,7 @@ curl http://localhost:8080/admin/vendors \
 }
 ```
 
-当厂商 ID 不存在时，`status` 返回 `"Unavailable"`。
+当厂商 ID 不存在时，`status` 返回 `"Unavailable"`。状态判定语义同 [GET /admin/vendors](#get-adminvendors)。
 
 **错误码**: 无业务错误
 
@@ -655,11 +713,11 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
 
 ### GET /admin/config
 
-返回当前运行时配置（完整 `Config` 结构）。
+返回当前运行时配置（完整 `Config` 结构，共 13 个顶层段：`server`、`database`、`vendors`、`global_model`、`pricing`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`）。
 
 **认证**: 需要 Bearer Token
 
-**响应**: `Config`
+**响应**: `Config`（下例为代表性节选，`routing` 等字段较多的段仅列常用项，以实际返回为准）
 
 ```json
 {
@@ -669,7 +727,7 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
   },
   "database": {
     "path": "./data/llm_proxy.db",
-    "pool_size": 5
+    "pool_size": 10
   },
   "vendors": [
     {
@@ -679,6 +737,7 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
       "api_key_env": "MOCK_OPENAI_KEY",
       "api_base": "http://127.0.0.1:8001/v1",
       "enabled": true,
+      "priority": 1,
       "models": [
         {
           "model_id": "gpt-3.5-turbo",
@@ -689,27 +748,107 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
       ],
       "rate_limit": {
         "type": "token",
-        "max_tokens": 10000000
+        "max_tokens": 10000000,
+        "window_hours": 24,
+        "sliding": false
       },
       "concurrency": {
-        "requests_per_second": 100
-      }
+        "requests_per_second": 100,
+        "max_concurrent_requests": null,
+        "token_weighted": false,
+        "token_ticket_min": 1,
+        "token_ticket_max": 16384,
+        "token_ticket_default": 4096
+      },
+      "timeout_ms": 60000,
+      "stream_ttft_ms": 60000,
+      "stream_idle_ms": 30000
     }
   ],
   "global_model": {
     "enabled": true,
     "strategy": "weighted"
+  },
+  "pricing": [
+    {
+      "vendor_id": "mock-openai",
+      "model_id": "gpt-3.5-turbo",
+      "input_per_1k_tokens": 0.0005,
+      "output_per_1k_tokens": 0.0015
+    }
+  ],
+  "auth": {
+    "enabled": true,
+    "api_keys": ["<sha256-hex>"],
+    "header": {
+      "name": "Authorization",
+      "prefix": "Bearer"
+    },
+    "keys": [
+      {
+        "hash": "<sha256-hex>",
+        "tier": "elastic"
+      }
+    ]
+  },
+  "cors": {
+    "enabled": true,
+    "allowed_origins": ["*"],
+    "allowed_methods": ["GET", "POST", "OPTIONS"],
+    "allowed_headers": ["*"],
+    "allow_credentials": false,
+    "max_age": 86400
+  },
+  "retry": {
+    "max_retries": 3,
+    "retryable_status_codes": [429, 500, 502, 503],
+    "initial_delay_ms": 1000,
+    "factor": 2.0,
+    "max_delay_ms": 16000,
+    "jitter": 0.2,
+    "spread_jitter": 1.0,
+    "max_total_attempts": 8,
+    "retry_budget_secs": 0,
+    "amplification_gate": false
+  },
+  "routing": {
+    "w_model": 0.4,
+    "w_queue": 0.3,
+    "w_window": 0.3,
+    "w_latency": 0.0,
+    "w_error": 0.0,
+    "allow_request_weight": false,
+    "retry_after_hint": false
+  },
+  "cache": {
+    "enabled": false,
+    "ttl_secs": 300
+  },
+  "rate_limit": {
+    "rules": []
+  },
+  "resilience": {
+    "cover_all_paths": false
+  },
+  "admission": {
+    "enabled": false,
+    "congestion_threshold": 0.9,
+    "alpha_slo": 2.0,
+    "alpha_burst": 1.0,
+    "alpha_debt": 4.0
   }
 }
 ```
 
-`rate_limit` 为 tagged enum，支持三种形态：
+`vendors[].rate_limit` 为 tagged enum，支持三种形态：
 
 ```json
 {"type": "time_window", "start": "00:00", "end": "06:00"}
-{"type": "interval", "hours": 24}
-{"type": "token", "max_tokens": 10000000}
+{"type": "interval", "hours": 24, "sliding": false}
+{"type": "token", "max_tokens": 10000000, "window_hours": 24, "sliding": false}
 ```
+
+> `[auth]`、`[cors]` 两段在配置文件中缺省时序列化为 `null`；`pricing` 缺省为空数组 `[]`。
 
 **错误码**: 无业务错误
 
@@ -728,16 +867,25 @@ curl http://localhost:8080/admin/config \
 
 **认证**: 需要 Bearer Token
 
-**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应）
+**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，13 个顶层段）
 
 **响应**:
 
 ```json
 {
   "success": true,
-  "message": "Config updated"
+  "message": "配置已更新；vendors/pricing/auth 立即生效",
+  "restart_required": []
 }
 ```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `success` | boolean | 固定 `true` |
+| `message` | string | 更新结果描述（随 locale） |
+| `restart_required` | array | 需重启才能生效的段名列表 |
+
+> 生效语义：`server` 或 `cors` 段变更时，`restart_required` 包含对应段名（`"server"` / `"cors"`），`message` 会提示这些段需重启后生效——两段在建站期被固化（axum Router 的 layer 在构造时编译），运行期不可热换；其余段（vendors/pricing/auth 等）热生效。`[rate_limit]` 段在 Router 构造期消费，热更新不生效（当前实现未列入 `restart_required` 提示，重启后生效）。
 
 **错误码**: `config_error`(500，更新失败或反序列化失败)
 
@@ -829,9 +977,11 @@ curl -X POST http://localhost:8080/admin/models/global \
 
 ## 健康检查
 
-### GET /health
+### GET /api/v1/health
 
 返回服务运行状态。无需认证，且不受限流约束。
+
+> **路径说明**：实际注册路径是 `/api/v1/health`——端点经 sdforge `#[forge(version = "v1", path = "/health")]` 宏注册，版本号自动加为路径前缀（见 `src/api/health.rs`）。裸路径 `/health` **未注册路由**（请求返回 404），但保留在认证白名单与限流白名单中。
 
 **认证**: 无需
 
@@ -856,18 +1006,28 @@ curl -X POST http://localhost:8080/admin/models/global \
 **curl 示例**:
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:8080/api/v1/health
 ```
 
 ---
 
 ## 附录：路由提示请求头
 
-LLM 推理端点（`/v1/chat/completions`、`/v1/messages`）支持通过请求头传递路由提示，绕过默认路由决策：
+LLM 推理端点（`/v1/chat/completions` 与 `/v1/messages` **两个端点均读取**路由提示请求头，见 `src/api/openai.rs` 与 `src/api/anthropic.rs` 中的 `RoutingHints::from_headers` 调用）支持通过请求头影响路由决策：
 
-| Header | 说明 |
-|---|---|
-| `X-Vendor` | 优先使用的厂商 ID |
-| `X-Model` | 优先使用的模型 ID |
+| Header | 说明 | 生效条件 |
+|---|---|---|
+| `X-Vendor` | 优先使用的厂商 ID（直连路由，不查厂商实时状态过滤） | 非空即生效 |
+| `X-Model` | 优先使用的模型 ID | 非空即生效 |
+| `X-Session-Id` | 会话亲和键——同键请求粘住同一成功厂商 | 非空即生效；缺失时自动兜底（见下） |
+| `X-Weight` | 请求级权重（浮点数） | 仅接受**有限正数**（非数值 / 负数 / NaN / Infinity 一律忽略）；且需服务端 `[routing].allow_request_weight` 开启（默认 `false`，关闭时忽略） |
 
-当任一请求头非空时，调用 `route_with_hints` 而非 `route`。两个端点中只有 `/v1/chat/completions` 显式读取这些请求头（见 `src/api/openai.rs`）；`/v1/messages` 虽接收 `HeaderMap` 但当前未使用（见 `src/api/anthropic.rs` 中 `_headers` 参数）。
+**X-Session-Id 兜底规则**：请求未携带 `X-Session-Id` 时，以 `serde_json::to_string(messages[0])` 的前 2KB（UTF-8 字符边界安全截断）计算 SHA256，hex 编码后截取前 16 字符作为会话键——同前缀开头的对话自动粘住同一厂商；请求体无 `messages` 时无兜底键，该请求不参与亲和。
+
+**X-Vendor/X-Model 提示语义**：任一提示头非空时走提示路由（`route_with_hints`），否则走默认路由决策（权重/亲和等策略）。提示仅是"优先"语义，目标厂商执行失败时仍会进入换路 fallback（resilience 特性开启时）。
+
+---
+
+## 相关文档
+
+[用户指南](./USER_GUIDE.md) · [架构文档](./ARCHITECTURE.md) · [FAQ](./FAQ.md) · [README](../README.md)

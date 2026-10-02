@@ -29,6 +29,9 @@ pub mod api;
 #[cfg(feature = "web-server")]
 pub mod middleware;
 
+#[cfg(all(feature = "web-server", feature = "logging"))]
+pub mod server;
+
 #[cfg(feature = "sdk")]
 pub mod sdk;
 

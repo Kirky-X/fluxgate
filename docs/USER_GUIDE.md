@@ -502,15 +502,16 @@ healthcheck:
 
 ## 🧰 Rust SDK 一览
 
-`sdk/` 目录提供 `nexusflow-sdk` crate（当前 0.2.0），通过 Rust 接口与网关交互（`sdk/src/lib.rs`）：
+SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `full` 已含），通过 Rust 接口与已部署网关交互（HTTP 客户端，非进程内直连）：
 
 | 项 | 内容 |
 |:---|:-----|
-| 特性 | `client`（默认，HTTP 客户端 + SSE 流）、`pipeline` |
+| 启用方式 | `nexusflow = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` 随该 feature 引入） |
 | 模块 | `chat` / `embed` / `stream` / `client`（`NexusFlowClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error` / `pipeline` |
 | 类型导出 | `ChatMessage` / `ChatRequest` / `ChatResponse` / `EmbedRequest` / `EmbedResponse` / `ChatStream` 等 |
+| 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |
 
-> ⚠️ **如实声明（开发中状态）**：`sdk/Cargo.toml` 全部依赖使用 `workspace = true` 继承，但根 `Cargo.toml` 尚无 `[workspace]` 段——SDK 当前**无法独立构建**，属开发中能力，待工作区化完成后可用。
+> `pipeline` 模块当前为空壳（开发中），尚无实现；`NexusFlowSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。
 
 ---
 

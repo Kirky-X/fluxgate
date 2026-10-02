@@ -40,6 +40,7 @@
 - [⚙️ 配置概览](#️-配置概览)
 - [📚 文档](#-文档)
 - [🏗️ 架构](#️-架构)
+- [📚 作为库依赖](#-作为库依赖)
 - [🧪 测试](#-测试)
 - [⚡ 性能设计](#-性能设计)
 - [🔒 安全](#-安全)
@@ -211,6 +212,53 @@ flowchart TB
 
 路由决策体系、弹性层状态机、配置热更新事务语义、DI 组装与 i18n 架构的完整说明见 [🏗️ 架构文档](docs/ARCHITECTURE.md)。
 
+NexusFlow 同时是**库优先**组件：服务器装配链承载于 `nexusflow::server`（可独立部署的 HTTP 服务器），Rust 客户端承载于 `nexusflow::sdk`（`sdk` feature 门控）——二进制 `main.rs` 只是薄启动入口。
+
+---
+
+## 📚 作为库依赖
+
+`nexusflow` 既是可执行网关，也是 Rust 库（`src/lib.rs` 导出公共 API）。默认 `full` feature 已含服务器组件；客户端 SDK 由 `sdk` feature 提供。
+
+**嵌入式起服**（在自己的应用中托管网关）：
+
+```rust
+#[tokio::main]
+async fn main() -> Result<(), nexusflow::error::NexusFlowError> {
+    // 装配链（配置/数据库/厂商/路由）+ 起服 + 优雅停机 flush 全部由库承担
+    nexusflow::server::run(Some("config.toml".into())).await
+}
+```
+
+**HTTP 客户端 SDK**（调用已部署网关，需 `sdk` feature）：
+
+```rust
+use nexusflow::sdk::{ChatMessage, ChatRequest, ChatRole, NexusFlowClientBuilder, RequestConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = NexusFlowClientBuilder::new()
+        .base_url("http://127.0.0.1:8080")
+        .api_key(std::env::var("NEXUSFLOW_API_KEY")?)
+        .build()?;
+
+    let resp = client
+        .chat(&ChatRequest {
+            model: "gpt-4".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: "你好".into(),
+            }],
+            config: RequestConfig::default(),
+        })
+        .await?;
+    println!("{}", resp.content);
+    Ok(())
+}
+```
+
+> SDK 是「HTTP 客户端」（调用网关 REST API，含 SSE 流式），不是进程内直连路由核心；嵌入式直用 `nexusflow::server` 与 `nexusflow::api` 即可。
+
 ---
 
 ## 🧪 测试
@@ -272,7 +320,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 <tr><td align="center">✅</td><td>配置热更新</td><td>confers DynamicField 无锁热读、事务写路径、快照备份与 restart_required 提示</td></tr>
 <tr><td align="center">✅</td><td>国际化</td><td>Fluent en/zh 双语束覆盖全部业务消息</td></tr>
 <tr><td align="center">🔜</td><td>成本查询 API</td><td>请求级 / 聚合级成本落库与 <code>/admin/cost</code> 查询端点（CostTracker 当前仅内存累积）</td></tr>
-<tr><td align="center">🔜</td><td>Rust SDK</td><td><code>sdk/</code>（nexusflow-sdk）workspace 继承接通与发布</td></tr>
+<tr><td align="center">✅</td><td>Rust SDK</td><td>sdk 并入 <code>src/sdk</code>（<code>sdk</code> feature 门控，原 workspace 继承断裂已消除）：chat / stream / embed / admin</td></tr>
 <tr><td align="center">🔜</td><td>性能基准</td><td>建立 Criterion 基线（透传 / 转换 / 路由决策路径）</td></tr>
 <tr><td align="center">🔜</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤落 SQL（当前已知未生效，见 <a href="docs/FAQ.md">FAQ</a>）</td></tr>
 </table>

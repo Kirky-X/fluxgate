@@ -103,14 +103,15 @@ projects/
 | `src/vendor/` | 厂商管理 | `manager.rs`、`rate_limiter.rs`、`pool.rs`、`queue.rs`、`resilience/`（FallbackChain + 错误映射） |
 | `src/utils/` | 成本追踪 / 全局指标 / 重试工具 | `cost_tracker.rs`、`metrics.rs`、`retry.rs` |
 | `src/error.rs` | `NexusFlowError` 统一错误（含 HTTP 映射） | — |
-| `src/lib.rs` / `src/main.rs` | lib 公共 API 与启动入口（DI 组装 / 优雅停机） | — |
+| `src/lib.rs` / `src/main.rs` | lib 公共 API 与薄启动入口（装配链在 `src/server`） | — |
 
 两个辅助位置：
 
 | 位置 | 说明 |
 |:-----|:-----|
-| `sdk/` | **nexusflow-sdk** crate（Cargo workspace 成员）：Rust 客户端 SDK（chat / embed / models / vendors / health，含流式） |
-| `tests/` | **20 个集成测试文件**（HTTP 全链路 / 配置示例断言 / feature 组合矩阵等） |
+| `src/server` | **服务器装配链**库模块（`all(web-server, logging)` 门控）：bootstrap / http / shutdown，`run()` 起服、`build_app()` 装配至 Router |
+| `src/sdk` | **Rust 客户端 SDK** 模块（`sdk` feature 门控）：chat / embed / models / vendors / health，含 SSE 流式（原顶层 `sdk/` 独立 crate 已并入） |
+| `tests/` | **21 个集成测试文件**（HTTP 全链路 / 配置示例断言 / feature 组合矩阵等） |
 
 > 架构惯例：`mod.rs` 只保留接口与 re-export，具体实现放独立文件（如 `router/router.rs`、`config/manager.rs`）。新增代码请遵循同一惯例。
 

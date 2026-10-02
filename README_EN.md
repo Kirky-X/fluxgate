@@ -40,6 +40,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 - [⚙️ Configuration Overview](#️-configuration-overview)
 - [📚 Documentation](#-documentation)
 - [🏗️ Architecture](#️-architecture)
+- [📚 As a Library Dependency](#-as-a-library-dependency)
 - [🧪 Testing](#-testing)
 - [⚡ Performance Design](#-performance-design)
 - [🔒 Security](#-security)
@@ -211,6 +212,54 @@ flowchart TB
 
 The full routing decision system, resilience state machines, hot-reload transaction semantics, DI assembly and i18n design are documented in the [🏗️ Architecture guide](docs/ARCHITECTURE.md).
 
+NexusFlow is also a **library-first** component set: the server assembly chain lives in `nexusflow::server` (an independently deployable HTTP server) and the Rust client lives in `nexusflow::sdk` (gated behind the `sdk` feature) — the binary `main.rs` is only a thin bootstrap.
+
+---
+
+## 📚 As a Library Dependency
+
+`nexusflow` is both an executable gateway and a Rust library (`src/lib.rs` exports the public API). The default `full` feature includes the server components; the client SDK is provided by the `sdk` feature.
+
+**Embedded startup** (hosting the gateway inside your own app):
+
+```rust
+#[tokio::main]
+async fn main() -> Result<(), nexusflow::error::NexusFlowError> {
+    // Assembly (config/database/vendors/routing) + serving + graceful-shutdown
+    // flush are all handled by the library
+    nexusflow::server::run(Some("config.toml".into())).await
+}
+```
+
+**HTTP client SDK** (talking to a deployed gateway, requires the `sdk` feature):
+
+```rust
+use nexusflow::sdk::{ChatMessage, ChatRequest, ChatRole, NexusFlowClientBuilder, RequestConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = NexusFlowClientBuilder::new()
+        .base_url("http://127.0.0.1:8080")
+        .api_key(std::env::var("NEXUSFLOW_API_KEY")?)
+        .build()?;
+
+    let resp = client
+        .chat(&ChatRequest {
+            model: "gpt-4".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: "Hello".into(),
+            }],
+            config: RequestConfig::default(),
+        })
+        .await?;
+    println!("{}", resp.content);
+    Ok(())
+}
+```
+
+> The SDK is an "HTTP client" (calling the gateway REST API, including SSE streaming), not an in-process route-core binding; for embedding use `nexusflow::server` and `nexusflow::api` directly.
+
 ---
 
 ## 🧪 Testing
@@ -272,7 +321,7 @@ Please do not report security vulnerabilities through public issues. Use the Git
 <tr><td align="center">✅</td><td>Hot reload</td><td>confers DynamicField lock-free reads, transactional writes, snapshots with restart_required reporting</td></tr>
 <tr><td align="center">✅</td><td>Internationalization</td><td>Fluent en/zh bundles covering all business messages</td></tr>
 <tr><td align="center">🔜</td><td>Cost query API</td><td>Persist request-level / aggregated costs and expose a <code>/admin/cost</code> endpoint (CostTracker is in-memory only today)</td></tr>
-<tr><td align="center">🔜</td><td>Rust SDK</td><td>Wire up <code>sdk/</code> (nexusflow-sdk) workspace inheritance and publish</td></tr>
+<tr><td align="center">✅</td><td>Rust SDK</td><td>Merged into <code>src/sdk</code> (<code>sdk</code> feature gate; the broken workspace inheritance is gone): chat / stream / embed / admin</td></tr>
 <tr><td align="center">🔜</td><td>Performance baselines</td><td>Establish Criterion baselines (passthrough / conversion / routing decision paths)</td></tr>
 <tr><td align="center">🔜</td><td>Log query completion</td><td>Push <code>/admin/logs</code> end_time filtering into SQL (known gap, see the <a href="docs/FAQ.md">FAQ</a>)</td></tr>
 </table>

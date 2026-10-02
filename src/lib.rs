@@ -29,6 +29,9 @@ pub mod api;
 #[cfg(feature = "web-server")]
 pub mod middleware;
 
+#[cfg(feature = "sdk")]
+pub mod sdk;
+
 pub use config::{
     Config, ConfigManager, DatabaseConfig, ModelConfig, PricingConfig, ServerConfig, VendorConfig,
 };

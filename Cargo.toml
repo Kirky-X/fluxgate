@@ -18,7 +18,7 @@ required-features = ["full"]
 
 [features]
 default = ["full"]
-full = ["web-server", "database", "vendor-management", "router", "protocol", "infrastructure", "sdforge-integration", "logging", "resilience", "cost-tracking"]
+full = ["web-server", "database", "vendor-management", "router", "protocol", "infrastructure", "sdforge-integration", "logging", "resilience", "cost-tracking", "sdk"]
 web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "router", "sdforge-integration", "http"]
 # sdforge `#[forge]` 宏按**目标 crate** 的 feature 求值 `cfg(feature = "http")`
 # （rustc check-cfg 文档明确此语义）：无同名 feature 时 RouteRegistration
@@ -38,6 +38,10 @@ protocol = []
 infrastructure = ["dep:oxcache", "dep:trait-kit"]
 sdforge-integration = ["dep:sdforge"]
 logging = ["dep:inklog"]
+# sdk：HTTP 客户端 SDK（src/sdk，调用已部署网关的 Rust 客户端）。
+# reqwest 复用 vendor-management 的 optional 依赖；eventsource-stream 仅做
+# SSE 事件分帧（default=[std] 仅 futures-core/nom，无 reqwest 强制依赖）
+sdk = ["dep:reqwest", "dep:eventsource-stream"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
@@ -87,6 +91,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"
 bytes = "1"
 reqwest = { version = "0.13", features = ["json", "stream", "socks"], optional = true }
+# SSE 事件分帧（sdk feature 的流式响应解析），0.2 为 crates.io 最新稳定
+eventsource-stream = { version = "0.2", default-features = false, optional = true }
 async-channel = { version = "2", optional = true }
 async-stream = { version = "0.3", optional = true }
 # 成本追踪（cost-tracking feature）：CostTracker 的分片锁并发 map（by_vendor/by_model）

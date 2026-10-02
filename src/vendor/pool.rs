@@ -73,7 +73,10 @@ impl ConnectionPool {
                 .acquire_owned()
                 .await
                 .map_err(|e: AcquireError| NexusFlowError::Config {
-                    message: format!("connection pool semaphore closed: {}", e),
+                    message: crate::i18n::t_args(
+                        "vendor-pool-semaphore-closed",
+                        &[("error", e.to_string())],
+                    ),
                 })?;
         Ok(OwnedReqwestClient {
             client: self.client.clone(),

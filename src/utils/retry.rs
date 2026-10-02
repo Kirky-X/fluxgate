@@ -11,11 +11,12 @@
 //!
 //! # Feature 门控
 //!
-//! `with_retry` 为 v0.1 手写实现（按 `ErrorCategory` 分类，签名
+//! `with_retry` 为手写实现（按 `ErrorCategory` 分类，签名
 //! `with_retry(f, initial_error)`）。重试延迟计算已迁移
 //! `limiteron::retry::delay_for_attempt`（recId=7，见 [`retry_delay_for`]）。
 
 use crate::error::NexusFlowError;
+use crate::i18n::t;
 // 仅 vendor-management 分支使用（spread_delay/retry_delay_for 同在该 feature 下）
 #[cfg(feature = "vendor-management")]
 use rand::Rng;
@@ -344,7 +345,7 @@ pub fn amplification_guard(r: f64, f: f64, c: f64, lambda: f64) -> (bool, bool) 
 
 /// 执行带重试的请求
 ///
-/// v0.1 手写实现 — 按 `ErrorCategory` 分类决定是否重试与退避。
+/// 手写实现 — 按 `ErrorCategory` 分类决定是否重试与退避。
 #[allow(clippy::too_many_arguments)]
 pub async fn with_retry<F, Fut, T>(
     mut f: F,
@@ -372,7 +373,7 @@ where
 
     if strategy.max_retries == 0 {
         return Err(initial_error.unwrap_or(NexusFlowError::Protocol {
-            source: "Unknown error".into(),
+            source: t("utils-retry-unknown-error"),
             inner: None,
         }));
     }
@@ -400,7 +401,7 @@ where
     }
 
     Err(last_error.unwrap_or(NexusFlowError::Protocol {
-        source: "Max retries exceeded".into(),
+        source: t("utils-retry-max-retries"),
         inner: None,
     }))
 }

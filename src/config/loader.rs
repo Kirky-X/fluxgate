@@ -3,6 +3,7 @@
 
 use super::{Config, ConfigManager};
 use crate::error::NexusFlowError;
+use crate::i18n::t_args;
 use confers::types::{AnnotatedValue, ConfigValue};
 use std::path::Path;
 
@@ -56,7 +57,7 @@ impl ConfigLoader {
 
         if !path.exists() {
             return Err(NexusFlowError::Config {
-                message: format!("配置文件不存在: {}", self.path),
+                message: t_args("config-file-not-found", &[("path", self.path.clone())]),
             });
         }
 
@@ -67,12 +68,12 @@ impl ConfigLoader {
         let loader_config = confers::loader::LoaderConfig::new().allow_absolute();
         let annotated = confers::loader::load_file(path, &loader_config).map_err(|e| {
             NexusFlowError::Config {
-                message: format!("加载配置文件失败: {}", e),
+                message: t_args("config-load-failed", &[("error", e.to_string())]),
             }
         })?;
         let json = config_value_to_json(&annotated.inner);
         let config: Config = serde_json::from_value(json).map_err(|e| NexusFlowError::Config {
-            message: format!("解析配置文件失败: {}", e),
+            message: t_args("config-parse-failed", &[("error", e.to_string())]),
         })?;
 
         validate_config(&config)?;
@@ -95,7 +96,10 @@ pub fn validate_config(config: &Config) -> Result<(), NexusFlowError> {
     for vendor in &config.vendors {
         if !vendor_ids.insert(&vendor.id) {
             return Err(NexusFlowError::Config {
-                message: format!("厂商 ID 重复: {}", vendor.id),
+                message: t_args(
+                    "config-duplicate-vendor-id",
+                    &[("vendor", vendor.id.clone())],
+                ),
             });
         }
     }
@@ -105,7 +109,13 @@ pub fn validate_config(config: &Config) -> Result<(), NexusFlowError> {
         for model in &vendor.models {
             if !model_ids.insert(&model.model_id) {
                 return Err(NexusFlowError::Config {
-                    message: format!("厂商 {} 内的模型 ID 重复: {}", vendor.id, model.model_id),
+                    message: t_args(
+                        "config-duplicate-model-id",
+                        &[
+                            ("vendor", vendor.id.clone()),
+                            ("model", model.model_id.clone()),
+                        ],
+                    ),
                 });
             }
         }
@@ -114,9 +124,14 @@ pub fn validate_config(config: &Config) -> Result<(), NexusFlowError> {
     for vendor in &config.vendors {
         if std::env::var(&vendor.api_key_env).is_err() {
             tracing::warn!(
-                "厂商 {} 的 API Key 环境变量 {} 未设置",
-                vendor.id,
-                vendor.api_key_env
+                "{}",
+                t_args(
+                    "config-api-key-env-missing",
+                    &[
+                        ("vendor", vendor.id.clone()),
+                        ("env", vendor.api_key_env.clone()),
+                    ],
+                )
             );
         }
     }

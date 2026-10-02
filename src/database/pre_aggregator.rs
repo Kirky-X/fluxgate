@@ -110,12 +110,24 @@ impl TokenPreAggregator {
             if shutdown.load(Ordering::Relaxed) {
                 // 停机：补最终 flush 后退出
                 if let Err(e) = self.flush().await {
-                    tracing::error!("Final token aggregation flush failed: {}", e);
+                    tracing::error!(
+                        "{}",
+                        crate::i18n::t_args(
+                            "database-preagg-final-flush-failed",
+                            &[("error", e.to_string())]
+                        )
+                    );
                 }
                 break;
             }
             if let Err(e) = self.flush().await {
-                tracing::error!("Failed to flush token aggregation: {}", e);
+                tracing::error!(
+                    "{}",
+                    crate::i18n::t_args(
+                        "database-preagg-flush-failed",
+                        &[("error", e.to_string())]
+                    )
+                );
             }
         }
     }

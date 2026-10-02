@@ -3,6 +3,7 @@
 
 use crate::config::{ConfigManager, ModelConfig, PricingConfig, VendorConfig};
 use crate::error::NexusFlowError;
+use crate::i18n::{t, t_args};
 use crate::vendor::{VendorManager, VendorStatus, WindowInfo};
 use rand::prelude::*;
 use std::collections::HashMap;
@@ -231,7 +232,10 @@ impl Router {
         }
 
         Err(NexusFlowError::Validation {
-            field: format!("模型 {} 未找到", abstract_model),
+            field: t_args(
+                "router-model-not-found",
+                &[("model", abstract_model.to_string())],
+            ),
         })
     }
 
@@ -296,7 +300,10 @@ impl Router {
             }
             // 如果指定的厂商不可用或找不到，返回错误
             return Err(NexusFlowError::Validation {
-                field: format!("指定的厂商 {} 不可用或未配置", vendor_id),
+                field: t_args(
+                    "router-vendor-unavailable",
+                    &[("vendor", vendor_id.to_string())],
+                ),
             });
         }
 
@@ -464,7 +471,8 @@ impl Router {
             if !status_dropped.is_empty() && self.config.read().routing.fail_open_when_all_cooling {
                 tracing::warn!(
                     count = status_dropped.len(),
-                    "all candidates cooling; fail-open fallback engaged"
+                    "{}",
+                    t("router-fail-open-engaged")
                 );
                 return Some(
                     self.weighted_select(
@@ -597,7 +605,8 @@ impl Router {
             if !status_dropped.is_empty() && self.config.read().routing.fail_open_when_all_cooling {
                 tracing::warn!(
                     count = status_dropped.len(),
-                    "all global candidates cooling; fail-open fallback engaged"
+                    "{}",
+                    t("router-global-fail-open-engaged")
                 );
                 return Some(
                     self.weighted_select(

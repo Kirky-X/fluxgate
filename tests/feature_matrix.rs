@@ -41,7 +41,8 @@ fn test_core_error_always_available() {
     let err = NexusFlowError::Config {
         message: "test".to_string(),
     };
-    assert_eq!(err.to_string(), "配置错误: test");
+    // 双轨约定：Display 恒英文规范串，本地化文案走 user_message()（src/error.rs:13）
+    assert_eq!(err.to_string(), "Configuration error: test");
 }
 
 /// 验证 config 模块在所有组合下都可用

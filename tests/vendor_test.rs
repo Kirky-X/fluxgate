@@ -2002,7 +2002,7 @@ mod token_weighted_tickets {
         });
         let a = estimate_cost_unified(&unified, &p) as f64;
         let b = estimate_cost_json(&body, &p) as f64;
-        assert!(a >= 1.0 && a <= 1000.0 && b >= 1.0 && b <= 1000.0);
+        assert!((1.0..=1000.0).contains(&a) && (1.0..=1000.0).contains(&b));
         let ratio = a.max(b) / a.min(b);
         assert!(ratio < 2.0, "两形态估值必须同量级: unified={a} json={b}");
     }

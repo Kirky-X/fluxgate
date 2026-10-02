@@ -26,7 +26,10 @@ pub use global_state::{get_global_state, init_global_state};
 pub use openai::{chat_completions, embeddings};
 
 use crate::error::NexusFlowError;
+use crate::i18n::t_args;
 // 仅 resilience 特性分支的重试预算代码（execute_request_with_fallback 等）使用
+#[cfg(feature = "resilience")]
+use crate::i18n::t;
 #[cfg(feature = "resilience")]
 use std::time::Duration;
 
@@ -103,7 +106,11 @@ pub(crate) fn truncate_payload(s: String) -> String {
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}...[truncated, {} bytes total]", &s[..end], s.len())
+    format!(
+        "{}{}",
+        &s[..end],
+        t_args("api-log-truncated", &[("total_bytes", s.len().to_string())])
+    )
 }
 
 /// recId=9④：从错误中提取上游真实状态码 — VendorUnavailable 的 vendor
@@ -166,11 +173,7 @@ fn gate_adjusted_max_attempts(
     };
     let (tighten, diverge) = crate::utils::retry::amplification_guard(r, f, capacity, lambda);
     if diverge {
-        tracing::warn!(
-            r,
-            f,
-            "retry amplification diverging: r·f > 0.95 (λ_eff unbounded)"
-        );
+        tracing::warn!(r, f, "{}", t("api-amplification-diverging"));
     }
     if tighten {
         tracing::warn!(
@@ -178,7 +181,8 @@ fn gate_adjusted_max_attempts(
             f,
             capacity,
             lambda,
-            "failure rate approaching critical f_c; tightening max_total_attempts to 1 for this request"
+            "{}",
+            t("api-amplification-tightening")
         );
         return 1;
     }
@@ -354,7 +358,8 @@ pub(crate) async fn execute_request_with_fallback(
                     vendor = %decision.vendor.id,
                     error = %e,
                     excluded = ?excluded,
-                    "vendor failed; rerouting to fallback"
+                    "{}",
+                    t("api-vendor-failed-rerouting")
                 );
                 let excluded_ids: Vec<String> = excluded.iter().map(|(id, _)| id.clone()).collect();
                 match state.router.route_excluding(model, &excluded_ids).await {
@@ -439,7 +444,8 @@ where
                     vendor = %decision.vendor.id,
                     error = %e,
                     excluded = ?excluded,
-                    "vendor failed before response/stream; rerouting to fallback"
+                    "{}",
+                    t("api-vendor-failed-rerouting-pre-stream")
                 );
                 let next = loop {
                     match state.router.route_excluding(model, &excluded).await {

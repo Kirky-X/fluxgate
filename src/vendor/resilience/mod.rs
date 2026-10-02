@@ -10,7 +10,7 @@
 //! resilience 模块现仅存：
 //! - [`FallbackChain`]（供 API 层换路 fallback，recId=7）
 //! - [`error_map`]：NexusFlowError ↔ LimiteronError 双向映射
-//!   （limiteron `execute`/`ErrorClassifier` 签名锁定 LimiteronError，
+//!   （limiteron `execute`/`FailureClassifier` 签名锁定 LimiteronError，
 //!   非等价手写熔断逻辑）
 //!
 //! ConnectionPool 位于 `crate::vendor::pool`（vendor 顶层模块），
@@ -20,6 +20,7 @@ pub mod error_map;
 pub mod fallback;
 
 pub use error_map::{
-    from_limiteron, is_circuit_open_error, to_limiteron, NexusFlowErrorClassifier,
+    from_circuit_call_error, from_limiteron, is_circuit_open_error, to_limiteron,
+    NexusFlowErrorClassifier,
 };
 pub use fallback::{FallbackChain, FallbackTarget, FallbackTrigger};

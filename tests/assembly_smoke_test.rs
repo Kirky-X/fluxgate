@@ -1,6 +1,4 @@
 #![cfg(feature = "web-server")]
-// Copyright (c) 2026 NexusFlow Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 装配链冒烟测试 — 验证生产装配（sdforge 站点 + create_router 合并）
 //! 与认证挂载的最小行为契约。

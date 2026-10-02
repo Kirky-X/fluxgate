@@ -10,6 +10,8 @@
 use bytes::Bytes;
 use futures::Stream;
 
+use crate::i18n::{t, t_args};
+
 /// 编码普通 SSE 事件。
 ///
 /// - `data` 为负载数据（必填）
@@ -211,8 +213,13 @@ where
                     Some(Ok(chunk)) => parser.feed(&chunk),
                     Some(Err(e)) => {
                         // recId=14②：流中断发带语义的 error 事件，提前终止
-                        tracing::warn!(error = %e, "upstream passthrough stream interrupted");
-                        let msg = format!("upstream stream interrupted: {e}");
+                        tracing::warn!(
+                            error = %e,
+                            "{}",
+                            t("protocol-passthrough-stream-interrupted")
+                        );
+                        let msg =
+                            t_args("protocol-stream-interrupted", &[("error", e.to_string())]);
                         return Some((
                             Ok(Bytes::from(encode_sse_error(&msg))),
                             (parser, stream, true),

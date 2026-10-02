@@ -3,6 +3,7 @@
 
 use crate::config::{Config, GlobalModelConfig, VendorConfig};
 use crate::database::LogFilter;
+use crate::i18n::{t, t_args};
 use crate::{error::NexusFlowError, ApiState};
 use axum::{
     extract::{Path, Query, State},
@@ -117,7 +118,7 @@ pub async fn reset_vendor(
     // 此端点保留以维持 API 兼容性，实际为 no-op。
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": "厂商限流状态由 limiteron Governor 自动管理"
+        "message": t("admin-vendor-limit-auto-managed")
     })))
 }
 
@@ -150,13 +151,12 @@ pub async fn update_config(
     Ok(Json(serde_json::json!({
         "success": true,
         "message": if restart_required.is_empty() {
-            "Config updated; vendors/pricing/auth take effect immediately".to_string()
+            t("admin-config-updated-immediate")
         } else {
-            format!(
-                "Config updated; vendors/pricing/auth take effect immediately; \
-                 {} take effect after restart",
-                restart_required.join(", ")
-            )
+            t_args("admin-config-updated-restart-required", &[(
+                "sections",
+                restart_required.join(", "),
+            )])
         },
         "restart_required": restart_required,
     })))
@@ -185,13 +185,13 @@ pub async fn update_vendor(
                 Ok(())
             }
             None => Err(NexusFlowError::Config {
-                message: format!("Vendor {} not found", id),
+                message: t_args("admin-vendor-not-found", &[("id", id.clone())]),
             }),
         }
     })?;
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": "Vendor updated"
+        "message": t("admin-vendor-updated")
     })))
 }
 
@@ -227,11 +227,11 @@ pub async fn update_model(
         })?;
         Ok(Json(serde_json::json!({
             "success": true,
-            "message": "Global model config updated"
+            "message": t("admin-global-model-updated")
         })))
     } else {
         Err(NexusFlowError::Config {
-            message: "Only 'global' model config is supported".into(),
+            message: t("admin-only-global-model-supported"),
         })
     }
 }

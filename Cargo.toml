@@ -105,6 +105,12 @@ hex = "0.4"
 sys-info = "0.9"
 toml = "1"
 
+# i18n — Fluent 双束（en/zh）+ 语言检测链基座；fluent 系走 crates.io，
+# 不经 [patch.crates-io]（该段仅重定向自研库）
+fluent-bundle = { version = "0.16", default-features = false }
+unic-langid = { version = "0.9", default-features = false }
+sys-locale = { version = "0.3", default-features = false }
+
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.15"

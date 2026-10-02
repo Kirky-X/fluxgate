@@ -15,8 +15,8 @@
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
-use limiteron::circuit::{CircuitBreaker, CircuitBreakerConfig, ErrorClassifier};
-use limiteron::error::{CircuitState, LimiteronError};
+use limiteron::circuit::{CircuitBreaker, CircuitBreakerConfig, FailureClassifier};
+use limiteron::error::{CircuitCallError, CircuitState, LimiteronError};
 use nexusflow::error::NexusFlowError;
 use nexusflow::vendor::resilience::{
     from_limiteron, is_circuit_open_error, to_limiteron, NexusFlowErrorClassifier,
@@ -54,7 +54,7 @@ async fn five_retryable_failures_open_the_circuit() {
     let (cb, _clock) = make_cb();
 
     for i in 0..5 {
-        let result: Result<(), LimiteronError> = cb.execute(failing_op()).await;
+        let result: Result<(), CircuitCallError<LimiteronError>> = cb.execute(failing_op()).await;
         assert!(result.is_err(), "call {} should fail", i);
     }
 
@@ -63,7 +63,7 @@ async fn five_retryable_failures_open_the_circuit() {
     // 第 6 次调用被拒绝且不执行操作（生产中 = 无 HTTP 调用）
     let executed = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let executed_c = executed.clone();
-    let result: Result<(), LimiteronError> = cb
+    let result: Result<(), CircuitCallError<LimiteronError>> = cb
         .execute(move || {
             let executed = executed_c.clone();
             async move {
@@ -86,7 +86,7 @@ async fn rate_limited_errors_do_not_trip_the_circuit() {
     let (cb, _clock) = make_cb();
 
     for _ in 0..10 {
-        let result: Result<(), LimiteronError> = cb
+        let result: Result<(), CircuitCallError<LimiteronError>> = cb
             .execute(|| {
                 std::future::ready(Err(to_limiteron(&NexusFlowError::RateLimited {
                     vendor: "vendor_a".into(),
@@ -135,11 +135,11 @@ async fn slow_call_rate_threshold_one_requires_all_slow() {
     let cb = CircuitBreaker::with_clock(config, clock_dyn);
 
     // 快调用先到：rate 0/1 = 0.0
-    let result: Result<u32, LimiteronError> = cb.execute(ok_op()).await;
+    let result: Result<u32, CircuitCallError<LimiteronError>> = cb.execute(ok_op()).await;
     assert!(result.is_ok());
     // 随后 2 次慢调用：rate 1/2 = 0.5、2/3 ≈ 0.67，全程 < 1.0
     for i in 0..2 {
-        let result: Result<u32, LimiteronError> = cb
+        let result: Result<u32, CircuitCallError<LimiteronError>> = cb
             .execute(|| async {
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 Ok(1)
@@ -162,7 +162,7 @@ async fn half_open_recovers_to_closed_after_three_probe_successes() {
     let (cb, clock) = make_cb();
 
     for _ in 0..5 {
-        let _: Result<(), LimiteronError> = cb.execute(failing_op()).await;
+        let _: Result<(), CircuitCallError<LimiteronError>> = cb.execute(failing_op()).await;
     }
     assert_eq!(cb.get_state().await, CircuitState::Open);
 
@@ -170,15 +170,15 @@ async fn half_open_recovers_to_closed_after_three_probe_successes() {
     clock.advance(Duration::from_secs(31));
 
     // 探针 1：Open → HalfOpen 转换并成功
-    let result: Result<u32, LimiteronError> = cb.execute(ok_op()).await;
+    let result: Result<u32, CircuitCallError<LimiteronError>> = cb.execute(ok_op()).await;
     assert!(result.is_ok());
     assert_eq!(cb.get_state().await, CircuitState::HalfOpen);
 
     // 探针 2、3 连续成功：success_count 达到阈值 3 → Closed
     // （手写版在 half_open_max_calls=1 下永久卡死于此场景）
-    let result: Result<u32, LimiteronError> = cb.execute(ok_op()).await;
+    let result: Result<u32, CircuitCallError<LimiteronError>> = cb.execute(ok_op()).await;
     assert!(result.is_ok());
-    let result: Result<u32, LimiteronError> = cb.execute(ok_op()).await;
+    let result: Result<u32, CircuitCallError<LimiteronError>> = cb.execute(ok_op()).await;
     assert!(result.is_ok());
 
     assert_eq!(
@@ -195,14 +195,14 @@ async fn failing_probe_reopens_immediately() {
     let (cb, clock) = make_cb();
 
     for _ in 0..5 {
-        let _: Result<(), LimiteronError> = cb.execute(failing_op()).await;
+        let _: Result<(), CircuitCallError<LimiteronError>> = cb.execute(failing_op()).await;
     }
     assert_eq!(cb.get_state().await, CircuitState::Open);
 
     clock.advance(Duration::from_secs(31));
 
     // 超时后的首个探针失败 → 立即重新熔断
-    let result: Result<(), LimiteronError> = cb.execute(failing_op()).await;
+    let result: Result<(), CircuitCallError<LimiteronError>> = cb.execute(failing_op()).await;
     assert!(result.is_err());
     assert_eq!(
         cb.get_state().await,

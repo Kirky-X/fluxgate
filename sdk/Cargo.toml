@@ -3,7 +3,7 @@ name = "nexusflow-sdk"
 version = "0.2.0"
 edition = "2021"
 description = "NexusFlow Rust SDK — 通过 Rust 接口与 NexusFlow 网关交互"
-authors = ["NexusFlow Contributors"]
+authors = ["Kirky-X <Kirky-X@outlook.com>"]
 
 [lib]
 path = "src/lib.rs"

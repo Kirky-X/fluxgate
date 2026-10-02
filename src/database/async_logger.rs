@@ -11,6 +11,7 @@
 
 use crate::database::{Repository, RequestLog};
 use crate::error::NexusFlowError;
+use crate::i18n::{t, t_args};
 use async_channel::{bounded, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -69,7 +70,7 @@ impl AsyncLogger {
     pub fn log(&self, log: RequestLog) -> Result<(), NexusFlowError> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(NexusFlowError::Database {
-                message: "Logger already shut down".into(),
+                message: t("database-logger-shutdown"),
             });
         }
         match self.sender.try_send(LogCommand::Write(log)) {
@@ -79,7 +80,7 @@ impl AsyncLogger {
                 Ok(())
             }
             Err(async_channel::TrySendError::Closed(_)) => Err(NexusFlowError::Database {
-                message: "Async logger channel closed".into(),
+                message: t("database-logger-channel-closed"),
             }),
         }
     }
@@ -97,7 +98,7 @@ impl AsyncLogger {
             .send(LogCommand::Shutdown)
             .await
             .map_err(|_| NexusFlowError::Database {
-                message: "Async logger channel closed".into(),
+                message: t("database-logger-channel-closed"),
             })
     }
 
@@ -151,9 +152,14 @@ impl AsyncLogger {
 
         if let Err(e) = repository.log_requests_batch(buffer).await {
             tracing::error!(
-                "Failed to write request logs (batch of {}): {}",
-                buffer.len(),
-                e
+                "{}",
+                t_args(
+                    "database-logger-flush-failed",
+                    &[
+                        ("count", buffer.len().to_string()),
+                        ("error", e.to_string()),
+                    ],
+                )
             );
         }
         buffer.clear();
@@ -424,7 +430,8 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             NexusFlowError::Database { message } => {
-                assert!(message.contains("shut down"));
+                // message 经 FTL（随 locale），与直接查表结果一致
+                assert_eq!(message, t("database-logger-shutdown"));
             }
             other => panic!("Expected Database error, got {:?}", other),
         }

@@ -28,16 +28,19 @@ pub(crate) struct Assembly {
 }
 
 /// 初始化日志系统（原 main.rs:22-29）。
-pub(crate) async fn init_logger() -> Result<(), NexusFlowError> {
-    let _logger = inklog::LoggerManager::builder()
+///
+/// 返回的 LoggerManager 句柄由调用方（run）持有到进程结束——
+/// 原二进制中 `let _logger` 活在 main 作用域，提前丢弃会使 inklog
+/// worker 断连、tracing 事件静默丢失。嵌入式调用方自管日志。
+pub(crate) async fn init_logger() -> Result<inklog::LoggerManager, NexusFlowError> {
+    inklog::LoggerManager::builder()
         .level("info")
         .console(true)
         .build()
         .await
         .map_err(|e| NexusFlowError::Config {
             message: t_args("main-logger-init-failed", &[("error", e.to_string())]),
-        })?;
-    Ok(())
+        })
 }
 
 /// 加载配置（原 main.rs:31-37）。

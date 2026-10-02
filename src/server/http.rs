@@ -28,7 +28,8 @@ pub async fn build_app(config_manager: Arc<ConfigManager>) -> Result<Router, Nex
 /// 完整运行时：bootstrap 装配 + serve + 优雅停机 flush 收尾
 /// （原 main() 的 serve 主体与收尾，main.rs:225-302）。
 pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
-    bootstrap::init_logger().await?;
+    // 进程级日志句柄：活到 run 返回（原 main.rs:22 的 main 作用域语义）
+    let _logger = bootstrap::init_logger().await?;
     let config_manager = bootstrap::load_config(config_path)?;
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
     let app = assemble_router(&config_manager, &assembly).await?;

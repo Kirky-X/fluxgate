@@ -64,11 +64,15 @@ pub async fn token_stats(
     Ok(Json(serde_json::json!(stats)))
 }
 
-/// 全局指标快照 — 返回请求计数、错误率、平均延迟与各厂商细分指标
+/// 全局指标快照 — 返回请求计数、错误率、平均延迟、各厂商细分指标，以及
+/// recId=9① 的日志背压丢弃计数（dropped_logs：channel 满被丢的日志条数）
 #[axum::debug_handler]
 pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, NexusFlowError> {
     let snapshot = state.vendor_manager.metrics().snapshot();
-    Ok(Json(serde_json::json!(snapshot)))
+    let mut value = serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({}));
+    value["dropped_logs"] =
+        serde_json::json!(state.logger.as_ref().map(|l| l.dropped_logs()).unwrap_or(0));
+    Ok(Json(value))
 }
 
 #[axum::debug_handler]
@@ -94,7 +98,7 @@ pub async fn vendor_status(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, NexusFlowError> {
-    let status = state.vendor_manager.get_status(&id);
+    let status = state.vendor_manager.get_status(&id).await;
     let queue_len = state.vendor_manager.get_queue_length(&id);
 
     Ok(Json(serde_json::json!({
@@ -131,10 +135,30 @@ pub async fn update_config(
     State(state): State<Arc<ApiState>>,
     Json(config): Json<Config>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
+    // 对比建站期消费的段（server/cors 在 main.rs 建站时被 sdforge 固化，
+    // 运行期不可热换——axum Router 的 layer 在构造时编译固化，sdforge 无
+    // 热重载中间件能力），变更时显式告知需重启，消除"静默失效"误判。
+    let old = state.config.get_config();
+    let mut restart_required: Vec<&'static str> = Vec::new();
+    if old.server != config.server {
+        restart_required.push("server");
+    }
+    if old.cors != config.cors {
+        restart_required.push("cors");
+    }
     state.config.update_config(config)?;
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": "Config updated"
+        "message": if restart_required.is_empty() {
+            "Config updated; vendors/pricing/auth take effect immediately".to_string()
+        } else {
+            format!(
+                "Config updated; vendors/pricing/auth take effect immediately; \
+                 {} take effect after restart",
+                restart_required.join(", ")
+            )
+        },
+        "restart_required": restart_required,
     })))
 }
 
@@ -152,19 +176,23 @@ pub async fn update_vendor(
     Path(id): Path<String>,
     Json(vendor): Json<VendorConfig>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
-    let mut config = state.config.get_config();
-    if let Some(idx) = config.vendors.iter().position(|v| v.id == id) {
-        config.vendors[idx] = vendor;
-        state.config.update_config(config)?;
-        Ok(Json(serde_json::json!({
-            "success": true,
-            "message": "Vendor updated"
-        })))
-    } else {
-        Err(NexusFlowError::Config {
-            message: format!("Vendor {} not found", id),
-        })
-    }
+    // 原子 RMW：读-改-校验-落盘在 ConfigManager 写锁内完成，
+    // 并发与其他 update_* 端点互斥，不丢失更新
+    state.config.update_config_with(|config| {
+        match config.vendors.iter().position(|v| v.id == id) {
+            Some(idx) => {
+                config.vendors[idx] = vendor;
+                Ok(())
+            }
+            None => Err(NexusFlowError::Config {
+                message: format!("Vendor {} not found", id),
+            }),
+        }
+    })?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Vendor updated"
+    })))
 }
 
 #[axum::debug_handler]
@@ -189,60 +217,14 @@ pub async fn update_model(
     Path(id): Path<String>,
     Json(model): Json<GlobalModelConfig>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
-    let mut config = state.config.get_config();
-    // Currently only one global model supported?
-    // PRD says "Global Model Mapping" but Config struct has `global_model: Option<GlobalModelConfig>`
-    // The `GlobalModelConfig` struct doesn't have an ID, it just has enabled/strategy.
-    // Wait, let's check config/mod.rs again.
-
-    // Config struct:
-    // pub global_model: Option<GlobalModelConfig>,
-
-    // GlobalModelConfig struct:
-    // pub enabled: bool,
-    // pub strategy: String,
-    // It DOES NOT have model_id.
-
-    // However, VendorConfig has models: Vec<ModelConfig>
-    // ModelConfig has model_id.
-
-    // The previous code tried to access `config.global_models` (plural) which doesn't exist.
-    // And tried to filter by `model_id` which GlobalModelConfig doesn't have.
-
-    // It seems `update_model` was intended to update Vendor Models?
-    // Or maybe Global Model Settings?
-
-    // If it's for Vendor Models, we need vendor_id AND model_id.
-    // But the path is just `Path(id)`.
-
-    // If it's for Global Model Config, then `id` is irrelevant unless it's a singleton resource "global".
-
-    // Let's assume `update_model` is meant to update a specific model configuration within a vendor.
-    // But which vendor?
-    // The API signature `update_model` suggests we are updating a model by ID.
-    // But model IDs might not be unique across vendors?
-    // Actually, usually they are unique per vendor.
-
-    // Let's look at `get_models`. It returns `Vec<GlobalModelConfig>`.
-    // But `GlobalModelConfig` seems to be the "Global Strategy" config, not a list of models.
-
-    // Maybe `get_models` should return ALL models from ALL vendors?
-    // If so, the return type should be `Vec<ModelConfig>` (plus vendor info?).
-
-    // Let's look at `get_vendors`. It returns `Vec<VendorConfig>`, which includes models.
-
-    // Re-reading PRD or intent...
-    // The user wants to "Fix src/api/admin.rs to use correct Config field for global_model".
-    // It seems the Admin API was generated assuming a list of global models, but the Config only has one.
-
-    // If I change `get_models` to return `Option<GlobalModelConfig>` it changes the API contract.
-    // But `Vec` is safer.
-
-    // For `update_model`, if we are updating the "Global Model Strategy", the ID might be "global"?
-
+    // Config 只有单例 global_model: Option<GlobalModelConfig>（无 ID 字段），
+    // 约定 id == "global" 更新全局模型策略
     if id == "global" {
-        config.global_model = Some(model);
-        state.config.update_config(config)?;
+        // 原子 RMW（同 update_vendor）：读-改-校验-落盘在写锁内完成
+        state.config.update_config_with(|config| {
+            config.global_model = Some(model);
+            Ok(())
+        })?;
         Ok(Json(serde_json::json!({
             "success": true,
             "message": "Global model config updated"

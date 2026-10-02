@@ -2,7 +2,10 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 mod converter {
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter, Protocol, ProtocolConverter};
+    use nexusflow::protocol::{
+        AnthropicConverter, AnthropicStreamEncoder, OpenAIConverter, Protocol, ProtocolConverter,
+        StreamChunk,
+    };
     use serde_json::json;
 
     #[tokio::test]
@@ -410,10 +413,601 @@ mod converter {
             _ => panic!("Expected Specific tool_choice"),
         }
     }
+
+    // ==================== 流式转换与 SSE 增量分帧（recId=3） ====================
+
+    use nexusflow::protocol::sse_frame::SseFrameParser;
+
+    /// 把上游 SSE 原文（可劈块）经分帧器取出的 data 负载串。
+    fn parse_frames_to_data(payload: &str, split_at: Option<usize>) -> Vec<String> {
+        let mut parser = SseFrameParser::new();
+        let bytes = payload.as_bytes();
+        match split_at {
+            Some(pos) => {
+                parser.feed(&bytes[..pos]);
+                parser.feed(&bytes[pos..]);
+            }
+            None => parser.feed(bytes),
+        }
+        let mut out = Vec::new();
+        while let Some(frame) = parser.next_frame() {
+            if let Some(data) = frame.data {
+                out.push(data);
+            }
+        }
+        out
+    }
+
+    /// ⑤ OpenAI chunk 帧 → StreamChunk → Anthropic 事件序列含
+    /// message_start / content_block_delta / message_stop（完整合法流）。
+    ///
+    /// 跨协议：parse 用 OpenAIConverter（上游协议），encode 用
+    /// AnthropicConverter（目标协议）。
+    #[tokio::test]
+    async fn test_openai_stream_frame_to_anthropic_event_lifecycle() {
+        let openai = OpenAIConverter::new();
+
+        let chunk1 = openai
+            .parse_stream_frame("{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}")
+            .expect("text delta 帧应解析为 IR chunk");
+        let chunk2 = openai
+            .parse_stream_frame(
+                "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+            )
+            .expect("finish_reason 帧应解析为 IR chunk");
+
+        // Anthropic 出站状态机补齐生命周期
+        let mut encoder = AnthropicStreamEncoder::new();
+        let mut all_events: Vec<String> = Vec::new();
+        for chunk in [chunk1, chunk2] {
+            all_events.extend(encoder.encode_chunk(chunk));
+        }
+        all_events.extend(encoder.finish());
+
+        let types: Vec<String> = all_events
+            .iter()
+            .filter_map(|e| {
+                let v: serde_json::Value = serde_json::from_str(e).ok()?;
+                v.get("type")?.as_str().map(|s| s.to_string())
+            })
+            .collect();
+
+        assert_eq!(
+            types[0], "message_start",
+            "首个事件必须是 message_start: {types:?}"
+        );
+        assert!(
+            types.iter().any(|t| t == "content_block_start"),
+            "text delta 前应有 content_block_start: {types:?}"
+        );
+        assert!(
+            types.iter().any(|t| t == "content_block_delta"),
+            "应含 content_block_delta: {types:?}"
+        );
+        assert!(
+            types.iter().any(|t| t == "content_block_stop"),
+            "finish_reason 后应闭合 content_block_stop: {types:?}"
+        );
+        assert_eq!(
+            types.last().unwrap(),
+            "message_stop",
+            "流必须以 message_stop 收尾: {types:?}"
+        );
+
+        // content_block_delta 携带文本
+        let delta_event = all_events
+            .iter()
+            .map(|e| serde_json::from_str::<serde_json::Value>(e).unwrap())
+            .find(|v| v["type"] == "content_block_delta")
+            .expect("delta event present");
+        assert_eq!(delta_event["delta"]["type"], "text_delta");
+        assert_eq!(delta_event["delta"]["text"], "Hel");
+    }
+
+    /// ⑥ usage 尾帧 → message_delta.output_tokens。
+    #[tokio::test]
+    async fn test_usage_tail_frame_becomes_message_delta_output_tokens() {
+        let openai = OpenAIConverter::new();
+
+        // OpenAI usage 尾帧（stream_options.include_usage，choices 空）
+        let usage_frame = openai
+            .parse_stream_frame(
+                "{\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":7,\"total_tokens\":17}}",
+            )
+            .expect("usage 尾帧应解析为 Usage chunk");
+        match &usage_frame {
+            StreamChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            } => {
+                assert_eq!(
+                    (*prompt_tokens, *completion_tokens, *total_tokens),
+                    (10, 7, 17)
+                );
+            }
+            other => panic!("expected Usage chunk, got {other:?}"),
+        }
+
+        // Anthropic 出站：Usage → message_delta（output_tokens）
+        let mut encoder = AnthropicStreamEncoder::new();
+        let events = encoder.encode_chunk(usage_frame);
+        let message_delta = events
+            .iter()
+            .map(|e| serde_json::from_str::<serde_json::Value>(e).unwrap())
+            .find(|v| v["type"] == "message_delta")
+            .expect("Usage 应产出 message_delta");
+        assert_eq!(message_delta["usage"]["output_tokens"], 7);
+    }
+
+    /// ⑦ tool_call delta 帧不静默丢弃（recId=8 联动回归）。
+    #[tokio::test]
+    async fn test_tool_call_delta_frame_not_silently_dropped() {
+        let converter = OpenAIConverter::new();
+        let chunk = converter
+            .parse_stream_frame(
+                "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\"\"}}]},\"finish_reason\":null}]}",
+            )
+            .expect("tool_call delta 帧不应被丢弃");
+        match chunk {
+            StreamChunk::Content { delta, .. } => match delta {
+                nexusflow::protocol::MessageContent::ToolCalls(calls) => {
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(calls[0].id, "call_1");
+                    assert_eq!(calls[0].function.name, "get_weather");
+                    assert!(calls[0].function.arguments.contains("\"city\""));
+                }
+                other => panic!("expected ToolCalls delta, got {other:?}"),
+            },
+            other => panic!("expected Content chunk, got {other:?}"),
+        }
+    }
+
+    /// Anthropic 上游流式帧反向解析：content_block_delta / message_delta / ping。
+    #[tokio::test]
+    async fn test_anthropic_stream_frames_parse_to_ir() {
+        let converter = AnthropicConverter::new();
+
+        let text = converter
+            .parse_stream_frame(
+                "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}",
+            )
+            .expect("content_block_delta 应解析");
+        assert!(matches!(
+            text,
+            StreamChunk::Content { ref delta, .. }
+                if matches!(delta, nexusflow::protocol::MessageContent::Text(t) if t == "hi")
+        ));
+
+        let usage = converter
+            .parse_stream_frame(
+                "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":9}}",
+            )
+            .expect("message_delta 应解析");
+        assert!(matches!(
+            usage,
+            StreamChunk::Usage {
+                completion_tokens: 9,
+                ..
+            }
+        ));
+
+        assert!(matches!(
+            converter.parse_stream_frame("{\"type\":\"ping\"}"),
+            Some(StreamChunk::Heartbeat)
+        ));
+        // 生命周期帧不映射 IR（由出站状态机重建）
+        assert!(converter
+            .parse_stream_frame("{\"type\":\"message_start\",\"message\":{}}")
+            .is_none());
+        assert!(converter
+            .parse_stream_frame("{\"type\":\"message_stop\"}")
+            .is_none());
+    }
+
+    /// `[DONE]` 终止标记与 role-only 首帧不产出 IR 事件。
+    #[tokio::test]
+    async fn test_openai_done_marker_and_role_only_frame_skipped() {
+        let converter = OpenAIConverter::new();
+        assert!(converter.parse_stream_frame("[DONE]").is_none());
+        assert!(converter
+            .parse_stream_frame(
+                "{\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}"
+            )
+            .is_none());
+    }
+
+    /// 端到端管线：上游 OpenAI SSE 原文劈在两块之间 → 分帧器拼帧 →
+    /// parse_stream_frame 反向解析 → IR chunk（manager 流的等价语义）。
+    #[tokio::test]
+    async fn test_split_sse_bytes_through_parser_to_ir_chunk() {
+        let converter = OpenAIConverter::new();
+        // split=79：劈在帧定界符 \n\n 中间（第一块含首个 \n）
+        let frames = parse_frames_to_data(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\nda",
+            Some(79),
+        );
+        // 第一块 + 第二块拼回后恰出第一帧（"da" 是第二帧的截断前缀）
+        assert_eq!(frames.len(), 1);
+
+        let mut parser = SseFrameParser::new();
+        // 第二帧的 "data:" 前缀同样被劈开（"da" 在上一块末尾）
+        parser.feed(b"da");
+        parser.feed(b"ta: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\n");
+        let rest: Vec<String> = parser
+            .next_frame()
+            .and_then(|f| f.data)
+            .into_iter()
+            .collect();
+        assert_eq!(rest.len(), 1);
+
+        let chunk1 = converter.parse_stream_frame(&frames[0]).unwrap();
+        let chunk2 = converter.parse_stream_frame(&rest[0]).unwrap();
+        match (chunk1, chunk2) {
+            (
+                StreamChunk::Content { delta: d1, .. },
+                StreamChunk::Content {
+                    finish_reason: fr2, ..
+                },
+            ) => {
+                assert!(matches!(d1, nexusflow::protocol::MessageContent::Text(t) if t == "Hel"));
+                assert_eq!(fr2.as_deref(), Some("stop"));
+            }
+            _ => panic!("expected two Content chunks"),
+        }
+    }
+
+    // ==================== 协议断点修复（recId=8） ====================
+
+    use nexusflow::protocol::Role;
+
+    /// ① Anthropic 多轮 tool_use+tool_result 历史 → to_unified →
+    /// request_to_external(OpenAI vendor) 往返：assistant.tool_calls 与
+    /// role:"tool"+tool_call_id 保留（此前 tool_use/tool_result 静默丢弃）。
+    #[tokio::test]
+    async fn test_anthropic_tool_history_roundtrip_preserves_tools() {
+        let anthropic = AnthropicConverter::new();
+        let openai = OpenAIConverter::new();
+
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "user", "content": "What's the weather in Beijing?"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Let me check."},
+                    {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Beijing"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "Sunny, 25C"}
+                ]},
+                {"role": "user", "content": "Thanks!"}
+            ]
+        });
+
+        let unified = anthropic
+            .to_unified(request)
+            .expect("to_unified should succeed");
+
+        // IR 层：assistant 聚合 TextWithToolCalls（text + tool_use 并存）
+        let assistant = &unified.messages[1];
+        assert_eq!(assistant.role, Role::Assistant);
+        match &assistant.content {
+            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+                assert_eq!(text, "Let me check.");
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].id, "toolu_1");
+                assert_eq!(tool_calls[0].function.name, "get_weather");
+            }
+            other => panic!("expected TextWithToolCalls, got {other:?}"),
+        }
+
+        // IR 层：tool_result 聚合为 Role::Tool + ToolResult
+        let tool_msg = &unified.messages[2];
+        assert_eq!(tool_msg.role, Role::Tool);
+        match &tool_msg.content {
+            nexusflow::protocol::MessageContent::ToolResult(result) => {
+                assert_eq!(result.tool_call_id, "toolu_1");
+                assert_eq!(result.content, "Sunny, 25C");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+
+        // 出站 OpenAI：assistant 消息带顶层 tool_calls，工具结果为
+        // role:"tool" + tool_call_id
+        let external = openai.request_to_external(unified).expect("to OpenAI");
+        let msgs = external["messages"].as_array().expect("messages array");
+
+        let assistant_out = &msgs[1];
+        assert_eq!(assistant_out["role"], "assistant");
+        let out_calls = assistant_out["tool_calls"]
+            .as_array()
+            .expect("top-level tool_calls");
+        assert_eq!(out_calls.len(), 1);
+        assert_eq!(out_calls[0]["id"], "toolu_1");
+        assert_eq!(out_calls[0]["function"]["name"], "get_weather");
+
+        let tool_out = &msgs[2];
+        assert_eq!(tool_out["role"], "tool");
+        assert_eq!(tool_out["tool_call_id"], "toolu_1");
+        assert_eq!(tool_out["content"], "Sunny, 25C");
+    }
+
+    /// ② OpenAI assistant 消息 String content + 顶层 tool_calls →
+    /// TextWithToolCalls（此前 String 分支提前返回、tool_calls 丢失）。
+    #[tokio::test]
+    async fn test_openai_string_content_with_tool_calls_becomes_text_with_tool_calls() {
+        let converter = OpenAIConverter::new();
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "Let me check the weather.",
+                    "tool_calls": [
+                        {"id": "call_9", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Beijing\"}"}}
+                    ]
+                }
+            ]
+        });
+
+        let unified = converter.to_unified(request).expect("to_unified");
+        match &unified.messages[0].content {
+            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+                assert_eq!(text, "Let me check the weather.");
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].id, "call_9");
+            }
+            other => panic!("expected TextWithToolCalls, got {other:?}"),
+        }
+    }
+
+    /// ③ OpenAI parse_response 读 message.tool_calls（此前只读 content）。
+    #[tokio::test]
+    async fn test_openai_parse_response_extracts_tool_calls() {
+        let converter = OpenAIConverter::new();
+        let response = json!({
+            "id": "chatcmpl-tool",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Checking...",
+                    "tool_calls": [
+                        {"id": "call_r1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        });
+
+        let parsed = converter.parse_response(response).expect("parse_response");
+        let msg = parsed.choices[0].message.as_ref().unwrap();
+        match &msg.content {
+            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+                assert_eq!(text, "Checking...");
+                assert_eq!(tool_calls[0].id, "call_r1");
+                assert_eq!(tool_calls[0].function.name, "lookup");
+            }
+            other => panic!("expected TextWithToolCalls, got {other:?}"),
+        }
+    }
+
+    /// ④ Anthropic 顶层 system → UnifiedRequest 首条 System 消息 →
+    /// OpenAI 出站 messages[0].role=="system"。
+    #[tokio::test]
+    async fn test_anthropic_top_level_system_to_first_system_message() {
+        let anthropic = AnthropicConverter::new();
+        let openai = OpenAIConverter::new();
+
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "system": "You are a helpful assistant.",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 10
+        });
+
+        let unified = anthropic.to_unified(request).expect("to_unified");
+        assert_eq!(unified.messages.len(), 2, "system 提升为首条消息");
+        assert_eq!(unified.messages[0].role, Role::System);
+        assert!(matches!(
+            &unified.messages[0].content,
+            nexusflow::protocol::MessageContent::Text(s) if s == "You are a helpful assistant."
+        ));
+
+        // 出站 OpenAI：system 保持为 messages[0]
+        let external = openai.request_to_external(unified).expect("to OpenAI");
+        assert_eq!(external["messages"][0]["role"], "system");
+        assert_eq!(
+            external["messages"][0]["content"],
+            "You are a helpful assistant."
+        );
+    }
+
+    /// ④ 反向：OpenAI system 消息 → Anthropic 出站顶层 system 字段
+    /// （Anthropic messages 数组不接受 system 角色）。
+    #[tokio::test]
+    async fn test_openai_system_message_lifted_to_anthropic_top_level() {
+        let converter = AnthropicConverter::new();
+        let request = nexusflow::protocol::UnifiedRequest {
+            model: "claude-3-5-sonnet-20241022".into(),
+            messages: vec![
+                nexusflow::protocol::Message {
+                    role: Role::System,
+                    content: nexusflow::protocol::MessageContent::Text("Be terse.".into()),
+                },
+                nexusflow::protocol::Message {
+                    role: Role::User,
+                    content: nexusflow::protocol::MessageContent::Text("Hi".into()),
+                },
+            ],
+            temperature: None,
+            max_tokens: Some(10),
+            stream: false,
+            stop: vec![],
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logit_bias: Default::default(),
+            user: None,
+            tools: vec![],
+            tool_choice: None,
+        };
+
+        let external = converter
+            .request_to_external(request)
+            .expect("to Anthropic");
+        assert_eq!(
+            external["system"], "Be terse.",
+            "System 消息应提升为顶层 system 参数"
+        );
+        let msgs = external["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1, "system 不得留在 messages 数组");
+        assert_eq!(msgs[0]["role"], "user");
+    }
+
+    /// ⑤ stop_reason ↔ finish_reason 静态映射（双向）。
+    #[tokio::test]
+    async fn test_stop_reason_finish_reason_bidirectional_mapping() {
+        let anthropic = AnthropicConverter::new();
+
+        // Anthropic → IR（OpenAI 词汇）
+        let parsed = anthropic
+            .parse_response(json!({
+                "id": "m", "model": "claude-x",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }))
+            .expect("parse");
+        assert_eq!(
+            parsed.choices[0].finish_reason.as_deref(),
+            Some("tool_calls"),
+            "tool_use 应映射为 tool_calls"
+        );
+
+        let parsed = anthropic
+            .parse_response(json!({
+                "id": "m", "model": "claude-x",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "max_tokens",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }))
+            .expect("parse");
+        assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("length"));
+
+        let parsed = anthropic
+            .parse_response(json!({
+                "id": "m", "model": "claude-x",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }))
+            .expect("parse");
+        assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
+
+        // IR → Anthropic（反向）
+        let make_response = |finish: Option<&str>| nexusflow::protocol::UnifiedResponse {
+            id: "m".into(),
+            object: "message".into(),
+            created: 0,
+            model: "claude-x".into(),
+            choices: vec![nexusflow::protocol::Choice {
+                index: 0,
+                message: Some(nexusflow::protocol::Message {
+                    role: Role::Assistant,
+                    content: nexusflow::protocol::MessageContent::Text("ok".into()),
+                }),
+                finish_reason: finish.map(|s| s.to_string()),
+                logprobs: None,
+            }],
+            usage: nexusflow::protocol::TokenUsage::default(),
+        };
+
+        let out = anthropic
+            .response_to_external(make_response(Some("tool_calls")))
+            .expect("to Anthropic");
+        assert_eq!(
+            out["stop_reason"], "tool_use",
+            "tool_calls 应反向映射为 tool_use"
+        );
+
+        let out = anthropic
+            .response_to_external(make_response(Some("length")))
+            .expect("to Anthropic");
+        assert_eq!(out["stop_reason"], "max_tokens");
+
+        let out = anthropic
+            .response_to_external(make_response(Some("stop")))
+            .expect("to Anthropic");
+        assert_eq!(out["stop_reason"], "end_turn");
+    }
+
+    /// 评审 major 回归：出站 Anthropic 方向的工具历史 —— tool_result 块
+    /// 必须用 Anthropic 规范字段 tool_use_id（此前误写 tool_call_id，缺
+    /// 必填字段会被上游 400 拒收；recId=8① 使本分支首次可达）。
+    #[tokio::test]
+    async fn test_anthropic_outbound_tool_result_uses_tool_use_id_field() {
+        let openai = OpenAIConverter::new();
+        let anthropic = AnthropicConverter::new();
+
+        // OpenAI 入站：assistant tool_calls 历史 + role:"tool" 结果
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "What's the weather?"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Beijing\"}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "Sunny, 25C"}
+            ]
+        });
+
+        let unified = openai.to_unified(request).expect("to_unified");
+        let external = anthropic
+            .request_to_external(unified)
+            .expect("to Anthropic");
+        let msgs = external["messages"].as_array().expect("messages array");
+
+        // assistant：tool_calls 转 tool_use 块
+        let assistant = &msgs[1];
+        assert_eq!(assistant["role"], "assistant");
+        let assistant_blocks = assistant["content"].as_array().expect("content array");
+        let tool_use = assistant_blocks
+            .iter()
+            .find(|b| b["type"] == "tool_use")
+            .expect("tool_use block");
+        assert_eq!(tool_use["id"], "call_1");
+        assert_eq!(tool_use["name"], "get_weather");
+        assert_eq!(tool_use["input"]["city"], "Beijing");
+
+        // 工具结果消息：Anthropic 用 user 角色携带 tool_result 块，
+        // 字段必须是规范名 tool_use_id
+        let tool_msg = &msgs[2];
+        assert_eq!(tool_msg["role"], "user");
+        let blocks = tool_msg["content"].as_array().expect("content array");
+        let result_block = blocks
+            .iter()
+            .find(|b| b["type"] == "tool_result")
+            .expect("tool_result block");
+        assert_eq!(
+            result_block["tool_use_id"], "call_1",
+            "tool_result 必须引用规范的 tool_use_id"
+        );
+        assert_eq!(result_block["content"], "Sunny, 25C");
+        assert!(
+            result_block.get("tool_call_id").is_none(),
+            "不得残留非规范字段 tool_call_id: {result_block}"
+        );
+    }
 }
 
 mod embedding {
-    use nexusflow::protocol::{embedding_request_to_openai, embedding_response_from_openai};
+    // recId=15③：embedding_response_from_openai 死代码已删除（零生产调用，
+    // embeddings 端点走治理透传），其两个用例随之退役；
+    // embedding_request_to_openai 仍被 api/openai.rs 使用，用例保留。
+    use nexusflow::protocol::embedding_request_to_openai;
     use serde_json::json;
 
     #[test]
@@ -474,66 +1068,6 @@ mod embedding {
         let result = embedding_request_to_openai(body);
         assert!(result.is_err());
     }
-
-    #[test]
-    fn test_embedding_response_from_openai() {
-        let response = json!({
-            "id": "embedding-abc123",
-            "object": "list",
-            "created": 1677858242,
-            "model": "text-embedding-ada-002",
-            "data": [
-                {
-                    "object": "embedding",
-                    "index": 0,
-                    "embedding": [0.1, 0.2, 0.3, 0.4]
-                },
-                {
-                    "object": "embedding",
-                    "index": 1,
-                    "embedding": [0.5, 0.6, 0.7, 0.8]
-                }
-            ],
-            "usage": {
-                "prompt_tokens": 10,
-                "total_tokens": 10
-            }
-        });
-
-        let result = embedding_response_from_openai(response);
-        assert!(result.is_ok());
-        let embedding = result.unwrap();
-
-        assert_eq!(embedding.id, "embedding-abc123");
-        assert_eq!(embedding.model, "text-embedding-ada-002");
-        assert_eq!(embedding.data.len(), 2);
-        assert_eq!(embedding.data[0].index, 0);
-        assert_eq!(embedding.data[0].embedding, vec![0.1, 0.2, 0.3, 0.4]);
-        assert_eq!(embedding.data[1].index, 1);
-        assert_eq!(embedding.usage.prompt_tokens, 10);
-    }
-
-    #[test]
-    fn test_embedding_response_from_openai_empty() {
-        let response = json!({
-            "id": "embedding-def456",
-            "object": "list",
-            "created": 1677858242,
-            "model": "text-embedding-3-small",
-            "data": [],
-            "usage": {
-                "prompt_tokens": 0,
-                "total_tokens": 0
-            }
-        });
-
-        let result = embedding_response_from_openai(response);
-        assert!(result.is_ok());
-        let embedding = result.unwrap();
-
-        assert!(embedding.data.is_empty());
-        assert_eq!(embedding.usage.total_tokens, 0);
-    }
 }
 
 mod unified {
@@ -568,7 +1102,10 @@ mod unified {
             serde_json::from_str::<Role>("\"assistant\"").unwrap(),
             Role::Assistant
         );
-        assert_eq!(serde_json::from_str::<Role>("\"tool\"").unwrap(), Role::Tool);
+        assert_eq!(
+            serde_json::from_str::<Role>("\"tool\"").unwrap(),
+            Role::Tool
+        );
     }
 
     #[test]
@@ -968,11 +1505,9 @@ mod unified {
         assert!(json_val.get("tool_type").is_none());
         assert_eq!(json_val["function"]["name"], "get_weather");
         assert_eq!(json_val["function"]["parameters"]["type"], "object");
-        assert!(
-            json_val["function"]["parameters"]
-                .get("param_type")
-                .is_none()
-        );
+        assert!(json_val["function"]["parameters"]
+            .get("param_type")
+            .is_none());
     }
 
     // ==================== ToolChoice Tests ====================

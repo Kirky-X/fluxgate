@@ -68,12 +68,13 @@ impl ConnectionPool {
     pub async fn acquire(&self) -> Result<OwnedReqwestClient, NexusFlowError> {
         // acquire_owned 需要 `Arc<Semaphore>` by value（消耗 Arc），
         // 因此先 clone 一份 Arc 再传入
-        let permit = Arc::clone(&self.semaphore)
-            .acquire_owned()
-            .await
-            .map_err(|e: AcquireError| NexusFlowError::Config {
-                message: format!("connection pool semaphore closed: {}", e),
-            })?;
+        let permit =
+            Arc::clone(&self.semaphore)
+                .acquire_owned()
+                .await
+                .map_err(|e: AcquireError| NexusFlowError::Config {
+                    message: format!("connection pool semaphore closed: {}", e),
+                })?;
         Ok(OwnedReqwestClient {
             client: self.client.clone(),
             _permit: permit,

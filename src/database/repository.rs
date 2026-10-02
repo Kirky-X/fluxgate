@@ -3,7 +3,7 @@
 
 use crate::database::{LogFilter, RequestLog, TokenUsage, VendorStatusRecord};
 use dbnexus::{DbError, DbPool};
-use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, Value};
+use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, TransactionTrait, Value};
 
 #[derive(Clone)]
 pub struct Repository {
@@ -76,7 +76,48 @@ impl Repository {
     }
 
     pub async fn log_request(&self, log: &RequestLog) -> Result<(), DbError> {
-        let sql = r#"
+        let stmt = Self::insert_log_statement(log);
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        conn.execute_raw(stmt).await?;
+        Ok(())
+    }
+
+    /// recId=9①：单事务批量写入 — N 条 INSERT 包在一个事务里 commit，
+    /// 替换 AsyncLogger 逐条 await 的逐事务模式（SQLite 每 INSERT 一次
+    /// fsync，批量事务把 N 次 fsync 合为 1 次）。
+    ///
+    /// 事务承载（与 plan 的偏差，以源码为准）：plan 写 `session.begin_transaction()`
+    /// 包 N 条 INSERT —— 实核实 dbnexus `Session::execute_raw(&self, sql: &str)`
+    /// 只接收裸 SQL（无参数绑定），事务内执行走 `tx.execute_unprepared`，
+    /// 需要手写转义（messages/response/error_message 是任意用户内容，
+    /// 引入注入面）。故改为 `session.connection()?.begin()` 取 sea-orm
+    /// `DatabaseTransaction`，参数化 Statement 循环执行后 `tx.commit()` ——
+    /// 语义等价（单事务批量 + 提交），绑定安全，连接仍来自 dbnexus 池。
+    pub async fn log_requests_batch(&self, logs: &[RequestLog]) -> Result<(), DbError> {
+        if logs.is_empty() {
+            return Ok(());
+        }
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let tx = conn.begin().await?;
+        for log in logs {
+            let stmt = Self::insert_log_statement(log);
+            // sea-orm 2.0：预构建 Statement 走 execute_raw（execute 接收
+            // StatementBuilder，即 sea_query 语句类型）
+            if let Err(e) = tx.execute_raw(stmt).await {
+                // 单条失败回滚整批（事务语义：不丢也不留半批）
+                let _ = tx.rollback().await;
+                return Err(e.into());
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// request_logs 的参数化 INSERT Statement（log_request / log_requests_batch 共用）
+    fn insert_log_statement(log: &RequestLog) -> Statement {
+        const SQL: &str = r#"
             INSERT INTO request_logs (
                 request_id, timestamp, endpoint, input_format,
                 abstract_model, messages, actual_vendor, actual_model,
@@ -106,11 +147,7 @@ impl Repository {
             log.cost_usd.into(),
         ];
 
-        let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values);
-        let session = self.pool.get_session("admin").await?;
-        let conn = session.connection()?;
-        conn.execute_raw(stmt).await?;
-        Ok(())
+        Statement::from_sql_and_values(DatabaseBackend::Sqlite, SQL, values)
     }
 
     pub async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<RequestLog>, DbError> {
@@ -147,11 +184,7 @@ impl Repository {
         Ok(rows.iter().map(map_request_log).collect())
     }
 
-    pub async fn search_logs(
-        &self,
-        keyword: &str,
-        limit: u32,
-    ) -> Result<Vec<RequestLog>, DbError> {
+    pub async fn search_logs(&self, keyword: &str, limit: u32) -> Result<Vec<RequestLog>, DbError> {
         let pattern = format!("%{}%", keyword);
         let sql = r#"
             SELECT * FROM request_logs
@@ -174,13 +207,11 @@ impl Repository {
         Ok(rows.iter().map(map_request_log).collect())
     }
 
-    pub async fn get_token_stats(
-        &self,
-        vendor: Option<&str>,
-    ) -> Result<Vec<TokenUsage>, DbError> {
+    pub async fn get_token_stats(&self, vendor: Option<&str>) -> Result<Vec<TokenUsage>, DbError> {
         let (sql, values): (String, Vec<Value>) = if let Some(v) = vendor {
             (
-                "SELECT * FROM token_usage WHERE vendor = ? ORDER BY date DESC, hour DESC".to_string(),
+                "SELECT * FROM token_usage WHERE vendor = ? ORDER BY date DESC, hour DESC"
+                    .to_string(),
                 vec![v.into()],
             )
         } else {
@@ -216,18 +247,34 @@ fn map_request_log(row: &QueryResult) -> RequestLog {
         timestamp: row.try_get("", "timestamp").unwrap_or_default(),
         endpoint: row.try_get("", "endpoint").unwrap_or_default(),
         input_format: row.try_get("", "input_format").unwrap_or_default(),
-        abstract_model: row.try_get::<Option<String>>("", "abstract_model").unwrap_or(None),
+        abstract_model: row
+            .try_get::<Option<String>>("", "abstract_model")
+            .unwrap_or(None),
         messages: row.try_get("", "messages").unwrap_or_default(),
         actual_vendor: row.try_get("", "actual_vendor").unwrap_or_default(),
         actual_model: row.try_get("", "actual_model").unwrap_or_default(),
         routing_strategy: row.try_get("", "routing_strategy").unwrap_or_default(),
-        status_code: row.try_get::<Option<i32>>("", "status_code").unwrap_or(None),
-        response: row.try_get::<Option<String>>("", "response").unwrap_or(None),
-        error_message: row.try_get::<Option<String>>("", "error_message").unwrap_or(None),
-        prompt_tokens: row.try_get::<Option<i32>>("", "prompt_tokens").unwrap_or(None),
-        completion_tokens: row.try_get::<Option<i32>>("", "completion_tokens").unwrap_or(None),
-        total_tokens: row.try_get::<Option<i32>>("", "total_tokens").unwrap_or(None),
-        duration_ms: row.try_get::<Option<i64>>("", "duration_ms").unwrap_or(None),
+        status_code: row
+            .try_get::<Option<i32>>("", "status_code")
+            .unwrap_or(None),
+        response: row
+            .try_get::<Option<String>>("", "response")
+            .unwrap_or(None),
+        error_message: row
+            .try_get::<Option<String>>("", "error_message")
+            .unwrap_or(None),
+        prompt_tokens: row
+            .try_get::<Option<i32>>("", "prompt_tokens")
+            .unwrap_or(None),
+        completion_tokens: row
+            .try_get::<Option<i32>>("", "completion_tokens")
+            .unwrap_or(None),
+        total_tokens: row
+            .try_get::<Option<i32>>("", "total_tokens")
+            .unwrap_or(None),
+        duration_ms: row
+            .try_get::<Option<i64>>("", "duration_ms")
+            .unwrap_or(None),
         cost_usd: row.try_get::<Option<f64>>("", "cost_usd").unwrap_or(None),
     }
 }
@@ -253,7 +300,9 @@ fn map_vendor_status(row: &QueryResult) -> VendorStatusRecord {
         status: row.try_get("", "status").unwrap_or_default(),
         last_updated: row.try_get("", "last_updated").unwrap_or_default(),
         window_used_tokens: row.try_get("", "window_used_tokens").unwrap_or_default(),
-        window_reset_at: row.try_get::<Option<i64>>("", "window_reset_at").unwrap_or(None),
+        window_reset_at: row
+            .try_get::<Option<i64>>("", "window_reset_at")
+            .unwrap_or(None),
         error_count: row.try_get("", "error_count").unwrap_or_default(),
     }
 }

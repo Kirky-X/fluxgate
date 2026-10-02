@@ -6,7 +6,7 @@
 //! Assembles the four infrastructure modules into a single `AsyncKit<AsyncReady>`
 //! at startup. The kit resolves modules in topological order and provides
 //! type-erased capabilities (`CacheBackend`, `ConnectionPool`, `Governor`,
-//! `LogDbProvider`) that downstream code can retrieve via `kit.require::<M>()`.
+//! `Database`) that downstream code can retrieve via `kit.require::<M>()`.
 //!
 //! # DI Chains
 //!
@@ -55,8 +55,11 @@ fn minimal_flow_config() -> limiteron::config::FlowControlConfig {
 fn memory_db_config() -> dbnexus::foundation::config::DbConfig {
     dbnexus::foundation::config::DbConfig {
         url: "sqlite::memory:".to_string(),
-        max_connections: 5,
-        min_connections: 1,
+        pool_config: dbnexus::foundation::config::PoolConfig {
+            max_connections: 5,
+            min_connections: 1,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
@@ -103,11 +106,9 @@ pub async fn build_kit_with_config(
             message: format!("DI register InklogModule failed: {}", e),
         })?;
 
-    kit.build()
-        .await
-        .map_err(|e| NexusFlowError::Config {
-            message: format!("DI kit build failed: {}", e),
-        })
+    kit.build().await.map_err(|e| NexusFlowError::Config {
+        message: format!("DI kit build failed: {}", e),
+    })
 }
 
 /// Test-only convenience: builds kit with an in-memory database and permissive
@@ -128,20 +129,22 @@ pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, NexusFlowError> {
 ///
 /// Returns `NexusFlowError::Config` if any capability is missing.
 pub fn verify_kit(kit: &AsyncKit<AsyncReady>) -> Result<(), NexusFlowError> {
-    let _cache: Arc<dyn oxcache::backend::CacheBackend + Send + Sync> =
-        kit.require::<OxcacheModule>().map_err(|e| NexusFlowError::Config {
+    let _cache: Arc<dyn oxcache::backend::CacheBackend + Send + Sync> = kit
+        .require::<OxcacheModule>()
+        .map_err(|e| NexusFlowError::Config {
             message: format!("DI require OxcacheModule failed: {}", e),
         })?;
-    let _governor: Arc<limiteron::Governor> = kit
-        .require::<LimiteronModule>()
+    let _governor: Arc<limiteron::Governor> =
+        kit.require::<LimiteronModule>()
+            .map_err(|e| NexusFlowError::Config {
+                message: format!("DI require LimiteronModule failed: {}", e),
+            })?;
+    let _pool: Arc<dyn dbnexus::database::pool::ConnectionPool + Send + Sync> = kit
+        .require::<DbNexusModule>()
         .map_err(|e| NexusFlowError::Config {
-            message: format!("DI require LimiteronModule failed: {}", e),
-        })?;
-    let _pool: Arc<dyn dbnexus::database::pool::ConnectionPool + Send + Sync> =
-        kit.require::<DbNexusModule>().map_err(|e| NexusFlowError::Config {
             message: format!("DI require DbNexusModule failed: {}", e),
         })?;
-    let _provider: Arc<dyn inklog::LogDbProvider + Send + Sync> = kit
+    let _provider: Arc<dyn inklog::Database + Send + Sync> = kit
         .require::<InklogModule>()
         .map_err(|e| NexusFlowError::Config {
             message: format!("DI require InklogModule failed: {}", e),
@@ -168,7 +171,7 @@ mod tests {
             .expect("DbNexusModule capability");
         let _ = pool;
 
-        let provider: Arc<dyn inklog::LogDbProvider + Send + Sync> = kit
+        let provider: Arc<dyn inklog::Database + Send + Sync> = kit
             .require::<InklogModule>()
             .expect("InklogModule capability");
         let _ = provider;
@@ -208,17 +211,20 @@ mod tests {
         // Proves the full oxcache → dbnexus → inklog chain: the ConnectionPool
         // from DbNexusModule (which itself depended on CacheBackend from
         // OxcacheModule) is successfully injected into InklogModule's
-        // LogDbProvider.
+        // `Database` adapter (DbNexusAdapter). inklog 0.3 rc.5 的
+        // `Database` trait 只暴露 `insert_batch` / `is_healthy`（无旧
+        // `LogDbProvider::execute_log`），故改用 `is_healthy()` 驱动一次
+        // get_session → 连接获取，验证注入的连接池确实可用。
         let kit = build_kit().await.expect("DI kit should build");
 
-        let provider: Arc<dyn inklog::LogDbProvider + Send + Sync> = kit
+        let provider: Arc<dyn inklog::Database + Send + Sync> = kit
             .require::<InklogModule>()
             .expect("InklogModule capability");
 
-        provider
-            .execute_log("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY)")
-            .await
-            .expect("execute_log should succeed on injected ConnectionPool");
+        assert!(
+            provider.is_healthy().await,
+            "injected ConnectionPool should be usable through inklog Database adapter"
+        );
     }
 
     #[tokio::test]
@@ -235,7 +241,10 @@ mod tests {
     async fn test_verify_kit_returns_err_for_empty_kit() {
         // An empty kit (no modules registered) should fail verification —
         // verify_kit requires all four capabilities to resolve.
-        let kit = AsyncKit::new().build().await.expect("empty kit should build");
+        let kit = AsyncKit::new()
+            .build()
+            .await
+            .expect("empty kit should build");
         let result = verify_kit(&kit);
         assert!(
             result.is_err(),

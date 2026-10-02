@@ -1,7 +1,8 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use super::*;
+// recId=15③：原 `use super::*`（供已删除的 embedding_response_from_openai
+// 引用 IR 类型）随死代码一并移除
 use crate::error::NexusFlowError;
 use serde_json::{json, Value};
 
@@ -51,63 +52,7 @@ pub fn embedding_request_to_openai(body: Value) -> Result<Value, NexusFlowError>
     Ok(result)
 }
 
-/// OpenAI Embedding 响应转换
-pub fn embedding_response_from_openai(
-    response: Value,
-) -> Result<UnifiedEmbeddingResponse, NexusFlowError> {
-    let id = response
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("embedding-unknown")
-        .to_string();
-
-    let model = response
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    let created = response
-        .get("created")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    let data: Vec<EmbeddingData> = response
-        .get("data")
-        .and_then(|v| v.as_array())
-        .unwrap_or(&Vec::new())
-        .iter()
-        .enumerate()
-        .filter_map(|(i, item)| {
-            let embedding = item
-                .get("embedding")?
-                .as_array()?
-                .iter()
-                .filter_map(|e| e.as_f64().map(|f| f as f32))
-                .collect();
-            Some(EmbeddingData {
-                index: i as u32,
-                object_: item.get("object")?.as_str()?.to_string(),
-                embedding,
-            })
-        })
-        .collect();
-
-    let usage = response
-        .get("usage")
-        .and_then(|v| v.as_object())
-        .map(|u| EmbeddingUsage {
-            prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-        })
-        .unwrap_or_default();
-
-    Ok(UnifiedEmbeddingResponse {
-        id,
-        object: "list".to_string(),
-        created,
-        model,
-        data,
-        usage,
-    })
-}
+// recId=15③：原 embedding_response_from_openai 死代码已删除 —
+// 全库零生产调用（grep 仅 mod.rs re-export 与自身测试），且 embeddings
+// 端点走治理透传路径后不再有统一化转换需求。UnifiedEmbeddingResponse 等
+// 类型保留于 unified.rs（协议 IR 完整性）。

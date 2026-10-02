@@ -14,7 +14,9 @@ pub mod database;
 pub mod pre_aggregator;
 pub mod repository;
 
+pub use async_logger::{AsyncLogger, AsyncLoggerHandle};
 pub use database::Database;
+pub use pre_aggregator::{TokenPreAggregator, TokenPreAggregatorHandle};
 pub use repository::Repository;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

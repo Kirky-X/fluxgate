@@ -11,12 +11,48 @@ use crate::sdk::error::NexusFlowSdkError;
 use crate::sdk::stream::ChatStream;
 
 /// NexusFlow 网关客户端。
-#[derive(Debug)]
 pub struct NexusFlowClient {
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: Url,
     pub(crate) api_key: String,
     pub(crate) default_config: RequestConfig,
+}
+
+// api_key 是 Bearer 凭证：手写 Debug 脱敏，不用 derive（会打印明文）
+impl std::fmt::Debug for NexusFlowClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NexusFlowClient")
+            .field("http", &self.http)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .field("default_config", &self.default_config)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// api_key 是 Bearer 凭证：Debug 输出必须脱敏，{:?} 打印客户端
+    /// （日志/调试）不得泄露明文 key。
+    #[test]
+    fn debug_output_redacts_api_key() {
+        let client = NexusFlowClientBuilder::new()
+            .base_url("http://127.0.0.1:8080")
+            .api_key("super-secret-bearer-key")
+            .build()
+            .unwrap();
+        let rendered = format!("{client:?}");
+        assert!(
+            !rendered.contains("super-secret-bearer-key"),
+            "Debug 输出泄露 api_key: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "Debug 输出应显式标注脱敏: {rendered}"
+        );
+    }
 }
 
 /// 客户端构建器。

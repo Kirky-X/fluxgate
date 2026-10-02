@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
 #![cfg(feature = "web-server")]
 
 //! recId=3（W2）：入站限流落地测试。

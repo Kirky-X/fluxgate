@@ -25,6 +25,8 @@
 //! | `--features sdforge-integration` | OK    | sdforge-integration                     |
 //! | `--features "protocol infra"`    | OK    | protocol + infrastructure               |
 //! | `--features "protocol logging"`  | OK    | protocol + logging                      |
+//! | `--features sdk`                 | OK    | sdk（reqwest + eventsource-stream）      |
+//! | `--no-default-features`          | OK    | 仅核心（config/error/i18n/protocol/utils）|
 //!
 //! ## Feature 依赖图
 //!
@@ -136,4 +138,37 @@ fn test_vendor_management_dependency_chain() {
 fn test_router_dependency_chain() {
     use nexusflow::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
+}
+
+/// sdk feature：验证 sdk 模块与客户端类型可访问
+#[cfg(feature = "sdk")]
+#[test]
+fn test_sdk_module_available() {
+    use nexusflow::sdk::{NexusFlowClient, NexusFlowSdkError, RequestConfig};
+    let _ = std::marker::PhantomData::<NexusFlowClient>;
+    let _ = std::marker::PhantomData::<NexusFlowSdkError>;
+    let _ = RequestConfig::default();
+}
+
+/// server 模块门控（all(web-server, logging)）：run/build_app 可访问
+#[cfg(all(feature = "web-server", feature = "logging"))]
+#[test]
+fn test_server_module_available() {
+    let _ = nexusflow::server::run;
+    let _ = nexusflow::server::build_app;
+}
+
+/// core-only 等价验证：sdk 关闭不侵蚀核心类型。
+/// （模块不存在无法在函数体内断言——引用即编译错误；core-only 组合
+/// 编译本身由 `cargo check --no-default-features` 命令验证。如实注明：
+/// 该组合无 CI 持续强制——ci.yml check 仅跑 --workspace 与 --all-features。）
+#[cfg(not(feature = "sdk"))]
+#[test]
+fn test_core_types_without_sdk() {
+    use nexusflow::{Config, NexusFlowError};
+    let err = NexusFlowError::Config {
+        message: "core".to_string(),
+    };
+    assert_eq!(err.to_string(), "Configuration error: core");
+    let _ = std::marker::PhantomData::<Config>;
 }

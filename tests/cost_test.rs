@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
 #![cfg(feature = "vendor-management")]
 
 //! CostCalculator 单元测试。

@@ -202,7 +202,6 @@ async fn main() -> Result<(), NexusFlowError> {
                 cors,
                 // NexusFlow 不经 sdforge 终结 TLS（自建 axum 明文监听，
                 // TLS 由外部反代承担）
-                tls: None,
             },
             // 认证由自建 api_auth_middleware 承担（[auth] 段 SHA256 摘要 +
             // 常量时间比较，见 middleware/auth.rs）。sdforge 层显式禁用：

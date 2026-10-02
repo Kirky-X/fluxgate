@@ -7,18 +7,18 @@
 //!
 //! `limiteron::circuit::CircuitBreaker::execute` 的签名锁定
 //! `Fut: Future<Output = Result<T, LimiteronError>>`（limiteron
-//! src/circuit/types.rs:377-379），`FailureClassifier::is_counted_as_failure`
-//! 亦以 `&LimiteronError` 为参；而本 crate 执行路径的
-//! 错误是 [`NexusFlowError`] —— 在此以带 `nexusflow:` 前缀的
-//! `LimiteronError::Other` 串为载体做双向转换。
+//! src/circuit/types.rs:377-380；熔断打开拒绝以 `LimiteronError::LimitError`
+//! 为载体），`ErrorClassifier::is_counted_as_failure` 亦以 `&LimiteronError`
+//! 为参；而本 crate 执行路径的错误是 [`NexusFlowError`] ——
+//! 在此以带 `nexusflow:` 前缀的 `LimiteronError::Other` 串为载体做双向转换。
 //!
 //! 有损风险声明：`from_limiteron` 对「不带前缀的 Other」或「前缀后
 //! variant 无法识别」的载荷无法还原原 variant，降级为
 //! `VendorUnavailable`（详情保留在 vendor 字符串中），该降级行为由
 //! `tests/circuit_breaker_test.rs` 锁定。
 
-use limiteron::circuit::FailureClassifier;
-use limiteron::error::{CircuitCallError, LimiteronError};
+use limiteron::circuit::ErrorClassifier;
+use limiteron::error::LimiteronError;
 
 use crate::error::NexusFlowError;
 
@@ -76,23 +76,6 @@ pub fn is_circuit_open_error(err: &NexusFlowError) -> bool {
         if vendor.contains("circuit open"))
 }
 
-/// `CircuitCallError` → NexusFlowError（`execute` 现返回包装错误）。
-///
-/// - `Open`（闭包未执行）→ `VendorUnavailable{vendor: "{id} (circuit open)"}`
-///   （保持 [`is_circuit_open_error`] 的字符串约定）
-/// - `Inner(e)` → [`from_limiteron`] 透传
-pub fn from_circuit_call_error(
-    err: CircuitCallError<LimiteronError>,
-    vendor_id: &str,
-) -> NexusFlowError {
-    match err {
-        CircuitCallError::Open => NexusFlowError::VendorUnavailable {
-            vendor: format!("{} (circuit open)", vendor_id),
-        },
-        CircuitCallError::Inner(e) => from_limiteron(e, vendor_id),
-    }
-}
-
 /// 解析失败 / 非本 crate 错误的降级形态
 fn degraded(vendor_id: &str, detail: &str) -> NexusFlowError {
     NexusFlowError::VendorUnavailable {
@@ -126,9 +109,9 @@ fn decode(payload: &str) -> Option<NexusFlowError> {
     }
 }
 
-/// 按映射前缀分类的 FailureClassifier。
+/// 按映射前缀分类的错误分类器。
 ///
-/// 语义对齐 limiteron `DefaultFailureClassifier` 的「保护机制错误不计失败」：
+/// 语义对齐 limiteron `DefaultErrorClassifier` 的「保护机制错误不计失败」：
 /// - `VendorUnavailable` / `Timeout`（上游故障）→ 计失败
 /// - `RateLimited` / `Validation` / `Protocol`（网关自身保护 / 客户端侧
 ///   问题，非 vendor 故障信号）→ 不计
@@ -136,7 +119,7 @@ fn decode(payload: &str) -> Option<NexusFlowError> {
 #[derive(Debug)]
 pub struct NexusFlowErrorClassifier;
 
-impl FailureClassifier<LimiteronError> for NexusFlowErrorClassifier {
+impl ErrorClassifier for NexusFlowErrorClassifier {
     fn is_counted_as_failure(&self, error: &LimiteronError) -> bool {
         match error {
             LimiteronError::Other(payload) if payload.starts_with(NEXUSFLOW_ERROR_PREFIX) => {

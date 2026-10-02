@@ -1490,7 +1490,7 @@ mod tests {
     #[test]
     fn rate_limited_counts_in_failure_window_but_not_circuit_breaker() {
         use crate::vendor::resilience::error_map::{to_limiteron, NexusFlowErrorClassifier};
-        use limiteron::circuit::FailureClassifier as _;
+        use limiteron::circuit::ErrorClassifier as _;
 
         let classifier = NexusFlowErrorClassifier;
         let encoded =

@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use serde_json::json;
 use url::Url;
 
 use crate::sdk::chat::{ChatRequest, ChatResponse};
@@ -82,6 +81,31 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(tuned_client.effective_timeout, explicit);
+    }
+
+    /// chat wire 载荷：类型化单次序列化，model/messages 直入顶层，
+    /// 未设配置字段省略（无 null、无 Value 中间物二次序列化）。
+    #[test]
+    fn chat_payload_serializes_without_null() {
+        use crate::sdk::chat::{ChatMessage, ChatRole};
+        let payload = ChatPayload {
+            model: "gpt-4",
+            messages: &[ChatMessage {
+                role: ChatRole::User,
+                content: "hi".into(),
+            }],
+            params: RequestConfig::default().openai_params(),
+        };
+        let v = serde_json::to_value(&payload).unwrap();
+        assert_eq!(v["model"], "gpt-4");
+        assert_eq!(v["messages"][0]["content"], "hi");
+        assert_eq!(v["stream"], false);
+        assert!(v.get("temperature").is_none());
+        let rendered = v.to_string();
+        assert!(
+            !rendered.contains("null"),
+            "wire body 不得含 null: {rendered}"
+        );
     }
 
     /// api_key 是 Bearer 凭证：Debug 输出必须脱敏，{:?} 打印客户端
@@ -165,14 +189,26 @@ impl NexusFlowClientBuilder {
     }
 }
 
+/// chat 请求 wire 载荷：类型化单次序列化（不经 serde_json::Value 中间物，
+/// 未设配置字段由 [`OpenAiParams`] 省略）。
+#[derive(serde::Serialize)]
+struct ChatPayload<'a> {
+    model: &'a str,
+    messages: &'a [crate::sdk::chat::ChatMessage],
+    #[serde(flatten)]
+    params: crate::sdk::config::OpenAiParams,
+}
+
 impl NexusFlowClient {
     /// 发送 chat 请求。合并 `default_config` 与 `req.config`，POST /v1/chat/completions。
     pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, NexusFlowSdkError> {
         let merged = self.default_config.merge(&req.config);
 
-        let mut body = merged.to_openai_json();
-        body["model"] = json!(req.model);
-        body["messages"] = json!(req.messages);
+        let payload = ChatPayload {
+            model: &req.model,
+            messages: &req.messages,
+            params: merged.openai_params(),
+        };
 
         let url =
             self.base_url
@@ -181,7 +217,11 @@ impl NexusFlowClient {
                     message: format!("invalid URL: {e}"),
                 })?;
 
-        let mut request = self.http.post(url).bearer_auth(&self.api_key).json(&body);
+        let mut request = self
+            .http
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(&payload);
 
         if let Some(v) = &merged.vendor_hint {
             request = request.header("X-Vendor", v);
@@ -240,9 +280,11 @@ impl NexusFlowClient {
         let mut merged = self.default_config.merge(&req.config);
         merged.stream = true;
 
-        let mut body = merged.to_openai_json();
-        body["model"] = json!(req.model);
-        body["messages"] = json!(req.messages);
+        let payload = ChatPayload {
+            model: &req.model,
+            messages: &req.messages,
+            params: merged.openai_params(),
+        };
 
         let url =
             self.base_url
@@ -251,7 +293,11 @@ impl NexusFlowClient {
                     message: format!("invalid URL: {e}"),
                 })?;
 
-        let mut request = self.http.post(url).bearer_auth(&self.api_key).json(&body);
+        let mut request = self
+            .http
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(&payload);
 
         if let Some(v) = &merged.vendor_hint {
             request = request.header("X-Vendor", v);

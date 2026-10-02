@@ -2,7 +2,27 @@
 
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde::Serialize;
+
+/// OpenAI wire 参数视图：未设置的 Option 字段直接省略（不写显式 null，
+/// 严格模式上游会拒绝 null，且省略免去空字段序列化分配）。
+/// `vendor_hint` / `model_hint` 是 header 级参数，不出现在该视图。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpenAiParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) max_tokens: Option<u32>,
+    pub(crate) stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stop: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) user: Option<String>,
+}
 
 /// 请求配置。字段覆盖 OpenAI Chat Completions API 常用参数，
 /// 外加 `vendor_hint` / `model_hint` 用于路由 header（不进入请求 body）。
@@ -41,17 +61,16 @@ impl RequestConfig {
         }
     }
 
-    /// 转换为 OpenAI Chat Completions API 的 JSON body 片段。
-    /// `vendor_hint` / `model_hint` 不出现在 body 中（它们是 header 级参数）。
-    pub fn to_openai_json(&self) -> Value {
-        json!({
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "top_k": self.top_k,
-            "max_tokens": self.max_tokens,
-            "stream": self.stream,
-            "stop": self.stop,
-            "user": self.user,
-        })
+    /// OpenAI wire 参数视图（未设字段省略；`timeout`/hints 不进 body）。
+    pub(crate) fn openai_params(&self) -> OpenAiParams {
+        OpenAiParams {
+            temperature: self.temperature,
+            top_p: self.top_p,
+            top_k: self.top_k,
+            max_tokens: self.max_tokens,
+            stream: self.stream,
+            stop: self.stop.clone(),
+            user: self.user.clone(),
+        }
     }
 }

@@ -17,28 +17,41 @@ fn merge_takes_other_priority() {
     assert_eq!(merged.temperature, Some(0.5));
 }
 
+/// 未设置的可选字段必须省略而非写 null：显式 null 在严格模式的上游
+/// 会被拒绝，且每次请求都为空字段付出序列化分配
 #[test]
-fn to_openai_json_contains_temperature_and_stream() {
+fn openai_params_omit_unset_fields() {
     let config = RequestConfig::default();
-    let v = config.to_openai_json();
-    assert!(v.get("temperature").is_some());
+    let v = serde_json::to_value(config.openai_params()).unwrap();
+    assert!(v.get("temperature").is_none(), "unset 温度必须省略: {v}");
+    assert!(v.get("top_p").is_none());
+    assert!(v.get("top_k").is_none());
+    assert!(v.get("max_tokens").is_none());
+    assert!(v.get("stop").is_none());
+    assert!(v.get("user").is_none());
+    // stream 是显式布尔，恒存在
     assert_eq!(v["stream"], json!(false));
+    let rendered = v.to_string();
+    assert!(
+        !rendered.contains("null"),
+        "wire body 不得含 null: {rendered}"
+    );
 }
 
 #[test]
-fn to_openai_json_excludes_hints() {
+fn openai_params_excludes_hints() {
     let config = RequestConfig {
         vendor_hint: Some("openai".into()),
         model_hint: Some("gpt-4".into()),
         ..Default::default()
     };
-    let v = config.to_openai_json();
+    let v = serde_json::to_value(config.openai_params()).unwrap();
     assert!(v.get("vendor_hint").is_none());
     assert!(v.get("model_hint").is_none());
 }
 
 #[test]
-fn to_openai_json_includes_all_fields_when_set() {
+fn openai_params_includes_all_fields_when_set() {
     let config = RequestConfig {
         temperature: Some(0.7),
         top_p: Some(0.9),
@@ -49,7 +62,7 @@ fn to_openai_json_includes_all_fields_when_set() {
         user: Some("user-123".into()),
         ..Default::default()
     };
-    let v = config.to_openai_json();
+    let v = serde_json::to_value(config.openai_params()).unwrap();
     // f32 → f64 有精度损失，用近似比较
     assert!((v["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-6);
     assert!((v["top_p"].as_f64().unwrap() - 0.9).abs() < 1e-6);

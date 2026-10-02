@@ -36,14 +36,25 @@ pub struct EmbedUsage {
     pub total_tokens: u32,
 }
 
+/// embedding 请求 wire 载荷：类型化单次序列化（同 [`ChatPayload`] 语义）。
+#[derive(serde::Serialize)]
+struct EmbedPayload<'a> {
+    model: &'a str,
+    input: &'a [String],
+    #[serde(flatten)]
+    params: crate::sdk::config::OpenAiParams,
+}
+
 impl NexusFlowClient {
     /// 发送 embedding 请求。POST /v1/embeddings。
     pub async fn embed(&self, req: &EmbedRequest) -> Result<EmbedResponse, NexusFlowSdkError> {
         let merged = self.default_config.merge(&req.config);
 
-        let mut body = merged.to_openai_json();
-        body["model"] = serde_json::json!(req.model);
-        body["input"] = serde_json::json!(req.input);
+        let payload = EmbedPayload {
+            model: &req.model,
+            input: &req.input,
+            params: merged.openai_params(),
+        };
 
         let url = self
             .base_url
@@ -56,7 +67,7 @@ impl NexusFlowClient {
             .http
             .post(url)
             .bearer_auth(&self.api_key)
-            .json(&body)
+            .json(&payload)
             .send()
             .await?;
 

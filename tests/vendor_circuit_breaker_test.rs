@@ -138,12 +138,16 @@ const OPENAI_SUCCESS_BODY: &str = r#"{
 #[tokio::test]
 async fn circuit_opens_after_five_failures_and_route_excludes_vendor() {
     let mut server_a = mockito::Server::new_async().await;
-    // Fatal 4xx：execute_http_with_retry_inner 不做内部重试，每请求恰好 1 次命中
+    // Fatal 4xx：execute_http_with_retry_inner 不做状态码重试，每请求至多
+    // 1 次命中——expect_at_most(5) 锁上界（≥6 即存在隐藏重试，失败）。
+    // 不用精确 expect(5)：全量并行下 localhost 瞬态连接失败会把失败计入
+    // 熔断（VendorUnavailable）但不产生 HTTP 命中（实测：Open 断言通过而
+    // mockito 收 4/5），「恰 5 次失败」语义由下方 CB 状态断言承载。
     let mock_a = server_a
         .mock("POST", "/v1/chat/completions")
         .with_status(400)
         .with_body("bad request")
-        .expect(5)
+        .expect_at_most(5)
         .create_async()
         .await;
 
@@ -220,7 +224,7 @@ async fn open_circuit_rejects_requests_fast_without_http() {
         .mock("POST", "/v1/chat/completions")
         .with_status(500)
         .with_body("upstream error")
-        .expect(5) // 恰好 5 次触发熔断，第 6 次被 CB 拒绝（max_retries=0）
+        .expect_at_most(5) // 上界锁：无隐藏重试；恰 5 次失败由 CB Open 断言承载
         .create_async()
         .await;
 
@@ -327,7 +331,7 @@ async fn circuit_recovers_after_timeout_via_probes_and_route_resumes() {
             .mock("POST", "/v1/chat/completions")
             .with_status(400)
             .with_body("bad request")
-            .expect(5)
+            .expect_at_most(5) // 上界锁无隐藏重试；失败计数由 CB Open 断言承载
             .create_async()
             .await;
     }

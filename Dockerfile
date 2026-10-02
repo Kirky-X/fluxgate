@@ -14,6 +14,11 @@ FROM docker.io/library/rust:${RUST_VERSION}-alpine AS build
 # 重新声明构建参数
 ARG APP_NAME=nexusflow
 ARG APP_VERSION=0.1.0
+# 兄弟库引用分支：Cargo.toml 以 ../<lib> path 依赖集成 7 个兄弟库，
+# 独立仓库构建时克隆到 /（即 /app 的上级）满足路径解析。
+# 注意：这是分支快照而非锁定版本，兄弟库 API 演进可能导致构建显性失败
+# （显性失败优于静默漂移；升级时同步核对 Cargo.lock 与兄弟库 tag）
+ARG SIBLING_REF=main
 
 # 设置工作目录
 WORKDIR /app
@@ -27,6 +32,13 @@ RUN apk add --no-cache \
     pkgconfig \
     sqlite-dev \
     git
+
+# 克隆 7 个兄弟库到 /app 的上级目录（Cargo.toml 的 ../<lib> 相对路径
+# 以 /app/Cargo.toml 为基准解析到 /<lib>；[patch.crates-io] 同样指向这里）
+RUN set -eux; \
+    for repo in confers dbnexus inklog limiteron oxcache sdforge trait-kit; do \
+      git clone --depth 1 --branch "${SIBLING_REF}" "https://github.com/Kirky-X/${repo}.git" "/${repo}"; \
+    done
 
 # 使用 BuildKit 缓存挂载优化构建速度
 # 缓存 Cargo 依赖和编译产物
@@ -56,7 +68,7 @@ LABEL maintainer="NexusFlow" \
       name="${APP_NAME}" \
       version="${APP_VERSION}" \
       description="智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度" \
-      org.opencontainers.image.source="https://github.com/nexusflow/nexusflow" \
+      org.opencontainers.image.source="https://github.com/Kirky-X/NexusFlow" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"
@@ -106,9 +118,9 @@ ENV RUST_BACKTRACE=1
 # 暴露服务端口
 EXPOSE 8080
 
-# 健康检查
+# 健康检查（实际注册路径带 sdforge 版本前缀：/api/v1/health）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/v1/health || exit 1
 
 # 启动应用
 CMD ["/bin/server"]

@@ -1,0 +1,43 @@
+# Tag 删除时清理对应的 GitHub Release（对齐 confers 基线）。
+# NexusFlow 不发布 crates.io（path 依赖不可发布），故无 yank 提示环节：
+# 删除 tag 时只需删除 Release 与产物。
+
+name: Tag Deleted
+
+on:
+  delete:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    name: Cleanup Release
+    if: github.event.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Get tag name
+        id: get_tag
+        run: |
+          TAG_NAME="${{ github.event.ref }}"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Delete GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.get_tag.outputs.tag_name }}"
+
+          RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG_NAME" \
+            --jq '.id' 2>/dev/null || echo "")
+
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+            echo "Deleting release $RELEASE_ID for tag $TAG_NAME"
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$RELEASE_ID"
+            echo "✅ GitHub Release deleted successfully"
+          else
+            echo "⚠️ No release found for tag $TAG_NAME"
+          fi

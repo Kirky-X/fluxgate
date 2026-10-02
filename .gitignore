@@ -57,6 +57,9 @@ python_mock_client/
 .env.local
 .env.*.local
 
+# 本地工作区指令（不入仓库）
+AGENTS.md
+
 # 日志
 *.log
 logs/

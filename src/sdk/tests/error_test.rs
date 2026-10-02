@@ -29,13 +29,3 @@ fn from_reqwest_error_implemented() {
     }
     assert_from_impl::<reqwest::Error, NexusFlowSdkError>();
 }
-
-#[test]
-fn timeout_from_system_time_error() {
-    fn assert_from_impl<T, U>()
-    where
-        U: From<T>,
-    {
-    }
-    assert_from_impl::<std::time::SystemTimeError, NexusFlowSdkError>();
-}

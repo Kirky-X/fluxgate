@@ -1,6 +1,7 @@
 //! SDK 统一错误类型。
 //!
-//! 用 thiserror 派生，支持 `?` 操作符从 reqwest::Error 和 SystemTimeError 转换。
+//! 用 thiserror 派生，支持 `?` 操作符从 reqwest::Error 转换
+//! （请求超时同走 reqwest::Error 的 Network 变体）。
 
 use thiserror::Error;
 
@@ -20,12 +21,6 @@ pub enum NexusFlowSdkError {
 
     #[error("protocol error: {message}")]
     Protocol { message: String },
-
-    #[error("timeout: {source}")]
-    Timeout {
-        #[from]
-        source: std::time::SystemTimeError,
-    },
 
     #[error("stream error: {message}")]
     Stream { message: String },

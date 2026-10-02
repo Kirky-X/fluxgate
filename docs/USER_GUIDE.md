@@ -507,11 +507,11 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 | 项 | 内容 |
 |:---|:-----|
 | 启用方式 | `nexusflow = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` 随该 feature 引入） |
-| 模块 | `chat` / `embed` / `stream` / `client`（`NexusFlowClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error` / `pipeline` |
+| 模块 | `chat` / `embed` / `stream` / `client`（`NexusFlowClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error` |
 | 类型导出 | `ChatMessage` / `ChatRequest` / `ChatResponse` / `EmbedRequest` / `EmbedResponse` / `ChatStream` 等 |
 | 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |
 
-> `pipeline` 模块当前为空壳（开发中），尚无实现；`NexusFlowSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。
+> `NexusFlowSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用；请求超时经 `NexusFlowClientBuilder::timeout` 显式设置，缺省 30s（`DEFAULT_REQUEST_TIMEOUT`）。
 
 ---
 

@@ -1,7 +1,7 @@
 //! NexusFlow Rust SDK
 //!
 //! 通过 Rust 接口与 NexusFlow 网关交互（HTTP 客户端 SDK），
-//! 支持 chat / stream / embed / admin / pipeline。
+//! 支持 chat / stream / embed / admin。
 
 pub mod admin;
 pub mod chat;
@@ -9,7 +9,6 @@ pub mod client;
 pub mod config;
 pub mod embed;
 pub mod error;
-pub mod pipeline;
 pub mod stream;
 
 pub use chat::{ChatMessage, ChatRequest, ChatResponse, ChatRole};

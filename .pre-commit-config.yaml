@@ -48,7 +48,10 @@ repos:
       - id: cargo-fmt
         name: Format Rust code
         description: Run rustfmt on Rust files
-        entry: cargo fmt --all -- --check
+        # 不带 --all：cargo fmt --all 会连带格式化全部本地 path 依赖（7 个
+        # 兄弟 crate），任何兄弟仓的未格式化中间态都会阻塞本仓提交；门禁
+        # 只应管辖本 crate（lib+bin 两 target 均覆盖）。
+        entry: cargo fmt -- --check
         language: system
         types: [rust]
         pass_filenames: false

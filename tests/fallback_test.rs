@@ -15,6 +15,8 @@
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
+mod common;
+
 use nexusflow::error::NexusFlowError;
 use nexusflow::vendor::resilience::{FallbackChain, FallbackTarget, FallbackTrigger};
 
@@ -358,14 +360,10 @@ mod cover_all_paths {
     use std::time::Duration;
     use tower::ServiceExt;
 
-    fn ensure_test_api_key() {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-    }
-
     /// openai 型 vendor（透传路径：入站 OpenAI == 出站 OpenAI）。
     /// api_base 不带 /v1 —— manager 会拼 `{base}/v1/chat/completions`。
     fn make_vendor(id: &str, priority: u8, api_base: String) -> VendorConfig {
-        ensure_test_api_key();
+        crate::common::ensure_test_api_key();
         VendorConfig {
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,

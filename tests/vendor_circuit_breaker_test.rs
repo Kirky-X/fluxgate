@@ -19,11 +19,16 @@
 
 #![cfg(all(feature = "resilience", feature = "router"))]
 
+mod common;
+
+/// 短窗口注入的成对常量：CB Open 窗口 300ms，睡眠 400ms。裕度不变量
+/// 「睡眠 > 窗口」由此锁定——把任一侧单独调过中线会翻转结构保证
+///（tokio 单调钟下 sleep 不早于返回，elapsed ≥ 睡眠 > 窗口必然越过）。
+const OPEN_WINDOW_MS: u64 = 300;
+const WINDOW_SLEEP_MS: u64 = 400;
+
 use limiteron::error::CircuitState;
-use nexusflow::config::{
-    ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-    RateLimitConfig, RetrySection, ServerConfig, VendorConfig,
-};
+use nexusflow::config::{Config, ConfigManager, RetrySection, VendorConfig};
 use nexusflow::error::NexusFlowError;
 use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
 use nexusflow::router::Router;
@@ -32,75 +37,25 @@ use nexusflow::vendor::VendorStatus;
 use std::sync::Arc;
 use std::time::Duration;
 
-fn ensure_test_api_key() {
-    std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-}
-
+/// 本文件语义：rps=100（与 CB 失败驱动的低流量形态一致），其余走共享基座
 fn make_vendor(id: &str, api_base: String) -> VendorConfig {
-    ensure_test_api_key();
-    VendorConfig {
-        timeout_ms: 60_000,
-        stream_ttft_ms: 60_000,
-        stream_idle_ms: 30_000,
-        id: id.into(),
-        name: format!("Test {}", id),
-        type_: "openai".into(),
-        api_key_env: "NEXUSFLOW_TEST_KEY".into(),
-        api_base,
-        enabled: true,
-        priority: 1,
-        models: vec![ModelConfig {
-            model_id: "gpt-4".into(),
-            abstract_id: Some("gpt-4".into()),
-            weight: 1.0,
-            enabled: true,
-        }],
-        rate_limit: RateLimitConfig::Token {
-            max_tokens: 1_000_000,
-            window_hours: None,
-            sliding: false,
-        },
-        concurrency: ConcurrencyConfig {
-            requests_per_second: 100,
-            max_concurrent_requests: None,
-            token_weighted: false,
-            token_ticket_min: 1,
-            token_ticket_max: 16384,
-            token_ticket_default: 4096,
-        },
-    }
+    common::ensure_test_api_key();
+    let mut v = common::base_vendor(id, api_base);
+    v.concurrency.requests_per_second = 100;
+    v
 }
 
+/// recId=7：max_retries=0 —— 500 直接冒泡（无内部重试），
+/// 每个请求恰好 1 次 HTTP，5 个请求即把 CB 失败计数推到阈值 5。
+/// server 字段无覆盖：本文件全部走 mockito 动态端口与进程内装配，
+/// 不 bind 任何服务，基座的 127.0.0.1:0 即可。
 fn make_config(vendors: Vec<VendorConfig>) -> Config {
     Config {
-        rate_limit: Default::default(),
-        server: ServerConfig {
-            host: "0.0.0.0".into(),
-            port: 8080,
-        },
-        database: DatabaseConfig {
-            path: ":memory:".into(),
-            pool_size: 1,
-        },
-        vendors,
-        global_model: Some(GlobalModelConfig {
-            enabled: true,
-            strategy: "weighted".into(),
-        }),
-        pricing: vec![],
-        auth: None,
-        cors: None,
-        // recId=7：max_retries=0 —— 500 直接冒泡（无内部重试），
-        // 每个请求恰好 1 次 HTTP，5 个请求即把 CB 失败计数推到阈值 5
         retry: RetrySection {
             max_retries: 0,
             ..Default::default()
         },
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
-        admission: Default::default(),
-        grpc: None,
-        resilience: nexusflow::config::ResilienceSection::default(),
+        ..common::test_config(vendors)
     }
 }
 
@@ -347,7 +302,10 @@ async fn circuit_recovers_after_timeout_via_probes_and_route_resumes() {
 
     let v_a = make_vendor("vendor_a", server_a.url());
     let v_b = make_vendor("vendor_b", server_b.url());
-    let cm = Arc::new(ConfigManager::new(make_config(vec![v_a, v_b])));
+    // 短窗口注入：CB 语义与生产 30s 一致，仅时间尺度缩短（31s→亚秒）
+    let mut cfg = make_config(vec![v_a, v_b]);
+    cfg.resilience.circuit_open_timeout_ms = OPEN_WINDOW_MS;
+    let cm = Arc::new(ConfigManager::new(cfg));
     let manager = Arc::new(VendorManager::new(cm.clone()));
     manager.initialize().await.expect("init should succeed");
     let router = Router::new(cm, manager.clone());
@@ -371,7 +329,7 @@ async fn circuit_recovers_after_timeout_via_probes_and_route_resumes() {
         assert_eq!(decision.vendor.id, "vendor_b", "熔断 vendor 被排除");
     }
 
-    // 阶段 2：真实睡眠越过 CB open_timeout(30s)，注销失败 mock、改挂成功 mock
+    // 阶段 2：短窗睡眠越过 CB open_timeout(300ms)，注销失败 mock、改挂成功 mock
     drop(mock_fail);
     let mock_ok = server_a
         .mock("POST", "/v1/chat/completions")
@@ -380,7 +338,7 @@ async fn circuit_recovers_after_timeout_via_probes_and_route_resumes() {
         .expect(3)
         .create_async()
         .await;
-    tokio::time::sleep(Duration::from_secs(31)).await;
+    tokio::time::sleep(Duration::from_millis(WINDOW_SLEEP_MS)).await;
 
     // 超时放行：get_status 不再 Unavailable（探测窗口开启）。
     //
@@ -506,6 +464,10 @@ async fn cover_all_paths_wraps_stream_and_passthrough_dispatch() {
 /// CB Open 超时窗口过后：首次探针成功使状态停在 HalfOpen
 ///（success_threshold=3 未满），get_status 的 HalfOpen 臂放行探测流量
 ///（不判 Unavailable）——「半开窗口必须存在放行通路」的语义断言。
+///
+/// 经 [resilience].circuit_open_timeout_ms 注入 300ms 短窗口：语义与
+/// 生产 30s 完全一致（elapsed >= threshold 的 limiteron 判定），仅
+/// 时间尺度缩短，测试从 31s 真实睡眠降到亚秒级。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn half_open_admits_probe_and_get_status_releases_traffic() {
     let mut server = mockito::Server::new_async().await;
@@ -518,7 +480,9 @@ async fn half_open_admits_probe_and_get_status_releases_traffic() {
         .await;
 
     let v = make_vendor("vendor_halfopen", server.url());
-    let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+    let mut config = make_config(vec![v]);
+    config.resilience.circuit_open_timeout_ms = OPEN_WINDOW_MS;
+    let cm = Arc::new(ConfigManager::new(config));
     let manager = Arc::new(VendorManager::new(cm));
     manager.initialize().await.expect("init should succeed");
 
@@ -534,7 +498,7 @@ async fn half_open_admits_probe_and_get_status_releases_traffic() {
         "5 次失败后熔断"
     );
 
-    // 真实睡眠越过 CB open_timeout(30s)，换挂成功 mock 供探针命中
+    // 睡过 300ms 短窗口，换挂成功 mock 供探针命中
     drop(mock_fail);
     let mock_ok = server
         .mock("POST", "/v1/chat/completions")
@@ -543,7 +507,7 @@ async fn half_open_admits_probe_and_get_status_releases_traffic() {
         .expect(1)
         .create_async()
         .await;
-    tokio::time::sleep(Duration::from_secs(31)).await;
+    tokio::time::sleep(Duration::from_millis(WINDOW_SLEEP_MS)).await;
 
     // 1 次探针成功：Open→HalfOpen 转换发生在 CB execute 内部，
     // success_threshold=3 未满 → 停在 HalfOpen

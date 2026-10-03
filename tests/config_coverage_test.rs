@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
 
 //! config 模块覆盖率补充测试。
 //!
@@ -15,12 +17,11 @@
 //! 不做"调用不报错"式断言。
 
 use nexusflow::config::loader::ConfigLoader;
-use nexusflow::config::{
-    CacheSection, ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, RateLimitConfig,
-    ResilienceSection, RetrySection, RoutingSection, ServerConfig, VendorConfig,
-};
+use nexusflow::config::{Config, ConfigManager, RateLimitConfig, RoutingSection, ServerConfig};
 use nexusflow::error::NexusFlowError;
 use std::path::PathBuf;
+
+mod common;
 
 /// 写临时 TOML 并返回路径（临时目录 + 进程号隔离，避免并行任务互踩）
 fn temp_toml(name: &str, content: &str) -> PathBuf {
@@ -271,6 +272,47 @@ model_id = "dup-model"
     }
 }
 
+/// [resilience].circuit_open_timeout_ms 下限校验：窗口 <100ms 使 Open→HalfOpen
+/// 即刻转换，故障期退化为探针风暴（等于关闭熔断冷却）。加载与热更新共用
+/// validate_config，两路同拒；下限值本身必须放行。
+#[test]
+fn loader_rejects_circuit_open_timeout_below_floor() {
+    const VENDOR_TOML: &str = r#"
+[server]
+host = "127.0.0.1"
+[database]
+[[vendors]]
+id = "cb_window_vendor"
+name = "A"
+type_ = "openai"
+api_key_env = "K"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+"#;
+
+    for value in [0u64, 50, 99] {
+        let path = temp_toml(
+            "cb-window-small.toml",
+            &format!("{VENDOR_TOML}\n[resilience]\ncircuit_open_timeout_ms = {value}\n"),
+        );
+        match load_from(&path).map(|_| ()) {
+            Err(NexusFlowError::Config { message }) => {
+                assert!(
+                    message.contains(&value.to_string()),
+                    "窗口下限错误必须插值携带配置值: {message}"
+                );
+            }
+            other => panic!("circuit_open_timeout_ms={value} 必须被拒绝，实际 {other:?}"),
+        }
+    }
+
+    let path = temp_toml(
+        "cb-window-floor.toml",
+        &format!("{VENDOR_TOML}\n[resilience]\ncircuit_open_timeout_ms = 100\n"),
+    );
+    load_from(&path).expect("100ms 下限值必须放行");
+}
+
 #[test]
 fn loader_reports_toml_syntax_and_type_errors_distinctly() {
     // TOML 语法错 → confers 加载层错误（config-load-failed）
@@ -368,51 +410,24 @@ concurrency = {{ requests_per_second = 1 }}
 }
 
 fn minimal_config(vendor_id: &str) -> Config {
+    // 与共享基座的差异字段（显式保留原值）：本文件测 RMW/落盘链路，不解析
+    // 模型——空模型列表、Interval 限流、rps 10、无全局模型是"最小可落盘"形态
+    let mut vendor = common::base_vendor(vendor_id, String::new());
+    vendor.name = "Cov Vendor".into();
+    vendor.api_key_env = "NX_COV_KEY".into();
+    vendor.models = vec![];
+    vendor.rate_limit = RateLimitConfig::Interval {
+        hours: 1,
+        sliding: false,
+    };
+    vendor.concurrency.requests_per_second = 10;
     Config {
-        rate_limit: Default::default(),
         server: ServerConfig {
             host: "127.0.0.1".into(),
             port: 8080,
         },
-        database: DatabaseConfig {
-            path: ":memory:".into(),
-            pool_size: 1,
-        },
-        vendors: vec![VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: vendor_id.to_string(),
-            name: "Cov Vendor".into(),
-            type_: "openai".into(),
-            api_key_env: "NX_COV_KEY".into(),
-            api_base: String::new(),
-            enabled: true,
-            priority: 1,
-            models: vec![],
-            rate_limit: RateLimitConfig::Interval {
-                hours: 1,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 10,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }],
         global_model: None,
-        pricing: vec![],
-        auth: None,
-        cors: None,
-        retry: RetrySection::default(),
-        routing: RoutingSection::default(),
-        cache: CacheSection::default(),
-        admission: Default::default(),
-        grpc: None,
-        resilience: ResilienceSection::default(),
+        ..common::test_config(vec![vendor])
     }
 }
 

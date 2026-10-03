@@ -18,6 +18,9 @@
 //!   主 vendor 重试耗尽 → 第二 vendor 接管且客户端拿到成功响应；
 //!   仅一个合格 vendor 失败 → 503 冒泡而非死循环
 
+#![allow(dead_code)]
+mod common;
+
 #[cfg(test)]
 mod tests {
     use nexusflow::error::NexusFlowError;
@@ -466,14 +469,10 @@ mod tests {
         use std::sync::Arc;
         use tower::ServiceExt;
 
-        fn ensure_test_api_key() {
-            std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        }
-
         /// type_ = "anthropic"：入站 OpenAI 请求走转换路径
         /// （execute_request），fallback 循环生效；避免同格式透传绕过。
         fn make_vendor(id: &str, priority: u8, api_base: String) -> VendorConfig {
-            ensure_test_api_key();
+            crate::common::ensure_test_api_key();
             VendorConfig {
                 timeout_ms: 60_000,
                 stream_ttft_ms: 60_000,

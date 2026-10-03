@@ -1,4 +1,5 @@
 use crate::sdk::client::NexusFlowClientBuilder;
+use crate::sdk::error::NexusFlowSdkError;
 use crate::sdk::stream::ChatStream;
 use crate::sdk::ChatRequest;
 use bytes::Bytes;
@@ -135,4 +136,41 @@ async fn stream_survives_beyond_total_timeout() {
         .filter_map(|d| d.content.clone())
         .collect();
     assert_eq!(text, "ab", "两帧都必须在总超时之外送达");
+}
+
+/// read_timeout 停滞看护的负向锁定：帧间停滞（1s）远超 read_timeout
+///（200ms）时，流必须报错终止而不是无限悬挂。总超时不约束流式（上一
+/// 条测试），「连接停滞被切断」的承诺由 read_timeout 承担。
+#[tokio::test]
+async fn stream_errors_when_stall_exceeds_read_timeout() {
+    let base_url = spawn_chunked_sse_server(Duration::from_secs(1)).await;
+    let client = NexusFlowClientBuilder::new()
+        .base_url(&base_url)
+        .api_key("test-key")
+        .read_timeout(Duration::from_millis(200))
+        .build()
+        .unwrap();
+
+    let mut stream = client
+        .chat_stream(&ChatRequest::new("gpt-4", "hi"))
+        .await
+        .expect("首帧前无停滞，响应应正常建立");
+
+    let first = stream
+        .next()
+        .await
+        .expect("流不应在首帧前终止")
+        .expect("首帧应在停滞前正常解码");
+    assert_eq!(first.delta.as_ref().unwrap().content.as_deref(), Some("a"));
+
+    // 第二帧前服务器停滞 1s > read_timeout 200ms：必须及时报错。
+    // 外层 5s 兜底仅防测试悬挂，断言目标是 read_timeout 切断本身。
+    let second = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("read_timeout 必须切断停滞，不能拖到外层兜底");
+    let err = second.expect("停滞切断后流应以错误帧收尾").unwrap_err();
+    assert!(
+        matches!(err, NexusFlowSdkError::Stream { .. }),
+        "停滞切断应以上游读取错误呈现，实际: {err:?}"
+    );
 }

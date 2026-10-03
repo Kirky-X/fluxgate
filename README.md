@@ -331,13 +331,14 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 ```bash
 # 构建镜像（多阶段：rust:1.92-alpine 构建 → alpine:3.21 运行，非 root）
-docker build -t nexusflow:latest .
+# 注意：-f 指定 Dockerfile，构建上下文仍为仓库根（bind mount 与 .dockerignore 按根解析）
+docker build -t nexusflow:latest -f docker/Dockerfile .
 
 # 运行容器（SQLite 数据持久化于 /app/data）
 docker run -d -p 8080:8080 -v $(pwd)/data:/app/data nexusflow:latest
 
-# 或使用 docker-compose 一键部署（含资源限制与健康检查）
-docker-compose up -d
+# 或使用 docker-compose 一键部署（含资源限制与健康检查；compose 文件位于 docker/ 下）
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 > 健康检查：Dockerfile 与 docker-compose 的 HEALTHCHECK 均探测实际注册路径 `/api/v1/health`；docker-compose 自带资源限制（cpus 2 / 内存 512M）与非 root 运行时（详见 [📖 用户指南 · Docker 部署](docs/USER_GUIDE.md)）。

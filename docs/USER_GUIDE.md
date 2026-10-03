@@ -431,6 +431,8 @@ flowchart TB
 
 ### 镜像构建
 
+Docker 相关文件位于 `docker/` 目录：`docker/Dockerfile`（构建定义）与 `docker/docker-compose.yml`（部署编排）；`.dockerignore` 留在仓库根——构建上下文是仓库根，忽略规则按上下文根解析。构建命令见 [README](../README.md#-docker-部署)。
+
 两阶段构建：`rust:1.92-alpine`（编译）→ `alpine:3.21`（运行），运行态仅含 libssl3 / sqlite / ca-certificates，以非 root 用户 `appuser`（UID/GID 10001）运行，`EXPOSE 8080`，数据目录 `/app/data`。
 
 ```mermaid

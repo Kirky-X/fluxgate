@@ -332,13 +332,16 @@ Please do not report security vulnerabilities through public issues. Use the Git
 
 ```bash
 # Build (multi-stage: rust:1.92-alpine build → alpine:3.21 runtime, non-root)
-docker build -t nexusflow:latest .
+# Note: -f points at the Dockerfile while the build context stays at the repo
+# root (bind mounts and .dockerignore resolve against the context root)
+docker build -t nexusflow:latest -f docker/Dockerfile .
 
 # Run (SQLite data persists under /app/data)
 docker run -d -p 8080:8080 -v $(pwd)/data:/app/data nexusflow:latest
 
 # Or one-command deployment with resource limits and health checks
-docker-compose up -d
+# (the compose file lives under docker/)
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 > Health check: the HEALTHCHECK in both the Dockerfile and docker-compose probes the registered path `/api/v1/health`; docker-compose ships with resource limits (2 CPUs / 512M) and a non-root runtime (see [📖 User Guide · Docker](docs/USER_GUIDE.md)).

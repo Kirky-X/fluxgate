@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "grpc", feature = "web-server", feature = "logging"))]
 
 //! gRPC 装配分支覆盖测试。

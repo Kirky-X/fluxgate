@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "web-server", feature = "logging"))]
 
 //! run 失败分支覆盖：[server].host 非 IPv4 → AddrParseError 映射为

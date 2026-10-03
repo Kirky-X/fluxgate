@@ -1,7 +1,9 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! recId=15：LinUCB bandit 纯函数与状态的集成侧单测——覆盖 d 维求逆
+//! LinUCB bandit 纯函数与状态的集成侧单测——覆盖 d 维求逆
 //! 防御分支、部分主元交换、特征提取边界、argmax 的 NaN 兜底与平局决断。
 
 #![cfg(feature = "router")]

@@ -8,6 +8,14 @@
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **gRPC 服务器**（`grpc` feature，独立门控不进 `full`——sdforge grpc 编译期需 protoc）：`src/server/grpc.rs` 镜像 HTTP 封装方式——`[grpc]` 配置段（默认禁用，显式 `enabled = true` opt-in）、`build_app` 装配后经 `ServerHandle::take_grpc_server` 产出 `GrpcServer`、`serve` 走 sdforge `build_server_with_graceful_shutdown`（signal 后停止接受新连接、等待 in-flight 完成，与 HTTP 侧 axum `with_graceful_shutdown` 同语义，停机信号经 watch 广播共享）。服务面为 sdforge `sdforge.v1.SdForgeService` 门面（GetInfo / Call / CallStream，JSON over gRPC）：Call/CallStream 逐调用校验 `[auth]` 段 SHA256 摘要（`x-api-key` 或 `authorization: Bearer`，常量时间比较，语义对齐 HTTP 中间件；`[auth]` 缺段或禁用时放行），GetInfo 免认证（对应 HTTP `/health` 白名单位置）。TLS 不经 sdforge 终结（外部反代承担）。`#[forge(grpc_method = "...")]` handler 经 inventory 注册即可被门面路由。冒烟测试 `grpc_smoke_test` 走真实 tonic 链路（认证边界 / handler 路由 / 优雅停机 / 句柄幂等）。
+
+---
+
 ## [0.1.0] - 2026-04-04
 
 自初始提交起在 0.1.0 版本线上落地的全部变更（63 个提交归纳）。

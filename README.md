@@ -212,7 +212,7 @@ flowchart TB
 
 路由决策体系、弹性层状态机、配置热更新事务语义、DI 组装与 i18n 架构的完整说明见 [🏗️ 架构文档](docs/ARCHITECTURE.md)。
 
-NexusFlow 同时是**库优先**组件：服务器装配链承载于 `nexusflow::server`（可独立部署的 HTTP 服务器），Rust 客户端承载于 `nexusflow::sdk`（`sdk` feature 门控）——二进制 `main.rs` 只是薄启动入口。
+NexusFlow 同时是**库优先**组件：服务器装配链承载于 `nexusflow::server`（可独立部署的 HTTP 服务器），Rust 客户端承载于 `nexusflow::sdk`（`sdk` feature 门控）——二进制 `main.rs` 只是薄启动入口。`grpc` feature（独立门控，不进 `full`）另提供 gRPC 服务器：sdforge `sdforge.v1.SdForgeService` 门面（GetInfo / Call / CallStream，JSON over gRPC）经 `take_grpc_server` 与 HTTP 同进程共存，认证复用 `[auth]` 段 SHA256 摘要，优雅停机与 HTTP 共享同一信号。
 
 ---
 

@@ -26,6 +26,7 @@
 //! | `--features "protocol infra"`    | OK    | protocol + infrastructure               |
 //! | `--features "protocol logging"`  | OK    | protocol + logging                      |
 //! | `--features sdk`                 | OK    | sdk（reqwest + eventsource-stream）      |
+//! | `--features "web-server logging grpc"` | OK | grpc → sdforge/grpc（另受 web-server+logging 门控，需 protoc）|
 //! | `--no-default-features`          | OK    | 仅核心（config/error/i18n/protocol/utils）|
 //!
 //! ## Feature 依赖图
@@ -33,6 +34,7 @@
 //! ```text
 //! web-server ──┬─→ router ──→ vendor-management ──→ database ──→ protocol
 //!              └─→ sdforge-integration
+//! grpc            (独立 feature；server::grpc 实际可见组合 = web-server + logging + grpc)
 //! infrastructure  (独立)
 //! logging         (独立)
 //! ```
@@ -156,6 +158,18 @@ fn test_sdk_module_available() {
 fn test_server_module_available() {
     let _ = nexusflow::server::run;
     let _ = nexusflow::server::build_app;
+}
+
+/// grpc feature：gRPC 服务器模块可访问（server 子模块，另受
+/// web-server + logging 门控——实际可运行组合为三 feature 联合）
+#[cfg(feature = "grpc")]
+#[test]
+fn test_grpc_module_available() {
+    let _ = std::marker::PhantomData::<nexusflow::server::GrpcServer>;
+    let _ = nexusflow::config::GrpcConfig {
+        enabled: true,
+        ..Default::default()
+    };
 }
 
 /// core-only 等价验证：sdk 关闭不侵蚀核心类型。

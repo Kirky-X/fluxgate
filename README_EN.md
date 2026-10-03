@@ -212,7 +212,7 @@ flowchart TB
 
 The full routing decision system, resilience state machines, hot-reload transaction semantics, DI assembly and i18n design are documented in the [🏗️ Architecture guide](docs/ARCHITECTURE.md).
 
-NexusFlow is also a **library-first** component set: the server assembly chain lives in `nexusflow::server` (an independently deployable HTTP server) and the Rust client lives in `nexusflow::sdk` (gated behind the `sdk` feature) — the binary `main.rs` is only a thin bootstrap.
+NexusFlow is also a **library-first** component set: the server assembly chain lives in `nexusflow::server` (an independently deployable HTTP server) and the Rust client lives in `nexusflow::sdk` (gated behind the `sdk` feature) — the binary `main.rs` is only a thin bootstrap. The `grpc` feature (independently gated, not part of `full`) additionally provides a gRPC server: the sdforge `sdforge.v1.SdForgeService` facade (GetInfo / Call / CallStream, JSON over gRPC) coexists with HTTP in the same process via `take_grpc_server`, authentication reuses the `[auth]` section SHA256 digests, and graceful shutdown shares the same signal as HTTP.
 
 ---
 

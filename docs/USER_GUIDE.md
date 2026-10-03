@@ -17,6 +17,7 @@
 - [配置热更新操作指南](#-配置热更新操作指南)
 - [Docker 部署](#-docker-部署)
 - [运维手册](#-运维手册)
+- [gRPC 服务器 grpc](#-grpc-服务器-grpc)
 - [Rust SDK 一览](#-rust-sdk-一览)
 - [延伸阅读](#-延伸阅读)
 
@@ -497,6 +498,50 @@ healthcheck:
 | 配置改了没生效 | 对照热生效段表；`rate_limit` / `concurrency` / `database` 需重启 |
 | 成本统计恒 0 | 核对 `[[pricing]]` 的 (vendor_id, model_id) 是否与实际路由完全一致 |
 | 更多怪癖 | 见 [FAQ](./FAQ.md) |
+
+---
+
+## 🌐 gRPC 服务器 grpc
+
+`grpc` feature（独立门控，**不进** `full`——sdforge 的 grpc 编译期需要 `protoc`）提供 gRPC 服务器，与 HTTP 同进程共存：
+
+```toml
+# config.toml
+[grpc]
+enabled = true        # 默认 false，显式启用
+host = "0.0.0.0"
+port = 50051          # gRPC 惯例端口
+timeout_seconds = 30  # per-call 超时，0 = 不限
+max_connections = 1000
+# http2_keepalive_interval_secs = 30
+# http2_keepalive_timeout_secs = 10
+```
+
+| 项 | 说明 |
+|:---|:-----|
+| 启用方式 | `cargo build --features grpc`（或在 `full` 之上追加）；本段缺席或 `enabled = false` 时完全不监听，行为与历史版本逐位一致 |
+| 服务面 | sdforge `sdforge.v1.SdForgeService` 门面：`GetInfo`（免认证）/ `Call` / `CallStream`（JSON over gRPC，`#[forge(grpc_method = "...")]` 声明的 handler 经 inventory 自动注册） |
+| 认证 | Call/CallStream 逐调用校验 `[auth]` 段 SHA256 摘要（`x-api-key` metadata 或 `authorization: Bearer <key>`，常量时间比较）；`[auth]` 缺段或禁用时放行。**与 HTTP 的差异**：gRPC 无 `/health` 式 method 白名单（GetInfo 免认证是 sdforge 门面现状，其余一律要求 key） |
+| 优雅停机 | Ctrl+C/SIGTERM 一次触发：HTTP 与 gRPC 并行排空 in-flight（gRPC 排空上限 30s），完成后统一 flush 日志管道 |
+| TLS | 不经 sdforge 终结（明文监听），与 `[server]` 同策略——由外部反代承担 |
+| 热更新 | `[grpc]` 段为**建站期消费**（固化于服务器构造），更新后需重启进程 |
+
+**gRPC 客户端调用示例**（任意 tonic 客户端，以 sdforge 生成的门面 client 为例）：
+
+```rust
+use sdforge::grpc::sdforge_v1::{CallRequest, sd_forge_service_client::SdForgeServiceClient};
+
+let mut client = SdForgeServiceClient::connect("http://127.0.0.1:50051").await?;
+let mut request = tonic::Request::new(CallRequest {
+    method: "nexusflow.health".into(),   // 任意 #[forge(grpc_method)] 注册的方法名
+    parameters: Default::default(),
+    data: r#"{"prompt":"hi"}"#.into(),   // JSON 载荷经门面分发到 handler
+});
+request.metadata_mut().insert("x-api-key", "<your-key>".parse()?);
+let response = client.call(request).await?;   // CallResponse.data 为 handler JSON 输出
+```
+
+> 嵌入式用法：`build_app` 后经 `ServerHandle::take_grpc_server()` 取出 `GrpcServer`，自行 `tokio::spawn(server.serve(signal))`——装配不等于启动。
 
 ---
 

@@ -1,6 +1,10 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "vendor-management")]
+
+mod common;
 
 mod status {
     use nexusflow::vendor::{VendorState, VendorStatus};
@@ -195,22 +199,17 @@ mod manager {
     //! - HTTP 测试断言响应 JSON 内容、错误类型字段、副作用（token 消耗）
     //! - 包含端到端集成场景（execute_request 经 worker 执行完整 HTTP 流程）
 
-    use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, ServerConfig, VendorConfig,
-    };
+    use crate::common;
+    use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
     use nexusflow::error::NexusFlowError;
     use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
     use nexusflow::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// 确保测试所需的 API key 环境变量存在（map_err 修复后必须设置）
-    fn ensure_test_api_key() {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-    }
-
-    /// 构造测试 vendor config
+    /// 构造测试 vendor config：type_/enabled/rate_limit 为参数化差异字段，
+    /// 其余走共享基座；rps=100 让 TokenBucket 立即放行，避免 acquire 阻塞
+    /// （本文件语义，显式覆盖基座 1000）
     fn make_vendor(
         id: &str,
         type_: &str,
@@ -218,36 +217,13 @@ mod manager {
         api_base: String,
         rate_limit: RateLimitConfig,
     ) -> VendorConfig {
-        ensure_test_api_key();
-        VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.into(),
-            name: format!("Test {}", id),
-            type_: type_.into(),
-            // make_vendor() 会设置 NEXUSFLOW_TEST_KEY 环境变量
-            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
-            api_base,
-            enabled,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "gpt-4".into(),
-                abstract_id: Some("gpt-4".into()),
-                weight: 1.0,
-                enabled: true,
-            }],
-            rate_limit,
-            // rps=100 让 TokenBucket 立即放行，避免 acquire 阻塞
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }
+        common::ensure_test_api_key();
+        let mut v = common::base_vendor(id, api_base);
+        v.type_ = type_.into();
+        v.enabled = enabled;
+        v.rate_limit = rate_limit;
+        v.concurrency.requests_per_second = 100;
+        v
     }
 
     fn token_limit(max: u64) -> RateLimitConfig {
@@ -260,29 +236,12 @@ mod manager {
 
     fn make_config(vendors: Vec<VendorConfig>) -> Config {
         Config {
-            rate_limit: Default::default(),
+            // 本文件语义：0.0.0.0:8080（共享基座为 127.0.0.1:0，显式保留）
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors,
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vendors)
         }
     }
 
@@ -1027,80 +986,31 @@ mod manager {
     // 此前唯一生产记账点在透传非流式 —— 转换路径（worker）与失败路径是盲区。
 
     mod metrics_paths {
-        use nexusflow::config::{
-            ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig,
-            ModelConfig, RateLimitConfig, ServerConfig, VendorConfig,
-        };
+        use crate::common;
+        use nexusflow::config::{Config, ConfigManager, ServerConfig, VendorConfig};
         use nexusflow::error::NexusFlowError;
         use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
         use nexusflow::vendor::VendorManager;
         use std::sync::Arc;
         use std::time::Duration;
 
-        fn ensure_test_api_key() {
-            std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        }
-
+        /// 本文件语义：rps=100（TokenBucket 立即放行，显式覆盖基座 1000），
+        /// 其余走共享基座
         fn make_vendor(id: &str, api_base: String) -> VendorConfig {
-            ensure_test_api_key();
-            VendorConfig {
-                timeout_ms: 60_000,
-                stream_ttft_ms: 60_000,
-                stream_idle_ms: 30_000,
-                id: id.into(),
-                name: format!("Test {}", id),
-                type_: "openai".into(),
-                api_key_env: "NEXUSFLOW_TEST_KEY".into(),
-                api_base,
-                enabled: true,
-                priority: 1,
-                models: vec![ModelConfig {
-                    model_id: "gpt-4".into(),
-                    abstract_id: Some("gpt-4".into()),
-                    weight: 1.0,
-                    enabled: true,
-                }],
-                rate_limit: RateLimitConfig::Token {
-                    max_tokens: 1_000_000,
-                    window_hours: None,
-                    sliding: false,
-                },
-                concurrency: ConcurrencyConfig {
-                    requests_per_second: 100,
-                    max_concurrent_requests: None,
-                    token_weighted: false,
-                    token_ticket_min: 1,
-                    token_ticket_max: 16384,
-                    token_ticket_default: 4096,
-                },
-            }
+            common::ensure_test_api_key();
+            let mut v = common::base_vendor(id, api_base);
+            v.concurrency.requests_per_second = 100;
+            v
         }
 
         fn make_config(vendors: Vec<VendorConfig>) -> Config {
             Config {
-                rate_limit: Default::default(),
+                // 本文件语义：0.0.0.0:8080（共享基座为 127.0.0.1:0，显式保留）
                 server: ServerConfig {
                     host: "0.0.0.0".into(),
                     port: 8080,
                 },
-                database: DatabaseConfig {
-                    path: ":memory:".into(),
-                    pool_size: 1,
-                },
-                vendors,
-                global_model: Some(GlobalModelConfig {
-                    enabled: true,
-                    strategy: "weighted".into(),
-                }),
-                pricing: vec![],
-                auth: None,
-                cors: None,
-                retry: nexusflow::config::RetrySection::default(),
-                routing: nexusflow::config::RoutingSection::default(),
-                cache: nexusflow::config::CacheSection::default(),
-                admission: Default::default(),
-                grpc: None,
-                resilience: nexusflow::config::ResilienceSection::default(),
+                ..common::test_config(vendors)
             }
         }
 
@@ -1949,6 +1859,7 @@ mod token_weighted_tickets {
     //! 估算双形态的 clamp 边界与量级一致性、acquire_many 语义（60×2 挤出
     //! 第三张）、全链路挤压（32k 长会话独占容量）。
 
+    use crate::common;
     use nexusflow::vendor::manager::{estimate_cost_json, estimate_cost_unified, TicketPolicy};
     use nexusflow::vendor::{ConcurrencyLimiter, VendorManager};
     use std::sync::Arc;
@@ -2115,7 +2026,7 @@ mod token_weighted_tickets {
     }
 
     async fn make_weighted_manager(api_base: String, weighted: bool) -> Arc<VendorManager> {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
+        common::ensure_test_api_key();
         let config = nexusflow::config::Config {
             rate_limit: Default::default(),
             server: nexusflow::config::ServerConfig {
@@ -2175,61 +2086,28 @@ mod token_weighted_tickets {
 /// reset_secs=0 → window_end=now → 最健康 vendor 恒 window_factor 0.5。
 #[tokio::test]
 async fn sliding_empty_window_not_ending_soon_in_window_info() {
-    use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig,
-        RateLimitConfig, ServerConfig, VendorConfig,
-    };
+    use crate::common;
+    use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig};
     use nexusflow::vendor::VendorManager;
     use std::sync::Arc;
+    let mut v = common::base_vendor("v-slide", "");
+    // 本文件语义差异，显式覆盖：展示名 V、空模型表、空窗 sliding 小额度窗口、
+    // rps=100（基座为单 gpt-4 模型、Token 1_000_000 非滑动、rps=1000）
+    v.name = "V".into();
+    v.models = vec![];
+    v.rate_limit = RateLimitConfig::Token {
+        max_tokens: 10,
+        window_hours: Some(1),
+        sliding: true,
+    };
+    v.concurrency.requests_per_second = 100;
     let config = Config {
-        rate_limit: Default::default(),
+        // 本文件语义：0.0.0.0:8080（共享基座为 127.0.0.1:0，显式保留）
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
         },
-        database: DatabaseConfig {
-            path: ":memory:".into(),
-            pool_size: 1,
-        },
-        vendors: vec![VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: "v-slide".to_string(),
-            name: "V".into(),
-            type_: "openai".into(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
-            api_base: String::new(),
-            enabled: true,
-            priority: 1,
-            models: vec![],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 10,
-                window_hours: Some(1),
-                sliding: true,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }],
-        global_model: Some(GlobalModelConfig {
-            enabled: true,
-            strategy: "weighted".into(),
-        }),
-        pricing: vec![],
-        auth: None,
-        cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
-        admission: Default::default(),
-        grpc: None,
-        resilience: nexusflow::config::ResilienceSection::default(),
+        ..common::test_config(vec![v])
     };
     let cm = Arc::new(ConfigManager::new(config));
     let vm = VendorManager::new(cm);
@@ -2254,10 +2132,8 @@ async fn sliding_empty_window_not_ending_soon_in_window_info() {
 // TimeWindow 窗口内 window_end 计算。
 
 mod manager_paths {
-    use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, ServerConfig, VendorConfig,
-    };
+    use crate::common;
+    use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
     use nexusflow::error::NexusFlowError;
     use nexusflow::protocol::{Message, MessageContent, Role, StreamChunk, UnifiedRequest};
     use nexusflow::vendor::VendorManager;
@@ -2296,42 +2172,20 @@ mod manager_paths {
         });
     }
 
-    // 恒值 env 写入：edition 2021 下 set_var 与并行线程的 getenv 存在理论
-    // 竞态；本键值恒定且仅在装配前写入，若迁移 edition 2024 需改为一次性初始化
+    /// 参数化字段（type_/rate_limit）按调用点传入，其余走共享基座；
+    /// rps=100 让 TokenBucket 立即放行（本文件语义，显式覆盖基座 1000）
     fn make_vendor(
         id: &str,
         type_: &str,
         api_base: String,
         rate_limit: RateLimitConfig,
     ) -> VendorConfig {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.into(),
-            name: format!("Test {}", id),
-            type_: type_.into(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
-            api_base,
-            enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "gpt-4".into(),
-                abstract_id: Some("gpt-4".into()),
-                weight: 1.0,
-                enabled: true,
-            }],
-            rate_limit,
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }
+        common::ensure_test_api_key();
+        let mut v = common::base_vendor(id, api_base);
+        v.type_ = type_.into();
+        v.rate_limit = rate_limit;
+        v.concurrency.requests_per_second = 100;
+        v
     }
 
     fn token_limit(max: u64) -> RateLimitConfig {
@@ -2344,29 +2198,12 @@ mod manager_paths {
 
     fn make_config(vendors: Vec<VendorConfig>) -> Config {
         Config {
-            rate_limit: Default::default(),
+            // 本文件语义：0.0.0.0:8080（共享基座为 127.0.0.1:0，显式保留）
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors,
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vendors)
         }
     }
 

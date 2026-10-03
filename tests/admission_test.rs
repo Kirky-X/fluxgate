@@ -3,9 +3,10 @@
 // recId=16：拥塞感知优先级准入 — 纯函数单元 + AdmissionState 行为 +
 // 中间件集成（构建于 #3 的 InboundLimitState / create_router 测试模式）。
 
+mod common;
+
 use nexusflow::config::{
-    AdmissionSection, AuthKeyEntry, AuthSection, AuthTier, Config, ConfigManager, DatabaseConfig,
-    GlobalModelConfig, ServerConfig,
+    AdmissionSection, AuthKeyEntry, AuthSection, AuthTier, Config, ConfigManager, ServerConfig,
 };
 use nexusflow::middleware::admission::{
     admission_priority, tier_for_request, tier_weight, AdmissionState, RETRY_AFTER_SECS,
@@ -85,60 +86,27 @@ fn priority_debt_suppression_exact() {
 // ============ AdmissionState 行为 ============
 
 fn vendor_config(id: &str, max_concurrent: Option<usize>) -> nexusflow::config::VendorConfig {
-    std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-    nexusflow::config::VendorConfig {
-        timeout_ms: 60_000,
-        stream_ttft_ms: 60_000,
-        stream_idle_ms: 30_000,
-        id: id.to_string(),
-        name: format!("Vendor {id}"),
-        type_: "openai".to_string(),
-        api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-        api_base: String::new(),
-        enabled: true,
-        priority: 1,
-        models: vec![],
-        rate_limit: nexusflow::config::RateLimitConfig::Token {
-            max_tokens: 1_000_000,
-            window_hours: None,
-            sliding: false,
-        },
-        concurrency: nexusflow::config::ConcurrencyConfig {
-            requests_per_second: 100,
-            max_concurrent_requests: max_concurrent,
-            token_weighted: false,
-            token_ticket_min: 1,
-            token_ticket_max: 16384,
-            token_ticket_default: 4096,
-        },
-    }
+    common::ensure_test_api_key();
+    // 与共享基座的差异字段（显式保留原值）：max_concurrent 是拥塞 shed 的
+    // 驱动值（测试语义主体，必须留在覆盖处）；空模型列表与 "Vendor {id}"
+    // 命名为本文件历史形态
+    let mut v = common::base_vendor(id, String::new());
+    v.name = format!("Vendor {id}");
+    v.models = vec![];
+    v.concurrency.requests_per_second = 100;
+    v.concurrency.max_concurrent_requests = max_concurrent;
+    v
 }
 
 fn config_with(admission: AdmissionSection) -> Config {
+    // 与共享基座的差异字段（显式保留原值）：admission 段是测试语义主体
     Config {
-        rate_limit: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
         },
-        database: DatabaseConfig {
-            path: ":memory:".into(),
-            pool_size: 1,
-        },
-        vendors: vec![vendor_config("v1", Some(2))],
-        global_model: Some(GlobalModelConfig {
-            enabled: true,
-            strategy: "weighted".into(),
-        }),
-        pricing: vec![],
-        auth: None,
-        cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
-        resilience: nexusflow::config::ResilienceSection::default(),
         admission,
-        grpc: None,
+        ..common::test_config(vec![vendor_config("v1", Some(2))])
     }
 }
 
@@ -370,12 +338,12 @@ fn tier_for_request_resolves_auth_keys_table() {
 // ============ 全链路集成（create_router，rate_limit_test 同模式）============
 
 mod full_chain {
+    use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, Router};
     use dbnexus::{DbConfig, DbPool};
     use nexusflow::api::create_router;
     use nexusflow::config::{
-        AdmissionSection, AuthKeyEntry, AuthSection, AuthTier, Config, ConfigManager,
-        DatabaseConfig, GlobalModelConfig, ServerConfig,
+        AdmissionSection, AuthKeyEntry, AuthSection, AuthTier, Config, ConfigManager, ServerConfig,
     };
     use nexusflow::database::Database;
     use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
@@ -390,61 +358,35 @@ mod full_chain {
     }
 
     fn config_with_admission(enabled: bool, with_model: bool) -> Config {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
+        common::ensure_test_api_key();
         let ded = digest("dedicated-key");
         let spot = digest("spot-key");
+        // 与共享基座的差异字段（显式保留原值）：短超时 1.5s 使 dedicated 请求
+        // 挂在不响应的本地监听上，超时返回前中间件 guard 一直持有（= dedicated
+        // 在途）；max_concurrent=2 是拥塞 shed 的驱动值；api_base 保持空，
+        // 由 build_app_with_base 改写为挂起监听地址
+        let mut vendor = common::base_vendor("v1", String::new());
+        vendor.timeout_ms = 1_500;
+        vendor.stream_ttft_ms = 1_500;
+        vendor.stream_idle_ms = 1_500;
+        vendor.name = "V1".into();
+        vendor.models = if with_model {
+            vec![nexusflow::config::ModelConfig {
+                model_id: "gpt-4".to_string(),
+                abstract_id: Some("gpt-4".to_string()),
+                weight: 1.0,
+                enabled: true,
+            }]
+        } else {
+            vec![]
+        };
+        vendor.concurrency.requests_per_second = 100;
+        vendor.concurrency.max_concurrent_requests = Some(2);
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors: vec![nexusflow::config::VendorConfig {
-                // 短超时：dedicated 请求挂在不响应的本地监听上 ~1.5s 后
-                // 失败返回（期间中间件 guard 持有 = dedicated 在途）
-                timeout_ms: 1_500,
-                stream_ttft_ms: 1_500,
-                stream_idle_ms: 1_500,
-                id: "v1".to_string(),
-                name: "V1".to_string(),
-                type_: "openai".to_string(),
-                api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-                api_base: String::new(), // 测试内改写为挂起监听
-                enabled: true,
-                priority: 1,
-                models: if with_model {
-                    vec![nexusflow::config::ModelConfig {
-                        model_id: "gpt-4".to_string(),
-                        abstract_id: Some("gpt-4".to_string()),
-                        weight: 1.0,
-                        enabled: true,
-                    }]
-                } else {
-                    vec![]
-                },
-                rate_limit: nexusflow::config::RateLimitConfig::Token {
-                    max_tokens: 1_000_000,
-                    window_hours: None,
-                    sliding: false,
-                },
-                concurrency: nexusflow::config::ConcurrencyConfig {
-                    requests_per_second: 100,
-                    max_concurrent_requests: Some(2),
-                    token_weighted: false,
-                    token_ticket_min: 1,
-                    token_ticket_max: 16384,
-                    token_ticket_default: 4096,
-                },
-            }],
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
             auth: Some(AuthSection {
                 enabled: true,
                 api_keys: vec![ded.clone(), spot.clone()],
@@ -460,16 +402,11 @@ mod full_chain {
                     },
                 ],
             }),
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
-            resilience: nexusflow::config::ResilienceSection::default(),
             admission: AdmissionSection {
                 enabled,
                 ..Default::default()
             },
-            grpc: None,
+            ..common::test_config(vec![vendor])
         }
     }
 

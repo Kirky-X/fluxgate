@@ -1,21 +1,63 @@
 #![cfg(feature = "router")]
 
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
+mod common;
+
 #[cfg(test)]
 mod tests {
+    use crate::common;
     use nexusflow::config::{
-        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig,
-        VendorConfig,
+        Config, ConfigManager, DatabaseConfig, ModelConfig, RateLimitConfig, ServerConfig,
     };
     use nexusflow::router::{Router, RoutingStrategy};
     use nexusflow::vendor::VendorManager;
     use std::sync::Arc;
 
     fn create_router_test_config() -> Config {
+        // 与共享基座的差异字段（显式保留原值）：双 vendor 双 type_ 布局、
+        // Interval 限流、低 rps 与真实 db 路径是路由解析用例的语义主体
+        let mut openai = common::base_vendor("openai_primary", String::new());
+        openai.name = "OpenAI Primary".into();
+        openai.api_key_env = "OPENAI_API_KEY".into();
+        openai.models = vec![
+            ModelConfig {
+                model_id: "gpt-4".to_string(),
+                abstract_id: Some("gpt-4".to_string()),
+                weight: 1.0,
+                enabled: true,
+            },
+            ModelConfig {
+                model_id: "gpt-3.5-turbo".to_string(),
+                abstract_id: Some("gpt-3.5".to_string()),
+                weight: 2.0,
+                enabled: true,
+            },
+        ];
+        openai.rate_limit = RateLimitConfig::Interval {
+            hours: 1,
+            sliding: false,
+        };
+        openai.concurrency.requests_per_second = 10;
+        let mut anthropic = common::base_vendor("anthropic_primary", String::new());
+        anthropic.name = "Anthropic Primary".into();
+        anthropic.type_ = "anthropic".into();
+        anthropic.api_key_env = "ANTHROPIC_API_KEY".into();
+        anthropic.models = vec![ModelConfig {
+            model_id: "claude-3-5-sonnet-20241022".to_string(),
+            abstract_id: Some("claude-3.5-sonnet".to_string()),
+            weight: 1.5,
+            enabled: true,
+        }];
+        anthropic.rate_limit = RateLimitConfig::Interval {
+            hours: 1,
+            sliding: false,
+        };
+        anthropic.concurrency.requests_per_second = 5;
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
@@ -24,89 +66,7 @@ mod tests {
                 path: "./test.db".to_string(),
                 pool_size: 5,
             },
-            vendors: vec![
-                VendorConfig {
-                    timeout_ms: 60_000,
-                    stream_ttft_ms: 60_000,
-                    stream_idle_ms: 30_000,
-                    id: "openai_primary".to_string(),
-                    name: "OpenAI Primary".to_string(),
-                    type_: "openai".to_string(),
-                    api_key_env: "OPENAI_API_KEY".to_string(),
-                    api_base: "".to_string(),
-                    enabled: true,
-                    priority: 1,
-                    models: vec![
-                        ModelConfig {
-                            model_id: "gpt-4".to_string(),
-                            abstract_id: Some("gpt-4".to_string()),
-                            weight: 1.0,
-                            enabled: true,
-                        },
-                        ModelConfig {
-                            model_id: "gpt-3.5-turbo".to_string(),
-                            abstract_id: Some("gpt-3.5".to_string()),
-                            weight: 2.0,
-                            enabled: true,
-                        },
-                    ],
-                    rate_limit: nexusflow::config::RateLimitConfig::Interval {
-                        hours: 1,
-                        sliding: false,
-                    },
-                    concurrency: nexusflow::config::ConcurrencyConfig {
-                        requests_per_second: 10,
-                        max_concurrent_requests: None,
-                        token_weighted: false,
-                        token_ticket_min: 1,
-                        token_ticket_max: 16384,
-                        token_ticket_default: 4096,
-                    },
-                },
-                VendorConfig {
-                    timeout_ms: 60_000,
-                    stream_ttft_ms: 60_000,
-                    stream_idle_ms: 30_000,
-                    id: "anthropic_primary".to_string(),
-                    name: "Anthropic Primary".to_string(),
-                    type_: "anthropic".to_string(),
-                    api_key_env: "ANTHROPIC_API_KEY".to_string(),
-                    api_base: "".to_string(),
-                    enabled: true,
-                    priority: 1,
-                    models: vec![ModelConfig {
-                        model_id: "claude-3-5-sonnet-20241022".to_string(),
-                        abstract_id: Some("claude-3.5-sonnet".to_string()),
-                        weight: 1.5,
-                        enabled: true,
-                    }],
-                    rate_limit: nexusflow::config::RateLimitConfig::Interval {
-                        hours: 1,
-                        sliding: false,
-                    },
-                    concurrency: nexusflow::config::ConcurrencyConfig {
-                        requests_per_second: 5,
-                        max_concurrent_requests: None,
-                        token_weighted: false,
-                        token_ticket_min: 1,
-                        token_ticket_max: 16384,
-                        token_ticket_default: 4096,
-                    },
-                },
-            ],
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".to_string(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vec![openai, anthropic])
         }
     }
 
@@ -324,10 +284,8 @@ mod tests {
 
 #[cfg(test)]
 mod scheduling_weight {
-    use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, RoutingSection, ServerConfig, VendorConfig,
-    };
+    use crate::common;
+    use nexusflow::config::{Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig};
     use nexusflow::router::{compute_weight, Router, RoutingStrategy};
     use nexusflow::vendor::VendorManager;
     use rand::rngs::StdRng;
@@ -338,67 +296,29 @@ mod scheduling_weight {
     /// 两 vendor 同 abstract 模型、同 model.weight —— 差异只能来自运行时
     /// 因子（队列/窗口/EWMA）。
     fn make_two_vendor_config() -> Config {
-        let vendor = |id: &str| VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
-            enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：并发上限 1 是队列滞留用例的
+        // 语义主体（慢响应占满唯一 permit，后续请求滞留 worker 队列）
+        let vendor = |id: &str| {
+            let mut v = common::base_vendor(id, String::new());
+            v.name = format!("Vendor {id}");
+            v.models = vec![ModelConfig {
                 model_id: "shared-model".to_string(),
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
                 enabled: true,
-            }],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: Some(1),
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
+            }];
+            v.concurrency.requests_per_second = 100;
+            v.concurrency.max_concurrent_requests = Some(1);
+            v
         };
-        ensure_test_api_key();
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors: vec![vendor("idle-vendor"), vendor("busy-vendor")],
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vec![vendor("idle-vendor"), vendor("busy-vendor")])
         }
-    }
-
-    fn ensure_test_api_key() {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
     }
 
     /// recId=4①：塞 pending 请求不取走 → get_queue_length>0，且真实
@@ -1158,78 +1078,38 @@ mod scheduling_weight {
 
 #[cfg(test)]
 mod session_affinity {
-    use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, RoutingSection, ServerConfig, VendorConfig,
-    };
+    use crate::common;
+    use nexusflow::config::{Config, ConfigManager, ModelConfig, ServerConfig};
     use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
     use nexusflow::router::Router;
     use nexusflow::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn ensure_test_api_key() {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-    }
-
     /// 两 vendor 同 abstract 模型（shared-model）—— 亲和 boost 的最小场景
     fn make_two_vendor_config() -> Config {
-        ensure_test_api_key();
-        let vendor = |id: &str| VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
-            enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：并发上限 1 与 shared-model
+        // 单模型是亲和绑定的最小场景语义
+        let vendor = |id: &str| {
+            let mut v = common::base_vendor(id, String::new());
+            v.name = format!("Vendor {id}");
+            v.models = vec![ModelConfig {
                 model_id: "shared-model".to_string(),
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
                 enabled: true,
-            }],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: Some(1),
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
+            }];
+            v.concurrency.requests_per_second = 100;
+            v.concurrency.max_concurrent_requests = Some(1);
+            v
         };
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors: vec![vendor("vendor-a"), vendor("vendor-b")],
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vec![vendor("vendor-a"), vendor("vendor-b")])
         }
     }
 
@@ -1447,75 +1327,39 @@ mod session_affinity {
 
 #[cfg(test)]
 mod failure_rate_gate {
-    use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, ResilienceSection, ServerConfig, VendorConfig,
-    };
+    use crate::common;
+    use nexusflow::config::{Config, ConfigManager, ModelConfig, ResilienceSection, ServerConfig};
     use nexusflow::router::Router;
     use nexusflow::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Instant;
 
     fn make_two_vendor_config(gate: bool) -> Config {
-        let vendor = |id: &str| VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
-            enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：shared-model 单模型 +
+        // "Vendor {id}" 命名 + rps 100 为本模块历史形态
+        let vendor = |id: &str| {
+            let mut v = common::base_vendor(id, String::new());
+            v.name = format!("Vendor {id}");
+            v.models = vec![ModelConfig {
                 model_id: "shared-model".to_string(),
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
                 enabled: true,
-            }],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
+            }];
+            v.concurrency.requests_per_second = 100;
+            v
         };
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors: vec![vendor("degraded-vendor"), vendor("healthy-vendor")],
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
             resilience: ResilienceSection {
                 failure_rate_gate: gate,
                 ..ResilienceSection::default()
             },
+            ..common::test_config(vec![vendor("degraded-vendor"), vendor("healthy-vendor")])
         }
     }
 
@@ -1604,9 +1448,10 @@ mod failure_rate_gate {
 
 #[cfg(test)]
 mod cooldown_improvements {
+    use crate::common;
     use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, RoutingSection, ServerConfig, VendorConfig,
+        Config, ConfigManager, ModelConfig, RateLimitConfig, RoutingSection, ServerConfig,
+        VendorConfig,
     };
     use nexusflow::error::NexusFlowError;
     use nexusflow::router::Router;
@@ -1614,65 +1459,34 @@ mod cooldown_improvements {
     use std::sync::Arc;
 
     fn make_vendor(id: &str, weight: f64, max_tokens: u64) -> VendorConfig {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：weight/max_tokens 是参数化的
+        // 权重与冷却驱动值；window_hours=Some(1) 与 rps 100 为本模块历史形态
+        let mut v = common::base_vendor(id, String::new());
+        v.name = format!("Vendor {id}");
+        v.models = vec![ModelConfig {
+            model_id: "shared-model".to_string(),
+            abstract_id: Some("shared-model".to_string()),
+            weight,
             enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "shared-model".to_string(),
-                abstract_id: Some("shared-model".to_string()),
-                weight,
-                enabled: true,
-            }],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens,
-                window_hours: Some(1),
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }
+        }];
+        v.rate_limit = RateLimitConfig::Token {
+            max_tokens,
+            window_hours: Some(1),
+            sliding: false,
+        };
+        v.concurrency.requests_per_second = 100;
+        v
     }
 
     fn make_config(routing: RoutingSection, vendors: Vec<VendorConfig>) -> Config {
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors,
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
             routing,
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vendors)
         }
     }
 
@@ -1920,9 +1734,9 @@ mod cooldown_improvements {
 
 #[cfg(test)]
 mod soft_affinity {
+    use crate::common;
     use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, RoutingSection, ServerConfig, VendorConfig,
+        Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
     use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
     use nexusflow::router::{apply_affinity_boost, Router, RoutingStrategy};
@@ -1932,70 +1746,35 @@ mod soft_affinity {
     use std::sync::Arc;
 
     fn make_vendor(id: &str) -> VendorConfig {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：shared-model 单模型、rps 100、
+        // 并发上限 1 为本模块历史形态
+        let mut v = common::base_vendor(id, String::new());
+        v.name = format!("Vendor {id}");
+        v.models = vec![ModelConfig {
+            model_id: "shared-model".to_string(),
+            abstract_id: Some("shared-model".to_string()),
+            weight: 1.0,
             enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "shared-model".to_string(),
-                abstract_id: Some("shared-model".to_string()),
-                weight: 1.0,
-                enabled: true,
-            }],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: Some(1),
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }
+        }];
+        v.concurrency.requests_per_second = 100;
+        v.concurrency.max_concurrent_requests = Some(1);
+        v
     }
 
     fn make_config(mode: &str, boost: f64, tenant_scoped: bool) -> Config {
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors: vec![make_vendor("vendor-a"), make_vendor("vendor-b")],
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
             routing: RoutingSection {
                 affinity_mode: mode.to_string(),
                 affinity_boost_factor: boost,
                 affinity_tenant_scoped: tenant_scoped,
                 ..Default::default()
             },
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vec![make_vendor("vendor-a"), make_vendor("vendor-b")])
         }
     }
 
@@ -2155,9 +1934,10 @@ mod soft_affinity {
 
 #[cfg(test)]
 mod sla_virtual_queue {
+    use crate::common;
     use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        PricingConfig, RateLimitConfig, RoutingSection, ServerConfig, VendorConfig,
+        Config, ConfigManager, ModelConfig, PricingConfig, RoutingSection, ServerConfig,
+        VendorConfig,
     };
     use nexusflow::router::Router;
     use nexusflow::vendor::VendorManager;
@@ -2169,38 +1949,19 @@ mod sla_virtual_queue {
     const BASELINE: f64 = 0.85;
 
     fn make_vendor(id: &str) -> VendorConfig {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：shared-model 单模型与
+        // "Vendor {id}" 命名为本模块历史形态
+        let mut v = common::base_vendor(id, String::new());
+        v.name = format!("Vendor {id}");
+        v.models = vec![ModelConfig {
+            model_id: "shared-model".to_string(),
+            abstract_id: Some("shared-model".to_string()),
+            weight: 1.0,
             enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "shared-model".to_string(),
-                abstract_id: Some("shared-model".to_string()),
-                weight: 1.0,
-                enabled: true,
-            }],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }
+        }];
+        v.concurrency.requests_per_second = 100;
+        v
     }
 
     fn make_config(
@@ -2209,29 +1970,13 @@ mod sla_virtual_queue {
         pricing: Vec<PricingConfig>,
     ) -> Config {
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors,
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
             pricing,
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
             routing,
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vendors)
         }
     }
 
@@ -2520,9 +2265,9 @@ mod sla_virtual_queue {
 
 #[cfg(test)]
 mod linucb_selection {
+    use crate::common;
     use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, RoutingSection, ServerConfig, VendorConfig,
+        Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
     use nexusflow::router::bandit::{linucb_features, BanditState};
     use nexusflow::router::Router;
@@ -2535,65 +2280,29 @@ mod linucb_selection {
     }
 
     fn make_vendor(id: &str) -> VendorConfig {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：shared-model 单模型与
+        // "Vendor {id}" 命名为本模块历史形态
+        let mut v = common::base_vendor(id, String::new());
+        v.name = format!("Vendor {id}");
+        v.models = vec![ModelConfig {
+            model_id: "shared-model".to_string(),
+            abstract_id: Some("shared-model".to_string()),
+            weight: 1.0,
             enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "shared-model".to_string(),
-                abstract_id: Some("shared-model".to_string()),
-                weight: 1.0,
-                enabled: true,
-            }],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }
+        }];
+        v.concurrency.requests_per_second = 100;
+        v
     }
 
     fn make_config(routing: RoutingSection, vendors: Vec<VendorConfig>) -> Config {
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors,
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
             routing,
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vendors)
         }
     }
 
@@ -2839,9 +2548,9 @@ mod linucb_selection {
 
 #[cfg(test)]
 mod lps_lookahead {
+    use crate::common;
     use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        RateLimitConfig, RoutingSection, ServerConfig, VendorConfig,
+        Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
     use nexusflow::router::Router;
     use nexusflow::vendor::VendorManager;
@@ -2852,65 +2561,30 @@ mod lps_lookahead {
     const BASELINE: f64 = 0.85;
 
     fn make_vendor(id: &str, max_concurrent: Option<usize>) -> VendorConfig {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：max_concurrent 参数决定 Ŵ 的
+        // 可区分量级（LPS 惩罚断言语义主体）；shared-model 单模型为历史形态
+        let mut v = common::base_vendor(id, String::new());
+        v.name = format!("Vendor {id}");
+        v.models = vec![ModelConfig {
+            model_id: "shared-model".to_string(),
+            abstract_id: Some("shared-model".to_string()),
+            weight: 1.0,
             enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "shared-model".to_string(),
-                abstract_id: Some("shared-model".to_string()),
-                weight: 1.0,
-                enabled: true,
-            }],
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: max_concurrent,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }
+        }];
+        v.concurrency.requests_per_second = 100;
+        v.concurrency.max_concurrent_requests = max_concurrent;
+        v
     }
 
     fn make_config(routing: RoutingSection, vendors: Vec<VendorConfig>) -> Config {
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors,
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
             routing,
-            cache: nexusflow::config::CacheSection::default(),
-            resilience: nexusflow::config::ResilienceSection::default(),
-            admission: Default::default(),
-            grpc: None,
+            ..common::test_config(vendors)
         }
     }
 
@@ -3075,10 +2749,10 @@ mod lps_lookahead {
 
 #[cfg(test)]
 mod route_gap_coverage {
+    use crate::common;
     use nexusflow::config::{
-        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-        PricingConfig, RateLimitConfig, ResilienceSection, RoutingSection, ServerConfig,
-        VendorConfig,
+        Config, ConfigManager, ModelConfig, PricingConfig, ResilienceSection, RoutingSection,
+        ServerConfig, VendorConfig,
     };
     use nexusflow::error::NexusFlowError;
     use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
@@ -3097,43 +2771,25 @@ mod route_gap_coverage {
         enabled: bool,
         models: Vec<(&str, Option<&str>, f64, bool)>,
     ) -> VendorConfig {
-        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
-        VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: id.to_string(),
-            name: format!("Vendor {id}"),
-            type_: "openai".to_string(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
-            api_base: String::new(),
-            enabled,
-            priority: 1,
-            models: models
-                .into_iter()
-                .map(
-                    |(model_id, abstract_id, weight, model_enabled)| ModelConfig {
-                        model_id: model_id.to_string(),
-                        abstract_id: abstract_id.map(|a| a.to_string()),
-                        weight,
-                        enabled: model_enabled,
-                    },
-                )
-                .collect(),
-            rate_limit: RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: ConcurrencyConfig {
-                requests_per_second: 100,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }
+        common::ensure_test_api_key();
+        // 与共享基座的差异字段（显式保留原值）：enabled 与模型列表是回退链
+        // 剪枝用例的语义主体；rps 100 与 "Vendor {id}" 命名为本模块历史形态
+        let mut v = common::base_vendor(id, String::new());
+        v.name = format!("Vendor {id}");
+        v.enabled = enabled;
+        v.models = models
+            .into_iter()
+            .map(
+                |(model_id, abstract_id, weight, model_enabled)| ModelConfig {
+                    model_id: model_id.to_string(),
+                    abstract_id: abstract_id.map(|a| a.to_string()),
+                    weight,
+                    enabled: model_enabled,
+                },
+            )
+            .collect();
+        v.concurrency.requests_per_second = 100;
+        v
     }
 
     fn single_shared(id: &str) -> VendorConfig {
@@ -3154,29 +2810,13 @@ mod route_gap_coverage {
         pricing: Vec<PricingConfig>,
     ) -> Config {
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors,
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
             pricing,
-            auth: None,
-            cors: None,
-            retry: nexusflow::config::RetrySection::default(),
             routing,
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vendors)
         }
     }
 

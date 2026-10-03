@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
 //! 装配链冒烟测试 — 验证生产装配（sdforge 站点 + create_router 合并）
@@ -18,6 +20,8 @@
 
 #![cfg(feature = "web-server")]
 
+mod common;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -25,10 +29,7 @@ use axum::{
 };
 use dbnexus::{DbConfig, DbPool};
 use nexusflow::api::create_router;
-use nexusflow::config::{
-    AuthSection, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-    ServerConfig, VendorConfig,
-};
+use nexusflow::config::{AuthSection, Config, ConfigManager};
 use nexusflow::database::Database;
 use nexusflow::middleware::ApiAuthState;
 use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
@@ -58,65 +59,19 @@ fn assert_valid_sha256_hex() {
 }
 
 fn test_config() -> Config {
+    let mut vendor = common::base_vendor("openai_main", String::new());
+    // 与共享基座的差异字段（显式保留原值）：本文件走真实装配链但不触上游
+    //（body 缺 model 在路由决策前 400），锁真实 env 名与历史 vendor 名
+    vendor.name = "OpenAI Main".into();
+    vendor.api_key_env = "OPENAI_API_KEY".into();
     Config {
-        rate_limit: Default::default(),
-        server: ServerConfig {
-            host: "127.0.0.1".into(),
-            port: 0,
-        },
-        database: DatabaseConfig {
-            path: ":memory:".into(),
-            pool_size: 1,
-        },
-        vendors: vec![VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: "openai_main".into(),
-            name: "OpenAI Main".into(),
-            type_: "openai".into(),
-            api_key_env: "OPENAI_API_KEY".into(),
-            api_base: String::new(),
-            enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "gpt-4".into(),
-                abstract_id: Some("gpt-4".into()),
-                weight: 1.0,
-                enabled: true,
-            }],
-            rate_limit: nexusflow::config::RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: nexusflow::config::ConcurrencyConfig {
-                requests_per_second: 1000,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }],
-        global_model: Some(GlobalModelConfig {
-            enabled: true,
-            strategy: "weighted".into(),
-        }),
-        pricing: vec![],
         auth: Some(AuthSection {
             enabled: true,
             api_keys: vec![SMOKE_KEY_HASH.to_string()],
             keys: vec![],
             header: Default::default(),
         }),
-        cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
-        admission: Default::default(),
-        grpc: None,
-        resilience: nexusflow::config::ResilienceSection::default(),
+        ..common::test_config(vec![vendor])
     }
 }
 

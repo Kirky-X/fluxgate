@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "grpc", feature = "web-server", feature = "logging"))]
 
 //! gRPC 服务器冒烟 — `build_app` 装配 → `take_grpc_server` → sdforge 门面
@@ -12,12 +14,11 @@
 //! build_app 内部执行 init_global_state（OnceCell 二次 set 即 panic），
 //! 全部断言收敛在单一 #[tokio::test] 内。
 
+mod common;
+
 use std::time::Duration;
 
-use nexusflow::config::{
-    AuthSection, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, GrpcConfig, ModelConfig,
-    ServerConfig, VendorConfig,
-};
+use nexusflow::config::{AuthSection, Config, ConfigManager, GrpcConfig, ServerConfig};
 use nexusflow::server::build_app;
 use sdforge::grpc::sdforge_v1::{
     sd_forge_service_client::SdForgeServiceClient, CallRequest, InfoRequest,
@@ -43,63 +44,21 @@ async fn grpc_health() -> Result<serde_json::Value, sdforge::core::ApiError> {
 }
 
 fn test_config() -> Config {
+    let mut vendor = common::base_vendor("openai_main", String::new());
+    // 与共享基座的差异字段（显式保留原值）：锁真实 env 名与历史 vendor 名
+    vendor.name = "OpenAI Main".into();
+    vendor.api_key_env = "OPENAI_API_KEY".into();
     Config {
-        rate_limit: Default::default(),
         server: ServerConfig {
             host: "127.0.0.1".into(),
             port: 18421,
         },
-        database: DatabaseConfig {
-            path: ":memory:".into(),
-            pool_size: 1,
-        },
-        vendors: vec![VendorConfig {
-            timeout_ms: 60_000,
-            stream_ttft_ms: 60_000,
-            stream_idle_ms: 30_000,
-            id: "openai_main".into(),
-            name: "OpenAI Main".into(),
-            type_: "openai".into(),
-            api_key_env: "OPENAI_API_KEY".into(),
-            api_base: String::new(),
-            enabled: true,
-            priority: 1,
-            models: vec![ModelConfig {
-                model_id: "gpt-4".into(),
-                abstract_id: Some("gpt-4".into()),
-                weight: 1.0,
-                enabled: true,
-            }],
-            rate_limit: nexusflow::config::RateLimitConfig::Token {
-                max_tokens: 1_000_000,
-                window_hours: None,
-                sliding: false,
-            },
-            concurrency: nexusflow::config::ConcurrencyConfig {
-                requests_per_second: 1000,
-                max_concurrent_requests: None,
-                token_weighted: false,
-                token_ticket_min: 1,
-                token_ticket_max: 16384,
-                token_ticket_default: 4096,
-            },
-        }],
-        global_model: Some(GlobalModelConfig {
-            enabled: true,
-            strategy: "weighted".into(),
-        }),
-        pricing: vec![],
         auth: Some(AuthSection {
             enabled: true,
             api_keys: vec![SMOKE_KEY_HASH.to_string()],
             keys: vec![],
             header: Default::default(),
         }),
-        cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
-        admission: Default::default(),
         grpc: Some(GrpcConfig {
             enabled: true,
             host: "127.0.0.1".into(),
@@ -108,7 +67,7 @@ fn test_config() -> Config {
             port: 18422,
             ..Default::default()
         }),
-        resilience: nexusflow::config::ResilienceSection::default(),
+        ..common::test_config(vec![vendor])
     }
 }
 

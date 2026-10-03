@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "vendor-management")]
 
 //! VendorManager × CostTracker 集成测试。
@@ -13,10 +15,9 @@
 
 #![cfg(feature = "cost-tracking")]
 
-use nexusflow::config::{
-    ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
-    PricingConfig, RateLimitConfig, ServerConfig, VendorConfig,
-};
+mod common;
+
+use nexusflow::config::{Config, ConfigManager, PricingConfig, ServerConfig};
 use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
 use nexusflow::vendor::VendorManager;
 use std::sync::Arc;
@@ -48,7 +49,7 @@ async fn setup_cost_test(
     response_body: &str,
     status: usize,
 ) -> (Arc<VendorManager>, mockito::ServerGuard, mockito::Mock) {
-    std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
+    common::ensure_test_api_key();
     let mut server = mockito::Server::new_async().await;
     let mock = server
         .mock("POST", "/v1/chat/completions")
@@ -58,67 +59,25 @@ async fn setup_cost_test(
         .create_async()
         .await;
 
-    let v = VendorConfig {
-        timeout_ms: 60_000,
-        stream_ttft_ms: 60_000,
-        stream_idle_ms: 30_000,
-        id: "openai-cost".into(),
-        name: "OpenAI Cost Test".into(),
-        type_: "openai".into(),
-        api_key_env: "NEXUSFLOW_TEST_KEY".into(),
-        api_base: format!("{}/v1", server.url()),
-        enabled: true,
-        priority: 1,
-        models: vec![ModelConfig {
-            model_id: "gpt-4".into(),
-            abstract_id: Some("gpt-4".into()),
-            weight: 1.0,
-            enabled: true,
-        }],
-        rate_limit: RateLimitConfig::Token {
-            max_tokens: 1_000_000,
-            window_hours: None,
-            sliding: false,
-        },
-        concurrency: ConcurrencyConfig {
-            requests_per_second: 100,
-            max_concurrent_requests: None,
-            token_weighted: false,
-            token_ticket_min: 1,
-            token_ticket_max: 16384,
-            token_ticket_default: 4096,
-        },
-    };
+    // 本文件语义差异，显式覆盖：展示名 "OpenAI Cost Test"、rps=100
+    // （共享基座为 "Test openai-cost"、rps=1000）
+    let mut v = common::base_vendor("openai-cost", format!("{}/v1", server.url()));
+    v.name = "OpenAI Cost Test".into();
+    v.concurrency.requests_per_second = 100;
 
     let config = Config {
-        rate_limit: Default::default(),
+        // 本文件语义差异，显式保留：0.0.0.0:8080（共享基座为 127.0.0.1:0）
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
         },
-        database: DatabaseConfig {
-            path: ":memory:".into(),
-            pool_size: 1,
-        },
-        vendors: vec![v],
-        global_model: Some(GlobalModelConfig {
-            enabled: true,
-            strategy: "weighted".into(),
-        }),
         pricing: vec![PricingConfig {
             vendor_id: "openai-cost".into(),
             model_id: "gpt-4".into(),
             input_per_1k_tokens: 0.03,
             output_per_1k_tokens: 0.06,
         }],
-        auth: None,
-        cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
-        admission: Default::default(),
-        grpc: None,
-        resilience: nexusflow::config::ResilienceSection::default(),
+        ..common::test_config(vec![v])
     };
 
     let cm = Arc::new(ConfigManager::new(config));

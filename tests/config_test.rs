@@ -1,69 +1,43 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
+
+mod common;
 
 /// 配置热更新地基集成测试（recId=13）
 #[cfg(test)]
 mod hot_reload {
+    use crate::common;
     use nexusflow::config::{
-        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, RateLimitConfig,
-        ServerConfig, VendorConfig,
+        AuthSection, Config, ConfigManager, CorsSection, RateLimitConfig, ServerConfig,
     };
     use std::path::PathBuf;
     use std::sync::Arc;
 
     fn sample_config(vendor_id: &str, api_key_env: &str) -> Config {
+        // 与共享基座的差异字段（显式保留原值）：本模块对 TOML 序列化往返做
+        // 子串断言，字段值必须与历史字面量逐位一致，禁止静默改值
+        let mut vendor = common::base_vendor(vendor_id, String::new());
+        vendor.name = "Hot Reload Test".into();
+        vendor.api_key_env = api_key_env.into();
+        vendor.rate_limit = RateLimitConfig::Interval {
+            hours: 1,
+            sliding: false,
+        };
+        vendor.concurrency.requests_per_second = 10;
         Config {
-            rate_limit: Default::default(),
             server: ServerConfig {
                 host: "127.0.0.1".into(),
                 port: 8080,
             },
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-                pool_size: 1,
-            },
-            vendors: vec![VendorConfig {
-                timeout_ms: 60_000,
-                stream_ttft_ms: 60_000,
-                stream_idle_ms: 30_000,
-                id: vendor_id.to_string(),
-                name: "Hot Reload Test".into(),
-                type_: "openai".into(),
-                api_key_env: api_key_env.to_string(),
-                api_base: String::new(),
-                enabled: true,
-                priority: 1,
-                models: vec![ModelConfig {
-                    model_id: "gpt-4".into(),
-                    abstract_id: Some("gpt-4".into()),
-                    weight: 1.0,
-                    enabled: true,
-                }],
-                rate_limit: RateLimitConfig::Interval {
-                    hours: 1,
-                    sliding: false,
-                },
-                concurrency: nexusflow::config::ConcurrencyConfig {
-                    requests_per_second: 10,
-                    max_concurrent_requests: None,
-                    token_weighted: false,
-                    token_ticket_min: 1,
-                    token_ticket_max: 16384,
-                    token_ticket_default: 4096,
-                },
-            }],
-            global_model: Some(GlobalModelConfig {
-                enabled: true,
-                strategy: "weighted".into(),
-            }),
-            pricing: vec![],
-            auth: Some(nexusflow::config::AuthSection {
+            auth: Some(AuthSection {
                 enabled: true,
                 api_keys: vec!["a".repeat(64)],
                 keys: vec![],
                 header: Default::default(),
             }),
-            cors: Some(nexusflow::config::CorsSection {
+            cors: Some(CorsSection {
                 enabled: true,
                 allowed_origins: vec!["https://console.example.com".into()],
                 allowed_methods: vec!["GET".into(), "POST".into()],
@@ -71,12 +45,7 @@ mod hot_reload {
                 allow_credentials: false,
                 max_age: 3600,
             }),
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
-            admission: Default::default(),
-            grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            ..common::test_config(vec![vendor])
         }
     }
 

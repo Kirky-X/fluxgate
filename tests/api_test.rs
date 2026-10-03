@@ -3060,3 +3060,2443 @@ mod linucb_reward_chain {
         );
     }
 }
+
+// ============ handler 层行覆盖补齐：错误路径 / 流式 / 缓存 / 亲和 / admin ============
+//
+// 针对 cargo-llvm-cov 实测的 src/api/* 未覆盖区间设计：每个测试让具体
+// 分支真正走进去（cover_all_paths 换路、流式透传、缓存 HIT/MISS、
+// 亲和 bind/rebind/clear、logger 停机降级、放大守门器、全候选限流、
+// admin 查询端点等），断言状态码 / JSON 结构 / 头 / mock 调用次数等
+// 可观测行为，而非"调用不报错"。
+#[cfg(test)]
+mod api_handler_coverage {
+    use axum::extract::{Query, State};
+    use axum::response::IntoResponse;
+    use axum::{body::Body, http::Request, routing::post, Router};
+    use nexusflow::api::admin::{self, LogQuery};
+    use nexusflow::api::response_cache::{cache_api_key_hash, ResponseCache};
+    use nexusflow::api::{
+        chat_completions, embeddings, get_global_state, init_global_state, messages, ApiState,
+    };
+    use nexusflow::config::{
+        CacheSection, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
+        RateLimitConfig, RetrySection, RoutingSection, ServerConfig, VendorConfig,
+    };
+    use nexusflow::database::{
+        AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, TokenPreAggregator,
+    };
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
+    use nexusflow::router::bandit::BanditState;
+    use nexusflow::router::{AffinityTable, Router as NexusRouter};
+    use nexusflow::vendor::VendorManager;
+    use serde_json::json;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    // 恒值 env 写入：edition 2021 下 set_var 与并行线程的 getenv 存在理论
+    // 竞态；本键值恒定且仅在装配前写入，若迁移 edition 2024 需改为一次性初始化
+    fn ensure_test_api_key() {
+        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
+    }
+
+    /// ApiState 可选接线项（None = 不接线，覆盖降级分支）
+    #[derive(Default)]
+    struct Wire {
+        logger: bool,
+        pre_aggregator: bool,
+        affinity: bool,
+        response_cache: bool,
+        bandit: bool,
+    }
+
+    /// 测试数据构造器：字段逐一对应 VendorConfig 的必填维度，
+    /// 收敛为参数对象会让 39 个调用点更啰嗦，故豁免参数数上限。
+    #[allow(clippy::too_many_arguments)]
+    fn vendor(
+        id: &str,
+        type_: &str,
+        api_base: String,
+        priority: u8,
+        model_id: &str,
+        weight: f64,
+        max_tokens: u64,
+        cap: Option<usize>,
+    ) -> VendorConfig {
+        ensure_test_api_key();
+        VendorConfig {
+            timeout_ms: 60_000,
+            stream_ttft_ms: 60_000,
+            stream_idle_ms: 30_000,
+            id: id.into(),
+            name: format!("Vendor {id}"),
+            type_: type_.into(),
+            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+            api_base,
+            enabled: true,
+            priority,
+            models: vec![ModelConfig {
+                model_id: model_id.into(),
+                abstract_id: Some(model_id.into()),
+                weight,
+                enabled: true,
+            }],
+            rate_limit: RateLimitConfig::Token {
+                max_tokens,
+                window_hours: if max_tokens == 0 { Some(1) } else { None },
+                sliding: false,
+            },
+            concurrency: nexusflow::config::ConcurrencyConfig {
+                requests_per_second: 1000,
+                max_concurrent_requests: cap,
+                token_weighted: false,
+                token_ticket_min: 1,
+                token_ticket_max: 16384,
+                token_ticket_default: 4096,
+            },
+        }
+    }
+
+    fn base_config(vendors: Vec<VendorConfig>) -> Config {
+        ensure_test_api_key();
+        Config {
+            rate_limit: Default::default(),
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            database: DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+            },
+            vendors,
+            global_model: Some(GlobalModelConfig {
+                enabled: true,
+                strategy: "weighted".into(),
+            }),
+            pricing: vec![],
+            auth: None,
+            cors: None,
+            retry: RetrySection::default(),
+            routing: RoutingSection::default(),
+            cache: CacheSection::default(),
+            admission: Default::default(),
+            grpc: None,
+            resilience: nexusflow::config::ResilienceSection::default(),
+        }
+    }
+
+    async fn build_state(config: Config, wire: Wire) -> Arc<ApiState> {
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        vendor_manager.initialize().await.expect("vendor init");
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repository = Arc::new(Repository::new(pool.clone()));
+        repository.initialize().await.expect("schema init");
+
+        let logger = wire.logger.then(|| {
+            Arc::new(AsyncLoggerHandle::new(AsyncLogger::new(
+                repository.clone(),
+                1024,
+                Duration::from_millis(200),
+            )))
+        });
+        let pre_aggregator = wire.pre_aggregator.then(|| {
+            Arc::new(TokenPreAggregator::new(
+                repository.clone(),
+                Duration::from_secs(60),
+            ))
+        });
+        let affinity = wire.affinity.then(|| {
+            Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+                3600,
+            )))
+        });
+        let response_cache = wire.response_cache.then(|| {
+            Arc::new(ResponseCache::new(
+                Arc::new(oxcache::backend::default_memory_backend()),
+                config_manager.clone(),
+                Arc::new(nexusflow::utils::metrics::GlobalMetrics::new()),
+            ))
+        });
+        let bandit = wire.bandit.then(|| Arc::new(BanditState::new(1.0)));
+
+        let router = {
+            let r = NexusRouter::new(config_manager.clone(), vendor_manager.clone());
+            if let Some(b) = bandit.clone() {
+                r.with_bandit(b)
+            } else {
+                r
+            }
+        };
+
+        Arc::new(ApiState {
+            config: config_manager,
+            vendor_manager,
+            router: Arc::new(router),
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database: Arc::new(nexusflow::database::Database { pool, repository }),
+            logger,
+            pre_aggregator,
+            affinity,
+            response_cache,
+            bandit,
+        })
+    }
+
+    fn app(state: Arc<ApiState>) -> Router {
+        Router::new()
+            .route("/v1/chat/completions", post(chat_completions))
+            .route("/v1/messages", post(messages))
+            .route("/v1/embeddings", post(embeddings))
+            .with_state(state)
+    }
+
+    async fn post_json(
+        state: Arc<ApiState>,
+        uri: &str,
+        body: serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        app(state)
+            .oneshot(
+                builder
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).expect("JSON body")
+    }
+
+    async fn body_text(response: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).expect("utf-8 body")
+    }
+
+    fn header_of(response: &axum::response::Response, name: &str) -> Option<String> {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+    }
+
+    fn chat_body(model: &str, stream: bool) -> serde_json::Value {
+        let mut body = json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 16
+        });
+        if stream {
+            body["stream"] = json!(true);
+        }
+        body
+    }
+
+    fn anthropic_body(model: &str, stream: bool) -> serde_json::Value {
+        let mut body = json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 16
+        });
+        if stream {
+            body["stream"] = json!(true);
+        }
+        body
+    }
+
+    const OPENAI_CHAT_JSON: &str = r#"{"id":"c1","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#;
+
+    fn anthropic_message_json() -> String {
+        r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[{"type":"text","text":"hi there"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}"#
+            .to_string()
+    }
+
+    /// 标准 Anthropic SSE 事件流（透传上游原样返回；转换上游经 IR 反解析）
+    fn anthropic_sse() -> String {
+        format!(
+            "event: message_start\ndata: {}\n\ndata: {}\n\ndata: {}\n\ndata: {}\n\n",
+            json!({"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","usage":{"input_tokens":3,"output_tokens":1}}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}),
+            json!({"type":"message_stop"}),
+        )
+    }
+
+    /// OpenAI 上游 SSE（转换路径入站，IR → Anthropic/OpenAI 出站重建）
+    fn openai_sse() -> String {
+        concat!(
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" there"},"finish_reason":null}]}"#,
+            "\n\n",
+            r#"data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        )
+        .to_string()
+    }
+
+    // ---- anthropic.rs：透传流式（cover_all_paths 开/关 × 成功/失败）----
+
+    /// 透传流式成功（cover_all_paths 关）：上游 SSE 帧原样转发给客户端，
+    /// 响应为 text/event-stream 且保留上游事件内容。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_passthrough_stream_success_forwards_upstream_frames() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(anthropic_sse())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "anthropic_main",
+                "anthropic",
+                server.url(),
+                1,
+                "claude-x",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+
+        let response =
+            post_json(state, "/v1/messages", anthropic_body("claude-x", true), &[]).await;
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            header_of(&response, "content-type").as_deref(),
+            Some("text/event-stream"),
+            "透传流式必须以 SSE 返回"
+        );
+        let text = body_text(response).await;
+        assert!(
+            text.contains("message_start"),
+            "丢失 message_start: {text:?}"
+        );
+        assert!(
+            text.contains("content_block_delta"),
+            "丢失文本 delta: {text:?}"
+        );
+        assert!(text.contains("message_stop"), "丢失 message_stop: {text:?}");
+
+        mock.assert_async().await;
+    }
+
+    /// 透传流式成功（cover_all_paths 开）：换路循环包裹下首派发即成功，
+    /// 行为与关闭时逐位一致（SSE 帧原样转发）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_passthrough_stream_cover_all_paths_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(anthropic_sse())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "anthropic_main",
+            "anthropic",
+            server.url(),
+            1,
+            "claude-x",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.resilience.cover_all_paths = true;
+        let state = build_state(config, Wire::default()).await;
+
+        let response =
+            post_json(state, "/v1/messages", anthropic_body("claude-x", true), &[]).await;
+
+        assert_eq!(response.status(), 200);
+        let text = body_text(response).await;
+        assert!(text.contains("message_start") && text.contains("message_stop"));
+
+        mock.assert_async().await;
+    }
+
+    /// 透传流式失败（cover_all_paths 开 + 放大守门器开但无失败观测）：
+    /// 守门器在无观测时放行基础尝试预算（fail-open），单 vendor 换路无候选
+    /// → 原错误冒泡为 503 JSON。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_passthrough_stream_cover_all_paths_upstream_401_yields_503() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"bad key"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "anthropic_main",
+            "anthropic",
+            server.url(),
+            1,
+            "claude-x",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.resilience.cover_all_paths = true;
+        config.retry.amplification_gate = true;
+        let state = build_state(config, Wire::default()).await;
+
+        let response =
+            post_json(state, "/v1/messages", anthropic_body("claude-x", true), &[]).await;
+
+        assert_eq!(
+            response.status(),
+            503,
+            "上游 401 应映射 503（首字节前失败）"
+        );
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "vendor_unavailable");
+
+        mock.assert_async().await;
+    }
+
+    // ---- anthropic.rs：透传非流式缓存 HIT/MISS + cover_all_paths ----
+
+    /// 透传非流式 + 响应缓存：首次 MISS（回写缓存并带 X-Cache: MISS），
+    /// 第二次 HIT（上游仅 1 次，响应体与首次一致）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_passthrough_nonstream_cache_miss_then_hit() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_message_json())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "anthropic_main",
+            "anthropic",
+            server.url(),
+            1,
+            "claude-x",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.cache = CacheSection {
+            enabled: true,
+            ttl_secs: 300,
+            ..Default::default()
+        };
+        let state = build_state(
+            config,
+            Wire {
+                response_cache: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let body = anthropic_body("claude-x", false);
+        let first = post_json(state.clone(), "/v1/messages", body.clone(), &[]).await;
+        assert_eq!(first.status(), 200);
+        assert_eq!(
+            header_of(&first, "x-cache").as_deref(),
+            Some("MISS"),
+            "首次必须 MISS 并回写缓存"
+        );
+        let first_body = body_json(first).await;
+        assert_eq!(first_body["type"], "message");
+
+        let second = post_json(state, "/v1/messages", body, &[]).await;
+        assert_eq!(second.status(), 200);
+        assert_eq!(
+            header_of(&second, "x-cache").as_deref(),
+            Some("HIT"),
+            "第二次必须命中缓存"
+        );
+        let second_body = body_json(second).await;
+        assert_eq!(first_body, second_body, "HIT 响应必须与首次一致");
+
+        mock.assert_async().await;
+    }
+
+    /// cover_all_paths 开：主 vendor 失败（404，Fatal 不内部重试）→ 换路
+    /// 至同协议健康 vendor 成功，客户端拿到 200。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_passthrough_nonstream_cover_all_paths_reroutes_to_healthy_vendor() {
+        let mut server = mockito::Server::new_async().await;
+        let fail_mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(404)
+            .with_body("not found")
+            .expect(1)
+            .create_async()
+            .await;
+        let ok_mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_message_json())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![
+            vendor(
+                "v-anth-a",
+                "anthropic",
+                server.url(),
+                1,
+                "claude-x",
+                // 悬殊权重锁定初始候选为失败 vendor（/v1/messages 无
+                // X-Vendor 语义），换路断言才确定
+                1_000_000.0,
+                1_000_000,
+                None,
+            ),
+            vendor(
+                "v-anth-b",
+                "anthropic",
+                server.url(),
+                2,
+                "claude-x",
+                0.0001,
+                1_000_000,
+                None,
+            ),
+        ]);
+        config.resilience.cover_all_paths = true;
+        let state = build_state(config, Wire::default()).await;
+
+        let response = post_json(
+            state,
+            "/v1/messages",
+            anthropic_body("claude-x", false),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 200, "换路后必须由健康 vendor 服务");
+        let body = body_json(response).await;
+        assert_eq!(body["type"], "message");
+
+        fail_mock.assert_async().await;
+        ok_mock.assert_async().await;
+    }
+
+    /// cover_all_paths 开 + 透传（same_protocol_only）：重路由命中异协议
+    /// 候选时计入排除集不发起 HTTP；总尝试预算（max_total_attempts=2）在
+    /// 排除循环内耗尽 → 原错误冒泡 503，openai 候选零触达。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_passthrough_cover_all_paths_skips_cross_protocol_candidate() {
+        let mut server = mockito::Server::new_async().await;
+        let fail_mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(404)
+            .with_body("not found")
+            .expect(1)
+            .create_async()
+            .await;
+        let mut other = mockito::Server::new_async().await;
+        let untouched = other
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_body(
+                r#"{"id":"sentinel-openai-b","object":"chat.completion","created":1,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"sentinel-b"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+            )
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![
+            vendor(
+                "v-anth-a",
+                "anthropic",
+                server.url(),
+                1,
+                "claude-x",
+                // /v1/messages 不支持 X-Vendor 提示（无 hints 路由语义）：
+                // 以悬殊 model 权重锁定初始候选（基础 queue/window 项对所
+                // 有候选相同，0.4×1e6 ≫ 0.6，选中偏差 ~1e-6）
+                1_000_000.0,
+                1_000_000,
+                None,
+            ),
+            vendor(
+                "v-openai-b",
+                "openai",
+                other.url(),
+                2,
+                "claude-x",
+                0.0001,
+                1_000_000,
+                None,
+            ),
+        ]);
+        config.resilience.cover_all_paths = true;
+        config.retry.max_total_attempts = 2;
+        let state = build_state(config, Wire::default()).await;
+
+        let response = post_json(
+            state,
+            "/v1/messages",
+            anthropic_body("claude-x", false),
+            &[],
+        )
+        .await;
+
+        let status = response.status();
+        let body = body_json(response).await;
+        assert_eq!(
+            status, 503,
+            "预算在排除循环内耗尽应冒泡原错误, body: {body}"
+        );
+        assert_eq!(body["error"]["type"], "vendor_unavailable", "body: {body}");
+
+        fail_mock.assert_async().await;
+        untouched.assert_async().await;
+    }
+
+    // ---- anthropic.rs：转换路径（流式 cover_all_paths、非流式缓存/错误）----
+
+    /// 转换流式成功（cover_all_paths 开）：OpenAI 上游 SSE 经 IR 重建为
+    /// 完整 Anthropic 生命周期事件（message_start → … → message_stop）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_conversion_stream_cover_all_paths_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(openai_sse())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-openai",
+            "openai",
+            server.url(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.resilience.cover_all_paths = true;
+        let state = build_state(config, Wire::default()).await;
+
+        let response = post_json(state, "/v1/messages", anthropic_body("gpt-4", true), &[]).await;
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            header_of(&response, "content-type").as_deref(),
+            Some("text/event-stream")
+        );
+        let text = body_text(response).await;
+        let non_empty: Vec<&str> = text
+            .lines()
+            .map(str::trim_end)
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert!(!non_empty.is_empty());
+        for line in &non_empty {
+            assert!(
+                line.starts_with("data: "),
+                "每个 SSE 事件行必须带 data: 前缀: {line:?}"
+            );
+        }
+        assert!(text.contains("message_start"), "{text:?}");
+        assert!(text.contains("message_stop"), "{text:?}");
+        let aggregated: String = text
+            .lines()
+            .filter_map(|l| {
+                let payload = l.strip_prefix("data: ")?;
+                serde_json::from_str::<serde_json::Value>(payload)
+                    .ok()?
+                    .get("delta")?
+                    .get("text")?
+                    .as_str()
+                    .map(String::from)
+            })
+            .collect();
+        assert_eq!(aggregated, "Hi there", "文本 delta 必须完整重建: {text:?}");
+
+        mock.assert_async().await;
+    }
+
+    /// 转换流式失败（cover_all_paths 开）：上游 401 在响应头前失败 →
+    /// 503 JSON（非 200 伪流）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_conversion_stream_cover_all_paths_upstream_401_yields_503() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"bad key"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-openai",
+            "openai",
+            server.url(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.resilience.cover_all_paths = true;
+        let state = build_state(config, Wire::default()).await;
+
+        let response = post_json(state, "/v1/messages", anthropic_body("gpt-4", true), &[]).await;
+
+        assert_eq!(response.status(), 503);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "vendor_unavailable");
+
+        mock.assert_async().await;
+    }
+
+    /// 转换非流式成功（缓存未接线）：OpenAI 上游响应经 UnifiedResponse
+    /// 转回 Anthropic 出站格式，且不带 X-Cache 头。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn anthropic_conversion_nonstream_success_without_cache() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_CHAT_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                server.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+
+        let response = post_json(state, "/v1/messages", anthropic_body("gpt-4", false), &[]).await;
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(header_of(&response, "x-cache"), None, "缓存未接线不带头");
+        let body = body_json(response).await;
+        assert_eq!(body["type"], "message", "body: {body}");
+        assert_eq!(body["role"], "assistant", "body: {body}");
+        assert_eq!(
+            body["content"]["content"][0]["text"], "hi there",
+            "body: {body}"
+        );
+        assert_eq!(body["usage"]["input_tokens"], 3, "body: {body}");
+        assert_eq!(body["usage"]["output_tokens"], 2, "body: {body}");
+
+        mock.assert_async().await;
+    }
+
+    /// 转换非流式 + 响应缓存：首次 MISS（以最终 vendor/model 回写），
+    /// 第二次 HIT（上游仅 1 次）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_conversion_nonstream_cache_miss_then_hit() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_CHAT_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-openai",
+            "openai",
+            server.url(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.cache = CacheSection {
+            enabled: true,
+            ttl_secs: 300,
+            ..Default::default()
+        };
+        let state = build_state(
+            config,
+            Wire {
+                response_cache: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let body = anthropic_body("gpt-4", false);
+        let first = post_json(state.clone(), "/v1/messages", body.clone(), &[]).await;
+        assert_eq!(first.status(), 200);
+        assert_eq!(header_of(&first, "x-cache").as_deref(), Some("MISS"));
+        let first_body = body_json(first).await;
+        assert_eq!(first_body["type"], "message");
+
+        let second = post_json(state, "/v1/messages", body, &[]).await;
+        assert_eq!(second.status(), 200);
+        assert_eq!(
+            header_of(&second, "x-cache").as_deref(),
+            Some("HIT"),
+            "转换路径回写后第二次必须 HIT"
+        );
+        let second_body = body_json(second).await;
+        assert_eq!(first_body, second_body);
+
+        mock.assert_async().await;
+    }
+
+    /// 转换非流式失败：上游 401 → 换路无候选 → 503 JSON（recId=14 口径）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn anthropic_conversion_nonstream_upstream_401_yields_503() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"bad key"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                server.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+
+        let response = post_json(state, "/v1/messages", anthropic_body("gpt-4", false), &[]).await;
+
+        assert_eq!(response.status(), 503);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "vendor_unavailable");
+
+        mock.assert_async().await;
+    }
+
+    /// linucb 档 + /v1/messages：请求特征参与选择、奖励落归一臂键
+    ///（body.model 小写），成功请求后臂 (claude-x, vendor) 必然存在。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn anthropic_messages_linucb_features_recorded_on_reward_arm() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_message_json())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "anthropic_main",
+            "anthropic",
+            server.url(),
+            1,
+            "claude-x",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.routing.selection = "linucb".into();
+        let state = build_state(
+            config,
+            Wire {
+                bandit: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = post_json(
+            state.clone(),
+            "/v1/messages",
+            anthropic_body("claude-x", false),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let body = body_json(response).await;
+        assert_eq!(body["type"], "message");
+
+        assert!(
+            state
+                .bandit
+                .as_ref()
+                .unwrap()
+                .has_arm("claude-x", "anthropic_main"),
+            "linucb 档成功请求必须落归一臂键 (claude-x, anthropic_main)"
+        );
+
+        mock.assert_async().await;
+    }
+
+    /// logger 已 shutdown：log push 被拒仅记 warn，响应路径不受影响。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn anthropic_passthrough_with_shutdown_logger_still_succeeds() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_message_json())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "anthropic_main",
+                "anthropic",
+                server.url(),
+                1,
+                "claude-x",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire {
+                logger: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        state
+            .logger
+            .as_ref()
+            .unwrap()
+            .shutdown()
+            .await
+            .expect("shutdown");
+
+        let response = post_json(
+            state,
+            "/v1/messages",
+            anthropic_body("claude-x", false),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), 200, "日志 push 失败不得影响响应");
+        let body = body_json(response).await;
+        assert_eq!(body["type"], "message");
+
+        mock.assert_async().await;
+    }
+
+    // ---- openai.rs：转换流式（anthropic vendor）、cover_all_paths、缓存 ----
+
+    /// 转换流式成功（cover_all_paths 关）：Anthropic 上游 SSE 经 IR 重建为
+    /// OpenAI chunk 事件并以 [DONE] 收尾，文本完整。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn openai_conversion_stream_anthropic_vendor_success_emits_chunks_and_done() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(anthropic_sse())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-anthropic",
+                "anthropic",
+                server.url(),
+                1,
+                "claude-x",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("claude-x", true),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            header_of(&response, "content-type").as_deref(),
+            Some("text/event-stream")
+        );
+        let text = body_text(response).await;
+        assert!(
+            text.contains("chat.completion.chunk"),
+            "出站必须是 OpenAI chunk 事件: {text:?}"
+        );
+        assert!(
+            text.contains("[DONE]"),
+            "OpenAI 流必须以 [DONE] 收尾: {text:?}"
+        );
+        let aggregated: String = text
+            .lines()
+            .filter_map(|l| {
+                let payload = l.strip_prefix("data: ")?;
+                let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+                v["choices"][0]["delta"]["content"]
+                    .as_str()
+                    .map(String::from)
+            })
+            .collect();
+        assert_eq!(
+            aggregated, "hi",
+            "文本 delta 必须重建自 Anthropic 流: {text:?}"
+        );
+
+        mock.assert_async().await;
+    }
+
+    /// 转换流式成功（cover_all_paths 开）：换路循环包裹下首派发即成功。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn openai_conversion_stream_cover_all_paths_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(anthropic_sse())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-anthropic",
+            "anthropic",
+            server.url(),
+            1,
+            "claude-x",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.resilience.cover_all_paths = true;
+        let state = build_state(config, Wire::default()).await;
+
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("claude-x", true),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 200);
+        let text = body_text(response).await;
+        assert!(text.contains("chat.completion.chunk") && text.contains("[DONE]"));
+
+        mock.assert_async().await;
+    }
+
+    /// 转换流式失败（cover_all_paths 开）：上游 429 → 客户端 429
+    ///（RateLimited 固定映射，可退避重试）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn openai_conversion_stream_cover_all_paths_upstream_429_yields_429() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(429)
+            .with_body(r#"{"error":{"message":"rate limited"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-anthropic",
+            "anthropic",
+            server.url(),
+            1,
+            "claude-x",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.resilience.cover_all_paths = true;
+        let state = build_state(config, Wire::default()).await;
+
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("claude-x", true),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 429);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "rate_limited");
+
+        mock.assert_async().await;
+    }
+
+    /// 透传流式失败（cover_all_paths 开）：上游 401 → 503 JSON（非 200 伪流）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn openai_passthrough_stream_cover_all_paths_upstream_401_yields_503() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"bad key"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-openai",
+            "openai",
+            server.url(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.resilience.cover_all_paths = true;
+        let state = build_state(config, Wire::default()).await;
+
+        let response =
+            post_json(state, "/v1/chat/completions", chat_body("gpt-4", true), &[]).await;
+
+        assert_eq!(response.status(), 503);
+        assert_ne!(
+            header_of(&response, "content-type").as_deref(),
+            Some("text/event-stream"),
+            "错误响应不得是 SSE 流"
+        );
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "vendor_unavailable");
+
+        mock.assert_async().await;
+    }
+
+    /// 转换非流式 + 响应缓存（anthropic vendor）：首次 MISS 回写，
+    /// 第二次 HIT（上游仅 1 次，租户键隔离由 body/key 维度承载）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn openai_conversion_nonstream_cache_miss_then_hit() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_message_json())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-anthropic",
+            "anthropic",
+            server.url(),
+            1,
+            "claude-x",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.cache = CacheSection {
+            enabled: true,
+            ttl_secs: 300,
+            ..Default::default()
+        };
+        let state = build_state(
+            config,
+            Wire {
+                response_cache: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let body = chat_body("claude-x", false);
+        let first = post_json(state.clone(), "/v1/chat/completions", body.clone(), &[]).await;
+        assert_eq!(first.status(), 200);
+        assert_eq!(header_of(&first, "x-cache").as_deref(), Some("MISS"));
+        let first_body = body_json(first).await;
+        assert_eq!(
+            first_body["choices"][0]["message"]["content"], "hi there",
+            "body: {first_body}"
+        );
+
+        let second = post_json(state, "/v1/chat/completions", body, &[]).await;
+        assert_eq!(second.status(), 200);
+        assert_eq!(header_of(&second, "x-cache").as_deref(), Some("HIT"));
+        assert_eq!(body_json(second).await, first_body);
+
+        mock.assert_async().await;
+    }
+
+    /// 转换非流式：上游 200 但返回 error 体 → 解析为 Protocol 错误 →
+    /// 换路无候选原错误冒泡 → 客户端 502（protocol_error）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openai_conversion_nonstream_upstream_error_body_yields_502() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":{"message":"overloaded","type":"api_error"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-anthropic",
+                "anthropic",
+                server.url(),
+                1,
+                "claude-x",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("claude-x", false),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 502, "上游 error 体映射 Protocol → 502");
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "protocol_error");
+
+        mock.assert_async().await;
+    }
+
+    /// 转换非流式换路：主 vendor 404 → route_excluding 重派健康 vendor
+    /// 成功（200），两个上游各恰一次。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openai_conversion_nonstream_reroutes_to_healthy_vendor() {
+        let mut server = mockito::Server::new_async().await;
+        let fail_mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(404)
+            .with_body("not found")
+            .expect(1)
+            .create_async()
+            .await;
+        let ok_mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_message_json())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![
+                vendor(
+                    "v-anth-a",
+                    "anthropic",
+                    server.url(),
+                    1,
+                    "claude-x",
+                    1.0,
+                    1_000_000,
+                    None,
+                ),
+                vendor(
+                    "v-anth-b",
+                    "anthropic",
+                    server.url(),
+                    2,
+                    "claude-x",
+                    1.0,
+                    1_000_000,
+                    None,
+                ),
+            ]),
+            Wire::default(),
+        )
+        .await;
+
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("claude-x", false),
+            // X-Vendor 锁定初始候选为失败 vendor，换路断言才确定
+            &[("x-vendor", "v-anth-a")],
+        )
+        .await;
+        assert_eq!(response.status(), 200, "换路后必须由健康 vendor 服务");
+        let body = body_json(response).await;
+        assert_eq!(
+            body["choices"][0]["message"]["content"], "hi there",
+            "body: {body}"
+        );
+
+        fail_mock.assert_async().await;
+        ok_mock.assert_async().await;
+    }
+
+    /// 跨 vendor 时间预算：首 vendor 慢失败（1.5s > 1s 预算）→ 重派前
+    /// 放弃，原错误冒泡 503，且上游仅 1 次。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openai_conversion_nonstream_retry_budget_exhausted_aborts_before_reroute() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(404)
+            // mockito 1.x 无 with_delay：分块写前睡 1.5s 模拟慢失败上游
+            .with_chunked_body(|w| {
+                std::thread::sleep(Duration::from_millis(1500));
+                std::io::Write::write_all(w, b"not found")
+            })
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-anth-slow",
+            "anthropic",
+            server.url(),
+            1,
+            "claude-x",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.retry.retry_budget_secs = 1;
+        let state = build_state(config, Wire::default()).await;
+
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("claude-x", false),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 503, "预算耗尽应以原错误（503）冒泡");
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "vendor_unavailable");
+
+        mock.assert_async().await;
+    }
+
+    /// 透传路径（cover_all_paths 开）的跨 vendor 时间预算：慢失败上游
+    /// （1.5s > 1s 预算）→ 换路循环内预算超限即放弃，原错误冒泡 503，
+    /// 上游仅 1 次。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openai_passthrough_retry_budget_exhausted_aborts_before_reroute() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(404)
+            // mockito 1.x 无 with_delay：分块写前睡 1.5s 模拟慢失败上游
+            .with_chunked_body(|w| {
+                std::thread::sleep(Duration::from_millis(1500));
+                std::io::Write::write_all(w, b"not found")
+            })
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-openai-slow",
+            "openai",
+            server.url(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.resilience.cover_all_paths = true;
+        config.retry.retry_budget_secs = 1;
+        let state = build_state(config, Wire::default()).await;
+
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 503, "预算耗尽应以原错误（503）冒泡");
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "vendor_unavailable");
+
+        mock.assert_async().await;
+    }
+
+    /// logger 已 shutdown：chat 成功响应不受日志 push 被拒影响（warn 降级）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openai_chat_with_shutdown_logger_still_succeeds() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_CHAT_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                server.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire {
+                logger: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        state
+            .logger
+            .as_ref()
+            .unwrap()
+            .shutdown()
+            .await
+            .expect("shutdown");
+
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let body = body_json(response).await;
+        assert_eq!(body["choices"][0]["message"]["content"], "hi there");
+
+        mock.assert_async().await;
+    }
+
+    // ---- openai.rs：embeddings（预聚合记账 + Protocol 门 + logger 降级）----
+
+    /// embeddings 成功且 usage 三元齐全：预聚合器记账（flush 后 token_stats
+    /// 非空）；logger 已 shutdown 时 warn 降级不影响响应。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embeddings_full_usage_feeds_pre_aggregator_and_tolerates_shutdown_logger() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/embeddings")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-embed",
+                "openai",
+                server.url(),
+                1,
+                "text-embedding-3-small",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire {
+                logger: true,
+                pre_aggregator: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        state
+            .logger
+            .as_ref()
+            .unwrap()
+            .shutdown()
+            .await
+            .expect("shutdown");
+
+        let response = post_json(
+            state.clone(),
+            "/v1/embeddings",
+            json!({"model": "text-embedding-3-small", "input": "hello"}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let body = body_json(response).await;
+        assert_eq!(body["object"], "list");
+
+        state
+            .pre_aggregator
+            .as_ref()
+            .unwrap()
+            .flush()
+            .await
+            .expect("flush");
+        let repository = state.database.repository();
+        let stats = repository
+            .get_token_stats(Some("v-embed"))
+            .await
+            .expect("token stats");
+        assert_eq!(stats.len(), 1, "usage 三元齐全必须预聚合记账");
+        assert_eq!(stats[0].total_tokens, 3);
+        assert_eq!(stats[0].request_count, 1);
+
+        mock.assert_async().await;
+    }
+
+    /// embeddings 仅支持 openai vendor：anthropic 型候选 → Protocol 错误
+    ///（502 protocol_error），不发上游请求。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embeddings_non_openai_vendor_yields_502_protocol_error() {
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-anthropic",
+                "anthropic",
+                String::new(),
+                1,
+                "text-embedding-3-small",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+
+        let response = post_json(
+            state,
+            "/v1/embeddings",
+            json!({"model": "text-embedding-3-small", "input": "hello"}),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 502);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "protocol_error");
+    }
+
+    // ---- 放大守门器（gate_adjusted_max_attempts 经 cover_all_paths 入口）----
+
+    /// gate=true + 超阈观测（r=1, f=1）：本请求尝试预算收紧到 1 —— 首次
+    /// 失败即放弃，健康 vendor 零触达；发散（r·f>0.95）与收紧 warn 同时
+    /// 命中。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn amplification_gate_tightens_dispatch_to_single_attempt() {
+        let mut server = mockito::Server::new_async().await;
+        let fail_mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(404)
+            .with_body("not found")
+            .expect(1)
+            .create_async()
+            .await;
+        let mut other = mockito::Server::new_async().await;
+        let untouched = other
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_body(OPENAI_CHAT_JSON)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![
+            vendor(
+                "v-a",
+                "openai",
+                server.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                Some(10),
+            ),
+            vendor(
+                "v-b",
+                "openai",
+                other.url(),
+                2,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                Some(10),
+            ),
+        ]);
+        config.resilience.cover_all_paths = true;
+        config.retry.amplification_gate = true;
+        let state = build_state(config, Wire::default()).await;
+
+        // 灌超阈观测：6/6 全失败（f=1.0）、r=1.0（r·f=1.0 发散）、C=20
+        let m = state.vendor_manager.metrics();
+        for _ in 0..6 {
+            m.record_request("v-a", false, Duration::from_millis(1));
+        }
+        for _ in 0..4 {
+            m.record_retry_attempt();
+            m.record_failed_request_before_retry();
+        }
+
+        // X-Vendor 锁定初始候选为 v-a，收紧语义才可确定性断言
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[("x-vendor", "v-a")],
+        )
+        .await;
+
+        assert_eq!(response.status(), 503, "收紧后首次失败即放弃");
+        fail_mock.assert_async().await;
+        untouched.assert_async().await;
+    }
+
+    /// gate=true + 健康观测（f≈0）：守门器不收紧，换路照常发生 → 200。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn amplification_gate_with_healthy_metrics_keeps_fallback_attempts() {
+        let mut server = mockito::Server::new_async().await;
+        let fail_mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(404)
+            .with_body("not found")
+            .expect(1)
+            .create_async()
+            .await;
+        let ok_mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_CHAT_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![
+            vendor(
+                "v-a",
+                "openai",
+                server.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                Some(10),
+            ),
+            vendor(
+                "v-b",
+                "openai",
+                server.url(),
+                2,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                Some(10),
+            ),
+        ]);
+        config.resilience.cover_all_paths = true;
+        config.retry.amplification_gate = true;
+        let state = build_state(config, Wire::default()).await;
+
+        // 有失败观测（view Some）但失败率≈0：不收紧、不发散 → 保持基础预算
+        let m = state.vendor_manager.metrics();
+        for _ in 0..20 {
+            m.record_request("v-a", true, Duration::from_millis(1));
+        }
+        m.record_retry_attempt();
+        m.record_failed_request_before_retry();
+
+        // X-Vendor 锁定初始候选为 v-a，"失败后换路 v-b" 才可确定性断言
+        let response = post_json(
+            state,
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[("x-vendor", "v-a")],
+        )
+        .await;
+
+        assert_eq!(response.status(), 200, "健康观测不得收紧：换路必须可达 v-b");
+        fail_mock.assert_async().await;
+        ok_mock.assert_async().await;
+    }
+
+    // ---- 全候选限流（handler 入口 → AllVendorsThrottled 429 + Retry-After）----
+
+    /// 双 vendor 均限流（max_tokens=0）+ fail-open + retry_after_hint：
+    /// 转换路径（anthropic 型 vendor）首路由 fail-open 进入 fallback 循环，
+    /// 耗尽后收敛 AllVendorsThrottled → 429 + Retry-After 头；最终失败
+    /// 解除亲和绑定。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn all_vendors_throttled_handler_yields_429_with_retry_after() {
+        let mut config = base_config(vec![
+            vendor(
+                "v-throttled-a",
+                "anthropic",
+                String::new(),
+                1,
+                "gpt-4",
+                1.0,
+                0,
+                None,
+            ),
+            vendor(
+                "v-throttled-b",
+                "anthropic",
+                String::new(),
+                2,
+                "gpt-4",
+                1.0,
+                0,
+                None,
+            ),
+        ]);
+        config.routing.retry_after_hint = true;
+        config.routing.fail_open_when_all_cooling = true;
+        let state = build_state(
+            config,
+            Wire {
+                affinity: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[],
+        )
+        .await;
+
+        assert_eq!(response.status(), 429, "全候选限流必须 429");
+        assert!(
+            header_of(&response, "retry-after").is_some(),
+            "retry_after_hint 开启时必须带 Retry-After 头"
+        );
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["type"], "all_vendors_throttled");
+
+        // 最终失败必须解除亲和绑定（messages 兜底会话键）
+        let session_key =
+            nexusflow::api::routing_hints::fallback_session_key(&chat_body("gpt-4", false))
+                .expect("messages 兜底键");
+        let affinity = state.affinity.as_ref().unwrap();
+        assert!(
+            affinity.lookup(None, &session_key).await.is_none(),
+            "全候选限流失败后亲和绑定必须被解除"
+        );
+    }
+
+    // ---- 会话亲和 bind/rebind（mod.rs 亲和读写体）----
+
+    /// 流式派发成功回写亲和绑定（tenant_scoped 开）：键带租户维度，
+    /// lookup(Some(tenant), session) 命中派发 vendor。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn session_affinity_binds_tenant_scoped_on_stream_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: [DONE]\n\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-openai",
+            "openai",
+            server.url(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.routing.affinity_tenant_scoped = true;
+        let state = build_state(
+            config,
+            Wire {
+                affinity: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", true),
+            &[("x-session-id", "sess-42")],
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+
+        let tenant = cache_api_key_hash(&axum::http::HeaderMap::new());
+        let bound = state
+            .affinity
+            .as_ref()
+            .unwrap()
+            .lookup(Some(&tenant), "sess-42")
+            .await;
+        assert_eq!(
+            bound.as_deref(),
+            Some("v-openai"),
+            "流式派发成功必须按租户维度回写亲和绑定"
+        );
+
+        mock.assert_async().await;
+    }
+
+    /// 流式派发成功回写亲和绑定（tenant_scoped 关）：legacy 键
+    /// lookup(None, session) 命中。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn session_affinity_binds_legacy_key_on_stream_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: [DONE]\n\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                server.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire {
+                affinity: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", true),
+            &[("x-session-id", "sess-legacy")],
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+
+        let bound = state
+            .affinity
+            .as_ref()
+            .unwrap()
+            .lookup(None, "sess-legacy")
+            .await;
+        assert_eq!(
+            bound.as_deref(),
+            Some("v-openai"),
+            "legacy 键（无租户维度）必须命中绑定"
+        );
+
+        mock.assert_async().await;
+    }
+
+    /// 非流式成功回写亲和（迁移重绑定路径）：tenant_scoped 开时以
+    /// 无条件 set 语义写入租户维度键。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_affinity_rebinds_with_tenant_on_nonstream_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_CHAT_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![vendor(
+            "v-openai",
+            "openai",
+            server.url(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.routing.affinity_tenant_scoped = true;
+        let state = build_state(
+            config,
+            Wire {
+                affinity: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[("x-session-id", "sess-nons")],
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+
+        let tenant = cache_api_key_hash(&axum::http::HeaderMap::new());
+        let bound = state
+            .affinity
+            .as_ref()
+            .unwrap()
+            .lookup(Some(&tenant), "sess-nons")
+            .await;
+        assert_eq!(
+            bound.as_deref(),
+            Some("v-openai"),
+            "非流式成功必须经重绑定回写租户维度亲和键"
+        );
+
+        mock.assert_async().await;
+    }
+
+    // ---- 大 payload 截断 / ApiState Debug / LinUCB 奖励守卫 / 全局状态 ----
+
+    /// >64KB 的 messages 落库截断：按 UTF-8 字符边界截断并附截断标记
+    ///（CJK 内容使 64KB 边界落在多字节字符内部，覆盖回退循环）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn oversized_messages_truncated_at_char_boundary_in_request_log() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_CHAT_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                server.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire {
+                logger: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        // 3 字节/字符 × 30000 = 90KB：64KiB 边界落在字符内部（65536 % 3 = 1）
+        let huge = "中".repeat(30_000);
+        let body = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": huge}],
+            "max_tokens": 16
+        });
+        let response = post_json(state.clone(), "/v1/chat/completions", body, &[]).await;
+        assert_eq!(response.status(), 200);
+
+        state
+            .logger
+            .as_ref()
+            .unwrap()
+            .shutdown()
+            .await
+            .expect("shutdown");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let logs = state
+            .database
+            .repository()
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("query logs");
+        assert_eq!(logs.len(), 1);
+        let messages = &logs[0].messages;
+        assert!(
+            messages.len() <= 64 * 1024 + 200,
+            "落库 messages 必须被截断到 64KB 附近，实际 {} 字节",
+            messages.len()
+        );
+        assert!(
+            messages.ends_with(']'),
+            "截断值必须以截断标记收尾: …{:?}",
+            &messages[messages.len() - 60..]
+        );
+
+        mock.assert_async().await;
+    }
+
+    /// ApiState Debug 不泄露内部细节，仅渲染接线摘要（字段存在性布尔）。
+    #[tokio::test]
+    async fn api_state_debug_renders_wiring_summary_only() {
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                String::new(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire {
+                logger: true,
+                bandit: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let debug = format!("{state:?}");
+        assert!(debug.starts_with("ApiState"), "{debug}");
+        for field in [
+            "config",
+            "vendor_manager",
+            "router",
+            "database",
+            "logger: true",
+            "pre_aggregator: false",
+            "affinity: false",
+            "response_cache: false",
+            "bandit: true",
+        ] {
+            assert!(debug.contains(field), "Debug 摘要缺字段 {field}: {debug}");
+        }
+    }
+
+    /// record_linucb_reward 双守卫：weighted 档不记账；linucb 档但臂键
+    /// 缺失（直连路径）不产生伪样本。
+    #[tokio::test]
+    async fn record_linucb_reward_guards_skip_accounting() {
+        let request = json!({"model": "gpt-4", "messages": []});
+
+        // weighted 档：bandit 已接线但选择档不是 linucb → 零记账
+        let weighted_state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                String::new(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire {
+                bandit: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        weighted_state.record_linucb_reward(Some("gpt-4"), "v-openai", &request, true);
+        assert!(
+            !weighted_state
+                .bandit
+                .as_ref()
+                .unwrap()
+                .has_arm("gpt-4", "v-openai"),
+            "weighted 档不得记账"
+        );
+
+        // linucb 档 + 臂键缺失（直连路径）→ 不产生伪样本
+        let mut linucb_config = base_config(vec![vendor(
+            "v-openai",
+            "openai",
+            String::new(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        linucb_config.routing.selection = "linucb".into();
+        let linucb_state = build_state(
+            linucb_config,
+            Wire {
+                bandit: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        linucb_state.record_linucb_reward(None, "v-openai", &request, true);
+        assert!(
+            !linucb_state
+                .bandit
+                .as_ref()
+                .unwrap()
+                .has_arm("gpt-4", "v-openai"),
+            "臂未被咨询（直连）不得产生伪样本"
+        );
+    }
+
+    /// 全局状态：init 后 get 返回同一实例（sdforge handler 的取态通道）。
+    ///
+    /// ⚠ OnceCell 独占：`init_global_state` 二次调用即 panic，本测试把
+    /// 进程级全局态永久绑定到自己的 ApiState——本二进制内不得再有其他
+    /// 测试调用 init_global_state / get_global_state（与 server_run_*.rs
+    /// "一场景独占一二进制"同一约束，只是本文件的其余测试不消费全局态）。
+    #[tokio::test]
+    async fn global_state_init_then_get_returns_same_instance() {
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                String::new(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+        init_global_state(state.clone());
+        assert!(
+            Arc::ptr_eq(&get_global_state(), &state),
+            "get_global_state 必须返回 init 注入的同一实例"
+        );
+    }
+
+    // ---- admin 查询与配置端点 ----
+    // （既有 admin 端点测试在上方 `mod admin`；本段是覆盖率补缺新增的
+    // 查询/更新分支，找 admin 测试时两处都要看。）
+
+    /// logs / search_logs / token_stats 三查询端点：以一次真实成功请求的
+    /// 落库数据驱动，断言各自返回结构与过滤语义。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn admin_log_query_endpoints_return_recent_activity() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_CHAT_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                server.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire {
+                logger: true,
+                pre_aggregator: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let response = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+
+        state
+            .logger
+            .as_ref()
+            .unwrap()
+            .shutdown()
+            .await
+            .expect("shutdown");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        state
+            .pre_aggregator
+            .as_ref()
+            .unwrap()
+            .flush()
+            .await
+            .expect("flush");
+
+        // logs：无条件查询返回该请求，状态码/端点为真实值
+        let value = admin::logs(
+            State(state.clone()),
+            Query(LogQuery {
+                start_time: None,
+                end_time: None,
+                vendor: None,
+                model: None,
+                limit: None,
+            }),
+        )
+        .await
+        .expect("logs query")
+        .0;
+        let arr = value.as_array().expect("logs 必须是数组");
+        assert_eq!(arr.len(), 1, "必须返回刚落库的一条日志");
+        assert_eq!(arr[0]["endpoint"], "/v1/chat/completions");
+        assert_eq!(arr[0]["status_code"], 200);
+        assert_eq!(arr[0]["actual_vendor"], "v-openai");
+
+        // search_logs：keyword 命中 messages 中的 "hello"
+        let value = admin::search_logs(
+            State(state.clone()),
+            Query(LogQuery {
+                start_time: None,
+                end_time: None,
+                vendor: Some("hello".into()),
+                model: None,
+                limit: None,
+            }),
+        )
+        .await
+        .expect("search query")
+        .0;
+        assert_eq!(
+            value.as_array().unwrap().len(),
+            1,
+            "关键词必须命中 messages"
+        );
+
+        // token_stats：预聚合 flush 后按 vendor 可查
+        let value = admin::token_stats(
+            State(state.clone()),
+            Query(LogQuery {
+                start_time: None,
+                end_time: None,
+                vendor: Some("v-openai".into()),
+                model: None,
+                limit: None,
+            }),
+        )
+        .await
+        .expect("token stats")
+        .0;
+        let stats = value.as_array().expect("token_stats 必须是数组");
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0]["vendor"], "v-openai");
+        assert_eq!(stats[0]["total_tokens"], 5);
+
+        mock.assert_async().await;
+    }
+
+    /// update_config 变更建站期固化段（server）→ 响应显式声明需重启。
+    #[tokio::test]
+    async fn admin_update_config_reports_restart_required_for_server() {
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                String::new(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+
+        let dir =
+            std::env::temp_dir().join(format!("nx-coverage-server-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+        state.config.set_path(path.clone());
+
+        let mut next = state.config.get_config();
+        next.server.port = 9090;
+        let response = admin::update_config(State(state.clone()), axum::Json(next))
+            .await
+            .unwrap()
+            .into_response();
+        assert_eq!(response.status(), 200);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["success"], true);
+        let required = value["restart_required"].as_array().unwrap();
+        assert!(
+            required.iter().any(|v| v == "server"),
+            "server 变更必须提示需重启: {required:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// get_models：global_model 未配置时返回空数组（非错误）。
+    #[tokio::test]
+    async fn admin_get_models_empty_without_global_model() {
+        let mut config = base_config(vec![vendor(
+            "v-openai",
+            "openai",
+            String::new(),
+            1,
+            "gpt-4",
+            1.0,
+            1_000_000,
+            None,
+        )]);
+        config.global_model = None;
+        let state = build_state(config, Wire::default()).await;
+
+        let models = admin::get_models(State(state)).await.unwrap().0;
+        assert!(
+            models.is_empty(),
+            "无 global_model 配置必须返回空数组: {models:?}"
+        );
+    }
+
+    /// update_model：id == "global" 更新单例全局模型策略并即时可读。
+    #[tokio::test]
+    async fn admin_update_model_global_updates_strategy() {
+        let state = build_state(
+            base_config(vec![vendor(
+                "v-openai",
+                "openai",
+                String::new(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            )]),
+            Wire::default(),
+        )
+        .await;
+
+        // update_config_with 原子 RMW 需要路径记忆才落盘
+        let dir =
+            std::env::temp_dir().join(format!("nx-coverage-update-model-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+        state.config.set_path(path.clone());
+
+        let response = admin::update_model(
+            State(state.clone()),
+            axum::extract::Path("global".into()),
+            axum::Json(GlobalModelConfig {
+                enabled: true,
+                strategy: "linucb".into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+        assert_eq!(response.status(), 200);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["success"], true);
+
+        let models = admin::get_models(State(state)).await.unwrap().0;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].strategy, "linucb", "更新必须即时可读");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

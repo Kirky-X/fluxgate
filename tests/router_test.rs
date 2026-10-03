@@ -3070,3 +3070,1013 @@ mod lps_lookahead {
         assert!(d.vendor.id == "busy" || d.vendor.id == "idle");
     }
 }
+
+// ============ 覆盖缺口补测：路由回退链 / fail-open / Po2C 平局 / 温度平滑 ============
+
+#[cfg(test)]
+mod route_gap_coverage {
+    use nexusflow::config::{
+        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
+        PricingConfig, RateLimitConfig, ResilienceSection, RoutingSection, ServerConfig,
+        VendorConfig,
+    };
+    use nexusflow::error::NexusFlowError;
+    use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use nexusflow::router::bandit::{linucb_features, BanditState};
+    use nexusflow::router::{compute_weight, Router, RoutingStrategy};
+    use nexusflow::vendor::{VendorManager, VendorStatus};
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    const BASELINE: f64 = 0.85;
+
+    fn vendor_with(
+        id: &str,
+        enabled: bool,
+        models: Vec<(&str, Option<&str>, f64, bool)>,
+    ) -> VendorConfig {
+        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
+        VendorConfig {
+            timeout_ms: 60_000,
+            stream_ttft_ms: 60_000,
+            stream_idle_ms: 30_000,
+            id: id.to_string(),
+            name: format!("Vendor {id}"),
+            type_: "openai".to_string(),
+            api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
+            api_base: String::new(),
+            enabled,
+            priority: 1,
+            models: models
+                .into_iter()
+                .map(
+                    |(model_id, abstract_id, weight, model_enabled)| ModelConfig {
+                        model_id: model_id.to_string(),
+                        abstract_id: abstract_id.map(|a| a.to_string()),
+                        weight,
+                        enabled: model_enabled,
+                    },
+                )
+                .collect(),
+            rate_limit: RateLimitConfig::Token {
+                max_tokens: 1_000_000,
+                window_hours: None,
+                sliding: false,
+            },
+            concurrency: ConcurrencyConfig {
+                requests_per_second: 100,
+                max_concurrent_requests: None,
+                token_weighted: false,
+                token_ticket_min: 1,
+                token_ticket_max: 16384,
+                token_ticket_default: 4096,
+            },
+        }
+    }
+
+    fn single_shared(id: &str) -> VendorConfig {
+        vendor_with(
+            id,
+            true,
+            vec![("shared-model", Some("shared-model"), 1.0, true)],
+        )
+    }
+
+    fn make_config(routing: RoutingSection, vendors: Vec<VendorConfig>) -> Config {
+        make_config_with_pricing(routing, vendors, vec![])
+    }
+
+    fn make_config_with_pricing(
+        routing: RoutingSection,
+        vendors: Vec<VendorConfig>,
+        pricing: Vec<PricingConfig>,
+    ) -> Config {
+        Config {
+            rate_limit: Default::default(),
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            database: DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+            },
+            vendors,
+            global_model: Some(GlobalModelConfig {
+                enabled: true,
+                strategy: "weighted".into(),
+            }),
+            pricing,
+            auth: None,
+            cors: None,
+            retry: nexusflow::config::RetrySection::default(),
+            routing,
+            cache: nexusflow::config::CacheSection::default(),
+            admission: Default::default(),
+            grpc: None,
+            resilience: nexusflow::config::ResilienceSection::default(),
+        }
+    }
+
+    async fn make_router(
+        routing: RoutingSection,
+        vendors: Vec<VendorConfig>,
+    ) -> (Arc<Router>, Arc<VendorManager>, Arc<ConfigManager>) {
+        let cm = Arc::new(ConfigManager::new(make_config(routing, vendors)));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        (Arc::new(Router::new(cm.clone(), vm.clone())), vm, cm)
+    }
+
+    /// 单候选 vendor 的 (VendorConfig, ModelConfig) 候选对
+    fn pair_of(id: &str) -> (VendorConfig, ModelConfig) {
+        let v = single_shared(id);
+        (v.clone(), v.models[0].clone())
+    }
+
+    // ---- auto（global 路由）回退链 ----
+
+    /// 全部 vendor 禁用：auto 路由的 abstract/direct 都落空，global 路径
+    /// 因 enabled 过滤产生空候选集且无 fail-open 回落集 → 收敛 Validation
+    /// 错误（route_inner 的 is_auto 分支 fallthrough）。
+    #[tokio::test]
+    async fn auto_route_all_vendors_disabled_returns_validation_error() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![vendor_with(
+                "gx-off",
+                false,
+                vec![("shared-model", Some("shared-model"), 1.0, true)],
+            )],
+        )
+        .await;
+        let err = router.route("auto").await.unwrap_err();
+        assert!(
+            matches!(err, NexusFlowError::Validation { .. }),
+            "全禁用下 auto 路由必须收敛 Validation 错误: {err}"
+        );
+    }
+
+    /// 全部 vendor 运维置为 Unavailable 且 fail-open 关闭（默认）：global
+    /// 路径把全部候选计入 status_dropped 后仍返回 None → Validation 错误
+    ///（fail-open 不开启时不得把冷却 vendor 纳入流量）。
+    #[tokio::test]
+    async fn auto_route_all_unavailable_without_fail_open_errors() {
+        let (router, vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![single_shared("gx-a"), single_shared("gx-b")],
+        )
+        .await;
+        vm.initialize().await.expect("vendor init");
+        vm.update_status("gx-a", VendorStatus::Unavailable);
+        vm.update_status("gx-b", VendorStatus::Unavailable);
+
+        let err = router.route("auto").await.unwrap_err();
+        assert!(
+            matches!(err, NexusFlowError::Validation { .. }),
+            "全冷却且 fail-open 关闭必须报 Validation: {err}"
+        );
+    }
+
+    /// global 路径的三类剪枝：禁用 vendor、被排除 vendor、禁用模型各自
+    /// 被跳过，唯一健康候选胜出且 strategy == Global。
+    #[tokio::test]
+    async fn global_route_skips_disabled_excluded_and_disabled_models() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![
+                vendor_with(
+                    "gx-dis",
+                    false,
+                    vec![("shared-model", Some("shared-model"), 1.0, true)],
+                ),
+                single_shared("gx-ex"),
+                vendor_with(
+                    "gx-md",
+                    true,
+                    vec![
+                        ("shared-model", Some("shared-model"), 1.0, false),
+                        ("shared-model", Some("shared-model"), 1.0, true),
+                    ],
+                ),
+                single_shared("gx-ok"),
+            ],
+        )
+        .await;
+        let d = router
+            .route_with_session_excluding("auto", None, &["gx-ex".to_string()])
+            .await
+            .expect("route");
+        // 合格集 = gx-md 的 enabled model + gx-ok；禁用 vendor 与被排除
+        // vendor（gx-dis/gx-ex）绝不出现，gx-md 的 disabled model 被剪枝。
+        assert_ne!(d.vendor.id, "gx-dis", "禁用 vendor 必须被剪枝");
+        assert_ne!(d.vendor.id, "gx-ex", "被排除 vendor 必须被剪枝");
+        assert!(d.vendor.id == "gx-md" || d.vendor.id == "gx-ok");
+        assert_eq!(d.strategy, RoutingStrategy::Global);
+    }
+
+    /// global 路径 fail-open：全部候选 Unavailable 且开关开启 → 回落
+    /// status_dropped 集合加权选择（有意冒险的安全网语义）。
+    #[tokio::test]
+    async fn global_fail_open_engages_when_all_cooling() {
+        let (router, vm, _cm) = make_router(
+            RoutingSection {
+                fail_open_when_all_cooling: true,
+                ..Default::default()
+            },
+            vec![single_shared("gx-a"), single_shared("gx-b")],
+        )
+        .await;
+        vm.initialize().await.expect("vendor init");
+        vm.update_status("gx-a", VendorStatus::Unavailable);
+        vm.update_status("gx-b", VendorStatus::Unavailable);
+
+        let d = router.route("auto").await.expect("fail-open 决策");
+        assert!(
+            d.vendor.id == "gx-a" || d.vendor.id == "gx-b",
+            "回落候选集必须来自冷却集合: {}",
+            d.vendor.id
+        );
+        assert_eq!(d.strategy, RoutingStrategy::Global);
+    }
+
+    // ---- route_with_hints：preferred_vendor 分支 ----
+
+    /// 指定 vendor 不存在 → router-vendor-unavailable Validation 错误
+    ///（try_vendor_route 的 get_vendor None 路径 + 显式 Err 收敛）。
+    #[tokio::test]
+    async fn hints_unknown_vendor_returns_unavailable_error() {
+        let (router, _vm, _cm) =
+            make_router(RoutingSection::default(), vec![single_shared("gx-a")]).await;
+        let err = router
+            .route_with_hints("shared-model", Some("ghost"), None, None, None, None, None)
+            .await
+            .unwrap_err();
+        match err {
+            NexusFlowError::Validation { field } => {
+                assert!(field.contains("ghost"), "错误须指名缺失 vendor: {field}");
+            }
+            other => panic!("必须收敛 Validation 错误: {other:?}"),
+        }
+    }
+
+    /// 指定 vendor 存在但配置禁用 → 不可用错误（enabled 门控先于状态查询）。
+    #[tokio::test]
+    async fn hints_disabled_vendor_returns_unavailable_error() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![vendor_with(
+                "gx-off",
+                false,
+                vec![("shared-model", Some("shared-model"), 1.0, true)],
+            )],
+        )
+        .await;
+        let err = router
+            .route_with_hints("shared-model", Some("gx-off"), None, None, None, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, NexusFlowError::Validation { .. }),
+            "禁用 vendor 必须按不可用收敛: {err:?}"
+        );
+    }
+
+    /// 指定 vendor 启用但运维置 Unavailable → 不可用错误（VendorStatus
+    /// 门控路径，区别于 enabled 配置门控）。
+    #[tokio::test]
+    async fn hints_unavailable_status_vendor_returns_unavailable_error() {
+        let (router, vm, _cm) =
+            make_router(RoutingSection::default(), vec![single_shared("gx-a")]).await;
+        vm.initialize().await.expect("vendor init");
+        vm.update_status("gx-a", VendorStatus::Unavailable);
+
+        let err = router
+            .route_with_hints("shared-model", Some("gx-a"), None, None, None, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, NexusFlowError::Validation { .. }),
+            "Unavailable 状态 vendor 必须按不可用收敛: {err:?}"
+        );
+    }
+
+    /// 指定 vendor + model 提示命中：model_id 大写（经 to_lowercase 归一）
+    /// 与 abstract_id 大写（第二匹配分支）都路由到 Direct 决策。
+    #[tokio::test]
+    async fn hints_vendor_model_hint_routes_direct_both_match_branches() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![vendor_with(
+                "gx-alias",
+                true,
+                vec![("m-real", Some("m-alias"), 1.0, true)],
+            )],
+        )
+        .await;
+
+        // (a) model_id 匹配（大写归一）
+        let d = router
+            .route_with_hints(
+                "shared-model",
+                Some("gx-alias"),
+                Some("M-REAL"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("model_id 提示路由");
+        assert_eq!(d.vendor.id, "gx-alias");
+        assert_eq!(d.model.model_id, "m-real");
+        assert_eq!(d.strategy, RoutingStrategy::Direct);
+
+        // (b) abstract_id 匹配（find 闭包的 or 分支）
+        let d = router
+            .route_with_hints(
+                "shared-model",
+                Some("gx-alias"),
+                Some("M-ALIAS"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("abstract_id 提示路由");
+        assert_eq!(d.vendor.id, "gx-alias");
+        assert_eq!(d.model.model_id, "m-real", "abstract_id 命中同一 model");
+        assert_eq!(d.strategy, RoutingStrategy::Direct);
+    }
+
+    /// model 提示无匹配 → hints 落到默认 route_weighted（abstract 路由
+    /// 正常决策，而非报错）。
+    #[tokio::test]
+    async fn hints_model_hint_miss_falls_through_to_weighted_default() {
+        let (router, _vm, _cm) =
+            make_router(RoutingSection::default(), vec![single_shared("gx-a")]).await;
+        let d = router
+            .route_with_hints(
+                "shared-model",
+                None,
+                Some("ghost-model"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("未命中提示必须落默认路由而非失败");
+        assert_eq!(d.vendor.id, "gx-a");
+        assert_eq!(d.strategy, RoutingStrategy::Abstract);
+    }
+
+    // ---- direct 形式（vendor.model）的排除与门控 ----
+
+    /// direct 候选 vendor 在排除集中 → None → 收敛 Validation
+    ///（失败迁移重路由的排除语义对 direct 形式同样生效）。
+    #[tokio::test]
+    async fn direct_route_excluded_vendor_errors() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![vendor_with(
+                "gx-alias",
+                true,
+                vec![("m-real", Some("m-alias"), 1.0, true)],
+            )],
+        )
+        .await;
+        let err = router
+            .route_with_session_excluding("gx-alias.m-real", None, &["gx-alias".to_string()])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, NexusFlowError::Validation { .. }),
+            "被排除的 direct vendor 必须收敛 Validation: {err:?}"
+        );
+    }
+
+    /// direct 候选 vendor 配置禁用 → None → Validation（direct 路径不复用
+    /// resolve_model 的 enabled 过滤，独立门控）。
+    #[tokio::test]
+    async fn direct_route_disabled_vendor_errors() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![vendor_with(
+                "gx-off",
+                false,
+                vec![("m-real", Some("m-alias"), 1.0, true)],
+            )],
+        )
+        .await;
+        let err = router.route("gx-off.m-real").await.unwrap_err();
+        assert!(
+            matches!(err, NexusFlowError::Validation { .. }),
+            "禁用 vendor 的 direct 形式必须收敛 Validation: {err:?}"
+        );
+    }
+
+    /// direct 的模型段按 abstract_id 匹配（find 闭包 or 分支）→
+    /// Direct 决策落到同一 model。
+    #[tokio::test]
+    async fn direct_route_matches_abstract_id_suffix() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![vendor_with(
+                "gx-alias",
+                true,
+                vec![("m-real", Some("m-alias"), 1.0, true)],
+            )],
+        )
+        .await;
+        let d = router.route("gx-alias.m-alias").await.expect("direct 路由");
+        assert_eq!(d.vendor.id, "gx-alias");
+        assert_eq!(d.model.model_id, "m-real");
+        assert_eq!(d.strategy, RoutingStrategy::Direct);
+    }
+
+    // ---- LinUCB 选择档的回退与 α 钳制 ----
+
+    /// 特征长度 != LINUCB_DIM → linucb_route 返回 None 回退 weighted
+    ///（脏特征不得参与选择，也不得 panic）。
+    #[tokio::test]
+    async fn linucb_wrong_feature_length_falls_back_to_weighted() {
+        let cm = Arc::new(ConfigManager::new(make_config(
+            RoutingSection {
+                selection: "linucb".into(),
+                ..Default::default()
+            },
+            vec![single_shared("gx-good"), single_shared("gx-bad")],
+        )));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let bandit = Arc::new(BanditState::new(1.0));
+        let router = Router::new(cm, vm).with_bandit(bandit.clone());
+
+        let x_unit = linucb_features(0, 0, false, false);
+        for _ in 0..5 {
+            bandit.update("shared-model", "gx-bad", &x_unit, 0.0);
+        }
+        // 长度 3 的非法特征
+        let bad_len = [1.0, 2.0, 3.0];
+        let (mut good, mut bad) = (0usize, 0usize);
+        for _ in 0..200 {
+            let d = router
+                .route_weighted("shared-model", None, None, &[], None, Some(&bad_len), None)
+                .await
+                .unwrap();
+            match d.vendor.id.as_str() {
+                "gx-good" => good += 1,
+                "gx-bad" => bad += 1,
+                other => panic!("unexpected vendor {other}"),
+            }
+        }
+        assert!(
+            good > 0 && bad > 0,
+            "长度非法特征必须回退 weighted（两臂都出现）: {good}/{bad}"
+        );
+    }
+
+    /// ucb_alpha 非法（负值）→ 钳 0 纯贪心：成功臂 mean 项定向、失败臂
+    /// 无探索补偿 → 恒选成功臂。
+    #[tokio::test]
+    async fn linucb_negative_alpha_clamped_to_zero_still_routes() {
+        let cm = Arc::new(ConfigManager::new(make_config(
+            RoutingSection {
+                selection: "linucb".into(),
+                ucb_alpha: -1.0,
+                ..Default::default()
+            },
+            vec![single_shared("gx-good"), single_shared("gx-bad")],
+        )));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let bandit = Arc::new(BanditState::new(1.0));
+        let router = Router::new(cm, vm).with_bandit(bandit.clone());
+
+        let x = linucb_features(0, 0, false, false);
+        for _ in 0..5 {
+            bandit.update("shared-model", "gx-bad", &x, 0.0);
+        }
+        for _ in 0..3 {
+            bandit.update("shared-model", "gx-good", &x, 1.0);
+        }
+        for _ in 0..20 {
+            let d = router
+                .route_weighted("shared-model", None, None, &[], None, Some(&x), None)
+                .await
+                .unwrap();
+            assert_eq!(
+                d.vendor.id, "gx-good",
+                "α 钳 0 后纯贪心必须定向成功臂（mean 0.75 > 0）"
+            );
+        }
+    }
+
+    // ---- weighted_select_with 的权重退化分支（pub 确定性入口）----
+
+    /// 全零权重：轮盘赌退化均匀随机（防除零语义），固定 seed 可复现、
+    /// 多 seed 下两候选都可出现。
+    #[test]
+    fn zero_total_weight_selects_uniformly() {
+        let (router, _vm, _cm) = {
+            let cm = Arc::new(ConfigManager::new(make_config(
+                RoutingSection::default(),
+                vec![single_shared("gx-a"), single_shared("gx-b")],
+            )));
+            let vm = Arc::new(VendorManager::new(cm.clone()));
+            (Router::new(cm.clone(), vm.clone()), vm, cm)
+        };
+        let (a, b) = (pair_of("gx-a"), pair_of("gx-b"));
+        let weighted = vec![(0.0, a.clone()), (0.0, b.clone())];
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let d = router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+        assert!(
+            d.vendor.id == "gx-a" || d.vendor.id == "gx-b",
+            "零总权重必须仍在候选内选择: {}",
+            d.vendor.id
+        );
+
+        // 同 seed 复现
+        let mut rng_a = StdRng::seed_from_u64(7);
+        let mut rng_b = StdRng::seed_from_u64(7);
+        for _ in 0..10 {
+            let x = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng_a,
+            );
+            let y = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng_b,
+            );
+            assert_eq!(x.vendor.id, y.vendor.id);
+        }
+
+        // 多 seed 两候选都出现（均匀而非恒首/恒尾）
+        let mut saw_a = false;
+        let mut saw_b = false;
+        for seed in 0..40u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let d =
+                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            saw_a |= d.vendor.id == "gx-a";
+            saw_b |= d.vendor.id == "gx-b";
+        }
+        assert!(saw_a && saw_b, "均匀随机下两候选都必须出现");
+    }
+
+    /// NaN 权重污染：轮盘赌 target/cumulative 恒不命中 → 兜底返回最后一个
+    /// 候选（防御分支的行为锚定）。
+    #[test]
+    fn nan_weights_fall_back_to_last_candidate() {
+        let cm = Arc::new(ConfigManager::new(make_config(
+            RoutingSection::default(),
+            vec![single_shared("gx-a"), single_shared("gx-b")],
+        )));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm);
+        let (a, b) = (pair_of("gx-a"), pair_of("gx-b"));
+        let weighted = vec![(f64::NAN, a), (2.0, b)];
+
+        for seed in [1u64, 7, 42, 12345] {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let d =
+                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            assert_eq!(
+                d.vendor.id, "gx-b",
+                "NaN 污染下必须走兜底（最后一个候选）: seed={seed}"
+            );
+        }
+    }
+
+    /// 非正权重经温度平滑（T=2）不得变成 NaN：负权重保留原值 → 总和非正
+    /// → 走均匀随机分支（多 seed 可选中首候选），而非 NaN 兜底恒选尾部。
+    #[test]
+    fn non_positive_weights_survive_temperature_smoothing() {
+        let cm = Arc::new(ConfigManager::new(make_config(
+            RoutingSection {
+                temperature: 2.0,
+                ..Default::default()
+            },
+            vec![single_shared("gx-a"), single_shared("gx-b")],
+        )));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm);
+        let (a, b) = (pair_of("gx-a"), pair_of("gx-b"));
+        // 全零与全负两组输入
+        for weighted in [
+            vec![(0.0, a.clone()), (0.0, b.clone())],
+            vec![(-1.0, a.clone()), (-1.0, b.clone())],
+        ] {
+            let mut saw_a = false;
+            for seed in 0..40u64 {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let d = router.weighted_select_with(
+                    weighted.clone(),
+                    RoutingStrategy::Abstract,
+                    &mut rng,
+                );
+                assert!(
+                    d.vendor.id == "gx-a" || d.vendor.id == "gx-b",
+                    "非正权重平滑后仍须在候选内: {}",
+                    d.vendor.id
+                );
+                saw_a |= d.vendor.id == "gx-a";
+            }
+            assert!(
+                saw_a,
+                "温度平滑不得把非正权重变成 NaN（否则恒兜底尾部、首候选永不出现）"
+            );
+        }
+    }
+
+    // ---- Po2C 平局分支 ----
+
+    /// 两候选均无延迟数据 → latency_score 平局（都是 2×ref）→ 回退权重
+    /// 高者；两种权重排布下都是重者胜出（平局回退的双向锚定）。
+    #[test]
+    fn power_of_two_tie_prefers_heavier_weight_both_orders() {
+        let cm = Arc::new(ConfigManager::new(make_config(
+            RoutingSection {
+                selection: "power_of_two".into(),
+                ..Default::default()
+            },
+            vec![single_shared("gx-a"), single_shared("gx-b")],
+        )));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm);
+        let (a, b) = (pair_of("gx-a"), pair_of("gx-b"));
+
+        // 权重 2:1 与 1:2 各跑一次（同 seed，i1/i2 采样一致）
+        let heavy_a = vec![(2.0, a.clone()), (1.0, b.clone())];
+        let heavy_b = vec![(1.0, a.clone()), (2.0, b.clone())];
+        let mut rng = StdRng::seed_from_u64(7);
+        let d1 = router.weighted_select_with(heavy_a, RoutingStrategy::Abstract, &mut rng);
+        let mut rng = StdRng::seed_from_u64(7);
+        let d2 = router.weighted_select_with(heavy_b, RoutingStrategy::Abstract, &mut rng);
+
+        assert_eq!(d1.vendor.id, "gx-a", "平局时权重高者（v-a）胜出");
+        assert_eq!(d2.vendor.id, "gx-b", "平局时权重高者（v-b）胜出");
+    }
+
+    // ---- 失败率软降权：未超阈分支 ----
+
+    /// gate=true、样本达标（5 ≥ min 5）但失败率 0.4 ≤ 0.5 → 不惩罚，
+    /// 劣化 vendor 与健康 vendor 权重相等。
+    #[tokio::test]
+    async fn failure_rate_below_threshold_keeps_weight() {
+        let mut config = make_config(
+            RoutingSection::default(),
+            vec![single_shared("gx-degraded"), single_shared("gx-healthy")],
+        );
+        config.resilience = ResilienceSection {
+            failure_rate_gate: true,
+            ..ResilienceSection::default()
+        };
+        let cm = Arc::new(ConfigManager::new(config));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm.clone(), vm.clone());
+
+        let t0 = Instant::now();
+        for _ in 0..2 {
+            vm.metrics()
+                .record_vendor_outcome_at("gx-degraded", false, t0);
+        }
+        for _ in 0..3 {
+            vm.metrics()
+                .record_vendor_outcome_at("gx-degraded", true, t0);
+        }
+
+        let candidates = cm.resolve_model("shared-model");
+        let weighted = router.calculate_weights(candidates).await;
+        let weight_of = |id: &str| {
+            weighted
+                .iter()
+                .find(|(_, (v, _))| v.id == id)
+                .map(|(w, _)| *w)
+                .unwrap()
+        };
+        assert_eq!(
+            weight_of("gx-degraded"),
+            weight_of("gx-healthy"),
+            "失败率未超阈不得惩罚（0.4 ≤ 0.5）"
+        );
+    }
+
+    // ---- SLA：α 非有限钳 0 / global 路径全无定价 ----
+
+    /// sla_alpha=NaN → 钳 0：Q 更新恒 0（不累积），权重只含成本项。
+    #[tokio::test]
+    async fn sla_nan_alpha_treated_as_zero_queue_never_grows() {
+        let cm = Arc::new(ConfigManager::new(make_config_with_pricing(
+            RoutingSection {
+                sla_v: 1.0,
+                sla_alpha: f64::NAN,
+                ..Default::default()
+            },
+            vec![single_shared("gx-a")],
+            vec![nexusflow::config::PricingConfig {
+                vendor_id: "gx-a".into(),
+                model_id: "shared-model".into(),
+                input_per_1k_tokens: 0.05,
+                output_per_1k_tokens: 0.05,
+            }],
+        )));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Arc::new(Router::new(cm.clone(), vm.clone()));
+
+        // 灌满失败观测（ŝ=0 < 默认 α=0.95 会累积；α 钳 0 后不得累积）
+        vm.metrics()
+            .record_request("gx-a", false, std::time::Duration::from_millis(10));
+        vm.metrics()
+            .record_e2e("gx-a", std::time::Duration::from_millis(10), Instant::now());
+
+        router
+            .route_weighted("shared-model", None, None, &[], None, None, None)
+            .await
+            .unwrap();
+        let q = router.sla_queue_snapshot();
+        assert_eq!(
+            q.get("global").copied(),
+            Some(0.0),
+            "α 钳 0 时对偶更新必须恒 0（键存在、值 0）"
+        );
+
+        let vendor = single_shared("gx-a");
+        let candidates = vec![(vendor.clone(), vendor.models[0].clone())];
+        let w = router
+            .calculate_weights(candidates)
+            .await
+            .into_iter()
+            .next()
+            .map(|(w, _)| w)
+            .unwrap();
+        assert!(
+            (w - BASELINE / 1.05).abs() < 1e-9,
+            "Q 恒 0 时权重只含成本项: {w}"
+        );
+    }
+
+    /// global 路径（auto）+ 全候选无定价：成本项整体置中性 0（warn 一次），
+    /// 路由成功且虚拟队列记账存在。
+    #[tokio::test]
+    async fn sla_unpriced_global_route_neutralizes_cost() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection {
+                sla_v: 1.0,
+                ..Default::default()
+            },
+            vec![single_shared("gx-a"), single_shared("gx-b")],
+        )
+        .await;
+        let d = router.route("auto").await.expect("global 路由");
+        assert!(d.vendor.id == "gx-a" || d.vendor.id == "gx-b");
+        // 选择完成 → 对偶更新记账（成本中性后纯 Q 项，ŝ=1 → Q 钳 0）
+        let q = router.sla_queue_snapshot();
+        assert_eq!(q.get("global").copied(), Some(0.0), "ŝ=1 ≥ α 时 Q 钳 0");
+    }
+
+    // ---- LPS：零 EWMA、非法 deadline、全可行、global 路径 ----
+
+    /// e2e EWMA == 0（记录了 0ms 样本）按无服务率处理 → Ŵ=0 中性不惩罚；
+    /// 无数据 vendor 同样中性 → δ>0 下两者权重都与基线逐位相等。
+    #[tokio::test]
+    async fn lps_zero_e2e_ewma_treated_as_no_queue_data() {
+        let (router, vm, _cm) = make_router(
+            RoutingSection {
+                lps_delta: 1.0,
+                ..Default::default()
+            },
+            vec![single_shared("gx-zero"), single_shared("gx-none")],
+        )
+        .await;
+        vm.metrics().record_e2e(
+            "gx-zero",
+            std::time::Duration::from_millis(0),
+            Instant::now(),
+        );
+
+        let w_zero = {
+            let v = single_shared("gx-zero");
+            router
+                .calculate_weights(vec![(v.clone(), v.models[0].clone())])
+                .await
+                .into_iter()
+                .next()
+                .map(|(w, _)| w)
+                .unwrap()
+        };
+        let w_none = {
+            let v = single_shared("gx-none");
+            router
+                .calculate_weights(vec![(v.clone(), v.models[0].clone())])
+                .await
+                .into_iter()
+                .next()
+                .map(|(w, _)| w)
+                .unwrap()
+        };
+        assert_eq!(w_zero, BASELINE, "0ms e2e EWMA 必须按无数据中性处理");
+        assert_eq!(w_none, BASELINE, "无数据 vendor 不受 LPS 惩罚");
+    }
+
+    /// deadline 非法（NaN / 负值）→ 不设限（不得误判全超时），正常路由。
+    #[tokio::test]
+    async fn lps_invalid_deadline_means_no_filter() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection {
+                lps_deadline_gate: true,
+                ..Default::default()
+            },
+            vec![single_shared("gx-a"), single_shared("gx-b")],
+        )
+        .await;
+        for deadline in [f64::NAN, -1.0, 0.0] {
+            let d = router
+                .route_weighted("shared-model", None, None, &[], None, None, Some(deadline))
+                .await
+                .unwrap_or_else(|e| panic!("deadline {deadline} 不得拒绝服务: {e}"));
+            assert!(d.vendor.id == "gx-a" || d.vendor.id == "gx-b");
+        }
+    }
+
+    /// 全候选 Ŵ 可行 → 不筛（保持原候选与权重路径），正常路由。
+    #[tokio::test]
+    async fn lps_all_candidates_feasible_keeps_full_set() {
+        let (router, vm, _cm) = make_router(
+            RoutingSection {
+                lps_deadline_gate: true,
+                ..Default::default()
+            },
+            vec![single_shared("gx-a"), single_shared("gx-b")],
+        )
+        .await;
+        // 有 e2e 数据但零到达率 → Ŵ=0 → 全可行（deadline 1e9ms）
+        let now = Instant::now();
+        vm.metrics()
+            .record_e2e("gx-a", std::time::Duration::from_millis(8), now);
+        vm.metrics()
+            .record_e2e("gx-b", std::time::Duration::from_millis(8), now);
+
+        let d = router
+            .route_weighted("shared-model", None, None, &[], None, None, Some(1e9))
+            .await
+            .expect("全可行不得拒绝服务");
+        assert!(d.vendor.id == "gx-a" || d.vendor.id == "gx-b");
+    }
+
+    /// global 路径 deadline 门控：部分候选超时 → 可行集筛选后只剩 idle
+    ///（Feasible 分支作用于 global 候选集）。并发上限 Some(2) 使 Ŵ 落在
+    /// 可区分量级（缺省 100 时 Ŵ 趋零、全候选可行，筛选不触发）。
+    #[tokio::test]
+    async fn global_lps_deadline_feasible_subset() {
+        let vendor = |id: &str| {
+            let mut v = single_shared(id);
+            v.concurrency.max_concurrent_requests = Some(2);
+            v
+        };
+        let (router, vm, _cm) = make_router(
+            RoutingSection {
+                lps_deadline_gate: true,
+                ..Default::default()
+            },
+            vec![vendor("gx-busy"), vendor("gx-idle")],
+        )
+        .await;
+        let now = Instant::now();
+        for v in ["gx-busy", "gx-idle"] {
+            vm.metrics()
+                .record_e2e(v, std::time::Duration::from_millis(8), now);
+        }
+        for _ in 0..600 {
+            vm.metrics().record_traffic_at("gx-busy", Instant::now());
+        }
+
+        let d = router
+            .route_weighted("auto", None, None, &[], None, None, Some(0.001))
+            .await
+            .expect("route");
+        assert_eq!(d.vendor.id, "gx-idle", "可行集应只剩 idle（global 路径）");
+        assert_eq!(d.strategy, RoutingStrategy::Global);
+    }
+
+    /// global 路径全候选超时 → 空集规则改选 Ŵ 最小者（busy：α=10 < idle α=20）。
+    #[tokio::test]
+    async fn global_lps_deadline_empty_feasible_picks_min_wait() {
+        let vendor = |id: &str| {
+            let mut v = single_shared(id);
+            v.concurrency.max_concurrent_requests = Some(2);
+            v
+        };
+        let (router, vm, _cm) = make_router(
+            RoutingSection {
+                lps_deadline_gate: true,
+                ..Default::default()
+            },
+            vec![vendor("gx-busy"), vendor("gx-idle")],
+        )
+        .await;
+        let now = Instant::now();
+        for v in ["gx-busy", "gx-idle"] {
+            vm.metrics()
+                .record_e2e(v, std::time::Duration::from_millis(8), now);
+        }
+        for _ in 0..600 {
+            vm.metrics().record_traffic_at("gx-busy", Instant::now());
+        }
+        for _ in 0..1200 {
+            vm.metrics().record_traffic_at("gx-idle", Instant::now());
+        }
+
+        let d = router
+            .route_weighted("auto", None, None, &[], None, None, Some(0.001))
+            .await
+            .expect("route");
+        assert_eq!(
+            d.vendor.id, "gx-busy",
+            "全候选超时必须回退 Ŵ 最小者（global 路径）"
+        );
+    }
+
+    // ---- global 路径的会话亲和（hard 命中 / soft boost）----
+
+    async fn make_affinity_router(
+        routing: RoutingSection,
+    ) -> (Arc<Router>, Arc<AffinityTable>, Arc<VendorManager>) {
+        let cm = Arc::new(ConfigManager::new(make_config(
+            routing,
+            vec![single_shared("gx-va"), single_shared("gx-vb")],
+        )));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let table = Arc::new(AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL));
+        let router = Arc::new(Router::new(cm, vm.clone()).with_affinity(table.clone()));
+        (router, table, vm)
+    }
+
+    /// auto（global 路由）+ hard 亲和：绑定 vendor 在合格集合内 → 命中即
+    /// 返回，strategy == Global。
+    #[tokio::test]
+    async fn global_affinity_hard_hit_returns_bound_vendor() {
+        let (router, table, _vm) = make_affinity_router(RoutingSection::default()).await;
+        table.bind(None, "g-sess", "gx-vb").await;
+
+        let d = router
+            .route_with_session("auto", Some("g-sess"))
+            .await
+            .expect("global 亲和路由");
+        assert_eq!(d.vendor.id, "gx-vb", "hard 命中必须粘住绑定 vendor");
+        assert_eq!(d.strategy, RoutingStrategy::Global);
+    }
+
+    /// auto（global 路由）+ soft 亲和：命中软化为权重乘子（×(1+factor)）
+    /// 而非硬粘——boost 后绑定 vendor 占多数但另一候选仍有流量。
+    #[tokio::test]
+    async fn global_affinity_soft_boosts_bound_vendor_distribution() {
+        let (router, table, _vm) = make_affinity_router(RoutingSection {
+            affinity_mode: "soft".into(),
+            affinity_boost_factor: 3.0, // 绑定 vendor 权重 1 → 4，P≈0.8
+            ..Default::default()
+        })
+        .await;
+        table.bind(None, "g-soft", "gx-vb").await;
+
+        let (mut a, mut b) = (0usize, 0usize);
+        for _ in 0..400 {
+            let d = router
+                .route_with_session("auto", Some("g-soft"))
+                .await
+                .expect("soft 亲和路由");
+            assert_eq!(d.strategy, RoutingStrategy::Global);
+            match d.vendor.id.as_str() {
+                "gx-va" => a += 1,
+                "gx-vb" => b += 1,
+                other => panic!("unexpected vendor {other}"),
+            }
+        }
+        assert!(b > a, "soft boost 后绑定 vendor 必须占多数: a={a} b={b}");
+        assert!(a > 0, "soft 是 boost 不是硬粘，另一候选必须有流量: a={a}");
+    }
+
+    // ---- 纯函数：latency_factor 的非法 ref 防御 ----
+
+    /// latency_ref_ms 配置非法（≤0）时延迟因子走中性 0.5，而非
+    /// ref/(ref+ewma) 的退化值。
+    #[test]
+    fn latency_factor_neutral_when_ref_invalid() {
+        let routing = RoutingSection {
+            w_latency: 0.3,
+            latency_ref_ms: 0.0,
+            ..Default::default()
+        };
+        let w = compute_weight(1.0, 0, None, &routing, Some((100.0, 0.0)));
+        // model 0.4 + queue 0.3 + window 0.15 + latency 0.5×0.3 + error 0 = 1.0
+        //（若非法 ref 未走中性分支，factor=0/(0+100)=0 → 权重 0.85）
+        assert!(
+            (w - 1.0).abs() < 1e-9,
+            "非法 ref 必须走中性 0.5（权重 1.0 而非退化的 0.85）: {w}"
+        );
+    }
+}

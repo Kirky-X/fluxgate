@@ -18,11 +18,16 @@ use crate::server::bootstrap::Assembly;
 ///
 /// 持有日志管道与预聚合器的运行时句柄；不持有则嵌入式退出时
 /// flush worker 泄漏（每 60s tick 持有 Repository）且缓冲数据丢失。
+///
+/// feature = "grpc" 时另持有装配好的 [`GrpcServer`]（`take_grpc_server`
+/// 取出后由调用方 spawn；未取出则随句柄丢弃——装配 ≠ 启动）。
 pub struct ServerHandle {
     logger_handle: Arc<AsyncLoggerHandle>,
     pre_aggregator: Arc<TokenPreAggregator>,
     pa_shutdown: Arc<AtomicBool>,
     done: AtomicBool,
+    #[cfg(feature = "grpc")]
+    grpc_server: std::sync::OnceLock<Option<crate::server::grpc::GrpcServer>>,
 }
 
 impl std::fmt::Debug for ServerHandle {
@@ -40,7 +45,23 @@ impl ServerHandle {
             pre_aggregator: assembly.pre_aggregator.clone(),
             pa_shutdown: assembly.pa_shutdown.clone(),
             done: AtomicBool::new(false),
+            #[cfg(feature = "grpc")]
+            grpc_server: std::sync::OnceLock::new(),
         }
+    }
+
+    /// 登记 gRPC 服务器（装配期一次性；重复调用为 no-op）。
+    #[cfg(feature = "grpc")]
+    pub(crate) fn set_grpc_server(&self, grpc: Option<crate::server::grpc::GrpcServer>) {
+        let _ = self.grpc_server.set(grpc);
+    }
+
+    /// 取出 gRPC 服务器（一次性）：`Some(server)` = [grpc] 段启用且装配
+    /// 成功，调用方 `tokio::spawn(server.serve(signal))` 启动；`None` =
+    /// gRPC 禁用或已被取走。不取则随句柄丢弃（装配 ≠ 启动）。
+    #[cfg(feature = "grpc")]
+    pub fn take_grpc_server(&mut self) -> Option<crate::server::grpc::GrpcServer> {
+        self.grpc_server.take().flatten()
     }
 
     /// 优雅停机收尾（原 main.rs:277-299 平移，顺序逐位一致）：

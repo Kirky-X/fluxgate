@@ -37,6 +37,13 @@ pub async fn build_app(
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
     let handle = ServerHandle::from_assembly(&assembly);
     let app = assemble_router(&config_manager, &assembly).await?;
+    // gRPC 装配（feature = "grpc"）：禁用/缺段为 None，随句柄登记，
+    // 由调用方 take_grpc_server 取出后启动
+    #[cfg(feature = "grpc")]
+    {
+        let grpc = crate::server::grpc::build(&config_manager, &assembly)?;
+        handle.set_grpc_server(grpc);
+    }
     Ok((app, handle))
 }
 
@@ -51,8 +58,17 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     let _logger = bootstrap::init_logger().await?;
     let config_manager = bootstrap::load_config(config_path)?;
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
+    #[cfg(feature = "grpc")]
+    let mut handle = ServerHandle::from_assembly(&assembly);
+    #[cfg(not(feature = "grpc"))]
     let handle = ServerHandle::from_assembly(&assembly);
     let app = assemble_router(&config_manager, &assembly).await?;
+    // gRPC 装配（与 build_app 同一登记路径；take 于下方 serve 前）
+    #[cfg(feature = "grpc")]
+    {
+        let grpc = crate::server::grpc::build(&config_manager, &assembly)?;
+        handle.set_grpc_server(grpc);
+    }
 
     let server_config = {
         let config = config_manager.read();
@@ -86,13 +102,36 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("{}", t("main-press-ctrl-c"));
 
+    // 停机广播：Ctrl+C/SIGTERM 一次触发，HTTP 与 gRPC 两路 graceful
+    // shutdown 共享同一信号（各持一个 ShutdownRx）
+    let mut shutdown_rx = crate::server::shutdown::spawn_shutdown_broadcaster();
+
+    // gRPC 服务器启动（[grpc] 段启用时；serve 内部打 starting/stopped 日志）
+    #[cfg(feature = "grpc")]
+    let grpc_task = match handle.take_grpc_server() {
+        Some(grpc) => {
+            let mut rx = shutdown_rx.clone();
+            Some(tokio::spawn(async move {
+                grpc.serve(async move { rx.fired().await }).await
+            }))
+        }
+        None => None,
+    };
+
     let result = axum::serve(listener, app)
-        .with_graceful_shutdown(crate::server::shutdown::shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_rx.fired().await;
+        })
         .await;
 
     match result {
         Ok(_) => tracing::info!("{}", t("main-server-stopped")),
         Err(e) => {
+            // HTTP serve 失败：signal 未触发，gRPC 无 graceful 可言，立即终止
+            #[cfg(feature = "grpc")]
+            if let Some(task) = &grpc_task {
+                task.abort();
+            }
             tracing::error!(
                 "{}",
                 t_args(
@@ -106,7 +145,34 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
         }
     }
 
-    // recId=9：优雅停机 flush（序列与 build_app 句柄共用同一实现）
+    // recId=9：优雅停机 flush（序列与 build_app 句柄共用同一实现）。
+    // gRPC 侧先收尾：HTTP serve 返回即 signal 已触发，gRPC 正在排空
+    // in-flight；等它返回（或超时）后再 flush，保证请求路径日志不丢。
+    #[cfg(feature = "grpc")]
+    if let Some(task) = grpc_task {
+        const GRPC_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        match tokio::time::timeout(GRPC_DRAIN_TIMEOUT, task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(e))) => return Err(e),
+            Ok(Err(join_err)) => {
+                return Err(NexusFlowError::Config {
+                    message: t_args("main-grpc-server-error", &[("error", join_err.to_string())]),
+                });
+            }
+            Err(_) => tracing::warn!(
+                "{}",
+                t_args(
+                    "main-grpc-server-error",
+                    &[(
+                        "error",
+                        t_args("main-grpc-drain-timeout", &[("secs", "30".to_string())])
+                            .to_string()
+                    )]
+                ),
+            ),
+        }
+    }
+
     handle.shutdown().await;
 
     Ok(())

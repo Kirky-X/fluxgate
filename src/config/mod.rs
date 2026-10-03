@@ -1008,7 +1008,7 @@ fn default_rate_limit_per_tenant() -> bool {
 /// [grpc] 段 — gRPC 服务器配置（sdforge grpc 门面，`feature = "grpc"`）。
 /// 建站期消费（`GrpcServerConfig` 固化于服务器构造，与 `[server]`/`[cors]`
 /// 同语义），更新后需重启进程生效。
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 pub struct GrpcConfig {
     /// 显式启用（None 段或 false = 不监听 gRPC 端口，行为与历史逐位一致）
     #[serde(default)]

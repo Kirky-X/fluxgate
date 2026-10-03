@@ -14,6 +14,8 @@
 //!   router/bandit/affinity/response_cache → ApiState → init_global_state
 //! - [`http`]：SdForgeConfig 构建、sdforge 站点 + 业务路由合并、bind/serve、
 //!   serve 结果映射与停机 flush 管道收尾
+//! - [`grpc`]（feature = "grpc"）：[grpc] 段装配、sdforge grpc 门面 +
+//!   [auth] 摘要 verifier、优雅停机 serve
 //! - [`handle`]：停机收尾句柄（flush worker 停机位 + 补刷，幂等）
 //! - [`shutdown`]：终止信号监听（SIGTERM/Ctrl+C）
 //!
@@ -30,3 +32,8 @@ mod bootstrap;
 mod handle;
 mod http;
 mod shutdown;
+
+#[cfg(feature = "grpc")]
+pub mod grpc;
+#[cfg(feature = "grpc")]
+pub use grpc::GrpcServer;

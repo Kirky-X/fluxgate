@@ -84,3 +84,120 @@ pub trait ProtocolConverter: Send + Sync {
         Ok(response)
     }
 }
+
+#[cfg(test)]
+mod default_impl_tests {
+    use super::*;
+
+    /// 未覆写 `parse_stream_frame` 的最小实现：Anthropic/OpenAI 两个具体
+    /// 转换器都覆写了该方法，trait 默认体只能经此类触达。
+    struct NoopConverter;
+
+    #[async_trait::async_trait]
+    impl ProtocolConverter for NoopConverter {
+        fn input_protocol(&self) -> Protocol {
+            Protocol::OpenAI
+        }
+
+        fn output_protocol(&self) -> Protocol {
+            Protocol::OpenAI
+        }
+
+        fn to_unified(&self, _body: serde_json::Value) -> Result<UnifiedRequest, NexusFlowError> {
+            Err(NexusFlowError::Validation {
+                field: "unsupported".into(),
+            })
+        }
+
+        fn request_to_external(
+            &self,
+            _request: UnifiedRequest,
+        ) -> Result<serde_json::Value, NexusFlowError> {
+            Err(NexusFlowError::Validation {
+                field: "unsupported".into(),
+            })
+        }
+
+        fn response_to_external(
+            &self,
+            _response: UnifiedResponse,
+        ) -> Result<serde_json::Value, NexusFlowError> {
+            Err(NexusFlowError::Validation {
+                field: "unsupported".into(),
+            })
+        }
+
+        fn parse_response(
+            &self,
+            _response: serde_json::Value,
+        ) -> Result<UnifiedResponse, NexusFlowError> {
+            Err(NexusFlowError::Validation {
+                field: "unsupported".into(),
+            })
+        }
+
+        fn stream_chunk_to_external(
+            &self,
+            _chunk: StreamChunk,
+        ) -> Result<serde_json::Value, NexusFlowError> {
+            Err(NexusFlowError::Validation {
+                field: "unsupported".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn default_parse_stream_frame_returns_none() {
+        // 默认契约：任何输入都不映射 IR，由调用方跳过
+        assert!(NoopConverter.parse_stream_frame("anything").is_none());
+        assert!(NoopConverter.parse_stream_frame("").is_none());
+        assert!(NoopConverter.parse_stream_frame("[DONE]").is_none());
+    }
+
+    /// 最小实现只依赖 trait 默认方法即可成立：未实现的必需方法必须显式
+    /// 报 Validation（而非 panic 或静默成功），透传判定与 output_protocol 一致。
+    #[test]
+    fn minimal_converter_unsupported_ops_return_validation() {
+        let c = NoopConverter;
+        assert!(!c.can_passthrough(Protocol::Anthropic));
+        assert!(c.can_passthrough(Protocol::OpenAI));
+
+        let req = UnifiedRequest {
+            model: "m".into(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            stop: vec![],
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logit_bias: Default::default(),
+            user: None,
+            tools: vec![],
+            tool_choice: None,
+        };
+        let resp = UnifiedResponse {
+            id: "r".into(),
+            object: String::new(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![],
+            usage: Default::default(),
+        };
+
+        let is_validation = |e: NexusFlowError| matches!(e, NexusFlowError::Validation { .. });
+        assert!(is_validation(
+            c.to_unified(serde_json::json!({})).unwrap_err()
+        ));
+        assert!(is_validation(c.request_to_external(req).unwrap_err()));
+        assert!(is_validation(
+            c.parse_response(serde_json::json!({})).unwrap_err()
+        ));
+        assert!(is_validation(c.response_to_external(resp).unwrap_err()));
+        assert!(is_validation(
+            c.stream_chunk_to_external(StreamChunk::Heartbeat)
+                .unwrap_err()
+        ));
+    }
+}

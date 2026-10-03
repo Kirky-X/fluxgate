@@ -1001,6 +1001,1433 @@ mod converter {
             "不得残留非规范字段 tool_call_id: {result_block}"
         );
     }
+
+    // ==================== 覆盖缺口补测：AnthropicConverter 边角分支 ====================
+
+    use nexusflow::protocol::{
+        Choice, ContentBlock, ImageSource, Message, MessageContent, TokenUsage, Tool, ToolCall,
+        ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolParameterProperty,
+        ToolParameters, ToolResult, UnifiedRequest, UnifiedResponse,
+    };
+    use nexusflow::NexusFlowError;
+
+    /// 构造仅含 model + 单条 user 文本消息的最小 UnifiedRequest（其余字段缺省）。
+    fn minimal_unified_request(model: &str, text: &str) -> UnifiedRequest {
+        UnifiedRequest {
+            model: model.into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text(text.into()),
+            }],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            stop: vec![],
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logit_bias: Default::default(),
+            user: None,
+            tools: vec![],
+            tool_choice: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_converter_default() {
+        let converter = <AnthropicConverter as Default>::default();
+        assert_eq!(converter.input_protocol(), Protocol::Anthropic);
+    }
+
+    /// 顶层 system 支持 content blocks 数组形状；非字符串/数组类型静默忽略。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_system_block_array_and_invalid_shape() {
+        let converter = AnthropicConverter::new();
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "system": [
+                    {"type": "text", "text": "Be terse."},
+                    {"type": "text", "text": "Cite sources."}
+                ],
+                "messages": [{"role": "user", "content": "Hi"}]
+            }))
+            .expect("blocks 数组形状的 system");
+        assert_eq!(unified.messages[0].role, Role::System);
+        assert!(matches!(
+            &unified.messages[0].content,
+            MessageContent::Text(s) if s == "Be terse.\nCite sources."
+        ));
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "system": 42,
+                "messages": [{"role": "user", "content": "Hi"}]
+            }))
+            .expect("非法形状 system 被忽略而非报错");
+        assert_eq!(
+            unified.messages.len(),
+            1,
+            "非法 system 形状不得产生 System 消息"
+        );
+        assert_eq!(unified.messages[0].role, Role::User);
+    }
+
+    /// tool_choice 三种入站形状：Specific 对象 / 无 function 的对象 / 其他标量。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_tool_choice_variants() {
+        let converter = AnthropicConverter::new();
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+            }))
+            .expect("specific tool_choice");
+        match unified.tool_choice {
+            Some(ToolChoice::Specific {
+                choice_type,
+                function,
+            }) => {
+                assert_eq!(choice_type, "function");
+                assert_eq!(function.name, "get_weather");
+            }
+            other => panic!("expected Specific, got {other:?}"),
+        }
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": {"type": "any"}
+            }))
+            .expect("object without function");
+        assert!(matches!(
+            unified.tool_choice,
+            Some(ToolChoice::Strategy(s)) if s == "auto"
+        ));
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": 42
+            }))
+            .expect("标量 tool_choice 走兜底");
+        assert!(matches!(
+            unified.tool_choice,
+            Some(ToolChoice::Strategy(s)) if s == "auto"
+        ));
+    }
+
+    /// to_unified → request_to_external 往返：stop_sequences、tool_choice
+    /// Strategy、采样参数与完整工具 schema（description/enum/required）。
+    #[tokio::test]
+    async fn test_anthropic_request_roundtrip_with_full_tool_schema() {
+        let converter = AnthropicConverter::new();
+        let request = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{"role": "user", "content": "What's the weather?"}],
+            "tools": [{
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "City name",
+                            "enum": ["Beijing", "Shanghai"]
+                        }
+                    },
+                    "required": ["city"]
+                }
+            }],
+            "tool_choice": "any",
+            "temperature": 0.5,
+            "max_tokens": 256,
+            "stream": true,
+            "stop_sequences": ["END", "STOP"]
+        });
+
+        let unified = converter.to_unified(request).expect("to_unified");
+        assert_eq!(
+            unified.stop,
+            vec!["END".to_string(), "STOP".to_string()],
+            "stop_sequences 应进入 IR stop"
+        );
+
+        let external = converter.request_to_external(unified).expect("to external");
+        assert_eq!(external["temperature"], 0.5);
+        assert_eq!(external["stream"], true);
+        assert_eq!(external["stop_sequences"], json!(["END", "STOP"]));
+        assert_eq!(external["tool_choice"], "any");
+        assert_eq!(external["max_tokens"], 256);
+
+        let tools = external["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "get_weather");
+        assert_eq!(tools[0]["description"], "Get weather for a city");
+        let schema = &tools[0]["input_schema"];
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"], json!(["city"]));
+        assert_eq!(schema["properties"]["city"]["type"], "string");
+        assert_eq!(schema["properties"]["city"]["description"], "City name");
+        assert_eq!(
+            schema["properties"]["city"]["enum"],
+            json!(["Beijing", "Shanghai"])
+        );
+    }
+
+    /// 出站 tool_choice Specific → Anthropic function 对象形状。
+    #[tokio::test]
+    async fn test_anthropic_request_to_external_specific_tool_choice() {
+        let converter = AnthropicConverter::new();
+        let mut request = minimal_unified_request("claude", "hi");
+        request.tool_choice = Some(ToolChoice::Specific {
+            choice_type: "function".into(),
+            function: ToolChoiceFunction {
+                name: "get_weather".into(),
+            },
+        });
+
+        let external = converter.request_to_external(request).expect("to external");
+        assert_eq!(external["tool_choice"]["type"], "function");
+        assert_eq!(external["tool_choice"]["function"]["name"], "get_weather");
+    }
+
+    /// 上游错误对象 → NexusFlowError::Protocol，type/message 进入错误文案。
+    #[tokio::test]
+    async fn test_anthropic_parse_response_error_object() {
+        let converter = AnthropicConverter::new();
+        let err = converter
+            .parse_response(json!({
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "max_tokens is required"
+                }
+            }))
+            .unwrap_err(); // error 对象必须转为 Err
+        match err {
+            NexusFlowError::Protocol { source, inner } => {
+                assert!(source.contains("invalid_request_error"), "{source}");
+                assert!(source.contains("max_tokens is required"), "{source}");
+                assert!(inner.is_none());
+            }
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    /// content 数组混合 text + tool_use + 未知块 → TextWithToolCalls，
+    /// 未知块类型在聚合循环中被跳过。
+    #[tokio::test]
+    async fn test_anthropic_parse_response_mixed_text_tool_use_and_unknown_blocks() {
+        let converter = AnthropicConverter::new();
+        let parsed = converter
+            .parse_response(json!({
+                "id": "m", "model": "claude",
+                "content": [
+                    {"type": "text", "text": "Checking."},
+                    {"type": "tool_use", "id": "t1", "name": "get_weather", "input": {"city": "BJ"}},
+                    {"type": "mystery"}
+                ],
+                "stop_reason": "tool_use"
+            }))
+            .expect("parse mixed content");
+        let msg = parsed.choices[0].message.as_ref().unwrap();
+        match &msg.content {
+            MessageContent::TextWithToolCalls { text, tool_calls } => {
+                assert_eq!(text, "Checking.");
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].function.name, "get_weather");
+                assert_eq!(tool_calls[0].function.arguments, "{\"city\":\"BJ\"}");
+            }
+            other => panic!("expected TextWithToolCalls, got {other:?}"),
+        }
+        assert_eq!(
+            parsed.choices[0].finish_reason.as_deref(),
+            Some("tool_calls")
+        );
+    }
+
+    /// tool_use 块缺 id/name 导致解析失败时聚合降级为纯文本（不得臆造空工具调用）。
+    #[tokio::test]
+    async fn test_anthropic_parse_response_unparsable_tool_use_degrades_to_text() {
+        let converter = AnthropicConverter::new();
+        let parsed = converter
+            .parse_response(json!({
+                "id": "m", "model": "claude",
+                "content": [
+                    {"type": "tool_use", "input": {}},
+                    {"type": "text", "text": "fallback text"}
+                ]
+            }))
+            .expect("parse degraded tool_use");
+        let msg = parsed.choices[0].message.as_ref().unwrap();
+        assert!(matches!(
+            &msg.content,
+            MessageContent::Text(s) if s == "fallback text"
+        ));
+    }
+
+    /// content 为字符串形状与 content 缺失两种响应形状。
+    #[tokio::test]
+    async fn test_anthropic_parse_response_string_and_missing_content() {
+        let converter = AnthropicConverter::new();
+
+        let parsed = converter
+            .parse_response(json!({
+                "id": "m1", "model": "claude", "content": "plain string"
+            }))
+            .expect("string content");
+        let msg = parsed.choices[0].message.as_ref().unwrap();
+        assert!(matches!(&msg.content, MessageContent::Text(s) if s == "plain string"));
+
+        let parsed = converter
+            .parse_response(json!({
+                "id": "m2", "model": "claude"
+            }))
+            .expect("无 content 字段");
+        assert!(
+            parsed.choices[0].message.is_none(),
+            "缺 content 不得臆造 assistant 消息"
+        );
+    }
+
+    /// stream_chunk_to_external 全变体：文本 / 多模态 / 工具调用 / 工具结果 /
+    /// 混合 / usage / 心跳。非文本 delta 首版不产出流式文本，但事件形状稳定。
+    #[tokio::test]
+    async fn test_anthropic_stream_chunk_to_external_variants() {
+        let converter = AnthropicConverter::new();
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 0,
+                delta: MessageContent::Text("hello".into()),
+                finish_reason: Some("stop".into()),
+            })
+            .expect("text delta");
+        assert_eq!(out["type"], "content_block_delta");
+        assert_eq!(out["delta"]["type"], "text_delta");
+        assert_eq!(out["delta"]["text"], "hello");
+        assert_eq!(out["content_block"]["text"], "hello");
+        assert_eq!(out["stop_reason"], "stop");
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 0,
+                delta: MessageContent::MultiModal(vec![
+                    ContentBlock::Text { text: "a".into() },
+                    ContentBlock::Image {
+                        source: ImageSource {
+                            type_: "base64".into(),
+                            media_type: "image/png".into(),
+                            data: "Zm9v".into(),
+                        },
+                        detail: None,
+                    },
+                    ContentBlock::Type("weird".into()),
+                ]),
+                finish_reason: None,
+            })
+            .expect("multimodal delta");
+        assert_eq!(out["type"], "content_block_delta");
+        assert_eq!(out["delta"]["text"], "", "MultiModal delta 首版不产出文本");
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 0,
+                delta: MessageContent::ToolCalls(vec![ToolCall {
+                    id: "c1".into(),
+                    call_type: "function".into(),
+                    function: ToolCallFunction {
+                        name: "f".into(),
+                        arguments: "{}".into(),
+                    },
+                }]),
+                finish_reason: None,
+            })
+            .expect("tool calls delta");
+        assert_eq!(out["delta"]["text"], "");
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 0,
+                delta: MessageContent::ToolResult(ToolResult {
+                    tool_call_id: "c1".into(),
+                    function_name: String::new(),
+                    content: "sunny".into(),
+                    is_error: false,
+                }),
+                finish_reason: None,
+            })
+            .expect("tool result delta");
+        assert_eq!(out["delta"]["text"], "");
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 0,
+                delta: MessageContent::TextWithToolCalls {
+                    text: "checking".into(),
+                    tool_calls: vec![],
+                },
+                finish_reason: None,
+            })
+            .expect("mixed delta");
+        assert_eq!(out["delta"]["text"], "");
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Usage {
+                prompt_tokens: 3,
+                completion_tokens: 7,
+                total_tokens: 10,
+            })
+            .expect("usage");
+        assert_eq!(out["type"], "message_delta");
+        assert_eq!(out["usage"]["output_tokens"], 7);
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Heartbeat)
+            .expect("heartbeat");
+        assert_eq!(out, json!({"type": "ping"}));
+    }
+
+    /// 空负载 / `[DONE]` / 错误帧不映射 IR。
+    #[tokio::test]
+    async fn test_anthropic_parse_stream_frame_skips_non_data_frames() {
+        let converter = AnthropicConverter::new();
+        assert!(converter.parse_stream_frame("").is_none());
+        assert!(converter.parse_stream_frame("   ").is_none());
+        assert!(converter.parse_stream_frame("[DONE]").is_none());
+        assert!(converter
+            .parse_stream_frame("{\"error\": {\"type\": \"overloaded\"}}")
+            .is_none());
+    }
+
+    /// Usage 到达时未闭合的 content block 先闭合再发 message_delta。
+    #[tokio::test]
+    async fn test_anthropic_stream_encoder_usage_closes_open_block() {
+        let mut encoder = AnthropicStreamEncoder::default();
+        let mut events = encoder.encode_chunk(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::Text("hi".into()),
+            finish_reason: None,
+        });
+        events.extend(encoder.encode_chunk(StreamChunk::Usage {
+            prompt_tokens: 2,
+            completion_tokens: 5,
+            total_tokens: 7,
+        }));
+
+        let types: Vec<String> = events
+            .iter()
+            .filter_map(|e| {
+                let v: serde_json::Value = serde_json::from_str(e).ok()?;
+                v["type"].as_str().map(|s| s.to_string())
+            })
+            .collect();
+        let stop_pos = types
+            .iter()
+            .position(|t| *t == "content_block_stop")
+            .expect("Usage 前有未闭合 block");
+        let delta_pos = types
+            .iter()
+            .position(|t| *t == "message_delta")
+            .expect("Usage 应产出 message_delta");
+        assert!(
+            stop_pos < delta_pos,
+            "content_block_stop 必须先于 message_delta: {types:?}"
+        );
+    }
+
+    /// Heartbeat 直接映射为 ping 帧。
+    #[tokio::test]
+    async fn test_anthropic_stream_encoder_heartbeat() {
+        let mut encoder = AnthropicStreamEncoder::new();
+        let events = encoder.encode_chunk(StreamChunk::Heartbeat);
+        assert_eq!(events, vec![json!({"type": "ping"}).to_string()]);
+    }
+
+    /// finish 补齐语义：空流产出最小合法流；未闭合 block 先闭合。
+    #[tokio::test]
+    async fn test_anthropic_stream_encoder_finish_variants() {
+        let types_of = |events: &[String]| -> Vec<String> {
+            events
+                .iter()
+                .filter_map(|e| {
+                    let v: serde_json::Value = serde_json::from_str(e).ok()?;
+                    v["type"].as_str().map(|s| s.to_string())
+                })
+                .collect()
+        };
+
+        let mut encoder = AnthropicStreamEncoder::new();
+        assert_eq!(
+            types_of(&encoder.finish()),
+            vec!["message_start".to_string(), "message_stop".to_string()],
+            "空流必须产出合法最小 Anthropic 流"
+        );
+
+        let mut encoder = AnthropicStreamEncoder::new();
+        encoder.encode_chunk(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::Text("x".into()),
+            finish_reason: None,
+        });
+        assert_eq!(
+            types_of(&encoder.finish()),
+            vec!["content_block_stop".to_string(), "message_stop".to_string()],
+            "finish 前未闭合的 block 必须先补 content_block_stop"
+        );
+    }
+
+    /// 流式 delta 内容变体：多模态拼接文本块、混合取文本、纯工具调用不产文本。
+    #[tokio::test]
+    async fn test_anthropic_stream_encoder_delta_content_variants() {
+        let delta_texts_of = |events: &[String]| -> Vec<String> {
+            events
+                .iter()
+                .filter_map(|e| {
+                    let v: serde_json::Value = serde_json::from_str(e).ok()?;
+                    v["delta"]["text"].as_str().map(|s| s.to_string())
+                })
+                .collect()
+        };
+
+        let mut encoder = AnthropicStreamEncoder::new();
+        let events = encoder.encode_chunk(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::MultiModal(vec![
+                ContentBlock::Text { text: "a".into() },
+                ContentBlock::Type("weird".into()),
+                ContentBlock::Text { text: "b".into() },
+            ]),
+            finish_reason: None,
+        });
+        assert_eq!(
+            delta_texts_of(&events),
+            vec!["ab".to_string()],
+            "多模态 delta 拼接全部文本块为单一事件"
+        );
+
+        let mut encoder = AnthropicStreamEncoder::new();
+        let events = encoder.encode_chunk(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::TextWithToolCalls {
+                text: "checking".into(),
+                tool_calls: vec![],
+            },
+            finish_reason: None,
+        });
+        assert_eq!(delta_texts_of(&events), vec!["checking".to_string()]);
+
+        let mut encoder = AnthropicStreamEncoder::new();
+        let events = encoder.encode_chunk(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                call_type: "function".into(),
+                function: ToolCallFunction {
+                    name: "f".into(),
+                    arguments: "{}".into(),
+                },
+            }]),
+            finish_reason: None,
+        });
+        assert!(
+            delta_texts_of(&events).is_empty(),
+            "纯工具调用 delta 首版不产出文本"
+        );
+    }
+
+    /// 消息级边角：未知 role 归一 user、tool_use 解析失败降级纯文本、
+    /// 未知块跳过、content 缺失/非法。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_message_edge_cases() {
+        let converter = AnthropicConverter::new();
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "function", "content": "legacy"}]
+            }))
+            .expect("未知 role");
+        assert_eq!(unified.messages[0].role, Role::User);
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "assistant", "content": [
+                    {"type": "tool_use", "input": {}},
+                    {"type": "text", "text": "partial"},
+                    {"type": "mystery"}
+                ]}]
+            }))
+            .expect("tool_use 解析失败");
+        assert!(matches!(
+            &unified.messages[0].content,
+            MessageContent::Text(s) if s == "partial"
+        ));
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user"}]
+            }))
+            .expect("content 缺失");
+        assert!(matches!(
+            &unified.messages[0].content,
+            MessageContent::Text(s) if s.is_empty()
+        ));
+
+        let err = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": 42}]
+            }))
+            .unwrap_err(); // content 数字必须报错
+        match err {
+            NexusFlowError::Validation { field } => assert_eq!(field, "content"),
+            other => panic!("expected Validation error, got {other:?}"),
+        }
+    }
+
+    /// 并行工具调用的多 tool_result 聚合：首块 tool_use_id 为准、
+    /// content 支持字符串与 blocks 数组、缺 content 块跳过、is_error 任一为真即真。
+    #[tokio::test]
+    async fn test_anthropic_tool_result_aggregation_multi_block() {
+        let converter = AnthropicConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "first"},
+                    {"type": "tool_result", "tool_use_id": "t2", "content": [
+                        {"type": "text", "text": "blk1"},
+                        {"type": "text", "text": "blk2"}
+                    ]},
+                    {"type": "tool_result", "tool_use_id": "t3"},
+                    {"type": "tool_result", "tool_use_id": "t4", "content": "boom", "is_error": true}
+                ]}]
+            }))
+            .expect("aggregated tool_result");
+        let msg = &unified.messages[0];
+        assert_eq!(msg.role, Role::Tool);
+        match &msg.content {
+            MessageContent::ToolResult(r) => {
+                assert_eq!(r.tool_call_id, "t1");
+                assert_eq!(
+                    r.content, "first\nblk1\nblk2\nboom",
+                    "各块 content 按序拼接，is_error 块内容同样参与"
+                );
+                assert!(r.is_error);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    /// System 消息为多模态 / 工具调用内容时的顶层 system 提取：
+    /// 文本块拼接、非文本内容为空并被过滤。
+    #[tokio::test]
+    async fn test_anthropic_system_message_multimodal_lifted_to_top_level() {
+        let converter = AnthropicConverter::new();
+        let request = UnifiedRequest {
+            model: "claude".into(),
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: MessageContent::MultiModal(vec![
+                        ContentBlock::Text {
+                            text: "visual rules".into(),
+                        },
+                        ContentBlock::Image {
+                            source: ImageSource {
+                                type_: "base64".into(),
+                                media_type: "image/png".into(),
+                                data: "Zm9v".into(),
+                            },
+                            detail: None,
+                        },
+                    ]),
+                },
+                Message {
+                    role: Role::System,
+                    content: MessageContent::ToolCalls(vec![]),
+                },
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Text("hi".into()),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            stop: vec![],
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logit_bias: Default::default(),
+            user: None,
+            tools: vec![],
+            tool_choice: None,
+        };
+
+        let external = converter.request_to_external(request).expect("to external");
+        assert_eq!(
+            external["system"], "visual rules",
+            "多模态 System 取文本块拼接，非文本 System 被过滤"
+        );
+    }
+
+    /// stop_reason 未知值双向原样保留（静态映射表不吞未知词汇）。
+    #[tokio::test]
+    async fn test_anthropic_stop_reason_unknown_passthrough() {
+        let converter = AnthropicConverter::new();
+
+        let parsed = converter
+            .parse_response(json!({
+                "id": "m", "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "pause_turn"
+            }))
+            .expect("parse");
+        assert_eq!(
+            parsed.choices[0].finish_reason.as_deref(),
+            Some("pause_turn")
+        );
+
+        let response = UnifiedResponse {
+            id: "m".into(),
+            object: "message".into(),
+            created: 0,
+            model: "claude".into(),
+            choices: vec![Choice {
+                index: 0,
+                message: Some(Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("ok".into()),
+                }),
+                finish_reason: Some("content_filter".into()),
+                logprobs: None,
+            }],
+            usage: TokenUsage::default(),
+        };
+        let out = converter
+            .response_to_external(response)
+            .expect("to external");
+        assert_eq!(out["stop_reason"], "content_filter");
+    }
+
+    /// user 消息普通 blocks 数组：text/image/未知块 → MultiModal（未知块丢弃）。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_multimodal_content_blocks() {
+        let converter = AnthropicConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "describe this"},
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/png", "data": "aGk="
+                    }},
+                    {"type": "unknown_block"}
+                ]}]
+            }))
+            .expect("multimodal content");
+        match &unified.messages[0].content {
+            MessageContent::MultiModal(blocks) => {
+                assert_eq!(blocks.len(), 2, "未知块类型应被丢弃");
+                assert!(matches!(
+                    &blocks[0],
+                    ContentBlock::Text { text } if text == "describe this"
+                ));
+                match &blocks[1] {
+                    ContentBlock::Image { source, detail } => {
+                        assert_eq!(source.type_, "base64");
+                        assert_eq!(source.media_type, "image/png");
+                        assert_eq!(source.data, "aGk=");
+                        assert!(detail.is_none());
+                    }
+                    other => panic!("expected Image block, got {other:?}"),
+                }
+            }
+            other => panic!("expected MultiModal, got {other:?}"),
+        }
+    }
+
+    /// 出站 MultiModal 消息 → Anthropic content blocks（text/image/unknown）。
+    #[tokio::test]
+    async fn test_anthropic_request_to_external_multimodal_message() {
+        let converter = AnthropicConverter::new();
+        let mut request = minimal_unified_request("claude", "");
+        request.messages[0].content = MessageContent::MultiModal(vec![
+            ContentBlock::Text {
+                text: "describe".into(),
+            },
+            ContentBlock::Image {
+                source: ImageSource {
+                    type_: "base64".into(),
+                    media_type: "image/jpeg".into(),
+                    data: "aGk=".into(),
+                },
+                detail: Some("high".into()),
+            },
+            ContentBlock::Type("weird".into()),
+        ]);
+
+        let external = converter.request_to_external(request).expect("to external");
+        let content = external["messages"][0]["content"]
+            .as_array()
+            .expect("content array");
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0], json!({"type": "text", "text": "describe"}));
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/jpeg");
+        assert_eq!(content[1]["source"]["data"], "aGk=");
+        assert_eq!(content[2], json!({"type": "unknown"}));
+    }
+
+    /// response_to_external：System 角色消息 + 文本与工具调用并列 →
+    /// Anthropic 形状（tool_use 块 input 反序列化）。
+    #[tokio::test]
+    async fn test_anthropic_response_to_external_system_role_with_tool_calls() {
+        let converter = AnthropicConverter::new();
+        let response = UnifiedResponse {
+            id: "m".into(),
+            object: "message".into(),
+            created: 0,
+            model: "claude".into(),
+            choices: vec![Choice {
+                index: 0,
+                message: Some(Message {
+                    role: Role::System,
+                    content: MessageContent::TextWithToolCalls {
+                        text: "let me check".into(),
+                        tool_calls: vec![ToolCall {
+                            id: "t1".into(),
+                            call_type: "function".into(),
+                            function: ToolCallFunction {
+                                name: "get_weather".into(),
+                                arguments: "{\"city\":\"BJ\"}".into(),
+                            },
+                        }],
+                    },
+                }),
+                finish_reason: Some("tool_calls".into()),
+                logprobs: None,
+            }],
+            usage: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+            },
+        };
+
+        let out = converter
+            .response_to_external(response)
+            .expect("to external");
+        assert_eq!(out["content"]["role"], "system");
+        let blocks = out["content"]["content"]
+            .as_array()
+            .expect("content blocks");
+        assert_eq!(blocks[0], json!({"type": "text", "text": "let me check"}));
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["id"], "t1");
+        assert_eq!(blocks[1]["name"], "get_weather");
+        assert_eq!(blocks[1]["input"], json!({"city": "BJ"}));
+    }
+
+    // ==================== 覆盖缺口补测：OpenAIConverter 边角分支 ====================
+
+    #[tokio::test]
+    async fn test_openai_converter_default() {
+        let converter = <OpenAIConverter as Default>::default();
+        assert_eq!(converter.input_protocol(), Protocol::OpenAI);
+    }
+
+    /// 采样参数与 logit_bias 入站解析：非数值 logit_bias 条目被丢弃。
+    #[tokio::test]
+    async fn test_openai_to_unified_sampling_and_logit_bias() {
+        let converter = OpenAIConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stop": ["END", "STOP"],
+                "top_p": 0.9,
+                "frequency_penalty": 0.5,
+                "presence_penalty": 0.25,
+                "user": "u-1",
+                "logit_bias": {"50256": -100.0, "bad": "not-a-number"}
+            }))
+            .expect("to_unified");
+        assert_eq!(unified.stop, vec!["END".to_string(), "STOP".to_string()]);
+        assert_eq!(unified.top_p, Some(0.9));
+        assert_eq!(unified.frequency_penalty, Some(0.5));
+        assert_eq!(unified.presence_penalty, Some(0.25));
+        assert_eq!(unified.user, Some("u-1".into()));
+        assert_eq!(unified.logit_bias.len(), 1, "非数值 logit_bias 应被丢弃");
+        assert_eq!(unified.logit_bias["50256"], -100.0);
+    }
+
+    /// 出站采样参数全字段落位。
+    #[tokio::test]
+    async fn test_openai_request_to_external_sampling_params() {
+        let converter = OpenAIConverter::new();
+        let request = UnifiedRequest {
+            model: "gpt-4".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            temperature: Some(0.3),
+            max_tokens: Some(64),
+            stream: true,
+            stop: vec!["END".into()],
+            top_p: Some(0.8),
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.2),
+            logit_bias: Default::default(),
+            user: Some("u-9".into()),
+            tools: vec![],
+            tool_choice: None,
+        };
+
+        let external = converter.request_to_external(request).expect("to external");
+        // f32 经序列化后按 f32 精度比较，避免 0.3 这类二进制不精确值误报
+        assert_eq!(external["temperature"], json!(0.3_f32));
+        assert_eq!(external["stop"], json!(["END"]));
+        assert_eq!(external["top_p"], json!(0.8_f32));
+        assert_eq!(external["frequency_penalty"], json!(0.1_f32));
+        assert_eq!(external["presence_penalty"], json!(0.2_f32));
+        assert_eq!(external["user"], "u-9");
+        assert_eq!(external["stream"], true);
+    }
+
+    /// parse_response：未知 role 归一 user；空 content + tool_calls → ToolCalls。
+    #[tokio::test]
+    async fn test_openai_parse_response_role_fallback_and_empty_content_tool_calls() {
+        let converter = OpenAIConverter::new();
+
+        let parsed = converter
+            .parse_response(json!({
+                "id": "r1", "model": "gpt-4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "developer", "content": "hi"},
+                    "finish_reason": "stop"
+                }]
+            }))
+            .expect("unknown role");
+        let msg = parsed.choices[0].message.as_ref().unwrap();
+        assert_eq!(msg.role, Role::User);
+
+        let parsed = converter
+            .parse_response(json!({
+                "id": "r2", "model": "gpt-4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                    ]},
+                    "finish_reason": "tool_calls"
+                }]
+            }))
+            .expect("empty content with tool_calls");
+        let msg = parsed.choices[0].message.as_ref().unwrap();
+        assert!(matches!(
+            &msg.content,
+            MessageContent::ToolCalls(calls) if calls.len() == 1
+        ));
+    }
+
+    /// 响应缺 usage 对象 → token 记账归零而非报错。
+    #[tokio::test]
+    async fn test_openai_parse_response_without_usage_defaults_to_zero() {
+        let converter = OpenAIConverter::new();
+        let parsed = converter
+            .parse_response(json!({
+                "id": "r", "model": "gpt-4",
+                "choices": []
+            }))
+            .expect("parse without usage");
+        assert_eq!(parsed.usage.prompt_tokens, 0);
+        assert_eq!(parsed.usage.completion_tokens, 0);
+        assert_eq!(parsed.usage.total_tokens, 0);
+    }
+
+    /// 流式出站全变体：Content（各 delta 形状）/ Usage 尾帧 / 心跳注释帧。
+    #[tokio::test]
+    async fn test_openai_stream_chunk_to_external_variants() {
+        let converter = OpenAIConverter::new();
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 2,
+                delta: MessageContent::Text("hi".into()),
+                finish_reason: Some("stop".into()),
+            })
+            .expect("content chunk");
+        assert_eq!(out["id"], "chunk-2");
+        assert_eq!(out["object"], "chat.completion.chunk");
+        assert_eq!(out["choices"][0]["index"], 2);
+        assert_eq!(out["choices"][0]["delta"]["content"], "hi");
+        assert_eq!(out["choices"][0]["finish_reason"], "stop");
+
+        let delta_cases: Vec<(MessageContent, serde_json::Value)> = vec![
+            (
+                MessageContent::MultiModal(vec![ContentBlock::Text { text: "mm".into() }]),
+                json!("mm"),
+            ),
+            (
+                MessageContent::MultiModal(vec![ContentBlock::Image {
+                    source: ImageSource {
+                        type_: "base64".into(),
+                        media_type: "image/png".into(),
+                        data: "x".into(),
+                    },
+                    detail: None,
+                }]),
+                json!(""),
+            ),
+            (
+                MessageContent::ToolCalls(vec![ToolCall {
+                    id: "c".into(),
+                    call_type: "function".into(),
+                    function: ToolCallFunction {
+                        name: "f".into(),
+                        arguments: "{}".into(),
+                    },
+                }]),
+                json!(""),
+            ),
+            (
+                MessageContent::ToolResult(ToolResult {
+                    tool_call_id: "c".into(),
+                    function_name: String::new(),
+                    content: "result-body".into(),
+                    is_error: false,
+                }),
+                json!("result-body"),
+            ),
+            (
+                MessageContent::TextWithToolCalls {
+                    text: "mixed".into(),
+                    tool_calls: vec![],
+                },
+                json!("mixed"),
+            ),
+        ];
+        for (delta, expected) in delta_cases {
+            let out = converter
+                .stream_chunk_to_external(StreamChunk::Content {
+                    index: 0,
+                    delta,
+                    finish_reason: None,
+                })
+                .expect("delta chunk");
+            assert_eq!(out["choices"][0]["delta"]["content"], expected);
+        }
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Usage {
+                prompt_tokens: 5,
+                completion_tokens: 3,
+                total_tokens: 8,
+            })
+            .expect("usage chunk");
+        assert_eq!(out["choices"], json!([]));
+        assert_eq!(out["usage"]["prompt_tokens"], 5);
+        assert_eq!(out["usage"]["completion_tokens"], 3);
+        assert_eq!(out["usage"]["total_tokens"], 8);
+
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Heartbeat)
+            .expect("heartbeat");
+        assert_eq!(out, json!({ ":": "" }));
+    }
+
+    /// 错误帧不映射 IR；choices 非空且带 usage 的普通帧不得误判为 usage 尾帧。
+    #[tokio::test]
+    async fn test_openai_parse_stream_frame_error_frame_and_inline_usage() {
+        let converter = OpenAIConverter::new();
+        assert!(converter
+            .parse_stream_frame("{\"error\": {\"message\": \"upstream exploded\"}}")
+            .is_none());
+
+        let chunk = converter
+            .parse_stream_frame(
+                "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":5}}",
+            )
+            .expect("choices 非空的 usage 帧应按普通 chunk 解析");
+        assert!(matches!(
+            chunk,
+            StreamChunk::Content { ref delta, .. }
+                if matches!(delta, MessageContent::Text(t) if t == "a")
+        ));
+    }
+
+    /// role 非法 / content 数字 → Validation 错误（field 精确）。
+    #[tokio::test]
+    async fn test_openai_to_unified_message_validation_errors() {
+        let converter = OpenAIConverter::new();
+
+        let err = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "developer", "content": "hi"}]
+            }))
+            .unwrap_err(); // 未知 role 必须报错
+        match err {
+            NexusFlowError::Validation { field } => assert_eq!(field, "role"),
+            other => panic!("expected Validation error, got {other:?}"),
+        }
+
+        let err = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": 42}]
+            }))
+            .unwrap_err(); // content 数字必须报错
+        match err {
+            NexusFlowError::Validation { field } => assert_eq!(field, "content"),
+            other => panic!("expected Validation error, got {other:?}"),
+        }
+    }
+
+    /// content 空串 + tool_calls → ToolCalls；content null 无 tool_calls →
+    /// 空文本；tool_calls 空数组视为无工具调用。
+    #[tokio::test]
+    async fn test_openai_to_unified_empty_and_null_content_variants() {
+        let converter = OpenAIConverter::new();
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                ]}]
+            }))
+            .expect("empty content with tool_calls");
+        assert!(matches!(
+            &unified.messages[0].content,
+            MessageContent::ToolCalls(calls) if calls.len() == 1
+        ));
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": null}]
+            }))
+            .expect("null content");
+        assert!(matches!(
+            &unified.messages[0].content,
+            MessageContent::Text(s) if s.is_empty()
+        ));
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "assistant", "content": "", "tool_calls": []}]
+            }))
+            .expect("空 tool_calls 数组");
+        assert!(matches!(
+            &unified.messages[0].content,
+            MessageContent::Text(s) if s.is_empty()
+        ));
+    }
+
+    /// content 数组四种形状：tool_call 块 / 兼容 function 块（arguments 支持
+    /// 对象）/ function 缺参降级 MultiModal / 纯多模态（image_url detail 有无）。
+    #[tokio::test]
+    async fn test_openai_to_unified_array_content_variants() {
+        let converter = OpenAIConverter::new();
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "assistant", "content": [
+                    {"type": "tool_call", "id": "c1", "function": {"name": "f", "arguments": "{}"}}
+                ]}]
+            }))
+            .expect("tool_call 块");
+        match &unified.messages[0].content {
+            MessageContent::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id, "c1");
+            }
+            other => panic!("expected ToolCalls, got {other:?}"),
+        }
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "assistant", "content": [
+                    {"type": "custom_tool", "id": "c2", "function": {"name": "g", "arguments": {"city": "BJ"}}},
+                    {"type": "text", "text": "ignored alongside tools"}
+                ]}]
+            }))
+            .expect("兼容 function 块");
+        match &unified.messages[0].content {
+            MessageContent::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1, "非工具块在工具聚合中被忽略");
+                assert_eq!(calls[0].id, "c2");
+                assert_eq!(calls[0].function.arguments, "{\"city\":\"BJ\"}");
+            }
+            other => panic!("expected ToolCalls, got {other:?}"),
+        }
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "assistant", "content": [
+                    {"type": "custom_tool", "function": {"name": "g"}}
+                ]}]
+            }))
+            .expect("function 块缺 arguments");
+        assert!(
+            matches!(&unified.messages[0].content, MessageContent::MultiModal(_)),
+            "解析全部失败时降级为 MultiModal 而非臆造工具调用"
+        );
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/a.png", "detail": "high"}},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/b.png"}},
+                    {"type": "skipped_type"}
+                ]}]
+            }))
+            .expect("纯多模态数组");
+        match &unified.messages[0].content {
+            MessageContent::MultiModal(blocks) => {
+                assert_eq!(blocks.len(), 3, "未知块类型应被丢弃");
+                assert!(matches!(
+                    &blocks[0],
+                    ContentBlock::Text { text } if text == "look"
+                ));
+                match &blocks[1] {
+                    ContentBlock::Image { source, detail } => {
+                        assert_eq!(source.type_, "url");
+                        assert_eq!(source.data, "https://example.com/a.png");
+                        assert_eq!(detail.as_deref(), Some("high"));
+                    }
+                    other => panic!("expected Image, got {other:?}"),
+                }
+                assert!(matches!(
+                    &blocks[2],
+                    ContentBlock::Image { detail: None, .. }
+                ));
+            }
+            other => panic!("expected MultiModal, got {other:?}"),
+        }
+    }
+
+    /// 出站 MultiModal（data URL 拼 base64、detail 缺省回退 auto、未知块空对象）
+    /// 与 ToolCalls（content 为 null + 顶层 tool_calls）两种消息形状。
+    #[tokio::test]
+    async fn test_openai_request_to_external_multimodal_and_tool_calls_messages() {
+        let converter = OpenAIConverter::new();
+        let mut request = minimal_unified_request("gpt-4", "");
+        request.messages[0].content = MessageContent::MultiModal(vec![
+            ContentBlock::Text {
+                text: "look".into(),
+            },
+            ContentBlock::Image {
+                source: ImageSource {
+                    type_: "base64".into(),
+                    media_type: "image/png".into(),
+                    data: "aGk=".into(),
+                },
+                detail: None,
+            },
+            ContentBlock::Type("weird".into()),
+        ]);
+        request.messages.push(Message {
+            role: Role::Assistant,
+            content: MessageContent::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                call_type: "function".into(),
+                function: ToolCallFunction {
+                    name: "get_weather".into(),
+                    arguments: "{}".into(),
+                },
+            }]),
+        });
+
+        let external = converter.request_to_external(request).expect("to external");
+        let msgs = external["messages"].as_array().expect("messages");
+
+        let blocks = msgs[0]["content"].as_array().expect("multimodal array");
+        assert_eq!(blocks[0], json!({"type": "text", "text": "look"}));
+        assert_eq!(blocks[1]["type"], "image_url");
+        assert_eq!(blocks[1]["image_url"]["url"], "data:image/png;base64,aGk=");
+        assert_eq!(
+            blocks[1]["image_url"]["detail"], "auto",
+            "detail 缺省时回退 auto"
+        );
+        assert_eq!(blocks[2], json!({}), "未知块类型出站为空对象");
+
+        assert!(
+            msgs[1]["content"].is_null(),
+            "工具调用消息 content 必须为 null"
+        );
+        assert_eq!(msgs[1]["tool_calls"][0]["id"], "c1");
+        assert_eq!(msgs[1]["tool_calls"][0]["type"], "function");
+        assert_eq!(msgs[1]["tool_calls"][0]["function"]["name"], "get_weather");
+        assert_eq!(msgs[1]["tool_calls"][0]["function"]["arguments"], "{}");
+    }
+
+    /// 出站工具 schema：property 的 description/enum 与 required 数组落位，
+    /// Specific tool_choice 序列化为 OpenAI 对象形状。
+    #[tokio::test]
+    async fn test_openai_request_to_external_full_tool_schema() {
+        let converter = OpenAIConverter::new();
+        let mut request = minimal_unified_request("gpt-4", "hi");
+        request.tools = vec![Tool {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "get_weather".into(),
+                description: "Get weather".into(),
+                parameters: ToolParameters {
+                    param_type: "object".into(),
+                    properties: {
+                        let mut m = std::collections::HashMap::new();
+                        m.insert(
+                            "city".into(),
+                            ToolParameterProperty {
+                                param_type: "string".into(),
+                                description: "City name".into(),
+                                enum_values: vec!["Beijing".into(), "Shanghai".into()],
+                            },
+                        );
+                        m
+                    },
+                    required: vec!["city".into()],
+                },
+            },
+        }];
+        request.tool_choice = Some(ToolChoice::Specific {
+            choice_type: "function".into(),
+            function: ToolChoiceFunction {
+                name: "get_weather".into(),
+            },
+        });
+
+        let external = converter.request_to_external(request).expect("to external");
+        let tool = &external["tools"][0];
+        assert_eq!(tool["type"], "function");
+        assert_eq!(tool["function"]["name"], "get_weather");
+        let params = &tool["function"]["parameters"];
+        assert_eq!(params["properties"]["city"]["description"], "City name");
+        assert_eq!(
+            params["properties"]["city"]["enum"],
+            json!(["Beijing", "Shanghai"])
+        );
+        assert_eq!(params["required"], json!(["city"]));
+
+        assert_eq!(external["tool_choice"]["type"], "function");
+        assert_eq!(external["tool_choice"]["function"]["name"], "get_weather");
+    }
+
+    /// 工具参数枚举值入站解析。
+    #[tokio::test]
+    async fn test_openai_to_unified_tool_with_enum_property() {
+        let converter = OpenAIConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "city": {"type": "string", "description": "City", "enum": ["Beijing", "Shanghai"]}
+                            },
+                            "required": ["city"]
+                        }
+                    }
+                }]
+            }))
+            .expect("to_unified");
+        let prop = unified.tools[0]
+            .function
+            .parameters
+            .properties
+            .get("city")
+            .expect("city property");
+        assert_eq!(
+            prop.enum_values,
+            vec!["Beijing".to_string(), "Shanghai".to_string()]
+        );
+    }
+
+    /// tool_choice 兜底：无 function 的对象与其他标量都归 Strategy("auto")。
+    #[tokio::test]
+    async fn test_openai_to_unified_tool_choice_fallbacks() {
+        let converter = OpenAIConverter::new();
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": {"type": "any"}
+            }))
+            .expect("object without function");
+        assert!(matches!(
+            unified.tool_choice,
+            Some(ToolChoice::Strategy(s)) if s == "auto"
+        ));
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": 42
+            }))
+            .expect("标量 tool_choice");
+        assert!(matches!(
+            unified.tool_choice,
+            Some(ToolChoice::Strategy(s)) if s == "auto"
+        ));
+    }
+
+    // ==================== ProtocolConverter trait 默认方法契约 ====================
+
+    /// can_passthrough 仅在同协议时为真；透传方法原样返回请求/响应体。
+    #[tokio::test]
+    async fn test_converter_passthrough_defaults() {
+        let openai = OpenAIConverter::new();
+        let anthropic = AnthropicConverter::new();
+
+        assert!(openai.can_passthrough(Protocol::OpenAI));
+        assert!(
+            !openai.can_passthrough(Protocol::Anthropic),
+            "跨协议不得透传"
+        );
+        assert!(anthropic.can_passthrough(Protocol::Anthropic));
+
+        let body = json!({"model": "gpt-4", "messages": []});
+        assert_eq!(
+            openai.passthrough_request(body.clone()).unwrap(),
+            body,
+            "请求透传必须零改动"
+        );
+        assert_eq!(
+            openai.passthrough_response(body.clone()).unwrap(),
+            body,
+            "响应透传必须零改动"
+        );
+    }
 }
 
 mod embedding {

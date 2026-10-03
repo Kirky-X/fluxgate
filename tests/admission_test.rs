@@ -227,6 +227,31 @@ async fn no_congestion_admits_all() {
     }
 }
 
+/// 拥塞但无可比较的在途档位（fleet 信号已拥塞、admission 在途计数为空
+/// ——流式近似误差/非网关侧占用）→ 保守放行：shed 无依据，fail-open。
+#[tokio::test]
+async fn congested_without_in_flight_tiers_admits_conservatively() {
+    let (state, vm) = make_admission(section()).await;
+    let _p1 = vm.acquire_permit("v1").await.expect("permit");
+    let _p2 = vm.acquire_permit("v1").await.expect("permit");
+    assert_eq!(
+        vm.fleet_concurrency(),
+        (2, 2),
+        "前置：占用率 1.0 ≥ 0.9 拥塞信号成立"
+    );
+    // 无任何 admission guard 在途 → min_in_flight_weight() == None
+    for tier in [
+        AuthTier::Dedicated,
+        AuthTier::Guaranteed,
+        AuthTier::Elastic,
+        AuthTier::Spot,
+    ] {
+        state
+            .admit(tier, "k", 1_000)
+            .expect("无可比在途档必须保守放行，不得 429");
+    }
+}
+
 /// burst EWMA：等间隔快速到达（100ms → 10 req/s）使 burst 单调上升并
 /// 收敛于速率（α=0.5）；首样本只记锚不更新。
 #[tokio::test]

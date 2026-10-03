@@ -323,3 +323,508 @@ async fn reframe_passthrough_empty_stream_ends_promptly() {
     assert_eq!(out, "");
     assert!(started.elapsed() < Duration::from_secs(1), "空流应立即结束");
 }
+
+// ==================== 覆盖补缺：SDK 客户端（chat / chat_stream / admin / builder） ====================
+//
+// src/sdk/tests/ 下的单元测试不走集成目标，这里从 tests/ 集成侧用 mockito
+// 锁定同一批 wire 行为：响应解析（含缺失 choices 的协议错误）、路由 hint
+// header、强制 stream=true、URL join 失败、read_timeout 停滞拦截与
+// Debug 脱敏。
+
+#[cfg(all(test, feature = "sdk"))]
+mod sdk_client_coverage {
+    use futures::StreamExt;
+    use nexusflow::sdk::{
+        ChatRequest, ChatRole, NexusFlowClient, NexusFlowClientBuilder, NexusFlowSdkError,
+        RequestConfig,
+    };
+    use std::time::Duration;
+
+    fn build_client(base_url: &str) -> NexusFlowClient {
+        NexusFlowClientBuilder::new()
+            .base_url(base_url)
+            .api_key("test-key")
+            .build()
+            .unwrap()
+    }
+
+    const CHAT_OK_BODY: &str = r#"{"id":"chatcmpl-1","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"Hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5},"vendor":"openai_main"}"#;
+
+    // -------- builder 构造与 Debug 脱敏 --------
+
+    /// 缺 base_url / URL 非法 / 缺 api_key → Config 错误显性化，不 panic。
+    #[test]
+    fn builder_rejects_incomplete_or_invalid_configuration() {
+        let err = NexusFlowClientBuilder::new()
+            .api_key("k")
+            .build()
+            .unwrap_err();
+        assert!(
+            matches!(err, NexusFlowSdkError::Config { .. }),
+            "缺 base_url"
+        );
+
+        let err = NexusFlowClientBuilder::new()
+            .base_url("::not a url::")
+            .api_key("k")
+            .build()
+            .unwrap_err();
+        match err {
+            NexusFlowSdkError::Config { message } => {
+                assert!(
+                    message.contains("invalid base_url"),
+                    "非法 URL 须指明: {message}"
+                );
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+
+        let err = NexusFlowClientBuilder::new()
+            .base_url("http://127.0.0.1:8080")
+            .build()
+            .unwrap_err();
+        assert!(
+            matches!(err, NexusFlowSdkError::Config { .. }),
+            "缺 api_key"
+        );
+    }
+
+    /// api_key 是 Bearer 凭证：Debug 输出必须脱敏为 [REDACTED]。
+    #[test]
+    fn debug_output_redacts_api_key() {
+        let client = build_client_with("http://127.0.0.1:8080", "super-secret-bearer-key");
+        let rendered = format!("{client:?}");
+        assert!(
+            !rendered.contains("super-secret-bearer-key"),
+            "Debug 泄露 api_key: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "应显式标注脱敏: {rendered}"
+        );
+    }
+
+    fn build_client_with(base_url: &str, key: &str) -> NexusFlowClient {
+        NexusFlowClientBuilder::new()
+            .base_url(base_url)
+            .api_key(key)
+            .build()
+            .unwrap()
+    }
+
+    // -------- chat 非流式 --------
+
+    /// chat 成功：字段逐一映射（id/model/content/usage/vendor/finish_reason）。
+    #[tokio::test]
+    async fn chat_success_maps_all_response_fields() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(CHAT_OK_BODY)
+            .create_async()
+            .await;
+
+        let resp = build_client(&server.url())
+            .chat(&ChatRequest::new("gpt-4", "hello"))
+            .await
+            .unwrap();
+        assert_eq!(resp.id, "chatcmpl-1");
+        assert_eq!(resp.model, "gpt-4");
+        assert_eq!(resp.content, "Hi there");
+        assert_eq!(resp.prompt_tokens, 10);
+        assert_eq!(resp.completion_tokens, 5);
+        assert_eq!(resp.vendor, "openai_main");
+        assert_eq!(resp.finish_reason, "stop");
+    }
+
+    /// 路由 hint 进 header（X-Vendor / X-Model）、Bearer 凭证与
+    /// default_config 合并语义：请求级 max_tokens 覆盖、默认级 user 补缺。
+    #[tokio::test]
+    async fn chat_sends_hints_auth_and_merged_config() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("authorization", "Bearer test-key")
+            .match_header("x-vendor", "anthropic_main")
+            .match_header("x-model", "claude-3")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "model": "gpt-4",
+                "max_tokens": 50,
+                "user": "sdk-user"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(CHAT_OK_BODY)
+            .create_async()
+            .await;
+
+        let client = NexusFlowClientBuilder::new()
+            .base_url(server.url())
+            .api_key("test-key")
+            .default_config(RequestConfig {
+                max_tokens: Some(999),
+                user: Some("sdk-user".into()),
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let req = ChatRequest {
+            model: "gpt-4".into(),
+            messages: vec![nexusflow::sdk::ChatMessage {
+                role: ChatRole::User,
+                content: "hi".into(),
+            }],
+            config: RequestConfig {
+                max_tokens: Some(50),
+                vendor_hint: Some("anthropic_main".into()),
+                model_hint: Some("claude-3".into()),
+                ..Default::default()
+            },
+        };
+        client.chat(&req).await.unwrap();
+        mock.assert_async().await;
+    }
+
+    /// 401 → Auth 错误；其他非 2xx → Server{status, 响应原文}。
+    #[tokio::test]
+    async fn chat_maps_error_statuses_to_typed_errors() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(401)
+            .create_async()
+            .await;
+        let err = build_client(&server.url())
+            .chat(&ChatRequest::new("gpt-4", "hi"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, NexusFlowSdkError::Auth { .. }),
+            "401 必须映射 Auth"
+        );
+
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(503)
+            .with_body("upstream overloaded")
+            .create_async()
+            .await;
+        let err = build_client(&server.url())
+            .chat(&ChatRequest::new("gpt-4", "hi"))
+            .await
+            .unwrap_err();
+        match err {
+            NexusFlowSdkError::Server { status, message } => {
+                assert_eq!(status, 503);
+                assert_eq!(message, "upstream overloaded", "响应原文必须透传");
+            }
+            other => panic!("expected Server error, got {other:?}"),
+        }
+    }
+
+    /// 协议错误：缺 choices 数组 / 空 choices 数组 → Protocol 错误，
+    /// 不得静默产出空响应。
+    #[tokio::test]
+    async fn chat_reports_protocol_errors_on_malformed_payload() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"x","model":"m"}"#)
+            .create_async()
+            .await;
+        let err = build_client(&server.url())
+            .chat(&ChatRequest::new("m", "hi"))
+            .await
+            .unwrap_err();
+        match err {
+            NexusFlowSdkError::Protocol { message } => {
+                assert_eq!(message, "missing choices array");
+            }
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"x","choices":[]}"#)
+            .create_async()
+            .await;
+        let err = build_client(&server.url())
+            .chat(&ChatRequest::new("m", "hi"))
+            .await
+            .unwrap_err();
+        match err {
+            NexusFlowSdkError::Protocol { message } => {
+                assert_eq!(message, "empty choices array");
+            }
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    /// cannot-be-a-base 的 base_url（mailto:）在 join 请求路径时失败 →
+    /// Config 错误显性化（构造期 URL 合法、拼接期失败的分界）。
+    #[tokio::test]
+    async fn chat_join_failure_on_non_base_url_is_config_error() {
+        let client = build_client("mailto:user@example.com");
+        let err = client.chat(&ChatRequest::new("m", "hi")).await.unwrap_err();
+        match err {
+            NexusFlowSdkError::Config { message } => {
+                assert!(
+                    message.contains("invalid URL"),
+                    "须指明 URL 拼接失败: {message}"
+                );
+            }
+            other => panic!("expected Config error, got {other:?}"),
+        }
+    }
+
+    // -------- chat_stream 流式 --------
+
+    /// chat_stream 成功：SSE 分帧解码为 chunk、[DONE] 过滤、wire body 强制
+    /// stream=true（请求未设也强制）、hint header 照带。
+    #[tokio::test]
+    async fn chat_stream_decodes_chunks_until_done_marker() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("x-vendor", "openai_main")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({ "stream": true }),
+            ))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"He\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"llo\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n",
+            ))
+            .create_async()
+            .await;
+
+        let client = build_client(&server.url());
+        let req = ChatRequest {
+            model: "gpt-4".into(),
+            messages: vec![nexusflow::sdk::ChatMessage {
+                role: ChatRole::User,
+                content: "hi".into(),
+            }],
+            config: RequestConfig {
+                vendor_hint: Some("openai_main".into()),
+                ..Default::default()
+            },
+        };
+        let mut stream = client.chat_stream(&req).await.unwrap();
+
+        let first = stream.next().await.expect("首 chunk").unwrap();
+        assert_eq!(first.id, "c1");
+        let delta = first.delta.expect("首 chunk 带 delta");
+        assert_eq!(delta.role, Some(ChatRole::Assistant));
+        assert_eq!(delta.content.as_deref(), Some("He"));
+        assert!(first.finish_reason.is_none());
+
+        let second = stream.next().await.expect("次 chunk").unwrap();
+        assert_eq!(
+            second.delta.and_then(|d| d.content),
+            Some("llo".to_string())
+        );
+        assert_eq!(second.finish_reason.as_deref(), Some("stop"));
+
+        assert!(stream.next().await.is_none(), "[DONE] 之后的流必须正常结束");
+        mock.assert_async().await;
+    }
+
+    /// chat_stream 错误路径：401 → Auth；500 → Server；mailto base → Config。
+    /// （ChatStream 无 Debug，错误分支用 match 而非 unwrap_err。）
+    #[tokio::test]
+    async fn chat_stream_maps_error_paths() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(401)
+            .create_async()
+            .await;
+        match build_client(&server.url())
+            .chat_stream(&ChatRequest::new("m", "hi"))
+            .await
+        {
+            Err(NexusFlowSdkError::Auth { .. }) => {}
+            Err(other) => panic!("expected Auth error, got {other:?}"),
+            Ok(_) => panic!("401 必须报错而非返回流"),
+        }
+
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_body("boom")
+            .create_async()
+            .await;
+        match build_client(&server.url())
+            .chat_stream(&ChatRequest::new("m", "hi"))
+            .await
+        {
+            Err(NexusFlowSdkError::Server { status, message }) => {
+                assert_eq!(status, 500);
+                assert_eq!(message, "boom");
+            }
+            Err(other) => panic!("expected Server error, got {other:?}"),
+            Ok(_) => panic!("500 必须报错而非返回流"),
+        }
+
+        match build_client("mailto:user@example.com")
+            .chat_stream(&ChatRequest::new("m", "hi"))
+            .await
+        {
+            Err(NexusFlowSdkError::Config { .. }) => {}
+            Err(other) => panic!("expected Config error, got {other:?}"),
+            Ok(_) => panic!("非法 base_url 必须报错而非返回流"),
+        }
+    }
+
+    // -------- admin / models / health --------
+
+    /// models / vendors / health 成功路径：响应结构逐一反序列化。
+    #[tokio::test]
+    async fn admin_endpoints_parse_success_payloads() {
+        let mut server = mockito::Server::new_async().await;
+
+        server
+            .mock("GET", "/v1/models")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":[{"id":"gpt-4","vendor":"openai_main"}]}"#)
+            .create_async()
+            .await;
+        let models = build_client(&server.url()).models().await.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-4");
+        assert_eq!(models[0].vendor, "openai_main");
+
+        server
+            .mock("GET", "/admin/vendors")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"vendors":[{"id":"v1","name":"V1","enabled":true},{"id":"v2","name":"V2","enabled":false}]}"#,
+            )
+            .create_async()
+            .await;
+        let vendors = build_client(&server.url()).vendors().await.unwrap();
+        assert_eq!(vendors.len(), 2);
+        assert!(vendors[0].enabled);
+        assert!(!vendors[1].enabled);
+
+        server
+            .mock("GET", "/admin/health")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","version":"0.1.0","vendors":3}"#)
+            .create_async()
+            .await;
+        let health = build_client(&server.url()).health().await.unwrap();
+        assert_eq!(health.status, "ok");
+        assert_eq!(health.version, "0.1.0");
+        assert_eq!(health.vendors, 3);
+    }
+
+    /// admin 端点非 2xx → Server{status, 响应原文}（models / health 代表）。
+    #[tokio::test]
+    async fn admin_endpoints_map_error_statuses() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/v1/models")
+            .with_status(503)
+            .with_body("unavailable")
+            .create_async()
+            .await;
+        let err = build_client(&server.url()).models().await.unwrap_err();
+        match err {
+            NexusFlowSdkError::Server { status, message } => {
+                assert_eq!(status, 503);
+                assert_eq!(message, "unavailable");
+            }
+            other => panic!("expected Server error, got {other:?}"),
+        }
+
+        server
+            .mock("GET", "/admin/health")
+            .with_status(500)
+            .with_body("db down")
+            .create_async()
+            .await;
+        let err = build_client(&server.url()).health().await.unwrap_err();
+        match err {
+            NexusFlowSdkError::Server { status, message } => {
+                assert_eq!(status, 500);
+                assert_eq!(message, "db down");
+            }
+            other => panic!("expected Server error, got {other:?}"),
+        }
+    }
+
+    /// admin 端点在 cannot-be-a-base URL 上 join 失败 → Config 错误
+    ///（models / vendors / health 三处拼接点）。
+    #[tokio::test]
+    async fn admin_join_failure_on_non_base_url_is_config_error() {
+        let client = build_client("mailto:user@example.com");
+        for err in [
+            client.models().await.unwrap_err(),
+            client.vendors().await.unwrap_err(),
+            client.health().await.unwrap_err(),
+        ] {
+            match err {
+                NexusFlowSdkError::Config { message } => {
+                    assert!(message.contains("invalid URL"), "{message}");
+                }
+                other => panic!("expected Config error, got {other:?}"),
+            }
+        }
+    }
+
+    // -------- 读超时（连接停滞拦截） --------
+
+    /// 裸 TCP 服务器：accept 后延迟 delay 才回（半）响应。返回 base_url。
+    async fn spawn_delayed_server(delay: Duration) -> String {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            tokio::time::sleep(delay).await;
+            let body = "{}";
+            let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
+            stream.write_all(head.as_bytes()).await.ok();
+            stream.write_all(body.as_bytes()).await.ok();
+        });
+        format!("http://{addr}")
+    }
+
+    /// read_timeout 是「按读停滞」看护：服务端迟迟不回字节，超过客户端
+    /// read_timeout 即 Network 错误（而非无限悬挂），也不受默认 30s 拖累。
+    #[tokio::test]
+    async fn read_timeout_intercepts_stalled_connection() {
+        let base = spawn_delayed_server(Duration::from_millis(1_500)).await;
+        let client = NexusFlowClientBuilder::new()
+            .base_url(&base)
+            .api_key("k")
+            .read_timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let err = client.chat(&ChatRequest::new("m", "hi")).await.unwrap_err();
+        match err {
+            NexusFlowSdkError::Network { .. } => {}
+            other => panic!("expected Network error, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "停滞必须在 read_timeout 量级被拦截: {:?}",
+            started.elapsed()
+        );
+    }
+}

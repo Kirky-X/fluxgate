@@ -705,3 +705,240 @@ mod tests {
         }
     }
 }
+
+// ============ 覆盖补缺：分类边界 / 策略构造 / with_retry 错误分支 ============
+
+#[cfg(test)]
+mod coverage {
+    use nexusflow::error::NexusFlowError;
+    use nexusflow::utils::extract_status_code;
+    use nexusflow::utils::retry::{
+        with_retry, BackoffStrategy, ErrorCategory, RetryDelayPolicy, RetryStrategy,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // -------- ErrorCategory 边界 --------
+
+    /// 网络错误关键词的完整覆盖：refused / reset 同判 Short；非网络错误 Fatal。
+    #[test]
+    fn error_message_connection_variants_are_short_retryable_and_others_fatal() {
+        assert_eq!(
+            ErrorCategory::from_error_message("Connection refused by peer"),
+            ErrorCategory::RetryableShort
+        );
+        assert_eq!(
+            ErrorCategory::from_error_message("CONNECTION RESET"),
+            ErrorCategory::RetryableShort,
+            "关键词匹配必须大小写不敏感"
+        );
+        assert_eq!(
+            ErrorCategory::from_error_message("invalid api key"),
+            ErrorCategory::Fatal,
+            "非网络错误不得重试"
+        );
+    }
+
+    /// max_retries 与分类语义一一对应（PRD：Fatal 0 / 429 5 次 / 5xx 3 次 / 超时 2 次）。
+    #[test]
+    fn max_retries_matches_category_semantics() {
+        assert_eq!(ErrorCategory::Fatal.max_retries(), 0);
+        assert_eq!(ErrorCategory::RetryableExponential.max_retries(), 5);
+        assert_eq!(ErrorCategory::RetryableFixed.max_retries(), 3);
+        assert_eq!(ErrorCategory::RetryableShort.max_retries(), 2);
+    }
+
+    /// Fatal 策略：零重试 + 无退避。
+    #[test]
+    fn strategy_for_fatal_is_zero_retry_with_no_backoff() {
+        let s = RetryStrategy::for_category(ErrorCategory::Fatal);
+        assert_eq!(s.max_retries, 0);
+        assert!(matches!(s.backoff, BackoffStrategy::None));
+    }
+
+    /// 5xx 策略：3 次固定 1s 退避（延迟与尝试次数无关）。
+    #[test]
+    fn strategy_for_fixed_is_three_retries_at_one_second() {
+        let s = RetryStrategy::for_category(ErrorCategory::RetryableFixed);
+        assert_eq!(s.max_retries, 3);
+        assert_eq!(s.backoff.delay(0), Duration::from_millis(1000));
+        assert_eq!(s.backoff.delay(2), Duration::from_millis(1000));
+    }
+
+    /// 无退避策略延迟恒 0（调用方跳过 sleep）。
+    #[test]
+    fn backoff_none_yields_zero_delay() {
+        assert_eq!(BackoffStrategy::None.delay(0), Duration::ZERO);
+        assert_eq!(BackoffStrategy::None.delay(3), Duration::ZERO);
+    }
+
+    // -------- extract_status_code 括号内无冒号形态 --------
+
+    /// "(429 rate)" 无冒号 → 空白分词取首个 token 直接解析数字；
+    /// 非数字 / 空括号 / 数字紧黏右括号（"429)" 非法 u16）回落 500。
+    #[test]
+    fn extract_status_code_supports_paren_number_without_colon() {
+        assert_eq!(extract_status_code("vendor (429 rate)"), 429);
+        assert_eq!(
+            extract_status_code("vendor (abc)"),
+            500,
+            "非数字回落默认 500"
+        );
+        assert_eq!(extract_status_code("vendor ("), 500, "空括号回落默认");
+        assert_eq!(
+            extract_status_code("vendor (429)"),
+            500,
+            "右括号黏在数字后不是合法 u16，必须回落默认而非 panic"
+        );
+    }
+
+    // -------- RetryDelayPolicy 缺省值锁定 --------
+
+    /// [retry] 段缺省快照：1s / ×2 / 16s 封顶 / 0.2 抖动 / 1.0 展宽。
+    #[test]
+    fn retry_delay_policy_defaults_match_doc() {
+        let p = RetryDelayPolicy::default();
+        assert_eq!(p.initial_delay, Duration::from_secs(1));
+        assert!((p.factor - 2.0).abs() < 1e-12);
+        assert_eq!(p.max_delay, Duration::from_secs(16));
+        assert!((p.jitter - 0.2).abs() < 1e-12);
+        assert!((p.spread_jitter - 1.0).abs() < 1e-12);
+    }
+
+    // -------- with_retry 错误分支（paused clock：sleep 虚拟推进，无 IO） --------
+
+    /// Fatal 初始错误（4xx VendorUnavailable）→ 不调用 f，直接返回初始错误。
+    #[tokio::test(start_paused = true)]
+    async fn fatal_initial_vendor_error_skips_closure_and_returns_initial() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let initial = NexusFlowError::VendorUnavailable {
+            vendor: "v (400: bad request)".into(),
+        };
+
+        let result: Result<(), NexusFlowError> = with_retry(
+            || {
+                c.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+            Some(initial),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "Fatal 初始错误不得调用 f");
+        assert!(matches!(
+            result.unwrap_err(),
+            NexusFlowError::VendorUnavailable { .. }
+        ));
+    }
+
+    /// 非 VendorUnavailable/Timeout 的初始错误一律按 Fatal 处理。
+    #[tokio::test(start_paused = true)]
+    async fn non_vendor_initial_error_is_fatal() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+
+        let result: Result<(), NexusFlowError> = with_retry(
+            || {
+                c.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+            Some(NexusFlowError::Config {
+                message: "bad config".into(),
+            }),
+        )
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(result.unwrap_err(), NexusFlowError::Config { .. }));
+    }
+
+    /// 429 初始错误 → RetryableExponential 策略：可重试失败后重试成功，
+    /// 闭包被再次调用。
+    #[tokio::test(start_paused = true)]
+    async fn rate_limited_initial_error_retries_then_succeeds() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let initial = NexusFlowError::VendorUnavailable {
+            vendor: "v (429: rate limited)".into(),
+        };
+
+        let result: Result<&'static str, NexusFlowError> = with_retry(
+            || {
+                let c = c.clone();
+                async move {
+                    if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Err(NexusFlowError::Timeout { vendor: "v".into() })
+                    } else {
+                        Ok("done")
+                    }
+                }
+            },
+            Some(initial),
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "首败 + 重试成功");
+    }
+
+    /// 重试途中出现不可重试错误 → 立即停止返回该错误（不再消耗剩余次数）。
+    #[tokio::test(start_paused = true)]
+    async fn non_retryable_error_midway_stops_immediately() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let initial = NexusFlowError::Timeout { vendor: "v".into() };
+
+        let result: Result<(), NexusFlowError> = with_retry(
+            || {
+                let c = c.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(NexusFlowError::Config {
+                        message: "permanent".into(),
+                    })
+                }
+            },
+            Some(initial),
+        )
+        .await;
+
+        match result.unwrap_err() {
+            NexusFlowError::Config { .. } => {}
+            other => panic!("Expected Config error, got {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "Fatal 错误必须立即停止");
+    }
+
+    /// 重试耗尽：RetryableShort 上限 2 次 → 恰调用 2 次，返回最后一次错误。
+    #[tokio::test(start_paused = true)]
+    async fn retries_exhausted_returns_last_error() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let initial = NexusFlowError::Timeout { vendor: "v".into() };
+
+        let result: Result<(), NexusFlowError> = with_retry(
+            || {
+                let c = c.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(NexusFlowError::Timeout { vendor: "v".into() })
+                }
+            },
+            Some(initial),
+        )
+        .await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            NexusFlowError::Timeout { .. }
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "RetryableShort 恰重试 2 次"
+        );
+    }
+}

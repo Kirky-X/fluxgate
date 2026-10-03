@@ -112,3 +112,56 @@ fn test_calculate_cost_with_zero_tokens() {
         cost
     );
 }
+
+/// Debug/Clone/Copy 派生行为：Debug 输出携带两个字段值；Copy 语义下
+/// 值复制后原值与副本均独立可用（PricingEntry 会在配置面与热点路径间
+/// 传递，派生语义是契约的一部分）。
+#[test]
+fn pricing_entry_debug_copy_derive_contract() {
+    let entry = PricingEntry {
+        input_per_1k_tokens: 0.03,
+        output_per_1k_tokens: 0.06,
+    };
+    let debug = format!("{:?}", entry);
+    assert!(debug.contains("0.03"), "Debug 应含输入单价: {}", debug);
+    assert!(debug.contains("0.06"), "Debug 应含输出单价: {}", debug);
+
+    let copied = entry;
+    assert!(
+        (copied.input_per_1k_tokens - entry.input_per_1k_tokens).abs() < f64::EPSILON,
+        "Copy 后输入单价一致"
+    );
+    assert!(
+        (copied.output_per_1k_tokens - entry.output_per_1k_tokens).abs() < f64::EPSILON,
+        "Copy 后输出单价一致"
+    );
+}
+
+/// From<&PricingConfig> 字段映射：与手工构造逐字段一致，且经
+/// CostCalculator 计算路径产出与公式一致的 USD（转换器与计算器同口径）。
+#[test]
+fn pricing_entry_from_pricing_config_maps_fields() {
+    let cfg = PricingConfig {
+        vendor_id: "v".into(),
+        model_id: "m".into(),
+        input_per_1k_tokens: 0.01,
+        output_per_1k_tokens: 0.02,
+    };
+    let entry = PricingEntry::from(&cfg);
+    assert!(
+        (entry.input_per_1k_tokens - 0.01).abs() < f64::EPSILON,
+        "输入单价必须原样映射"
+    );
+    assert!(
+        (entry.output_per_1k_tokens - 0.02).abs() < f64::EPSILON,
+        "输出单价必须原样映射"
+    );
+
+    let calc = CostCalculator::from_config(&[cfg]);
+    let cost = calc.calculate("v", "m", 2000, 1000);
+    assert!(
+        (cost - 0.04).abs() < 1e-9,
+        "2k 输入 × 0.01 + 1k 输出 × 0.02 = 0.04, got {}",
+        cost
+    );
+}

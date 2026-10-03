@@ -2244,3 +2244,1424 @@ async fn sliding_empty_window_not_ending_soon_in_window_info() {
         "空窗预算满格"
     );
 }
+
+// ============ manager.rs 执行路径补全（错误分支 / 流分帧边界 / 预算与热更新） ============
+//
+// 每个（组）用例对应一条此前未覆盖的执行路径，断言可观测行为而非"调用不报错"：
+// worker 票据加权与配置热移除、token 记账 CAS 拒绝、未知 vendor type 三条路径、
+// 默认 api_base 解析与 api key 缺失、出站连接拒绝、Retry-After 解析、重试时间
+// 预算放弃、body 读取超时、流式限流/错误帧/IO 中断/EOF 冲刷/注释与 role-only 帧跳过、
+// TimeWindow 窗口内 window_end 计算。
+
+mod manager_paths {
+    use nexusflow::config::{
+        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
+        RateLimitConfig, ServerConfig, VendorConfig,
+    };
+    use nexusflow::error::NexusFlowError;
+    use nexusflow::protocol::{Message, MessageContent, Role, StreamChunk, UnifiedRequest};
+    use nexusflow::vendor::VendorManager;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// tracing 宏在进程无订阅者时整体短路：warn! 的事件字段表达式（含 i18n
+    /// 文案构造）不会求值，对应分支在行覆盖率上恒为 0。测试进程内安装一次性
+    /// 全局订阅者（no-op，事件仅吞掉，零输出噪声），使这些分支真实可测。
+    /// 不用 tracing-subscriber：它在 Cargo.toml 中是 optional 且无 feature
+    /// 引用，对集成测试不可见。
+    fn init_tracing() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            struct SinkSubscriber;
+            impl tracing::Subscriber for SinkSubscriber {
+                fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
+                    true
+                }
+                fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                    tracing::span::Id::from_u64(1)
+                }
+                fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+                fn record_follows_from(
+                    &self,
+                    _span: &tracing::span::Id,
+                    _follows: &tracing::span::Id,
+                ) {
+                }
+                fn event(&self, _event: &tracing::Event<'_>) {}
+                fn enter(&self, _span: &tracing::span::Id) {}
+                fn exit(&self, _span: &tracing::span::Id) {}
+            }
+            let _ = tracing::subscriber::set_global_default(SinkSubscriber);
+        });
+    }
+
+    // 恒值 env 写入：edition 2021 下 set_var 与并行线程的 getenv 存在理论
+    // 竞态；本键值恒定且仅在装配前写入，若迁移 edition 2024 需改为一次性初始化
+    fn make_vendor(
+        id: &str,
+        type_: &str,
+        api_base: String,
+        rate_limit: RateLimitConfig,
+    ) -> VendorConfig {
+        std::env::set_var("NEXUSFLOW_TEST_KEY", "test-key-for-mockito");
+        VendorConfig {
+            timeout_ms: 60_000,
+            stream_ttft_ms: 60_000,
+            stream_idle_ms: 30_000,
+            id: id.into(),
+            name: format!("Test {}", id),
+            type_: type_.into(),
+            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+            api_base,
+            enabled: true,
+            priority: 1,
+            models: vec![ModelConfig {
+                model_id: "gpt-4".into(),
+                abstract_id: Some("gpt-4".into()),
+                weight: 1.0,
+                enabled: true,
+            }],
+            rate_limit,
+            concurrency: ConcurrencyConfig {
+                requests_per_second: 100,
+                max_concurrent_requests: None,
+                token_weighted: false,
+                token_ticket_min: 1,
+                token_ticket_max: 16384,
+                token_ticket_default: 4096,
+            },
+        }
+    }
+
+    fn token_limit(max: u64) -> RateLimitConfig {
+        RateLimitConfig::Token {
+            max_tokens: max,
+            window_hours: None,
+            sliding: false,
+        }
+    }
+
+    fn make_config(vendors: Vec<VendorConfig>) -> Config {
+        Config {
+            rate_limit: Default::default(),
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            database: DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+            },
+            vendors,
+            global_model: Some(GlobalModelConfig {
+                enabled: true,
+                strategy: "weighted".into(),
+            }),
+            pricing: vec![],
+            auth: None,
+            cors: None,
+            retry: nexusflow::config::RetrySection::default(),
+            routing: nexusflow::config::RoutingSection::default(),
+            cache: nexusflow::config::CacheSection::default(),
+            admission: Default::default(),
+            grpc: None,
+            resilience: nexusflow::config::ResilienceSection::default(),
+        }
+    }
+
+    fn make_unified_request() -> UnifiedRequest {
+        UnifiedRequest {
+            model: "gpt-4".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hello".into()),
+            }],
+            temperature: None,
+            max_tokens: Some(10),
+            stream: false,
+            stop: vec![],
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            logit_bias: Default::default(),
+            user: None,
+            tools: vec![],
+            tool_choice: None,
+        }
+    }
+
+    const OPENAI_OK_BODY: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}"#;
+
+    // ============ 实例生命周期与观测访问器 ============
+
+    /// initialize 二次调用命中 get_or_create_instance 的已存在分支：
+    /// 不重建实例、不重复 spawn worker（get_all_status 仍只有一份）。
+    #[tokio::test]
+    async fn initialize_twice_reuses_existing_instance() {
+        let v = make_vendor("v-init2", "openai", String::new(), token_limit(1000));
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("first init");
+        manager.initialize().await.expect("second init");
+        assert_eq!(
+            manager.get_all_status().len(),
+            1,
+            "二次 initialize 不得重复建实例"
+        );
+    }
+
+    /// get_circuit_state 对未初始化 vendor 返回 None（CB map 未注册该 id）。
+    #[tokio::test]
+    async fn get_circuit_state_unknown_vendor_returns_none() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+        assert!(manager.get_circuit_state("ghost").await.is_none());
+    }
+
+    /// 无实例（未 initialize）时 fleet 均值必须返回 0.0 退化值，
+    /// 不得除零或 panic（消费方 relative 公式依赖该兜底）。
+    #[tokio::test]
+    async fn fleet_mean_in_flight_zero_before_initialize() {
+        let cm = Arc::new(ConfigManager::new(make_config(vec![])));
+        let manager = VendorManager::new(cm);
+        assert_eq!(manager.fleet_mean_in_flight(), 0.0);
+    }
+
+    // ============ worker 转换路径（queue → worker → HTTP）============
+
+    /// token_weighted 开启时 worker 按 estimate_cost_unified 计费取票
+    ///（acquire_weighted 分支），请求成功且 permit 随完成释放。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_ticket_weighted_path_acquires_and_releases() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_OK_BODY)
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-weighted-worker",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.concurrency.token_weighted = true;
+        v.concurrency.max_concurrent_requests = Some(8);
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = Arc::new(VendorManager::new(cm));
+        manager.initialize().await.expect("init");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("v-weighted-worker", make_unified_request()),
+        )
+        .await
+        .expect("no timeout")
+        .expect("weighted worker request should succeed");
+        assert_eq!(result.id, "chatcmpl-1");
+
+        // permit 已随完成释放：在途归零，容量 = 显式并发上限
+        assert_eq!(
+            manager.fleet_concurrency(),
+            (0, 8),
+            "worker 完成后加权票据必须释放"
+        );
+        mock.assert_async().await;
+    }
+
+    /// 热更新移除 vendor 后，已初始化实例的在途请求必须以 VendorUnavailable
+    /// 拒绝（worker 热读 fresh_config 失败分支），错误文案携带 vendor id。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_rejects_when_vendor_removed_from_hot_config() {
+        let dir = std::env::temp_dir().join("nexusflow-vendor-removed-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+
+        let v = make_vendor(
+            "v-removed",
+            "openai",
+            "http://127.0.0.1:1/v1".into(),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        cm.set_path(path.clone());
+        let manager = Arc::new(VendorManager::new(cm.clone()));
+        manager.initialize().await.expect("init");
+
+        // 热更新：vendor 从配置中移除（落盘 + 内存切换）
+        cm.update_config(make_config(vec![])).expect("hot update");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("v-removed", make_unified_request()),
+        )
+        .await
+        .expect("no timeout");
+        match result {
+            Ok(_) => panic!("removed vendor must be rejected"),
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert!(
+                    vendor.contains("v-removed"),
+                    "错误文案必须携带 vendor id: {}",
+                    vendor
+                );
+            }
+            Err(other) => panic!("expected VendorUnavailable, got {:?}", other),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// worker 成功分支的 token 记账 CAS 拒绝：响应 usage 超过窗口剩余时
+    /// consume_tokens 整笔拒绝，used_tokens 保持不变（不超卖）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_success_token_underflow_skips_accounting() {
+        init_tracing();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c1","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":20,"total_tokens":50}}"#,
+            )
+            .create_async()
+            .await;
+
+        // 窗口 10 < 响应 usage 50 → 记账必然被 CAS 拒绝（quota-underflow 分支）
+        let v = make_vendor(
+            "v-underflow-worker",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(10),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = Arc::new(VendorManager::new(cm));
+        manager.initialize().await.expect("init");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("v-underflow-worker", make_unified_request()),
+        )
+        .await
+        .expect("no timeout")
+        .expect("response itself must succeed");
+        assert_eq!(result.usage.total_tokens, 50);
+
+        // CAS 全有全无：拒绝记账后窗口用量保持 0
+        let info = manager
+            .get_window_info("v-underflow-worker")
+            .await
+            .expect("window info");
+        assert_eq!(info.used_tokens, 0, "被拒绝的记账不得部分扣减（CAS 语义）");
+        mock.assert_async().await;
+    }
+
+    // ============ vendor type 与 api_base/api_key 解析 ============
+
+    /// 未知 vendor type 走转换路径时在 converter 分派处失败（Config 错误），
+    /// 不得触达任何 HTTP。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conversion_unknown_vendor_type_fails_fast() {
+        let v = make_vendor(
+            "v-bad-type",
+            "crystal-ball",
+            "http://127.0.0.1:1/v1".into(),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("v-bad-type", make_unified_request()),
+        )
+        .await
+        .expect("no timeout");
+        match result {
+            Err(NexusFlowError::Config { .. }) => {}
+            other => panic!("expected Config error, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// 透传路径 + 空 api_base + 未知 type：URL 构建期失败（无法推导默认 base）。
+    #[tokio::test]
+    async fn passthrough_unknown_vendor_type_empty_base_fails_at_url_build() {
+        let v = make_vendor(
+            "v-bad-type-base",
+            "crystal-ball",
+            String::new(),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = manager
+            .execute_passthrough_request("v-bad-type-base", serde_json::json!({}))
+            .await;
+        match result {
+            Err(NexusFlowError::Config { .. }) => {}
+            other => panic!("expected Config error, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// 流式路径 + 未知 type + 合法 api_base：URL 构建成功后在 converter
+    /// 分派处失败（与转换/透传路径不同的第三处分派点）。
+    #[tokio::test]
+    async fn stream_unknown_vendor_type_fails_at_converter() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .create_async()
+            .await;
+        let v = make_vendor(
+            "v-bad-type-stream",
+            "crystal-ball",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = manager
+            .execute_stream_request("v-bad-type-stream", make_unified_request())
+            .await;
+        match result {
+            Ok(_) => panic!("unknown type must fail"),
+            Err(NexusFlowError::Config { .. }) => {}
+            Err(other) => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    /// 空 api_base 的默认域名解析（anthropic/openai 两个分支），随后在
+    /// api key 环境变量缺失处失败——全程无网络请求。
+    #[tokio::test]
+    async fn default_api_base_resolution_then_missing_api_key_fails() {
+        const MISSING_ANTHROPIC: &str = "NEXUSFLOW_UNSET_KEY_ANTHROPIC_Q7";
+        const MISSING_OPENAI: &str = "NEXUSFLOW_UNSET_KEY_OPENAI_Q7";
+        std::env::remove_var(MISSING_ANTHROPIC);
+        std::env::remove_var(MISSING_OPENAI);
+
+        let anthropic = {
+            let mut v = make_vendor(
+                "v-no-base-anthropic",
+                "anthropic",
+                String::new(),
+                token_limit(1000),
+            );
+            v.api_key_env = MISSING_ANTHROPIC.into();
+            v
+        };
+        let openai = {
+            let mut v = make_vendor(
+                "v-no-base-openai",
+                "openai",
+                String::new(),
+                token_limit(1000),
+            );
+            v.api_key_env = MISSING_OPENAI.into();
+            v
+        };
+        let cm = Arc::new(ConfigManager::new(make_config(vec![anthropic, openai])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        for (id, env) in [
+            ("v-no-base-anthropic", MISSING_ANTHROPIC),
+            ("v-no-base-openai", MISSING_OPENAI),
+        ] {
+            let result = manager
+                .execute_passthrough_request(id, serde_json::json!({}))
+                .await;
+            match result {
+                Err(NexusFlowError::Config { message }) => {
+                    assert!(
+                        message.contains(env),
+                        "错误文案必须携带缺失的环境变量名 {}: {}",
+                        env,
+                        message
+                    );
+                }
+                other => panic!(
+                    "expected Config error for {}, got {:?}",
+                    id,
+                    other.map(|_| ())
+                ),
+            }
+        }
+    }
+
+    /// 透传出站连接拒绝（无监听端口）映射 VendorUnavailable——
+    /// outbound_send_error 的非超时分支。
+    #[tokio::test]
+    async fn passthrough_connect_refused_is_vendor_unavailable() {
+        let v = make_vendor(
+            "v-conn-refused",
+            "openai",
+            "http://127.0.0.1:1/v1".into(),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = manager
+            .execute_passthrough_request("v-conn-refused", serde_json::json!({}))
+            .await;
+        match result {
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert_eq!(vendor, "v-conn-refused");
+            }
+            other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    // ============ 重试循环（Retry-After / 时间预算 / body 超时）============
+
+    /// 上游 429 携带 Retry-After 头：秒数形式必须被解析（后续退避以其为
+    /// base）；max_retries=0 下不重试，单次命中后以 429 语义失败。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conversion_429_retry_after_header_is_parsed() {
+        init_tracing();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(429)
+            .with_header("retry-after", "7")
+            .with_body("slow down")
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-retry-after",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let mut config = make_config(vec![v]);
+        config.retry.max_retries = 0;
+        let cm = Arc::new(ConfigManager::new(config));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("v-retry-after", make_unified_request()),
+        )
+        .await
+        .expect("no timeout");
+        match result {
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert!(vendor.contains("429"), "错误须携带状态码: {}", vendor);
+            }
+            other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
+        }
+        mock.assert_async().await;
+    }
+
+    /// 网络错误的 RetryableShort 重试受 retry_budget_secs 约束：
+    /// 「已耗时 + 下次等待」超预算时立即放弃（不再 sleep），返回最后错误。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retry_budget_aborts_network_retry_loop() {
+        let v = make_vendor(
+            "v-budget-net",
+            "openai",
+            "http://127.0.0.1:1/v1".into(),
+            token_limit(1000),
+        );
+        let mut config = make_config(vec![v]);
+        config.retry.retry_budget_secs = 1;
+        let cm = Arc::new(ConfigManager::new(config));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let start = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("v-budget-net", make_unified_request()),
+        )
+        .await
+        .expect("no timeout");
+        match result {
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert_eq!(vendor, "v-budget-net");
+            }
+            other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
+        }
+        // 第二次尝试的等待（1000ms）被预算截断：总耗时应明显小于
+        // 500ms + 1000ms 的完整退避序列
+        assert!(
+            start.elapsed() < Duration::from_millis(1500),
+            "预算超限必须提前放弃，实际耗时 {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// 5xx 重试同样受 retry_budget_secs 约束：首次重试等待前即判超限
+    ///（spread 展宽后 delay ≥ 1s ≥ 预算），保留 5xx 语义失败。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retry_budget_aborts_5xx_retry_loop() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_body("boom")
+            .expect_at_most(2)
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-budget-5xx",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let mut config = make_config(vec![v]);
+        config.retry.retry_budget_secs = 1;
+        let cm = Arc::new(ConfigManager::new(config));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("v-budget-5xx", make_unified_request()),
+        )
+        .await
+        .expect("no timeout");
+        match result {
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert!(
+                    vendor.contains("500"),
+                    "预算放弃必须保留最后错误的 5xx 语义: {}",
+                    vendor
+                );
+            }
+            other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
+        }
+        mock.assert_async().await;
+    }
+
+    /// 转换路径（worker）body 读取阶段超时映射 Timeout——与透传路径
+    ///（既有用例）同语义，覆盖重试内层 json() 的 is_timeout 分支。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conversion_body_read_timeout_maps_to_timeout() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_chunked_body(|w| {
+                let _ = w.write_all(b"{\"id\":\"slow-body\"");
+                let _ = w.flush();
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                let _ = w.write_all(b"}");
+                Ok::<(), std::io::Error>(())
+            })
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-body-timeout",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.timeout_ms = 200;
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            manager.execute_request("v-body-timeout", make_unified_request()),
+        )
+        .await
+        .expect("test-level watchdog must not fire");
+        match result {
+            Err(NexusFlowError::Timeout { vendor }) => assert_eq!(vendor, "v-body-timeout"),
+            other => panic!("expected Timeout, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// timeout_ms=0（不限时）时 execute_request 外层只加排队预算——
+    /// 成功路径锁定「零值不退化为立即超时」语义。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_request_zero_timeout_uses_queue_budget() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(OPENAI_OK_BODY)
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-zero-timeout",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.timeout_ms = 0;
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.execute_request("v-zero-timeout", make_unified_request()),
+        )
+        .await
+        .expect("no timeout")
+        .expect("timeout_ms=0 must not fail the request");
+        assert_eq!(result.id, "chatcmpl-1");
+        mock.assert_async().await;
+    }
+
+    // ============ 流式：限流 / 派发错误 / 分帧边界 ============
+
+    /// Token 窗口耗尽后转换流式在 advanced limiter peek 处被拒
+    ///（RateLimited，无 HTTP 命中）。
+    #[tokio::test]
+    async fn stream_rate_limited_when_token_window_exhausted() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c1","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-stream-throttle",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(5),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        // 透传一次消耗满 5/5 窗口
+        let r = manager
+            .execute_passthrough_request("v-stream-throttle", serde_json::json!({}))
+            .await;
+        assert!(r.is_ok(), "priming request should succeed: {:?}", r.err());
+
+        let result = manager
+            .execute_stream_request("v-stream-throttle", make_unified_request())
+            .await;
+        match result {
+            Ok(_) => panic!("exhausted window must reject streams"),
+            Err(NexusFlowError::RateLimited { vendor }) => {
+                assert_eq!(vendor, "v-stream-throttle");
+            }
+            Err(other) => panic!("expected RateLimited, got {:?}", other),
+        }
+        // 第二次请求未触达上游
+        mock.assert_async().await;
+    }
+
+    /// token_weighted 流式按预估 token 计费取票（acquire_weighted 分支），
+    /// 流正常建立并产出 chunk。
+    #[tokio::test]
+    async fn stream_ticket_weighted_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_chunked_body(|w| {
+                let _ = w.write_all(
+                    b"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"}}]}\n\n",
+                );
+                Ok::<(), std::io::Error>(())
+            })
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-weighted-stream",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.concurrency.token_weighted = true;
+        v.concurrency.max_concurrent_requests = Some(8);
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_stream_request("v-weighted-stream", make_unified_request())
+            .await
+            .expect("stream should start");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut chunks = 0;
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            assert!(item.is_ok(), "chunk should be ok: {:?}", item.err());
+            chunks += 1;
+        }
+        assert_eq!(chunks, 1, "应恰好产出一个内容 chunk");
+        mock.assert_async().await;
+    }
+
+    /// anthropic 协议的流式 converter 分派 + 反向解析（content_block_delta
+    /// → IR Content，message_stop 生命周期帧跳过）。
+    #[tokio::test]
+    async fn anthropic_stream_success_uses_anthropic_converter() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_chunked_body(|w| {
+                let _ = w.write_all(
+                    b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"bon\"}}\n\n",
+                );
+                let _ = w.write_all(b"data: {\"type\":\"message_stop\"}\n\n");
+                Ok::<(), std::io::Error>(())
+            })
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-anthropic-stream",
+            "anthropic",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_stream_request("v-anthropic-stream", make_unified_request())
+            .await
+            .expect("stream should start");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut texts = Vec::new();
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            match item.expect("chunk ok") {
+                StreamChunk::Content {
+                    delta: MessageContent::Text(t),
+                    ..
+                } => texts.push(t),
+                other => panic!("unexpected chunk: {:?}", other),
+            }
+        }
+        assert_eq!(texts, vec!["bon".to_string()], "生命周期帧必须被跳过");
+        mock.assert_async().await;
+    }
+
+    /// stream_ttft_ms=0（TTFT 不限时）分支：出站 send 失败（连接拒绝）
+    /// 映射 VendorUnavailable——不经 outbound_send_error 的直连映射臂。
+    #[tokio::test]
+    async fn stream_send_error_without_ttft_budget_maps_to_vendor_unavailable() {
+        let v = make_vendor(
+            "v-stream-dead",
+            "openai",
+            "http://127.0.0.1:1/v1".into(),
+            token_limit(1000),
+        );
+        let mut config = make_config(vec![v]);
+        config.vendors[0].stream_ttft_ms = 0;
+        let cm = Arc::new(ConfigManager::new(config));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = manager
+            .execute_stream_request("v-stream-dead", make_unified_request())
+            .await;
+        match result {
+            Ok(_) => panic!("dead endpoint must fail"),
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert_eq!(vendor, "v-stream-dead");
+            }
+            Err(other) => panic!("expected VendorUnavailable, got {:?}", other),
+        }
+    }
+
+    /// 上游 429 的流式派发：状态校验映射 RateLimited（不再以 200 正文
+    /// 伪装 SSE 流），且失败计入 metrics。
+    #[tokio::test]
+    async fn stream_429_maps_to_rate_limited() {
+        init_tracing();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(429)
+            .with_body("rate limited")
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-stream-429",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = Arc::new(VendorManager::new(cm));
+        manager.initialize().await.expect("init");
+
+        let result = manager
+            .execute_stream_request("v-stream-429", make_unified_request())
+            .await;
+        match result {
+            Ok(_) => panic!("429 must fail the stream"),
+            Err(NexusFlowError::RateLimited { vendor }) => {
+                assert_eq!(vendor, "v-stream-429");
+            }
+            Err(other) => panic!("expected RateLimited, got {:?}", other),
+        }
+
+        let vendor_metrics = manager
+            .metrics()
+            .snapshot()
+            .vendors
+            .into_iter()
+            .find(|v| v.vendor == "v-stream-429")
+            .expect("failure must be recorded");
+        assert_eq!(vendor_metrics.failures, 1, "流式失败必须记账 metrics");
+        mock.assert_async().await;
+    }
+
+    /// 分帧边界组合：注释帧与 role-only 帧跳过、内容帧映射 IR、
+    /// 上游省略末尾定界空行时 EOF 冲刷仍产出尾帧；
+    /// idle=0 走无超时直读分支，流以 None 正常收束（permit 释放）。
+    #[tokio::test]
+    async fn conversion_stream_zero_idle_parses_comment_role_and_eof_flush() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_chunked_body(|w| {
+                // 注释帧（data 缺失 → 跳过）
+                let _ = w.write_all(b": keepalive\n\n");
+                // role-only 首帧（无内容无终止 → 不产出空事件）
+                let _ = w.write_all(
+                    b"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+                );
+                // 内容帧
+                let _ = w.write_all(
+                    b"data: {\"id\":\"2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                );
+                // 尾帧故意不带定界空行 → EOF 冲刷路径产出
+                let _ = w.write_all(
+                    b"data: {\"id\":\"3\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\"}}]}",
+                );
+                Ok::<(), std::io::Error>(())
+            })
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-stream-frames",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.stream_ttft_ms = 0;
+        v.stream_idle_ms = 0;
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_stream_request("v-stream-frames", make_unified_request())
+            .await
+            .expect("stream should start");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut texts = Vec::new();
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            match item.expect("chunk ok") {
+                StreamChunk::Content {
+                    delta: MessageContent::Text(t),
+                    ..
+                } => texts.push(t),
+                other => panic!("unexpected chunk: {:?}", other),
+            }
+        }
+        assert_eq!(
+            texts,
+            vec!["hi".to_string(), "!".to_string()],
+            "注释/role-only 帧必须跳过，EOF 冲刷必须产出尾帧"
+        );
+        mock.assert_async().await;
+    }
+
+    /// 上游中流 IO 错误（声明 content-length 提前断开）：字节流错误统一为
+    /// NexusFlowError 后，分帧层以 VendorUnavailable（stream-interrupted
+    /// 语义）提前终止流。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conversion_stream_io_error_wraps_as_vendor_unavailable() {
+        init_tracing();
+        // 手写 TCP 桩：声明 200 字节只发 17 字节即断开 → hyper 产生
+        // 「连接提前关闭」IO 错误（mockito 无此原语）
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // 先读掉入站请求再写响应：带着未读数据关连接会触发 RST
+                //（客户端在响应头前就见到连接重置），读净后关连接才是 FIN
+                let mut buf = vec![0u8; 16_384];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 200\r\n\r\ndata: {\"partial\":",
+                    )
+                    .await;
+                let _ = sock.flush().await;
+                // drop 即关闭：声明 200 字节只发 17 字节，客户端在 body
+                // 读完前见到 EOF → hyper 产生 IO 错误
+            }
+        });
+
+        let v = make_vendor(
+            "v-stream-ioerr",
+            "openai",
+            format!("http://{addr}/v1"),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_stream_request("v-stream-ioerr", make_unified_request())
+            .await
+            .expect("headers arrived, stream established");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut last = None;
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            last = Some(item);
+        }
+        match last {
+            Some(Err(NexusFlowError::VendorUnavailable { vendor })) => {
+                assert!(
+                    vendor.contains("v-stream-ioerr"),
+                    "中断错误必须携带 vendor 与 detail: {}",
+                    vendor
+                );
+            }
+            other => panic!("expected Err(VendorUnavailable), got {:?}", other),
+        }
+    }
+
+    /// 上游中流错误帧（event: error）→ 语义化 Err 提前终止，
+    /// detail 取自帧 data，不得被当作普通 chunk 吞掉。
+    #[tokio::test]
+    async fn conversion_stream_error_frame_terminates_as_vendor_unavailable() {
+        init_tracing();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_chunked_body(|w| {
+                let _ = w.write_all(
+                    b"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                );
+                let _ = w.write_all(b"event: error\ndata: upstream exploded\n\n");
+                Ok::<(), std::io::Error>(())
+            })
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-stream-errframe",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_stream_request("v-stream-errframe", make_unified_request())
+            .await
+            .expect("stream should start");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut items = Vec::new();
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            items.push(item);
+        }
+        assert_eq!(items.len(), 2, "内容帧 + 错误帧各产出一条: {:?}", items);
+        assert!(items[0].is_ok(), "首帧应为内容 chunk");
+        match &items[1] {
+            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+                assert!(
+                    vendor.contains("upstream exploded"),
+                    "错误 detail 必须携带上游消息: {}",
+                    vendor
+                );
+            }
+            other => panic!("expected VendorUnavailable, got {:?}", other),
+        }
+        mock.assert_async().await;
+    }
+
+    // ============ 透传流式：idle 超时 / 零 idle / IO 错误 / 限流 / 票据加权 ============
+
+    /// 透传流式 idle 超时：chunk 间隔超过 stream_idle_ms → 字节流以
+    /// Err(Timeout) 产出（与转换流式同口径）。
+    #[tokio::test]
+    async fn passthrough_stream_idle_timeout_yields_timeout_item() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_chunked_body(|w| {
+                let _ = w.write_all(b"data: {\"first\":true}\n\n");
+                let _ = w.flush();
+                std::thread::sleep(std::time::Duration::from_millis(1200));
+                let _ = w.write_all(b"data: {\"late\":true}\n\n");
+                Ok::<(), std::io::Error>(())
+            })
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-pta-idle",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.stream_idle_ms = 300;
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_passthrough_stream_request("v-pta-idle", serde_json::json!({}))
+            .await
+            .expect("stream should start");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut items = Vec::new();
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            items.push(item);
+            if items.len() > 4 {
+                break;
+            }
+        }
+        assert!(
+            items.iter().any(|i| i.is_ok()),
+            "首个 chunk 应在停顿前到达: {:?}",
+            items
+        );
+        assert!(
+            items.iter().any(
+                |i| matches!(i, Err(NexusFlowError::Timeout { vendor }) if vendor == "v-pta-idle")
+            ),
+            "idle 超时必须以 Err(Timeout) 产出: {:?}",
+            items
+        );
+    }
+
+    /// 透传流式 idle=0（不限时）：直读分支读到 EOF，内容完整收束。
+    #[tokio::test]
+    async fn passthrough_stream_zero_idle_reads_to_eof() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"pta-zero"}"#)
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-pta-zero",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.stream_idle_ms = 0;
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_passthrough_stream_request("v-pta-zero", serde_json::json!({}))
+            .await
+            .expect("stream should start");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut collected = Vec::new();
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            collected.extend_from_slice(&item.expect("chunk ok"));
+        }
+        let text = String::from_utf8(collected).expect("utf8");
+        assert!(
+            text.contains("pta-zero"),
+            "idle=0 必须完整读到 EOF: {}",
+            text
+        );
+        mock.assert_async().await;
+    }
+
+    /// 透传流式中流 IO 错误：以 Err(VendorUnavailable) 产出（与转换流式
+    /// 同一 outbound_send_error 统一口径）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn passthrough_stream_io_error_yields_vendor_unavailable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // 同上：读净请求再写响应，避免未读数据触发的 RST
+                let mut buf = vec![0u8; 16_384];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 200\r\n\r\ndata: {\"partial\":",
+                    )
+                    .await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        let v = make_vendor(
+            "v-pta-ioerr",
+            "openai",
+            format!("http://{addr}/v1"),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_passthrough_stream_request("v-pta-ioerr", serde_json::json!({}))
+            .await
+            .expect("stream established");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut last = None;
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            last = Some(item);
+        }
+        match last {
+            Some(Err(NexusFlowError::VendorUnavailable { vendor })) => {
+                assert_eq!(vendor, "v-pta-ioerr");
+            }
+            other => panic!("expected Err(VendorUnavailable), got {:?}", other),
+        }
+    }
+
+    /// Token 窗口耗尽后透传流式在 advanced limiter peek 处被拒。
+    #[tokio::test]
+    async fn passthrough_stream_rate_limited_when_token_window_exhausted() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c1","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-pta-throttle",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(5),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let r = manager
+            .execute_passthrough_request("v-pta-throttle", serde_json::json!({}))
+            .await;
+        assert!(r.is_ok(), "priming request should succeed: {:?}", r.err());
+
+        let result = manager
+            .execute_passthrough_stream_request("v-pta-throttle", serde_json::json!({}))
+            .await;
+        match result {
+            Ok(_) => panic!("exhausted window must reject streams"),
+            Err(NexusFlowError::RateLimited { vendor }) => {
+                assert_eq!(vendor, "v-pta-throttle");
+            }
+            Err(other) => panic!("expected RateLimited, got {:?}", other),
+        }
+        mock.assert_async().await;
+    }
+
+    /// token_weighted 透传流式按 estimate_cost_json 计费取票，
+    /// 流正常建立并读至 EOF。
+    #[tokio::test]
+    async fn passthrough_stream_ticket_weighted_success() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"pta-weighted"}"#)
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-pta-weighted",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.concurrency.token_weighted = true;
+        v.concurrency.max_concurrent_requests = Some(8);
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let stream = manager
+            .execute_passthrough_stream_request("v-pta-weighted", serde_json::json!({}))
+            .await
+            .expect("stream should start");
+        use futures_util::StreamExt;
+        let mut stream = stream;
+        let mut collected = Vec::new();
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no hang")
+        {
+            collected.extend_from_slice(&item.expect("chunk ok"));
+        }
+        assert!(
+            String::from_utf8(collected)
+                .unwrap()
+                .contains("pta-weighted"),
+            "加权票据不得影响透传流内容"
+        );
+        mock.assert_async().await;
+    }
+
+    // ============ 透传 token 记账 CAS 拒绝 / TimeWindow 窗口内 ============
+
+    /// 透传成功响应的 usage 超过窗口剩余：consume_tokens CAS 整笔拒绝，
+    /// 窗口用量保持 0（quota-underflow 分支不产生误导性扣减）。
+    #[tokio::test]
+    async fn passthrough_token_underflow_skips_accounting() {
+        init_tracing();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c1","choices":[],"usage":{"prompt_tokens":30,"completion_tokens":20,"total_tokens":50}}"#,
+            )
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-underflow-pta",
+            "openai",
+            format!("{}/v1", server.url()),
+            token_limit(10),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let r = manager
+            .execute_passthrough_request("v-underflow-pta", serde_json::json!({}))
+            .await;
+        assert!(r.is_ok(), "response itself must succeed: {:?}", r.err());
+
+        let info = manager
+            .get_window_info("v-underflow-pta")
+            .await
+            .expect("window info");
+        assert_eq!(info.used_tokens, 0, "CAS 拒绝后窗口用量不得变化");
+        mock.assert_async().await;
+    }
+
+    /// TimeWindow 窗口内 get_window_info 返回精确 window_end（当日 end
+    /// 时刻内插分支）。窗口取 now±2min，同日/跨午夜构造下均恒在窗口内。
+    #[tokio::test]
+    async fn get_window_info_time_window_inside_reports_window_end() {
+        use chrono::{Duration as ChronoDuration, Local};
+
+        let now = Local::now().time();
+        let start = (now - ChronoDuration::minutes(2))
+            .format("%H:%M")
+            .to_string();
+        let end = (now + ChronoDuration::minutes(2))
+            .format("%H:%M")
+            .to_string();
+        let v = make_vendor(
+            "v-timewindow-inside",
+            "openai",
+            String::new(),
+            RateLimitConfig::TimeWindow { start, end },
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let info = manager
+            .get_window_info("v-timewindow-inside")
+            .await
+            .expect("window info");
+        assert_eq!(info.max_tokens, None, "TimeWindow 无 token 上限");
+        assert_eq!(info.used_tokens, 0);
+        assert!(
+            info.window_end.is_some(),
+            "窗口内必须内插出 end 时刻（window_end）"
+        );
+        // 不断言 is_ending_soon：跨午夜构造下 end_datetime 退化为 now 是
+        // 既有已知语义（manager.rs 注释如实声明），断言会随运行时刻翻flaky
+    }
+}

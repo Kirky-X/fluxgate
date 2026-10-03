@@ -88,3 +88,46 @@ async fn test_pool_capacity_tracks_max_concurrent() {
     drop(_g4);
     assert_eq!(pool.available_permits(), 3, "all permits restored");
 }
+
+/// 获取的 OwnedReqwestClient 两条引用口径（client() 访问器与 Deref 自动
+/// 解引用）都拿到同一个可发真实请求的 reqwest::Client：各自打一次 mockito
+/// 并断言响应状态与正文，permit 随 guard drop 释放后可再获取。
+#[tokio::test]
+async fn acquired_client_supports_requests_via_accessor_and_deref() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/echo")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"ok":true}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let pool = ConnectionPool::new(1);
+    let g1 = pool.acquire().await.expect("first acquire");
+    // 显式访问器口径
+    let resp = g1
+        .client()
+        .post(format!("{}/echo", server.url()))
+        .header("content-type", "application/json")
+        .body(r#"{"ping":1}"#)
+        .send()
+        .await
+        .expect("request via accessor");
+    assert_eq!(resp.status(), 200);
+
+    // 释放唯一 permit 后重新获取（capacity=1 的排他语义）
+    drop(g1);
+    let g2 = pool.acquire().await.expect("re-acquire after drop");
+    // Deref 口径：guard 直接以 reqwest::Client 的方法调用
+    let resp = g2
+        .post(format!("{}/echo", server.url()))
+        .body("raw")
+        .send()
+        .await
+        .expect("request via deref");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), r#"{"ok":true}"#);
+    mock.assert_async().await;
+}

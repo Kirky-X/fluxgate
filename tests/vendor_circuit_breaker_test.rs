@@ -433,3 +433,139 @@ async fn circuit_recovers_after_timeout_via_probes_and_route_resumes() {
     );
     mock_ok.assert_async().await;
 }
+
+/// recId=2（二期）：cover_all_paths 开启时两条裸路径由 per-vendor CB 包裹：
+/// 转换流式的 dispatch_stream_once 与透传非流式的
+/// execute_passthrough_request_covered 均走 CircuitBreaker::execute，
+/// 成功结果经 from_circuit_call 无损还原。
+#[tokio::test]
+async fn cover_all_paths_wraps_stream_and_passthrough_dispatch() {
+    let mut server = mockito::Server::new_async().await;
+    let stream_mock = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "text/event-stream")
+        .with_chunked_body(|w| {
+            let _ = w.write_all(
+                b"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"}}]}\n\n",
+            );
+            Ok::<(), std::io::Error>(())
+        })
+        .create_async()
+        .await;
+    // 透传走 embeddings 端点（同 server 上与 chat mock 按路径区分）
+    let embeddings_mock = server
+        .mock("POST", "/v1/embeddings")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"object":"list","data":[]}"#)
+        .create_async()
+        .await;
+
+    let mut v = make_vendor("v-covered", server.url());
+    v.stream_ttft_ms = 10_000;
+    v.stream_idle_ms = 10_000;
+    let mut config = make_config(vec![v]);
+    config.resilience.cover_all_paths = true;
+    let cm = Arc::new(ConfigManager::new(config));
+    let manager = VendorManager::new(cm);
+    manager.initialize().await.expect("init should succeed");
+
+    // 流式：send + 状态校验段在 CB 内执行，成功后正常产出 chunk
+    let stream = manager
+        .execute_stream_request("v-covered", make_unified_request())
+        .await
+        .expect("CB-wrapped stream should start");
+    use futures_util::StreamExt;
+    let mut stream = stream;
+    let mut chunks = 0;
+    while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("no hang")
+    {
+        assert!(item.is_ok(), "chunk should be ok: {:?}", item.err());
+        chunks += 1;
+    }
+    assert_eq!(chunks, 1, "应产出一个内容 chunk");
+
+    // 透传非流式：CB 内执行，成功 JSON 原样返回
+    let resp = manager
+        .execute_passthrough_request_at(
+            "v-covered",
+            serde_json::json!({"model":"text-embedding-3","input":"hi"}),
+            "embeddings",
+        )
+        .await
+        .expect("CB-wrapped passthrough should succeed");
+    assert_eq!(resp["object"], "list");
+
+    stream_mock.assert_async().await;
+    embeddings_mock.assert_async().await;
+}
+
+/// CB Open 超时窗口过后：首次探针成功使状态停在 HalfOpen
+///（success_threshold=3 未满），get_status 的 HalfOpen 臂放行探测流量
+///（不判 Unavailable）——「半开窗口必须存在放行通路」的语义断言。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn half_open_admits_probe_and_get_status_releases_traffic() {
+    let mut server = mockito::Server::new_async().await;
+    let mock_fail = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(400)
+        .with_body("bad request")
+        .expect_at_most(5)
+        .create_async()
+        .await;
+
+    let v = make_vendor("vendor_halfopen", server.url());
+    let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+    let manager = Arc::new(VendorManager::new(cm));
+    manager.initialize().await.expect("init should succeed");
+
+    // 5 次 Fatal 失败驱动熔断
+    for _ in 0..5 {
+        let _ = manager
+            .execute_request("vendor_halfopen", make_unified_request())
+            .await;
+    }
+    assert_eq!(
+        manager.get_circuit_state("vendor_halfopen").await,
+        Some(CircuitState::Open),
+        "5 次失败后熔断"
+    );
+
+    // 真实睡眠越过 CB open_timeout(30s)，换挂成功 mock 供探针命中
+    drop(mock_fail);
+    let mock_ok = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(200)
+        .with_body(OPENAI_SUCCESS_BODY)
+        .expect(1)
+        .create_async()
+        .await;
+    tokio::time::sleep(Duration::from_secs(31)).await;
+
+    // 1 次探针成功：Open→HalfOpen 转换发生在 CB execute 内部，
+    // success_threshold=3 未满 → 停在 HalfOpen
+    let probe = manager
+        .execute_request("vendor_halfopen", make_unified_request())
+        .await;
+    assert!(
+        probe.is_ok(),
+        "超时窗口后的探针必须被放行: {:?}",
+        probe.err()
+    );
+    assert_eq!(
+        manager.get_circuit_state("vendor_halfopen").await,
+        Some(CircuitState::HalfOpen),
+        "1/3 成功后必须停在 HalfOpen（半开探测窗口）"
+    );
+
+    // get_status 在 HalfOpen 臂只放行（并发准入交给 CB 的 half_open_max_calls）
+    assert_eq!(
+        manager.get_status("vendor_halfopen").await,
+        VendorStatus::Available,
+        "HalfOpen 探测窗口内 get_status 必须放行"
+    );
+    mock_ok.assert_async().await;
+}

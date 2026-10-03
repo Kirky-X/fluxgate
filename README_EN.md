@@ -336,8 +336,10 @@ Please do not report security vulnerabilities through public issues. Use the Git
 # root (bind mounts and .dockerignore resolve against the context root)
 docker build -t nexusflow:latest -f docker/Dockerfile .
 
-# Run (SQLite data persists under /app/data)
-docker run -d -p 8080:8080 -v $(pwd)/data:/app/data nexusflow:latest
+# Run (read-only config mount + SQLite data persists under /app/data)
+docker run -d -p 8080:8080 \
+  -v $(pwd)/config.toml:/app/config.toml:ro \
+  -v $(pwd)/data:/app/data nexusflow:latest
 
 # Or one-command deployment with resource limits and health checks
 # (the compose file lives under docker/)

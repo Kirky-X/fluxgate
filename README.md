@@ -334,8 +334,10 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 # 注意：-f 指定 Dockerfile，构建上下文仍为仓库根（bind mount 与 .dockerignore 按根解析）
 docker build -t nexusflow:latest -f docker/Dockerfile .
 
-# 运行容器（SQLite 数据持久化于 /app/data）
-docker run -d -p 8080:8080 -v $(pwd)/data:/app/data nexusflow:latest
+# 运行容器（配置只读挂载 + SQLite 数据持久化于 /app/data）
+docker run -d -p 8080:8080 \
+  -v $(pwd)/config.toml:/app/config.toml:ro \
+  -v $(pwd)/data:/app/data nexusflow:latest
 
 # 或使用 docker-compose 一键部署（含资源限制与健康检查；compose 文件位于 docker/ 下）
 docker compose -f docker/docker-compose.yml up -d

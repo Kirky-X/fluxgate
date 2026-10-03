@@ -6,8 +6,10 @@
 services:
   app:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # 构建上下文必须是仓库根：Dockerfile 以 bind mount 绑定 src / Cargo.toml，
+      # .dockerignore 也按上下文根解析（保持根目录不动）
+      context: ..
+      dockerfile: docker/Dockerfile
     container_name: nexusflow-app
     image: nexusflow:latest
     restart: unless-stopped
@@ -22,6 +24,9 @@ services:
       # - OPENAI_API_KEY=${OPENAI_API_KEY}
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
+      # 配置挂载（只读）：镜像内不含配置文件（.dockerignore 安全排除，
+      # main 以第一个 CLI 参数或缺省 config.toml 解析路径）
+      - ../config.toml:/app/config.toml:ro
       # SQLite 数据持久化卷
       - nexusflow_data:/app/data
     # 健康检查（实际注册路径带 sdforge 版本前缀：/api/v1/health）

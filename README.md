@@ -277,17 +277,17 @@ cargo test --workspace --all-features
 
 ### 📊 测试规模
 
-截至当前版本：单元测试 196 个（`src/` 内联实测）、集成测试 454 个（`tests/` 20 个文件实测），合计 **650 个，0 ignored**。主要分布：
+截至当前版本：单元测试 235 个（`src/` 内联实测）、集成测试 700 个（`tests/` 30 个文件实测），合计 **935 个，0 ignored**。整体行覆盖率 97%+（`cargo llvm-cov --workspace --all-features`）。主要分布：
 
 | 测试域 | 用例数 | 覆盖范围 |
 |--------|--------|----------|
-| vendor_test | 79 | 厂商管理 / 限流 / 健康 |
-| protocol_test | 71 | OpenAI ↔ Anthropic 转换 / SSE 分帧 |
-| router_test | 63 | 加权选择 / 亲和 / 提示路由 / 边界 |
-| api_test | 62 | 端点集成 |
-| retry / sse / config / database | 26 / 24 / 20 / 20 | 重试分类 / 流分帧 / 配置加载 / 落库查询 |
-| fallback / admission / circuit_breaker | 17 / 15 / 13 | 换路链 / 准入 / 熔断（含 vendor 侧 4） |
-| cost / cost_tracker / feature_matrix 等 | 其余 | 成本链 / 特性矩阵 / 装配冒烟 |
+| vendor_test | 110 | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
+| protocol_test | 108 | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
+| api_test | 101 | 端点集成 / 缓存 / 换路 / 亲和 / admin |
+| router_test | 92 | 加权选择 / 亲和 / 提示路由 / 边界 |
+| retry / database / sse | 38 / 38 / 37 | 重试分类 / 落库查询与预聚合 / 流分帧与 SDK |
+| config / utils_coverage / fallback / admission | 20 / 19 / 17 / 16 | 配置加载 / 指标与限流边界 / 换路链 / 准入 |
+| bandit / config_coverage / circuit_breaker 等 | 其余 | 波段it 路由 / loader·manager 分支 / 熔断 / server·grpc 起服 / 装配冒烟 |
 
 ---
 

@@ -278,17 +278,17 @@ cargo test --workspace --all-features
 
 ### 📊 Scale
 
-As of the current version: 196 unit tests (measured inline in `src/`) and 454 integration tests (measured across 20 files in `tests/`) — **650 total, 0 ignored**. Main distribution:
+As of the current version: 235 unit tests (measured inline in `src/`) and 700 integration tests (measured across 30 files in `tests/`) — **935 total, 0 ignored**. Overall line coverage is 97%+ (`cargo llvm-cov --workspace --all-features`). Main distribution:
 
 | Test domain | Cases | Coverage |
 |-------------|-------|----------|
-| vendor_test | 79 | vendor management / rate limits / health |
-| protocol_test | 71 | OpenAI ↔ Anthropic conversion / SSE framing |
-| router_test | 63 | weighted selection / affinity / hint routing / edges |
-| api_test | 62 | endpoint integration |
-| retry / sse / config / database | 26 / 24 / 20 / 20 | retry classes / stream framing / config loading / persistence |
-| fallback / admission / circuit_breaker | 17 / 15 / 13 | fallback chain / admission / circuit (incl. 4 vendor-side) |
-| cost / cost_tracker / feature_matrix etc. | remainder | cost chain / feature matrix / assembly smoke |
+| vendor_test | 110 | vendor management / rate limits / stream timeouts / health & metrics |
+| protocol_test | 108 | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
+| api_test | 101 | endpoint integration / caching / rerouting / affinity / admin |
+| router_test | 92 | weighted selection / affinity / hint routing / edges |
+| retry / database / sse | 38 / 38 / 37 | retry classes / persistence & pre-aggregation / stream framing & SDK |
+| config / utils_coverage / fallback / admission | 20 / 19 / 17 / 16 | config loading / metrics & limiter edges / fallback chain / admission |
+| bandit / config_coverage / circuit_breaker etc. | remainder | bandit routing / loader·manager branches / circuit / server·grpc serving / assembly smoke |
 
 ---
 

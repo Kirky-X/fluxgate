@@ -242,8 +242,8 @@ flowchart LR
 | 静态检查 | `cargo clippy --all-features -- -D warnings` | 每次 push / PR |
 | 依赖漏洞扫描 | `cargo audit`（actions-rs/audit-check） | 每次 push / PR + **每日定时**（cron `0 0 * * *`） |
 | 全量测试 | `cargo test --all-features --all` | 每次 push / PR |
-| 镜像构建 | Docker 多阶段构建（main 分支 push） | main 分支 |
-| 镜像漏洞扫描 | Trivy（SARIF 结果上传 GitHub code scanning） | 每次 Docker 构建后 |
+
+镜像构建与 Trivy 扫描已移出 CI（依赖与本仓 Cargo.lock 同源的兄弟库提交，纯远端构建不可行），本机构建命令见 [USER_GUIDE · Docker 部署](./USER_GUIDE.md#-docker-部署)；恢复 CI 镜像门禁的前置条件与 `SIBLING_PINS` 机制见 `docker/Dockerfile` 头注。
 
 工具链锁定 `RUST_VERSION=1.92`（`dtolnay/rust-toolchain@stable`），构建产物可复现。
 

@@ -1,13 +1,16 @@
 #===============================================================================
 # NexusFlow CI 质量门禁（对齐 confers 7 仓库统一基线）
-# fmt / clippy / check / test / coverage / security / docker
+# fmt / clippy / check / test / coverage / security
 #
 # 与 confers 基线的差异：
 #   - NexusFlow 通过 path 依赖集成 7 个兄弟库（Cargo.toml 中 ../<lib>），
 #     所有 cargo 作业先克隆兄弟库到仓库上级目录，否则依赖解析必然失败；
 #   - 本仓库无 Criterion 基准、无 deny.toml，故无 benchmarks 作业，
 #     security 作业仅跑 cargo audit（补 deny.toml 后再加 cargo deny check）；
-#   - 无 CodeQL（按安全门禁约定 CodeQL 为 opt-in，不进默认流程）。
+#   - 无 CodeQL（按安全门禁约定 CodeQL 为 opt-in，不进默认流程）；
+#   - 无 docker 作业：镜像构建依赖与本仓 Cargo.lock 同源的兄弟库提交，
+#     未全部推送远端前纯远端构建不可行（docker/Dockerfile 的 SIBLING_PINS
+#     已就绪，兄弟库推送后可随时恢复该作业）。
 #===============================================================================
 name: CI/CD
 
@@ -203,59 +206,3 @@ jobs:
           tool: cargo-audit
       - name: cargo audit
         run: cargo audit
-
-  #-----------------------------------------------------------------------------
-  # Docker 构建 + Trivy 扫描（main 推送；需要 DOCKERHUB_USERNAME /
-  # DOCKERHUB_TOKEN secrets，未配置时登录步骤显性失败）
-  #-----------------------------------------------------------------------------
-  docker:
-    name: Docker Build & Scan
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    needs: [test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/nexusflow
-          tags: |
-            type=sha,prefix=
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            APP_VERSION=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.meta.outputs.tags }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: '1'

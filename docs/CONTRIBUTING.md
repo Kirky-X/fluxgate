@@ -36,7 +36,7 @@ rustup component add rustfmt clippy
 
 ### ⚠️ 兄弟库必须同级目录
 
-NexusFlow 深度依赖 7 个自研兄弟库，通过 **path 依赖 + `[patch.crates-io]`** 统一重定向到本地源码（保证 trait 身份一致、避免 path 版与 registry 版并存分裂）。**这 7 个库必须克隆到与 `nexusflow/` 同级目录**，否则 `cargo build` 直接失败。CI 上同理——`.github/workflows/ci.yml` 的每个 cargo 作业会先把 7 个兄弟库浅克隆到仓库同级目录再执行检查；Docker 构建则在镜像内完成同样的克隆（`Dockerfile` 的 `SIBLING_REF` 构建参数，默认 `main`）：
+NexusFlow 深度依赖 7 个自研兄弟库，通过 **path 依赖 + `[patch.crates-io]`** 统一重定向到本地源码（保证 trait 身份一致、避免 path 版与 registry 版并存分裂）。**这 7 个库必须克隆到与 `nexusflow/` 同级目录**，否则 `cargo build` 直接失败。CI 上同理——`.github/workflows/ci.yml` 的每个 cargo 作业会先把 7 个兄弟库浅克隆到仓库同级目录再执行检查。Docker 构建不在 CI 内（镜像构建依赖与本仓 `Cargo.lock` 同源的兄弟库提交，未全部推送远端前纯远端构建不可行），在本机执行 `docker build -f docker/Dockerfile .`——镜像内经 `SIBLING_PINS` 构建参数逐仓钉住与本仓锁文件同源的完整 SHA：
 
 ```
 projects/

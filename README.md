@@ -80,7 +80,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>国际化</b><br><span style="color:#64748B">Fluent 双语束（en/zh）覆盖全部业务消息与错误文案，<code>NEXUSFLOW_LANG</code> → 系统环境 → 回退 en 检测链</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>生产就绪</b><br><span style="color:#64748B">Docker 多阶段构建 + 非 root 运行、docker-compose 资源限制、GitHub Actions CI（fmt/clippy/test/audit/Trivy）与多平台交叉编译</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>生产就绪</b><br><span style="color:#64748B">Docker 多阶段构建 + 非 root 运行、docker-compose 资源限制与健康检查、GitHub Actions CI（fmt/clippy/test/coverage/audit）与自动发布流水线</span></td>
 </tr>
 </table>
 

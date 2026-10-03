@@ -4,10 +4,9 @@
 # 产物（NexusFlow 是应用，不发 crates.io——path 依赖决定其不可发布）：
 #   - nexusflow-<ver>-x86_64-unknown-linux-gnu.tar.gz
 #     ubuntu runner 编译，动态链接系统 libsqlite3（sqlx 走 pkg-config，非 bundled）
-#   - nexusflow-<ver>-x86_64-musl.tar.gz（静态，alpine 可直接运行）
-#     由 Dockerfile 的 alpine 构建阶段产出后从镜像提取，与发布镜像同源——
-#     musl 交叉编译需要 musl 版 libsqlite3，ubuntu runner 上不可行，
-#     借道 Docker 构建是唯一与镜像保持一致的路径
+# 说明：musl 静态产物曾借道 Docker 构建产出，因兄弟库本地状态未推送、
+# 纯远端 Docker 构建不可行而移除（CI 同步去 docker 化）；需要 musl 静态
+# 二进制时在本机执行 `docker build -f docker/Dockerfile .` 自行提取。
 #===============================================================================
 name: Release
 
@@ -82,44 +81,6 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           ASSET="${{ env.BIN_NAME }}-${VERSION}-${{ matrix.target }}.tar.gz"
           tar -czf "$ASSET" -C "target/${{ matrix.target }}/release" "${{ env.BIN_NAME }}"
-          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
-      - name: Attach to release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
-        with:
-          files: ${{ env.ASSET }}
-
-  #-----------------------------------------------------------------------------
-  # musl 静态二进制（复用 Dockerfile 的 alpine 构建阶段，与镜像同源）
-  #-----------------------------------------------------------------------------
-  build-musl:
-    name: Build (x86_64-musl via Docker)
-    needs: create-release
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: docker/setup-buildx-action@v3
-      - name: Build image (local only, no push)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: false
-          load: true
-          tags: nexusflow:release-build
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Extract binary from image
-        run: |
-          set -euo pipefail
-          cid=$(docker create nexusflow:release-build)
-          docker cp "$cid:/bin/server" ./nexusflow
-          docker rm "$cid"
-      - name: Package
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          ASSET="${{ env.BIN_NAME }}-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          tar -czf "$ASSET" nexusflow
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
       - name: Attach to release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3

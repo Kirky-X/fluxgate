@@ -80,7 +80,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>NEXUSFLOW_LANG</code> → system locale → en fallback chain</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Production ready</b><br><span style="color:#64748B">Multi-stage Docker build with non-root runtime, docker-compose resource limits, GitHub Actions CI (fmt/clippy/test/audit/Trivy) and multi-platform cross compilation</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Production ready</b><br><span style="color:#64748B">Multi-stage Docker build with non-root runtime, docker-compose resource limits and health checks, GitHub Actions CI (fmt/clippy/test/coverage/audit) and automated release pipeline</span></td>
 </tr>
 </table>
 

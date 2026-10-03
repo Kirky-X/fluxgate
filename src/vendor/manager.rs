@@ -149,8 +149,8 @@ struct VendorInstance {
 /// 残余触发场景「窗口内 100% 调用皆 >60s 且全成功」在 W2 默认值下与
 /// 失败路径触发条件重合，行为一致。
 #[cfg(feature = "resilience")]
-pub(crate) fn nexusflow_circuit_config() -> CircuitBreakerConfig {
-    CircuitBreakerConfig::new(5, 3, Duration::from_secs(30))
+pub(crate) fn nexusflow_circuit_config(open_timeout: std::time::Duration) -> CircuitBreakerConfig {
+    CircuitBreakerConfig::new(5, 3, open_timeout)
         .slow_call_duration_threshold(Duration::from_secs(60))
         .slow_call_rate_threshold(1.0)
         .error_classifier(Arc::new(NexusFlowErrorClassifier))
@@ -161,6 +161,7 @@ impl VendorInstance {
         config: &VendorConfig,
         queue_size: usize,
         rps: u32,
+        #[cfg(feature = "resilience")] circuit_open_timeout: std::time::Duration,
         #[cfg(feature = "cost-tracking")] cost_tracker: Arc<CostTracker>,
     ) -> Self {
         Self {
@@ -193,8 +194,10 @@ impl VendorInstance {
                 // src/circuit/types.rs finalize_transition），无手写版
                 // "熔断一次即永久拒绝"的死锁。
                 // recId=1：构造统一收敛至 nexusflow_circuit_config()
-                //（慢调用阈值修复见该函数 doc）。
-                nexusflow_circuit_config(),
+                //（慢调用阈值修复见该函数 doc）；Open 窗口经
+                // [resilience].circuit_open_timeout_ms 可配，缺省 30s
+                // 与历史硬编码逐位一致。
+                nexusflow_circuit_config(circuit_open_timeout),
             )),
             #[cfg(feature = "cost-tracking")]
             cost_tracker,
@@ -331,6 +334,8 @@ impl VendorManager {
             vendor,
             queue_size,
             rps,
+            #[cfg(feature = "resilience")]
+            std::time::Duration::from_millis(self.config.read().resilience.circuit_open_timeout_ms),
             #[cfg(feature = "cost-tracking")]
             self.cost_tracker.clone(),
         ));
@@ -2112,7 +2117,7 @@ mod tests {
     #[cfg(feature = "resilience")]
     #[tokio::test]
     async fn slow_ok_calls_do_not_open_production_circuit() {
-        let cb = CircuitBreaker::new(nexusflow_circuit_config());
+        let cb = CircuitBreaker::new(nexusflow_circuit_config(Duration::from_secs(30)));
 
         for i in 0..3 {
             // execute 的 Open 态拒绝以 CircuitCallError::Open 独立承载（rc.6）
@@ -2136,11 +2141,13 @@ mod tests {
     }
 
     /// helper 参数值断言（模式对齐 limiteron
-    /// src/circuit/types.rs:1401 test_builder_with_slow_call_config）。
+    /// src/circuit/types.rs:1401 test_builder_with_slow_call_config）：
+    /// 默认 30s 窗口与 [resilience].circuit_open_timeout_ms 缺省一致，
+    /// 短窗口经参数注入后仅 timeout 变化、其余参数不动。
     #[cfg(feature = "resilience")]
     #[test]
     fn nexusflow_circuit_config_values() {
-        let config = nexusflow_circuit_config();
+        let config = nexusflow_circuit_config(Duration::from_secs(30));
         assert_eq!(config.failure_threshold, 5);
         assert_eq!(config.success_threshold, 3);
         assert_eq!(config.timeout, Duration::from_secs(30));
@@ -2152,6 +2159,20 @@ mod tests {
         assert!(
             (config.slow_call_rate_threshold - 1.0).abs() < f64::EPSILON,
             "慢调用率阈值必须为 1.0（recId=1）：混合流量下慢调用路径失活"
+        );
+
+        let short = nexusflow_circuit_config(Duration::from_millis(300));
+        assert_eq!(short.timeout, Duration::from_millis(300));
+        assert_eq!(short.failure_threshold, config.failure_threshold);
+        assert_eq!(short.slow_call_duration_threshold, Duration::from_secs(60));
+
+        // 配置缺省 ↔ 熔断构造缺省必须同源：[resilience] 段默认 30s，
+        // 改任一侧而不同步另一侧时此处立即翻红
+        assert_eq!(
+            Duration::from_millis(
+                crate::config::ResilienceSection::default().circuit_open_timeout_ms
+            ),
+            Duration::from_secs(30)
         );
     }
 }

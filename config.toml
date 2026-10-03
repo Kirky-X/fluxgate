@@ -285,12 +285,18 @@ default_deadline_ms = 10000
 #   429 感知：失败率窗口把 RateLimited（上游限流/本地 token 窗耗尽）也计
 #   入失败——独立于熔断器计数（CB 对 429 无感），上游正常限流也可能触发
 #   降权，penalty=0.1 而非剔除、风险有界。
+#
+# - circuit_open_timeout_ms: 熔断 Open→HalfOpen 的超时窗口（毫秒），
+#   **默认 30000**。调小加速故障恢复探测（对抖动上游恢复更灵敏）、调大
+#   避免对持续故障上游的探针风暴；热生效：经 POST /admin/config 全量
+#   更新后，新建 vendor 实例即采用新值（已热建的实例沿用创建时窗口）。
 [resilience]
 cover_all_paths = false
 failure_rate_gate = false
 failure_rate_min_samples = 5
 failure_rate_threshold = 0.5
 failure_rate_penalty = 0.1
+circuit_open_timeout_ms = 30000
 
 # Congestion-Aware Priority Admission (recId=16)
 # 热生效：本段经 POST /admin/config 全量更新后立即生效（准入每请求从

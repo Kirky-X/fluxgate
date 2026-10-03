@@ -149,6 +149,13 @@ pub async fn update_config(
     if old.cors != config.cors {
         restart_required.push("cors");
     }
+    // 第三类生效语义：vendor 实例按 id 惰性创建后进程级缓存（manager 的
+    // instances map 无失效路径），CB 窗口变更只对新建实例生效——既非重启级
+    // （同段其余键每请求现读）也非即时级，单列 surfaced 防止误判。
+    let mut applies_to_new_instances: Vec<&'static str> = Vec::new();
+    if old.resilience.circuit_open_timeout_ms != config.resilience.circuit_open_timeout_ms {
+        applies_to_new_instances.push("resilience.circuit_open_timeout_ms");
+    }
     state.config.update_config(config)?;
     Ok(Json(serde_json::json!({
         "success": true,
@@ -161,6 +168,7 @@ pub async fn update_config(
             )])
         },
         "restart_required": restart_required,
+        "applies_to_new_instances": applies_to_new_instances,
     })))
 }
 

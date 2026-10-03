@@ -8,6 +8,7 @@ config-parse-failed = Failed to parse config file: { $error }
 config-duplicate-vendor-id = Duplicate vendor ID: { $vendor }
 config-duplicate-model-id = Duplicate model ID in vendor { $vendor }: { $model }
 config-api-key-env-missing = API key environment variable { $env } of vendor { $vendor } is not set
+config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) is below the 100ms floor: a too-short window flips the circuit straight from Open to Half-Open, degrading failure recovery into a probe storm
 
 # ---- config/manager.rs ----
 config-snapshot-serialize-failed = Config snapshot skipped: failed to serialize old config

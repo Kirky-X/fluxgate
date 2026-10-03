@@ -138,5 +138,19 @@ pub fn validate_config(config: &Config) -> Result<(), NexusFlowError> {
         }
     }
 
+    // 窗口 <100ms 使 CB Open→HalfOpen 即刻转换：故障期退化为探针风暴，
+    // 等于关闭熔断冷却。加载与 POST /admin/config 热更新共用本函数，两路同拒。
+    if config.resilience.circuit_open_timeout_ms < 100 {
+        return Err(NexusFlowError::Config {
+            message: t_args(
+                "config-circuit-open-timeout-too-small",
+                &[(
+                    "value",
+                    config.resilience.circuit_open_timeout_ms.to_string(),
+                )],
+            ),
+        });
+    }
+
     Ok(())
 }

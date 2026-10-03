@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
@@ -867,6 +869,11 @@ pub struct ResilienceSection {
     /// recId=7（W5）：软降权乘子（权重 ×penalty）。0.1 = LiteLLM 数值对照。
     #[serde(default = "default_failure_rate_penalty")]
     pub failure_rate_penalty: f64,
+    /// CB Open→HalfOpen 的超时窗口（毫秒）。**默认 30000**：与既有硬编码
+    /// 行为逐位一致。调小加速故障恢复探测、调大避免对持续故障上游的
+    /// 探针风暴；测试经此注入短窗口以替代真实秒级睡眠。
+    #[serde(default = "default_circuit_open_timeout_ms")]
+    pub circuit_open_timeout_ms: u64,
 }
 
 fn default_failure_rate_min_samples() -> u64 {
@@ -881,6 +888,10 @@ fn default_failure_rate_penalty() -> f64 {
     0.1
 }
 
+fn default_circuit_open_timeout_ms() -> u64 {
+    30_000
+}
+
 impl Default for ResilienceSection {
     fn default() -> Self {
         Self {
@@ -889,6 +900,7 @@ impl Default for ResilienceSection {
             failure_rate_min_samples: default_failure_rate_min_samples(),
             failure_rate_threshold: default_failure_rate_threshold(),
             failure_rate_penalty: default_failure_rate_penalty(),
+            circuit_open_timeout_ms: default_circuit_open_timeout_ms(),
         }
     }
 }

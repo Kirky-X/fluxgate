@@ -23,7 +23,7 @@
 - **成本追踪链**：`PricingConfig` 价格表 → `CostCalculator`（价格表查询）→ `CostTracker`（dashmap 分片 + 原子累积）→ VendorManager worker 成功路径集成
 - **可观测性与管理端点**：GlobalMetrics + `/admin/metrics`；配置热更新（`/admin/config`）、日志查询 / 关键词搜索、Token 统计、厂商状态与重置、模型管理
 - **i18n**：Fluent 双语目录（en/zh）+ 语言检测链
-- **SDK**：nexusflow-sdk crate（Cargo workspace 成员）——chat（含 `chat_stream` SSE 解码）/ embed / models / vendors / health
+- **SDK**：`src/sdk` 模块（`sdk` feature 门控，原顶层独立 crate 已并入）——chat（含 `chat_stream` SSE 解码）/ embed / models / vendors / health
 - **DI 组装**：trait-kit AsyncKit 容器统一组装兄弟库模块（启动期 `4/4 modules resolved` 验证）
 - **运维**：优雅停机（Ctrl+C / SIGTERM）、feature 门控与组合矩阵测试、Docker 多阶段构建 + docker-compose、GitHub Actions CI/CD
 - **测试体系**：vendor / protocol / error / auth / admin / async_logger / queue / rate_limiter 等模块综合测试补齐（mockall / mockito）

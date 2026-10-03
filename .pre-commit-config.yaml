@@ -3,7 +3,7 @@
 # 适配说明（相对 inklog 模板）:
 #   - 本仓无 deny.toml，不接 cargo-deny（补配置后在 CI/security 与钩子同步加入）;
 #   - fmt/clippy 使用本仓 CI 口径（--workspace，与 ci.yml 一致）;
-#   - detect-secrets 排除 tests/ 与 sdk/tests/（mock 厂商凭证夹具），基线记录
+#   - detect-secrets 排除 tests/ 与 src/sdk/tests（mock 厂商凭证夹具），基线记录
 #     其余误报（api_key_env 的环境变量名、测试 fixture 字面量、SHA256 摘要夹具）;
 #   - out/ 为提交在库的研究报告工具产物，各改写型钩子统一排除。
 repos:
@@ -34,7 +34,7 @@ repos:
       - id: detect-secrets
         # --baseline: .secrets.baseline 记录已人工核实的误报；带 --baseline 时
         # 基线内发现放行，基线外的新发现仍阻断。
-        args: [--baseline, .secrets.baseline, --exclude-files, tests/, --exclude-files, sdk/tests/, --exclude-files, out/]
+        args: [--baseline, .secrets.baseline, --exclude-files, tests/, --exclude-files, src/sdk/tests, --exclude-files, out/]
         # 自排除: 基线文件本身(内含凭证哈希)与锁文件不参与扫描
         exclude: '^(Cargo\.lock|\.secrets\.baseline)$'
 

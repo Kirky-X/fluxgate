@@ -22,7 +22,7 @@ pub mod error_map;
 pub mod fallback;
 
 pub use error_map::{
-    from_circuit_call_error, from_limiteron, is_circuit_open_error, to_limiteron,
+    from_circuit_call, from_limiteron, is_circuit_open_error, to_limiteron,
     NexusFlowErrorClassifier,
 };
 pub use fallback::{FallbackChain, FallbackTarget, FallbackTrigger};

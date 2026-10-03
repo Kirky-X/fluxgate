@@ -17,8 +17,10 @@
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
-use limiteron::circuit::{CircuitBreaker, CircuitBreakerConfig, FailureClassifier};
-use limiteron::error::{CircuitCallError, CircuitState, LimiteronError};
+use limiteron::circuit::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitCallError, FailureClassifier,
+};
+use limiteron::error::{CircuitState, LimiteronError};
 use nexusflow::error::NexusFlowError;
 use nexusflow::vendor::resilience::{
     from_limiteron, is_circuit_open_error, to_limiteron, NexusFlowErrorClassifier,
@@ -382,7 +384,7 @@ fn classifier_counts_failures_by_variant_semantics() {
         }))
     );
     assert!(classifier.is_counted_as_failure(&LimiteronError::Other("alien".into())));
-    // 库自身保护机制错误：不计失败（对齐 DefaultErrorClassifier）
+    // 库自身保护机制错误：不计失败（对齐 DefaultFailureClassifier）
     assert!(!classifier.is_counted_as_failure(&LimiteronError::LimitError("rejected".into())));
     assert!(!classifier.is_counted_as_failure(&LimiteronError::CircuitBreakerError("open".into())));
 }

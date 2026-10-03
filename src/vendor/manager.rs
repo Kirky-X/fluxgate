@@ -19,7 +19,7 @@ use crate::utils::retry::{retry_delay_for, ErrorCategory, RetryDelayPolicy};
 use crate::utils::CostTracker;
 #[cfg(feature = "resilience")]
 use crate::vendor::resilience::error_map::{
-    from_circuit_call_error, to_limiteron, NexusFlowErrorClassifier,
+    from_circuit_call, to_limiteron, NexusFlowErrorClassifier,
 };
 use bytes::Bytes;
 #[cfg(feature = "resilience")]
@@ -743,7 +743,7 @@ impl VendorManager {
                     .map_err(|e| to_limiteron(&e))
                 })
                 .await;
-            result.map_err(|e| from_circuit_call_error(e, &vendor_id))
+            result.map_err(|e| from_circuit_call(e, &vendor_id))
         }
         #[cfg(not(feature = "resilience"))]
         {
@@ -1236,7 +1236,7 @@ impl VendorManager {
                     let result = circuit_breaker
                         .execute(|| async { send().await.map_err(|e| to_limiteron(&e)) })
                         .await;
-                    return result.map_err(|e| from_circuit_call_error(e, vendor_id));
+                    return result.map_err(|e| from_circuit_call(e, vendor_id));
                 }
             }
         }
@@ -1568,7 +1568,7 @@ impl VendorManager {
                             .map_err(|e| to_limiteron(&e))
                         })
                         .await;
-                    return result.map_err(|e| from_circuit_call_error(e, vendor_id));
+                    return result.map_err(|e| from_circuit_call(e, vendor_id));
                 }
             }
         }
@@ -2115,10 +2115,10 @@ mod tests {
         let cb = CircuitBreaker::new(nexusflow_circuit_config());
 
         for i in 0..3 {
-            // execute 返回包装错误：Ok = 调用被执行且成功（Open 态为 Err(CircuitCallError::Open)）
+            // execute 的 Open 态拒绝以 CircuitCallError::Open 独立承载（rc.6）
             let result: Result<
                 u32,
-                limiteron::error::CircuitCallError<limiteron::error::LimiteronError>,
+                limiteron::circuit::CircuitCallError<limiteron::error::LimiteronError>,
             > = cb
                 .execute(|| async {
                     tokio::time::sleep(Duration::from_millis(800)).await;

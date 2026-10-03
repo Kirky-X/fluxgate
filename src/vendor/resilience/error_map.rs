@@ -6,19 +6,18 @@
 //! NexusFlowError ↔ LimiteronError 双向映射层。
 //!
 //! `limiteron::circuit::CircuitBreaker::execute` 的签名锁定
-//! `Fut: Future<Output = Result<T, LimiteronError>>`（limiteron
-//! src/circuit/types.rs:377-379），`FailureClassifier::is_counted_as_failure`
-//! 亦以 `&LimiteronError` 为参；而本 crate 执行路径的
-//! 错误是 [`NexusFlowError`] —— 在此以带 `nexusflow:` 前缀的
-//! `LimiteronError::Other` 串为载体做双向转换。
+//! `Fut: Future<Output = Result<T, LimiteronError>>`，rc.6 起熔断打开拒绝以
+//! `CircuitCallError::Open` 独立承载；`FailureClassifier::is_counted_as_failure`
+//! 亦以 `&LimiteronError` 为参；而本 crate 执行路径的错误是 [`NexusFlowError`] ——
+//! 在此以带 `nexusflow:` 前缀的 `LimiteronError::Other` 串为载体做双向转换。
 //!
 //! 有损风险声明：`from_limiteron` 对「不带前缀的 Other」或「前缀后
 //! variant 无法识别」的载荷无法还原原 variant，降级为
 //! `VendorUnavailable`（详情保留在 vendor 字符串中），该降级行为由
 //! `tests/circuit_breaker_test.rs` 锁定。
 
-use limiteron::circuit::FailureClassifier;
-use limiteron::error::{CircuitCallError, LimiteronError};
+use limiteron::circuit::{CircuitCallError, FailureClassifier};
+use limiteron::error::LimiteronError;
 
 use crate::error::NexusFlowError;
 
@@ -50,8 +49,9 @@ pub fn to_limiteron(err: &NexusFlowError) -> LimiteronError {
 
 /// LimiteronError → NexusFlowError。
 ///
-/// - `LimitError`（CB Open / half-open 准入超限的拒绝串，limiteron
-///   src/circuit/types.rs:415/448）→ `VendorUnavailable{vendor: "{id} (circuit open)"}`
+/// - `LimitError`（limiteron 限流 / 准入拒绝）→
+///   `VendorUnavailable{vendor: "{id} (circuit open)"}`（与 CB Open 同形态，
+///   CB `execute` 的 Open 拒绝现经 [`from_circuit_call`] 走同一形态）
 /// - 带前缀的 `Other` → 解码还原原 variant
 /// - 其余 → 有损降级为 `VendorUnavailable`（详情保留在 vendor 串中）
 pub fn from_limiteron(err: LimiteronError, vendor_id: &str) -> NexusFlowError {
@@ -67,6 +67,23 @@ pub fn from_limiteron(err: LimiteronError, vendor_id: &str) -> NexusFlowError {
     }
 }
 
+/// 熔断 `execute` 结果 → NexusFlowError（limiteron rc.6 起 `execute`
+/// 返回 `CircuitCallError<LimiteronError>`，区分「熔断拒绝未执行」与
+/// 「调用透传失败」）。
+///
+/// - `Open` → `VendorUnavailable{vendor: "{id} (circuit open)"}`
+///   （与 [`from_limiteron`] 的 LimitError 形态一致，`is_circuit_open_error`
+///   据此同步 `VendorState`）
+/// - `Inner(e)` → [`from_limiteron`] 透传
+pub fn from_circuit_call(err: CircuitCallError<LimiteronError>, vendor_id: &str) -> NexusFlowError {
+    match err {
+        CircuitCallError::Open => NexusFlowError::VendorUnavailable {
+            vendor: format!("{} (circuit open)", vendor_id),
+        },
+        CircuitCallError::Inner(e) => from_limiteron(e, vendor_id),
+    }
+}
+
 /// 判断错误是否为熔断打开（`from_limiteron` 对 CB 拒绝的还原形态）。
 ///
 /// 供 worker 完成分支把 CB Open 同步回写 `VendorState`（路由过滤
@@ -74,23 +91,6 @@ pub fn from_limiteron(err: LimiteronError, vendor_id: &str) -> NexusFlowError {
 pub fn is_circuit_open_error(err: &NexusFlowError) -> bool {
     matches!(err, NexusFlowError::VendorUnavailable { vendor }
         if vendor.contains("circuit open"))
-}
-
-/// `CircuitCallError` → NexusFlowError（`execute` 现返回包装错误）。
-///
-/// - `Open`（闭包未执行）→ `VendorUnavailable{vendor: "{id} (circuit open)"}`
-///   （保持 [`is_circuit_open_error`] 的字符串约定）
-/// - `Inner(e)` → [`from_limiteron`] 透传
-pub fn from_circuit_call_error(
-    err: CircuitCallError<LimiteronError>,
-    vendor_id: &str,
-) -> NexusFlowError {
-    match err {
-        CircuitCallError::Open => NexusFlowError::VendorUnavailable {
-            vendor: format!("{} (circuit open)", vendor_id),
-        },
-        CircuitCallError::Inner(e) => from_limiteron(e, vendor_id),
-    }
 }
 
 /// 解析失败 / 非本 crate 错误的降级形态
@@ -126,7 +126,7 @@ fn decode(payload: &str) -> Option<NexusFlowError> {
     }
 }
 
-/// 按映射前缀分类的 FailureClassifier。
+/// 按映射前缀分类的错误分类器。
 ///
 /// 语义对齐 limiteron `DefaultFailureClassifier` 的「保护机制错误不计失败」：
 /// - `VendorUnavailable` / `Timeout`（上游故障）→ 计失败

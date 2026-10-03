@@ -702,7 +702,10 @@ mod cover_all_paths {
             .mock("POST", "/v1/chat/completions")
             .with_status(500)
             .with_body("burn")
-            .expect(5) // 恰好 5 次（熔断耗尽），第 6 次请求不得触达 A
+            // expect_at_most(5) 上界锁「第 6 次请求不触达 A 且无隐藏重试」；
+            // 不用精确 5：全量并行下 localhost 瞬态连接失败会把失败计入
+            // 熔断但不产生 HTTP 命中，「恰 5 次失败」由 CB Open 断言承载
+            .expect_at_most(5)
             .create_async()
             .await;
         let mut server_b = mockito::Server::new_async().await;
@@ -761,7 +764,7 @@ mod cover_all_paths {
             .mock("POST", "/v1/chat/completions")
             .with_status(500)
             .with_body("burn")
-            .expect(5) // 恰好 5 次预热；direct 路由的请求被 CB 拒绝、零 HTTP
+            .expect_at_most(5) // 上界锁无隐藏重试；恰 5 次失败由 CB Open 断言承载
             .create_async()
             .await;
         let mut server_b = mockito::Server::new_async().await;

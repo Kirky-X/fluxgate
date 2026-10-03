@@ -41,6 +41,13 @@ model_id = "claude-3-opus-20240229"
 enabled = true
 weight = 1.0
 
+# gRPC Server（feature = "grpc"）— sdforge grpc 门面。缺席或 enabled = false
+# 时 gRPC 服务器禁用。认证复用 [auth] 段摘要校验；TLS 由外部反代承担。
+[grpc]
+enabled = false
+host = "0.0.0.0"
+port = 50051
+
 [global_model]
 enabled = true
 strategy = "weighted"

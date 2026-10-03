@@ -37,6 +37,12 @@ router = ["vendor-management", "dep:oxcache"]
 protocol = []
 infrastructure = ["dep:oxcache", "dep:trait-kit"]
 sdforge-integration = ["dep:sdforge"]
+# gRPC 服务器（sdforge grpc 门面）：独立 feature 不进 full——sdforge 的
+# grpc feature 编译期需要 protoc（编译 proto/sdforge.v1.proto），默认构建
+# 不引入该工具链前置。feature 名兼作 `#[forge]` 宏在目标 crate 上的
+# `cfg(feature = "grpc")` 门控（同 http = [] 的机制，见上注）。
+# 服务器模块另受 web-server + logging 门控（与 HTTP 共用装配链）。
+grpc = ["dep:sdforge", "sdforge/grpc"]
 logging = ["dep:inklog"]
 # sdk：HTTP 客户端 SDK（src/sdk，调用已部署网关的 Rust 客户端）。
 # reqwest 复用 vendor-management 的 optional 依赖；eventsource-stream 仅做

@@ -554,6 +554,7 @@ mod fallback_guard_tests {
             routing: RoutingSection::default(),
             cache: crate::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: crate::config::ResilienceSection::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));
@@ -851,6 +852,7 @@ mod cooldown_retry_after {
             routing,
             cache: crate::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: crate::config::ResilienceSection::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));

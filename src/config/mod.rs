@@ -1005,6 +1005,49 @@ fn default_rate_limit_per_tenant() -> bool {
     true
 }
 
+/// [grpc] 段 — gRPC 服务器配置（sdforge grpc 门面，`feature = "grpc"`）。
+/// 建站期消费（`GrpcServerConfig` 固化于服务器构造，与 `[server]`/`[cors]`
+/// 同语义），更新后需重启进程生效。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GrpcConfig {
+    /// 显式启用（None 段或 false = 不监听 gRPC 端口，行为与历史逐位一致）
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_grpc_host")]
+    pub host: String,
+    #[serde(default = "default_grpc_port")]
+    pub port: u16,
+    /// per-call 超时秒数（透传 sdforge `GrpcServerConfig.timeout_seconds`；
+    /// 0 = 不限）
+    #[serde(default = "default_grpc_timeout_seconds")]
+    pub timeout_seconds: u64,
+    /// 每连接并发上限（透传 `max_connections`；0 = tonic 默认）
+    #[serde(default = "default_grpc_max_connections")]
+    pub max_connections: usize,
+    /// HTTP/2 keepalive 探测间隔秒数（None = tonic 默认）
+    #[serde(default)]
+    pub http2_keepalive_interval_secs: Option<u64>,
+    /// HTTP/2 keepalive 探测超时秒数（None = tonic 默认）
+    #[serde(default)]
+    pub http2_keepalive_timeout_secs: Option<u64>,
+}
+
+fn default_grpc_host() -> String {
+    "0.0.0.0".into()
+}
+
+fn default_grpc_port() -> u16 {
+    50051
+}
+
+fn default_grpc_timeout_seconds() -> u64 {
+    30
+}
+
+fn default_grpc_max_connections() -> usize {
+    1000
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
     pub server: ServerConfig,
@@ -1042,6 +1085,10 @@ pub struct Config {
     ///（完全旁路，行为与历史逐位一致）。
     #[serde(default)]
     pub admission: AdmissionSection,
+    /// [grpc] 段 — gRPC 服务器（`feature = "grpc"`）。None = 配置中无该段，
+    /// gRPC 服务器禁用（不监听 gRPC 端口，行为与历史逐位一致）
+    #[serde(default)]
+    pub grpc: Option<GrpcConfig>,
 }
 
 /// 单条定价配置 — vendor + model 维度的输入/输出 token 单价（每 1k tokens，USD）

@@ -349,6 +349,7 @@ mod tests {
             routing: crate::config::RoutingSection::default(),
             cache: crate::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: crate::config::ResilienceSection::default(),
         }
     }
@@ -588,8 +589,74 @@ mod tests {
             format!("env-{}", ITERS - 1),
             "api_key_env 最后一次写入保留"
         );
-        assert_eq!(disk.name, mem.name, "磁盘与内存一致（name）");
-        assert_eq!(disk.api_key_env, mem.api_key_env, "磁盘与内存一致（env）");
+        assert_eq!(mem.name, disk.name, "磁盘与内存一致（name）");
+        assert_eq!(mem.api_key_env, disk.api_key_env, "磁盘与内存一致（env）");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// [grpc] 段 serde 行为：缺段 = None（禁用）、全键缺省值、显式值透传
+    #[test]
+    fn test_grpc_section_serde() {
+        use crate::config::GrpcConfig;
+
+        // 缺段 → None（不监听 gRPC 端口，行为与历史逐位一致）
+        let config: Config = toml::from_str(
+            r#"
+            [server]
+            port = 8080
+            [database]
+            path = ":memory:"
+            [[vendors]]
+            id = "v"
+            name = "V"
+            type_ = "openai"
+            api_key_env = "K"
+            rate_limit = { type = "token", max_tokens = 1 }
+            concurrency = { requests_per_second = 1 }
+            "#,
+        )
+        .unwrap();
+        assert!(config.grpc.is_none(), "缺 [grpc] 段必须为 None");
+
+        // 空段（enabled: false 隐含）→ 全默认值
+        let config: Config = toml::from_str(
+            r#"
+            [server]
+            port = 8080
+            [database]
+            path = ":memory:"
+            [[vendors]]
+            id = "v"
+            name = "V"
+            type_ = "openai"
+            api_key_env = "K"
+            rate_limit = { type = "token", max_tokens = 1 }
+            concurrency = { requests_per_second = 1 }
+            [grpc]
+            "#,
+        )
+        .unwrap();
+        let grpc = config.grpc.expect("空 [grpc] 段应为 Some");
+        assert!(!grpc.enabled);
+        assert_eq!(grpc.host, "0.0.0.0");
+        assert_eq!(grpc.port, 50051);
+        assert_eq!(grpc.timeout_seconds, 30);
+        assert_eq!(grpc.max_connections, 1000);
+        assert_eq!(grpc.http2_keepalive_interval_secs, None);
+        assert_eq!(grpc.http2_keepalive_timeout_secs, None);
+
+        // 显式值透传
+        let grpc = GrpcConfig {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            port: 60000,
+            timeout_seconds: 0,
+            max_connections: 0,
+            http2_keepalive_interval_secs: Some(15),
+            http2_keepalive_timeout_secs: Some(5),
+        };
+        let text = toml::to_string(&grpc).unwrap();
+        let parsed: GrpcConfig = toml::from_str(&text).unwrap();
+        assert_eq!(parsed, grpc, "GrpcConfig 序列化往返必须保真");
     }
 }

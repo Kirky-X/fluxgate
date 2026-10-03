@@ -404,6 +404,7 @@ mod tests {
                 ..Default::default()
             },
             admission: Default::default(),
+            grpc: None,
             resilience: Default::default(),
         });
         let cache = ResponseCache::new(
@@ -472,6 +473,7 @@ mod tests {
                 ..Default::default()
             },
             admission: Default::default(),
+            grpc: None,
             resilience: Default::default(),
         });
         let cache = ResponseCache::new(
@@ -536,6 +538,7 @@ mod ttl_load_linking_tests {
             routing: Default::default(),
             cache,
             admission: Default::default(),
+            grpc: None,
             resilience: Default::default(),
         }
     }

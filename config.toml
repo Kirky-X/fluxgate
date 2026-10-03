@@ -323,6 +323,28 @@ alpha_debt = 4.0
 # 请求头 X-No-Cache: 1 强制回源；命中响应带 X-Cache: HIT，未命中 MISS。
 # 键 = resp:{api_key_sha256}:{vendor}:{model}:{sha256(canonical_body)}，
 # 调用方 API key 哈希入键做租户隔离；存储落地 oxcache 内存后端。
+# gRPC Server（feature = "grpc"）— sdforge grpc 门面（sdforge.v1.SdForgeService）
+# 建站期消费：GrpcServerConfig 固化于服务器构造，更新后需重启进程生效。
+# 本段缺席或 enabled = false 时 gRPC 服务器完全禁用（不监听 50051，
+# 行为与历史逐位一致）。feature 开启方式：cargo build --features grpc。
+# - port: gRPC 监听端口（50051 为 gRPC 惯例端口）。
+# - timeout_seconds: per-call 超时（秒），0 = 不限；默认 30。
+# - max_connections: 每连接并发上限；0 = tonic 默认；默认 1000。
+# - http2_keepalive_interval_secs / http2_keepalive_timeout_secs: HTTP/2
+#   keepalive 探测间隔/超时（秒），缺席 = tonic 默认。
+# 认证：门面调用（Call/CallStream/GetInfo）经 auth_verifier 校验，
+# 复用 [auth] 段 SHA256 摘要 + 常量时间比较（语义对齐 HTTP 中间件；
+# 与 HTTP /health 白名单的差异：gRPC 侧无 method 白名单，一律要求 key）。
+# TLS 不经 sdforge 终结（明文监听，由外部反代承担），与 [server] 同策略。
+[grpc]
+enabled = false
+host = "0.0.0.0"
+port = 50051
+timeout_seconds = 30
+max_connections = 1000
+http2_keepalive_interval_secs = 30
+http2_keepalive_timeout_secs = 10
+
 [cache]
 enabled = false
 ttl_secs = 300

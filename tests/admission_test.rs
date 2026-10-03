@@ -138,6 +138,7 @@ fn config_with(admission: AdmissionSection) -> Config {
         cache: nexusflow::config::CacheSection::default(),
         resilience: nexusflow::config::ResilienceSection::default(),
         admission,
+        grpc: None,
     }
 }
 
@@ -443,6 +444,7 @@ mod full_chain {
                 enabled,
                 ..Default::default()
             },
+            grpc: None,
         }
     }
 

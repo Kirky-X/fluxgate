@@ -272,6 +272,7 @@ mod build_fallback_chain {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         };
         let cm = Arc::new(ConfigManager::new(config));
@@ -421,6 +422,7 @@ mod cover_all_paths {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: ResilienceSection {
                 cover_all_paths,
                 ..Default::default()

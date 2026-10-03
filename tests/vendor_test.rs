@@ -281,6 +281,7 @@ mod manager {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -1098,6 +1099,7 @@ mod manager {
                 routing: nexusflow::config::RoutingSection::default(),
                 cache: nexusflow::config::CacheSection::default(),
                 admission: Default::default(),
+                grpc: None,
                 resilience: nexusflow::config::ResilienceSection::default(),
             }
         }
@@ -2158,6 +2160,7 @@ mod token_weighted_tickets {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         };
         let cm = Arc::new(nexusflow::config::ConfigManager::new(config));
@@ -2225,6 +2228,7 @@ async fn sliding_empty_window_not_ending_soon_in_window_info() {
         routing: nexusflow::config::RoutingSection::default(),
         cache: nexusflow::config::CacheSection::default(),
         admission: Default::default(),
+        grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
     };
     let cm = Arc::new(ConfigManager::new(config));

@@ -75,6 +75,7 @@ mod hot_reload {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -354,6 +355,7 @@ mod tests {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }

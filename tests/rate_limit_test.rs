@@ -117,6 +117,7 @@ fn make_config(rules: Vec<RateLimitRule>) -> Config {
         routing: nexusflow::config::RoutingSection::default(),
         cache: nexusflow::config::CacheSection::default(),
         admission: Default::default(),
+        grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
         rate_limit: RateLimitSection { rules },
     }

@@ -88,6 +88,7 @@ fn test_config() -> Config {
         routing: nexusflow::config::RoutingSection::default(),
         cache: nexusflow::config::CacheSection::default(),
         admission: Default::default(),
+        grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
     }
 }

@@ -192,4 +192,30 @@ fn config_toml_example_parses() {
         content.contains("token_weighted"),
         "config.toml 示例缺 token_weighted 注释"
     );
+    // [grpc] 段：示例显式禁用（enabled=false 与历史行为逐位一致），键齐全
+    //（serde default 会让缺席键静默过解析，示例缺席必须显性断言）
+    let grpc = config
+        .grpc
+        .as_ref()
+        .expect("config.toml 示例必须带 [grpc] 段");
+    assert!(!grpc.enabled, "示例 [grpc] 默认禁用（显式 opt-in）");
+    assert_eq!(grpc.host, "0.0.0.0");
+    assert_eq!(grpc.port, 50051);
+    assert_eq!(grpc.timeout_seconds, 30);
+    assert_eq!(grpc.max_connections, 1000);
+    assert_eq!(grpc.http2_keepalive_interval_secs, Some(30));
+    assert_eq!(grpc.http2_keepalive_timeout_secs, Some(10));
+    assert!(
+        content.contains("http2_keepalive_interval_secs"),
+        "config.toml 示例缺 http2_keepalive_interval_secs 键"
+    );
+    // 最小示例 config.example.toml 同样必须带 [grpc] 段
+    let example = std::fs::read_to_string("config.example.toml").unwrap();
+    let example_config: nexusflow::config::Config = toml::from_str(&example).unwrap();
+    let example_grpc = example_config
+        .grpc
+        .as_ref()
+        .expect("config.example.toml 必须带 [grpc] 段");
+    assert!(!example_grpc.enabled);
+    assert_eq!(example_grpc.port, 50051);
 }

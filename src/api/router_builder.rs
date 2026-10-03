@@ -410,6 +410,7 @@ mod tests {
             cache: Default::default(),
             resilience: Default::default(),
             admission: Default::default(),
+            grpc: None,
         }
     }
 

@@ -109,6 +109,7 @@ mod endpoints {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -465,6 +466,7 @@ mod integration {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -969,6 +971,7 @@ mod admin {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -1383,6 +1386,7 @@ mod streaming_error_propagation {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -1809,6 +1813,7 @@ mod logging_pipeline {
                 ..Default::default()
             },
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -2233,6 +2238,7 @@ mod embeddings_governance {
                 ..Default::default()
             },
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));
@@ -2529,6 +2535,7 @@ mod response_cache_tests {
                 ..Default::default()
             },
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -2932,6 +2939,7 @@ mod linucb_reward_chain {
             },
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }

@@ -105,6 +105,7 @@ mod tests {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -235,6 +236,7 @@ mod tests {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         };
 
@@ -266,6 +268,7 @@ mod tests {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         };
 
@@ -389,6 +392,7 @@ mod scheduling_weight {
             routing: RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -1224,6 +1228,7 @@ mod session_affinity {
             routing: RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -1506,6 +1511,7 @@ mod failure_rate_gate {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: ResilienceSection {
                 failure_rate_gate: gate,
                 ..ResilienceSection::default()
@@ -1665,6 +1671,7 @@ mod cooldown_improvements {
             routing,
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -1987,6 +1994,7 @@ mod soft_affinity {
             },
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -2222,6 +2230,7 @@ mod sla_virtual_queue {
             routing,
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -2583,6 +2592,7 @@ mod linucb_selection {
             routing,
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
         }
     }
@@ -2900,6 +2910,7 @@ mod lps_lookahead {
             cache: nexusflow::config::CacheSection::default(),
             resilience: nexusflow::config::ResilienceSection::default(),
             admission: Default::default(),
+            grpc: None,
         }
     }
 

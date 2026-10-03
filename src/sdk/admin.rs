@@ -48,7 +48,15 @@ impl NexusFlowClient {
                 message: format!("invalid URL: {e}"),
             })?;
 
-        let resp = self.http.get(url).bearer_auth(&self.api_key).send().await?;
+        let resp = self
+            .http
+            .get(url)
+            .bearer_auth(&self.api_key)
+            // client 级只有 read_timeout 停滞看护；admin 无请求级 config，
+            // 总超时逐请求落到客户端默认，慢滴漏响应不能无上界
+            .timeout(self.effective_timeout)
+            .send()
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -72,7 +80,15 @@ impl NexusFlowClient {
                 message: format!("invalid URL: {e}"),
             })?;
 
-        let resp = self.http.get(url).bearer_auth(&self.api_key).send().await?;
+        let resp = self
+            .http
+            .get(url)
+            .bearer_auth(&self.api_key)
+            // client 级只有 read_timeout 停滞看护；admin 无请求级 config，
+            // 总超时逐请求落到客户端默认，慢滴漏响应不能无上界
+            .timeout(self.effective_timeout)
+            .send()
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -96,7 +112,15 @@ impl NexusFlowClient {
                 message: format!("invalid URL: {e}"),
             })?;
 
-        let resp = self.http.get(url).bearer_auth(&self.api_key).send().await?;
+        let resp = self
+            .http
+            .get(url)
+            .bearer_auth(&self.api_key)
+            // client 级只有 read_timeout 停滞看护；admin 无请求级 config，
+            // 总超时逐请求落到客户端默认，慢滴漏响应不能无上界
+            .timeout(self.effective_timeout)
+            .send()
+            .await?;
 
         let status = resp.status();
         if !status.is_success() {

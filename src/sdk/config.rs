@@ -33,6 +33,9 @@ pub struct RequestConfig {
     pub top_k: Option<u32>,
     pub max_tokens: Option<u32>,
     pub stream: bool,
+    /// 非流式请求（chat / embed）的总超时逐请求覆盖：Some(d) 取代客户端
+    /// 默认（`NexusFlowClientBuilder::timeout`，缺省 30s）；对
+    /// `chat_stream` 不生效（流式不设总超时，由 read_timeout 看护停滞）。
     pub timeout: Option<Duration>,
     pub vendor_hint: Option<String>,
     pub model_hint: Option<String>,

@@ -1,6 +1,9 @@
+use crate::sdk::client::NexusFlowClientBuilder;
 use crate::sdk::stream::ChatStream;
+use crate::sdk::ChatRequest;
 use bytes::Bytes;
 use futures::StreamExt;
+use std::time::Duration;
 
 #[tokio::test]
 async fn stream_decodes_chunks_and_filters_done() {
@@ -60,4 +63,76 @@ async fn stream_empty_input_yields_nothing() {
     let byte_stream = futures::stream::iter(Vec::<Result<bytes::Bytes, reqwest::Error>>::new());
     let mut chat_stream = ChatStream::from_bytes_stream(byte_stream);
     assert!(chat_stream.next().await.is_none());
+}
+
+/// 裸 TCP SSE 服务器（mockito 1.7.2 无分块延迟 API）：两帧 SSE，
+/// 帧间隔 `gap`。返回 base_url。
+async fn spawn_chunked_sse_server(gap: Duration) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let mut got = Vec::new();
+        loop {
+            let n = sock.read(&mut buf).await.unwrap();
+            got.extend_from_slice(&buf[..n]);
+            if got.windows(4).any(|w| w == b"\r\n\r\n") || n == 0 {
+                break;
+            }
+        }
+        sock.write_all(
+            b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let frames: [&[u8]; 2] = [
+            b"data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+            b"data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n",
+        ];
+        for (i, frame) in frames.iter().enumerate() {
+            if i == 1 {
+                tokio::time::sleep(gap).await;
+            }
+            sock.write_all(format!("{:x}\r\n", frame.len()).as_bytes())
+                .await
+                .unwrap();
+            sock.write_all(frame).await.unwrap();
+            sock.write_all(b"\r\n").await.unwrap();
+        }
+        sock.write_all(b"0\r\n\r\n").await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+/// 流式主路径不得被客户端总超时切断：帧间隔（300ms）远大于 builder
+/// 总超时（100ms），SSE 长流必须继续收帧（总超时若作用于流式 body
+/// 读取，LLM 长回复会在默认 30s 处被截断——reqwest 总超时按整个
+/// body 计且不按 chunk 重置）。stall 由 read_timeout 看护。
+#[tokio::test]
+async fn stream_survives_beyond_total_timeout() {
+    let base_url = spawn_chunked_sse_server(Duration::from_millis(300)).await;
+    let client = NexusFlowClientBuilder::new()
+        .base_url(&base_url)
+        .api_key("test-key")
+        .timeout(Duration::from_millis(100))
+        .build()
+        .unwrap();
+
+    let mut stream = client
+        .chat_stream(&ChatRequest::new("gpt-4", "hi"))
+        .await
+        .expect("streaming must not be bound by the total request timeout");
+
+    let mut collected = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        collected.push(chunk.expect("chunk should decode"));
+    }
+    let text: String = collected
+        .iter()
+        .filter_map(|c| c.delta.as_ref())
+        .filter_map(|d| d.content.clone())
+        .collect();
+    assert_eq!(text, "ab", "两帧都必须在总超时之外送达");
 }

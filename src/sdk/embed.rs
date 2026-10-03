@@ -68,6 +68,8 @@ impl NexusFlowClient {
             .post(url)
             .bearer_auth(&self.api_key)
             .json(&payload)
+            // 非流式总超时逐请求设置：请求级 config.timeout 覆盖客户端默认
+            .timeout(merged.timeout.unwrap_or(self.effective_timeout))
             .send()
             .await?;
 

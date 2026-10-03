@@ -9,13 +9,24 @@ use crate::sdk::config::RequestConfig;
 use crate::sdk::error::NexusFlowSdkError;
 use crate::sdk::stream::ChatStream;
 
-/// 未显式设置 `timeout` 时的默认请求总超时。reqwest 默认无总超时，
-/// 挂起的网关会让调用方任务无限悬挂。
+/// 非流式请求（chat / embed）的默认总超时。reqwest 默认无总超时，
+/// 挂起的网关会让调用方任务无限悬挂。不作用于 [`NexusFlowClient::chat_stream`]：
+/// 流式不设总超时（reqwest 总超时按整个 body 计且不按 chunk 重置，
+/// SSE 长流会被中途切断），由 [`DEFAULT_READ_TIMEOUT`] 看护。
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 流读取超时默认值：作用于所有请求的每次读取，成功读取后重置——
+/// 只拦截「连接停滞」（连续 30s 无字节），不限制长流的总时长。
+pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 计算生效超时：显式值优先，否则落到 [`DEFAULT_REQUEST_TIMEOUT`]。
 fn effective_timeout(explicit: Option<Duration>) -> Duration {
     explicit.unwrap_or(DEFAULT_REQUEST_TIMEOUT)
+}
+
+/// 计算生效读超时：显式值优先，否则落到 [`DEFAULT_READ_TIMEOUT`]。
+fn effective_read_timeout(explicit: Option<Duration>) -> Duration {
+    explicit.unwrap_or(DEFAULT_READ_TIMEOUT)
 }
 
 /// NexusFlow 网关客户端。
@@ -24,8 +35,10 @@ pub struct NexusFlowClient {
     pub(crate) base_url: Url,
     pub(crate) api_key: String,
     pub(crate) default_config: RequestConfig,
-    /// 生效的请求总超时（审计/测试用；实际执行由 `http` 承担）
+    /// 非流式请求的默认总超时（chat_stream 不适用；实际执行逐请求设置）
     pub(crate) effective_timeout: Duration,
+    /// 流读取超时（reqwest client 级 read_timeout）
+    pub(crate) read_timeout: Duration,
 }
 
 // api_key 是 Bearer 凭证：手写 Debug 脱敏，不用 derive（会打印明文）
@@ -36,6 +49,7 @@ impl std::fmt::Debug for NexusFlowClient {
             .field("base_url", &self.base_url)
             .field("api_key", &"[REDACTED]")
             .field("effective_timeout", &self.effective_timeout)
+            .field("read_timeout", &self.read_timeout)
             .field("default_config", &self.default_config)
             .finish()
     }
@@ -72,6 +86,15 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(default_client.effective_timeout, DEFAULT_REQUEST_TIMEOUT);
+        assert_eq!(default_client.read_timeout, DEFAULT_READ_TIMEOUT);
+
+        let tuned = NexusFlowClientBuilder::new()
+            .base_url("http://127.0.0.1:8080")
+            .api_key("k")
+            .read_timeout(Duration::from_millis(400))
+            .build()
+            .unwrap();
+        assert_eq!(tuned.read_timeout, Duration::from_millis(400));
 
         let explicit = Duration::from_millis(250);
         let tuned_client = NexusFlowClientBuilder::new()
@@ -136,6 +159,7 @@ pub struct NexusFlowClientBuilder {
     api_key: Option<String>,
     default_config: RequestConfig,
     timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
 }
 
 impl NexusFlowClientBuilder {
@@ -158,8 +182,15 @@ impl NexusFlowClientBuilder {
         self
     }
 
+    /// 非流式请求（chat / embed）的默认总超时；不作用于流式请求。
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// 流读取超时（按读重置，拦截连接停滞）。
+    pub fn read_timeout(mut self, read_timeout: Duration) -> Self {
+        self.read_timeout = Some(read_timeout);
         self
     }
 
@@ -175,9 +206,13 @@ impl NexusFlowClientBuilder {
         })?;
 
         let mut builder = reqwest::Client::builder();
-        let effective = effective_timeout(self.timeout);
-        builder = builder.timeout(effective);
+        // client 级只设 read_timeout（按读重置，拦截连接停滞）：
+        // 总超时若设在 client 级会按整个 body 计且不按 chunk 重置，
+        // 把 SSE 长流在默认 30s 处切断。非流式请求的总超时逐请求设置。
+        let read = effective_read_timeout(self.read_timeout);
+        builder = builder.read_timeout(read);
         let http = builder.build()?;
+        let effective = effective_timeout(self.timeout);
 
         Ok(NexusFlowClient {
             http,
@@ -185,6 +220,7 @@ impl NexusFlowClientBuilder {
             api_key,
             default_config: self.default_config,
             effective_timeout: effective,
+            read_timeout: read,
         })
     }
 }
@@ -221,7 +257,9 @@ impl NexusFlowClient {
             .http
             .post(url)
             .bearer_auth(&self.api_key)
-            .json(&payload);
+            .json(&payload)
+            // 非流式总超时逐请求设置：请求级 config.timeout 覆盖客户端默认
+            .timeout(merged.timeout.unwrap_or(self.effective_timeout));
 
         if let Some(v) = &merged.vendor_hint {
             request = request.header("X-Vendor", v);
@@ -298,6 +336,9 @@ impl NexusFlowClient {
             .post(url)
             .bearer_auth(&self.api_key)
             .json(&payload);
+        // 流式不设总超时：reqwest 总超时按整个 body 计且不按 chunk 重置，
+        // SSE 长流会被中途切断；连接停滞由 client 级 read_timeout 看护
+        // （RequestConfig.timeout 对流式不生效）。
 
         if let Some(v) = &merged.vendor_hint {
             request = request.header("X-Vendor", v);

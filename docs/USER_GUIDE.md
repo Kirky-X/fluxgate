@@ -511,7 +511,7 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 | 类型导出 | `ChatMessage` / `ChatRequest` / `ChatResponse` / `EmbedRequest` / `EmbedResponse` / `ChatStream` 等 |
 | 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |
 
-> `NexusFlowSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用；请求超时经 `NexusFlowClientBuilder::timeout` 显式设置，缺省 30s（`DEFAULT_REQUEST_TIMEOUT`）。
+> `NexusFlowSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。超时模型：非流式请求（chat / embed）总超时缺省 30s（`NexusFlowClientBuilder::timeout`），可被 `RequestConfig.timeout` 逐请求覆盖；`chat_stream` 流式**不设总超时**（SSE 长流不被切断），连接停滞由 read_timeout（缺省 30s，按读重置）看护。
 
 ---
 

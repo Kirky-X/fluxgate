@@ -44,6 +44,7 @@ fn test_config(grpc_port: u16) -> Config {
             name: "OpenAI Main".into(),
             type_: "openai".into(),
             api_key_env: "OPENAI_API_KEY".into(),
+            api_key_envs: Vec::new(),
             api_base: String::new(),
             enabled: true,
             priority: 1,

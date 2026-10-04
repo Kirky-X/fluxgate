@@ -7,7 +7,8 @@ config-load-failed = 加载配置文件失败: { $error }
 config-parse-failed = 解析配置文件失败: { $error }
 config-duplicate-vendor-id = 厂商 ID 重复: { $vendor }
 config-duplicate-model-id = 厂商 { $vendor } 内的模型 ID 重复: { $model }
-config-api-key-env-missing = 厂商 { $vendor } 的 API Key 环境变量 { $env } 未设置
+config-api-key-env-missing = 厂商 { $vendor } 的 API Key 环境变量未设置（配置值长度 { $length }）——请核对是否误将 key 原文当作环境变量名
+config-api-key-pool-env-missing = 厂商 { $vendor } 的 API Key 池环境变量 #{ $index }（值长度 { $length }）未设置——请核对是否误将 key 原文当作环境变量名
 config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) 低于下限 100ms：窗口过短会使熔断 Open 态立即转入半开，故障期退化为探针风暴
 
 # ---- config/manager.rs ----

@@ -17,6 +17,7 @@ use crate::utils::metrics::GlobalMetrics;
 use crate::utils::retry::{retry_delay_for, ErrorCategory, RetryDelayPolicy};
 #[cfg(feature = "cost-tracking")]
 use crate::utils::CostTracker;
+use crate::vendor::key_pool::{KeyPool, KeyPoolInfo, RequestCredential};
 #[cfg(feature = "resilience")]
 use crate::vendor::resilience::error_map::{from_circuit_call, to_limiteron, GateErrorClassifier};
 use bytes::Bytes;
@@ -121,8 +122,27 @@ struct VendorInstance {
     /// recId=18：token 加权票据策略 — None = 未开启（单票据，现状）
     ticket: Option<TicketPolicy>,
     advanced_limiter: AdvancedRateLimiter,
+    /// T005：key 池（解析快照 + 轮换游标）。池空回退 legacy 单 key 行为。
+    key_pool: KeyPool,
+    /// vendor 级熔断器 — legacy 回退（池空）请求的执行熔断器；池命中
+    /// 请求改用 per-key 指纹熔断器（见 `circuit_breaker_for`）。
     #[cfg(feature = "resilience")]
     circuit_breaker: Arc<CircuitBreaker>,
+    /// T005：per-key 指纹熔断器注册表 — 熔断状态键维度对齐 provider_chain.rs:199-214 的 breaker_state_key：**vendor_id + model + endpoint + key 指纹**（vendor_id 由实例域隐含，map 挂在实例上；键三元 = (model, endpoint, 指纹)）——同 key 同 model 跨请求共享计数，不同 key / 不同 model 互相隔离。legacy 回退不经此表。
+    ///
+    /// 审查 F1 上界声明：活跃指纹 ≤ 8×名单变更次数（`MAX_KEY_POOL` ×
+    /// 热更新重解析次数，旧指纹条目随池收缩自然失活）；(model, endpoint)
+    /// 组合维度中 endpoint 来自配置面（每实例 1 个），model 为请求入参
+    /// 维度——条目上界 = 活跃指纹数 × 活跃 model 数（由路由 model 白名单
+    /// 与客户端实际用量约束），字节级有界。
+    #[cfg(feature = "resilience")]
+    per_key_circuit_breakers:
+        std::sync::Mutex<std::collections::HashMap<(String, String, String), Arc<CircuitBreaker>>>,
+    /// T005：per-key 熔断器构造参数（实例创建时取自 [resilience] 段快照，
+    /// 与 `circuit_breaker` 同源；vendor 实例构造期定死，restart-required，
+    /// 与既有 CB 窗口语义一致）。
+    #[cfg(feature = "resilience")]
+    circuit_open_timeout: Duration,
     #[cfg(feature = "cost-tracking")]
     cost_tracker: Arc<CostTracker>,
 }
@@ -197,9 +217,88 @@ impl VendorInstance {
                 // 与历史硬编码逐位一致。
                 gate_circuit_config(circuit_open_timeout),
             )),
+            // T005：key 池构造期解析一次（缺 env 逐名显性 warn）
+            key_pool: KeyPool::new(config, &config.id),
+            #[cfg(feature = "resilience")]
+            per_key_circuit_breakers: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(feature = "resilience")]
+            circuit_open_timeout,
             #[cfg(feature = "cost-tracking")]
             cost_tracker,
         }
+    }
+
+    /// T005：请求级凭证选择（池命中 → 当前 key + 指纹；池空 → legacy）。
+    fn select_request_key(&self, config: &VendorConfig) -> RequestCredential {
+        self.key_pool.select(config, &self.vendor_id)
+    }
+
+    /// T005：401/403 认证类失败推进轮换游标（生效于下次尝试）。
+    fn advance_key_cursor(&self, status: u16) {
+        self.key_pool.advance(&self.vendor_id, status);
+    }
+
+    /// T005：本次凭证应使用的熔断器 — 池命中按（model, endpoint, key 指纹）
+    /// 取（get_or_create，同 key 同 model 跨请求共享计数、不同 key /
+    /// 不同 model 独立，审查 M2 维度补全），legacy 回退用 vendor 级。
+    #[cfg(feature = "resilience")]
+    fn circuit_breaker_for(
+        &self,
+        credential: &RequestCredential,
+        model: &str,
+        endpoint: &str,
+    ) -> Arc<CircuitBreaker> {
+        self.circuit_breaker_for_fp(credential.fingerprint(), model, endpoint)
+    }
+
+    /// [`Self::circuit_breaker_for`] 的指纹直入版（`None` = legacy 回退）。
+    #[cfg(feature = "resilience")]
+    fn circuit_breaker_for_fp(
+        &self,
+        fingerprint: Option<&str>,
+        model: &str,
+        endpoint: &str,
+    ) -> Arc<CircuitBreaker> {
+        match fingerprint {
+            Some(fp) => {
+                let mut guard = self.per_key_circuit_breakers.lock().unwrap();
+                guard
+                    .entry((model.to_string(), endpoint.to_string(), fp.to_string()))
+                    .or_insert_with(|| {
+                        Arc::new(CircuitBreaker::new(gate_circuit_config(
+                            self.circuit_open_timeout,
+                        )))
+                    })
+                    .clone()
+            }
+            None => self.circuit_breaker.clone(),
+        }
+    }
+
+    /// T005：只读指定指纹的**全部 model 通道**熔断器（不创建）——路由
+    /// 观测热路径与观测 API 的聚合输入；`None`（legacy 回退）返回
+    /// vendor 级单元素。指定指纹尚无任何请求（表空）返回空 Vec。
+    #[cfg(feature = "resilience")]
+    fn peek_circuit_breakers_for_fingerprint(
+        &self,
+        fingerprint: Option<&str>,
+    ) -> Vec<Arc<CircuitBreaker>> {
+        match fingerprint {
+            Some(fp) => {
+                let guard = self.per_key_circuit_breakers.lock().unwrap();
+                guard
+                    .iter()
+                    .filter(|((_, _, entry_fp), _)| entry_fp == fp)
+                    .map(|(_, cb)| cb.clone())
+                    .collect()
+            }
+            None => vec![self.circuit_breaker.clone()],
+        }
+    }
+
+    /// T005：admin 观测（仅 env 名 / 数量 / 下标 / 指纹，绝无 key 原文）。
+    fn key_pool_info(&self) -> KeyPoolInfo {
+        self.key_pool.info()
     }
 }
 
@@ -211,8 +310,6 @@ pub struct VendorManager {
     openai_converter: Arc<OpenAIConverter>,
     anthropic_converter: Arc<AnthropicConverter>,
     metrics: Arc<GlobalMetrics>,
-    #[cfg(feature = "resilience")]
-    circuit_breakers: Arc<RwLock<std::collections::HashMap<String, Arc<CircuitBreaker>>>>,
     #[cfg(feature = "cost-tracking")]
     cost_tracker: Arc<CostTracker>,
 }
@@ -240,8 +337,6 @@ impl VendorManager {
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             metrics: Arc::new(GlobalMetrics::new()),
-            #[cfg(feature = "resilience")]
-            circuit_breakers: Arc::new(RwLock::new(std::collections::HashMap::new())),
             #[cfg(feature = "cost-tracking")]
             cost_tracker: Arc::new(CostTracker::new()),
         }
@@ -287,21 +382,95 @@ impl VendorManager {
     /// 路由过滤不调用本方法（async 不扩散到 router）——熔断状态由
     /// worker 完成分支同步回写 VendorState（见 process_vendor_queue），
     /// router 的 `== Available` 过滤借同步状态自动生效。
+    ///
+    /// T005（审查 M2）：读**当前 key 指纹 × 全部 model 通道**的聚合状态
+    /// （键维度 vendor_id+model+endpoint+指纹）——全部通道 Open 才报 Open
+    /// （模型无关 peek 的保守聚合），任一 HalfOpen 报 HalfOpen；指纹尚无
+    /// 请求（表空）回落 vendor 级熔断器（Closed 等价，与历史一致）。
     #[cfg(feature = "resilience")]
     pub async fn get_circuit_state(&self, vendor_id: &str) -> Option<CircuitState> {
-        let cb = {
-            let guard = self.circuit_breakers.read().unwrap();
-            guard.get(vendor_id).cloned()
-        }?;
-        Some(cb.get_state().await)
+        let instance = self.instance_for(vendor_id)?;
+        let fingerprint = instance.key_pool.peek_current_fingerprint();
+        let breakers = instance.peek_circuit_breakers_for_fingerprint(fingerprint.as_deref());
+        if breakers.is_empty() {
+            return Some(instance.circuit_breaker.get_state().await);
+        }
+        Some(Self::aggregate_circuit_state(&breakers).await)
+    }
+
+    /// T005：按 key 指纹直读聚合熔断状态——per-key 隔离的观测入口
+    /// （坏 key 熔断不污染其他 key 的可见性证明面）。指定指纹尚无任何
+    /// model 通道请求时返回 `None`（只读 peek，不创建）。
+    #[cfg(feature = "resilience")]
+    pub async fn get_circuit_state_for_fingerprint(
+        &self,
+        vendor_id: &str,
+        fingerprint: &str,
+    ) -> Option<CircuitState> {
+        let instance = self.instance_for(vendor_id)?;
+        let breakers = instance.peek_circuit_breakers_for_fingerprint(Some(fingerprint));
+        if breakers.is_empty() {
+            return None;
+        }
+        Some(Self::aggregate_circuit_state(&breakers).await)
+    }
+
+    /// 多通道（同指纹不同 model）聚合判定：全 Open → Open；任一
+    /// HalfOpen → HalfOpen；其余 → Closed。空集由调用方守卫（回落语义
+    /// 各不相同）。
+    #[cfg(feature = "resilience")]
+    async fn aggregate_circuit_state(breakers: &[Arc<CircuitBreaker>]) -> CircuitState {
+        let mut all_open = true;
+        let mut any_half_open = false;
+        for cb in breakers {
+            match cb.get_state().await {
+                CircuitState::Open => {}
+                CircuitState::HalfOpen => {
+                    any_half_open = true;
+                    all_open = false;
+                }
+                CircuitState::Closed => all_open = false,
+            }
+        }
+        if all_open {
+            CircuitState::Open
+        } else if any_half_open {
+            CircuitState::HalfOpen
+        } else {
+            CircuitState::Closed
+        }
+    }
+
+    /// 实例只读句柄（观测路径共用）。
+    #[cfg(feature = "resilience")]
+    fn instance_for(&self, vendor_id: &str) -> Option<Arc<VendorInstance>> {
+        let guard = self.instances.read().unwrap();
+        guard.get(vendor_id).cloned()
+    }
+
+    /// T005：admin 观测——vendor 的 key 池快照（仅 env 名 / 数量 / 下标 /
+    /// 指纹，绝不暴露 key 原文）。实例未初始化返回 `None`。
+    pub fn key_pool_info(&self, vendor_id: &str) -> Option<KeyPoolInfo> {
+        let guard = self.instances.read().unwrap();
+        guard.get(vendor_id).map(|i| i.key_pool_info())
     }
 
     /// recId=2：vendor 的 CircuitBreaker 句柄（instances 未初始化时 None）。
     /// 仅供 cover_all_paths 覆盖路径取用；路由过滤不读 CB（见 get_status doc）。
+    /// T005（审查 M2）：按本次请求凭证 + model + endpoint 取——池命中用
+    /// per-key 指纹熔断器（键含 model/endpoint 维度）。
     #[cfg(feature = "resilience")]
-    fn circuit_breaker_for(&self, vendor_id: &str) -> Option<Arc<CircuitBreaker>> {
+    fn circuit_breaker_for(
+        &self,
+        vendor_id: &str,
+        credential: &RequestCredential,
+        model: &str,
+        endpoint: &str,
+    ) -> Option<Arc<CircuitBreaker>> {
         let guard = self.instances.read().unwrap();
-        guard.get(vendor_id).map(|i| i.circuit_breaker.clone())
+        guard
+            .get(vendor_id)
+            .map(|i| i.circuit_breaker_for(credential, model, endpoint))
     }
 
     pub async fn initialize(&self) -> Result<(), GateError> {
@@ -338,16 +507,6 @@ impl VendorManager {
             self.cost_tracker.clone(),
         ));
         guard.insert(vendor.id.clone(), instance.clone());
-
-        // 同步注册到 manager 级 CB map（cfg-gated）
-        #[cfg(feature = "resilience")]
-        {
-            let cb = instance.circuit_breaker.clone();
-            self.circuit_breakers
-                .write()
-                .unwrap()
-                .insert(vendor.id.clone(), cb);
-        }
 
         // Spawn worker
         let instance_clone = instance.clone();
@@ -449,6 +608,19 @@ impl VendorManager {
                 // 更新后下一次重试循环即用新参数
                 let retry_cfg = config_manager.read().retry.clone();
 
+                // T005：请求级凭证选择（池命中 → 当前 key；池空 → legacy
+                // 单 key 行为）+ 按（model, endpoint, key 指纹）选熔断器
+                //（审查 M2 维度补全）。key 在请求启动时固定——本请求所有
+                // 重试尝试复用同一 key（轮换生效于下次请求，见
+                // execute_http_with_retry_inner 的 401/403 分支）。
+                let credential = instance.select_request_key(&config);
+                #[cfg(feature = "resilience")]
+                let circuit_breaker = instance.circuit_breaker_for(
+                    &credential,
+                    Self::cb_model(&instance.vendor_id, &config, &pending.request.model),
+                    Self::cb_endpoint(&config),
+                );
+
                 let result = Self::perform_http_request(
                     &client,
                     &config,
@@ -457,8 +629,10 @@ impl VendorManager {
                     &anthropic,
                     &retry_cfg,
                     #[cfg(feature = "resilience")]
-                    &instance.circuit_breaker,
+                    &circuit_breaker,
                     &metrics,
+                    &instance,
+                    &credential,
                 )
                 .await;
 
@@ -561,8 +735,10 @@ impl VendorManager {
         }
     }
 
-    /// （`--all-features` 下含 cfg(resilience) 门控的 circuit_breaker 共 8 参，
-    /// 超 clippy 默认阈值 7——转换器双向入参为协议转换所需，不打包重构。）
+    /// （`--all-features` 下含 cfg(resilience) 门控的 circuit_breaker 共
+    /// 10 参——T005 追加 instance/credential 两出参（key 轮换与按 key 指纹
+    /// 熔断所需），超 clippy 默认阈值 7——转换器双向入参为协议转换所需，
+    /// 不打包重构。）
     #[allow(clippy::too_many_arguments)]
     async fn perform_http_request(
         client: &reqwest::Client,
@@ -573,6 +749,8 @@ impl VendorManager {
         retry_cfg: &RetrySection,
         #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker>,
         metrics: &GlobalMetrics,
+        instance: &VendorInstance,
+        credential: &RequestCredential,
     ) -> Result<UnifiedResponse, GateError> {
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
             "openai" => openai,
@@ -597,6 +775,8 @@ impl VendorManager {
             #[cfg(feature = "resilience")]
             circuit_breaker,
             metrics,
+            instance,
+            credential,
         )
         .await
     }
@@ -645,7 +825,8 @@ impl VendorManager {
         Self::build_vendor_url_at(config, path)
     }
 
-    /// 获取 API key 并构建带认证 header 的 RequestBuilder
+    /// 获取 API key 并构建带认证 header 的 RequestBuilder（legacy 单 key
+    /// 行为：读 `api_key_env` env，缺失报 Config 错误——与历史逐位一致）。
     fn build_authed_request(
         client: &reqwest::Client,
         config: &VendorConfig,
@@ -658,7 +839,17 @@ impl VendorManager {
                 &[("env", config.api_key_env.clone())],
             ),
         })?;
+        Self::build_authed_request_with_key(client, config, url, include_content_type, &api_key)
+    }
 
+    /// T005：以指定 key 构建带认证 header 的 RequestBuilder（池命中路径）。
+    fn build_authed_request_with_key(
+        client: &reqwest::Client,
+        config: &VendorConfig,
+        url: &str,
+        include_content_type: bool,
+        api_key: &str,
+    ) -> Result<reqwest::RequestBuilder, GateError> {
         let mut builder = client.post(url);
 
         if config.type_ == "anthropic" {
@@ -676,6 +867,53 @@ impl VendorManager {
         }
 
         Ok(builder)
+    }
+
+    /// T005：认证类失败判定（provider_chain 切换触发集合的 401/403）——
+    /// 唯一推进 key 轮换游标的状态码集合。
+    fn is_auth_failure_status(status: reqwest::StatusCode) -> bool {
+        matches!(status.as_u16(), 401 | 403)
+    }
+
+    /// T005（审查 M2）：per-key 熔断键的 endpoint 段——配置面 api_base
+    /// 身份（对齐 provider_chain 候选 endpoint 语义：空 = 默认端点）。
+    /// 无 resilience 组合下不参与 CB 选路（仅签名统一）。
+    #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
+    fn cb_endpoint(config: &VendorConfig) -> &str {
+        if config.api_base.is_empty() {
+            "<default>"
+        } else {
+            &config.api_base
+        }
+    }
+
+    /// T005（审查 M2）：per-key 熔断键的 model 段——归一到**配置面模型
+    /// 身份**（vendor.models 的 model_id）：
+    /// - 先剥离 router 直达语法的 `{vendor_id}.` 前缀（与
+    ///   `Router::try_direct_route` 的 `splitn(2, '.')` 语义一致）——hint
+    ///   形式（"gpt-4"）与 direct 形式（"fb-a.gpt-4"）必须落同一熔断键，
+    ///   否则 direct 请求绕过已熔断通道（fallback_test 回归实证）；
+    /// - 再按 vendor.models 匹配（model_id / abstract_id，仅 enabled），
+    ///   未登记模型回落剥离后的原始串（语义源 provider_chain 候选
+    ///   model_id：熔断计数按「上游看到的模型身份」隔离，不按客户端
+    ///   拼写分裂）。
+    #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
+    fn cb_model<'a>(vendor_id: &str, config: &'a VendorConfig, request_model: &'a str) -> &'a str {
+        let stripped = request_model
+            .strip_prefix(vendor_id)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .unwrap_or(request_model);
+        if stripped.is_empty() {
+            return request_model;
+        }
+        config
+            .models
+            .iter()
+            .find(|m| {
+                m.enabled && (m.model_id == stripped || m.abstract_id.as_deref() == Some(stripped))
+            })
+            .map(|m| m.model_id.as_str())
+            .unwrap_or(stripped)
     }
 
     /// recId=4（W2）：非流式 per-attempt 总超时 — 从 `send` 发起起算至响应
@@ -720,6 +958,10 @@ impl VendorManager {
     /// - 执行路径错误是 GateError，经 [`to_limiteron`] 编码进库签名
     ///   要求的 `Result<T, LimiteronError>`，计失败与否由
     ///   [`GateErrorClassifier`] 按 variant 语义判定。
+    ///
+    /// T005：`credential` 固定本请求的 key（池命中时所有重试尝试复用；
+    /// 401/403 认证类失败推进轮换游标，生效于下次请求）。
+    #[allow(clippy::too_many_arguments)]
     async fn execute_http_with_retry(
         client: &reqwest::Client,
         config: &VendorConfig,
@@ -728,6 +970,8 @@ impl VendorManager {
         retry_cfg: &RetrySection,
         #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker>,
         metrics: &GlobalMetrics,
+        instance: &VendorInstance,
+        credential: &RequestCredential,
     ) -> Result<UnifiedResponse, GateError> {
         #[cfg(feature = "resilience")]
         {
@@ -741,6 +985,8 @@ impl VendorManager {
                         converter,
                         retry_cfg,
                         metrics,
+                        instance,
+                        credential,
                     )
                     .await
                     .map_err(|e| to_limiteron(&e))
@@ -758,6 +1004,8 @@ impl VendorManager {
                 converter,
                 retry_cfg,
                 metrics,
+                instance,
+                credential,
             )
             .await
         }
@@ -776,6 +1024,10 @@ impl VendorManager {
     ///
     /// 注：不走 `RetryPolicy::execute`（limiteron src/retry.rs:147 签名
     /// 无 per-attempt 延迟注入点），Retry-After 分支需要自管薄循环。
+    ///
+    /// T005：`credential` 池命中时所有尝试用同一 key（不在单请求内换 key
+    /// 重试）；401/403 认证类失败推进轮换游标——生效于下次请求。
+    #[allow(clippy::too_many_arguments)]
     async fn execute_http_with_retry_inner(
         client: &reqwest::Client,
         config: &VendorConfig,
@@ -783,6 +1035,8 @@ impl VendorManager {
         converter: &dyn ProtocolConverter,
         retry_cfg: &RetrySection,
         metrics: &GlobalMetrics,
+        instance: &VendorInstance,
+        credential: &RequestCredential,
     ) -> Result<UnifiedResponse, GateError> {
         let url = Self::build_vendor_url(config)?;
         let policy = RetryDelayPolicy::from_config(retry_cfg);
@@ -801,9 +1055,20 @@ impl VendorManager {
         let mut attempt = 0u32;
 
         loop {
-            // 构建带认证的请求（recId=4：per-attempt 总超时，从 send 起算）
-            let builder = Self::build_authed_request(client, config, &url, true)?;
-            let builder = Self::apply_attempt_timeout(builder, config);
+            // 构建带认证的请求（recId=4：per-attempt 总超时，从 send 起算）。
+            // T005：池命中用固定 key；legacy 回退在 build 时读 env
+            //（缺失报 Config 错误——与历史逐位一致）。
+            let builder = match credential.api_key() {
+                Some(api_key) => {
+                    let builder =
+                        Self::build_authed_request_with_key(client, config, &url, true, api_key)?;
+                    Self::apply_attempt_timeout(builder, config)
+                }
+                None => {
+                    let builder = Self::build_authed_request(client, config, &url, true)?;
+                    Self::apply_attempt_timeout(builder, config)
+                }
+            };
 
             // 发送请求
             let response = match builder.json(&request_body).send().await {
@@ -856,6 +1121,11 @@ impl VendorManager {
                     "{}",
                     crate::i18n::t("vendor-upstream-non-success")
                 );
+                // T005：401/403 认证类失败推进 key 轮换游标——生效于下次
+                // 请求；本请求的剩余尝试（若有）仍用同一 key
+                if Self::is_auth_failure_status(status) {
+                    instance.advance_key_cursor(status.as_u16());
+                }
                 let error = GateError::VendorUnavailable {
                     vendor: crate::i18n::t_args(
                         "vendor-upstream-status",
@@ -954,18 +1224,41 @@ impl VendorManager {
 
         #[cfg(feature = "resilience")]
         {
-            match instance.circuit_breaker.get_state().await {
-                CircuitState::Open => {
-                    if !Self::circuit_probe_ready(&instance.circuit_breaker).await {
+            // T005（审查 M2）：读当前 key 指纹 × 全部 model 通道的聚合判定
+            // ——全部通道 Open 且无一越过冷却窗才判 Unavailable（模型无关
+            // peek 的保守聚合；任一通道 Closed/HalfOpen/可探测则放行）。
+            // 表空（当前指纹尚无请求）回落 vendor 级熔断器（历史语义）。
+            let fingerprint = instance.key_pool.peek_current_fingerprint();
+            let breakers = instance.peek_circuit_breakers_for_fingerprint(fingerprint.as_deref());
+            if breakers.is_empty() {
+                let circuit_breaker = instance.circuit_breaker.clone();
+                if let CircuitState::Open = circuit_breaker.get_state().await {
+                    if !Self::circuit_probe_ready(&circuit_breaker).await {
                         return VendorStatus::Unavailable;
                     }
-                    // 超时已过：放行探测流量；真实的 Open→HalfOpen 转换将由
-                    // 该请求在 CB execute 内完成（limiteron src/circuit/types.rs:396-433）
                 }
-                // 半开 = 恢复探测窗口：放行探针（并发准入由 CB 的
-                // half_open_max_calls 控制），探针失败会立即重新熔断
-                CircuitState::HalfOpen => {}
-                CircuitState::Closed => {}
+            } else {
+                let mut all_open = true;
+                let mut any_ready = false;
+                for circuit_breaker in &breakers {
+                    match circuit_breaker.get_state().await {
+                        CircuitState::Open => {
+                            if Self::circuit_probe_ready(circuit_breaker).await {
+                                any_ready = true;
+                            }
+                        }
+                        // 半开 = 恢复探测窗口：放行探针（并发准入由 CB 的
+                        // half_open_max_calls 控制），探针失败会立即重新熔断
+                        CircuitState::HalfOpen => all_open = false,
+                        CircuitState::Closed => all_open = false,
+                    }
+                }
+                if all_open && !any_ready {
+                    return VendorStatus::Unavailable;
+                }
+                // 超时已过或存在非 Open 通道：放行（真实的 Open→HalfOpen
+                // 转换由该请求在 CB execute 内完成，limiteron
+                // src/circuit/types.rs:396-433）
             }
         }
 
@@ -1141,6 +1434,17 @@ impl VendorManager {
             "{}",
             crate::i18n::t("vendor-stream-upstream-non-success")
         );
+        // T005：401/403 认证类失败推进 key 轮换游标——生效于下次请求
+        //（流式派发单次尝试，无请求内重试，与转换非流式语义一致）
+        if Self::is_auth_failure_status(status) {
+            let instance = {
+                let guard = self.instances.read().unwrap();
+                guard.get(vendor_id).cloned()
+            };
+            if let Some(instance) = instance {
+                instance.advance_key_cursor(status.as_u16());
+            }
+        }
         let duration = start.elapsed();
         self.metrics.record_request(vendor_id, false, duration);
         // recId=7（W5）：失败率滑窗双记 —— 上游 429 → RateLimited 亦计入
@@ -1181,14 +1485,22 @@ impl VendorManager {
     /// `builder` 在 CB 之外构建（构建失败的 Config 错误不计 CB 失败，与
     /// 既有放置位置一致）；`include_content_type` 差异（转换流 true /
     /// 透传流 false）由调用方构建 builder 时保留。
+    /// （审查 M2 追加 model 入参后 8 参超 clippy 阈值 7——CB 键维度所需，
+    /// 不打包重构。）
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_stream_once(
         &self,
         vendor_id: &str,
         config: &VendorConfig,
+        credential: &RequestCredential,
+        model: &str,
         builder: reqwest::RequestBuilder,
         request_body: &Value,
         start: Instant,
     ) -> Result<reqwest::Response, GateError> {
+        // 无 resilience 组合下 model/credential 不参与 CB 选路（仅签名统一）
+        #[cfg(not(feature = "resilience"))]
+        let _ = (model, credential);
         let send = || async {
             let response = if config.stream_ttft_ms > 0 {
                 // recId=4（W2）：流式 TTFT 超时 — 包住 `send` 发起至上游
@@ -1235,7 +1547,12 @@ impl VendorManager {
         #[cfg(feature = "resilience")]
         {
             if self.config.read().resilience.cover_all_paths {
-                if let Some(circuit_breaker) = self.circuit_breaker_for(vendor_id) {
+                if let Some(circuit_breaker) = self.circuit_breaker_for(
+                    vendor_id,
+                    credential,
+                    model,
+                    Self::cb_endpoint(config),
+                ) {
                     let result = circuit_breaker
                         .execute(|| async { send().await.map_err(|e| to_limiteron(&e)) })
                         .await;
@@ -1299,6 +1616,10 @@ impl VendorManager {
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url(&config)?;
 
+        // T005：请求级凭证选择——key 在请求启动时固定（池命中用当前 key，
+        // 池空回退 legacy 读 env）
+        let credential = instance.select_request_key(&config);
+
         // recId=3：converter 以 Arc 进流 —— 流式反向解析
         // （parse_stream_frame）按 vendor 协议分派，生命周期与流一致
         let converter: Arc<dyn ProtocolConverter> = match config.type_.as_str() {
@@ -1311,16 +1632,32 @@ impl VendorManager {
             }
         };
 
+        // 审查 M2：per-key 熔断键带 model 段（归一到配置模型身份；
+        // request 被 move 前捕获，无 resilience 组合下仅作参数透传）
+        let request_model = Self::cb_model(vendor_id, &config, &request.model).to_string();
         let request_body = converter.request_to_external(request)?;
 
-        let request_builder = Self::build_authed_request(&self.client, &config, &url, true)?;
+        let request_builder = match credential.api_key() {
+            Some(api_key) => {
+                Self::build_authed_request_with_key(&self.client, &config, &url, true, api_key)?
+            }
+            None => Self::build_authed_request(&self.client, &config, &url, true)?,
+        };
 
         let start = Instant::now();
         // recId=2（二期）：cover_all_paths 开启时 send + 状态校验段由
         // CircuitBreaker 包裹（时长只计到响应头，与首字节边界一致）；
         // 关闭时直连，行为与历史逐位一致
         let response = self
-            .dispatch_stream_once(vendor_id, &config, request_builder, &request_body, start)
+            .dispatch_stream_once(
+                vendor_id,
+                &config,
+                &credential,
+                &request_model,
+                request_builder,
+                &request_body,
+                start,
+            )
             .await?;
 
         // recId=4④：流式口径为「派发处计」——send 成功（2xx、流已建立）即记
@@ -1552,16 +1889,41 @@ impl VendorManager {
         request_body: Value,
         path: &str,
     ) -> Result<Value, GateError> {
+        // T005：请求级凭证选择（池命中 → 当前 key；池空 → legacy 读 env）。
+        // 实例不存在时不取配置——错误语义交由 inner 的实例查找
+        //（VendorUnavailable，与历史一致）。
+        let instance = {
+            let guard = self.instances.read().unwrap();
+            guard.get(vendor_id).cloned()
+        };
+        let resolved = match instance {
+            Some(instance) => {
+                let config = self.fresh_config(vendor_id)?;
+                Some((instance.select_request_key(&config), config))
+            }
+            None => None,
+        };
         #[cfg(feature = "resilience")]
-        {
+        if let Some((ref credential, ref config)) = resolved {
             if self.config.read().resilience.cover_all_paths {
-                if let Some(circuit_breaker) = self.circuit_breaker_for(vendor_id) {
+                let raw_model = request_body
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<unspecified>");
+                let passthrough_model = Self::cb_model(vendor_id, config, raw_model).to_string();
+                if let Some(circuit_breaker) = self.circuit_breaker_for(
+                    vendor_id,
+                    credential,
+                    &passthrough_model,
+                    Self::cb_endpoint(config),
+                ) {
                     let result = circuit_breaker
                         .execute(|| async {
                             self.execute_passthrough_request_inner(
                                 vendor_id,
                                 request_body.clone(),
                                 path,
+                                credential,
                             )
                             .await
                             .map_err(|e| to_limiteron(&e))
@@ -1571,7 +1933,10 @@ impl VendorManager {
                 }
             }
         }
-        self.execute_passthrough_request_inner(vendor_id, request_body, path)
+        let credential = resolved
+            .map(|(credential, _config)| credential)
+            .unwrap_or(RequestCredential::LegacyEnv);
+        self.execute_passthrough_request_inner(vendor_id, request_body, path, &credential)
             .await
     }
 
@@ -1580,6 +1945,7 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
         path: &str,
+        credential: &RequestCredential,
     ) -> Result<Value, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
@@ -1615,7 +1981,13 @@ impl VendorManager {
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url_at(&config, path)?;
 
-        let builder = Self::build_authed_request(&self.client, &config, &url, true)?;
+        // T005：池命中用请求启动时固定的 key；legacy 回退读 env
+        let builder = match credential.api_key() {
+            Some(api_key) => {
+                Self::build_authed_request_with_key(&self.client, &config, &url, true, api_key)?
+            }
+            None => Self::build_authed_request(&self.client, &config, &url, true)?,
+        };
         // recId=4（W2）：per-attempt 总超时（从 send 起算；0=不限时）
         let builder = Self::apply_attempt_timeout(builder, &config);
 
@@ -1635,6 +2007,10 @@ impl VendorManager {
                 "{}",
                 crate::i18n::t("vendor-upstream-non-success")
             );
+            // T005：401/403 认证类失败推进 key 轮换游标——生效于下次请求
+            if Self::is_auth_failure_status(status) {
+                instance.advance_key_cursor(status.as_u16());
+            }
             return Err(GateError::VendorUnavailable {
                 vendor: crate::i18n::t_args(
                     "vendor-upstream-status",
@@ -1727,13 +2103,37 @@ impl VendorManager {
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url(&config)?;
 
-        let builder = Self::build_authed_request(&self.client, &config, &url, false)?;
+        // T005：请求级凭证选择——key 在请求启动时固定（池命中用当前 key，
+        // 池空回退 legacy 读 env）
+        let credential = instance.select_request_key(&config);
+
+        let builder = match credential.api_key() {
+            Some(api_key) => {
+                Self::build_authed_request_with_key(&self.client, &config, &url, false, api_key)?
+            }
+            None => Self::build_authed_request(&self.client, &config, &url, false)?,
+        };
+        // 审查 M2：per-key 熔断键带 model 段（透传 model 取自请求体，
+        // 归一到配置模型身份；无 resilience 组合下仅作参数透传）
+        let raw_model = request_body
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unspecified>");
+        let request_model = Self::cb_model(vendor_id, &config, raw_model).to_string();
 
         let start = Instant::now();
         // recId=2（二期）：TTFT 超时与状态校验段收拢于 dispatch_stream_once
         //（cover_all_paths 开启时由 CB 包裹，关闭时直连，行为逐位一致）
         let response = self
-            .dispatch_stream_once(vendor_id, &config, builder, &request_body, start)
+            .dispatch_stream_once(
+                vendor_id,
+                &config,
+                &credential,
+                &request_model,
+                builder,
+                &request_body,
+                start,
+            )
             .await?;
 
         // recId=4④：流式「派发处计」——send 成功即记成功，与转换流式同口径
@@ -2093,6 +2493,218 @@ mod tests {
         assert_eq!(cloned.used_tokens, info.used_tokens);
         // Debug 不 panic
         let _ = format!("{:?}", info);
+    }
+
+    // ======== T005：按 key 指纹隔离的熔断计数（单测） ========
+
+    fn pool_vendor_config(env_a: &str, env_b: &str) -> VendorConfig {
+        VendorConfig {
+            id: "v-pool-test".into(),
+            name: "Pool Test".into(),
+            type_: "openai".into(),
+            api_key_env: String::new(),
+            api_key_envs: vec![env_a.to_string(), env_b.to_string()],
+            api_base: String::new(),
+            enabled: true,
+            priority: 1,
+            models: vec![],
+            rate_limit: crate::config::RateLimitConfig::Token {
+                max_tokens: 1000,
+                window_hours: None,
+                sliding: false,
+            },
+            concurrency: crate::config::ConcurrencyConfig::default(),
+            timeout_ms: 60_000,
+            stream_ttft_ms: 60_000,
+            stream_idle_ms: 30_000,
+        }
+    }
+
+    /// 同 key 跨请求共享计数：两次选择同 key 得到同一熔断器（Arc 同源）；
+    /// 5 次失败在该指纹熔断器上累计至阈值 5 → Open。
+    /// 不同 key 隔离：另一 key 的熔断器独立构造且保持 Closed。
+    #[cfg(feature = "resilience")]
+    #[tokio::test]
+    async fn per_key_circuit_breaker_shared_for_same_key_isolated_across_keys() {
+        const ENV_A: &str = "NEXUSFLOW_MGR_POOL_A";
+        const ENV_B: &str = "NEXUSFLOW_MGR_POOL_B";
+        std::env::set_var(ENV_A, "mgr-key-a");
+        std::env::set_var(ENV_B, "mgr-key-b");
+
+        let config = pool_vendor_config(ENV_A, ENV_B);
+        let instance = VendorInstance::new(
+            &config,
+            10,
+            100,
+            #[cfg(feature = "resilience")]
+            Duration::from_secs(30),
+            #[cfg(feature = "cost-tracking")]
+            Arc::new(CostTracker::new()),
+        );
+
+        // 同 key 跨请求共享计数：同 key 两次凭证选择的指纹一致，取到同一 CB
+        const MODEL: &str = "gpt-4";
+        const ENDPOINT: &str = "https://unit.test/v1";
+        let credential_a = instance.select_request_key(&config);
+        let fp_a = credential_a.fingerprint().unwrap().to_string();
+        let cb_a1 = instance.circuit_breaker_for(&credential_a, MODEL, ENDPOINT);
+        let cb_a2 = instance.circuit_breaker_for(&credential_a, MODEL, ENDPOINT);
+        assert!(
+            Arc::ptr_eq(&cb_a1, &cb_a2),
+            "同 key 同 model 跨请求必须共享同一熔断器（共享计数）"
+        );
+
+        // 不同 key 隔离：401 轮换推进游标后，下一请求用第二把 key，
+        // 指纹互异、熔断器独立
+        assert!(instance.key_pool.advance("v-pool-test", 401));
+        let credential_b = instance.select_request_key(&config);
+        let cb_b = instance.circuit_breaker_for(&credential_b, MODEL, ENDPOINT);
+        assert_ne!(
+            credential_a.fingerprint(),
+            credential_b.fingerprint(),
+            "不同 key 指纹互异"
+        );
+        assert!(
+            !Arc::ptr_eq(&cb_a1, &cb_b),
+            "不同 key 必须使用独立熔断器（隔离计数）"
+        );
+
+        // 共享计数的语义后果：5 次失败令 key A 的指纹熔断器触阈 Open，
+        // key B 的熔断器全程 Closed 不受污染
+        for _ in 0..5 {
+            let _: Result<
+                u32,
+                limiteron::circuit::CircuitCallError<limiteron::error::LimiteronError>,
+            > = cb_a1
+                .execute(|| async {
+                    Err(to_limiteron(&GateError::VendorUnavailable {
+                        vendor: "v-pool-test".into(),
+                    }))
+                })
+                .await;
+        }
+        assert_eq!(
+            cb_a1.get_state().await,
+            CircuitState::Open,
+            "5 次失败在同 key 熔断器上累计至阈值（failure_threshold=5）"
+        );
+        assert_eq!(
+            cb_b.get_state().await,
+            CircuitState::Closed,
+            "不同 key 的熔断计数不被污染（隔离）"
+        );
+
+        // 指纹跨请求稳定：游标停在新位后再选择仍得同 key，路由到同一
+        // （此刻仍 Closed 的）key B 熔断器
+        let credential_b_again = instance.select_request_key(&config);
+        assert_eq!(credential_b_again.fingerprint(), credential_b.fingerprint());
+        assert!(Arc::ptr_eq(
+            &instance.circuit_breaker_for(&credential_b_again, MODEL, ENDPOINT),
+            &cb_b
+        ));
+        let _ = fp_a;
+    }
+
+    /// 审查 M2：per-key 熔断键含 model 维度（vendor_id+model+endpoint+指纹，
+    /// 对齐 provider_chain breaker_state_key）——同 vendor 同 key 不同 model
+    /// 的失败计数互不污染。
+    #[cfg(feature = "resilience")]
+    #[tokio::test]
+    async fn per_key_circuit_breaker_isolated_across_models() {
+        const ENV_A: &str = "NEXUSFLOW_MGR_POOL_MODELA";
+        std::env::set_var(ENV_A, "mgr-key-models");
+        let config = pool_vendor_config(ENV_A, ENV_A);
+        let instance = VendorInstance::new(
+            &config,
+            10,
+            100,
+            #[cfg(feature = "resilience")]
+            Duration::from_secs(30),
+            #[cfg(feature = "cost-tracking")]
+            Arc::new(CostTracker::new()),
+        );
+
+        let credential = instance.select_request_key(&config);
+        let fp = credential.fingerprint().unwrap().to_string();
+
+        // 同 key 同 model 同 endpoint → 同一熔断器（共享计数）
+        let cb_m1 = instance.circuit_breaker_for(&credential, "model-a", "https://unit.test/v1");
+        let cb_m1_again =
+            instance.circuit_breaker_for(&credential, "model-a", "https://unit.test/v1");
+        assert!(Arc::ptr_eq(&cb_m1, &cb_m1_again), "同 model 通道共享计数");
+
+        // 同 key 不同 model → 独立熔断器（互不污染）
+        let cb_m2 = instance.circuit_breaker_for(&credential, "model-b", "https://unit.test/v1");
+        assert!(
+            !Arc::ptr_eq(&cb_m1, &cb_m2),
+            "不同 model 必须使用独立熔断器（键含 model 维度）"
+        );
+
+        // 语义后果：model-a 通道 5 次失败触阈 Open，model-b 通道保持 Closed
+        for _ in 0..5 {
+            let _: Result<
+                u32,
+                limiteron::circuit::CircuitCallError<limiteron::error::LimiteronError>,
+            > = cb_m1
+                .execute(|| async {
+                    Err(to_limiteron(&GateError::VendorUnavailable {
+                        vendor: "v-pool-test".into(),
+                    }))
+                })
+                .await;
+        }
+        assert_eq!(
+            cb_m1.get_state().await,
+            CircuitState::Open,
+            "model-a 通道按自身计数熔断"
+        );
+        assert_eq!(
+            cb_m2.get_state().await,
+            CircuitState::Closed,
+            "model-b 通道计数不被 model-a 污染（互不污染）"
+        );
+
+        // 同 key 同 model 不同 endpoint → 独立熔断器（键含 endpoint 维度）
+        let cb_m1_other =
+            instance.circuit_breaker_for(&credential, "model-a", "https://other.test/v1");
+        assert!(
+            !Arc::ptr_eq(&cb_m1, &cb_m1_other),
+            "不同 endpoint 必须使用独立熔断器"
+        );
+        assert_eq!(cb_m1_other.get_state().await, CircuitState::Closed);
+        let _ = fp;
+    }
+
+    /// legacy 回退（池空）走 vendor 级熔断器——不进 per-key 表。
+    #[cfg(feature = "resilience")]
+    #[tokio::test]
+    async fn legacy_env_fallback_uses_vendor_level_breaker() {
+        const MISSING: &str = "NEXUSFLOW_MGR_POOL_MISSING_Q7";
+        std::env::remove_var(MISSING);
+        let config = pool_vendor_config(MISSING, MISSING);
+        let instance = VendorInstance::new(
+            &config,
+            10,
+            100,
+            #[cfg(feature = "resilience")]
+            Duration::from_secs(30),
+            #[cfg(feature = "cost-tracking")]
+            Arc::new(CostTracker::new()),
+        );
+        let credential = instance.select_request_key(&config);
+        assert_eq!(
+            credential,
+            RequestCredential::LegacyEnv,
+            "全缺 env 回退 legacy"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &instance.circuit_breaker_for(&credential, "gpt-4", "https://unit.test/v1"),
+                &instance.circuit_breaker
+            ),
+            "legacy 回退使用 vendor 级熔断器（与历史逐位一致）"
+        );
+        assert!(instance.key_pool_info().size == 0);
     }
 
     // ======== recId=1：熔断器 slow-call-rate 误触发修复（生产构造证明） ========

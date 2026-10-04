@@ -1007,6 +1007,7 @@ mod admin {
             name: "Test".to_string(),
             type_: "openai".to_string(),
             api_key_env: "TEST_KEY".to_string(),
+            api_key_envs: Vec::new(),
             api_base: "".to_string(),
             enabled: true,
             priority: 1,

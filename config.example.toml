@@ -11,6 +11,10 @@ id = "openai"
 name = "OpenAI"
 type_ = "openai"
 api_key_env = "OPENAI_API_KEY"
+# 可选：多 key 池（T005）——显式 env 名列表，与 api_key_env 合并去重
+# （本列表在前），按序轮换出站 key；401/403 认证失败自动切换下一把
+# （生效于下次请求）。缺 env 的名跳过并告警；池空回退 api_key_env 单 key。
+# api_key_envs = ["OPENAI_API_KEY_2", "OPENAI_API_KEY_3"]
 api_base = "https://api.openai.com/v1"
 enabled = true
 concurrency = { requests_per_second = 100 }

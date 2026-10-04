@@ -19,3 +19,9 @@ vendor-upstream-stream-interrupted = 上游流中断
 vendor-token-quota-underflow = token 配额下溢：用量未记账（将超出窗口上限）
 vendor-pool-semaphore-closed = 连接池信号量已关闭: { $error }
 vendor-circuit-error = { $vendor } (熔断错误: { $detail })
+# ---- key_pool.rs（T005 vendor 内 key 池）----
+vendor-key-pool-env-missing = 厂商 { $vendor } 的 key 池环境变量 #{ $index }（值长度 { $length }）未设置，已跳过——请核对是否误将 key 原文当作环境变量名
+vendor-key-pool-truncated = 厂商 { $vendor } 的 key 池超出上限 { $cap }，已截断（丢弃 { $dropped } 条）
+vendor-key-pool-fallback-legacy = 厂商 { $vendor } 的 key 池为空（全部 env 缺失），回退既有单 key 行为
+vendor-key-rotated = 厂商 { $vendor } 认证失败 ({ $status })，已推进 key 轮换游标，下次尝试使用下一把 key
+vendor-key-pool-shrunk = 厂商 { $vendor } 的 key 池由 { $before } 把收缩至 { $after } 把（{ $missing } 个池 env 现缺失）

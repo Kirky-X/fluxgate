@@ -46,6 +46,7 @@ pub fn base_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         name: format!("Test {}", id),
         type_: "openai".into(),
         api_key_env: TEST_API_KEY_ENV.into(),
+        api_key_envs: Vec::new(),
         api_base: api_base.into(),
         enabled: true,
         priority: 1,

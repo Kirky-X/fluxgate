@@ -2046,6 +2046,7 @@ mod token_weighted_tickets {
                 name: "V1".into(),
                 type_: "openai".into(),
                 api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+                api_key_envs: Vec::new(),
                 api_base,
                 enabled: true,
                 priority: 1,

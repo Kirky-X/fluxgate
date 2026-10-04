@@ -318,6 +318,7 @@ mod tests {
                 name: "Test".into(),
                 type_: "openai".into(),
                 api_key_env: "TEST_KEY".into(),
+                api_key_envs: Vec::new(),
                 api_base: String::new(),
                 enabled: true,
                 priority: 1,

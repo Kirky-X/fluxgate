@@ -91,10 +91,17 @@ pub async fn vendors(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
     let vendors: Vec<Value> = statuses
         .iter()
         .map(|(id, status, queue_len)| {
+            // T005：key 池观测只暴露 env 名/数量/下标/指纹，绝不暴露 key 原文
+            let key_pool = state
+                .vendor_manager
+                .key_pool_info(id)
+                .map(|info| serde_json::to_value(&info).unwrap_or_default())
+                .unwrap_or(Value::Null);
             serde_json::json!({
                 "id": id,
                 "status": format!("{:?}", status),
                 "queue_length": queue_len,
+                "key_pool": key_pool,
             })
         })
         .collect();
@@ -109,11 +116,18 @@ pub async fn vendor_status(
 ) -> Result<Json<Value>, NexusFlowError> {
     let status = state.vendor_manager.get_status(&id).await;
     let queue_len = state.vendor_manager.get_queue_length(&id);
+    // T005：key 池观测只暴露 env 名/数量/下标/指纹，绝不暴露 key 原文
+    let key_pool = state
+        .vendor_manager
+        .key_pool_info(&id)
+        .map(|info| serde_json::to_value(&info).unwrap_or_default())
+        .unwrap_or(Value::Null);
 
     Ok(Json(serde_json::json!({
         "id": id,
         "status": format!("{:?}", status),
         "queue_length": queue_len,
+        "key_pool": key_pool,
     })))
 }
 

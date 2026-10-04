@@ -49,6 +49,14 @@ pub struct VendorConfig {
     pub name: String,
     pub type_: String,
     pub api_key_env: String,
+    /// 多 key 池的显式 env 名列表（T005/N5）。语义对齐 agentstem
+    /// provider_chain.rs:226-236：显式列表优先于池 env——与 `api_key_env`
+    /// （向后兼容单 env 名，旧配置逐位可用）合并去重定序，本列表在前。
+    /// 池解析逐名读环境变量得实际 key 串，缺名的 env 跳过并显性告警；
+    /// 池上限截断见 `vendor::key_pool::MAX_KEY_POOL`。
+    /// 本字段只存环境变量名，绝不存 key 原文（admin 面掩码约定）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_key_envs: Vec<String>,
     #[serde(default = "default_api_base")]
     pub api_base: String,
     #[serde(default = "default_vendor_enabled")]

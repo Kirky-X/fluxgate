@@ -43,6 +43,7 @@ mod vendor_fallback_integration {
             name: format!("Test {}", id),
             type_: "anthropic".into(),
             api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+            api_key_envs: Vec::new(),
             api_base,
             enabled: true,
             priority,

@@ -122,6 +122,8 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
         }
     }
 
+    // 安全 L4 脱敏：缺失告警不回显配置原文（用户可能误将 key 原文当作
+    // env 名填入配置，回显会把密钥泄进日志）——只报值长度/序号 + 核对提示。
     for vendor in &config.vendors {
         if std::env::var(&vendor.api_key_env).is_err() {
             tracing::warn!(
@@ -130,10 +132,27 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
                     "config-api-key-env-missing",
                     &[
                         ("vendor", vendor.id.clone()),
-                        ("env", vendor.api_key_env.clone()),
+                        ("length", vendor.api_key_env.len().to_string()),
                     ],
                 )
             );
+        }
+        // T005：key 池显式列表逐名校验（缺失只告警不拒——池解析时跳过
+        // 缺失名并显性化，与 api_key_env 同一宽容级别）
+        for (index, env) in vendor.api_key_envs.iter().enumerate() {
+            if std::env::var(env).is_err() {
+                tracing::warn!(
+                    "{}",
+                    t_args(
+                        "config-api-key-pool-env-missing",
+                        &[
+                            ("vendor", vendor.id.clone()),
+                            ("index", index.to_string()),
+                            ("length", env.len().to_string()),
+                        ],
+                    )
+                );
+            }
         }
     }
 

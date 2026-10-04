@@ -5,6 +5,7 @@
 
 use crate::api::RoutingHints;
 use crate::database::RequestLog;
+use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use crate::protocol::embedding_request_to_openai;
 use crate::{error::NexusFlowError, router::RoutingDecision, ApiState};
@@ -24,9 +25,9 @@ pub async fn chat_completions(
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
-        .ok_or(NexusFlowError::Validation {
+        .ok_or(NexusFlowError::from(GateError::Validation {
             field: "model".into(),
-        })?;
+        }))?;
 
     let stream = body
         .get("stream")
@@ -141,6 +142,7 @@ pub async fn chat_completions(
                 {
                     Ok(r) => r,
                     Err(e) => {
+                        let e = NexusFlowError::from(e);
                         let duration_ms = start_time.elapsed().as_millis() as i64;
                         // recId=11：最终失败解除亲和绑定
                         crate::api::clear_session_affinity(
@@ -171,6 +173,7 @@ pub async fn chat_completions(
                 {
                     Ok(r) => (r, decision),
                     Err(e) => {
+                        let e = NexusFlowError::from(e);
                         let duration_ms = start_time.elapsed().as_millis() as i64;
                         // recId=11：最终失败解除亲和绑定
                         crate::api::clear_session_affinity(
@@ -202,6 +205,7 @@ pub async fn chat_completions(
             {
                 Ok(r) => r,
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -332,6 +336,7 @@ pub async fn chat_completions(
             {
                 Ok(r) => r,
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -362,6 +367,7 @@ pub async fn chat_completions(
             {
                 Ok(r) => (r, decision),
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -393,6 +399,7 @@ pub async fn chat_completions(
         {
             Ok(r) => r,
             Err(e) => {
+                let e = NexusFlowError::from(e);
                 let duration_ms = start_time.elapsed().as_millis() as i64;
                 // recId=11：最终失败解除亲和绑定
                 crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref())
@@ -498,6 +505,7 @@ pub async fn chat_completions(
             {
                 Ok(r) => r,
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -528,6 +536,7 @@ pub async fn chat_completions(
             {
                 Ok(s) => (s, decision),
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -559,6 +568,7 @@ pub async fn chat_completions(
         {
             Ok(s) => s,
             Err(e) => {
+                let e = NexusFlowError::from(e);
                 let duration_ms = start_time.elapsed().as_millis() as i64;
                 // recId=11：最终失败解除亲和绑定
                 crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref())
@@ -700,6 +710,7 @@ pub async fn chat_completions(
         {
             Ok(r) => r,
             Err(e) => {
+                let e = NexusFlowError::from(e);
                 let duration_ms = start_time.elapsed().as_millis() as i64;
                 // recId=11：换路 fallback 耗尽（最终失败）解除亲和绑定
                 crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref()).await;
@@ -725,6 +736,7 @@ pub async fn chat_completions(
     {
         Ok(r) => r,
         Err(e) => {
+            let e = NexusFlowError::from(e);
             let duration_ms = start_time.elapsed().as_millis() as i64;
             // recId=11：最终失败解除亲和绑定
             crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref()).await;
@@ -965,21 +977,21 @@ pub async fn embeddings(
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
-        .ok_or(NexusFlowError::Validation {
+        .ok_or(NexusFlowError::from(GateError::Validation {
             field: "model".into(),
-        })?;
+        }))?;
 
     let decision = match state.router.route(model).await {
         Ok(d) => d,
-        Err(e) => return Err(e),
+        Err(e) => return Err(e.into()),
     };
 
     // 只支持 OpenAI vendor
     if decision.vendor.type_ != "openai" {
-        return Err(NexusFlowError::Protocol {
+        return Err(NexusFlowError::from(GateError::Protocol {
             source: t("api-embeddings-openai-only"),
             inner: None,
-        });
+        }));
     }
 
     // 转换为 OpenAI 格式
@@ -993,6 +1005,7 @@ pub async fn embeddings(
     {
         Ok(r) => r,
         Err(e) => {
+            let e = NexusFlowError::from(e);
             // 失败落库（recId=9④）：status_code/error_message 真实值
             let duration_ms = start_time.elapsed().as_millis() as i64;
             let input_str = body

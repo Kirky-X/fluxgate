@@ -5,6 +5,7 @@
 
 use crate::config::{Config, GlobalModelConfig, VendorConfig};
 use crate::database::LogFilter;
+use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use crate::{error::NexusFlowError, ApiState};
 use axum::{
@@ -194,7 +195,7 @@ pub async fn update_vendor(
                 config.vendors[idx] = vendor;
                 Ok(())
             }
-            None => Err(NexusFlowError::Config {
+            None => Err(GateError::Config {
                 message: t_args("admin-vendor-not-found", &[("id", id.clone())]),
             }),
         }
@@ -240,8 +241,8 @@ pub async fn update_model(
             "message": t("admin-global-model-updated")
         })))
     } else {
-        Err(NexusFlowError::Config {
+        Err(NexusFlowError::from(GateError::Config {
             message: t("admin-only-global-model-supported"),
-        })
+        }))
     }
 }

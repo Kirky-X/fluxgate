@@ -1453,7 +1453,7 @@ mod cooldown_improvements {
         Config, ConfigManager, ModelConfig, RateLimitConfig, RoutingSection, ServerConfig,
         VendorConfig,
     };
-    use nexusflow::error::NexusFlowError;
+    use nexusflow::error::GateError;
     use nexusflow::router::Router;
     use nexusflow::vendor::VendorManager;
     use std::sync::Arc;
@@ -1703,7 +1703,7 @@ mod cooldown_improvements {
         vm_off.initialize().await.expect("vendor init");
         let err = router_off.route("shared-model").await.unwrap_err();
         assert!(
-            matches!(err, NexusFlowError::Validation { .. }),
+            matches!(err, GateError::Validation { .. }),
             "门控关必须保持 Validation 现状: {err}"
         );
 
@@ -2754,7 +2754,7 @@ mod route_gap_coverage {
         Config, ConfigManager, ModelConfig, PricingConfig, ResilienceSection, RoutingSection,
         ServerConfig, VendorConfig,
     };
-    use nexusflow::error::NexusFlowError;
+    use nexusflow::error::GateError;
     use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
     use nexusflow::router::bandit::{linucb_features, BanditState};
     use nexusflow::router::{compute_weight, Router, RoutingStrategy};
@@ -2853,7 +2853,7 @@ mod route_gap_coverage {
         .await;
         let err = router.route("auto").await.unwrap_err();
         assert!(
-            matches!(err, NexusFlowError::Validation { .. }),
+            matches!(err, GateError::Validation { .. }),
             "全禁用下 auto 路由必须收敛 Validation 错误: {err}"
         );
     }
@@ -2874,7 +2874,7 @@ mod route_gap_coverage {
 
         let err = router.route("auto").await.unwrap_err();
         assert!(
-            matches!(err, NexusFlowError::Validation { .. }),
+            matches!(err, GateError::Validation { .. }),
             "全冷却且 fail-open 关闭必须报 Validation: {err}"
         );
     }
@@ -2954,7 +2954,7 @@ mod route_gap_coverage {
             .await
             .unwrap_err();
         match err {
-            NexusFlowError::Validation { field } => {
+            GateError::Validation { field } => {
                 assert!(field.contains("ghost"), "错误须指名缺失 vendor: {field}");
             }
             other => panic!("必须收敛 Validation 错误: {other:?}"),
@@ -2978,7 +2978,7 @@ mod route_gap_coverage {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, NexusFlowError::Validation { .. }),
+            matches!(err, GateError::Validation { .. }),
             "禁用 vendor 必须按不可用收敛: {err:?}"
         );
     }
@@ -2997,7 +2997,7 @@ mod route_gap_coverage {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, NexusFlowError::Validation { .. }),
+            matches!(err, GateError::Validation { .. }),
             "Unavailable 状态 vendor 必须按不可用收敛: {err:?}"
         );
     }
@@ -3093,7 +3093,7 @@ mod route_gap_coverage {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, NexusFlowError::Validation { .. }),
+            matches!(err, GateError::Validation { .. }),
             "被排除的 direct vendor 必须收敛 Validation: {err:?}"
         );
     }
@@ -3113,7 +3113,7 @@ mod route_gap_coverage {
         .await;
         let err = router.route("gx-off.m-real").await.unwrap_err();
         assert!(
-            matches!(err, NexusFlowError::Validation { .. }),
+            matches!(err, GateError::Validation { .. }),
             "禁用 vendor 的 direct 形式必须收敛 Validation: {err:?}"
         );
     }

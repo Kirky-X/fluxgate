@@ -10,7 +10,7 @@ use super::{
     VendorQueue, VendorState, VendorStatus,
 };
 use crate::config::{ConfigManager, RetrySection, VendorConfig};
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
 use crate::protocol::{StreamChunk, UnifiedRequest, UnifiedResponse};
 use crate::utils::metrics::GlobalMetrics;
@@ -18,9 +18,7 @@ use crate::utils::retry::{retry_delay_for, ErrorCategory, RetryDelayPolicy};
 #[cfg(feature = "cost-tracking")]
 use crate::utils::CostTracker;
 #[cfg(feature = "resilience")]
-use crate::vendor::resilience::error_map::{
-    from_circuit_call, to_limiteron, NexusFlowErrorClassifier,
-};
+use crate::vendor::resilience::error_map::{from_circuit_call, to_limiteron, GateErrorClassifier};
 use bytes::Bytes;
 #[cfg(feature = "resilience")]
 use limiteron::circuit::{CircuitBreaker, CircuitBreakerConfig};
@@ -153,7 +151,7 @@ pub(crate) fn nexusflow_circuit_config(open_timeout: std::time::Duration) -> Cir
     CircuitBreakerConfig::new(5, 3, open_timeout)
         .slow_call_duration_threshold(Duration::from_secs(60))
         .slow_call_rate_threshold(1.0)
-        .error_classifier(Arc::new(NexusFlowErrorClassifier))
+        .error_classifier(Arc::new(GateErrorClassifier))
 }
 
 impl VendorInstance {
@@ -251,10 +249,10 @@ impl VendorManager {
 
     /// 热读厂商配置 — 执行路径统一入口。
     /// vendor 已从配置中移除时返回 Err（该请求以 VendorUnavailable 拒绝）。
-    fn fresh_config(&self, vendor_id: &str) -> Result<VendorConfig, NexusFlowError> {
+    fn fresh_config(&self, vendor_id: &str) -> Result<VendorConfig, GateError> {
         self.config
             .get_vendor(vendor_id)
-            .ok_or_else(|| NexusFlowError::VendorUnavailable {
+            .ok_or_else(|| GateError::VendorUnavailable {
                 vendor: crate::i18n::t_args(
                     "vendor-removed-from-config",
                     &[("vendor", vendor_id.to_string())],
@@ -306,7 +304,7 @@ impl VendorManager {
         guard.get(vendor_id).map(|i| i.circuit_breaker.clone())
     }
 
-    pub async fn initialize(&self) -> Result<(), NexusFlowError> {
+    pub async fn initialize(&self) -> Result<(), GateError> {
         let vendors = self.config.get_enabled_vendors();
         for vendor in &vendors {
             self.get_or_create_instance(vendor);
@@ -401,7 +399,7 @@ impl VendorManager {
                 // 路由状态不在此回写（评审 blocker）：Token 耗尽的
                 // Throttled 判定已由 get_status 的实时 peek 承担，回写
                 // 持久状态会造成「路由排除→无请求→窗口重置后仍被排除」
-                let _ = pending.response_tx.send(Err(NexusFlowError::RateLimited {
+                let _ = pending.response_tx.send(Err(GateError::RateLimited {
                     vendor: instance.vendor_id.clone(),
                 }));
                 continue;
@@ -421,7 +419,7 @@ impl VendorManager {
             //    vendor 已被移除时以 VendorUnavailable 拒绝该请求）
             let config = config_manager
                 .get_vendor(&instance.vendor_id)
-                .ok_or_else(|| NexusFlowError::VendorUnavailable {
+                .ok_or_else(|| GateError::VendorUnavailable {
                     vendor: crate::i18n::t_args(
                         "vendor-removed-from-config",
                         &[("vendor", instance.vendor_id.clone())],
@@ -575,12 +573,12 @@ impl VendorManager {
         retry_cfg: &RetrySection,
         #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker>,
         metrics: &GlobalMetrics,
-    ) -> Result<UnifiedResponse, NexusFlowError> {
+    ) -> Result<UnifiedResponse, GateError> {
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
             "openai" => openai,
             "anthropic" => anthropic,
             _ => {
-                return Err(NexusFlowError::Config {
+                return Err(GateError::Config {
                     message: crate::i18n::t("vendor-unknown-type"),
                 })
             }
@@ -613,13 +611,13 @@ impl VendorManager {
 
     /// 构建 vendor API URL（统一 4 处重复的 URL 拼接逻辑）。
     /// recId=15：path 可变版（chat/completions / messages / embeddings）。
-    fn build_vendor_url_at(config: &VendorConfig, path: &str) -> Result<String, NexusFlowError> {
+    fn build_vendor_url_at(config: &VendorConfig, path: &str) -> Result<String, GateError> {
         let api_base = if config.api_base.is_empty() {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
                 "openai" => "https://api.openai.com/v1",
                 _ => {
-                    return Err(NexusFlowError::Config {
+                    return Err(GateError::Config {
                         message: crate::i18n::t("vendor-unknown-type"),
                     })
                 }
@@ -638,7 +636,7 @@ impl VendorManager {
     }
 
     /// 构建 vendor API URL（chat/messages 默认端点 — 既有调用点语义不变）
-    fn build_vendor_url(config: &VendorConfig) -> Result<String, NexusFlowError> {
+    fn build_vendor_url(config: &VendorConfig) -> Result<String, GateError> {
         let path = if config.type_ == "anthropic" {
             "messages"
         } else {
@@ -653,8 +651,8 @@ impl VendorManager {
         config: &VendorConfig,
         url: &str,
         include_content_type: bool,
-    ) -> Result<reqwest::RequestBuilder, NexusFlowError> {
-        let api_key = std::env::var(&config.api_key_env).map_err(|_| NexusFlowError::Config {
+    ) -> Result<reqwest::RequestBuilder, GateError> {
+        let api_key = std::env::var(&config.api_key_env).map_err(|_| GateError::Config {
             message: crate::i18n::t_args(
                 "vendor-api-key-env-not-set",
                 &[("env", config.api_key_env.clone())],
@@ -699,13 +697,13 @@ impl VendorManager {
 
     /// recId=4（W2）：出站错误分类 — reqwest 超时错误映射 `Timeout`
     /// （客户端可识别 504 语义），其余网络错误保持 `VendorUnavailable`。
-    fn outbound_send_error(vendor_id: &str, e: &reqwest::Error) -> NexusFlowError {
+    fn outbound_send_error(vendor_id: &str, e: &reqwest::Error) -> GateError {
         if e.is_timeout() {
-            NexusFlowError::Timeout {
+            GateError::Timeout {
                 vendor: vendor_id.to_string(),
             }
         } else {
-            NexusFlowError::VendorUnavailable {
+            GateError::VendorUnavailable {
                 vendor: vendor_id.to_string(),
             }
         }
@@ -719,9 +717,9 @@ impl VendorManager {
     /// - Open（含 half-open 准入超限）状态下直接拒绝，经
     ///   [`from_limiteron`] 还原为 `VendorUnavailable{... (circuit open)}`，
     ///   无 HTTP 调用；
-    /// - 执行路径错误是 NexusFlowError，经 [`to_limiteron`] 编码进库签名
+    /// - 执行路径错误是 GateError，经 [`to_limiteron`] 编码进库签名
     ///   要求的 `Result<T, LimiteronError>`，计失败与否由
-    ///   [`NexusFlowErrorClassifier`] 按 variant 语义判定。
+    ///   [`GateErrorClassifier`] 按 variant 语义判定。
     async fn execute_http_with_retry(
         client: &reqwest::Client,
         config: &VendorConfig,
@@ -730,7 +728,7 @@ impl VendorManager {
         retry_cfg: &RetrySection,
         #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker>,
         metrics: &GlobalMetrics,
-    ) -> Result<UnifiedResponse, NexusFlowError> {
+    ) -> Result<UnifiedResponse, GateError> {
         #[cfg(feature = "resilience")]
         {
             let vendor_id = config.id.clone();
@@ -785,7 +783,7 @@ impl VendorManager {
         converter: &dyn ProtocolConverter,
         retry_cfg: &RetrySection,
         metrics: &GlobalMetrics,
-    ) -> Result<UnifiedResponse, NexusFlowError> {
+    ) -> Result<UnifiedResponse, GateError> {
         let url = Self::build_vendor_url(config)?;
         let policy = RetryDelayPolicy::from_config(retry_cfg);
 
@@ -830,7 +828,7 @@ impl VendorManager {
                         //（此处即网络错误的 VendorUnavailable 映射）
                         if let Some(b) = budget {
                             if crate::utils::retry::budget_exceeded(budget_anchor, b, delay) {
-                                return Err(NexusFlowError::VendorUnavailable {
+                                return Err(GateError::VendorUnavailable {
                                     vendor: config.id.clone(),
                                 });
                             }
@@ -838,7 +836,7 @@ impl VendorManager {
                         tokio::time::sleep(delay).await;
                         continue;
                     }
-                    return Err(NexusFlowError::VendorUnavailable {
+                    return Err(GateError::VendorUnavailable {
                         vendor: config.id.clone(),
                     });
                 }
@@ -858,7 +856,7 @@ impl VendorManager {
                     "{}",
                     crate::i18n::t("vendor-upstream-non-success")
                 );
-                let error = NexusFlowError::VendorUnavailable {
+                let error = GateError::VendorUnavailable {
                     vendor: crate::i18n::t_args(
                         "vendor-upstream-status",
                         &[
@@ -907,12 +905,12 @@ impl VendorManager {
             let response_json: Value = match response.json().await {
                 Ok(json) => json,
                 Err(e) if e.is_timeout() => {
-                    return Err(NexusFlowError::Timeout {
+                    return Err(GateError::Timeout {
                         vendor: config.id.clone(),
                     });
                 }
                 Err(e) => {
-                    return Err(NexusFlowError::VendorUnavailable {
+                    return Err(GateError::VendorUnavailable {
                         vendor: crate::i18n::t_args(
                             "vendor-parse-error",
                             &[("error", e.to_string())],
@@ -1067,12 +1065,12 @@ impl VendorManager {
         &self,
         vendor_id: &str,
         request: UnifiedRequest,
-    ) -> Result<UnifiedResponse, NexusFlowError> {
+    ) -> Result<UnifiedResponse, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
                 .get(vendor_id)
-                .ok_or(NexusFlowError::VendorUnavailable {
+                .ok_or(GateError::VendorUnavailable {
                     vendor: vendor_id.to_string(),
                 })?
                 .clone()
@@ -1110,7 +1108,7 @@ impl VendorManager {
         };
         timeout(timeout_duration, response_rx)
             .await
-            .map_err(|_| NexusFlowError::Timeout {
+            .map_err(|_| GateError::Timeout {
                 vendor: vendor_id.to_string(),
             })??
     }
@@ -1120,7 +1118,7 @@ impl VendorManager {
     /// 流式路径此前不查上游状态码：非 2xx 时错误 JSON 正文会被当作 SSE 流
     /// 原样透传给客户端（伪 200 流），客户端与重试逻辑无法分辨成败。
     /// 此处对齐非流式路径（`execute_http_with_retry_inner`）的既有写法：
-    /// 读 body 记 warn 转 `NexusFlowError`，经 error.rs 固定 IntoResponse
+    /// 读 body 记 warn 转 `GateError`，经 error.rs 固定 IntoResponse
     /// 映射 —— 429 → `RateLimited`（映射 429，客户端可退避重试），
     /// 其余非 2xx → `VendorUnavailable`（映射 503）。
     /// 错误分支同步补 metrics（此前流式路径零指标，全仓唯一生产调用点
@@ -1130,7 +1128,7 @@ impl VendorManager {
         vendor_id: &str,
         start: Instant,
         response: reqwest::Response,
-    ) -> Result<reqwest::Response, NexusFlowError> {
+    ) -> Result<reqwest::Response, GateError> {
         if response.status().is_success() {
             return Ok(response);
         }
@@ -1150,11 +1148,11 @@ impl VendorManager {
         self.metrics
             .record_vendor_outcome_at(vendor_id, false, Instant::now());
         let error = if status.as_u16() == 429 {
-            NexusFlowError::RateLimited {
+            GateError::RateLimited {
                 vendor: vendor_id.to_string(),
             }
         } else {
-            NexusFlowError::VendorUnavailable {
+            GateError::VendorUnavailable {
                 vendor: crate::i18n::t_args(
                     "vendor-upstream-status",
                     &[
@@ -1190,14 +1188,14 @@ impl VendorManager {
         builder: reqwest::RequestBuilder,
         request_body: &Value,
         start: Instant,
-    ) -> Result<reqwest::Response, NexusFlowError> {
+    ) -> Result<reqwest::Response, GateError> {
         let send = || async {
             let response = if config.stream_ttft_ms > 0 {
                 // recId=4（W2）：流式 TTFT 超时 — 包住 `send` 发起至上游
                 // 响应头返回的段落；流建立前超时以 Err(Timeout) 返回。
                 // reqwest 0.13 RequestBuilder 无 Clone（try_clone：body 为
                 // 流时 None）—— 此处 body 尚未附加，必为 Some
-                let builder = builder.try_clone().ok_or_else(|| NexusFlowError::Config {
+                let builder = builder.try_clone().ok_or_else(|| GateError::Config {
                     message: crate::i18n::t_args(
                         "vendor-builder-not-cloneable",
                         &[("vendor", vendor_id.to_string())],
@@ -1212,20 +1210,20 @@ impl VendorManager {
                     Ok(Ok(resp)) => resp,
                     Ok(Err(e)) => return Err(Self::outbound_send_error(vendor_id, &e)),
                     Err(_) => {
-                        return Err(NexusFlowError::Timeout {
+                        return Err(GateError::Timeout {
                             vendor: vendor_id.to_string(),
                         })
                     }
                 }
             } else {
-                let builder = builder.try_clone().ok_or_else(|| NexusFlowError::Config {
+                let builder = builder.try_clone().ok_or_else(|| GateError::Config {
                     message: crate::i18n::t_args(
                         "vendor-builder-not-cloneable",
                         &[("vendor", vendor_id.to_string())],
                     ),
                 })?;
                 builder.json(request_body).send().await.map_err(|_e| {
-                    NexusFlowError::VendorUnavailable {
+                    GateError::VendorUnavailable {
                         vendor: vendor_id.to_string(),
                     }
                 })?
@@ -1268,13 +1266,12 @@ impl VendorManager {
         &self,
         vendor_id: &str,
         request: UnifiedRequest,
-    ) -> Result<impl futures::Stream<Item = Result<StreamChunk, NexusFlowError>>, NexusFlowError>
-    {
+    ) -> Result<impl futures::Stream<Item = Result<StreamChunk, GateError>>, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
                 .get(vendor_id)
-                .ok_or(NexusFlowError::VendorUnavailable {
+                .ok_or(GateError::VendorUnavailable {
                     vendor: vendor_id.to_string(),
                 })?
                 .clone()
@@ -1282,7 +1279,7 @@ impl VendorManager {
 
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check().await {
-            return Err(NexusFlowError::RateLimited {
+            return Err(GateError::RateLimited {
                 vendor: vendor_id.to_string(),
             });
         }
@@ -1308,7 +1305,7 @@ impl VendorManager {
             "openai" => self.openai_converter.clone(),
             "anthropic" => self.anthropic_converter.clone(),
             _ => {
-                return Err(NexusFlowError::Config {
+                return Err(GateError::Config {
                     message: crate::i18n::t("vendor-unknown-type"),
                 })
             }
@@ -1344,7 +1341,7 @@ impl VendorManager {
         // 字节流：permit move 进 unfold，流结束才释放（recId=5④）。
         // recId=4（W2）：chunk 间 idle 超时 — bytes.next() 按 0-约定包
         // timeout(stream_idle_ms)，超时产出 Err(Timeout) 并由下游分帧层
-        // 终止流（permit 随终止释放）；item 错误类型统一为 NexusFlowError。
+        // 终止流（permit 随终止释放）；item 错误类型统一为 GateError。
         let idle = Duration::from_millis(config.stream_idle_ms);
         let vendor_template = vendor_id.to_string();
         let inner = Box::pin(response.bytes_stream());
@@ -1357,10 +1354,7 @@ impl VendorManager {
                         Ok(next) => next,
                         Err(_) => {
                             let vendor = vendor_for_bytes.clone();
-                            return Some((
-                                Err(NexusFlowError::Timeout { vendor }),
-                                (inner, permit),
-                            ));
+                            return Some((Err(GateError::Timeout { vendor }), (inner, permit)));
                         }
                     }
                 } else {
@@ -1405,7 +1399,7 @@ impl VendorManager {
                                     .unwrap_or_else(|| crate::i18n::t("vendor-upstream-error"))
                             });
                             return Some((
-                                Err(NexusFlowError::VendorUnavailable {
+                                Err(GateError::VendorUnavailable {
                                     vendor: crate::i18n::t_args(
                                         "vendor-stream-error",
                                         &[("vendor", vendor.clone()), ("detail", detail)],
@@ -1435,12 +1429,12 @@ impl VendorManager {
                                 "{}",
                                 crate::i18n::t("vendor-upstream-stream-interrupted")
                             );
-                            // recId=4（W2）：上游错误已统一为 NexusFlowError ——
+                            // recId=4（W2）：上游错误已统一为 GateError ——
                             // idle 超时（Timeout）原样透传（api 层转 SSE error
                             // 事件终止）；其余 IO 错误保持既有包装语义
                             let err = match e {
-                                NexusFlowError::Timeout { .. } => e,
-                                other => NexusFlowError::VendorUnavailable {
+                                GateError::Timeout { .. } => e,
+                                other => GateError::VendorUnavailable {
                                     vendor: crate::i18n::t_args(
                                         "vendor-stream-interrupted",
                                         &[
@@ -1490,7 +1484,7 @@ impl VendorManager {
         &self,
         vendor_id: &str,
         request_body: Value,
-    ) -> Result<Value, NexusFlowError> {
+    ) -> Result<Value, GateError> {
         let vendor_type = self
             .fresh_config(vendor_id)
             .map(|c| c.type_)
@@ -1518,7 +1512,7 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
         path: &str,
-    ) -> Result<Value, NexusFlowError> {
+    ) -> Result<Value, GateError> {
         let start = Instant::now();
         let result = self
             .execute_passthrough_request_covered(vendor_id, request_body, path)
@@ -1557,7 +1551,7 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
         path: &str,
-    ) -> Result<Value, NexusFlowError> {
+    ) -> Result<Value, GateError> {
         #[cfg(feature = "resilience")]
         {
             if self.config.read().resilience.cover_all_paths {
@@ -1586,12 +1580,12 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
         path: &str,
-    ) -> Result<Value, NexusFlowError> {
+    ) -> Result<Value, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
                 .get(vendor_id)
-                .ok_or(NexusFlowError::VendorUnavailable {
+                .ok_or(GateError::VendorUnavailable {
                     vendor: vendor_id.to_string(),
                 })?
                 .clone()
@@ -1602,7 +1596,7 @@ impl VendorManager {
 
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check().await {
-            return Err(NexusFlowError::RateLimited {
+            return Err(GateError::RateLimited {
                 vendor: vendor_id.to_string(),
             });
         }
@@ -1641,7 +1635,7 @@ impl VendorManager {
                 "{}",
                 crate::i18n::t("vendor-upstream-non-success")
             );
-            return Err(NexusFlowError::VendorUnavailable {
+            return Err(GateError::VendorUnavailable {
                 vendor: crate::i18n::t_args(
                     "vendor-upstream-status",
                     &[
@@ -1657,12 +1651,12 @@ impl VendorManager {
         let response_json: Value = match response.json().await {
             Ok(json) => json,
             Err(e) if e.is_timeout() => {
-                return Err(NexusFlowError::Timeout {
+                return Err(GateError::Timeout {
                     vendor: vendor_id.to_string(),
                 });
             }
             Err(e) => {
-                return Err(NexusFlowError::VendorUnavailable {
+                return Err(GateError::VendorUnavailable {
                     vendor: crate::i18n::t_args("vendor-parse-error", &[("error", e.to_string())]),
                 });
             }
@@ -1693,18 +1687,18 @@ impl VendorManager {
     /// 执行零拷贝透传流式请求
     ///
     /// recId=4（W2）：流错误类型由 `reqwest::Error` 统一为
-    /// [`NexusFlowError`]（idle 超时以 `Timeout` 产出）；下游
+    /// [`GateError`]（idle 超时以 `Timeout` 产出）；下游
     /// `reframe_passthrough_stream` 泛型于 `E: Display`，无需改动。
     pub async fn execute_passthrough_stream_request(
         &self,
         vendor_id: &str,
         request_body: Value,
-    ) -> Result<impl futures::Stream<Item = Result<Bytes, NexusFlowError>>, NexusFlowError> {
+    ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
                 .get(vendor_id)
-                .ok_or(NexusFlowError::VendorUnavailable {
+                .ok_or(GateError::VendorUnavailable {
                     vendor: vendor_id.to_string(),
                 })?
                 .clone()
@@ -1715,7 +1709,7 @@ impl VendorManager {
 
         // Check Advanced Rate Limiter
         if !instance.advanced_limiter.check().await {
-            return Err(NexusFlowError::RateLimited {
+            return Err(GateError::RateLimited {
                 vendor: vendor_id.to_string(),
             });
         }
@@ -1769,10 +1763,7 @@ impl VendorManager {
                         Ok(next) => next,
                         Err(_) => {
                             let vendor = vendor_for_bytes.clone();
-                            return Some((
-                                Err(NexusFlowError::Timeout { vendor }),
-                                (inner, permit),
-                            ));
+                            return Some((Err(GateError::Timeout { vendor }), (inner, permit)));
                         }
                     }
                 } else {

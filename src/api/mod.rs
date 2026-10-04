@@ -27,7 +27,7 @@ pub use anthropic::messages;
 pub use global_state::{get_global_state, init_global_state};
 pub use openai::{chat_completions, embeddings};
 
-use crate::error::NexusFlowError;
+use crate::error::{GateError, NexusFlowError};
 use crate::i18n::t_args;
 // 仅 resilience 特性分支的重试预算代码（execute_request_with_fallback 等）使用
 #[cfg(feature = "resilience")]
@@ -120,8 +120,8 @@ pub(crate) fn truncate_payload(s: String) -> String {
 /// RateLimited 即上游/网关 429。提取不到返回 None。
 pub(crate) fn upstream_status_code(err: &NexusFlowError) -> Option<i32> {
     match err {
-        NexusFlowError::RateLimited { .. } => Some(429),
-        NexusFlowError::VendorUnavailable { vendor } => {
+        NexusFlowError::Gate(GateError::RateLimited { .. }) => Some(429),
+        NexusFlowError::Gate(GateError::VendorUnavailable { vendor }) => {
             let inner = vendor.rsplit('(').next()?;
             let digits: String = inner.chars().take_while(|c| c.is_ascii_digit()).collect();
             digits.parse().ok()
@@ -131,18 +131,13 @@ pub(crate) fn upstream_status_code(err: &NexusFlowError) -> Option<i32> {
 }
 
 /// recId=9④：失败路径落库的 status_code — 优先上游真实状态码（回归
-/// "上游 500 落库 500"），否则取 error.rs IntoResponse 的固定客户端映射
-/// （落库值与客户端实际收到的状态一致）。
+/// "上游 500 落库 500"），否则取核心错误固定客户端映射（GateError::
+/// status_code，与 IntoResponse 同源）；
+/// Database 等应用面错误 500（落库值与客户端实际收到的状态一致）。
 pub(crate) fn status_code_for_error(err: &NexusFlowError) -> i32 {
     upstream_status_code(err).unwrap_or(match err {
-        NexusFlowError::Validation { .. } => 400,
-        NexusFlowError::VendorUnavailable { .. } => 503,
-        NexusFlowError::Timeout { .. } => 504,
-        NexusFlowError::RateLimited { .. } => 429,
-        // recId=19(c)：全候选限流即 429（与 IntoResponse 映射一致）
-        NexusFlowError::AllVendorsThrottled { .. } => 429,
-        NexusFlowError::Protocol { .. } => 502,
-        _ => 500,
+        NexusFlowError::Gate(e) => e.status_code() as i32,
+        NexusFlowError::Database { .. } => 500,
     })
 }
 
@@ -207,9 +202,9 @@ pub(crate) enum ExclusionReason {
 async fn exclusion_reason(
     state: &std::sync::Arc<crate::api::state::ApiState>,
     vendor_id: &str,
-    e: &NexusFlowError,
+    e: &GateError,
 ) -> ExclusionReason {
-    if matches!(e, NexusFlowError::RateLimited { .. })
+    if matches!(e, GateError::RateLimited { .. })
         || state.vendor_manager.get_status(vendor_id).await
             == crate::vendor::VendorStatus::Throttled
     {
@@ -227,9 +222,9 @@ async fn exclusion_reason(
 #[cfg(feature = "resilience")]
 async fn finalize_fallback_error(
     state: &std::sync::Arc<crate::api::state::ApiState>,
-    original: NexusFlowError,
+    original: GateError,
     excluded: &[(String, ExclusionReason)],
-) -> NexusFlowError {
+) -> GateError {
     let all_throttled = !excluded.is_empty()
         && excluded
             .iter()
@@ -268,13 +263,13 @@ pub(crate) fn finalize_all_throttled(
     all_throttled: bool,
     resets: &[(String, Option<u64>)],
     hint_enabled: bool,
-    original: NexusFlowError,
-) -> NexusFlowError {
+    original: GateError,
+) -> GateError {
     if !hint_enabled || !all_throttled || resets.is_empty() {
         return original;
     }
     match resets.iter().filter_map(|(_, r)| *r).min() {
-        Some(secs) => NexusFlowError::AllVendorsThrottled {
+        Some(secs) => GateError::AllVendorsThrottled {
             retry_after_secs: secs,
         },
         None => original,
@@ -314,7 +309,7 @@ pub(crate) async fn execute_request_with_fallback(
         crate::protocol::UnifiedResponse,
         crate::router::RoutingDecision,
     ),
-    crate::error::NexusFlowError,
+    GateError,
 > {
     use crate::vendor::resilience::FallbackChain;
 
@@ -400,14 +395,14 @@ pub(crate) async fn execute_dispatch_with_fallback<T, F, Fut>(
     initial: crate::router::RoutingDecision,
     same_protocol_only: bool,
     dispatch: F,
-) -> Result<(T, crate::router::RoutingDecision), crate::error::NexusFlowError>
+) -> Result<(T, crate::router::RoutingDecision), GateError>
 where
     // 派发闭包持有决策的**所有权**并返回不借用环境的 future（owned
     // captures）：稳定 Rust 下 Fn 返回的固定 Fut 类型无法表达「借用闭包
     // 参数」的高阶生命周期（async-book 经典限制）。clone 成本
     //（RoutingDecision / Arc / Value）相对 HTTP 往返可忽略。
     F: Fn(crate::router::RoutingDecision) -> Fut,
-    Fut: std::future::Future<Output = Result<T, crate::error::NexusFlowError>>,
+    Fut: std::future::Future<Output = Result<T, GateError>>,
 {
     use crate::vendor::resilience::FallbackChain;
 
@@ -628,8 +623,7 @@ mod fallback_guard_tests {
         pre_sleep: Duration,
     ) -> impl Fn(
         crate::router::RoutingDecision,
-    )
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), NexusFlowError>>>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GateError>>>> {
         move |_d: crate::router::RoutingDecision| {
             let calls = calls.clone();
             Box::pin(async move {
@@ -637,7 +631,7 @@ mod fallback_guard_tests {
                 if pre_sleep > Duration::ZERO {
                     tokio::time::sleep(pre_sleep).await;
                 }
-                Err::<(), NexusFlowError>(NexusFlowError::VendorUnavailable {
+                Err::<(), GateError>(GateError::VendorUnavailable {
                     vendor: "stub".into(),
                 })
             })
@@ -928,7 +922,7 @@ mod cooldown_retry_after {
     /// 收尾纯判定：min 重置秒数、混合原因/hint 关/重置不可得/空集 → 原错误。
     #[test]
     fn finalize_all_throttled_min_reset_and_gates() {
-        let original = || NexusFlowError::VendorUnavailable {
+        let original = || GateError::VendorUnavailable {
             vendor: "v-a (500)".into(),
         };
         // 全 Throttled + hint 开 → min(30, 60) = 30
@@ -939,7 +933,7 @@ mod cooldown_retry_after {
             original(),
         );
         match out {
-            NexusFlowError::AllVendorsThrottled { retry_after_secs } => {
+            GateError::AllVendorsThrottled { retry_after_secs } => {
                 assert_eq!(retry_after_secs, 30, "min 重置秒数");
             }
             other => panic!("期望 AllVendorsThrottled，实际 {other}"),
@@ -953,29 +947,29 @@ mod cooldown_retry_after {
         );
         assert!(matches!(
             out,
-            NexusFlowError::AllVendorsThrottled {
+            GateError::AllVendorsThrottled {
                 retry_after_secs: 45
             }
         ));
         // 混合原因（非全 Throttled）→ 原错误
         assert!(matches!(
             finalize_all_throttled(false, &[("v-a".to_string(), Some(30))], true, original()),
-            NexusFlowError::VendorUnavailable { .. }
+            GateError::VendorUnavailable { .. }
         ));
         // hint 关 → 原错误
         assert!(matches!(
             finalize_all_throttled(true, &[("v-a".to_string(), Some(30))], false, original()),
-            NexusFlowError::VendorUnavailable { .. }
+            GateError::VendorUnavailable { .. }
         ));
         // 重置全部不可得 → 原错误
         assert!(matches!(
             finalize_all_throttled(true, &[("v-a".to_string(), None)], true, original()),
-            NexusFlowError::VendorUnavailable { .. }
+            GateError::VendorUnavailable { .. }
         ));
         // 空排除集 → 原错误
         assert!(matches!(
             finalize_all_throttled(true, &[], true, original()),
-            NexusFlowError::VendorUnavailable { .. }
+            GateError::VendorUnavailable { .. }
         ));
     }
 
@@ -1006,9 +1000,11 @@ mod cooldown_retry_after {
             chat_request(),
         )
         .await;
-        let err = result.expect_err("两 vendor 限流必须失败");
+        let err = NexusFlowError::from(result.expect_err("两 vendor 限流必须失败"));
         let secs = match &err {
-            NexusFlowError::AllVendorsThrottled { retry_after_secs } => *retry_after_secs,
+            NexusFlowError::Gate(GateError::AllVendorsThrottled { retry_after_secs }) => {
+                *retry_after_secs
+            }
             other => panic!("期望 AllVendorsThrottled，实际 {other}"),
         };
         assert!(secs >= 1, "重置秒数取自窗口快照: {secs}");
@@ -1050,7 +1046,7 @@ mod cooldown_retry_after {
         .await;
         let err = result.expect_err("全部候选限流必须失败");
         assert!(
-            matches!(err, NexusFlowError::AllVendorsThrottled { .. }),
+            matches!(err, GateError::AllVendorsThrottled { .. }),
             "第二耗尽分支（重路由无候选）也应收敛 AllVendorsThrottled: {err}"
         );
     }
@@ -1085,8 +1081,8 @@ mod cooldown_retry_after {
         .await;
         let err = result.expect_err("混合原因最终必须失败");
         match &err {
-            NexusFlowError::VendorUnavailable { .. } => {
-                assert_eq!(status_code_for_error(&err), 503);
+            GateError::VendorUnavailable { .. } => {
+                assert_eq!(err.status_code() as i32, 503);
             }
             other => panic!("混合原因必须保持原错误冒泡，实际 {other}"),
         }
@@ -1115,7 +1111,7 @@ mod cooldown_retry_after {
         .await;
         let err = result.expect_err("全部候选限流必须失败");
         assert!(
-            matches!(err, NexusFlowError::RateLimited { .. }),
+            matches!(err, GateError::RateLimited { .. }),
             "默认关必须保持原错误（RateLimited），实际 {err}"
         );
     }

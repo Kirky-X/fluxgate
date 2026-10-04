@@ -29,7 +29,7 @@ const WINDOW_SLEEP_MS: u64 = 400;
 
 use limiteron::error::CircuitState;
 use nexusflow::config::{Config, ConfigManager, RetrySection, VendorConfig};
-use nexusflow::error::NexusFlowError;
+use nexusflow::error::GateError;
 use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
 use nexusflow::router::Router;
 use nexusflow::vendor::VendorManager;
@@ -207,7 +207,7 @@ async fn open_circuit_rejects_requests_fast_without_http() {
 
     let err = result.expect_err("open circuit should reject");
     match &err {
-        NexusFlowError::VendorUnavailable { vendor } => {
+        GateError::VendorUnavailable { vendor } => {
             assert!(
                 vendor.contains("circuit open"),
                 "error should mention 'circuit open', got: {}",

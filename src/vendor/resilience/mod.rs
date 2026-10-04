@@ -11,7 +11,7 @@
 //! finalize_transition）且提供假时钟注入，故删除等价手写。
 //! resilience 模块现仅存：
 //! - [`FallbackChain`]（供 API 层换路 fallback，recId=7）
-//! - [`error_map`]：NexusFlowError ↔ LimiteronError 双向映射
+//! - [`error_map`]：GateError ↔ LimiteronError 双向映射
 //!   （limiteron `execute`/`FailureClassifier` 签名锁定 LimiteronError，
 //!   非等价手写熔断逻辑）
 //!
@@ -22,7 +22,6 @@ pub mod error_map;
 pub mod fallback;
 
 pub use error_map::{
-    from_circuit_call, from_limiteron, is_circuit_open_error, to_limiteron,
-    NexusFlowErrorClassifier,
+    from_circuit_call, from_limiteron, is_circuit_open_error, to_limiteron, GateErrorClassifier,
 };
 pub use fallback::{FallbackChain, FallbackTarget, FallbackTrigger};

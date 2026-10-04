@@ -39,14 +39,14 @@
 //! logging         (独立)
 //! ```
 
-use nexusflow::NexusFlowError;
+use nexusflow::{GateError, NexusFlowError};
 
 /// 验证 NexusFlowError 在所有组合下都可用（核心错误类型）
 #[test]
 fn test_core_error_always_available() {
-    let err = NexusFlowError::Config {
+    let err = NexusFlowError::from(GateError::Config {
         message: "test".to_string(),
-    };
+    });
     // 双轨约定：Display 恒英文规范串，本地化文案走 user_message()（src/error.rs:13）
     assert_eq!(err.to_string(), "Configuration error: test");
 }
@@ -180,9 +180,9 @@ fn test_grpc_module_available() {
 #[test]
 fn test_core_types_without_sdk() {
     use nexusflow::{Config, NexusFlowError};
-    let err = NexusFlowError::Config {
+    let err = NexusFlowError::from(GateError::Config {
         message: "core".to_string(),
-    };
+    });
     assert_eq!(err.to_string(), "Configuration error: core");
     let _ = std::marker::PhantomData::<Config>;
 }

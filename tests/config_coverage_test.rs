@@ -13,12 +13,12 @@
 //! 分支也一并锁定。
 //!
 //! 全部走公开 API：ConfigLoader::load 读临时目录中的 TOML，ConfigManager
-//! 做 RMW 与模型解析断言；错误分支断言 NexusFlowError 变体与插值参数，
+//! 做 RMW 与模型解析断言；错误分支断言 GateError 变体与插值参数，
 //! 不做"调用不报错"式断言。
 
 use nexusflow::config::loader::ConfigLoader;
 use nexusflow::config::{Config, ConfigManager, RateLimitConfig, RoutingSection, ServerConfig};
-use nexusflow::error::NexusFlowError;
+use nexusflow::error::GateError;
 use std::path::PathBuf;
 
 mod common;
@@ -32,7 +32,7 @@ fn temp_toml(name: &str, content: &str) -> PathBuf {
     path
 }
 
-fn load_from(path: &std::path::Path) -> Result<ConfigManager, NexusFlowError> {
+fn load_from(path: &std::path::Path) -> Result<ConfigManager, GateError> {
     ConfigLoader::new(Some(path.to_string_lossy().to_string())).load()
 }
 
@@ -230,7 +230,7 @@ concurrency = { requests_per_second = 1 }
     );
     // ConfigManager 无 Debug，map 抹掉 Ok 载荷后仅对错误分支做形态断言
     match load_from(&path).map(|_| ()) {
-        Err(NexusFlowError::Config { message }) => {
+        Err(GateError::Config { message }) => {
             assert!(
                 message.contains("dup_vendor"),
                 "重复 vendor 错误必须插值携带 id: {message}"
@@ -262,7 +262,7 @@ model_id = "dup-model"
 "#,
     );
     match load_from(&path).map(|_| ()) {
-        Err(NexusFlowError::Config { message }) => {
+        Err(GateError::Config { message }) => {
             assert!(
                 message.contains("dup-model") && message.contains("dup_models_vendor"),
                 "重复 model 错误必须插值携带 vendor 与 model id: {message}"
@@ -296,7 +296,7 @@ concurrency = { requests_per_second = 1 }
             &format!("{VENDOR_TOML}\n[resilience]\ncircuit_open_timeout_ms = {value}\n"),
         );
         match load_from(&path).map(|_| ()) {
-            Err(NexusFlowError::Config { message }) => {
+            Err(GateError::Config { message }) => {
                 assert!(
                     message.contains(&value.to_string()),
                     "窗口下限错误必须插值携带配置值: {message}"
@@ -318,7 +318,7 @@ fn loader_reports_toml_syntax_and_type_errors_distinctly() {
     // TOML 语法错 → confers 加载层错误（config-load-failed）
     let syntax = temp_toml("bad-syntax.toml", "this is not [ valid toml");
     match load_from(&syntax).map(|_| ()) {
-        Err(NexusFlowError::Config { message }) => {
+        Err(GateError::Config { message }) => {
             assert_ne!(
                 message, "config-load-failed",
                 "加载错误键必须注册进 FTL 目录"
@@ -345,7 +345,7 @@ concurrency = { requests_per_second = 1 }
 "#,
     );
     match load_from(&mismatch).map(|_| ()) {
-        Err(NexusFlowError::Config { message }) => {
+        Err(GateError::Config { message }) => {
             assert_ne!(
                 message, "config-parse-failed",
                 "解析错误键必须注册进 FTL 目录"
@@ -364,7 +364,7 @@ fn loader_reports_file_not_found_with_path() {
     let missing = std::env::temp_dir().join("nx-config-cov-definitely-missing.toml");
     let _ = std::fs::remove_file(&missing);
     match load_from(&missing).map(|_| ()) {
-        Err(NexusFlowError::Config { message }) => {
+        Err(GateError::Config { message }) => {
             assert!(
                 message.contains(missing.to_string_lossy().as_ref()),
                 "文件缺失错误必须插值携带路径: {message}"
@@ -436,7 +436,7 @@ fn update_without_path_is_rejected_and_memory_unchanged() {
     let manager = ConfigManager::new(minimal_config("v1"));
     let result = manager.update_config(minimal_config("v2"));
     assert!(
-        matches!(result, Err(NexusFlowError::Config { .. })),
+        matches!(result, Err(GateError::Config { .. })),
         "无路径记忆时 update 必须拒绝落盘（config-path-unknown）"
     );
     assert!(manager.get_vendor("v1").is_some(), "内存态不变");
@@ -495,7 +495,7 @@ fn rmw_closure_error_keeps_memory_and_disk() {
     let before = std::fs::read(&path).unwrap();
 
     let result = manager.update_config_with(|_config| {
-        Err(NexusFlowError::Config {
+        Err(GateError::Config {
             message: "mutate rejected".to_string(),
         })
     });

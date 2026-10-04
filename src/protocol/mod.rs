@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 
 pub mod anthropic_converter;
 pub mod embedding_converter;
@@ -34,24 +34,15 @@ pub enum Protocol {
 pub trait ProtocolConverter: Send + Sync {
     fn input_protocol(&self) -> Protocol;
     fn output_protocol(&self) -> Protocol;
-    fn to_unified(&self, body: serde_json::Value) -> Result<UnifiedRequest, NexusFlowError>;
+    fn to_unified(&self, body: serde_json::Value) -> Result<UnifiedRequest, GateError>;
     /// 将 UnifiedRequest 转换为外部 API 请求格式 (如 Anthropic → OpenAI)
-    fn request_to_external(
-        &self,
-        request: UnifiedRequest,
-    ) -> Result<serde_json::Value, NexusFlowError>;
+    fn request_to_external(&self, request: UnifiedRequest) -> Result<serde_json::Value, GateError>;
     fn response_to_external(
         &self,
         response: UnifiedResponse,
-    ) -> Result<serde_json::Value, NexusFlowError>;
-    fn parse_response(
-        &self,
-        response: serde_json::Value,
-    ) -> Result<UnifiedResponse, NexusFlowError>;
-    fn stream_chunk_to_external(
-        &self,
-        chunk: StreamChunk,
-    ) -> Result<serde_json::Value, NexusFlowError>;
+    ) -> Result<serde_json::Value, GateError>;
+    fn parse_response(&self, response: serde_json::Value) -> Result<UnifiedResponse, GateError>;
+    fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<serde_json::Value, GateError>;
 
     /// 上游 SSE 帧 `data` 负载 → IR StreamChunk（recId=3 阶段二反向解析）。
     ///
@@ -71,10 +62,7 @@ pub trait ProtocolConverter: Send + Sync {
 
     /// 透传请求体（零拷贝优化）
     /// 当入站协议与出站协议相同时，直接返回原始请求体，避免序列化/反序列化开销
-    fn passthrough_request(
-        &self,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value, NexusFlowError> {
+    fn passthrough_request(&self, body: serde_json::Value) -> Result<serde_json::Value, GateError> {
         Ok(body)
     }
 
@@ -82,7 +70,7 @@ pub trait ProtocolConverter: Send + Sync {
     fn passthrough_response(
         &self,
         response: serde_json::Value,
-    ) -> Result<serde_json::Value, NexusFlowError> {
+    ) -> Result<serde_json::Value, GateError> {
         Ok(response)
     }
 }
@@ -105,8 +93,8 @@ mod default_impl_tests {
             Protocol::OpenAI
         }
 
-        fn to_unified(&self, _body: serde_json::Value) -> Result<UnifiedRequest, NexusFlowError> {
-            Err(NexusFlowError::Validation {
+        fn to_unified(&self, _body: serde_json::Value) -> Result<UnifiedRequest, GateError> {
+            Err(GateError::Validation {
                 field: "unsupported".into(),
             })
         }
@@ -114,8 +102,8 @@ mod default_impl_tests {
         fn request_to_external(
             &self,
             _request: UnifiedRequest,
-        ) -> Result<serde_json::Value, NexusFlowError> {
-            Err(NexusFlowError::Validation {
+        ) -> Result<serde_json::Value, GateError> {
+            Err(GateError::Validation {
                 field: "unsupported".into(),
             })
         }
@@ -123,8 +111,8 @@ mod default_impl_tests {
         fn response_to_external(
             &self,
             _response: UnifiedResponse,
-        ) -> Result<serde_json::Value, NexusFlowError> {
-            Err(NexusFlowError::Validation {
+        ) -> Result<serde_json::Value, GateError> {
+            Err(GateError::Validation {
                 field: "unsupported".into(),
             })
         }
@@ -132,8 +120,8 @@ mod default_impl_tests {
         fn parse_response(
             &self,
             _response: serde_json::Value,
-        ) -> Result<UnifiedResponse, NexusFlowError> {
-            Err(NexusFlowError::Validation {
+        ) -> Result<UnifiedResponse, GateError> {
+            Err(GateError::Validation {
                 field: "unsupported".into(),
             })
         }
@@ -141,8 +129,8 @@ mod default_impl_tests {
         fn stream_chunk_to_external(
             &self,
             _chunk: StreamChunk,
-        ) -> Result<serde_json::Value, NexusFlowError> {
-            Err(NexusFlowError::Validation {
+        ) -> Result<serde_json::Value, GateError> {
+            Err(GateError::Validation {
                 field: "unsupported".into(),
             })
         }
@@ -188,7 +176,7 @@ mod default_impl_tests {
             usage: Default::default(),
         };
 
-        let is_validation = |e: NexusFlowError| matches!(e, NexusFlowError::Validation { .. });
+        let is_validation = |e: GateError| matches!(e, GateError::Validation { .. });
         assert!(is_validation(
             c.to_unified(serde_json::json!({})).unwrap_err()
         ));

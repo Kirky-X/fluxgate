@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use super::{Config, ConfigManager};
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::i18n::t_args;
 use confers::types::{AnnotatedValue, ConfigValue};
 use std::path::Path;
@@ -54,11 +54,11 @@ impl ConfigLoader {
         }
     }
 
-    pub fn load(&self) -> Result<ConfigManager, NexusFlowError> {
+    pub fn load(&self) -> Result<ConfigManager, GateError> {
         let path = Path::new(&self.path);
 
         if !path.exists() {
-            return Err(NexusFlowError::Config {
+            return Err(GateError::Config {
                 message: t_args("config-file-not-found", &[("path", self.path.clone())]),
             });
         }
@@ -68,13 +68,12 @@ impl ConfigLoader {
         // （防不可信输入穿越）；此处路径来自操作者显式 CLI 参数（可信输入），
         // 放行绝对路径，symlink 检查与 max_size 防护保留默认开启。
         let loader_config = confers::loader::LoaderConfig::new().allow_absolute();
-        let annotated = confers::loader::load_file(path, &loader_config).map_err(|e| {
-            NexusFlowError::Config {
+        let annotated =
+            confers::loader::load_file(path, &loader_config).map_err(|e| GateError::Config {
                 message: t_args("config-load-failed", &[("error", e.to_string())]),
-            }
-        })?;
+            })?;
         let json = config_value_to_json(&annotated.inner);
-        let config: Config = serde_json::from_value(json).map_err(|e| NexusFlowError::Config {
+        let config: Config = serde_json::from_value(json).map_err(|e| GateError::Config {
             message: t_args("config-parse-failed", &[("error", e.to_string())]),
         })?;
 
@@ -93,11 +92,11 @@ impl ConfigLoader {
 /// vendor/model id 去重是跨 Vec 条目的唯一性约束，confers::validator 的
 /// ValidationRule 仅支持字段级规则（MinLength/Range/Email 等，见
 /// confers/src/impl_/validator.rs:42-62），无法表达，故保留手写。
-pub fn validate_config(config: &Config) -> Result<(), NexusFlowError> {
+pub fn validate_config(config: &Config) -> Result<(), GateError> {
     let mut vendor_ids = std::collections::HashSet::new();
     for vendor in &config.vendors {
         if !vendor_ids.insert(&vendor.id) {
-            return Err(NexusFlowError::Config {
+            return Err(GateError::Config {
                 message: t_args(
                     "config-duplicate-vendor-id",
                     &[("vendor", vendor.id.clone())],
@@ -110,7 +109,7 @@ pub fn validate_config(config: &Config) -> Result<(), NexusFlowError> {
         let mut model_ids = std::collections::HashSet::new();
         for model in &vendor.models {
             if !model_ids.insert(&model.model_id) {
-                return Err(NexusFlowError::Config {
+                return Err(GateError::Config {
                     message: t_args(
                         "config-duplicate-model-id",
                         &[
@@ -141,7 +140,7 @@ pub fn validate_config(config: &Config) -> Result<(), NexusFlowError> {
     // 窗口 <100ms 使 CB Open→HalfOpen 即刻转换：故障期退化为探针风暴，
     // 等于关闭熔断冷却。加载与 POST /admin/config 热更新共用本函数，两路同拒。
     if config.resilience.circuit_open_timeout_ms < 100 {
-        return Err(NexusFlowError::Config {
+        return Err(GateError::Config {
             message: t_args(
                 "config-circuit-open-timeout-too-small",
                 &[(

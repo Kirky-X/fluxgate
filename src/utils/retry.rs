@@ -17,7 +17,7 @@
 //! `with_retry(f, initial_error)`）。重试延迟计算已迁移
 //! `limiteron::retry::delay_for_attempt`（recId=7，见 [`retry_delay_for`]）。
 
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::i18n::t;
 // 仅 vendor-management 分支使用（spread_delay/retry_delay_for 同在该 feature 下）
 #[cfg(feature = "vendor-management")]
@@ -161,14 +161,14 @@ pub fn extract_status_code(error: &str) -> u16 {
 }
 
 /// 判断错误是否可重试
-pub fn is_retryable_error(error: &NexusFlowError) -> bool {
+pub fn is_retryable_error(error: &GateError) -> bool {
     match error {
-        NexusFlowError::VendorUnavailable { vendor, .. } => {
+        GateError::VendorUnavailable { vendor, .. } => {
             let code = extract_status_code(vendor);
             let category = ErrorCategory::from_status_code(code);
             category.is_retryable()
         }
-        NexusFlowError::Timeout { .. } => true,
+        GateError::Timeout { .. } => true,
         _ => false,
     }
 }
@@ -351,17 +351,17 @@ pub fn amplification_guard(r: f64, f: f64, c: f64, lambda: f64) -> (bool, bool) 
 #[allow(clippy::too_many_arguments)]
 pub async fn with_retry<F, Fut, T>(
     mut f: F,
-    initial_error: Option<NexusFlowError>,
-) -> Result<T, NexusFlowError>
+    initial_error: Option<GateError>,
+) -> Result<T, GateError>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, NexusFlowError>>,
+    Fut: std::future::Future<Output = Result<T, GateError>>,
 {
     // 确定初始错误类别
     let initial_category = if let Some(ref err) = initial_error {
         match err {
-            NexusFlowError::Timeout { .. } => ErrorCategory::RetryableShort,
-            NexusFlowError::VendorUnavailable { vendor, .. } => {
+            GateError::Timeout { .. } => ErrorCategory::RetryableShort,
+            GateError::VendorUnavailable { vendor, .. } => {
                 let code = extract_status_code(vendor);
                 ErrorCategory::from_status_code(code)
             }
@@ -374,7 +374,7 @@ where
     let strategy = RetryStrategy::for_category(initial_category);
 
     if strategy.max_retries == 0 {
-        return Err(initial_error.unwrap_or(NexusFlowError::Protocol {
+        return Err(initial_error.unwrap_or(GateError::Protocol {
             source: t("utils-retry-unknown-error"),
             inner: None,
         }));
@@ -402,7 +402,7 @@ where
         }
     }
 
-    Err(last_error.unwrap_or(NexusFlowError::Protocol {
+    Err(last_error.unwrap_or(GateError::Protocol {
         source: t("utils-retry-max-retries"),
         inner: None,
     }))

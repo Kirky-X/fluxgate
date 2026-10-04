@@ -5,15 +5,15 @@
 
 // recId=15③：原 `use super::*`（供已删除的 embedding_response_from_openai
 // 引用 IR 类型）随死代码一并移除
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use serde_json::{json, Value};
 
 /// OpenAI Embedding 请求转换
-pub fn embedding_request_to_openai(body: Value) -> Result<Value, NexusFlowError> {
+pub fn embedding_request_to_openai(body: Value) -> Result<Value, GateError> {
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
-        .ok_or(NexusFlowError::Validation {
+        .ok_or(GateError::Validation {
             field: "model".into(),
         })?;
 

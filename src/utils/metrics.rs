@@ -1484,17 +1484,16 @@ mod tests {
 
     /// recId=7（W5）429 感知对照断言：RateLimited 计入失败率滑窗
     ///（failure window 视角是失败），而 CB 分类器对其无感
-    ///（error_map.rs NexusFlowErrorClassifier 的既有语义——独立计数、
+    ///（error_map.rs GateErrorClassifier 的既有语义——独立计数、
     /// 不影响 CB 自身的 failure_count）。
     #[cfg(feature = "resilience")]
     #[test]
     fn rate_limited_counts_in_failure_window_but_not_circuit_breaker() {
-        use crate::vendor::resilience::error_map::{to_limiteron, NexusFlowErrorClassifier};
+        use crate::vendor::resilience::error_map::{to_limiteron, GateErrorClassifier};
         use limiteron::circuit::FailureClassifier as _;
 
-        let classifier = NexusFlowErrorClassifier;
-        let encoded =
-            to_limiteron(&crate::error::NexusFlowError::RateLimited { vendor: "v".into() });
+        let classifier = GateErrorClassifier;
+        let encoded = to_limiteron(&crate::error::GateError::RateLimited { vendor: "v".into() });
         assert!(
             !classifier.is_counted_as_failure(&encoded),
             "CB 分类器对 RateLimited 必须无感（既有语义，对照基线）"

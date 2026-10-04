@@ -23,7 +23,7 @@ mod di_container {
     use inklog::integrations::kit::InklogModule;
     use limiteron::integrations::kit::LimiteronModule;
     use nexusflow::di::{build_kit_with_config, verify_kit};
-    use nexusflow::error::NexusFlowError;
+    use nexusflow::error::{GateError, NexusFlowError};
     use oxcache::integrations::kit::{OxcacheConfig, OxcacheModule};
     use trait_kit::prelude::*;
 
@@ -109,13 +109,13 @@ mod di_container {
             .await
             .expect_err("非法 db url 必须让 build 失败");
         match err {
-            NexusFlowError::Config { message } => {
+            NexusFlowError::Gate(GateError::Config { message }) => {
                 assert!(
                     message.starts_with("DI kit build failed"),
                     "错误消息必须带 build 失败前缀: {message}"
                 );
             }
-            other => panic!("必须映射为 NexusFlowError::Config: {other:?}"),
+            other => panic!("必须映射为 NexusFlowError::Gate(GateError::Config): {other:?}"),
         }
     }
 
@@ -125,14 +125,14 @@ mod di_container {
         let kit = AsyncKit::new().build().await.expect("空 kit 可构建");
         let result = verify_kit(&kit);
         match result {
-            Err(NexusFlowError::Config { message }) => {
+            Err(NexusFlowError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("DI require"),
                     "错误消息必须指明 require 失败: {message}"
                 );
             }
             Ok(()) => panic!("空 kit 不得通过 verify_kit"),
-            other => panic!("必须映射为 NexusFlowError::Config: {other:?}"),
+            other => panic!("必须映射为 NexusFlowError::Gate(GateError::Config): {other:?}"),
         }
     }
 }

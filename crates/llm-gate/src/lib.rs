@@ -13,4 +13,5 @@
 //! 模块按 feature 门控：config/error/i18n/protocol/utils 常开，
 //! vendor/router/resilience/cost-tracking 按 feature 编译（见 Cargo.toml）。
 
+pub mod error;
 pub mod i18n;

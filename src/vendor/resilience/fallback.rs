@@ -11,7 +11,7 @@
 //! - `next_after_failure` 返回 priority 数值大于 failed 的最小 priority target
 //!   —— 即"降级到下一档"，所有 fallback 用尽时返回 None
 
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::utils::retry::extract_status_code;
 
 /// 单个 fallback 目标 — vendor + model + 优先级
@@ -49,23 +49,23 @@ impl FallbackChain {
     }
 
     /// 判断当前错误是否应触发 fallback
-    pub fn should_trigger(&self, error: &NexusFlowError) -> bool {
+    pub fn should_trigger(&self, error: &GateError) -> bool {
         match self.trigger {
             FallbackTrigger::All => true,
-            FallbackTrigger::Timeout => matches!(error, NexusFlowError::Timeout { .. }),
+            FallbackTrigger::Timeout => matches!(error, GateError::Timeout { .. }),
             FallbackTrigger::RateLimited => match error {
-                NexusFlowError::RateLimited { .. } => true,
-                NexusFlowError::VendorUnavailable { vendor } => {
+                GateError::RateLimited { .. } => true,
+                GateError::VendorUnavailable { vendor } => {
                     !is_circuit_open(vendor) && extract_status_code(vendor) == 429
                 }
                 _ => false,
             },
             FallbackTrigger::CircuitOpen => match error {
-                NexusFlowError::VendorUnavailable { vendor } => is_circuit_open(vendor),
+                GateError::VendorUnavailable { vendor } => is_circuit_open(vendor),
                 _ => false,
             },
             FallbackTrigger::Http5xx => match error {
-                NexusFlowError::VendorUnavailable { vendor } => {
+                GateError::VendorUnavailable { vendor } => {
                     // 排除 circuit open 错误（由 CircuitOpen 触发器处理）
                     !is_circuit_open(vendor)
                         && matches!(extract_status_code(vendor), 500 | 502 | 503)
@@ -82,11 +82,7 @@ impl FallbackChain {
     /// 2. 找到 failed vendor 的 priority
     /// 3. 在所有 priority 数值大于 failed 的 target 中，选 priority 最小的
     /// 4. 若无更大 priority 的 target（链已用尽）→ None
-    pub fn next_after_failure(
-        &self,
-        failed: &str,
-        error: &NexusFlowError,
-    ) -> Option<&FallbackTarget> {
+    pub fn next_after_failure(&self, failed: &str, error: &GateError) -> Option<&FallbackTarget> {
         if !self.should_trigger(error) {
             return None;
         }

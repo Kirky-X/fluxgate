@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use super::*;
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -33,11 +33,11 @@ impl ProtocolConverter for AnthropicConverter {
         Protocol::Anthropic
     }
 
-    fn to_unified(&self, body: Value) -> Result<UnifiedRequest, NexusFlowError> {
+    fn to_unified(&self, body: Value) -> Result<UnifiedRequest, GateError> {
         let model = body
             .get("model")
             .and_then(|v| v.as_str())
-            .ok_or(NexusFlowError::Validation {
+            .ok_or(GateError::Validation {
                 field: "model".into(),
             })?
             .to_lowercase();
@@ -45,7 +45,7 @@ impl ProtocolConverter for AnthropicConverter {
         let messages = body
             .get("messages")
             .and_then(|v| v.as_array())
-            .ok_or(NexusFlowError::Validation {
+            .ok_or(GateError::Validation {
                 field: "messages".into(),
             })?
             .iter()
@@ -139,7 +139,7 @@ impl ProtocolConverter for AnthropicConverter {
         })
     }
 
-    fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, NexusFlowError> {
+    fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, GateError> {
         // recId=8④：Role::System 消息提升为 Anthropic 顶层 system 参数
         // （Anthropic messages 数组不接受 system 角色，直接放入会被上游拒收）
         let system_text = extract_system_text(&request.messages);
@@ -192,8 +192,8 @@ impl ProtocolConverter for AnthropicConverter {
         Ok(body)
     }
 
-    fn response_to_external(&self, response: UnifiedResponse) -> Result<Value, NexusFlowError> {
-        let choice = response.choices.first().ok_or(NexusFlowError::Validation {
+    fn response_to_external(&self, response: UnifiedResponse) -> Result<Value, GateError> {
+        let choice = response.choices.first().ok_or(GateError::Validation {
             field: "choices".into(),
         })?;
 
@@ -222,7 +222,7 @@ impl ProtocolConverter for AnthropicConverter {
         }))
     }
 
-    fn parse_response(&self, response: Value) -> Result<UnifiedResponse, NexusFlowError> {
+    fn parse_response(&self, response: Value) -> Result<UnifiedResponse, GateError> {
         // Check for error response
         if let Some(error_obj) = response.get("error").and_then(|v| v.as_object()) {
             let message = error_obj
@@ -235,7 +235,7 @@ impl ProtocolConverter for AnthropicConverter {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            return Err(NexusFlowError::Protocol {
+            return Err(GateError::Protocol {
                 source: t_args(
                     "protocol-anthropic-error",
                     &[("type", error_type), ("message", message)],
@@ -365,7 +365,7 @@ impl ProtocolConverter for AnthropicConverter {
         })
     }
 
-    fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<Value, NexusFlowError> {
+    fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<Value, GateError> {
         match chunk {
             StreamChunk::Content {
                 index: _,
@@ -696,7 +696,7 @@ fn extract_delta_text(delta: &MessageContent) -> String {
     }
 }
 
-fn parse_anthropic_message(json: &Value) -> Result<Message, NexusFlowError> {
+fn parse_anthropic_message(json: &Value) -> Result<Message, GateError> {
     let role = json.get("role").and_then(|v| v.as_str()).unwrap_or("user");
 
     let role = match role {
@@ -768,7 +768,7 @@ fn parse_anthropic_message(json: &Value) -> Result<Message, NexusFlowError> {
         }
         None => MessageContent::Text(String::new()),
         _ => {
-            return Err(NexusFlowError::Validation {
+            return Err(GateError::Validation {
                 field: "content".into(),
             })
         }

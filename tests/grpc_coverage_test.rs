@@ -20,7 +20,7 @@ use nexusflow::config::{
     Config, ConfigManager, DatabaseConfig, GlobalModelConfig, GrpcConfig, ModelConfig,
     ServerConfig, VendorConfig,
 };
-use nexusflow::error::NexusFlowError;
+use nexusflow::error::{GateError, NexusFlowError};
 use nexusflow::server::build_app;
 use std::sync::Arc;
 use std::time::Duration;
@@ -146,7 +146,7 @@ async fn grpc_serve_maps_bind_failure_and_handle_semantics() {
     .await
     .expect("端口被占时 serve 必须快速失败而非挂起");
     match result {
-        Err(NexusFlowError::Config { message }) => {
+        Err(NexusFlowError::Gate(GateError::Config { message })) => {
             assert_ne!(
                 message, "main-grpc-server-error",
                 "错误键必须注册进 FTL 目录（缺键回退返回键名）"

@@ -40,7 +40,7 @@ pub mod sdk;
 pub use config::{
     Config, ConfigManager, DatabaseConfig, ModelConfig, PricingConfig, ServerConfig, VendorConfig,
 };
-pub use error::NexusFlowError;
+pub use error::{GateError, NexusFlowError};
 
 #[cfg(feature = "web-server")]
 pub use api::ApiState;

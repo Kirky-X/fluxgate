@@ -23,7 +23,7 @@ mod common;
 
 #[cfg(test)]
 mod tests {
-    use nexusflow::error::NexusFlowError;
+    use nexusflow::error::GateError;
     use nexusflow::utils::{
         extract_status_code, is_retryable_error, BackoffStrategy, ErrorCategory, RetryStrategy,
     };
@@ -125,16 +125,16 @@ mod tests {
 
     #[test]
     fn test_is_retryable_error_variants() {
-        assert!(is_retryable_error(&NexusFlowError::Timeout {
+        assert!(is_retryable_error(&GateError::Timeout {
             vendor: "v".into()
         }));
-        assert!(is_retryable_error(&NexusFlowError::VendorUnavailable {
+        assert!(is_retryable_error(&GateError::VendorUnavailable {
             vendor: "v (429: Rate limit)".into()
         }));
-        assert!(!is_retryable_error(&NexusFlowError::VendorUnavailable {
+        assert!(!is_retryable_error(&GateError::VendorUnavailable {
             vendor: "v (400: Bad Request)".into()
         }));
-        assert!(!is_retryable_error(&NexusFlowError::Config {
+        assert!(!is_retryable_error(&GateError::Config {
             message: "x".into()
         }));
     }
@@ -146,7 +146,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let result: Result<i32, NexusFlowError> = nexusflow::utils::retry::with_retry(
+        let result: Result<i32, GateError> = nexusflow::utils::retry::with_retry(
             || {
                 let count = call_count_clone.clone();
                 async move {
@@ -165,19 +165,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_retry_succeeds_after_retryable_failures() {
-        let initial = NexusFlowError::Timeout {
+        let initial = GateError::Timeout {
             vendor: "test_vendor".into(),
         };
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();
 
-        let result: Result<i32, NexusFlowError> = nexusflow::utils::retry::with_retry(
+        let result: Result<i32, GateError> = nexusflow::utils::retry::with_retry(
             || {
                 let count = call_count_clone.clone();
                 async move {
                     let n = count.fetch_add(1, Ordering::SeqCst);
                     if n < 1 {
-                        Err(NexusFlowError::Timeout {
+                        Err(GateError::Timeout {
                             vendor: "test_vendor".into(),
                         })
                     } else {
@@ -709,7 +709,7 @@ mod tests {
 
 #[cfg(test)]
 mod coverage {
-    use nexusflow::error::NexusFlowError;
+    use nexusflow::error::GateError;
     use nexusflow::utils::extract_status_code;
     use nexusflow::utils::retry::{
         with_retry, BackoffStrategy, ErrorCategory, RetryDelayPolicy, RetryStrategy,
@@ -812,11 +812,11 @@ mod coverage {
     async fn fatal_initial_vendor_error_skips_closure_and_returns_initial() {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
-        let initial = NexusFlowError::VendorUnavailable {
+        let initial = GateError::VendorUnavailable {
             vendor: "v (400: bad request)".into(),
         };
 
-        let result: Result<(), NexusFlowError> = with_retry(
+        let result: Result<(), GateError> = with_retry(
             || {
                 c.fetch_add(1, Ordering::SeqCst);
                 async { Ok(()) }
@@ -829,7 +829,7 @@ mod coverage {
         assert_eq!(calls.load(Ordering::SeqCst), 0, "Fatal 初始错误不得调用 f");
         assert!(matches!(
             result.unwrap_err(),
-            NexusFlowError::VendorUnavailable { .. }
+            GateError::VendorUnavailable { .. }
         ));
     }
 
@@ -839,19 +839,19 @@ mod coverage {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
 
-        let result: Result<(), NexusFlowError> = with_retry(
+        let result: Result<(), GateError> = with_retry(
             || {
                 c.fetch_add(1, Ordering::SeqCst);
                 async { Ok(()) }
             },
-            Some(NexusFlowError::Config {
+            Some(GateError::Config {
                 message: "bad config".into(),
             }),
         )
         .await;
 
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(matches!(result.unwrap_err(), NexusFlowError::Config { .. }));
+        assert!(matches!(result.unwrap_err(), GateError::Config { .. }));
     }
 
     /// 429 初始错误 → RetryableExponential 策略：可重试失败后重试成功，
@@ -860,16 +860,16 @@ mod coverage {
     async fn rate_limited_initial_error_retries_then_succeeds() {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
-        let initial = NexusFlowError::VendorUnavailable {
+        let initial = GateError::VendorUnavailable {
             vendor: "v (429: rate limited)".into(),
         };
 
-        let result: Result<&'static str, NexusFlowError> = with_retry(
+        let result: Result<&'static str, GateError> = with_retry(
             || {
                 let c = c.clone();
                 async move {
                     if c.fetch_add(1, Ordering::SeqCst) == 0 {
-                        Err(NexusFlowError::Timeout { vendor: "v".into() })
+                        Err(GateError::Timeout { vendor: "v".into() })
                     } else {
                         Ok("done")
                     }
@@ -888,14 +888,14 @@ mod coverage {
     async fn non_retryable_error_midway_stops_immediately() {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
-        let initial = NexusFlowError::Timeout { vendor: "v".into() };
+        let initial = GateError::Timeout { vendor: "v".into() };
 
-        let result: Result<(), NexusFlowError> = with_retry(
+        let result: Result<(), GateError> = with_retry(
             || {
                 let c = c.clone();
                 async move {
                     c.fetch_add(1, Ordering::SeqCst);
-                    Err::<(), _>(NexusFlowError::Config {
+                    Err::<(), _>(GateError::Config {
                         message: "permanent".into(),
                     })
                 }
@@ -905,7 +905,7 @@ mod coverage {
         .await;
 
         match result.unwrap_err() {
-            NexusFlowError::Config { .. } => {}
+            GateError::Config { .. } => {}
             other => panic!("Expected Config error, got {other:?}"),
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1, "Fatal 错误必须立即停止");
@@ -916,24 +916,21 @@ mod coverage {
     async fn retries_exhausted_returns_last_error() {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
-        let initial = NexusFlowError::Timeout { vendor: "v".into() };
+        let initial = GateError::Timeout { vendor: "v".into() };
 
-        let result: Result<(), NexusFlowError> = with_retry(
+        let result: Result<(), GateError> = with_retry(
             || {
                 let c = c.clone();
                 async move {
                     c.fetch_add(1, Ordering::SeqCst);
-                    Err::<(), _>(NexusFlowError::Timeout { vendor: "v".into() })
+                    Err::<(), _>(GateError::Timeout { vendor: "v".into() })
                 }
             },
             Some(initial),
         )
         .await;
 
-        assert!(matches!(
-            result.unwrap_err(),
-            NexusFlowError::Timeout { .. }
-        ));
+        assert!(matches!(result.unwrap_err(), GateError::Timeout { .. }));
         assert_eq!(
             calls.load(Ordering::SeqCst),
             2,

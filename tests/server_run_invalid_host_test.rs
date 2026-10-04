@@ -12,7 +12,7 @@
 //! 独立成文件的原因：run 内部 init_global_state（OnceCell 一次性写入），
 //! 同进程只能消费一次全局态，每个 run 场景必须独占一个测试二进制。
 
-use nexusflow::error::NexusFlowError;
+use nexusflow::error::{GateError, NexusFlowError};
 
 #[tokio::test]
 async fn run_rejects_non_ipv4_server_host_with_localized_message() {
@@ -48,7 +48,7 @@ enabled = false
     let result = nexusflow::server::run(Some(config)).await;
 
     match result {
-        Err(NexusFlowError::Config { message }) => {
+        Err(NexusFlowError::Gate(GateError::Config { message })) => {
             assert!(
                 message.contains("not-an-ipv4-host"),
                 "错误消息必须插值携带非法 host: {message}"

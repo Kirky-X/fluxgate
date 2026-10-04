@@ -15,6 +15,7 @@ use crate::config::loader::ConfigLoader;
 use crate::config::ConfigManager;
 use crate::database::AsyncLoggerHandle;
 use crate::database::TokenPreAggregator;
+use crate::error::GateError;
 use crate::error::NexusFlowError;
 use crate::i18n::{t, t_args};
 use crate::ApiState;
@@ -38,8 +39,10 @@ pub(crate) async fn init_logger() -> Result<inklog::LoggerManager, NexusFlowErro
         .console(true)
         .build()
         .await
-        .map_err(|e| NexusFlowError::Config {
-            message: t_args("main-logger-init-failed", &[("error", e.to_string())]),
+        .map_err(|e| {
+            NexusFlowError::from(GateError::Config {
+                message: t_args("main-logger-init-failed", &[("error", e.to_string())]),
+            })
         })
 }
 

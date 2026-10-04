@@ -3,7 +3,10 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-// 错误处理模块
+// 应用层错误处理模块 — Database 等应用面变体留存本 crate；路由核心
+// 变体集（GateError）进 llm-gate（design.md D1.3），经 `Gate` 包装携带。
+// `From<dbnexus::DbError>` 受孤儿规则约束必须与被实现的枚举同 crate，
+// 这是 Database 变体不下沉 llm-gate 的结构性原因。
 #[cfg(feature = "web-server")]
 use axum::response::IntoResponse;
 #[cfg(feature = "web-server")]
@@ -12,45 +15,18 @@ use thiserror::Error;
 
 use crate::i18n::t_args;
 
+pub use llm_gate::error::GateError;
+
 /// 错误双轨：`#[error]` Display 恒英文规范串（日志 / 错误链），HTTP 展示
 /// 走 [`NexusFlowError::user_message()`]（FTL，随 locale，见 i18n 基线 §4）。
+/// `Gate` 变体 `transparent` 透传 llm-gate 英文规范串。
 #[derive(Error, Debug)]
 pub enum NexusFlowError {
-    #[error("Configuration error: {message}")]
-    Config { message: String },
-
-    #[error("Protocol conversion error: {source}")]
-    Protocol {
-        source: String,
-        #[source]
-        inner: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-
-    #[error("Vendor unavailable: {vendor}")]
-    VendorUnavailable { vendor: String },
-
-    #[error("Request timeout: {vendor}")]
-    Timeout { vendor: String },
-
-    #[error("Rate limited: {vendor}")]
-    RateLimited { vendor: String },
-
     #[error("Database error: {message}")]
     Database { message: String },
 
-    #[error("Request validation failed: {field}")]
-    Validation { field: String },
-
-    #[error("Routing error: {message}")]
-    Routing { message: String },
-
-    /// recId=19(c)：换路 fallback 耗尽且全部候选因限流被排除 —
-    /// `[routing].retry_after_hint` 开启时由 api 层收尾函数抛出，
-    /// IntoResponse 映射 429 + Retry-After 头（reset 秒数取各 vendor
-    /// 窗口重置剩余的 min）。默认开关关闭时永不产生本变体（原错误
-    /// 冒泡保持 503 语义）。
-    #[error("All candidate vendors rate limited: retry after {retry_after_secs}s")]
-    AllVendorsThrottled { retry_after_secs: u64 },
+    #[error(transparent)]
+    Gate(#[from] GateError),
 }
 
 #[cfg(feature = "web-server")]
@@ -58,19 +34,13 @@ impl IntoResponse for NexusFlowError {
     fn into_response(self) -> axum::response::Response {
         // recId=19(c)：AllVendorsThrottled 额外携带 Retry-After 响应头
         let retry_after_secs = match &self {
-            NexusFlowError::AllVendorsThrottled { retry_after_secs } => Some(*retry_after_secs),
-            _ => None,
+            NexusFlowError::Gate(e) => e.retry_after_secs(),
+            NexusFlowError::Database { .. } => None,
         };
         let status = match &self {
-            NexusFlowError::Validation { .. } => axum::http::StatusCode::BAD_REQUEST,
-            NexusFlowError::VendorUnavailable { .. } => axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            NexusFlowError::Timeout { .. } => axum::http::StatusCode::GATEWAY_TIMEOUT,
-            NexusFlowError::RateLimited { .. } => axum::http::StatusCode::TOO_MANY_REQUESTS,
-            NexusFlowError::Config { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            NexusFlowError::Protocol { .. } => axum::http::StatusCode::BAD_GATEWAY,
             NexusFlowError::Database { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            NexusFlowError::Routing { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            NexusFlowError::AllVendorsThrottled { .. } => axum::http::StatusCode::TOO_MANY_REQUESTS,
+            NexusFlowError::Gate(e) => axum::http::StatusCode::from_u16(e.status_code())
+                .expect("GateError::status_code must yield a valid HTTP status code"),
         };
 
         let body = json!({
@@ -98,49 +68,18 @@ impl NexusFlowError {
     /// Display 分轨，写入 HTTP 响应体 `error.message`。
     fn user_message(&self) -> String {
         match self {
-            NexusFlowError::Config { message } => {
-                t_args("error-config", &[("message", message.clone())])
-            }
-            NexusFlowError::Protocol { source, .. } => {
-                t_args("error-protocol", &[("source", source.clone())])
-            }
-            NexusFlowError::VendorUnavailable { vendor } => {
-                t_args("error-vendor-unavailable", &[("vendor", vendor.clone())])
-            }
-            NexusFlowError::Timeout { vendor } => {
-                t_args("error-timeout", &[("vendor", vendor.clone())])
-            }
-            NexusFlowError::RateLimited { vendor } => {
-                t_args("error-rate-limited", &[("vendor", vendor.clone())])
-            }
             NexusFlowError::Database { message } => {
                 t_args("error-database", &[("message", message.clone())])
             }
-            NexusFlowError::Validation { field } => {
-                t_args("error-validation", &[("field", field.clone())])
-            }
-            NexusFlowError::Routing { message } => {
-                t_args("error-routing", &[("message", message.clone())])
-            }
-            NexusFlowError::AllVendorsThrottled { retry_after_secs } => t_args(
-                "error-all-vendors-throttled",
-                &[("retry_after_secs", retry_after_secs.to_string())],
-            ),
+            NexusFlowError::Gate(e) => e.user_message(),
         }
     }
 
     /// 返回固定的错误类型代码字符串（不暴露内部枚举结构）
     fn error_code(&self) -> &'static str {
         match self {
-            NexusFlowError::Config { .. } => "config_error",
-            NexusFlowError::Protocol { .. } => "protocol_error",
-            NexusFlowError::VendorUnavailable { .. } => "vendor_unavailable",
-            NexusFlowError::Timeout { .. } => "timeout",
-            NexusFlowError::RateLimited { .. } => "rate_limited",
             NexusFlowError::Database { .. } => "database_error",
-            NexusFlowError::Validation { .. } => "validation_error",
-            NexusFlowError::Routing { .. } => "routing_error",
-            NexusFlowError::AllVendorsThrottled { .. } => "all_vendors_throttled",
+            NexusFlowError::Gate(e) => e.error_code(),
         }
     }
 }
@@ -162,20 +101,12 @@ impl From<std::io::Error> for NexusFlowError {
     }
 }
 
-impl From<tokio::sync::oneshot::error::RecvError> for NexusFlowError {
-    fn from(_e: tokio::sync::oneshot::error::RecvError) -> Self {
-        NexusFlowError::Timeout {
-            vendor: "unknown".to_string(),
-        }
-    }
-}
-
 #[cfg(feature = "sdforge-integration")]
 impl From<sdforge::config::ConfigError> for NexusFlowError {
     fn from(e: sdforge::config::ConfigError) -> Self {
-        NexusFlowError::Config {
+        NexusFlowError::Gate(GateError::Config {
             message: e.to_string(),
-        }
+        })
     }
 }
 
@@ -196,55 +127,55 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_validation_to_response() {
-        let response = NexusFlowError::Validation {
+        let response = NexusFlowError::from(GateError::Validation {
             field: "model".to_string(),
-        }
+        })
         .into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn test_error_vendor_unavailable_to_response() {
-        let response = NexusFlowError::VendorUnavailable {
+        let response = NexusFlowError::from(GateError::VendorUnavailable {
             vendor: "openai".to_string(),
-        }
+        })
         .into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
     async fn test_error_timeout_to_response() {
-        let response = NexusFlowError::Timeout {
+        let response = NexusFlowError::from(GateError::Timeout {
             vendor: "openai".to_string(),
-        }
+        })
         .into_response();
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     }
 
     #[tokio::test]
     async fn test_error_rate_limited_to_response() {
-        let response = NexusFlowError::RateLimited {
+        let response = NexusFlowError::from(GateError::RateLimited {
             vendor: "anthropic".to_string(),
-        }
+        })
         .into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]
     async fn test_error_config_to_response() {
-        let response = NexusFlowError::Config {
+        let response = NexusFlowError::from(GateError::Config {
             message: "bad config".to_string(),
-        }
+        })
         .into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
     async fn test_error_protocol_to_response() {
-        let response = NexusFlowError::Protocol {
+        let response = NexusFlowError::from(GateError::Protocol {
             source: "openai".to_string(),
             inner: None,
-        }
+        })
         .into_response();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
@@ -260,9 +191,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_routing_to_response() {
-        let response = NexusFlowError::Routing {
+        let response = NexusFlowError::from(GateError::Routing {
             message: "no vendor".to_string(),
-        }
+        })
         .into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -271,9 +202,9 @@ mod tests {
     async fn test_error_all_vendors_throttled_to_response_with_retry_after() {
         // recId=19(c)：AllVendorsThrottled → 429 + Retry-After 头（秒数
         // 原样带出）+ 固定错误代码
-        let response = NexusFlowError::AllVendorsThrottled {
+        let response = NexusFlowError::from(GateError::AllVendorsThrottled {
             retry_after_secs: 30,
-        }
+        })
         .into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         let retry_after = response
@@ -295,42 +226,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_user_message_uses_ftl_catalog() {
-        // 键必须在 FTL 目录注册（缺键时 t_args 回退返回键名本身）；
-        // 占位符必须被实参替换。断言与进程 locale 无关（en/zh 均成立）。
-        let message = NexusFlowError::Config {
-            message: "bad key".to_string(),
-        }
-        .user_message();
-        assert_ne!(
-            message, "error-config",
-            "键 'error-config' 未注册进 FTL 目录"
-        );
-        assert!(
-            message.contains("bad key"),
-            "占位符 $message 必须被替换: {message}"
-        );
-
-        let throttled = NexusFlowError::AllVendorsThrottled {
-            retry_after_secs: 7,
-        }
-        .user_message();
-        assert_ne!(
-            throttled, "error-all-vendors-throttled",
-            "键 'error-all-vendors-throttled' 未注册进 FTL 目录"
-        );
-        assert!(
-            throttled.contains('7'),
-            "占位符 $retry_after_secs 必须被替换: {throttled}"
-        );
-    }
-
     #[tokio::test]
     async fn test_error_response_body_structure() {
-        let err = NexusFlowError::Validation {
+        let err = NexusFlowError::from(GateError::Validation {
             field: "model".to_string(),
-        };
+        });
         // error.message 走本地化轨道：必须等于 user_message() 的输出
         let expected_message = err.user_message();
         let response = err.into_response();
@@ -400,25 +300,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_error_from_recv_error() {
-        // 构造 RecvError：发送端被丢弃后，接收端 await 会返回 RecvError
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        drop(tx);
-        let recv_err = rx.await.unwrap_err();
-
-        let err: NexusFlowError = recv_err.into();
-        match err {
-            NexusFlowError::Timeout { vendor } => {
-                assert_eq!(
-                    vendor, "unknown",
-                    "From<RecvError> should set vendor to 'unknown'"
-                );
-            }
-            _ => panic!("From<RecvError> should produce Timeout variant"),
-        }
-    }
-
-    #[tokio::test]
     #[cfg(feature = "sdforge-integration")]
     async fn test_error_from_config_error() {
         let cfg_err = sdforge::config::ConfigError::FileNotFound {
@@ -426,7 +307,7 @@ mod tests {
         };
         let err: NexusFlowError = cfg_err.into();
         match err {
-            NexusFlowError::Config { message } => {
+            NexusFlowError::Gate(GateError::Config { message }) => {
                 assert!(
                     message.contains("/etc/config.toml"),
                     "message should contain the original path: {}",
@@ -438,7 +319,7 @@ mod tests {
                     message
                 );
             }
-            _ => panic!("From<ConfigError> should produce Config variant"),
+            _ => panic!("From<ConfigError> should produce Gate(Config) variant"),
         }
     }
 }

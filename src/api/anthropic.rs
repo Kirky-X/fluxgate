@@ -5,6 +5,7 @@
 
 use crate::api::RoutingHints;
 use crate::database::RequestLog;
+use crate::error::GateError;
 use crate::i18n::t_args;
 use crate::{error::NexusFlowError, router::RoutingDecision, ApiState};
 use axum::{extract::State, http::HeaderMap, response::IntoResponse, Json};
@@ -23,9 +24,9 @@ pub async fn messages(
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
-        .ok_or(NexusFlowError::Validation {
+        .ok_or(NexusFlowError::from(GateError::Validation {
             field: "model".into(),
-        })?;
+        }))?;
 
     let stream = body
         .get("stream")
@@ -109,6 +110,7 @@ pub async fn messages(
                 {
                     Ok(r) => r,
                     Err(e) => {
+                        let e = NexusFlowError::from(e);
                         let duration_ms = start_time.elapsed().as_millis() as i64;
                         // recId=11：最终失败解除亲和绑定
                         crate::api::clear_session_affinity(
@@ -138,6 +140,7 @@ pub async fn messages(
                 {
                     Ok(r) => (r, decision),
                     Err(e) => {
+                        let e = NexusFlowError::from(e);
                         let duration_ms = start_time.elapsed().as_millis() as i64;
                         // recId=11：最终失败解除亲和绑定
                         crate::api::clear_session_affinity(
@@ -168,6 +171,7 @@ pub async fn messages(
             {
                 Ok(r) => r,
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -294,6 +298,7 @@ pub async fn messages(
             {
                 Ok(r) => r,
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -323,6 +328,7 @@ pub async fn messages(
             {
                 Ok(r) => (r, decision),
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -353,6 +359,7 @@ pub async fn messages(
         {
             Ok(r) => r,
             Err(e) => {
+                let e = NexusFlowError::from(e);
                 let duration_ms = start_time.elapsed().as_millis() as i64;
                 // recId=11：最终失败解除亲和绑定
                 crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref())
@@ -456,6 +463,7 @@ pub async fn messages(
             {
                 Ok(r) => r,
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -485,6 +493,7 @@ pub async fn messages(
             {
                 Ok(s) => (s, decision),
                 Err(e) => {
+                    let e = NexusFlowError::from(e);
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     // recId=11：最终失败解除亲和绑定
                     crate::api::clear_session_affinity(
@@ -515,6 +524,7 @@ pub async fn messages(
         {
             Ok(s) => s,
             Err(e) => {
+                let e = NexusFlowError::from(e);
                 let duration_ms = start_time.elapsed().as_millis() as i64;
                 // recId=11：最终失败解除亲和绑定
                 crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref())
@@ -652,6 +662,7 @@ pub async fn messages(
         {
             Ok(r) => r,
             Err(e) => {
+                let e = NexusFlowError::from(e);
                 let duration_ms = start_time.elapsed().as_millis() as i64;
                 // recId=11：换路 fallback 耗尽（最终失败）解除亲和绑定
                 crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref()).await;
@@ -668,6 +679,7 @@ pub async fn messages(
     {
         Ok(r) => r,
         Err(e) => {
+            let e = NexusFlowError::from(e);
             let duration_ms = start_time.elapsed().as_millis() as i64;
             // recId=11：最终失败解除亲和绑定
             crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref()).await;

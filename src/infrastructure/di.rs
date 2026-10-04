@@ -23,6 +23,7 @@ use limiteron::integrations::kit::LimiteronModule;
 use oxcache::integrations::kit::{OxcacheConfig, OxcacheModule};
 use trait_kit::prelude::*;
 
+use crate::error::GateError;
 use crate::error::NexusFlowError;
 
 /// Build a minimal valid `FlowControlConfig` (1 rule matching all IPs with a
@@ -91,25 +92,31 @@ pub async fn build_kit_with_config(
     kit.set_config(minimal_flow_config());
     kit.set_config(db_config);
 
-    kit.register::<OxcacheModule>()
-        .map_err(|e| NexusFlowError::Config {
+    kit.register::<OxcacheModule>().map_err(|e| {
+        NexusFlowError::from(GateError::Config {
             message: format!("DI register OxcacheModule failed: {}", e),
-        })?;
-    kit.register::<LimiteronModule>()
-        .map_err(|e| NexusFlowError::Config {
+        })
+    })?;
+    kit.register::<LimiteronModule>().map_err(|e| {
+        NexusFlowError::from(GateError::Config {
             message: format!("DI register LimiteronModule failed: {}", e),
-        })?;
-    kit.register::<DbNexusModule>()
-        .map_err(|e| NexusFlowError::Config {
+        })
+    })?;
+    kit.register::<DbNexusModule>().map_err(|e| {
+        NexusFlowError::from(GateError::Config {
             message: format!("DI register DbNexusModule failed: {}", e),
-        })?;
-    kit.register::<InklogModule>()
-        .map_err(|e| NexusFlowError::Config {
+        })
+    })?;
+    kit.register::<InklogModule>().map_err(|e| {
+        NexusFlowError::from(GateError::Config {
             message: format!("DI register InklogModule failed: {}", e),
-        })?;
+        })
+    })?;
 
-    kit.build().await.map_err(|e| NexusFlowError::Config {
-        message: format!("DI kit build failed: {}", e),
+    kit.build().await.map_err(|e| {
+        NexusFlowError::from(GateError::Config {
+            message: format!("DI kit build failed: {}", e),
+        })
     })
 }
 
@@ -131,25 +138,28 @@ pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, NexusFlowError> {
 ///
 /// Returns `NexusFlowError::Config` if any capability is missing.
 pub fn verify_kit(kit: &AsyncKit<AsyncReady>) -> Result<(), NexusFlowError> {
-    let _cache: Arc<dyn oxcache::backend::CacheBackend + Send + Sync> = kit
-        .require::<OxcacheModule>()
-        .map_err(|e| NexusFlowError::Config {
-            message: format!("DI require OxcacheModule failed: {}", e),
+    let _cache: Arc<dyn oxcache::backend::CacheBackend + Send + Sync> =
+        kit.require::<OxcacheModule>().map_err(|e| {
+            NexusFlowError::from(GateError::Config {
+                message: format!("DI require OxcacheModule failed: {}", e),
+            })
         })?;
-    let _governor: Arc<limiteron::Governor> =
-        kit.require::<LimiteronModule>()
-            .map_err(|e| NexusFlowError::Config {
-                message: format!("DI require LimiteronModule failed: {}", e),
-            })?;
-    let _pool: Arc<dyn dbnexus::database::pool::ConnectionPool + Send + Sync> = kit
-        .require::<DbNexusModule>()
-        .map_err(|e| NexusFlowError::Config {
-            message: format!("DI require DbNexusModule failed: {}", e),
+    let _governor: Arc<limiteron::Governor> = kit.require::<LimiteronModule>().map_err(|e| {
+        NexusFlowError::from(GateError::Config {
+            message: format!("DI require LimiteronModule failed: {}", e),
+        })
+    })?;
+    let _pool: Arc<dyn dbnexus::database::pool::ConnectionPool + Send + Sync> =
+        kit.require::<DbNexusModule>().map_err(|e| {
+            NexusFlowError::from(GateError::Config {
+                message: format!("DI require DbNexusModule failed: {}", e),
+            })
         })?;
-    let _provider: Arc<dyn inklog::Database + Send + Sync> = kit
-        .require::<InklogModule>()
-        .map_err(|e| NexusFlowError::Config {
-            message: format!("DI require InklogModule failed: {}", e),
+    let _provider: Arc<dyn inklog::Database + Send + Sync> =
+        kit.require::<InklogModule>().map_err(|e| {
+            NexusFlowError::from(GateError::Config {
+                message: format!("DI require InklogModule failed: {}", e),
+            })
         })?;
     Ok(())
 }

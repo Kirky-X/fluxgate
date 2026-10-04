@@ -201,7 +201,7 @@ mod manager {
 
     use crate::common;
     use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
-    use nexusflow::error::NexusFlowError;
+    use nexusflow::error::GateError;
     use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
     use nexusflow::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
@@ -521,7 +521,7 @@ mod manager {
             .await;
         assert!(result.is_err(), "expected error for nonexistent vendor");
         match result.unwrap_err() {
-            NexusFlowError::VendorUnavailable { vendor } => {
+            GateError::VendorUnavailable { vendor } => {
                 assert_eq!(vendor, "ghost");
             }
             other => panic!("expected VendorUnavailable, got {:?}", other),
@@ -587,7 +587,7 @@ mod manager {
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            NexusFlowError::VendorUnavailable { vendor } => {
+            GateError::VendorUnavailable { vendor } => {
                 // vendor 字符串包含 vendor id 和状态码 500
                 assert!(vendor.contains("openai-500"), "vendor: {}", vendor);
                 assert!(
@@ -628,7 +628,7 @@ mod manager {
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            NexusFlowError::VendorUnavailable { vendor } => {
+            GateError::VendorUnavailable { vendor } => {
                 assert!(vendor.contains("Parse error"), "vendor: {}", vendor);
             }
             other => panic!(
@@ -696,7 +696,7 @@ mod manager {
             .await;
         assert!(r2.is_err(), "second request should fail (rate limited)");
         match r2.unwrap_err() {
-            NexusFlowError::RateLimited { vendor } => {
+            GateError::RateLimited { vendor } => {
                 assert_eq!(vendor, "openai-usage");
             }
             other => panic!("expected RateLimited, got {:?}", other),
@@ -716,7 +716,7 @@ mod manager {
         // 注意：Ok 类型是 impl Stream（未实现 Debug），不能使用 unwrap_err
         match result {
             Ok(_) => panic!("expected error for nonexistent vendor"),
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert_eq!(vendor, "ghost");
             }
             Err(other) => panic!("expected VendorUnavailable, got {:?}", other),
@@ -776,7 +776,7 @@ mod manager {
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            NexusFlowError::VendorUnavailable { vendor } => {
+            GateError::VendorUnavailable { vendor } => {
                 assert_eq!(vendor, "ghost");
             }
             other => panic!("expected VendorUnavailable, got {:?}", other),
@@ -975,7 +975,7 @@ mod manager {
         // Ok 类型是 impl Stream（未实现 Debug），不能用 unwrap_err
         match result {
             Ok(_) => panic!("expected error for nonexistent vendor"),
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert_eq!(vendor, "ghost");
             }
             Err(other) => panic!("expected VendorUnavailable, got {:?}", other),
@@ -988,7 +988,7 @@ mod manager {
     mod metrics_paths {
         use crate::common;
         use nexusflow::config::{Config, ConfigManager, ServerConfig, VendorConfig};
-        use nexusflow::error::NexusFlowError;
+        use nexusflow::error::GateError;
         use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
         use nexusflow::vendor::VendorManager;
         use std::sync::Arc;
@@ -1139,7 +1139,7 @@ mod manager {
                 .expect("vendor metrics must exist on worker failure path");
             assert_eq!(vendor.failures, 1);
             match result.unwrap_err() {
-                NexusFlowError::VendorUnavailable { .. } => {}
+                GateError::VendorUnavailable { .. } => {}
                 other => panic!("expected VendorUnavailable, got {:?}", other),
             }
         }
@@ -1239,7 +1239,7 @@ mod manager {
         .expect("test-level watchdog must not fire");
         match result {
             Ok(_) => panic!("body stall beyond timeout_ms must fail"),
-            Err(NexusFlowError::Timeout { vendor }) => assert_eq!(vendor, "v-ot"),
+            Err(GateError::Timeout { vendor }) => assert_eq!(vendor, "v-ot"),
             Err(other) => panic!("expected Timeout, got {:?}", other),
         }
     }
@@ -1343,7 +1343,7 @@ mod manager {
             items
         );
         assert!(
-            matches!(items.last(), Some(Err(NexusFlowError::Timeout { vendor })) if vendor == "v-idle-t"),
+            matches!(items.last(), Some(Err(GateError::Timeout { vendor })) if vendor == "v-idle-t"),
             "idle timeout must terminate the mid-stream with Err(Timeout), got {:?}",
             items.last()
         );
@@ -1387,7 +1387,7 @@ mod manager {
         .expect("test-level watchdog must not fire");
         match result {
             Ok(_) => panic!("TTFT timeout must fail before the stream is established"),
-            Err(NexusFlowError::Timeout { vendor }) => assert_eq!(vendor, "v-ttft"),
+            Err(GateError::Timeout { vendor }) => assert_eq!(vendor, "v-ttft"),
             Err(other) => panic!("expected Timeout, got {:?}", other),
         }
     }
@@ -1403,9 +1403,8 @@ mod queue {
     }
 
     fn sample_pending() -> PendingRequest {
-        let (tx, _rx) = tokio::sync::oneshot::channel::<
-            Result<UnifiedResponse, nexusflow::error::NexusFlowError>,
-        >();
+        let (tx, _rx) =
+            tokio::sync::oneshot::channel::<Result<UnifiedResponse, nexusflow::error::GateError>>();
         PendingRequest {
             request: sample_request(),
             response_tx: tx,
@@ -2134,7 +2133,7 @@ async fn sliding_empty_window_not_ending_soon_in_window_info() {
 mod manager_paths {
     use crate::common;
     use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
-    use nexusflow::error::NexusFlowError;
+    use nexusflow::error::GateError;
     use nexusflow::protocol::{Message, MessageContent, Role, StreamChunk, UnifiedRequest};
     use nexusflow::vendor::VendorManager;
     use std::sync::Arc;
@@ -2342,7 +2341,7 @@ mod manager_paths {
         .expect("no timeout");
         match result {
             Ok(_) => panic!("removed vendor must be rejected"),
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert!(
                     vendor.contains("v-removed"),
                     "错误文案必须携带 vendor id: {}",
@@ -2422,7 +2421,7 @@ mod manager_paths {
         .await
         .expect("no timeout");
         match result {
-            Err(NexusFlowError::Config { .. }) => {}
+            Err(GateError::Config { .. }) => {}
             other => panic!("expected Config error, got {:?}", other.map(|_| ())),
         }
     }
@@ -2444,7 +2443,7 @@ mod manager_paths {
             .execute_passthrough_request("v-bad-type-base", serde_json::json!({}))
             .await;
         match result {
-            Err(NexusFlowError::Config { .. }) => {}
+            Err(GateError::Config { .. }) => {}
             other => panic!("expected Config error, got {:?}", other.map(|_| ())),
         }
     }
@@ -2474,7 +2473,7 @@ mod manager_paths {
             .await;
         match result {
             Ok(_) => panic!("unknown type must fail"),
-            Err(NexusFlowError::Config { .. }) => {}
+            Err(GateError::Config { .. }) => {}
             Err(other) => panic!("expected Config error, got {:?}", other),
         }
     }
@@ -2520,7 +2519,7 @@ mod manager_paths {
                 .execute_passthrough_request(id, serde_json::json!({}))
                 .await;
             match result {
-                Err(NexusFlowError::Config { message }) => {
+                Err(GateError::Config { message }) => {
                     assert!(
                         message.contains(env),
                         "错误文案必须携带缺失的环境变量名 {}: {}",
@@ -2555,7 +2554,7 @@ mod manager_paths {
             .execute_passthrough_request("v-conn-refused", serde_json::json!({}))
             .await;
         match result {
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert_eq!(vendor, "v-conn-refused");
             }
             other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
@@ -2597,7 +2596,7 @@ mod manager_paths {
         .await
         .expect("no timeout");
         match result {
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert!(vendor.contains("429"), "错误须携带状态码: {}", vendor);
             }
             other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
@@ -2629,7 +2628,7 @@ mod manager_paths {
         .await
         .expect("no timeout");
         match result {
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert_eq!(vendor, "v-budget-net");
             }
             other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
@@ -2675,7 +2674,7 @@ mod manager_paths {
         .await
         .expect("no timeout");
         match result {
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert!(
                     vendor.contains("500"),
                     "预算放弃必须保留最后错误的 5xx 语义: {}",
@@ -2724,7 +2723,7 @@ mod manager_paths {
         .await
         .expect("test-level watchdog must not fire");
         match result {
-            Err(NexusFlowError::Timeout { vendor }) => assert_eq!(vendor, "v-body-timeout"),
+            Err(GateError::Timeout { vendor }) => assert_eq!(vendor, "v-body-timeout"),
             other => panic!("expected Timeout, got {:?}", other.map(|_| ())),
         }
     }
@@ -2803,7 +2802,7 @@ mod manager_paths {
             .await;
         match result {
             Ok(_) => panic!("exhausted window must reject streams"),
-            Err(NexusFlowError::RateLimited { vendor }) => {
+            Err(GateError::RateLimited { vendor }) => {
                 assert_eq!(vendor, "v-stream-throttle");
             }
             Err(other) => panic!("expected RateLimited, got {:?}", other),
@@ -2933,7 +2932,7 @@ mod manager_paths {
             .await;
         match result {
             Ok(_) => panic!("dead endpoint must fail"),
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert_eq!(vendor, "v-stream-dead");
             }
             Err(other) => panic!("expected VendorUnavailable, got {:?}", other),
@@ -2968,7 +2967,7 @@ mod manager_paths {
             .await;
         match result {
             Ok(_) => panic!("429 must fail the stream"),
-            Err(NexusFlowError::RateLimited { vendor }) => {
+            Err(GateError::RateLimited { vendor }) => {
                 assert_eq!(vendor, "v-stream-429");
             }
             Err(other) => panic!("expected RateLimited, got {:?}", other),
@@ -3055,7 +3054,7 @@ mod manager_paths {
     }
 
     /// 上游中流 IO 错误（声明 content-length 提前断开）：字节流错误统一为
-    /// NexusFlowError 后，分帧层以 VendorUnavailable（stream-interrupted
+    /// GateError 后，分帧层以 VendorUnavailable（stream-interrupted
     /// 语义）提前终止流。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn conversion_stream_io_error_wraps_as_vendor_unavailable() {
@@ -3106,7 +3105,7 @@ mod manager_paths {
             last = Some(item);
         }
         match last {
-            Some(Err(NexusFlowError::VendorUnavailable { vendor })) => {
+            Some(Err(GateError::VendorUnavailable { vendor })) => {
                 assert!(
                     vendor.contains("v-stream-ioerr"),
                     "中断错误必须携带 vendor 与 detail: {}",
@@ -3163,7 +3162,7 @@ mod manager_paths {
         assert_eq!(items.len(), 2, "内容帧 + 错误帧各产出一条: {:?}", items);
         assert!(items[0].is_ok(), "首帧应为内容 chunk");
         match &items[1] {
-            Err(NexusFlowError::VendorUnavailable { vendor }) => {
+            Err(GateError::VendorUnavailable { vendor }) => {
                 assert!(
                     vendor.contains("upstream exploded"),
                     "错误 detail 必须携带上游消息: {}",
@@ -3229,9 +3228,9 @@ mod manager_paths {
             items
         );
         assert!(
-            items.iter().any(
-                |i| matches!(i, Err(NexusFlowError::Timeout { vendor }) if vendor == "v-pta-idle")
-            ),
+            items
+                .iter()
+                .any(|i| matches!(i, Err(GateError::Timeout { vendor }) if vendor == "v-pta-idle")),
             "idle 超时必须以 Err(Timeout) 产出: {:?}",
             items
         );
@@ -3327,7 +3326,7 @@ mod manager_paths {
             last = Some(item);
         }
         match last {
-            Some(Err(NexusFlowError::VendorUnavailable { vendor })) => {
+            Some(Err(GateError::VendorUnavailable { vendor })) => {
                 assert_eq!(vendor, "v-pta-ioerr");
             }
             other => panic!("expected Err(VendorUnavailable), got {:?}", other),
@@ -3369,7 +3368,7 @@ mod manager_paths {
             .await;
         match result {
             Ok(_) => panic!("exhausted window must reject streams"),
-            Err(NexusFlowError::RateLimited { vendor }) => {
+            Err(GateError::RateLimited { vendor }) => {
                 assert_eq!(vendor, "v-pta-throttle");
             }
             Err(other) => panic!("expected RateLimited, got {:?}", other),

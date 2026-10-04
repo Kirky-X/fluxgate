@@ -14,6 +14,7 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::config::ConfigManager;
+use crate::error::GateError;
 use crate::error::NexusFlowError;
 use crate::i18n::{t, t_args};
 use crate::server::bootstrap;
@@ -79,14 +80,16 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
         server_config
             .host
             .parse()
-            .map_err(|e: std::net::AddrParseError| NexusFlowError::Config {
-                message: t_args(
-                    "main-invalid-server-host",
-                    &[
-                        ("host", server_config.host.clone()),
-                        ("error", e.to_string()),
-                    ],
-                ),
+            .map_err(|e: std::net::AddrParseError| {
+                NexusFlowError::from(GateError::Config {
+                    message: t_args(
+                        "main-invalid-server-host",
+                        &[
+                            ("host", server_config.host.clone()),
+                            ("error", e.to_string()),
+                        ],
+                    ),
+                })
             })?;
     let addr = SocketAddr::from((ipv4, server_config.port));
 
@@ -139,9 +142,9 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
                     &[("error", e.to_string())]
                 )
             );
-            return Err(NexusFlowError::Config {
+            return Err(NexusFlowError::from(GateError::Config {
                 message: t_args("main-server-error", &[("error", e.to_string())]),
-            });
+            }));
         }
     }
 
@@ -155,9 +158,9 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(e))) => return Err(e),
             Ok(Err(join_err)) => {
-                return Err(NexusFlowError::Config {
+                return Err(NexusFlowError::from(GateError::Config {
                     message: t_args("main-grpc-server-error", &[("error", join_err.to_string())]),
-                });
+                }));
             }
             Err(_) => tracing::warn!(
                 "{}",

@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use crate::config::{ConfigManager, ModelConfig, PricingConfig, VendorConfig};
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use crate::vendor::{VendorManager, VendorStatus, WindowInfo};
 use rand::prelude::*;
@@ -80,12 +80,12 @@ impl Router {
         &self,
         abstract_model: &str,
         excluded: &[String],
-    ) -> Result<RoutingDecision, NexusFlowError> {
+    ) -> Result<RoutingDecision, GateError> {
         self.route_with_session_excluding(abstract_model, None, excluded)
             .await
     }
 
-    pub async fn route(&self, abstract_model: &str) -> Result<RoutingDecision, NexusFlowError> {
+    pub async fn route(&self, abstract_model: &str) -> Result<RoutingDecision, GateError> {
         self.route_excluding(abstract_model, &[]).await
     }
 
@@ -96,7 +96,7 @@ impl Router {
         &self,
         abstract_model: &str,
         session_key: Option<&str>,
-    ) -> Result<RoutingDecision, NexusFlowError> {
+    ) -> Result<RoutingDecision, GateError> {
         self.route_with_session_excluding(abstract_model, session_key, &[])
             .await
     }
@@ -107,7 +107,7 @@ impl Router {
         abstract_model: &str,
         session_key: Option<&str>,
         excluded: &[String],
-    ) -> Result<RoutingDecision, NexusFlowError> {
+    ) -> Result<RoutingDecision, GateError> {
         self.route_inner(
             abstract_model,
             session_key,
@@ -141,7 +141,7 @@ impl Router {
         // 开启时被消费（缺省用 default_deadline_ms）；默认关闭时本参数
         // 不参与任何路径（行为与历史一致）。
         lps_deadline_ms: Option<f64>,
-    ) -> Result<RoutingDecision, NexusFlowError> {
+    ) -> Result<RoutingDecision, GateError> {
         let gated = self.gate_request_weight(request_weight);
         self.route_inner(
             abstract_model,
@@ -176,7 +176,7 @@ impl Router {
         request_weight: Option<f64>,
         linucb_features: Option<&[f64]>,
         lps_deadline_ms: Option<f64>,
-    ) -> Result<RoutingDecision, NexusFlowError> {
+    ) -> Result<RoutingDecision, GateError> {
         // recId=14：SLA 虚拟队列键使用**原始**租户 —— affinity_tenant_scoped
         // 是亲和键格式兼容开关（recId=10(2)），只约束亲和 lookup，不约束
         // SLA 分桶（键 = 租户 hash，无租户上下文 "global"）。
@@ -233,7 +233,7 @@ impl Router {
             }
         }
 
-        Err(NexusFlowError::Validation {
+        Err(GateError::Validation {
             field: t_args(
                 "router-model-not-found",
                 &[("model", abstract_model.to_string())],
@@ -289,7 +289,7 @@ impl Router {
         linucb_features: Option<&[f64]>,
         // recId=17：x-deadline-ms 头（语义同 [`Self::route_weighted`]）
         lps_deadline_ms: Option<f64>,
-    ) -> Result<RoutingDecision, NexusFlowError> {
+    ) -> Result<RoutingDecision, GateError> {
         // recId=19(a) 评审修复：preferred_model 分支此前把 request_weight
         // 裸传 try_abstract_route，绕过 allow_request_weight 门控（X-Model
         // + X-Weight 在门控关闭时仍覆盖 model.weight）。入口统一过门——
@@ -301,7 +301,7 @@ impl Router {
                 return Ok(decision);
             }
             // 如果指定的厂商不可用或找不到，返回错误
-            return Err(NexusFlowError::Validation {
+            return Err(GateError::Validation {
                 field: t_args(
                     "router-vendor-unavailable",
                     &[("vendor", vendor_id.to_string())],

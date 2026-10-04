@@ -1011,7 +1011,7 @@ mod converter {
         ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolParameterProperty,
         ToolParameters, ToolResult, UnifiedRequest, UnifiedResponse,
     };
-    use nexusflow::NexusFlowError;
+    use nexusflow::GateError;
 
     /// 构造仅含 model + 单条 user 文本消息的最小 UnifiedRequest（其余字段缺省）。
     fn minimal_unified_request(model: &str, text: &str) -> UnifiedRequest {
@@ -1201,7 +1201,7 @@ mod converter {
         assert_eq!(external["tool_choice"]["function"]["name"], "get_weather");
     }
 
-    /// 上游错误对象 → NexusFlowError::Protocol，type/message 进入错误文案。
+    /// 上游错误对象 → GateError::Protocol，type/message 进入错误文案。
     #[tokio::test]
     async fn test_anthropic_parse_response_error_object() {
         let converter = AnthropicConverter::new();
@@ -1214,7 +1214,7 @@ mod converter {
             }))
             .unwrap_err(); // error 对象必须转为 Err
         match err {
-            NexusFlowError::Protocol { source, inner } => {
+            GateError::Protocol { source, inner } => {
                 assert!(source.contains("invalid_request_error"), "{source}");
                 assert!(source.contains("max_tokens is required"), "{source}");
                 assert!(inner.is_none());
@@ -1592,7 +1592,7 @@ mod converter {
             }))
             .unwrap_err(); // content 数字必须报错
         match err {
-            NexusFlowError::Validation { field } => assert_eq!(field, "content"),
+            GateError::Validation { field } => assert_eq!(field, "content"),
             other => panic!("expected Validation error, got {other:?}"),
         }
     }
@@ -2085,7 +2085,7 @@ mod converter {
             }))
             .unwrap_err(); // 未知 role 必须报错
         match err {
-            NexusFlowError::Validation { field } => assert_eq!(field, "role"),
+            GateError::Validation { field } => assert_eq!(field, "role"),
             other => panic!("expected Validation error, got {other:?}"),
         }
 
@@ -2096,7 +2096,7 @@ mod converter {
             }))
             .unwrap_err(); // content 数字必须报错
         match err {
-            NexusFlowError::Validation { field } => assert_eq!(field, "content"),
+            GateError::Validation { field } => assert_eq!(field, "content"),
             other => panic!("expected Validation error, got {other:?}"),
         }
     }

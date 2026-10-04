@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use super::*;
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -33,11 +33,11 @@ impl ProtocolConverter for OpenAIConverter {
         Protocol::OpenAI
     }
 
-    fn to_unified(&self, body: Value) -> Result<UnifiedRequest, NexusFlowError> {
+    fn to_unified(&self, body: Value) -> Result<UnifiedRequest, GateError> {
         let model = body
             .get("model")
             .and_then(|v| v.as_str())
-            .ok_or(NexusFlowError::Validation {
+            .ok_or(GateError::Validation {
                 field: "model".into(),
             })?
             .to_lowercase();
@@ -45,7 +45,7 @@ impl ProtocolConverter for OpenAIConverter {
         let messages = body
             .get("messages")
             .and_then(|v| v.as_array())
-            .ok_or(NexusFlowError::Validation {
+            .ok_or(GateError::Validation {
                 field: "messages".into(),
             })?
             .iter()
@@ -105,7 +105,7 @@ impl ProtocolConverter for OpenAIConverter {
         })
     }
 
-    fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, NexusFlowError> {
+    fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, GateError> {
         // 将 UnifiedRequest 转换为 OpenAI 格式
         let messages: Vec<Value> = request
             .messages
@@ -157,7 +157,7 @@ impl ProtocolConverter for OpenAIConverter {
         Ok(body)
     }
 
-    fn response_to_external(&self, response: UnifiedResponse) -> Result<Value, NexusFlowError> {
+    fn response_to_external(&self, response: UnifiedResponse) -> Result<Value, GateError> {
         let choices = response
             .choices
             .into_iter()
@@ -184,7 +184,7 @@ impl ProtocolConverter for OpenAIConverter {
         }))
     }
 
-    fn parse_response(&self, response: Value) -> Result<UnifiedResponse, NexusFlowError> {
+    fn parse_response(&self, response: Value) -> Result<UnifiedResponse, GateError> {
         // Check for error response
         if let Some(error_obj) = response.get("error").and_then(|v| v.as_object()) {
             let message = error_obj
@@ -197,7 +197,7 @@ impl ProtocolConverter for OpenAIConverter {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            return Err(NexusFlowError::Protocol {
+            return Err(GateError::Protocol {
                 source: t_args(
                     "protocol-openai-error",
                     &[("type", error_type), ("message", message)],
@@ -325,7 +325,7 @@ impl ProtocolConverter for OpenAIConverter {
         })
     }
 
-    fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<Value, NexusFlowError> {
+    fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<Value, GateError> {
         match chunk {
             StreamChunk::Content {
                 index,
@@ -495,11 +495,11 @@ fn parse_stream_tool_call_delta(json: &Value) -> Option<ToolCall> {
     })
 }
 
-fn parse_openai_message(json: &Value) -> Result<Message, NexusFlowError> {
+fn parse_openai_message(json: &Value) -> Result<Message, GateError> {
     let role = json
         .get("role")
         .and_then(|v| v.as_str())
-        .ok_or(NexusFlowError::Validation {
+        .ok_or(GateError::Validation {
             field: "role".into(),
         })?;
 
@@ -509,7 +509,7 @@ fn parse_openai_message(json: &Value) -> Result<Message, NexusFlowError> {
         "assistant" => Role::Assistant,
         "tool" => Role::Tool,
         _ => {
-            return Err(NexusFlowError::Validation {
+            return Err(GateError::Validation {
                 field: "role".into(),
             })
         }
@@ -596,7 +596,7 @@ fn parse_openai_message(json: &Value) -> Result<Message, NexusFlowError> {
             }
         }
         _ => {
-            return Err(NexusFlowError::Validation {
+            return Err(GateError::Validation {
                 field: "content".into(),
             })
         }

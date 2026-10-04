@@ -3,13 +3,13 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::protocol::{UnifiedRequest, UnifiedResponse};
 use async_channel::{bounded, Receiver, Sender};
 
 pub struct PendingRequest {
     pub request: UnifiedRequest,
-    pub response_tx: tokio::sync::oneshot::Sender<Result<UnifiedResponse, NexusFlowError>>,
+    pub response_tx: tokio::sync::oneshot::Sender<Result<UnifiedResponse, GateError>>,
     /// recId=4③：入队时刻 — worker 完成分支以此计算排队+执行的全程延迟，
     /// 使 metrics.record_request 的口径覆盖队列等待（与 queue_factor 同源）。
     pub enqueued_at: std::time::Instant,
@@ -30,11 +30,11 @@ impl VendorQueue {
         Self { sender, receiver }
     }
 
-    pub async fn send(&self, request: PendingRequest) -> Result<(), NexusFlowError> {
+    pub async fn send(&self, request: PendingRequest) -> Result<(), GateError> {
         self.sender
             .send(request)
             .await
-            .map_err(|_| NexusFlowError::VendorUnavailable {
+            .map_err(|_| GateError::VendorUnavailable {
                 vendor: "queue_closed".into(),
             })
     }
@@ -65,7 +65,7 @@ mod tests {
     use super::*;
 
     fn sample_pending() -> PendingRequest {
-        let (tx, _rx) = tokio::sync::oneshot::channel::<Result<UnifiedResponse, NexusFlowError>>();
+        let (tx, _rx) = tokio::sync::oneshot::channel::<Result<UnifiedResponse, GateError>>();
         PendingRequest {
             request: serde_json::from_value(serde_json::json!({
                 "model": "test",

@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use super::{validate_config, Config, ModelConfig, VendorConfig};
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use confers::dynamic::DynamicField;
 use confers::snapshot::{SnapshotConfig, SnapshotFormat, SnapshotManager};
@@ -116,7 +116,7 @@ impl ConfigManager {
     /// 顺序即事务语义：校验/落盘任一失败时内存态不变、磁盘文件不变；
     /// 全部成功才切换内存态（DynamicField::update，触发 on_change 回调）。
     /// 并发调用在本管理器内串行化，最终磁盘与内存一致（都为最后完成者）。
-    pub fn update_config(&self, new_config: Config) -> Result<(), NexusFlowError> {
+    pub fn update_config(&self, new_config: Config) -> Result<(), GateError> {
         let _guard = self
             .write_lock
             .lock()
@@ -129,9 +129,9 @@ impl ConfigManager {
     /// 供 admin 的 update_vendor/update_model 等 RMW 端点使用，替代
     /// 「get_config → 修改 → update_config」的裸三段式（并发下丢失更新）。
     /// 闭包返回 Err 时整个更新中止，内存与磁盘均不变。
-    pub fn update_config_with<F>(&self, mutate: F) -> Result<(), NexusFlowError>
+    pub fn update_config_with<F>(&self, mutate: F) -> Result<(), GateError>
     where
-        F: FnOnce(&mut Config) -> Result<(), NexusFlowError>,
+        F: FnOnce(&mut Config) -> Result<(), GateError>,
     {
         let _guard = self
             .write_lock
@@ -144,19 +144,19 @@ impl ConfigManager {
 
     /// 持锁前提下的公共尾部：校验 → 序列化 → 唯一 tmp → rename → 内存切换。
     /// 调用方必须已持有 write_lock。
-    fn persist_and_swap(&self, new_config: Config) -> Result<(), NexusFlowError> {
+    fn persist_and_swap(&self, new_config: Config) -> Result<(), GateError> {
         // 1. 共享校验（与加载路径同一条 validate_config）
         validate_config(&new_config)?;
 
         // 2. 序列化先行 — 序列化失败不触碰磁盘与内存
-        let content = toml::to_string_pretty(&new_config).map_err(|e| NexusFlowError::Config {
+        let content = toml::to_string_pretty(&new_config).map_err(|e| GateError::Config {
             message: t_args("config-serialize-failed", &[("error", e.to_string())]),
         })?;
 
         // 3. 原子写：同目录唯一临时文件 + rename（POSIX 原子替换）。
         //    唯一名（pid+序号）避免固定 "config.toml.tmp" 被并发/多进程实例
         //    互踩：一方 rename 走后另一方拿到 ENOENT 或覆盖内容错乱。
-        let path = self.path().ok_or(NexusFlowError::Config {
+        let path = self.path().ok_or(GateError::Config {
             message: t("config-path-unknown"),
         })?;
         let parent = path
@@ -179,7 +179,7 @@ impl ConfigManager {
         //     快照失败只记 warn，不阻塞合法更新（主回滚手段仍是 tmp+rename 原子性）。
         snapshot_current_config(self, &path);
 
-        std::fs::write(&tmp_path, content).map_err(|e| NexusFlowError::Config {
+        std::fs::write(&tmp_path, content).map_err(|e| GateError::Config {
             message: t_args(
                 "config-tmp-write-failed",
                 &[
@@ -191,7 +191,7 @@ impl ConfigManager {
         if let Err(e) = std::fs::rename(&tmp_path, &path) {
             // rename 失败时清理临时文件，避免残留
             let _ = std::fs::remove_file(&tmp_path);
-            return Err(NexusFlowError::Config {
+            return Err(GateError::Config {
                 message: t_args(
                     "config-atomic-replace-failed",
                     &[
@@ -472,7 +472,7 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
 
         let result = manager.update_config_with(|_config| {
-            Err(NexusFlowError::Config {
+            Err(GateError::Config {
                 message: "mutate rejected".to_string(),
             })
         });

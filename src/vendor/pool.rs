@@ -11,7 +11,7 @@
 //! - `acquire()` 返回 `OwnedReqwestClient`，drop 时自动释放 permit
 //! - 模仿 `tower::limit::ConcurrencyLimit` 模式但不引入 tower 依赖
 
-use crate::error::NexusFlowError;
+use crate::error::GateError;
 use std::sync::Arc;
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 
@@ -66,15 +66,15 @@ impl ConnectionPool {
 
     /// 获取一个 permit + client 引用。
     /// 若所有 permit 已被占用，会异步等待直到有 permit 释放。
-    /// 若 semaphore 被关闭（pool 被销毁），返回 `NexusFlowError::Config`。
-    pub async fn acquire(&self) -> Result<OwnedReqwestClient, NexusFlowError> {
+    /// 若 semaphore 被关闭（pool 被销毁），返回 `GateError::Config`。
+    pub async fn acquire(&self) -> Result<OwnedReqwestClient, GateError> {
         // acquire_owned 需要 `Arc<Semaphore>` by value（消耗 Arc），
         // 因此先 clone 一份 Arc 再传入
         let permit =
             Arc::clone(&self.semaphore)
                 .acquire_owned()
                 .await
-                .map_err(|e: AcquireError| NexusFlowError::Config {
+                .map_err(|e: AcquireError| GateError::Config {
                     message: crate::i18n::t_args(
                         "vendor-pool-semaphore-closed",
                         &[("error", e.to_string())],

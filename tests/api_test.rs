@@ -834,7 +834,7 @@ mod admin {
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ServerConfig, VendorConfig,
     };
     use nexusflow::database::Database;
-    use nexusflow::error::NexusFlowError;
+    use nexusflow::error::{GateError, NexusFlowError};
     use nexusflow::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
     use nexusflow::router::Router;
     use nexusflow::vendor::VendorManager;
@@ -1023,7 +1023,7 @@ mod admin {
         let result =
             admin::update_vendor(State(state), Path("nonexistent".to_string()), Json(vendor)).await;
         match result {
-            Err(NexusFlowError::Config { message }) => {
+            Err(NexusFlowError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("not found"),
                     "message should mention 'not found': {}",
@@ -1045,7 +1045,7 @@ mod admin {
         let result =
             admin::update_model(State(state), Path("non-global".to_string()), Json(model)).await;
         match result {
-            Err(NexusFlowError::Config { message }) => {
+            Err(NexusFlowError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("global"),
                     "message should mention 'global': {}",

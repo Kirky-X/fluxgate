@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{ConfigManager, GrpcConfig};
+use crate::error::GateError;
 use crate::error::NexusFlowError;
 use crate::i18n::t_args;
 use crate::middleware::auth::ApiAuthState;
@@ -68,8 +69,10 @@ impl GrpcServer {
         );
         sdforge::grpc::build_server_with_graceful_shutdown(&addr, self.config, signal)
             .await
-            .map_err(|e| NexusFlowError::Config {
-                message: t_args("main-grpc-server-error", &[("error", e.to_string())]),
+            .map_err(|e| {
+                NexusFlowError::from(GateError::Config {
+                    message: t_args("main-grpc-server-error", &[("error", e.to_string())]),
+                })
             })?;
         tracing::info!("{}", t_args("main-grpc-stopped", &[("addr", addr)]));
         Ok(())
@@ -106,11 +109,13 @@ fn grpc_addr(grpc_config: &GrpcConfig) -> Result<SocketAddr, NexusFlowError> {
         grpc_config
             .host
             .parse()
-            .map_err(|e: std::net::AddrParseError| NexusFlowError::Config {
-                message: t_args(
-                    "main-grpc-invalid-host",
-                    &[("host", grpc_config.host.clone()), ("error", e.to_string())],
-                ),
+            .map_err(|e: std::net::AddrParseError| {
+                NexusFlowError::from(GateError::Config {
+                    message: t_args(
+                        "main-grpc-invalid-host",
+                        &[("host", grpc_config.host.clone()), ("error", e.to_string())],
+                    ),
+                })
             })?;
     Ok(SocketAddr::from((ipv4, grpc_config.port)))
 }

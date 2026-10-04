@@ -17,7 +17,7 @@
 
 mod common;
 
-use nexusflow::error::NexusFlowError;
+use nexusflow::error::GateError;
 use nexusflow::vendor::resilience::{FallbackChain, FallbackTarget, FallbackTrigger};
 
 fn target(vendor: &str, priority: u8) -> FallbackTarget {
@@ -34,7 +34,7 @@ fn test_primary_5xx_failure_returns_secondary() {
         vec![target("primary", 1), target("secondary", 2)],
         FallbackTrigger::Http5xx,
     );
-    let error = NexusFlowError::VendorUnavailable {
+    let error = GateError::VendorUnavailable {
         vendor: "primary (500: internal server error)".into(),
     };
 
@@ -52,7 +52,7 @@ fn test_http5xx_trigger_ignores_429() {
         vec![target("primary", 1), target("secondary", 2)],
         FallbackTrigger::Http5xx,
     );
-    let error = NexusFlowError::VendorUnavailable {
+    let error = GateError::VendorUnavailable {
         vendor: "primary (429: rate limit exceeded)".into(),
     };
 
@@ -74,19 +74,19 @@ fn test_all_trigger_fires_on_any_error() {
     );
 
     // Timeout 错误
-    let timeout_err = NexusFlowError::Timeout {
+    let timeout_err = GateError::Timeout {
         vendor: "primary".into(),
     };
     assert!(chain.should_trigger(&timeout_err), "All 应匹配 Timeout");
 
     // RateLimited variant
-    let rl_err = NexusFlowError::RateLimited {
+    let rl_err = GateError::RateLimited {
         vendor: "primary".into(),
     };
     assert!(chain.should_trigger(&rl_err), "All 应匹配 RateLimited");
 
     // VendorUnavailable 5xx
-    let vu_err = NexusFlowError::VendorUnavailable {
+    let vu_err = GateError::VendorUnavailable {
         vendor: "primary (503: unavailable)".into(),
     };
     assert!(
@@ -107,7 +107,7 @@ fn test_all_fallbacks_exhausted_returns_none() {
         vec![target("primary", 1), target("secondary", 2)],
         FallbackTrigger::All,
     );
-    let error = NexusFlowError::VendorUnavailable {
+    let error = GateError::VendorUnavailable {
         vendor: "secondary (500: error)".into(),
     };
 
@@ -127,7 +127,7 @@ fn test_circuit_open_trigger_matches_only_circuit_open_errors() {
     );
 
     // CB Open 错误（vendor 字符串含 "circuit open"）
-    let cb_open = NexusFlowError::VendorUnavailable {
+    let cb_open = GateError::VendorUnavailable {
         vendor: "primary (circuit open)".into(),
     };
     assert!(
@@ -140,7 +140,7 @@ fn test_circuit_open_trigger_matches_only_circuit_open_errors() {
     assert_eq!(next.vendor_id, "secondary");
 
     // 普通 5xx 不应触发 CircuitOpen
-    let normal_5xx = NexusFlowError::VendorUnavailable {
+    let normal_5xx = GateError::VendorUnavailable {
         vendor: "primary (500: error)".into(),
     };
     assert!(
@@ -157,7 +157,7 @@ fn test_rate_limited_trigger_matches_429_and_variant() {
     );
 
     // RateLimited variant
-    let rl_variant = NexusFlowError::RateLimited {
+    let rl_variant = GateError::RateLimited {
         vendor: "primary".into(),
     };
     assert!(
@@ -166,7 +166,7 @@ fn test_rate_limited_trigger_matches_429_and_variant() {
     );
 
     // VendorUnavailable 含 429 状态码
-    let vu_429 = NexusFlowError::VendorUnavailable {
+    let vu_429 = GateError::VendorUnavailable {
         vendor: "primary (429: rate limit)".into(),
     };
     assert!(
@@ -175,7 +175,7 @@ fn test_rate_limited_trigger_matches_429_and_variant() {
     );
 
     // 5xx 不应触发 RateLimited
-    let vu_500 = NexusFlowError::VendorUnavailable {
+    let vu_500 = GateError::VendorUnavailable {
         vendor: "primary (500: error)".into(),
     };
     assert!(!chain.should_trigger(&vu_500), "RateLimited 不应匹配 5xx");
@@ -188,7 +188,7 @@ fn test_timeout_trigger_matches_only_timeout() {
         FallbackTrigger::Timeout,
     );
 
-    let timeout_err = NexusFlowError::Timeout {
+    let timeout_err = GateError::Timeout {
         vendor: "primary".into(),
     };
     assert!(chain.should_trigger(&timeout_err), "Timeout 应匹配 Timeout");
@@ -198,7 +198,7 @@ fn test_timeout_trigger_matches_only_timeout() {
     assert_eq!(next.vendor_id, "secondary");
 
     // 5xx 不应触发 Timeout
-    let vu_500 = NexusFlowError::VendorUnavailable {
+    let vu_500 = GateError::VendorUnavailable {
         vendor: "primary (500: error)".into(),
     };
     assert!(!chain.should_trigger(&vu_500), "Timeout 不应匹配 5xx");

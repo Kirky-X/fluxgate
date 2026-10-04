@@ -21,27 +21,27 @@ use limiteron::circuit::{
     CircuitBreaker, CircuitBreakerConfig, CircuitCallError, FailureClassifier,
 };
 use limiteron::error::{CircuitState, LimiteronError};
-use nexusflow::error::NexusFlowError;
+use nexusflow::error::GateError;
 use nexusflow::vendor::resilience::{
-    from_limiteron, is_circuit_open_error, to_limiteron, NexusFlowErrorClassifier,
+    from_limiteron, is_circuit_open_error, to_limiteron, GateErrorClassifier,
 };
 use std::sync::Arc;
 use std::time::Duration;
 
 /// failure_threshold=5 / success_threshold=3 / timeout=30s（生产同款配置），
-/// 错误分类器与 manager 接线一致（NexusFlowErrorClassifier）。
+/// 错误分类器与 manager 接线一致（GateError 前缀分类器）。
 fn make_cb() -> (CircuitBreaker, Arc<limiteron::MockClock>) {
     let clock = Arc::new(limiteron::MockClock::new());
     let clock_dyn: Arc<dyn limiteron::Clock> = clock.clone();
     let config = CircuitBreakerConfig::new(5, 3, Duration::from_secs(30))
-        .error_classifier(Arc::new(NexusFlowErrorClassifier));
+        .error_classifier(Arc::new(GateErrorClassifier));
     (CircuitBreaker::with_clock(config, clock_dyn), clock)
 }
 
 /// 桩异步操作：返回以映射层编码的上游不可用错误（计失败）
 fn failing_op() -> impl FnOnce() -> std::future::Ready<Result<(), LimiteronError>> {
     || {
-        std::future::ready(Err(to_limiteron(&NexusFlowError::VendorUnavailable {
+        std::future::ready(Err(to_limiteron(&GateError::VendorUnavailable {
             vendor: "vendor_a".into(),
         })))
     }
@@ -92,7 +92,7 @@ async fn rate_limited_errors_do_not_trip_the_circuit() {
     for _ in 0..10 {
         let result: Result<(), CircuitCallError<LimiteronError>> = cb
             .execute(|| {
-                std::future::ready(Err(to_limiteron(&NexusFlowError::RateLimited {
+                std::future::ready(Err(to_limiteron(&GateError::RateLimited {
                     vendor: "vendor_a".into(),
                 })))
             })
@@ -135,7 +135,7 @@ async fn slow_call_rate_threshold_one_requires_all_slow() {
     let config = CircuitBreakerConfig::new(5, 3, Duration::from_secs(30))
         .slow_call_duration_threshold(Duration::from_millis(100))
         .slow_call_rate_threshold(1.0)
-        .error_classifier(Arc::new(NexusFlowErrorClassifier));
+        .error_classifier(Arc::new(GateErrorClassifier));
     let cb = CircuitBreaker::with_clock(config, clock_dyn);
 
     // 快调用先到：rate 0/1 = 0.0
@@ -219,34 +219,30 @@ async fn failing_probe_reopens_immediately() {
 
 /// 断言两个 NexusFlowError 同 variant 且字段一致（NexusFlowError 未派生
 /// PartialEq；Protocol 的 inner 源链不参与比较）。
-fn assert_same_error(a: &NexusFlowError, b: &NexusFlowError) {
+fn assert_same_error(a: &GateError, b: &GateError) {
     match (a, b) {
         (
-            NexusFlowError::VendorUnavailable { vendor: x },
-            NexusFlowError::VendorUnavailable { vendor: y },
+            GateError::VendorUnavailable { vendor: x },
+            GateError::VendorUnavailable { vendor: y },
         ) => {
             assert_eq!(x, y)
         }
-        (NexusFlowError::Timeout { vendor: x }, NexusFlowError::Timeout { vendor: y }) => {
+        (GateError::Timeout { vendor: x }, GateError::Timeout { vendor: y }) => {
             assert_eq!(x, y)
         }
-        (NexusFlowError::RateLimited { vendor: x }, NexusFlowError::RateLimited { vendor: y }) => {
+        (GateError::RateLimited { vendor: x }, GateError::RateLimited { vendor: y }) => {
             assert_eq!(x, y)
         }
-        (NexusFlowError::Validation { field: x }, NexusFlowError::Validation { field: y }) => {
+        (GateError::Validation { field: x }, GateError::Validation { field: y }) => {
             assert_eq!(x, y)
         }
-        (
-            NexusFlowError::Protocol { source: x, .. },
-            NexusFlowError::Protocol { source: y, .. },
-        ) => assert_eq!(x, y),
-        (NexusFlowError::Config { message: x }, NexusFlowError::Config { message: y }) => {
+        (GateError::Protocol { source: x, .. }, GateError::Protocol { source: y, .. }) => {
             assert_eq!(x, y)
         }
-        (NexusFlowError::Database { message: x }, NexusFlowError::Database { message: y }) => {
+        (GateError::Config { message: x }, GateError::Config { message: y }) => {
             assert_eq!(x, y)
         }
-        (NexusFlowError::Routing { message: x }, NexusFlowError::Routing { message: y }) => {
+        (GateError::Routing { message: x }, GateError::Routing { message: y }) => {
             assert_eq!(x, y)
         }
         _ => panic!("variant mismatch: {:?} vs {:?}", a, b),
@@ -256,29 +252,26 @@ fn assert_same_error(a: &NexusFlowError, b: &NexusFlowError) {
 #[test]
 fn to_and_from_limiteron_roundtrip_all_variants() {
     let cases = vec![
-        NexusFlowError::VendorUnavailable {
+        GateError::VendorUnavailable {
             vendor: "mock-openai (500: Internal Server Error)".into(),
         },
-        NexusFlowError::Timeout {
+        GateError::Timeout {
             vendor: "mock-anthropic".into(),
         },
-        NexusFlowError::RateLimited {
+        GateError::RateLimited {
             vendor: "mock-openai".into(),
         },
-        NexusFlowError::Validation {
+        GateError::Validation {
             field: "model".into(),
         },
-        NexusFlowError::Protocol {
+        GateError::Protocol {
             source: "detail: with: colons".into(),
             inner: None,
         },
-        NexusFlowError::Config {
+        GateError::Config {
             message: "bad [retry] section".into(),
         },
-        NexusFlowError::Database {
-            message: "sqlite busy".into(),
-        },
-        NexusFlowError::Routing {
+        GateError::Routing {
             message: "no vendor".into(),
         },
     ];
@@ -302,6 +295,30 @@ fn to_and_from_limiteron_roundtrip_all_variants() {
 }
 
 #[test]
+fn database_payload_degrades_after_variant_freeze() {
+    // 变体集冻结（design.md D1.3）：Database 留 nexusflow、llm-gate 映射层
+    // 不再引用——`nexusflow:database:*` 载荷自冻结起走有损降级
+    //（VendorUnavailable，详情保留在 vendor 串中）。
+    let restored = from_limiteron(
+        LimiteronError::Other("nexusflow:database:sqlite busy".into()),
+        "vendor_a",
+    );
+    match restored {
+        GateError::VendorUnavailable { vendor } => {
+            assert!(
+                vendor.contains("sqlite busy"),
+                "降级形态必须保留原始 detail: {vendor}"
+            );
+            assert!(
+                vendor.contains("vendor_a"),
+                "降级形态必须携带 vendor 标识: {vendor}"
+            );
+        }
+        other => panic!("database 载荷应降级为 VendorUnavailable，实际 {other:?}"),
+    }
+}
+
+#[test]
 fn from_limiteron_limit_error_maps_to_circuit_open() {
     // CB Open / half-open 准入超限的拒绝串 → "…(circuit open)"
     let err = from_limiteron(
@@ -309,13 +326,13 @@ fn from_limiteron_limit_error_maps_to_circuit_open() {
         "vendor_a",
     );
     match &err {
-        NexusFlowError::VendorUnavailable { vendor } => {
+        GateError::VendorUnavailable { vendor } => {
             assert_eq!(vendor, "vendor_a (circuit open)");
         }
         other => panic!("expected VendorUnavailable, got {:?}", other),
     }
     assert!(is_circuit_open_error(&err));
-    assert!(!is_circuit_open_error(&NexusFlowError::Timeout {
+    assert!(!is_circuit_open_error(&GateError::Timeout {
         vendor: "vendor_a".into()
     }));
 }
@@ -328,7 +345,7 @@ fn from_limiteron_degrades_unrecognizable_payloads() {
         "vendor_a",
     );
     match &err {
-        NexusFlowError::VendorUnavailable { vendor } => {
+        GateError::VendorUnavailable { vendor } => {
             assert!(
                 vendor.starts_with("vendor_a (circuit error:"),
                 "degraded error should keep vendor id, got: {}",
@@ -342,44 +359,42 @@ fn from_limiteron_degrades_unrecognizable_payloads() {
 
     // 完全无关的库内错误 → 降级
     let err = from_limiteron(LimiteronError::BanError("banned".into()), "vendor_a");
-    assert!(matches!(err, NexusFlowError::VendorUnavailable { .. }));
+    assert!(matches!(err, GateError::VendorUnavailable { .. }));
     assert!(!is_circuit_open_error(&err));
 }
 
 #[test]
 fn classifier_counts_failures_by_variant_semantics() {
-    let classifier = NexusFlowErrorClassifier;
+    let classifier = GateErrorClassifier;
     // 上游故障类：计失败
     assert!(
-        classifier.is_counted_as_failure(&to_limiteron(&NexusFlowError::VendorUnavailable {
+        classifier.is_counted_as_failure(&to_limiteron(&GateError::VendorUnavailable {
             vendor: "v".into()
         }))
     );
     assert!(
-        classifier.is_counted_as_failure(&to_limiteron(&NexusFlowError::Timeout {
-            vendor: "v".into()
-        }))
+        classifier.is_counted_as_failure(&to_limiteron(&GateError::Timeout { vendor: "v".into() }))
     );
     // 网关自身保护 / 客户端侧：不计失败
     assert!(
-        !classifier.is_counted_as_failure(&to_limiteron(&NexusFlowError::RateLimited {
+        !classifier.is_counted_as_failure(&to_limiteron(&GateError::RateLimited {
             vendor: "v".into()
         }))
     );
     assert!(
-        !classifier.is_counted_as_failure(&to_limiteron(&NexusFlowError::Validation {
+        !classifier.is_counted_as_failure(&to_limiteron(&GateError::Validation {
             field: "model".into()
         }))
     );
     assert!(
-        !classifier.is_counted_as_failure(&to_limiteron(&NexusFlowError::Protocol {
+        !classifier.is_counted_as_failure(&to_limiteron(&GateError::Protocol {
             source: "bad body".into(),
             inner: None,
         }))
     );
     // 保守计失败：config/database/routing 与未知载荷
     assert!(
-        classifier.is_counted_as_failure(&to_limiteron(&NexusFlowError::Config {
+        classifier.is_counted_as_failure(&to_limiteron(&GateError::Config {
             message: "x".into()
         }))
     );

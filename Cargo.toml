@@ -53,6 +53,9 @@ sdk = ["dep:reqwest", "dep:eventsource-stream"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
 
 [dependencies]
+# 路由核心库（workspace 成员）：config/error/i18n/protocol/utils 门面随本
+# crate 常开复出，vendor/router/resilience/cost-tracking 由同名 feature 转发
+llm-gate = { path = "crates/llm-gate", default-features = false }
 # Web 框架
 axum = { version = "0.8", features = ["macros"], optional = true }
 tokio = { version = "1", features = ["full"] }
@@ -152,6 +155,7 @@ oxcache = { path = "../oxcache" }
 
 [workspace]
 members = [
+    "crates/llm-gate",
     "examples/rest-http",
     "examples/sdk-usage",
     "examples/embedded-server",

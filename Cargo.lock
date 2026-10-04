@@ -2830,6 +2830,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
+name = "llm-gate"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "confers",
+ "dashmap",
+ "fluent-bundle",
+ "limiteron",
+ "oxcache",
+ "rand 0.8.7",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unic-langid",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3051,6 +3072,7 @@ dependencies = [
  "http-body",
  "inklog",
  "limiteron",
+ "llm-gate",
  "mockall",
  "mockall_double",
  "mockito",

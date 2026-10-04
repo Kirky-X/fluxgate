@@ -13,7 +13,7 @@
 //! # 示例
 //!
 //! ```rust,ignore
-//! use nexusflow::i18n;
+//! use llm_gate::i18n;
 //!
 //! i18n::init();                          // 可选预热
 //! i18n::t("vendor-unavailable");

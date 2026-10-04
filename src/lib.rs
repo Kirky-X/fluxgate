@@ -7,7 +7,9 @@
 
 pub mod config;
 pub mod error;
-pub mod i18n;
+// i18n 引擎整体进 llm-gate（Fluent 目录随迁）；此处门面 re-export，
+// crate 内外统一经 nexusflow::i18n（= llm_gate::i18n）访问
+pub use llm_gate::i18n;
 pub mod protocol;
 pub mod utils;
 

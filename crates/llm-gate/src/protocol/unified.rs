@@ -452,10 +452,12 @@ pub struct TokenUsage {
 /// - `Usage` ↔ core `StreamChunk::Usage`；
 /// - `Heartbeat` 为网关保心跳，无 core 对应。
 ///
-/// 表示统一注意（N4 范围）：`Content` 携带 `MessageContent::ToolCalls`
-/// 为旧表示（OpenAI 入站解析路径现状，出站聚合语义依赖它）；N4 将把工具
-/// 流统一迁移到 [`StreamChunk::ToolCall`] 片段表示 + 多 index 交错状态机
-/// ——N4 范围由此扩为「表示统一」，而非仅并行交错补齐。
+/// 表示统一（T004 已落地）：双侧流式工具路径的规范表示为
+/// [`StreamChunk::ToolCall`] 片段流（openai 单片段帧直接映射；
+/// anthropic 帧类型显式判定）。`Content` 携带 `MessageContent::ToolCalls`
+/// 仅为旧表示回退——openai 单帧多片段 / 片段与 finish_reason 同帧的
+/// 非规范形状（trait 单 chunk 交付约束下的无损回退），消费方聚合状态
+/// （index → {id, name, arguments 缓冲}）对两种表示均可拼接。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum StreamChunk {

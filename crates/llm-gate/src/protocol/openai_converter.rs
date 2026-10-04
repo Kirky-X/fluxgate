@@ -560,9 +560,11 @@ impl ProtocolConverter for OpenAIConverter {
 /// - `[DONE]` → `None`（终止标记，不映射 IR）；
 /// - 顶层 `usage` 帧（`stream_options.include_usage` 尾帧，choices 空）
 ///   → [`StreamChunk::Usage`]；
+/// - `choices[0].delta.tool_calls`（规范单片段帧）→
+///   [`StreamChunk::ToolCall`]（T004 表示统一：id/name 仅首片段携带，
+///   arguments 为增量分片；多片段帧或与 finish_reason 同帧回退
+///   Content{ToolCalls} 旧聚合表示，无损交付）；
 /// - `choices[0].delta.content` → [`StreamChunk::Content`]（Text delta）；
-/// - `choices[0].delta.tool_calls` → [`StreamChunk::Content`]（ToolCalls
-///   delta，与 recId=8 联动：流式工具片段不静默丢弃）；
 /// - `choices[0].finish_reason` 非空时挂到 Content 的 `finish_reason`；
 /// - role-only 首帧（仅 `delta.role`，无内容无终止）→ `None` 跳过。
 pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
@@ -625,11 +627,35 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
 
     let delta = choice.get("delta");
 
-    // delta.tool_calls：流式工具调用片段聚合（recId=8⑦ 联动回归）
-    let tool_call_delta = delta
+    // T004：表示统一——tool_calls delta → ToolCall 片段流。
+    // 规范形状：每帧恰一个片段（OpenAI 实践形状）→ [`StreamChunk::ToolCall`]
+    // {index, id（续片缺省为空串）, name: Option, arguments: Option 增量}，
+    // 消费方以显式聚合状态（index → {id, name, arguments 缓冲}）拼接。
+    // 非规范形状回退旧聚合表示 [`MessageContent::ToolCalls`]（无损交付，
+    // trait 每次 `parse_stream_frame` 只能产出一个 chunk）：
+    // - 单帧多片段（数组 len > 1，部分兼容端点会合并并行工具首片段）；
+    // - 片段与 finish_reason 同帧（ToolCall 片段无终止槽）。
+    let tool_array = delta
         .and_then(|d| d.get("tool_calls"))
         .and_then(|v| v.as_array())
-        .filter(|arr| !arr.is_empty())
+        .filter(|arr| !arr.is_empty());
+    if let Some(arr) = tool_array {
+        if arr.len() == 1 && finish_reason.is_none() {
+            if let Some((tool_index, id, name, arguments)) =
+                parse_stream_tool_call_fragment(&arr[0])
+            {
+                return Some(StreamChunk::ToolCall {
+                    index: tool_index,
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+        }
+    }
+
+    // 回退路径：多片段帧 / 与 finish_reason 同帧 / 片段形状非法
+    let tool_call_delta = tool_array
         .map(|arr| {
             MessageContent::ToolCalls(
                 arr.iter()
@@ -659,9 +685,36 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
     })
 }
 
-/// 解析流式 tool_calls delta 片段（OpenAI 流式形状：id/name 仅首片段携带，
-/// arguments 逐片段增量）。片段缺省字段以空串占位，聚合语义后置于
-/// recId=8 的工具流式回归。
+/// 解析流式 tool_calls 单片段 → ToolCall 片段字段（T004 表示统一）。
+///
+/// OpenAI 流式形状：id/name 仅首片段携带（续片缺省 → 空串/None），
+/// arguments 为增量分片；index 为并行工具槽位（消费方聚合状态按它拼接）。
+fn parse_stream_tool_call_fragment(
+    json: &Value,
+) -> Option<(u32, String, Option<String>, Option<String>)> {
+    let obj = json.as_object()?;
+    let function = obj.get("function").and_then(|f| f.as_object());
+    let name = function
+        .and_then(|f| f.get("name"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let arguments = function
+        .and_then(|f| f.get("arguments"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Some((
+        obj.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        obj.get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        name,
+        arguments,
+    ))
+}
+
+/// 旧聚合表示路径的片段解析（T004：仅服务非规范形状回退——单帧多片段 /
+/// 与 finish_reason 同帧）。片段缺省字段以空串占位。
 fn parse_stream_tool_call_delta(json: &Value) -> Option<ToolCall> {
     let obj = json.as_object()?;
     let function = obj.get("function").and_then(|f| f.as_object());

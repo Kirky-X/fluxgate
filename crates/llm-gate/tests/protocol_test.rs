@@ -552,17 +552,23 @@ mod converter {
                 "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\"\"}}]},\"finish_reason\":null}]}",
             )
             .expect("tool_call delta 帧不应被丢弃");
+        // T004 表示统一：单片段帧 → ToolCall 片段（id/name 首片段携带）
         match chunk {
-            StreamChunk::Content { delta, .. } => match delta {
-                llm_gate::protocol::MessageContent::ToolCalls(calls) => {
-                    assert_eq!(calls.len(), 1);
-                    assert_eq!(calls[0].id, "call_1");
-                    assert_eq!(calls[0].function.name, "get_weather");
-                    assert!(calls[0].function.arguments.contains("\"city\""));
-                }
-                other => panic!("expected ToolCalls delta, got {other:?}"),
-            },
-            other => panic!("expected Content chunk, got {other:?}"),
+            StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(index, 0);
+                assert_eq!(id, "call_1");
+                assert_eq!(name.as_deref(), Some("get_weather"));
+                assert!(arguments
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("\"city\""));
+            }
+            other => panic!("expected ToolCall fragment, got {other:?}"),
         }
     }
 
@@ -1306,7 +1312,8 @@ mod converter {
         assert_eq!(out["delta"]["type"], "text_delta");
         assert_eq!(out["delta"]["text"], "hello");
         assert_eq!(out["content_block"]["text"], "hello");
-        assert_eq!(out["stop_reason"], "stop");
+        // T004：stop_reason 出站映射 Anthropic 词表（stop→end_turn）
+        assert_eq!(out["stop_reason"], "end_turn");
 
         let out = converter
             .stream_chunk_to_external(StreamChunk::Content {
@@ -2779,18 +2786,23 @@ mod converter {
         );
         assert_eq!(fragment["function"]["arguments"], ":5}");
 
-        // 回读：片段帧 → Content{ToolCalls}（既有聚合语义）
+        // 回读：片段帧 → ToolCall 续片段（T004 表示统一）
         let chunk = openai
             .parse_stream_frame(&out.to_string())
             .expect("片段帧应回读");
         match chunk {
-            StreamChunk::Content { delta, .. } => match delta {
-                MessageContent::ToolCalls(calls) => {
-                    assert!(calls[0].function.arguments.contains(":5}"));
-                }
-                other => panic!("expected ToolCalls, got {other:?}"),
-            },
-            other => panic!("expected Content chunk, got {other:?}"),
+            StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(index, 0);
+                assert_eq!(id, "", "续片段无 id");
+                assert_eq!(name, None);
+                assert_eq!(arguments.as_deref(), Some(":5}"));
+            }
+            other => panic!("expected ToolCall fragment, got {other:?}"),
         }
     }
 
@@ -3455,6 +3467,598 @@ mod converter {
         assert_eq!(
             out["messages"][0]["content"][0]["source"],
             json!({"type": "url", "url": "https://example.com/cat.png"})
+        );
+    }
+
+    // ==================== T004：流式工具链 golden（表示统一） ====================
+
+    use std::collections::BTreeMap;
+
+    /// 聚合后的完整工具调用（golden 断言用）。
+    #[derive(Default, Debug, Clone, PartialEq)]
+    struct AggregatedCall {
+        id: String,
+        name: Option<String>,
+        arguments: String,
+    }
+
+    /// T004 golden 聚合器：显式状态跟踪 index → {id, name, arguments 缓冲}
+    ///（审查 F3 收口——不依赖 name 存在性判定），双侧入站与交叉往返共用。
+    struct ToolCallAggregator {
+        slots: BTreeMap<u32, AggregatedCall>,
+    }
+
+    impl ToolCallAggregator {
+        fn new() -> Self {
+            Self {
+                slots: BTreeMap::new(),
+            }
+        }
+
+        fn absorb(&mut self, chunk: &StreamChunk) {
+            if let StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } = chunk
+            {
+                let slot = self.slots.entry(*index).or_default();
+                if !id.is_empty() {
+                    slot.id = id.clone();
+                }
+                if name.is_some() {
+                    slot.name = name.clone();
+                }
+                if let Some(shard) = arguments {
+                    slot.arguments.push_str(shard);
+                }
+            }
+        }
+
+        fn call(&self, index: u32) -> &AggregatedCall {
+            &self.slots[&index]
+        }
+    }
+
+    /// golden：openai 入站并行工具——多 id/index 交错片段流经显式聚合
+    /// 状态还原完整调用（arguments 分片拼接），终止帧 finish_reason 不失。
+    #[tokio::test]
+    async fn test_openai_stream_parallel_tools_golden() {
+        let openai = OpenAIConverter::new();
+        let frames = [
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"get_weather"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"get_time"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"tz\":"}}]}}]}"#,
+            // 交错：tool 0 的参数分片在 tool 1 之后到达
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Beijing\"}"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"Asia/CST\"}"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+        ];
+
+        let mut aggregator = ToolCallAggregator::new();
+        let mut finish_reason = None;
+        for frame in frames {
+            let chunk = openai
+                .parse_stream_frame(frame)
+                .unwrap_or_else(|| panic!("帧应解析: {frame}"));
+            match &chunk {
+                StreamChunk::Content {
+                    finish_reason: fr, ..
+                } => {
+                    finish_reason = fr.clone();
+                }
+                _ => aggregator.absorb(&chunk),
+            }
+        }
+
+        assert_eq!(
+            finish_reason.as_deref(),
+            Some("tool_calls"),
+            "终止帧 finish_reason 不得丢失"
+        );
+        assert_eq!(
+            aggregator.call(0),
+            &AggregatedCall {
+                id: "call_a".into(),
+                name: Some("get_weather".into()),
+                arguments: r#"{"city":"Beijing"}"#.into(),
+            },
+            "tool 0 分片拼接应还原完整调用"
+        );
+        assert_eq!(
+            aggregator.call(1),
+            &AggregatedCall {
+                id: "call_b".into(),
+                name: Some("get_time".into()),
+                arguments: r#"{"tz":"Asia/CST"}"#.into(),
+            },
+            "tool 1 交错片段应还原完整调用"
+        );
+    }
+
+    /// golden：anthropic 入站并行工具——相邻顺序块（tool_use 块无法并发
+    /// open）经显式聚合状态还原完整调用；content_block_stop 为生命周期
+    /// 事件不映射 IR，message_delta 尾帧 stop_reason 进 Usage.finish_reason。
+    #[tokio::test]
+    async fn test_anthropic_stream_parallel_tools_golden() {
+        let anthropic = AnthropicConverter::new();
+        let events = [
+            r#"{"type":"message_start","message":{}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"checking"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_a","name":"get_weather","input":{}}}"#,
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}"#,
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"Beijing\"}"}}"#,
+            r#"{"type":"content_block_stop","index":1}"#,
+            r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_b","name":"get_time","input":{}}}"#,
+            r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"tz\":\"CST\"}"}}"#,
+            r#"{"type":"content_block_stop","index":2}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}"#,
+            r#"{"type":"message_stop"}"#,
+        ];
+
+        let mut aggregator = ToolCallAggregator::new();
+        let mut stream_stop_reason = None;
+        for event in events {
+            match anthropic.parse_stream_frame(event) {
+                Some(chunk) => match &chunk {
+                    StreamChunk::Usage { finish_reason, .. } => {
+                        stream_stop_reason = finish_reason.clone();
+                    }
+                    _ => aggregator.absorb(&chunk),
+                },
+                None => continue, // 生命周期事件（含 content_block_stop 收口）
+            }
+        }
+
+        assert!(
+            anthropic
+                .parse_stream_frame(r#"{"type":"content_block_stop","index":1}"#)
+                .is_none(),
+            "content_block_stop 为生命周期事件不映射 IR"
+        );
+        assert_eq!(
+            stream_stop_reason.as_deref(),
+            Some("tool_calls"),
+            "message_delta stop_reason 应映射进 Usage.finish_reason"
+        );
+        // 文本块与两个工具块并存
+        assert_eq!(
+            aggregator.call(1),
+            &AggregatedCall {
+                id: "toolu_a".into(),
+                name: Some("get_weather".into()),
+                arguments: r#"{"city":"Beijing"}"#.into(),
+            },
+        );
+        assert_eq!(
+            aggregator.call(2),
+            &AggregatedCall {
+                id: "toolu_b".into(),
+                name: Some("get_time".into()),
+                arguments: r#"{"tz":"CST"}"#.into(),
+            },
+        );
+    }
+
+    /// golden 交叉：openai SSE → IR 片段流 → AnthropicStreamEncoder →
+    /// 合法事件序列（message_start 首位、工具块 start/delta*/stop 顺序块、
+    /// message_delta 携带 stop_reason、message_stop 收尾），事件回读经
+    /// anthropic 解析聚合后还原原始调用。
+    #[tokio::test]
+    async fn test_openai_to_anthropic_tool_stream_golden() {
+        let openai = OpenAIConverter::new();
+        let anthropic = AnthropicConverter::new();
+        let frames = [
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"get_weather"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"get_time"}}]}}]}"#,
+            // 交错：tool 1 参数 → tool 0 参数（编码器按槽位序串行化）
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"tz\":"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"Beijing\"}"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            r#"{"id":"u","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":9,"total_tokens":14}}"#,
+        ];
+
+        let mut encoder = AnthropicStreamEncoder::new();
+        let mut all_events: Vec<String> = Vec::new();
+        for frame in frames {
+            let chunk = openai
+                .parse_stream_frame(frame)
+                .unwrap_or_else(|| panic!("帧应解析: {frame}"));
+            all_events.extend(encoder.encode_chunk(chunk));
+        }
+        all_events.extend(encoder.finish());
+
+        let parsed: Vec<serde_json::Value> = all_events
+            .iter()
+            .map(|e| serde_json::from_str(e).expect("事件必须是合法 JSON"))
+            .collect();
+        let types: Vec<&str> = parsed
+            .iter()
+            .map(|v| v["type"].as_str().expect("事件必须带 type"))
+            .collect();
+
+        // 事件序合法性：message_start 首位、message_stop 收尾、无交错 open 块
+        assert_eq!(types[0], "message_start", "types={types:?}");
+        assert_eq!(*types.last().unwrap(), "message_stop", "types={types:?}");
+        assert_eq!(
+            types,
+            vec![
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "message_delta",
+                "message_stop",
+            ],
+            "交错片段必须按槽位序串行化为合法顺序块: {types:?}"
+        );
+        // 工具块序号由编码器内部计数器分配（0/1 顺序）
+        assert_eq!(parsed[1]["index"], 0);
+        assert_eq!(parsed[4]["index"], 1);
+        assert_eq!(parsed[1]["content_block"]["type"], "tool_use");
+        assert_eq!(parsed[1]["content_block"]["id"], "call_a");
+        assert_eq!(parsed[4]["content_block"]["id"], "call_b");
+        // 分片逐片还原（刷写按 IR 工具槽位序：slot 0 先于 slot 1）
+        assert_eq!(parsed[2]["delta"]["partial_json"], r#"{"city":"Beijing"}"#);
+        assert_eq!(parsed[5]["delta"]["partial_json"], r#"{"tz":"#);
+        // stop_reason 流式透传闭环：finish_reason("tool_calls") → message_delta
+        assert_eq!(parsed[7]["delta"]["stop_reason"], "tool_use");
+        assert_eq!(parsed[7]["usage"]["output_tokens"], 9);
+
+        // 事件回读：anthropic 解析聚合 → 原调用还原
+        let mut aggregator = ToolCallAggregator::new();
+        for event in &all_events {
+            if let Some(chunk) = anthropic.parse_stream_frame(event) {
+                aggregator.absorb(&chunk);
+            }
+        }
+        assert_eq!(
+            aggregator.call(0),
+            &AggregatedCall {
+                id: "call_a".into(),
+                name: Some("get_weather".into()),
+                arguments: r#"{"city":"Beijing"}"#.into(),
+            },
+        );
+        assert_eq!(
+            aggregator.call(1),
+            &AggregatedCall {
+                id: "call_b".into(),
+                name: Some("get_time".into()),
+                arguments: r#"{"tz":"#.into(),
+            },
+        );
+    }
+
+    /// golden 交叉：anthropic SSE → IR 片段流 → openai chunk → 回读解析
+    /// 聚合，还原原始调用（分片语义与 index 经 openai delta.tool_calls 保留）。
+    #[tokio::test]
+    async fn test_anthropic_to_openai_tool_stream_golden() {
+        let anthropic = AnthropicConverter::new();
+        let openai = OpenAIConverter::new();
+        let events = [
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_a","name":"get_weather","input":{}}}"#,
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}"#,
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"Beijing\"}"}}"#,
+            r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_b","name":"get_time","input":{}}}"#,
+            r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"tz\":\"CST\"}"}}"#,
+        ];
+
+        let mut aggregator = ToolCallAggregator::new();
+        for event in events {
+            let chunk = anthropic
+                .parse_stream_frame(event)
+                .unwrap_or_else(|| panic!("事件应解析: {event}"));
+            let wire = openai
+                .stream_chunk_to_external(chunk)
+                .expect("IR 片段应编码为 openai chunk");
+            // 回读：openai chunk data 负载 → IR → 聚合
+            let chunk = openai
+                .parse_stream_frame(&wire.to_string())
+                .unwrap_or_else(|| panic!("chunk 应回读: {wire}"));
+            aggregator.absorb(&chunk);
+        }
+
+        assert_eq!(
+            aggregator.call(1),
+            &AggregatedCall {
+                id: "toolu_a".into(),
+                name: Some("get_weather".into()),
+                arguments: r#"{"city":"Beijing"}"#.into(),
+            },
+            "分片语义与 index 经 openai delta.tool_calls 往返保留"
+        );
+        assert_eq!(
+            aggregator.call(2),
+            &AggregatedCall {
+                id: "toolu_b".into(),
+                name: Some("get_time".into()),
+                arguments: r#"{"tz":"CST"}"#.into(),
+            },
+        );
+    }
+
+    /// stop_reason 流式透传专项：anthropic message_delta → Usage.finish_reason
+    /// → 编码器回注 message_delta.delta.stop_reason（闭环）；openai 侧
+    /// finish_reason 帧 → Content → chunk 透传。
+    #[tokio::test]
+    async fn test_stop_reason_stream_passthrough_roundtrip() {
+        let anthropic = AnthropicConverter::new();
+
+        // 上游：message_delta 尾帧 stop_reason
+        let usage_chunk = anthropic
+            .parse_stream_frame(
+                r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}"#,
+            )
+            .expect("message_delta 应解析");
+        match &usage_chunk {
+            StreamChunk::Usage { finish_reason, .. } => {
+                assert_eq!(finish_reason.as_deref(), Some("tool_calls"));
+            }
+            other => panic!("expected Usage, got {other:?}"),
+        }
+
+        // 编码器回注：Usage.finish_reason → message_delta.delta.stop_reason
+        let mut encoder = AnthropicStreamEncoder::new();
+        let events = encoder.encode_chunk(usage_chunk);
+        let message_delta = events
+            .iter()
+            .map(|e| serde_json::from_str::<serde_json::Value>(e).unwrap())
+            .find(|v| v["type"] == "message_delta")
+            .expect("Usage 应产出 message_delta");
+        assert_eq!(
+            message_delta["delta"]["stop_reason"], "tool_use",
+            "stop_reason 必须经编码器回注到 message_delta"
+        );
+
+        // Content 携带 finish_reason 的回注路径
+        let mut encoder = AnthropicStreamEncoder::new();
+        let mut events = encoder.encode_chunk(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::Text("done".into()),
+            finish_reason: Some("max_tokens".into()),
+        });
+        events.extend(encoder.finish());
+        let stop_reason = events
+            .iter()
+            .filter_map(|e| serde_json::from_str::<serde_json::Value>(e).ok())
+            .find_map(|v| (v["type"] == "content_block_stop").then_some(v["index"].clone()));
+        assert!(
+            stop_reason.is_some(),
+            "finish_reason 应闭合文本块: {events:?}"
+        );
+
+        // openai 侧：finish_reason 帧 → Content → chunk 透传
+        let openai = OpenAIConverter::new();
+        let chunk = openai
+            .parse_stream_frame(
+                r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            )
+            .expect("finish_reason 帧应解析");
+        match &chunk {
+            StreamChunk::Content { finish_reason, .. } => {
+                assert_eq!(finish_reason.as_deref(), Some("tool_calls"));
+            }
+            other => panic!("expected Content, got {other:?}"),
+        }
+        let wire = openai.stream_chunk_to_external(chunk).expect("编码");
+        assert_eq!(wire["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    /// 非规范形状无损回退：单帧多片段 → Content{ToolCalls} 旧聚合表示
+    ///（trait 单 chunk 交付约束下的无损路径）；片段与 finish_reason 同帧
+    /// 同样回退（ToolCall 片段无终止槽）。
+    #[tokio::test]
+    async fn test_openai_stream_multi_fragment_frame_falls_back() {
+        let openai = OpenAIConverter::new();
+
+        // 单帧多片段：两个并行工具首片段合并
+        let chunk = openai
+            .parse_stream_frame(
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[
+                    {"index":0,"id":"call_a","type":"function","function":{"name":"get_weather"}},
+                    {"index":1,"id":"call_b","type":"function","function":{"name":"get_time"}}
+                ]}}]}"#,
+            )
+            .expect("多片段帧应解析");
+        match chunk {
+            StreamChunk::Content {
+                delta,
+                finish_reason,
+                ..
+            } => {
+                match delta {
+                    MessageContent::ToolCalls(calls) => {
+                        assert_eq!(calls.len(), 2, "多片段必须无损保留");
+                        assert_eq!(calls[0].id, "call_a");
+                        assert_eq!(calls[1].id, "call_b");
+                    }
+                    other => panic!("expected ToolCalls fallback, got {other:?}"),
+                }
+                assert_eq!(finish_reason, None);
+            }
+            other => panic!("expected Content chunk, got {other:?}"),
+        }
+
+        // 片段与 finish_reason 同帧：回退并保留终止原因
+        let chunk = openai
+            .parse_stream_frame(
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[
+                    {"index":0,"id":"call_a","type":"function","function":{"name":"get_weather","arguments":"{}"}}
+                ]},"finish_reason":"tool_calls"}]}"#,
+            )
+            .expect("同帧应解析");
+        match chunk {
+            StreamChunk::Content {
+                delta,
+                finish_reason,
+                ..
+            } => {
+                assert!(matches!(
+                    delta,
+                    MessageContent::ToolCalls(calls) if calls.len() == 1
+                ));
+                assert_eq!(finish_reason.as_deref(), Some("tool_calls"));
+            }
+            other => panic!("expected Content chunk, got {other:?}"),
+        }
+    }
+
+    /// MEDIUM 修复：非规范回退形状 Content{ToolCalls}（openai 多片段帧
+    /// 回退产物）经 anthropic 出站合成 tool_use 块还原调用，不再静默丢弃；
+    /// 事件序保持合法（工具块 + message_delta stop_reason + message_stop），
+    /// 且回读聚合跨表示还原原调用。
+    #[tokio::test]
+    async fn test_anthropic_outbound_fallback_toolcalls_synthesized() {
+        let mut encoder = AnthropicStreamEncoder::new();
+        let mut events = encoder.encode_chunk(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::ToolCalls(vec![
+                ToolCall {
+                    id: "call_a".into(),
+                    call_type: "function".into(),
+                    function: ToolCallFunction {
+                        name: "get_weather".into(),
+                        arguments: r#"{"city":"Beijing"}"#.into(),
+                    },
+                },
+                ToolCall {
+                    id: "call_b".into(),
+                    call_type: "function".into(),
+                    function: ToolCallFunction {
+                        name: "get_time".into(),
+                        arguments: r#"{"tz":"CST"}"#.into(),
+                    },
+                },
+            ]),
+            finish_reason: Some("tool_calls".into()),
+        });
+        events.extend(encoder.encode_chunk(StreamChunk::Usage {
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            total_tokens: 3,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            finish_reason: Some("tool_calls".into()),
+        }));
+        events.extend(encoder.finish());
+
+        let parsed: Vec<serde_json::Value> = events
+            .iter()
+            .map(|e| serde_json::from_str(e).expect("事件必须是合法 JSON"))
+            .collect();
+        let types: Vec<&str> = parsed
+            .iter()
+            .map(|v| v["type"].as_str().expect("事件必须带 type"))
+            .collect();
+        assert_eq!(
+            types,
+            vec![
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "message_delta",
+                "message_stop",
+            ],
+            "合成片段必须走既有刷写路径产出合法顺序块: {types:?}"
+        );
+        assert_eq!(parsed[1]["content_block"]["type"], "tool_use");
+        assert_eq!(parsed[1]["content_block"]["id"], "call_a");
+        assert_eq!(parsed[1]["content_block"]["name"], "get_weather");
+        assert_eq!(parsed[2]["delta"]["partial_json"], r#"{"city":"Beijing"}"#);
+        assert_eq!(parsed[4]["content_block"]["id"], "call_b");
+        assert_eq!(parsed[5]["delta"]["partial_json"], r#"{"tz":"CST"}"#);
+        assert_eq!(parsed[7]["delta"]["stop_reason"], "tool_use");
+
+        // 回读：合成事件经 anthropic 解析聚合 → 跨表示还原原调用
+        let anthropic = AnthropicConverter::new();
+        let mut aggregator = ToolCallAggregator::new();
+        for event in &events {
+            if let Some(chunk) = anthropic.parse_stream_frame(event) {
+                aggregator.absorb(&chunk);
+            }
+        }
+        assert_eq!(
+            aggregator.call(0),
+            &AggregatedCall {
+                id: "call_a".into(),
+                name: Some("get_weather".into()),
+                arguments: r#"{"city":"Beijing"}"#.into(),
+            },
+        );
+        assert_eq!(
+            aggregator.call(1),
+            &AggregatedCall {
+                id: "call_b".into(),
+                name: Some("get_time".into()),
+                arguments: r#"{"tz":"CST"}"#.into(),
+            },
+        );
+    }
+
+    /// LOW-4：id 与 name 均空的退化槽（畸形输入）刷写时跳过，不产出
+    /// tool_use 块（tracing::warn 显性化），事件序保持合法；Some("") 与
+    /// 空串同判。
+    #[tokio::test]
+    async fn test_anthropic_encoder_degenerate_tool_slot_skipped() {
+        let mut encoder = AnthropicStreamEncoder::new();
+        encoder.encode_chunk(StreamChunk::ToolCall {
+            index: 0,
+            id: String::new(),
+            name: None,
+            arguments: Some("{}".into()),
+        });
+        let events = encoder.encode_chunk(StreamChunk::Usage {
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            total_tokens: 3,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            finish_reason: Some("tool_calls".into()),
+        });
+        let types: Vec<String> = events
+            .iter()
+            .filter_map(|e| {
+                let v: serde_json::Value = serde_json::from_str(e).ok()?;
+                v["type"].as_str().map(|s| s.to_string())
+            })
+            .collect();
+        assert_eq!(
+            types,
+            vec!["message_start".to_string(), "message_delta".to_string()],
+            "退化槽不得产出 tool_use 块: {types:?}"
+        );
+
+        // Some("") 与空串同判：不产出、不 panic
+        let mut encoder = AnthropicStreamEncoder::new();
+        encoder.encode_chunk(StreamChunk::ToolCall {
+            index: 0,
+            id: String::new(),
+            name: Some(String::new()),
+            arguments: None,
+        });
+        let events = encoder.finish();
+        let types: Vec<String> = events
+            .iter()
+            .filter_map(|e| {
+                let v: serde_json::Value = serde_json::from_str(e).ok()?;
+                v["type"].as_str().map(|s| s.to_string())
+            })
+            .collect();
+        assert_eq!(
+            types,
+            vec!["message_start".to_string(), "message_stop".to_string()]
         );
     }
 }

@@ -7,7 +7,7 @@ use super::*;
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Anthropic 协议已显式映射进 IR 的顶层键（其余字段吸收进 vendor_extensions）。
 ///
@@ -601,13 +601,17 @@ impl ProtocolConverter for AnthropicConverter {
                         "type": "text",
                         "text": delta_text,
                     },
-                    "stop_reason": finish_reason,
+                    // T004：IR finish 词表 → Anthropic stop_reason 词表
+                    //（stop→end_turn 等；未知词原样透传）
+                    "stop_reason": finish_reason
+                        .as_deref()
+                        .map(finish_reason_to_anthropic_stop_reason),
                 }))
             }
-            // T003：流式工具调用片段 → Anthropic 原生事件——首片段（带 name）
-            // 为 content_block_start(tool_use)，续片段为
-            // content_block_delta(input_json_delta)；完整交错状态机随 N4
-            // 流式 parity 回归
+            // T004：无状态单块路径——首片段（name 存在性，本方法无跨帧
+            // 状态只能启发式判定）→ content_block_start(tool_use)，
+            // 续片段 → content_block_delta(input_json_delta)。规范化交错
+            // 编码走 [`AnthropicStreamEncoder`]（显式缓冲状态）
             StreamChunk::ToolCall {
                 index,
                 id,
@@ -644,10 +648,12 @@ impl ProtocolConverter for AnthropicConverter {
                 cache_creation_tokens,
                 finish_reason,
             } => {
-                // T003：finish_reason 随 Usage 到达时透传进 delta.stop_reason
-                //（IR 侧 Anthropic message_delta 尾帧的映射回流）
+                // T004：finish_reason 随 Usage 到达时透传进 delta.stop_reason
+                //（IR 词表 → Anthropic 词表；未知词原样透传）
                 let delta = json!({
-                    "stop_reason": finish_reason,
+                    "stop_reason": finish_reason
+                        .as_deref()
+                        .map(finish_reason_to_anthropic_stop_reason),
                     "stop_sequence": Value::Null,
                 });
                 let mut usage = json!({
@@ -678,15 +684,17 @@ impl ProtocolConverter for AnthropicConverter {
 ///
 /// Anthropic 流式事件的 `data` JSON 自带 `type` 字段：
 /// - `content_block_delta`（text_delta）→ [`StreamChunk::Content`]；
-/// - `content_block_delta`（input_json_delta）/ `content_block_start`
-///   （tool_use）→ [`StreamChunk::ToolCall`]（T003：并行工具 = 多 index
-///   交错流，id/name 仅首片段携带）；
+/// - `content_block_start`（tool_use）/ `content_block_delta`
+///   （input_json_delta）→ [`StreamChunk::ToolCall`]（T004 表示统一：
+///   首片段带 id/name，续片段为 arguments 增量；片段类别由帧类型显式
+///   判定，并行工具 = 多 index 交错流，消费方按显式聚合状态拼接）；
 /// - `message_delta`（usage 尾帧）→ [`StreamChunk::Usage`]（token 记账
 ///   依赖它；其 `delta.stop_reason` 同帧映射进 Usage 的 `finish_reason`，
-///   T003 流式 stop_reason 透传）；
+///   流式 stop_reason 透传）；
 /// - `ping` → [`StreamChunk::Heartbeat`]；
 /// - `message_start`/`content_block_start`（text）/`content_block_stop`/
-///   `message_stop` → `None`（生命周期事件，由出站侧
+///   `message_stop` → `None`（生命周期事件：块收口语义由消费方聚合状态
+///   持有、终止按 stop_reason/流尾判定，事件序由出站侧
 ///   [`AnthropicStreamEncoder`] 状态机重建）；
 /// - `error` → `None`（manager 层分帧器 is_error 先行拦截终止）。
 pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
@@ -706,8 +714,9 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
                 // text 等非工具块为生命周期事件，由出站状态机重建
                 return None;
             }
-            // 首片段以 name 存在性判定（N4 收口：块生命周期与参数增量
-            // 的按 index 配对统一进交错状态机后，改为显式状态跟踪）
+            // T004（F3 收口）：片段类别由帧类型显式判定——
+            // content_block_start 恒为首片段（id/name 必带），不依赖
+            // name 存在性启发式；参数增量在 content_block_delta
             Some(StreamChunk::ToolCall {
                 index: json.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 id: block
@@ -727,7 +736,8 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
         }
         "content_block_delta" => {
             let delta = json.get("delta")?;
-            // T003：工具参数增量 → ToolCall 续片段（id/name 由首片段携带）
+            // T004：工具参数增量 → ToolCall 续片段（id/name 由首片段携带；
+            // 片段类别由 delta.type 显式判定，不依赖 name 存在性）
             if delta.get("type").and_then(|v| v.as_str()) == Some("input_json_delta") {
                 let partial = delta
                     .get("partial_json")
@@ -740,7 +750,7 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
                     arguments: Some(partial.to_string()),
                 });
             }
-            // 首版仅 text delta（非 text 非工具增量不产出事件）
+            // 文本增量（非 text 非工具增量不产出事件）
             let text = delta
                 .get("text")
                 .and_then(|v| v.as_str())
@@ -750,6 +760,12 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
                 delta: MessageContent::Text(text.to_string()),
                 finish_reason: None,
             })
+        }
+        "content_block_stop" => {
+            // T004：块收口为生命周期事件，不映射 IR——消费方按显式聚合
+            // 状态（index → {id, name, arguments 缓冲}）持有调用，终止以
+            // stop_reason（message_delta）或流尾判定；事件序由出站状态机重建
+            None
         }
         "message_delta" => {
             // T003：delta.stop_reason 同帧映射（end_turn/stop_sequence→Stop、
@@ -793,7 +809,7 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
     }
 }
 
-/// Anthropic 出站流式状态机（recId=3 阶段二③）。
+/// Anthropic 出站流式状态机（recId=3 阶段二③；T004 工具流统一）。
 ///
 /// IR StreamChunk 流不携带 Anthropic 流式协议的生命周期事件 —— 直接逐块
 /// [`ProtocolConverter::stream_chunk_to_external`] 输出的
@@ -802,7 +818,8 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
 /// 本状态机在 IR 事件之上补齐完整生命周期：
 ///
 /// ```text
-/// message_start（首个 Content/Usage 前发一次）
+/// message_start（首个 Content/Usage/工具块前发一次）
+///   [工具块刷写（见下）]
 ///   content_block_start（首个 text delta 前发）
 ///     content_block_delta*（每个 text delta）
 ///   content_block_stop（finish_reason 或 Usage 到达时闭合）
@@ -810,14 +827,32 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
 /// message_stop（finish 时）
 /// ```
 ///
-/// 首版仅 text delta + usage + 生命周期事件；工具流式后置与 recId=8
-/// 一起回归。
+/// T004 工具流：[`StreamChunk::ToolCall`] 片段先进入按 IR 工具槽位
+/// （index）组织的缓冲——Anthropic 顺序块语义下同一时刻至多一个 open
+/// block，并行多 id/index 交错无法直接映射为事件，缓冲到刷写点（下一个
+/// Content/Usage 到达或 finish 收尾）后按槽位序串行化为
+/// content_block_start(tool_use) + input_json_delta 分片* +
+/// content_block_stop；刷写点先于文本块（工具块在前为归一化顺序，文本块
+/// 如在其后重新开块，块序仍合法）。块序号由编码器内部计数器分配，与
+/// IR chunk index 无关。
 #[derive(Debug)]
 pub struct AnthropicStreamEncoder {
     message_started: bool,
     block_open: bool,
     block_index: u32,
     stop_reason: Option<String>,
+    /// 待刷写工具块缓冲：IR 工具槽位 index → 缓冲（T004 交错状态跟踪）
+    pending_tools: BTreeMap<u32, ToolBuffer>,
+}
+
+/// 待刷写工具块缓冲（T004：并行多 id/index 交错的显式状态跟踪，
+/// 取代 name 存在性判定）。
+#[derive(Debug, Default)]
+struct ToolBuffer {
+    id: String,
+    name: Option<String>,
+    /// 按到达序保留的 arguments 分片（刷写时逐片还原 input_json_delta）
+    arguments_shards: Vec<String>,
 }
 
 impl Default for AnthropicStreamEncoder {
@@ -833,6 +868,60 @@ impl AnthropicStreamEncoder {
             block_open: false,
             block_index: 0,
             stop_reason: None,
+            pending_tools: BTreeMap::new(),
+        }
+    }
+
+    /// 刷写待发工具块缓冲（T004）：按 IR 工具槽位序产出合法事件序列——
+    /// 必要时先闭合当前 open 的文本块，随后
+    /// content_block_start(tool_use) + input_json_delta 分片* +
+    /// content_block_stop；块序号取编码器内部计数器并逐块递增。
+    fn flush_pending_tools(&mut self, events: &mut Vec<String>) {
+        // F1：mem::take 拿所有权直接迭代（BTreeMap 键序 = 槽位序），
+        // 免临时 key Vec 与逐项 remove
+        for (slot, buffer) in std::mem::take(&mut self.pending_tools) {
+            // LOW-4：id 与 name 均空的退化槽为畸形输入，跳过并显性化
+            //（与 openai 入站解析对畸形片段的丢弃行为对称）
+            if buffer.id.is_empty() && buffer.name.as_deref().unwrap_or("").is_empty() {
+                tracing::warn!(slot, "丢弃畸形工具缓冲：id 与 name 均空");
+                continue;
+            }
+            if self.block_open {
+                events.push(self.content_block_stop_event());
+                self.block_open = false;
+                self.block_index += 1;
+            }
+            if !self.message_started {
+                events.push(self.message_start_event());
+            }
+            events.push(
+                json!({
+                    "type": "content_block_start",
+                    "index": self.block_index,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": buffer.id,
+                        "name": buffer.name.unwrap_or_default(),
+                        "input": {},
+                    },
+                })
+                .to_string(),
+            );
+            for shard in buffer.arguments_shards {
+                events.push(
+                    json!({
+                        "type": "content_block_delta",
+                        "index": self.block_index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": shard,
+                        },
+                    })
+                    .to_string(),
+                );
+            }
+            events.push(self.content_block_stop_event());
+            self.block_index += 1;
         }
     }
 
@@ -845,6 +934,27 @@ impl AnthropicStreamEncoder {
                 finish_reason,
                 ..
             } => {
+                // MEDIUM 修复：非规范回退形状 Content{ToolCalls}（openai
+                // 多片段帧回退产物）的工具载荷不再静默丢弃——整段 arguments
+                // 合成为一片 ToolCall 入既有缓冲，走刷写路径产出合法 tool_use 块
+                if let MessageContent::ToolCalls(calls) = &delta {
+                    for call in calls {
+                        let slot = self
+                            .pending_tools
+                            .keys()
+                            .copied()
+                            .next_back()
+                            .map_or(0, |k| k + 1);
+                        let buffer = self.pending_tools.entry(slot).or_default();
+                        buffer.id = call.id.clone();
+                        buffer.name = Some(call.function.name.clone()).filter(|n| !n.is_empty());
+                        if !call.function.arguments.is_empty() {
+                            buffer
+                                .arguments_shards
+                                .push(call.function.arguments.clone());
+                        }
+                    }
+                }
                 let text = extract_delta_text(&delta);
                 if let Some(reason) = finish_reason {
                     self.stop_reason = Some(reason);
@@ -854,6 +964,9 @@ impl AnthropicStreamEncoder {
                 if !self.message_started {
                     events.push(self.message_start_event());
                 }
+                // T004：文本块打开前先刷写工具缓冲（工具块在前为归一化
+                // 顺序；文本块如在其后重新开块，块序仍合法）
+                self.flush_pending_tools(&mut events);
                 if !text.is_empty() {
                     if !self.block_open {
                         events.push(self.content_block_start_event());
@@ -893,6 +1006,8 @@ impl AnthropicStreamEncoder {
                 if !self.message_started {
                     events.push(self.message_start_event_with_input(prompt_tokens));
                 }
+                // T004：message_delta 前必须刷写完所有工具块（顺序块语义）
+                self.flush_pending_tools(&mut events);
                 if self.block_open {
                     events.push(self.content_block_stop_event());
                     self.block_open = false;
@@ -901,7 +1016,12 @@ impl AnthropicStreamEncoder {
                     json!({
                         "type": "message_delta",
                         "delta": {
-                            "stop_reason": self.stop_reason,
+                            // T004：IR finish 词表 → Anthropic stop_reason 词表
+                            //（stop→end_turn、tool_calls→tool_use 等；未知词透传）
+                            "stop_reason": self
+                                .stop_reason
+                                .as_deref()
+                                .map(finish_reason_to_anthropic_stop_reason),
                             "stop_sequence": Value::Null,
                         },
                         "usage": {
@@ -912,51 +1032,46 @@ impl AnthropicStreamEncoder {
                 );
                 events
             }
-            // T003：工具片段按原生事件直通——首片段（带 name）content_block_start
-            // (tool_use)，续片段 content_block_delta(input_json_delta)；
-            // 跨 index 的交错块状态（并行工具）随 N4 流式 parity 回归
+            // T004：工具片段先缓冲——并行多 id/index 交错不能直接映射为
+            // Anthropic 事件（顺序块语义），缓冲到刷写点（下一个
+            // Content/Usage 到达或 finish 收尾）按槽位序串行化。
+            // 无状态单块路径见 [`ProtocolConverter::stream_chunk_to_external`]。
             StreamChunk::ToolCall {
                 index,
                 id,
                 name,
                 arguments,
             } => {
-                if let Some(name) = name {
-                    vec![json!({
-                        "type": "content_block_start",
-                        "index": index,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": id,
-                            "name": name,
-                            "input": {},
-                        },
-                    })
-                    .to_string()]
-                } else {
-                    vec![json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": arguments.unwrap_or_default(),
-                        },
-                    })
-                    .to_string()]
+                let buffer = self.pending_tools.entry(index).or_default();
+                if !id.is_empty() {
+                    buffer.id = id;
                 }
+                // LOW-2：name 覆盖仅在非空时——Some("") 不得降级既有合法 name
+                if name.as_deref().is_some_and(|n| !n.is_empty()) {
+                    buffer.name = name;
+                }
+                if let Some(shard) = arguments {
+                    buffer.arguments_shards.push(shard);
+                }
+                Vec::new()
             }
             StreamChunk::Heartbeat => vec![json!({ "type": "ping" }).to_string()],
         }
     }
 
     /// 流收尾：补齐未闭合的 content_block_stop 与 message_stop。
-    /// 正常流（已收 message_delta）只补 message_stop；空流产出完整
-    /// message_start + message_stop（合法的最小 Anthropic 流）。
+    ///
+    /// 本方法只发 message_stop，不发 message_delta——stop_reason 仅随
+    /// Usage 帧到达时经 message_delta 上线；无 Usage 帧的流其 stop_reason
+    /// 不上线为已知边界（T004 审查 LOW-3 如实记录）。
+    /// 空流产出完整 message_start + message_stop（合法的最小 Anthropic 流）。
     pub fn finish(&mut self) -> Vec<String> {
         let mut events = Vec::new();
         if !self.message_started {
             events.push(self.message_start_event());
         }
+        // T004：收尾前刷写残留工具缓冲
+        self.flush_pending_tools(&mut events);
         if self.block_open {
             events.push(self.content_block_stop_event());
             self.block_open = false;
@@ -1025,7 +1140,8 @@ fn extract_delta_text(delta: &MessageContent) -> String {
             .collect::<Vec<_>>()
             .join(""),
         MessageContent::TextWithToolCalls { text, .. } => text.clone(),
-        // 工具流式后置（recId=8）：ToolCalls/ToolResult delta 首版不产出文本
+        // 旧表示遗留（仅非规范回退形状可达）：ToolCalls 载荷已由 Content
+        // 臂合成进工具缓冲（不产出流式文本）；ToolResult 仍不产出
         _ => String::new(),
     }
 }

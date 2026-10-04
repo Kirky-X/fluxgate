@@ -1,0 +1,29 @@
+# NexusFlow gRPC 门面启用片段
+#
+# 并入网关侧 config.toml（二进制缺省读工作目录的 config.toml，也可将配置
+# 路径作为唯一命令行参数传入）。除本片段外还需编译期启用 grpc feature
+# （独立门控，不在 full 内，需要 protoc）：
+#
+#   cargo build --features grpc
+#   cargo run --features grpc -- /path/to/config.toml
+#
+# [auth] 与 [grpc] 的字段语义与仓库 config.toml / config.example.toml 同源。
+
+[auth]
+enabled = true
+# API keys 存 SHA256 hex 摘要（明文不入配置）：
+#   echo -n "your-api-key" | sha256sum
+api_keys = [
+    # "<your-key-sha256-hex>",
+]
+
+[grpc]
+enabled = true
+host = "0.0.0.0"
+port = 50051
+# per-call 超时（秒），0 = 不限
+timeout_seconds = 30
+# 每连接并发上限，0 = tonic 默认
+max_connections = 1000
+http2_keepalive_interval_secs = 30
+http2_keepalive_timeout_secs = 10

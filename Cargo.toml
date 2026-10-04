@@ -149,3 +149,11 @@ inklog = { path = "../inklog" }
 limiteron = { path = "../limiteron" }
 sdforge = { path = "../sdforge" }
 oxcache = { path = "../oxcache" }
+
+[workspace]
+members = [
+    "examples/rest-http",
+    "examples/sdk-usage",
+    "examples/embedded-server",
+    "examples/grpc-client",
+]

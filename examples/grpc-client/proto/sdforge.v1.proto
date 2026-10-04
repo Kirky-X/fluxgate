@@ -1,0 +1,57 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+syntax = "proto3";
+
+package sdforge.v1;
+
+// SDForge gRPC service v1
+service SdForgeService {
+  // Call a method with parameters and data
+  rpc Call(CallRequest) returns (CallResponse);
+  // Call a streaming method: each item produced by the forge handler
+  // (declared with `stream = true`) arrives as one CallResponse message.
+  // Requires the `streaming` feature on the server.
+  rpc CallStream(CallRequest) returns (stream CallResponse);
+  // Get service information
+  rpc GetInfo(InfoRequest) returns (InfoResponse);
+}
+
+// Request to call a method
+message CallRequest {
+  // Method name to call
+  string method = 1;
+  // Parameters for the method
+  map<string, string> parameters = 2;
+  // Data payload
+  string data = 3;
+}
+
+// Response from a method call
+message CallResponse {
+  // Whether the call was successful
+  bool success = 1;
+  // Response data
+  string data = 2;
+  // Error message if failed
+  string error = 3;
+  // HTTP status code
+  int32 status_code = 4;
+}
+
+// Request for service info
+message InfoRequest {
+  // Version to query
+  string version = 1;
+}
+
+// Response with service info
+message InfoResponse {
+  // Service name
+  string name = 1;
+  // Service version
+  string version = 2;
+  // Available methods
+  repeated string methods = 3;
+  // Service description
+  string description = 4;
+}

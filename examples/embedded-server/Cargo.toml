@@ -1,0 +1,15 @@
+[package]
+name = "nexusflow-example-embedded-server"
+edition = "2021"
+publish = false
+
+[dependencies]
+# 默认 feature（full）即网关完整装配；库形态直接 use 其 server/config 模块
+nexusflow = { path = "../.." }
+
+# 版本与根 Cargo.toml 现有行对齐（axum 0.8+macros、tokio 1）以复用构建缓存；
+# default-features = false 下的最小声明不缺特性——json/tokio/http1 等由
+# nexusflow 依赖侧的默认特性统一补齐（Cargo 特性联合）
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net"] }
+axum = { version = "0.8", default-features = false, features = ["macros"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }

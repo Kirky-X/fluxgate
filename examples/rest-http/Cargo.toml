@@ -1,0 +1,14 @@
+[package]
+name = "nexusflow-example-rest-http"
+edition = "2021"
+publish = false
+
+# 裸 HTTP 示例：不依赖 nexusflow crate，直接对网关线级协议编程，
+# 任何语言可对照移植。第三方依赖全部 default-features = false +
+# 显式 features，版本对齐仓库根 Cargo.toml 以复用构建缓存。
+[dependencies]
+anyhow = { version = "1", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }

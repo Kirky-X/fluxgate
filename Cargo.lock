@@ -2072,7 +2072,6 @@ dependencies = [
  "icu_list",
  "icu_locale",
  "icu_normalizer",
- "icu_pattern",
  "icu_plurals",
  "icu_properties",
  "icu_provider",
@@ -2092,7 +2091,6 @@ dependencies = [
  "icu_locale_core",
  "icu_locale_fallback",
  "icu_provider",
- "ixdtf",
  "serde",
  "tinystr",
  "zerovec",
@@ -2437,7 +2435,6 @@ version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82d07aafccd67af15d02512a6adf5896fbc5ed00f2e99b471d2efa14016db3db"
 dependencies = [
- "core_maths",
  "icu_collections",
  "icu_locale_fallback",
  "icu_provider",
@@ -2466,7 +2463,6 @@ dependencies = [
  "icu_locale_core",
  "icu_provider",
  "icu_time_data",
- "ixdtf",
  "serde",
  "zerotrie",
  "zerovec",
@@ -2628,12 +2624,6 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
-
-[[package]]
-name = "ixdtf"
-version = "0.6.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d3667095d64c3ecffc96463a21157b04bf3e252f6e8d5750b20c02e33c194e3"
 
 [[package]]
 name = "jni"
@@ -3088,6 +3078,48 @@ dependencies = [
  "unic-langid",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "nexusflow-example-embedded-server"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "nexusflow",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "nexusflow-example-grpc-client"
+version = "0.0.0"
+dependencies = [
+ "prost",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "nexusflow-example-rest-http"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "nexusflow-example-sdk-usage"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "nexusflow",
+ "tokio",
 ]
 
 [[package]]

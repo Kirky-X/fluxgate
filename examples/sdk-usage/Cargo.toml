@@ -1,0 +1,10 @@
+[package]
+name = "nexusflow-example-sdk-usage"
+edition = "2021"
+publish = false
+
+[dependencies]
+# 只启用 sdk 门面（HTTP 客户端），不拉起网关服务器本体
+nexusflow = { path = "../..", default-features = false, features = ["sdk"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }

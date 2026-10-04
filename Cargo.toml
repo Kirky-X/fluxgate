@@ -75,10 +75,10 @@ limiteron = { path = "../limiteron", default-features = false, features = ["towe
 # 缓存 — path dep 确保 trait-kit 0.3 对齐
 oxcache = { path = "../oxcache", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 
-# DI — path dep（本地源码 0.3.0）
+# DI — path dep（本地源码 0.5.0-rc.7）
 trait-kit = { path = "../trait-kit", default-features = false, features = ["async"], optional = true }
 
-# SDK 框架 — path dep（本地 0.3.5 已修复 limiteron::FlowGuardError 不兼容问题）
+# SDK 框架 — path dep（本地 0.5.0-rc.6 已修复 limiteron::FlowGuardError 不兼容问题）
 sdforge = { path = "../sdforge", default-features = false, features = ["http", "security", "streaming"], optional = true }
 
 # 序列化与核心

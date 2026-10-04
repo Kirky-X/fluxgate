@@ -2861,17 +2861,20 @@ mod api_handler_coverage {
         repository.initialize().await.expect("schema init");
 
         let logger = wire.logger.then(|| {
-            Arc::new(AsyncLoggerHandle::new(AsyncLogger::new(
-                repository.clone(),
-                1024,
-                Duration::from_millis(200),
-            )))
+            let sink: Arc<dyn nexusflow::storage::RequestLogSink> =
+                Arc::new(AsyncLoggerHandle::new(AsyncLogger::new(
+                    repository.clone(),
+                    1024,
+                    Duration::from_millis(200),
+                )));
+            sink
         });
         let pre_aggregator = wire.pre_aggregator.then(|| {
-            Arc::new(TokenPreAggregator::new(
+            let sink: Arc<dyn nexusflow::storage::UsageSink> = Arc::new(TokenPreAggregator::new(
                 repository.clone(),
                 Duration::from_secs(60),
-            ))
+            ));
+            sink
         });
         let affinity = wire.affinity.then(|| {
             Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
@@ -4265,15 +4268,9 @@ mod api_handler_coverage {
         let body = body_json(response).await;
         assert_eq!(body["object"], "list");
 
-        state
-            .pre_aggregator
-            .as_ref()
-            .unwrap()
-            .flush()
-            .await
-            .expect("flush");
-        let repository = state.database.repository();
-        let stats = repository
+        let usage_front = state.pre_aggregator.as_ref().unwrap();
+        usage_front.flush().await.expect("flush");
+        let stats = usage_front
             .get_token_stats(Some("v-embed"))
             .await
             .expect("token stats");
@@ -4757,7 +4754,6 @@ mod api_handler_coverage {
 
         let logs = state
             .database
-            .repository()
             .query_logs(&LogFilter::default())
             .await
             .expect("query logs");

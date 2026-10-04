@@ -3,12 +3,12 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::database::{AsyncLoggerHandle, TokenPreAggregator};
 use crate::protocol::ProtocolConverter;
 use crate::router::affinity::AffinityTable;
 use crate::router::bandit::{linucb_features_from_body, BanditState};
 use crate::router::Router as RouterTrait;
-use crate::{ConfigManager, Database, VendorManager};
+use crate::storage::{RequestLogSink, UsageSink};
+use crate::{ConfigManager, VendorManager};
 use std::sync::Arc;
 
 use super::response_cache::ResponseCache;
@@ -20,14 +20,16 @@ pub struct ApiState {
     pub router: Arc<RouterTrait>,
     pub openai_converter: Arc<dyn ProtocolConverter>,
     pub anthropic_converter: Arc<dyn ProtocolConverter>,
-    pub database: Arc<Database>,
-    /// recId=9②：异步日志管道 — handler 对其 `log()` push 即返回
+    /// 请求日志存储后端（N2 存储缝）：admin 读（logs/search/token_stats）
+    /// 与直写兜底经 trait 注入，bootstrap 恒接线 Database 实现
+    pub database: Arc<dyn RequestLogSink>,
+    /// recId=9②：异步日志管道前沿 — handler 对其 `log()` push 即返回
     /// （try_send 背压，满即丢并计数）；None = 未接线（部分测试场景降级
     /// 为不落日志）。
-    pub logger: Option<Arc<AsyncLoggerHandle>>,
-    /// recId=9⑤：Token 使用预聚合器 — handler 拿到 usage 后 record_raw，
+    pub logger: Option<Arc<dyn RequestLogSink>>,
+    /// recId=9⑤：Token 使用预聚合前沿 — handler 拿到 usage 后 record_raw，
     /// 定时批量落 token_usage 表；None = 未接线。
-    pub pre_aggregator: Option<Arc<TokenPreAggregator>>,
+    pub pre_aggregator: Option<Arc<dyn UsageSink>>,
     /// recId=11：会话亲和表（oxcache）— 路由 `route_with_session` 的
     /// boost 来源；None = 未接线（亲和关闭，路由行为与历史一致）。
     pub affinity: Option<Arc<AffinityTable>>,
@@ -48,7 +50,7 @@ impl std::fmt::Debug for ApiState {
             .field("router", &"Router")
             .field("openai_converter", &"ProtocolConverter")
             .field("anthropic_converter", &"ProtocolConverter")
-            .field("database", &"Database")
+            .field("database", &"RequestLogSink")
             .field("logger", &self.logger.is_some())
             .field("pre_aggregator", &self.pre_aggregator.is_some())
             .field("affinity", &self.affinity.is_some())

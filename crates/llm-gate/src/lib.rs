@@ -17,6 +17,7 @@ pub mod config;
 pub mod error;
 pub mod i18n;
 pub mod protocol;
+pub mod storage;
 pub mod utils;
 
 #[cfg(feature = "vendor-management")]

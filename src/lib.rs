@@ -17,6 +17,9 @@ pub use llm_gate::i18n;
 pub use llm_gate::utils;
 // protocol IR 与双协议转换器整体进 llm-gate；门面 re-export 同 i18n
 pub use llm_gate::protocol;
+// 存储边界缝（RequestLogSink/UsageSink + 契约类型）定义在 llm-gate，
+// dbnexus 实现留在 database 模块（N2）；门面 re-export 同 protocol
+pub use llm_gate::storage;
 
 #[cfg(feature = "database")]
 pub mod database;

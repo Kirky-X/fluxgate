@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::database::{LogFilter, RequestLog, TokenUsage, VendorStatusRecord};
+use crate::database::{LogFilter, RequestLog, TokenUsageRow, VendorStatusRecord};
 use dbnexus::{DbError, DbPool};
 use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, TransactionTrait, Value};
 
@@ -209,7 +209,10 @@ impl Repository {
         Ok(rows.iter().map(map_request_log).collect())
     }
 
-    pub async fn get_token_stats(&self, vendor: Option<&str>) -> Result<Vec<TokenUsage>, DbError> {
+    pub async fn get_token_stats(
+        &self,
+        vendor: Option<&str>,
+    ) -> Result<Vec<TokenUsageRow>, DbError> {
         let (sql, values): (String, Vec<Value>) = if let Some(v) = vendor {
             (
                 "SELECT * FROM token_usage WHERE vendor = ? ORDER BY date DESC, hour DESC"
@@ -281,8 +284,8 @@ fn map_request_log(row: &QueryResult) -> RequestLog {
     }
 }
 
-fn map_token_usage(row: &QueryResult) -> TokenUsage {
-    TokenUsage {
+fn map_token_usage(row: &QueryResult) -> TokenUsageRow {
+    TokenUsageRow {
         id: row.try_get::<Option<i64>>("", "id").unwrap_or(None),
         vendor: row.try_get("", "vendor").unwrap_or_default(),
         model: row.try_get("", "model").unwrap_or_default(),

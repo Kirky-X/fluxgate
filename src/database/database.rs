@@ -105,6 +105,46 @@ fn normalize_sqlite_url(path: &str) -> String {
     }
 }
 
+#[async_trait::async_trait]
+impl llm_gate::storage::RequestLogSink for Database {
+    async fn log(
+        &self,
+        log: llm_gate::storage::RequestLog,
+    ) -> Result<(), llm_gate::error::GateError> {
+        self.repository()
+            .log_request(&log)
+            .await
+            .map_err(|e| llm_gate::error::GateError::Config {
+                message: format!("request log write failed: {e}"),
+            })
+    }
+
+    async fn query_logs(
+        &self,
+        filter: &llm_gate::storage::LogFilter,
+    ) -> Result<Vec<llm_gate::storage::RequestLog>, llm_gate::error::GateError> {
+        self.repository()
+            .query_logs(filter)
+            .await
+            .map_err(|e| llm_gate::error::GateError::Config {
+                message: format!("request log query failed: {e}"),
+            })
+    }
+
+    async fn search_logs(
+        &self,
+        keyword: &str,
+        limit: u32,
+    ) -> Result<Vec<llm_gate::storage::RequestLog>, llm_gate::error::GateError> {
+        self.repository()
+            .search_logs(keyword, limit)
+            .await
+            .map_err(|e| llm_gate::error::GateError::Config {
+                message: format!("request log search failed: {e}"),
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::normalize_sqlite_url;

@@ -21,41 +21,11 @@ pub use database::Database;
 pub use pre_aggregator::{TokenPreAggregator, TokenPreAggregatorHandle};
 pub use repository::Repository;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RequestLog {
-    pub id: Option<i64>,
-    pub request_id: String,
-    pub timestamp: i64,
-    pub endpoint: String,
-    pub input_format: String,
-    pub abstract_model: Option<String>,
-    pub messages: String,
-    pub actual_vendor: String,
-    pub actual_model: String,
-    pub routing_strategy: String,
-    pub status_code: Option<i32>,
-    pub response: Option<String>,
-    pub error_message: Option<String>,
-    pub prompt_tokens: Option<i32>,
-    pub completion_tokens: Option<i32>,
-    pub total_tokens: Option<i32>,
-    pub duration_ms: Option<i64>,
-    pub cost_usd: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub id: Option<i64>,
-    pub vendor: String,
-    pub model: String,
-    pub date: String,
-    pub hour: i32,
-    pub request_count: i64,
-    pub total_tokens: i64,
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub cost_usd_sum: f64,
-}
+// 请求日志与用量契约（RequestLog/LogFilter/TokenUsageRow）已上收
+// llm-gate::storage（N2 存储缝），database 侧经 trait 对象注入 ApiState；
+// 此处 re-export 维持 database::X 既有路径可用。TokenUsage 行结构已按
+// T002 改名 TokenUsageRow，与 IR 的 protocol::TokenUsage 消歧。
+pub use llm_gate::storage::{LogFilter, RequestLog, TokenUsageRow};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VendorStatusRecord {
@@ -65,13 +35,4 @@ pub struct VendorStatusRecord {
     pub window_used_tokens: i64,
     pub window_reset_at: Option<i64>,
     pub error_count: i32,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LogFilter {
-    pub start_time: Option<i64>,
-    pub end_time: Option<i64>,
-    pub vendor: Option<String>,
-    pub model: Option<String>,
-    pub limit: u32,
 }

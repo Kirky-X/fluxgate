@@ -835,15 +835,23 @@ async fn log_request(
         completion_tokens,
         total_tokens,
     ) {
-        pa.record_raw(
-            &decision.vendor.id,
-            &decision.model.model_id,
-            p.clamp(0, i32::MAX) as u32,
-            c.clamp(0, i32::MAX) as u32,
-            t.clamp(0, i32::MAX) as u32,
-            0.0,
-        )
-        .await;
+        if let Err(e) = pa
+            .record_raw(
+                &decision.vendor.id,
+                &decision.model.model_id,
+                p.clamp(0, i32::MAX) as u32,
+                c.clamp(0, i32::MAX) as u32,
+                t.clamp(0, i32::MAX) as u32,
+                0.0,
+            )
+            .await
+        {
+            // 记账失败不失败请求（recId=9⑤ 语义保持；错误显性化）
+            tracing::warn!(
+                "{}",
+                t_args("api-usage-record-rejected", &[("error", e.to_string())])
+            );
+        }
     }
 
     let log = RequestLog {
@@ -872,7 +880,7 @@ async fn log_request(
 
     // recId=9②：logger 未接线 = 降级为不落日志（不回退同步直写）
     if let Some(logger) = state.logger.as_ref() {
-        if let Err(e) = logger.log(log) {
+        if let Err(e) = logger.log(log).await {
             tracing::warn!(
                 "{}",
                 t_args("api-log-push-rejected", &[("error", e.to_string())])

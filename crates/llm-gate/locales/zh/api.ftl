@@ -25,6 +25,7 @@ api-vendor-failed-rerouting-pre-stream = vendor 在响应/流建立前失败；�
 
 # ---- api/openai.rs / api/anthropic.rs ----
 api-log-push-rejected = 请求日志推送被拒：{ $error }
+api-usage-record-rejected = Token 用量记账被拒：{ $error }
 api-embeddings-openai-only = embeddings 仅支持 OpenAI 类型厂商
 
 # ---- api/health.rs（#[forge] description，经 sdforge::i18n::register_translation 运行时注册） ----

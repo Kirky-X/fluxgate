@@ -201,6 +201,27 @@ impl AsyncLoggerHandle {
     }
 }
 
+#[async_trait::async_trait]
+impl llm_gate::storage::RequestLogSink for AsyncLoggerHandle {
+    async fn log(&self, log: RequestLog) -> Result<(), llm_gate::error::GateError> {
+        AsyncLoggerHandle::log(self, log).map_err(|e| llm_gate::error::GateError::Config {
+            message: format!("async log push failed: {e}"),
+        })
+    }
+
+    fn dropped_logs(&self) -> u64 {
+        AsyncLoggerHandle::dropped_logs(self)
+    }
+
+    async fn shutdown(&self) -> Result<(), llm_gate::error::GateError> {
+        AsyncLoggerHandle::shutdown(self)
+            .await
+            .map_err(|e| llm_gate::error::GateError::Config {
+                message: format!("async logger shutdown failed: {e}"),
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

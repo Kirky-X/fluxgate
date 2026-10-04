@@ -232,6 +232,50 @@ impl TokenPreAggregatorHandle {
     }
 }
 
+#[async_trait::async_trait]
+impl llm_gate::storage::UsageSink for TokenPreAggregator {
+    async fn record_raw(
+        &self,
+        vendor: &str,
+        model: &str,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cost_usd: f64,
+    ) -> Result<(), llm_gate::error::GateError> {
+        TokenPreAggregator::record_raw(
+            self,
+            vendor,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cost_usd,
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn flush(&self) -> Result<(), llm_gate::error::GateError> {
+        TokenPreAggregator::flush(self)
+            .await
+            .map_err(|e| llm_gate::error::GateError::Config {
+                message: format!("token usage flush failed: {e}"),
+            })
+    }
+
+    async fn get_token_stats(
+        &self,
+        vendor: Option<&str>,
+    ) -> Result<Vec<llm_gate::storage::TokenUsageRow>, llm_gate::error::GateError> {
+        self.repository.get_token_stats(vendor).await.map_err(|e| {
+            llm_gate::error::GateError::Config {
+                message: format!("token stats query failed: {e}"),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

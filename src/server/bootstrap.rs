@@ -18,6 +18,7 @@ use crate::database::TokenPreAggregator;
 use crate::error::GateError;
 use crate::error::NexusFlowError;
 use crate::i18n::{t, t_args};
+use crate::storage::{RequestLogSink, UsageSink};
 use crate::ApiState;
 
 /// 装配产物：Router 构建与 serve 后停机 flush 收尾所需的运行时句柄。
@@ -173,6 +174,9 @@ pub(crate) async fn assemble(
         );
     }
 
+    let db_sink: Arc<dyn RequestLogSink> = database.clone();
+    let log_front: Option<Arc<dyn RequestLogSink>> = Some(logger_handle.clone());
+    let usage_front: Option<Arc<dyn UsageSink>> = Some(pre_aggregator.clone());
     let api_state = Arc::new(ApiState {
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
@@ -183,9 +187,9 @@ pub(crate) async fn assemble(
         ),
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
-        database: database.clone(),
-        logger: Some(logger_handle.clone()),
-        pre_aggregator: Some(pre_aggregator.clone()),
+        database: db_sink,
+        logger: log_front,
+        pre_aggregator: usage_front,
         affinity: Some(affinity_table.clone()),
         response_cache: Some(response_cache),
         bandit: Some(bandit_state),

@@ -485,6 +485,7 @@ mod fallback_guard_tests {
     };
     use crate::protocol::{AnthropicConverter, OpenAIConverter};
     use crate::router::Router as NexusRouter;
+    use crate::storage::{RequestLogSink, UsageSink};
     use crate::vendor::VendorManager;
     use dbnexus::{DbConfig, DbPool};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -587,15 +588,18 @@ mod fallback_guard_tests {
             config_manager.clone(),
             vendor_manager.clone(),
         ));
+        let db_sink: Arc<dyn RequestLogSink> = database;
+        let log_front: Option<Arc<dyn RequestLogSink>> = Some(logger);
+        let usage_front: Option<Arc<dyn UsageSink>> = Some(pa);
         Arc::new(ApiState {
             config: config_manager,
             vendor_manager,
             router,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database,
-            logger: Some(logger),
-            pre_aggregator: Some(pa),
+            database: db_sink,
+            logger: log_front,
+            pre_aggregator: usage_front,
             affinity: None,
             response_cache: None,
             bandit: None,
@@ -775,6 +779,7 @@ mod cooldown_retry_after {
     };
     use crate::protocol::{AnthropicConverter, OpenAIConverter, UnifiedRequest};
     use crate::router::{RoutingDecision, RoutingStrategy};
+    use crate::storage::{RequestLogSink, UsageSink};
     use crate::vendor::VendorManager;
     use axum::response::IntoResponse;
     use dbnexus::{DbConfig, DbPool};
@@ -884,15 +889,18 @@ mod cooldown_retry_after {
             config_manager.clone(),
             vendor_manager.clone(),
         ));
+        let db_sink: Arc<dyn RequestLogSink> = database;
+        let log_front: Option<Arc<dyn RequestLogSink>> = Some(logger);
+        let usage_front: Option<Arc<dyn UsageSink>> = Some(pa);
         Arc::new(ApiState {
             config: config_manager,
             vendor_manager,
             router,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database,
-            logger: Some(logger),
-            pre_aggregator: Some(pa),
+            database: db_sink,
+            logger: log_front,
+            pre_aggregator: usage_front,
             affinity: None,
             response_cache: None,
             bandit: None,

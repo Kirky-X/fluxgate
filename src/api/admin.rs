@@ -38,7 +38,7 @@ pub async fn logs(
         limit: params.limit.unwrap_or(100),
     };
 
-    let logs = state.database.repository().query_logs(&filter).await?;
+    let logs = state.database.query_logs(&filter).await?;
     Ok(Json(serde_json::json!(logs)))
 }
 
@@ -50,11 +50,7 @@ pub async fn search_logs(
     let keyword = params.vendor.unwrap_or_default();
     let limit = params.limit.unwrap_or(100);
 
-    let logs = state
-        .database
-        .repository()
-        .search_logs(&keyword, limit)
-        .await?;
+    let logs = state.database.search_logs(&keyword, limit).await?;
     Ok(Json(serde_json::json!(logs)))
 }
 
@@ -64,7 +60,16 @@ pub async fn token_stats(
     Query(params): Query<LogQuery>,
 ) -> Result<Json<Value>, NexusFlowError> {
     let vendor = params.vendor.as_deref();
-    let stats = state.database.repository().get_token_stats(vendor).await?;
+    // token 统计表由预聚合器管理（N2 存储缝）：读经 UsageSink，
+    // 未接线（测试降级场景）显式拒绝而非虚构空表
+    let usage_sink =
+        state
+            .pre_aggregator
+            .as_ref()
+            .ok_or_else(|| crate::error::GateError::Config {
+                message: "usage sink is not wired; token stats unavailable".to_string(),
+            })?;
+    let stats = usage_sink.get_token_stats(vendor).await?;
     Ok(Json(serde_json::json!(stats)))
 }
 

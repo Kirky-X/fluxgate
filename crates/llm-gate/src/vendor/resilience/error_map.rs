@@ -9,11 +9,11 @@
 //! `Fut: Future<Output = Result<T, LimiteronError>>`，rc.6 起熔断打开拒绝以
 //! `CircuitCallError::Open` 独立承载；`FailureClassifier::is_counted_as_failure`
 //! 亦以 `&LimiteronError` 为参；而本 crate 执行路径的错误是 [`GateError`] ——
-//! 在此以带 `nexusflow:` 前缀的 `LimiteronError::Other` 串为载体做双向转换。
+//! 在此以带 `llm-gate:` 前缀的 `LimiteronError::Other` 串为载体做双向转换。
 //!
 //! 变体集冻结（design.md D1.3）：映射层只覆盖 llm-gate 核心变体集；
 //! `Database` 变体留 nexusflow、本映射层不引用——前缀串载荷
-//! `nexusflow:database:*` 自拆分起不可还原，`from_limiteron` 走有损降级。
+//! `llm-gate:database:*` 自拆分起不可还原，`from_limiteron` 走有损降级。
 //!
 //! 有损风险声明：`from_limiteron` 对「不带前缀的 Other」或「前缀后
 //! variant 无法识别」（含 database）的载荷无法还原原 variant，降级为
@@ -26,11 +26,11 @@ use limiteron::error::LimiteronError;
 use crate::error::GateError;
 
 /// `LimiteronError::Other` 载荷的命名空间前缀
-pub const NEXUSFLOW_ERROR_PREFIX: &str = "nexusflow:";
+pub const GATE_ERROR_PREFIX: &str = "llm-gate:";
 
 /// GateError → LimiteronError。
 ///
-/// 编码为 `nexusflow:<variant>:<detail>` 前缀串；`detail` 中允许出现
+/// 编码为 `llm-gate:<variant>:<detail>` 前缀串；`detail` 中允许出现
 /// `:`（解码按首个 `:` 切分 variant，其余全部归属 detail），往返无损。
 pub fn to_limiteron(err: &GateError) -> LimiteronError {
     let (variant, detail) = match err {
@@ -47,7 +47,7 @@ pub fn to_limiteron(err: &GateError) -> LimiteronError {
             ("all_vendors_throttled", retry_after_secs.to_string())
         }
     };
-    LimiteronError::Other(format!("{}{}:{}", NEXUSFLOW_ERROR_PREFIX, variant, detail))
+    LimiteronError::Other(format!("{}{}:{}", GATE_ERROR_PREFIX, variant, detail))
 }
 
 /// LimiteronError → GateError。
@@ -62,8 +62,8 @@ pub fn from_limiteron(err: LimiteronError, vendor_id: &str) -> GateError {
         LimiteronError::LimitError(_) => GateError::VendorUnavailable {
             vendor: format!("{} (circuit open)", vendor_id),
         },
-        LimiteronError::Other(payload) if payload.starts_with(NEXUSFLOW_ERROR_PREFIX) => {
-            decode(&payload[NEXUSFLOW_ERROR_PREFIX.len()..])
+        LimiteronError::Other(payload) if payload.starts_with(GATE_ERROR_PREFIX) => {
+            decode(&payload[GATE_ERROR_PREFIX.len()..])
                 .unwrap_or_else(|| degraded(vendor_id, &payload))
         }
         other => degraded(vendor_id, &other.to_string()),
@@ -109,7 +109,7 @@ fn degraded(vendor_id: &str, detail: &str) -> GateError {
     }
 }
 
-/// 解码 `nexusflow:<variant>:<detail>` 载荷
+/// 解码 `llm-gate:<variant>:<detail>` 载荷
 fn decode(payload: &str) -> Option<GateError> {
     let (variant, detail) = payload.split_once(':')?;
     let detail = detail.to_string();
@@ -141,8 +141,8 @@ pub struct GateErrorClassifier;
 impl FailureClassifier<LimiteronError> for GateErrorClassifier {
     fn is_counted_as_failure(&self, error: &LimiteronError) -> bool {
         match error {
-            LimiteronError::Other(payload) if payload.starts_with(NEXUSFLOW_ERROR_PREFIX) => {
-                match payload[NEXUSFLOW_ERROR_PREFIX.len()..].split_once(':') {
+            LimiteronError::Other(payload) if payload.starts_with(GATE_ERROR_PREFIX) => {
+                match payload[GATE_ERROR_PREFIX.len()..].split_once(':') {
                     Some(("vendor_unavailable", _)) | Some(("timeout", _)) => true,
                     Some(("rate_limited", _)) | Some(("validation", _)) | Some(("protocol", _)) => {
                         false

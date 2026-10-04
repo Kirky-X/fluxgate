@@ -21,12 +21,11 @@ pub async fn messages(
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
 
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .ok_or(NexusFlowError::from(GateError::Validation {
+    let model = body.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
+        NexusFlowError::from(GateError::Validation {
             field: "model".into(),
-        }))?;
+        })
+    })?;
 
     let stream = body
         .get("stream")

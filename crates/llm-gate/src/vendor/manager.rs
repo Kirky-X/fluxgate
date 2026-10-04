@@ -147,7 +147,7 @@ struct VendorInstance {
 /// 残余触发场景「窗口内 100% 调用皆 >60s 且全成功」在 W2 默认值下与
 /// 失败路径触发条件重合，行为一致。
 #[cfg(feature = "resilience")]
-pub(crate) fn nexusflow_circuit_config(open_timeout: std::time::Duration) -> CircuitBreakerConfig {
+pub(crate) fn gate_circuit_config(open_timeout: std::time::Duration) -> CircuitBreakerConfig {
     CircuitBreakerConfig::new(5, 3, open_timeout)
         .slow_call_duration_threshold(Duration::from_secs(60))
         .slow_call_rate_threshold(1.0)
@@ -191,11 +191,11 @@ impl VendorInstance {
                 // 探针计数在每次状态转换统一清零——limiteron
                 // src/circuit/types.rs finalize_transition），无手写版
                 // "熔断一次即永久拒绝"的死锁。
-                // recId=1：构造统一收敛至 nexusflow_circuit_config()
+                // recId=1：构造统一收敛至 gate_circuit_config()
                 //（慢调用阈值修复见该函数 doc）；Open 窗口经
                 // [resilience].circuit_open_timeout_ms 可配，缺省 30s
                 // 与历史硬编码逐位一致。
-                nexusflow_circuit_config(circuit_open_timeout),
+                gate_circuit_config(circuit_open_timeout),
             )),
             #[cfg(feature = "cost-tracking")]
             cost_tracker,
@@ -2097,7 +2097,7 @@ mod tests {
 
     // ======== recId=1：熔断器 slow-call-rate 误触发修复（生产构造证明） ========
 
-    /// 生产构造证明：经 [`nexusflow_circuit_config`]（生产同款参数）建 CB，
+    /// 生产构造证明：经 [`gate_circuit_config`]（生产同款参数）建 CB，
     /// 3 次 800ms 成功调用必须保持 Closed。修复前（limiteron 默认
     /// duration=500ms / rate=0.5，../limiteron src/constants.rs:106/111）
     /// 单次 800ms 成功调用即 1/1 慢、rate 1.0 ≥ 0.5 → Open（Red 实测：
@@ -2108,7 +2108,7 @@ mod tests {
     #[cfg(feature = "resilience")]
     #[tokio::test]
     async fn slow_ok_calls_do_not_open_production_circuit() {
-        let cb = CircuitBreaker::new(nexusflow_circuit_config(Duration::from_secs(30)));
+        let cb = CircuitBreaker::new(gate_circuit_config(Duration::from_secs(30)));
 
         for i in 0..3 {
             // execute 的 Open 态拒绝以 CircuitCallError::Open 独立承载（rc.6）
@@ -2137,8 +2137,8 @@ mod tests {
     /// 短窗口经参数注入后仅 timeout 变化、其余参数不动。
     #[cfg(feature = "resilience")]
     #[test]
-    fn nexusflow_circuit_config_values() {
-        let config = nexusflow_circuit_config(Duration::from_secs(30));
+    fn gate_circuit_config_values() {
+        let config = gate_circuit_config(Duration::from_secs(30));
         assert_eq!(config.failure_threshold, 5);
         assert_eq!(config.success_threshold, 3);
         assert_eq!(config.timeout, Duration::from_secs(30));
@@ -2152,7 +2152,7 @@ mod tests {
             "慢调用率阈值必须为 1.0（recId=1）：混合流量下慢调用路径失活"
         );
 
-        let short = nexusflow_circuit_config(Duration::from_millis(300));
+        let short = gate_circuit_config(Duration::from_millis(300));
         assert_eq!(short.timeout, Duration::from_millis(300));
         assert_eq!(short.failure_threshold, config.failure_threshold);
         assert_eq!(short.slow_call_duration_threshold, Duration::from_secs(60));

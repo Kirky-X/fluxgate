@@ -20,8 +20,6 @@ path = "src/lib.rs"
 default = ["full"]
 # marker feature（与 nexusflow 同名 feature 对齐转发；当前无 cfg 消费点）
 protocol = []
-# vendor 栈：HTTP 出站 + limiteron 限流/熔断原语（不含存储——原
-# vendor-management→database 联动已在 workspace 化时解除）
 # vendor 栈：HTTP 出站 + limiteron 限流/熔断原语 + 队列通道
 #（不含存储——原 nexusflow 侧 vendor-management→database 联动已解除）
 vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand", "dep:async-channel"]
@@ -29,7 +27,8 @@ vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand", "dep:async-chan
 router = ["vendor-management", "dep:oxcache"]
 # 韧性模块门控（FallbackChain + 错误映射层），纯门控无实现体
 resilience = []
-# CostTracker 的分片锁并发 map（dashmap；选型理由见 nexusflow Cargo.toml 同名段）
+# CostTracker 的分片锁并发 map（dashmap；选型评估：oxcache 的 DashMapMemoryBackend
+# 是带 TTL 语义的缓存后端封装，不是裸并发 map 能力暴露，不适合当 CostTracker 容器）
 cost-tracking = ["dep:dashmap"]
 full = ["protocol", "vendor-management", "router", "resilience", "cost-tracking"]
 

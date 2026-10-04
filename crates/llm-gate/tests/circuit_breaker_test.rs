@@ -282,8 +282,8 @@ fn to_and_from_limiteron_roundtrip_all_variants() {
         match &mapped {
             LimiteronError::Other(payload) => {
                 assert!(
-                    payload.starts_with("nexusflow:"),
-                    "payload should carry nexusflow: prefix, got: {}",
+                    payload.starts_with("llm-gate:"),
+                    "payload should carry llm-gate: prefix, got: {}",
                     payload
                 );
             }
@@ -297,10 +297,10 @@ fn to_and_from_limiteron_roundtrip_all_variants() {
 #[test]
 fn database_payload_degrades_after_variant_freeze() {
     // 变体集冻结（design.md D1.3）：Database 留 nexusflow、llm-gate 映射层
-    // 不再引用——`nexusflow:database:*` 载荷自冻结起走有损降级
+    // 不再引用——`llm-gate:database:*` 载荷自冻结起走有损降级
     //（VendorUnavailable，详情保留在 vendor 串中）。
     let restored = from_limiteron(
-        LimiteronError::Other("nexusflow:database:sqlite busy".into()),
+        LimiteronError::Other("llm-gate:database:sqlite busy".into()),
         "vendor_a",
     );
     match restored {
@@ -341,7 +341,7 @@ fn from_limiteron_limit_error_maps_to_circuit_open() {
 fn from_limiteron_degrades_unrecognizable_payloads() {
     // 带前缀但 variant 无法识别 → 降级 VendorUnavailable
     let err = from_limiteron(
-        LimiteronError::Other("nexusflow:unknown_variant:boom".into()),
+        LimiteronError::Other("llm-gate:unknown_variant:boom".into()),
         "vendor_a",
     );
     match &err {

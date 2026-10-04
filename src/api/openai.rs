@@ -22,12 +22,11 @@ pub async fn chat_completions(
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
 
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .ok_or(NexusFlowError::from(GateError::Validation {
+    let model = body.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
+        NexusFlowError::from(GateError::Validation {
             field: "model".into(),
-        }))?;
+        })
+    })?;
 
     let stream = body
         .get("stream")
@@ -974,12 +973,11 @@ pub async fn embeddings(
     let start_time = std::time::Instant::now();
 
     // 路由决策 - embedding 使用特殊路由
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .ok_or(NexusFlowError::from(GateError::Validation {
+    let model = body.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
+        NexusFlowError::from(GateError::Validation {
             field: "model".into(),
-        }))?;
+        })
+    })?;
 
     let decision = match state.router.route(model).await {
         Ok(d) => d,

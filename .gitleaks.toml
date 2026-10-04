@@ -1,0 +1,9 @@
+# gitleaks 配置 — 仓库自带安全工具为 detect-secrets（.pre-commit-config.yaml），
+# 其基线 .secrets.baseline 记录已人工核实的误报；gitleaks 扫描该基线文件时
+# generic-api-key 规则命中的是 detect-secrets 的 hashed_secret 字段
+# （SHA1 摘要，非密钥原文），属安全工具自身工件误报，故整体放行。
+title = "NexusFlow gitleaks 配置"
+
+[allowlist]
+description = "detect-secrets 基线文件自报（hashed_secret 为摘要值，非密钥原文）"
+paths = ['''\.secrets\.baseline$''']

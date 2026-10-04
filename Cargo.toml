@@ -31,14 +31,15 @@ http = []
 # 映射层 + metrics 韧性观测）双侧门控，feature 转发保持单开关语义
 resilience = ["llm-gate/resilience"]
 # cost-tracking：过渡期双开——cost_tracker.rs 尚在 nexusflow（dep:dashmap），
-# llm-gate 侧 cost-tracker 已就位（转发）；utils 迁移后收敛为纯转发
+# llm-gate 侧已就位（转发）；utils+vendor 迁移后收敛纯转发
 cost-tracking = ["dep:dashmap", "llm-gate/cost-tracking"]
 database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "protocol"]
 vendor-management = ["dep:reqwest", "dep:limiteron", "database"]
 # router 带 oxcache（recId=11 会话亲和表 / recId=12 响应缓存的存储层——
 # CacheWriter::set/get/expire 的 TTL 续期语义由库提供，不手写 map）
 router = ["vendor-management", "dep:oxcache"]
-protocol = []
+# marker feature 随协议模块迁 llm-gate，此处纯转发
+protocol = ["llm-gate/protocol"]
 infrastructure = ["dep:oxcache", "dep:trait-kit"]
 sdforge-integration = ["dep:sdforge"]
 # gRPC 服务器（sdforge grpc 门面）：独立 feature 不进 full——sdforge 的

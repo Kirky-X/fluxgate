@@ -13,8 +13,9 @@ pub mod error;
 // i18n 引擎整体进 llm-gate（Fluent 目录随迁）；此处门面 re-export，
 // crate 内外统一经 nexusflow::i18n（= llm_gate::i18n）访问
 pub use llm_gate::i18n;
-pub mod protocol;
 pub mod utils;
+// protocol IR 与双协议转换器整体进 llm-gate；门面 re-export 同 i18n
+pub use llm_gate::protocol;
 
 #[cfg(feature = "database")]
 pub mod database;

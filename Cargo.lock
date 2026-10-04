@@ -2834,9 +2834,12 @@ name = "llm-gate"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
+ "chrono",
  "confers",
  "dashmap",
  "fluent-bundle",
+ "futures",
  "limiteron",
  "oxcache",
  "rand 0.8.7",
@@ -2849,6 +2852,7 @@ dependencies = [
  "toml",
  "tracing",
  "unic-langid",
+ "uuid",
 ]
 
 [[package]]

@@ -64,6 +64,8 @@ sys-locale = { version = "0.3", default-features = false }
 limiteron = { path = "../../../limiteron", features = ["test-clock"] }
 # mock 上游 HTTP 服务（vendor/router 集成测试）
 mockito = "1"
+# 测试临时目录：RAII 唯一目录，取代手写 temp_dir 固定路径（并发跑测试不碰撞）
+tempfile = "3"
 futures-util = "0.3"
 # retry 预算测试用 paused clock（start_paused；独立 -p 测试不走 workspace
 # 依赖统一，test-util 必须显式声明）

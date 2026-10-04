@@ -359,10 +359,9 @@ mod tests {
         let manager = ConfigManager::new(sample_config("v1"));
         assert!(manager.path().is_none(), "未注入路径时为 None");
 
-        let dir = std::env::temp_dir().join("nexusflow-cfgmgr-test");
-        let _ = std::fs::create_dir_all(&dir);
-        manager.set_path(dir.join("config.toml"));
-        assert_eq!(manager.path(), Some(dir.join("config.toml")));
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        manager.set_path(dir.path().join("config.toml"));
+        assert_eq!(manager.path(), Some(dir.path().join("config.toml")));
     }
 
     #[test]
@@ -392,10 +391,8 @@ mod tests {
 
     #[test]
     fn test_update_config_switches_memory_after_success() {
-        let dir = std::env::temp_dir().join("nexusflow-cfgmgr-test-success");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("config.toml");
-        let _ = std::fs::remove_file(&path);
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
         std::fs::write(&path, "placeholder").unwrap();
 
         let manager = ConfigManager::new(sample_config("v1"));
@@ -411,7 +408,7 @@ mod tests {
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(on_disk.contains("v2"), "磁盘文件应含新 vendor id");
         // 无临时文件残留（唯一名 .tmp-{pid}-{seq} 均被 rename 消费）
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
@@ -421,7 +418,6 @@ mod tests {
             "tmp 文件应被 rename 消费: {:?}",
             leftovers
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// RMW 原子性：update_config_with 在写锁内基于最新内存态改单字段，
@@ -429,10 +425,8 @@ mod tests {
     /// get_config→改→update_config 的丢失更新）
     #[test]
     fn test_update_config_with_preserves_other_fields() {
-        let dir = std::env::temp_dir().join("nexusflow-cfgmgr-test-rmw");
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("config.toml");
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
         std::fs::write(&path, "seed").unwrap();
 
         let manager = ConfigManager::new(sample_config("v1"));
@@ -455,16 +449,13 @@ mod tests {
         let fresh = manager.get_vendor("v1").unwrap();
         assert_eq!(fresh.name, "renamed");
         assert_eq!(fresh.api_key_env, "KEY_B", "RMW 不得回退其他字段");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// RMW 闭包返回 Err → 整体中止，内存与磁盘均不变
     #[test]
     fn test_update_config_with_closure_error_aborts() {
-        let dir = std::env::temp_dir().join("nexusflow-cfgmgr-test-rmw-err");
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("config.toml");
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
         std::fs::write(&path, "seed").unwrap();
 
         let manager = ConfigManager::new(sample_config("v1"));
@@ -479,7 +470,6 @@ mod tests {
         assert!(result.is_err(), "闭包 Err 必须传播");
         assert_eq!(manager.get_vendor("v1").unwrap().id, "v1", "内存态不变");
         assert_eq!(std::fs::read(&path).unwrap(), before, "磁盘文件字节不变");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 并发 update 一致性（评审 major-1 场景）：多线程并发 POST 等价的
@@ -487,10 +477,8 @@ mod tests {
     /// 无锁交错会导致磁盘与内存分裂（磁盘=后者内容、内存=前者值）。
     #[test]
     fn test_concurrent_updates_leave_disk_and_memory_consistent() {
-        let dir = std::env::temp_dir().join("nexusflow-cfgmgr-test-concurrent");
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("config.toml");
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
         std::fs::write(&path, "seed").unwrap();
 
         let manager = std::sync::Arc::new(ConfigManager::new(sample_config("v0")));
@@ -524,23 +512,20 @@ mod tests {
             "磁盘必须等于最后一次内存切换的值（无分裂）"
         );
         // 无 tmp 残留
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "无 tmp 残留: {:?}", leftovers);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 并发 RMW 不丢字段：两个线程分别经 update_config_with 改 name 与
     /// api_key_env，最终两者都保留各自最后一次写入（裸三段式会互相覆盖）
     #[test]
     fn test_concurrent_rmw_does_not_lose_fields() {
-        let dir = std::env::temp_dir().join("nexusflow-cfgmgr-test-rmw-concurrent");
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("config.toml");
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
         std::fs::write(&path, "seed").unwrap();
 
         let manager = std::sync::Arc::new(ConfigManager::new(sample_config("v1")));
@@ -591,7 +576,6 @@ mod tests {
         );
         assert_eq!(mem.name, disk.name, "磁盘与内存一致（name）");
         assert_eq!(mem.api_key_env, disk.api_key_env, "磁盘与内存一致（env）");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// [grpc] 段 serde 行为：缺段 = None（禁用）、全键缺省值、显式值透传

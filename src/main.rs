@@ -9,6 +9,8 @@
 
 #[tokio::main]
 async fn main() -> Result<(), nexusflow::error::NexusFlowError> {
-    let config_path = std::env::args().nth(1);
+    // 薄入口只读一个 CLI 配置路径进装配链，不进任何 exec/网络面；
+    // 扫描器 INFO 按误报行内豁免（处置记录：design.md D7）。
+    let config_path = std::env::args().nth(1); // nosemgrep
     nexusflow::server::run(config_path).await
 }

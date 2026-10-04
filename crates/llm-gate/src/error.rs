@@ -6,7 +6,7 @@
 //! 路由核心错误 — 从原 `NexusFlowError` 拆出的核心变体集（design.md D1.3）。
 //!
 //! 变体集冻结约定：路由/协议/厂商/重试/熔断相关变体进本 crate；
-//! `Database` 等应用面变体留 nexusflow（`From<dbnexus::DbError>` 受孤儿
+//! `Database` 等应用面变体留 nexusflow（其存储层错误转换受孤儿
 //! 规则约束必须随应用类型所在 crate），应用错误经 `From<GateError>`
 //! 包装携带核心错误。新增变体需两栏同步评估 error_map 映射层。
 //!

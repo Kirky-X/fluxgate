@@ -14,8 +14,8 @@
 
 #![cfg(feature = "vendor-management")]
 
-use nexusflow::config::PricingConfig;
-use nexusflow::vendor::cost::{CostCalculator, PricingEntry};
+use llm_gate::config::PricingConfig;
+use llm_gate::vendor::cost::{CostCalculator, PricingEntry};
 
 #[test]
 fn test_calculate_cost_with_known_pricing() {

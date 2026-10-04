@@ -15,12 +15,16 @@ publish = false
 path = "src/lib.rs"
 
 [features]
-default = []
+# 默认全量：独立消费 llm-gate 的开箱即用面（nexusflow 以
+# default-features=false 按需转发，不受此影响）
+default = ["full"]
 # marker feature（与 nexusflow 同名 feature 对齐转发；当前无 cfg 消费点）
 protocol = []
 # vendor 栈：HTTP 出站 + limiteron 限流/熔断原语（不含存储——原
 # vendor-management→database 联动已在 workspace 化时解除）
-vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand"]
+# vendor 栈：HTTP 出站 + limiteron 限流/熔断原语 + 队列通道
+#（不含存储——原 nexusflow 侧 vendor-management→database 联动已解除）
+vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand", "dep:async-channel"]
 # router 带 oxcache（会话亲和表 / 响应缓存的存储层——CacheBackend trait）
 router = ["vendor-management", "dep:oxcache"]
 # 韧性模块门控（FallbackChain + 错误映射层），纯门控无实现体
@@ -47,6 +51,8 @@ oxcache = { path = "../../../oxcache", default-features = false, features = ["mi
 dashmap = { version = "6", optional = true }
 # 配置全量写回（persist_and_swap 的 toml::to_string_pretty）
 toml = "1"
+# vendor 队列（VendorQueue 的 bounded channel）
+async-channel = { version = "2", optional = true }
 # 配置热更新地基（dynamic/snapshot/loader 三面，与 nexusflow 侧声明一致）
 confers = { path = "../../../confers", default-features = false, features = ["toml", "dynamic", "snapshot"] }
 # i18n — Fluent 双束（en/zh）+ 语言检测链基座
@@ -57,3 +63,6 @@ sys-locale = { version = "0.3", default-features = false }
 [dev-dependencies]
 # 测试需要注入 limiteron MockClock（假时钟驱动熔断超时 / 限流窗口重置）
 limiteron = { path = "../../../limiteron", features = ["test-clock"] }
+# mock 上游 HTTP 服务（vendor/router 集成测试）
+mockito = "1"
+futures-util = "0.3"

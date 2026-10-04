@@ -17,9 +17,9 @@
 
 mod common;
 
-use nexusflow::config::{Config, ConfigManager, PricingConfig, ServerConfig};
-use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use nexusflow::vendor::VendorManager;
+use llm_gate::config::{Config, ConfigManager, PricingConfig, ServerConfig};
+use llm_gate::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use llm_gate::vendor::VendorManager;
 use std::sync::Arc;
 use std::time::Duration;
 

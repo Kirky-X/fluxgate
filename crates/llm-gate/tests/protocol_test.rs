@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 mod converter {
-    use nexusflow::protocol::{
+    use llm_gate::protocol::{
         AnthropicConverter, AnthropicStreamEncoder, OpenAIConverter, Protocol, ProtocolConverter,
         StreamChunk,
     };
@@ -238,7 +238,7 @@ mod converter {
         assert_eq!(unified.messages.len(), 3);
         // Check tool message
         let tool_msg = &unified.messages[2];
-        assert_eq!(tool_msg.role, nexusflow::protocol::Role::Tool);
+        assert_eq!(tool_msg.role, llm_gate::protocol::Role::Tool);
     }
 
     #[tokio::test]
@@ -345,7 +345,7 @@ mod converter {
         let msg = parsed.choices[0].message.as_ref().unwrap();
         // Verify tool call is parsed correctly
         match &msg.content {
-            nexusflow::protocol::MessageContent::ToolCalls(calls) => {
+            llm_gate::protocol::MessageContent::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].function.name, "get_weather");
             }
@@ -409,7 +409,7 @@ mod converter {
         let unified = converter.to_unified(request).unwrap();
 
         match &unified.tool_choice {
-            Some(nexusflow::protocol::ToolChoice::Specific { function, .. }) => {
+            Some(llm_gate::protocol::ToolChoice::Specific { function, .. }) => {
                 assert_eq!(function.name, "get_weather");
             }
             _ => panic!("Expected Specific tool_choice"),
@@ -418,7 +418,7 @@ mod converter {
 
     // ==================== 流式转换与 SSE 增量分帧（recId=3） ====================
 
-    use nexusflow::protocol::sse_frame::SseFrameParser;
+    use llm_gate::protocol::sse_frame::SseFrameParser;
 
     /// 把上游 SSE 原文（可劈块）经分帧器取出的 data 负载串。
     fn parse_frames_to_data(payload: &str, split_at: Option<usize>) -> Vec<String> {
@@ -553,7 +553,7 @@ mod converter {
             .expect("tool_call delta 帧不应被丢弃");
         match chunk {
             StreamChunk::Content { delta, .. } => match delta {
-                nexusflow::protocol::MessageContent::ToolCalls(calls) => {
+                llm_gate::protocol::MessageContent::ToolCalls(calls) => {
                     assert_eq!(calls.len(), 1);
                     assert_eq!(calls[0].id, "call_1");
                     assert_eq!(calls[0].function.name, "get_weather");
@@ -578,7 +578,7 @@ mod converter {
         assert!(matches!(
             text,
             StreamChunk::Content { ref delta, .. }
-                if matches!(delta, nexusflow::protocol::MessageContent::Text(t) if t == "hi")
+                if matches!(delta, llm_gate::protocol::MessageContent::Text(t) if t == "hi")
         ));
 
         let usage = converter
@@ -652,7 +652,7 @@ mod converter {
                     finish_reason: fr2, ..
                 },
             ) => {
-                assert!(matches!(d1, nexusflow::protocol::MessageContent::Text(t) if t == "Hel"));
+                assert!(matches!(d1, llm_gate::protocol::MessageContent::Text(t) if t == "Hel"));
                 assert_eq!(fr2.as_deref(), Some("stop"));
             }
             _ => panic!("expected two Content chunks"),
@@ -661,7 +661,7 @@ mod converter {
 
     // ==================== 协议断点修复（recId=8） ====================
 
-    use nexusflow::protocol::Role;
+    use llm_gate::protocol::Role;
 
     /// ① Anthropic 多轮 tool_use+tool_result 历史 → to_unified →
     /// request_to_external(OpenAI vendor) 往返：assistant.tool_calls 与
@@ -694,7 +694,7 @@ mod converter {
         let assistant = &unified.messages[1];
         assert_eq!(assistant.role, Role::Assistant);
         match &assistant.content {
-            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            llm_gate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
                 assert_eq!(text, "Let me check.");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "toolu_1");
@@ -707,7 +707,7 @@ mod converter {
         let tool_msg = &unified.messages[2];
         assert_eq!(tool_msg.role, Role::Tool);
         match &tool_msg.content {
-            nexusflow::protocol::MessageContent::ToolResult(result) => {
+            llm_gate::protocol::MessageContent::ToolResult(result) => {
                 assert_eq!(result.tool_call_id, "toolu_1");
                 assert_eq!(result.content, "Sunny, 25C");
             }
@@ -754,7 +754,7 @@ mod converter {
 
         let unified = converter.to_unified(request).expect("to_unified");
         match &unified.messages[0].content {
-            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            llm_gate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
                 assert_eq!(text, "Let me check the weather.");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "call_9");
@@ -787,7 +787,7 @@ mod converter {
         let parsed = converter.parse_response(response).expect("parse_response");
         let msg = parsed.choices[0].message.as_ref().unwrap();
         match &msg.content {
-            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            llm_gate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
                 assert_eq!(text, "Checking...");
                 assert_eq!(tool_calls[0].id, "call_r1");
                 assert_eq!(tool_calls[0].function.name, "lookup");
@@ -815,7 +815,7 @@ mod converter {
         assert_eq!(unified.messages[0].role, Role::System);
         assert!(matches!(
             &unified.messages[0].content,
-            nexusflow::protocol::MessageContent::Text(s) if s == "You are a helpful assistant."
+            llm_gate::protocol::MessageContent::Text(s) if s == "You are a helpful assistant."
         ));
 
         // 出站 OpenAI：system 保持为 messages[0]
@@ -832,16 +832,16 @@ mod converter {
     #[tokio::test]
     async fn test_openai_system_message_lifted_to_anthropic_top_level() {
         let converter = AnthropicConverter::new();
-        let request = nexusflow::protocol::UnifiedRequest {
+        let request = llm_gate::protocol::UnifiedRequest {
             model: "claude-3-5-sonnet-20241022".into(),
             messages: vec![
-                nexusflow::protocol::Message {
+                llm_gate::protocol::Message {
                     role: Role::System,
-                    content: nexusflow::protocol::MessageContent::Text("Be terse.".into()),
+                    content: llm_gate::protocol::MessageContent::Text("Be terse.".into()),
                 },
-                nexusflow::protocol::Message {
+                llm_gate::protocol::Message {
                     role: Role::User,
-                    content: nexusflow::protocol::MessageContent::Text("Hi".into()),
+                    content: llm_gate::protocol::MessageContent::Text("Hi".into()),
                 },
             ],
             temperature: None,
@@ -910,21 +910,21 @@ mod converter {
         assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
 
         // IR → Anthropic（反向）
-        let make_response = |finish: Option<&str>| nexusflow::protocol::UnifiedResponse {
+        let make_response = |finish: Option<&str>| llm_gate::protocol::UnifiedResponse {
             id: "m".into(),
             object: "message".into(),
             created: 0,
             model: "claude-x".into(),
-            choices: vec![nexusflow::protocol::Choice {
+            choices: vec![llm_gate::protocol::Choice {
                 index: 0,
-                message: Some(nexusflow::protocol::Message {
+                message: Some(llm_gate::protocol::Message {
                     role: Role::Assistant,
-                    content: nexusflow::protocol::MessageContent::Text("ok".into()),
+                    content: llm_gate::protocol::MessageContent::Text("ok".into()),
                 }),
                 finish_reason: finish.map(|s| s.to_string()),
                 logprobs: None,
             }],
-            usage: nexusflow::protocol::TokenUsage::default(),
+            usage: llm_gate::protocol::TokenUsage::default(),
         };
 
         let out = anthropic
@@ -1006,12 +1006,12 @@ mod converter {
 
     // ==================== 覆盖缺口补测：AnthropicConverter 边角分支 ====================
 
-    use nexusflow::protocol::{
+    use llm_gate::protocol::{
         Choice, ContentBlock, ImageSource, Message, MessageContent, TokenUsage, Tool, ToolCall,
         ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolParameterProperty,
         ToolParameters, ToolResult, UnifiedRequest, UnifiedResponse,
     };
-    use nexusflow::GateError;
+    use llm_gate::GateError;
 
     /// 构造仅含 model + 单条 user 文本消息的最小 UnifiedRequest（其余字段缺省）。
     fn minimal_unified_request(model: &str, text: &str) -> UnifiedRequest {
@@ -2436,7 +2436,7 @@ mod embedding {
     // recId=15③：embedding_response_from_openai 死代码已删除（零生产调用，
     // embeddings 端点走治理透传），其两个用例随之退役；
     // embedding_request_to_openai 仍被 api/openai.rs 使用，用例保留。
-    use nexusflow::protocol::embedding_request_to_openai;
+    use llm_gate::protocol::embedding_request_to_openai;
     use serde_json::json;
 
     #[test]
@@ -2500,7 +2500,7 @@ mod embedding {
 }
 
 mod unified {
-    use nexusflow::protocol::*;
+    use llm_gate::protocol::*;
     use serde_json::json;
     use std::collections::HashMap;
 

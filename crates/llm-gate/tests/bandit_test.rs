@@ -10,7 +10,7 @@
 
 #[cfg(test)]
 mod bandit_units {
-    use nexusflow::router::bandit::{
+    use llm_gate::router::bandit::{
         linucb_diag_inverse, linucb_features, linucb_features_from_body, linucb_invert,
         linucb_ucb_from_arm, BanditState, LINUCB_DIM,
     };

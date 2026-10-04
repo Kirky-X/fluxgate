@@ -16,9 +16,9 @@
 //! 做 RMW 与模型解析断言；错误分支断言 GateError 变体与插值参数，
 //! 不做"调用不报错"式断言。
 
-use nexusflow::config::loader::ConfigLoader;
-use nexusflow::config::{Config, ConfigManager, RateLimitConfig, RoutingSection, ServerConfig};
-use nexusflow::error::GateError;
+use llm_gate::config::loader::ConfigLoader;
+use llm_gate::config::{Config, ConfigManager, RateLimitConfig, RoutingSection, ServerConfig};
+use llm_gate::error::GateError;
 use std::path::PathBuf;
 
 mod common;

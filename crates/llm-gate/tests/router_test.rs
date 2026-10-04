@@ -10,11 +10,11 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use nexusflow::config::{
+    use llm_gate::config::{
         Config, ConfigManager, DatabaseConfig, ModelConfig, RateLimitConfig, ServerConfig,
     };
-    use nexusflow::router::{Router, RoutingStrategy};
-    use nexusflow::vendor::VendorManager;
+    use llm_gate::router::{Router, RoutingStrategy};
+    use llm_gate::vendor::VendorManager;
     use std::sync::Arc;
 
     fn create_router_test_config() -> Config {
@@ -192,12 +192,12 @@ mod tests {
             pricing: config.pricing.clone(),
             auth: None,
             cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
+            retry: llm_gate::config::RetrySection::default(),
+            routing: llm_gate::config::RoutingSection::default(),
+            cache: llm_gate::config::CacheSection::default(),
             admission: Default::default(),
             grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            resilience: llm_gate::config::ResilienceSection::default(),
         };
 
         let config_manager = Arc::new(ConfigManager::new(disabled_config));
@@ -224,12 +224,12 @@ mod tests {
             pricing: config.pricing.clone(),
             auth: None,
             cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
+            retry: llm_gate::config::RetrySection::default(),
+            routing: llm_gate::config::RoutingSection::default(),
+            cache: llm_gate::config::CacheSection::default(),
             admission: Default::default(),
             grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            resilience: llm_gate::config::ResilienceSection::default(),
         };
 
         let config_manager = Arc::new(ConfigManager::new(disabled_config));
@@ -285,9 +285,9 @@ mod tests {
 #[cfg(test)]
 mod scheduling_weight {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig};
-    use nexusflow::router::{compute_weight, Router, RoutingStrategy};
-    use nexusflow::vendor::VendorManager;
+    use llm_gate::config::{Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig};
+    use llm_gate::router::{compute_weight, Router, RoutingStrategy};
+    use llm_gate::vendor::VendorManager;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -352,7 +352,7 @@ mod scheduling_weight {
         let router = Router::new(config_manager.clone(), vendor_manager.clone());
 
         let request =
-            serde_json::from_value::<nexusflow::protocol::UnifiedRequest>(serde_json::json!({
+            serde_json::from_value::<llm_gate::protocol::UnifiedRequest>(serde_json::json!({
                 "model": "shared-model",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 8
@@ -477,7 +477,7 @@ mod scheduling_weight {
         }
 
         let request =
-            serde_json::from_value::<nexusflow::protocol::UnifiedRequest>(serde_json::json!({
+            serde_json::from_value::<llm_gate::protocol::UnifiedRequest>(serde_json::json!({
                 "model": "shared-model",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 8
@@ -625,7 +625,7 @@ mod scheduling_weight {
             w_window: 0.0,
             ..RoutingSection::default()
         };
-        let exhausted = nexusflow::vendor::WindowInfo {
+        let exhausted = llm_gate::vendor::WindowInfo {
             max_tokens: Some(100),
             used_tokens: 100,
             window_end: None,
@@ -1079,10 +1079,10 @@ mod scheduling_weight {
 #[cfg(test)]
 mod session_affinity {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, ModelConfig, ServerConfig};
-    use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::{VendorManager, VendorStatus};
+    use llm_gate::config::{Config, ConfigManager, ModelConfig, ServerConfig};
+    use llm_gate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use llm_gate::router::Router;
+    use llm_gate::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1226,52 +1226,6 @@ mod session_affinity {
         );
     }
 
-    /// ④ 无 header 时同前缀 messages 哈希 → 同兜底会话键 → 同 vendor
-    ///（web-server feature 下经 RoutingHints 的兜底路径）。
-    #[cfg(feature = "web-server")]
-    #[tokio::test]
-    async fn prefix_hash_fallback_binds_same_vendor() {
-        use nexusflow::api::RoutingHints;
-
-        let (_vm, router, table) = make_affinity_router(DEFAULT_AFFINITY_TTL);
-
-        let body_a = serde_json::json!({
-            "model": "shared-model",
-            "messages": [{"role": "user", "content": "hello"}]
-        });
-        let body_b = serde_json::json!({
-            "model": "shared-model",
-            "messages": [{"role": "user", "content": "hello"}]
-        });
-
-        // 无 X-Session-Id header：兜底哈希生成会话键（同前缀 → 同键）
-        let hints_a = RoutingHints::from_headers(&axum::http::HeaderMap::new());
-        let key_a = hints_a
-            .effective_session_key(&body_a)
-            .expect("fallback key");
-        let key_b = RoutingHints::from_headers(&axum::http::HeaderMap::new())
-            .effective_session_key(&body_b)
-            .expect("fallback key");
-        assert_eq!(key_a, key_b, "同前缀 messages 必须生成同会话键");
-
-        // 首次路由 + 成功回写（生产由 API 层做）
-        let first = router
-            .route_with_session("shared-model", Some(&key_a))
-            .await
-            .expect("route");
-        table.bind(None, &key_a, &first.vendor.id).await;
-
-        // 后续同前缀请求（key_b == key_a）粘住同一 vendor
-        let second = router
-            .route_with_session("shared-model", Some(&key_b))
-            .await
-            .expect("route");
-        assert_eq!(
-            second.vendor.id, first.vendor.id,
-            "同前缀哈希 → 同键 → 同 vendor"
-        );
-    }
-
     /// ⑤ hit_rate 从 0 递增：未绑定路由计 miss，命中路由计 hit。
     #[tokio::test]
     async fn affinity_hit_rate_increments() {
@@ -1328,9 +1282,9 @@ mod session_affinity {
 #[cfg(test)]
 mod failure_rate_gate {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, ModelConfig, ResilienceSection, ServerConfig};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use llm_gate::config::{Config, ConfigManager, ModelConfig, ResilienceSection, ServerConfig};
+    use llm_gate::router::Router;
+    use llm_gate::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -1449,13 +1403,13 @@ mod failure_rate_gate {
 #[cfg(test)]
 mod cooldown_improvements {
     use crate::common;
-    use nexusflow::config::{
+    use llm_gate::config::{
         Config, ConfigManager, ModelConfig, RateLimitConfig, RoutingSection, ServerConfig,
         VendorConfig,
     };
-    use nexusflow::error::GateError;
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use llm_gate::error::GateError;
+    use llm_gate::router::Router;
+    use llm_gate::vendor::VendorManager;
     use std::sync::Arc;
 
     fn make_vendor(id: &str, weight: f64, max_tokens: u64) -> VendorConfig {
@@ -1735,12 +1689,12 @@ mod cooldown_improvements {
 #[cfg(test)]
 mod soft_affinity {
     use crate::common;
-    use nexusflow::config::{
+    use llm_gate::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use nexusflow::router::{apply_affinity_boost, Router, RoutingStrategy};
-    use nexusflow::vendor::VendorManager;
+    use llm_gate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use llm_gate::router::{apply_affinity_boost, Router, RoutingStrategy};
+    use llm_gate::vendor::VendorManager;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -1935,12 +1889,12 @@ mod soft_affinity {
 #[cfg(test)]
 mod sla_virtual_queue {
     use crate::common;
-    use nexusflow::config::{
+    use llm_gate::config::{
         Config, ConfigManager, ModelConfig, PricingConfig, RoutingSection, ServerConfig,
         VendorConfig,
     };
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use llm_gate::router::Router;
+    use llm_gate::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -2266,12 +2220,12 @@ mod sla_virtual_queue {
 #[cfg(test)]
 mod linucb_selection {
     use crate::common;
-    use nexusflow::config::{
+    use llm_gate::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use nexusflow::router::bandit::{linucb_features, BanditState};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use llm_gate::router::bandit::{linucb_features, BanditState};
+    use llm_gate::router::Router;
+    use llm_gate::vendor::VendorManager;
     use std::sync::Arc;
 
     /// 单位特征（截距 1、其余 0）——选择与奖励灌账共用。
@@ -2549,11 +2503,11 @@ mod linucb_selection {
 #[cfg(test)]
 mod lps_lookahead {
     use crate::common;
-    use nexusflow::config::{
+    use llm_gate::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use llm_gate::router::Router;
+    use llm_gate::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -2750,15 +2704,15 @@ mod lps_lookahead {
 #[cfg(test)]
 mod route_gap_coverage {
     use crate::common;
-    use nexusflow::config::{
+    use llm_gate::config::{
         Config, ConfigManager, ModelConfig, PricingConfig, ResilienceSection, RoutingSection,
         ServerConfig, VendorConfig,
     };
-    use nexusflow::error::GateError;
-    use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use nexusflow::router::bandit::{linucb_features, BanditState};
-    use nexusflow::router::{compute_weight, Router, RoutingStrategy};
-    use nexusflow::vendor::{VendorManager, VendorStatus};
+    use llm_gate::error::GateError;
+    use llm_gate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use llm_gate::router::bandit::{linucb_features, BanditState};
+    use llm_gate::router::{compute_weight, Router, RoutingStrategy};
+    use llm_gate::vendor::{VendorManager, VendorStatus};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -3418,7 +3372,7 @@ mod route_gap_coverage {
                 ..Default::default()
             },
             vec![single_shared("gx-a")],
-            vec![nexusflow::config::PricingConfig {
+            vec![llm_gate::config::PricingConfig {
                 vendor_id: "gx-a".into(),
                 model_id: "shared-model".into(),
                 input_per_1k_tokens: 0.05,

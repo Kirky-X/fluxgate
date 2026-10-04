@@ -28,12 +28,12 @@ const OPEN_WINDOW_MS: u64 = 300;
 const WINDOW_SLEEP_MS: u64 = 400;
 
 use limiteron::error::CircuitState;
-use nexusflow::config::{Config, ConfigManager, RetrySection, VendorConfig};
-use nexusflow::error::GateError;
-use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use nexusflow::router::Router;
-use nexusflow::vendor::VendorManager;
-use nexusflow::vendor::VendorStatus;
+use llm_gate::config::{Config, ConfigManager, RetrySection, VendorConfig};
+use llm_gate::error::GateError;
+use llm_gate::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use llm_gate::router::Router;
+use llm_gate::vendor::VendorManager;
+use llm_gate::vendor::VendorStatus;
 use std::sync::Arc;
 use std::time::Duration;
 

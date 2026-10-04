@@ -15,7 +15,7 @@
 
 #![cfg(feature = "cost-tracking")]
 
-use nexusflow::utils::cost_tracker::CostTracker;
+use llm_gate::utils::cost_tracker::CostTracker;
 use std::sync::Arc;
 
 #[tokio::test]

@@ -7,7 +7,7 @@
 //!
 //! 从 NexusFlow 单 crate workspace 化抽出的路由半边：IR 与协议转换、
 //! Vendor 管理与韧性、路由决策、配置热读。零 axum 假设、零存储依赖
-//! （dbnexus/sea-orm 不进编译图）；HTTP 服务面（api/middleware/server）、
+//! （存储层驱动依赖不进本 crate 编译图）；HTTP 服务面（api/middleware/server）、
 //! SDK 与数据库落库留在 nexusflow 应用 crate，经本 crate 正向引用。
 //!
 //! 模块按 feature 门控：config/error/i18n/protocol/utils 常开，
@@ -17,3 +17,12 @@ pub mod config;
 pub mod error;
 pub mod i18n;
 pub mod protocol;
+pub mod utils;
+
+#[cfg(feature = "vendor-management")]
+pub mod vendor;
+
+#[cfg(feature = "router")]
+pub mod router;
+
+pub use error::GateError;

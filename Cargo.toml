@@ -19,7 +19,11 @@ required-features = ["full"]
 [features]
 default = ["full"]
 full = ["web-server", "database", "vendor-management", "router", "protocol", "infrastructure", "sdforge-integration", "logging", "resilience", "cost-tracking", "sdk"]
-web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "router", "sdforge-integration", "http"]
+# database 显式入链：原 web-server→router→vendor-management→database 的
+# 传递依赖在解除 vendor-management→database 后改为显式声明（服务器装配
+# bootstrap 需要 Database，行为面与历史组合逐位一致）；dep:limiteron 供
+# api/router_builder 的入站限流直用
+web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "router", "sdforge-integration", "http", "database", "dep:limiteron"]
 # sdforge `#[forge]` 宏按**目标 crate** 的 feature 求值 `cfg(feature = "http")`
 # （rustc check-cfg 文档明确此语义）：无同名 feature 时 RouteRegistration
 # 整体被 cfg 掉，#[forge] 站点路由（/health）静默丢失。此 feature 无实现体，
@@ -30,14 +34,15 @@ http = []
 # resilience：本 crate（api 换路编排）与 llm-gate（FallbackChain + 错误
 # 映射层 + metrics 韧性观测）双侧门控，feature 转发保持单开关语义
 resilience = ["llm-gate/resilience"]
-# cost-tracking：过渡期双开——cost_tracker.rs 尚在 nexusflow（dep:dashmap），
-# llm-gate 侧已就位（转发）；utils+vendor 迁移后收敛纯转发
-cost-tracking = ["dep:dashmap", "llm-gate/cost-tracking"]
+# cost-tracking：CostTracker 本体进 llm-gate，此处纯转发（dashmap 随迁）
+cost-tracking = ["llm-gate/cost-tracking"]
 database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "protocol"]
-vendor-management = ["dep:reqwest", "dep:limiteron", "database"]
-# router 带 oxcache（recId=11 会话亲和表 / recId=12 响应缓存的存储层——
-# CacheWriter::set/get/expire 的 TTL 续期语义由库提供，不手写 map）
-router = ["vendor-management", "dep:oxcache"]
+# vendor 栈本体进 llm-gate（reqwest/limiteron/async-channel 随迁）；
+# database 联动解除（design.md D1 feature 图重切）——本 feature 收敛为纯转发
+vendor-management = ["llm-gate/vendor-management"]
+# router 本体进 llm-gate（含其 vendor-management 联动，转发保持单开关）；
+# dep:oxcache 留 nexusflow（response_cache/bootstrap 直用 CacheBackend）
+router = ["vendor-management", "llm-gate/router", "dep:oxcache"]
 # marker feature 随协议模块迁 llm-gate，此处纯转发
 protocol = ["llm-gate/protocol"]
 infrastructure = ["dep:oxcache", "dep:trait-kit"]

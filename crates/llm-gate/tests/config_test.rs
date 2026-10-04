@@ -9,7 +9,7 @@ mod common;
 #[cfg(test)]
 mod hot_reload {
     use crate::common;
-    use nexusflow::config::{
+    use llm_gate::config::{
         AuthSection, Config, ConfigManager, CorsSection, RateLimitConfig, ServerConfig,
     };
     use std::path::PathBuf;
@@ -227,7 +227,7 @@ mod hot_reload {
 
 #[cfg(test)]
 mod tests {
-    use nexusflow::config::{
+    use llm_gate::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, PricingConfig,
         ServerConfig, VendorConfig,
     };
@@ -269,11 +269,11 @@ mod tests {
                             enabled: true,
                         },
                     ],
-                    rate_limit: nexusflow::config::RateLimitConfig::Interval {
+                    rate_limit: llm_gate::config::RateLimitConfig::Interval {
                         hours: 1,
                         sliding: false,
                     },
-                    concurrency: nexusflow::config::ConcurrencyConfig {
+                    concurrency: llm_gate::config::ConcurrencyConfig {
                         requests_per_second: 10,
                         max_concurrent_requests: None,
                         token_weighted: false,
@@ -299,11 +299,11 @@ mod tests {
                         weight: 1.0,
                         enabled: true,
                     }],
-                    rate_limit: nexusflow::config::RateLimitConfig::Interval {
+                    rate_limit: llm_gate::config::RateLimitConfig::Interval {
                         hours: 1,
                         sliding: false,
                     },
-                    concurrency: nexusflow::config::ConcurrencyConfig {
+                    concurrency: llm_gate::config::ConcurrencyConfig {
                         requests_per_second: 5,
                         max_concurrent_requests: None,
                         token_weighted: false,
@@ -320,12 +320,12 @@ mod tests {
             pricing: vec![],
             auth: None,
             cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
+            retry: llm_gate::config::RetrySection::default(),
+            routing: llm_gate::config::RoutingSection::default(),
+            cache: llm_gate::config::CacheSection::default(),
             admission: Default::default(),
             grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            resilience: llm_gate::config::ResilienceSection::default(),
         }
     }
 

@@ -21,8 +21,8 @@ use limiteron::circuit::{
     CircuitBreaker, CircuitBreakerConfig, CircuitCallError, FailureClassifier,
 };
 use limiteron::error::{CircuitState, LimiteronError};
-use nexusflow::error::GateError;
-use nexusflow::vendor::resilience::{
+use llm_gate::error::GateError;
+use llm_gate::vendor::resilience::{
     from_limiteron, is_circuit_open_error, to_limiteron, GateErrorClassifier,
 };
 use std::sync::Arc;

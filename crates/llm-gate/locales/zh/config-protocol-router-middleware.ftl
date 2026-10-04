@@ -9,6 +9,11 @@ config-duplicate-vendor-id = 厂商 ID 重复: { $vendor }
 config-duplicate-model-id = 厂商 { $vendor } 内的模型 ID 重复: { $model }
 config-api-key-env-missing = 厂商 { $vendor } 的 API Key 环境变量未设置（配置值长度 { $length }）——请核对是否误将 key 原文当作环境变量名
 config-api-key-pool-env-missing = 厂商 { $vendor } 的 API Key 池环境变量 #{ $index }（值长度 { $length }）未设置——请核对是否误将 key 原文当作环境变量名
+config-duplicate-catalog-model-id = 模型目录 id 重复：{ $model }
+config-catalog-context-window-zero = 模型目录条目 { $model } 的 context_window = 0；登记条目必须声明真实窗口（0 会使 TUI auto-compact 静默不装配）
+config-catalog-too-many = 模型目录条目数 { $count } 超过上限 { $cap }
+config-catalog-model-id-empty = 模型目录条目的 model_id 为空（仅空白字符）
+config-catalog-price-invalid = 模型目录条目 { $model } 的 { $field } = { $value } 非法；价格必须为有限非负数
 config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) 低于下限 100ms：窗口过短会使熔断 Open 态立即转入半开，故障期退化为探针风暴
 
 # ---- config/manager.rs ----

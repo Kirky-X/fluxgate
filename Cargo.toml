@@ -123,6 +123,9 @@ sys-info = "0.9"
 [dev-dependencies]
 # config 系测试直接构造/解析 TOML（config 迁移后测试拆分随 llm-gate 走）
 toml = "1"
+# admin CRUD 测试的 ConfigManager 写路径：RAII 唯一临时目录（D7.6 同款，
+# 取代手写 temp_dir 固定路径）
+tempfile = "3"
 tokio-test = "0.4"
 mockall = "0.15"
 mockall_double = "0.3"

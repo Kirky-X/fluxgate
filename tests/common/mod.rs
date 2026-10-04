@@ -91,6 +91,7 @@ pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
             strategy: "weighted".into(),
         }),
         pricing: vec![],
+        model_catalog: Vec::new(),
         auth: None,
         cors: None,
         retry: Default::default(),

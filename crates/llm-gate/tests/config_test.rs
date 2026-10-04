@@ -228,9 +228,10 @@ mod hot_reload {
 #[cfg(test)]
 mod tests {
     use llm_gate::config::{
-        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, PricingConfig,
-        ServerConfig, VendorConfig,
+        validate_config, Config, ConfigManager, DatabaseConfig, GlobalModelConfig,
+        ModelCatalogEntry, ModelConfig, PricingConfig, PricingCurrency, ServerConfig, VendorConfig,
     };
+    use llm_gate::error::GateError;
 
     fn create_test_config() -> Config {
         Config {
@@ -320,6 +321,7 @@ mod tests {
                 strategy: "weighted".to_string(),
             }),
             pricing: vec![],
+            model_catalog: Vec::new(),
             auth: None,
             cors: None,
             retry: llm_gate::config::RetrySection::default(),
@@ -534,5 +536,186 @@ weight = 1.0
         assert_eq!(entry.model_id, "claude-3-opus");
         assert!((entry.input_per_1k_tokens - 0.015).abs() < f64::EPSILON);
         assert!((entry.output_per_1k_tokens - 0.075).abs() < f64::EPSILON);
+    }
+
+    // ======== T006：[[model_catalog]] 校验（validate_config） ========
+
+    /// 登记条目 model_id 去重（与 vendor/model id 同级唯一性约束）
+    #[test]
+    fn catalog_rejects_duplicate_model_id() {
+        let mut config = create_test_config();
+        config.model_catalog = vec![
+            ModelCatalogEntry {
+                model_id: "claude-sonnet-4-20250514".into(),
+                context_window: 200_000,
+                ..Default::default()
+            },
+            ModelCatalogEntry {
+                model_id: "claude-sonnet-4-20250514".into(),
+                context_window: 100_000,
+                ..Default::default()
+            },
+        ];
+        let err = validate_config(&config).expect_err("duplicate catalog id must reject");
+        match err {
+            GateError::Config { message } => {
+                assert!(
+                    message.contains("claude-sonnet-4-20250514"),
+                    "错误携带冲突 model_id: {message}"
+                );
+            }
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    /// 登记条目 context_window 必须 > 0：0 会让 agentstem TUI auto-compact
+    /// 静默不装配（agent_session.rs:3290-3291 语义），登记面强制真实值。
+    #[test]
+    fn catalog_rejects_zero_context_window() {
+        let mut config = create_test_config();
+        config.model_catalog = vec![ModelCatalogEntry {
+            model_id: "bad-model".into(),
+            context_window: 0,
+            ..Default::default()
+        }];
+        let err = validate_config(&config).expect_err("zero window must reject");
+        match err {
+            GateError::Config { message } => {
+                assert!(
+                    message.contains("bad-model"),
+                    "错误携带 model_id: {message}"
+                );
+            }
+            other => panic!("expected Config error, got {:?}", other),
+        }
+    }
+
+    /// 合法条目（去重 + 非零窗口）放行
+    #[test]
+    fn catalog_valid_entries_pass() {
+        let mut config = create_test_config();
+        config.model_catalog = vec![
+            ModelCatalogEntry {
+                model_id: "claude-sonnet-4-20250514".into(),
+                context_window: 200_000,
+                input_price: 3.0,
+                output_price: 15.0,
+                cache_read_price: 0.3,
+                cache_creation_price: 3.75,
+                currency: PricingCurrency::Usd,
+                max_output_tokens: Some(8192),
+                supports_tools: true,
+                supports_thinking: true,
+            },
+            ModelCatalogEntry {
+                model_id: "gpt-4o".into(),
+                context_window: 128_000,
+                ..Default::default()
+            },
+        ];
+        validate_config(&config).expect("valid catalog must pass");
+    }
+
+    /// 缺段兼容：model_catalog 为空时校验照常通过（旧配置逐位可用）
+    #[test]
+    fn catalog_empty_section_passes() {
+        let config = create_test_config();
+        assert!(config.model_catalog.is_empty());
+        validate_config(&config).expect("empty catalog must pass");
+    }
+
+    // ======== T006 审查回写：价格/空白 id/条目上限 ========
+
+    /// 审查 LOW-1：四个价格字段必须有限（拒 NaN/Inf）且 ≥ 0——
+    /// NaN 比较恒 false、负价是配置错误，加载与热更新两路同拒
+    #[test]
+    fn catalog_rejects_non_finite_and_negative_prices() {
+        let cases: Vec<(&str, f64)> = vec![
+            ("input_price", f64::NAN),
+            ("input_price", f64::INFINITY),
+            ("input_price", -0.1),
+            ("output_price", f64::NAN),
+            ("cache_read_price", f64::NEG_INFINITY),
+            ("cache_creation_price", -1.0),
+        ];
+        for (field, value) in cases {
+            let mut config = create_test_config();
+            config.model_catalog = vec![ModelCatalogEntry {
+                model_id: "m".into(),
+                context_window: 128_000,
+                input_price: if field == "input_price" { value } else { 0.0 },
+                output_price: if field == "output_price" { value } else { 0.0 },
+                cache_read_price: if field == "cache_read_price" {
+                    value
+                } else {
+                    0.0
+                },
+                cache_creation_price: if field == "cache_creation_price" {
+                    value
+                } else {
+                    0.0
+                },
+                ..Default::default()
+            }];
+            let err =
+                validate_config(&config).expect_err(&format!("{field} = {value} must reject"));
+            match err {
+                GateError::Config { message } => {
+                    assert!(
+                        message.contains("m") && message.contains(field),
+                        "错误携带 model 与字段名: {message}"
+                    );
+                }
+                other => panic!("expected Config error, got {:?}", other),
+            }
+        }
+        // 边界：0.0 与正有限值放行
+        let mut config = create_test_config();
+        config.model_catalog = vec![ModelCatalogEntry {
+            model_id: "m".into(),
+            context_window: 128_000,
+            input_price: 0.0,
+            output_price: 15.5,
+            cache_read_price: 0.3,
+            cache_creation_price: 0.0,
+            ..Default::default()
+        }];
+        validate_config(&config).expect("zero and finite positive prices must pass");
+    }
+
+    /// 审查 LOW-3：model_id trim 后非空（全空白 id 拒绝）
+    #[test]
+    fn catalog_rejects_blank_model_id() {
+        let mut config = create_test_config();
+        config.model_catalog = vec![ModelCatalogEntry {
+            model_id: "   ".into(),
+            context_window: 128_000,
+            ..Default::default()
+        }];
+        let err = validate_config(&config).expect_err("blank id must reject");
+        assert!(matches!(err, GateError::Config { .. }));
+    }
+
+    /// 审查 LOW-3：目录条目上限 1024——超限拒绝、恰在限额放行
+    #[test]
+    fn catalog_rejects_over_cap_and_admits_at_cap() {
+        let build_entry = |i: usize| ModelCatalogEntry {
+            model_id: format!("model-{i}"),
+            context_window: 128_000,
+            ..Default::default()
+        };
+        let mut config = create_test_config();
+        config.model_catalog = (0..=1024usize).map(build_entry).collect();
+        let err = validate_config(&config).expect_err("1025 entries must reject");
+        match err {
+            GateError::Config { message } => {
+                assert!(message.contains("1024"), "错误携带上限: {message}");
+            }
+            other => panic!("expected Config error, got {:?}", other),
+        }
+
+        let mut config = create_test_config();
+        config.model_catalog = (0..1024usize).map(build_entry).collect();
+        validate_config(&config).expect("exactly 1024 entries must pass");
     }
 }

@@ -373,7 +373,14 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
             get(admin::get_config).post(admin::update_config),
         )
         .route("/admin/models", get(admin::get_models))
-        .route("/admin/models/{id}", post(admin::update_model))
+        // T006：目录 CRUD —— POST {id} 保留 global 策略更新（存量契约），
+        // PUT/DELETE 承载目录条目 upsert/下条
+        .route(
+            "/admin/models/{id}",
+            post(admin::update_model)
+                .put(admin::upsert_model)
+                .delete(admin::delete_model),
+        )
         .with_state(state.clone())
         .layer(from_fn_with_state(limit_state, rate_limit_middleware))
         .layer(from_fn_with_state(state.config.clone(), auth_middleware))
@@ -403,6 +410,7 @@ mod tests {
             vendors: vec![],
             global_model: None,
             pricing: vec![],
+            model_catalog: Vec::new(),
             auth: None,
             cors: None,
             retry: Default::default(),

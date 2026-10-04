@@ -86,6 +86,7 @@ mod vendor_fallback_integration {
                 strategy: "weighted".into(),
             }),
             pricing: vec![],
+            model_catalog: Vec::new(),
             auth: None,
             cors: None,
             // recId=7：max_retries=2 + jitter=0（确定性 1s 间隔）——

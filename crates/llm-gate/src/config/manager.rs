@@ -344,6 +344,7 @@ mod tests {
                 strategy: "weighted".into(),
             }),
             pricing: vec![],
+            model_catalog: Vec::new(),
             auth: None,
             cors: None,
             retry: crate::config::RetrySection::default(),

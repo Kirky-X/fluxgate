@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::config::{Config, GlobalModelConfig, VendorConfig};
+use crate::config::{Config, GlobalModelConfig, ModelCatalogEntry, VendorConfig};
 use crate::database::LogFilter;
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
@@ -225,20 +225,19 @@ pub async fn update_vendor(
     })))
 }
 
+/// GET /admin/models — 模型能力目录列表（T006）。
+///
+/// 响应面从单 global_model 包装（历史形状错位：Config 只有单例策略段）
+/// 扩为 `Vec<ModelCatalogEntry>` 目录条目——sdk 客户端未消费本端点
+/// （sdk/admin.rs 只走 /v1/models），形状变更无存量消费方。
+/// 全局模型策略（global_model 段）经 GET /admin/config 或
+/// POST /admin/models/global 读写，不并入本列表。
 #[axum::debug_handler]
 pub async fn get_models(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Vec<GlobalModelConfig>>, NexusFlowError> {
-    let config = state.config.get_config();
-    // Config only has Option<GlobalModelConfig> (singular)
-    // But API expects Vec for extensibility or maybe misunderstanding?
-    // Let's assume we return a Vec containing the single global model if it exists
-    let models = if let Some(gm) = config.global_model {
-        vec![gm]
-    } else {
-        vec![]
-    };
-    Ok(Json(models))
+) -> Result<Json<Vec<ModelCatalogEntry>>, NexusFlowError> {
+    // 审查性能 LOW：只克隆目录段，免去全量 Config 深克隆（13 段逐字段复制）
+    Ok(Json(state.config.read().model_catalog.clone()))
 }
 
 #[axum::debug_handler]
@@ -248,7 +247,7 @@ pub async fn update_model(
     Json(model): Json<GlobalModelConfig>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
     // Config 只有单例 global_model: Option<GlobalModelConfig>（无 ID 字段），
-    // 约定 id == "global" 更新全局模型策略
+    // 约定 id == "global" 更新全局模型策略（T006 起目录条目走 PUT/DELETE）
     if id == "global" {
         // 原子 RMW（同 update_vendor）：读-改-校验-落盘在写锁内完成
         state.config.update_config_with(|config| {
@@ -264,4 +263,75 @@ pub async fn update_model(
             message: t("admin-only-global-model-supported"),
         }))
     }
+}
+
+/// PUT /admin/models/{model_id} — upsert 单条目录条目（T006）。
+///
+/// 原子 RMW（写锁内读-改-校验-落盘）：条目存在则整体替换，不存在则追加；
+/// 校验（model_id 去重 / context_window > 0）经 update_config_with 内的
+/// validate_config 同拒。path 的 model_id 权威——body 中的 model_id 被
+/// 覆写（REST 惯例：资源标识取自 URL）。
+#[axum::debug_handler]
+pub async fn upsert_model(
+    State(state): State<Arc<ApiState>>,
+    Path(model_id): Path<String>,
+    Json(mut entry): Json<ModelCatalogEntry>,
+) -> Result<impl IntoResponse, NexusFlowError> {
+    // 审查 LOW-2：global 为全局策略段保留键（update_model 的 POST 契约），
+    // 目录面显式拒绝——禁止借 PUT/DELETE 旁路改写策略段。Validation 变体
+    // 映射 400（客户端侧请求问题；Config 变体映射 500 是服务端故障语义）
+    if model_id == "global" {
+        return Err(NexusFlowError::from(GateError::Validation {
+            field: format!("model_id={model_id} (reserved for global strategy)"),
+        }));
+    }
+    entry.model_id = model_id.clone();
+    state.config.update_config_with(|config| {
+        match config
+            .model_catalog
+            .iter_mut()
+            .find(|e| e.model_id == entry.model_id)
+        {
+            Some(slot) => *slot = entry.clone(),
+            None => config.model_catalog.push(entry.clone()),
+        }
+        Ok(())
+    })?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": t_args("admin-model-upserted", &[("model", model_id)]),
+    })))
+}
+
+/// DELETE /admin/models/{model_id} — 目录下条（T006）。
+///
+/// 原子 RMW；条目不存在时显性 400（GateError 八核心变体无 NotFound，
+/// 冻结约束下以 Config 错误承载显性缺失，禁止静默成功）。
+#[axum::debug_handler]
+pub async fn delete_model(
+    State(state): State<Arc<ApiState>>,
+    Path(model_id): Path<String>,
+) -> Result<impl IntoResponse, NexusFlowError> {
+    // 审查 LOW-2：global 保留键（同 upsert_model，Validation → 400）
+    if model_id == "global" {
+        return Err(NexusFlowError::from(GateError::Validation {
+            field: format!("model_id={model_id} (reserved for global strategy)"),
+        }));
+    }
+    state.config.update_config_with(|config| {
+        let before = config.model_catalog.len();
+        config.model_catalog.retain(|e| e.model_id != model_id);
+        if config.model_catalog.len() == before {
+            // 显性缺失（禁止静默成功）：Validation → 400（客户端侧请求
+            // 问题——请求的资源不存在；Config 变体是服务端故障语义 500）
+            return Err(GateError::Validation {
+                field: format!("model_id={model_id} (not in catalog)"),
+            });
+        }
+        Ok(())
+    })?;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": t_args("admin-model-deleted", &[("model", model_id)]),
+    })))
 }

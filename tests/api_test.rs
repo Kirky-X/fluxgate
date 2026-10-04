@@ -984,16 +984,24 @@ mod admin {
         assert!(vendors[0].enabled);
     }
 
+    /// T006：GET /admin/models 响应面为目录条目列表（create_test_config
+    /// 未登记条目 → 空 vec）；全局模型策略改经 /admin/config 或
+    /// POST /admin/models/global 读写，不并入本列表。
     #[tokio::test]
     async fn test_admin_get_models() {
         let state = create_api_state().await;
-        let result = admin::get_models(State(state)).await;
+        let result = admin::get_models(State(state.clone())).await;
         assert!(result.is_ok());
         let models = result.unwrap().0;
-        // Config 有 global_model: Some(...)
-        assert_eq!(models.len(), 1);
-        assert!(models[0].enabled);
-        assert_eq!(models[0].strategy, "weighted");
+        assert!(
+            models.is_empty(),
+            "未登记目录为空列表（不再是 global_model 包装）"
+        );
+        // 全局策略段仍经 config 面可读（独立关注点）
+        assert_eq!(
+            state.config.get_config().global_model.unwrap().strategy,
+            "weighted"
+        );
     }
 
     #[tokio::test]
@@ -5204,9 +5212,20 @@ mod api_handler_coverage {
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["success"], true);
 
-        let models = admin::get_models(State(state)).await.unwrap().0;
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].strategy, "linucb", "更新必须即时可读");
+        // T006：GET /admin/models 响应面为目录条目（global 策略读 config 面）
+        assert!(
+            admin::get_models(State(state.clone()))
+                .await
+                .unwrap()
+                .0
+                .is_empty(),
+            "目录列表与 global 策略段独立"
+        );
+        assert_eq!(
+            state.config.get_config().global_model.unwrap().strategy,
+            "linucb",
+            "更新必须即时可读"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

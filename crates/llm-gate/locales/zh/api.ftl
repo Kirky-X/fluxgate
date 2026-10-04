@@ -5,6 +5,10 @@ admin-vendor-limit-auto-managed = 厂商限流状态由 limiteron Governor 自�
 admin-config-updated-immediate = 配置已更新；vendors/pricing/auth 立即生效
 admin-config-updated-restart-required = 配置已更新；vendors/pricing/auth 立即生效；{ $sections } 重启后生效
 admin-vendor-not-found = 厂商 { $id } 不存在
+# ---- T006：/admin/models 模型能力目录 CRUD ----
+admin-model-upserted = 模型 { $model } 已登记至目录
+admin-model-not-found = 模型 { $model } 不在目录中
+admin-model-deleted = 模型 { $model } 已从目录移除
 admin-vendor-updated = 厂商已更新
 admin-global-model-updated = 全局模型配置已更新
 admin-only-global-model-supported = 仅支持 'global' 模型配置

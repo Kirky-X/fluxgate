@@ -9,6 +9,11 @@ config-duplicate-vendor-id = Duplicate vendor ID: { $vendor }
 config-duplicate-model-id = Duplicate model ID in vendor { $vendor }: { $model }
 config-api-key-env-missing = API key environment variable of vendor { $vendor } is not set (configured value length { $length }) — verify it is an environment variable NAME, not a key pasted by mistake
 config-api-key-pool-env-missing = API key pool environment variable #{ $index } (value length { $length }) of vendor { $vendor } is not set — verify it is an environment variable NAME, not a key pasted by mistake
+config-duplicate-catalog-model-id = duplicate model catalog id { $model }
+config-catalog-context-window-zero = model catalog entry { $model } has context_window = 0; registered models must declare a real window (0 disables TUI auto-compact silently)
+config-catalog-too-many = model catalog has { $count } entries; the cap is { $cap }
+config-catalog-model-id-empty = model catalog entry has an empty model_id (whitespace only)
+config-catalog-price-invalid = model catalog entry { $model } has invalid { $field } = { $value }; prices must be finite and >= 0
 config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) is below the 100ms floor: a too-short window flips the circuit straight from Open to Half-Open, degrading failure recovery into a probe storm
 
 # ---- config/manager.rs ----

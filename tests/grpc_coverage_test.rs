@@ -73,6 +73,7 @@ fn test_config(grpc_port: u16) -> Config {
             strategy: "weighted".into(),
         }),
         pricing: vec![],
+        model_catalog: Vec::new(),
         auth: None,
         cors: None,
         retry: nexusflow::config::RetrySection::default(),

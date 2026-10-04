@@ -448,6 +448,35 @@ impl VendorManager {
         guard.get(vendor_id).cloned()
     }
 
+    /// T006：per-model 能力查询 — capabilities() 语义面（路由决策/响应面/
+    /// 网关客户端适配器可取）。已登记模型返回目录真实值（context_window
+    /// 非 0——agentstem agent_session.rs:3290-3291 auto-compact 静默不装配
+    /// 守卫）；未登记回落 per-flavor（vendor type）保守默认
+    /// （`model_catalog::flavor_default_capabilities`，来源见其 doc）。
+    /// 热读 ConfigManager（POST /admin/config 登记后立即生效）。
+    pub fn model_capabilities(
+        &self,
+        vendor_type: &str,
+        model_id: &str,
+    ) -> crate::config::ModelCapabilities {
+        crate::config::model_catalog::capabilities_for(
+            &self.config.read().model_catalog,
+            vendor_type,
+            model_id,
+        )
+    }
+
+    /// T006：[`Self::model_capabilities`] 的 vendor_id 便捷版 — 按 vendor
+    /// 配置的 `type_` 分派 per-flavor 默认；未知 vendor 返回 `None`。
+    pub fn model_capabilities_for_vendor(
+        &self,
+        vendor_id: &str,
+        model_id: &str,
+    ) -> Option<crate::config::ModelCapabilities> {
+        let vendor_type = self.config.get_vendor(vendor_id)?.type_;
+        Some(self.model_capabilities(&vendor_type, model_id))
+    }
+
     /// T005：admin 观测——vendor 的 key 池快照（仅 env 名 / 数量 / 下标 /
     /// 指纹，绝不暴露 key 原文）。实例未初始化返回 `None`。
     pub fn key_pool_info(&self, vendor_id: &str) -> Option<KeyPoolInfo> {
@@ -2316,6 +2345,7 @@ mod tests {
     //! 异常输入（max=0、used > max）和数值精度。
 
     use super::*;
+    use crate::config::{Config, ModelCatalogEntry};
     use std::time::Duration;
 
     // ============ is_ending_soon ============
@@ -2493,6 +2523,142 @@ mod tests {
         assert_eq!(cloned.used_tokens, info.used_tokens);
         // Debug 不 panic
         let _ = format!("{:?}", info);
+    }
+
+    // ======== T006：per-model 能力目录查询 ========
+
+    /// T006：带 model_catalog 的 Config 基座（单 vendor，type 可调）
+    fn catalog_test_config(vendor_type: &str, catalog: Vec<ModelCatalogEntry>) -> Config {
+        let mut vendor = pool_vendor_config("NEXUSFLOW_T006_CAP", "NEXUSFLOW_T006_CAP");
+        vendor.type_ = vendor_type.into();
+        vendor.enabled = true;
+        Config {
+            rate_limit: Default::default(),
+            server: crate::config::ServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            database: crate::config::DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+            },
+            vendors: vec![vendor],
+            global_model: None,
+            pricing: vec![],
+            model_catalog: catalog,
+            auth: None,
+            cors: None,
+            retry: crate::config::RetrySection::default(),
+            routing: crate::config::RoutingSection::default(),
+            cache: crate::config::CacheSection::default(),
+            admission: Default::default(),
+            grpc: None,
+            resilience: crate::config::ResilienceSection::default(),
+        }
+    }
+
+    /// 登记模型返回目录真实值（context_window 非 0——agent_session.rs:3290
+    /// auto-compact 守卫），未登记回落 per-flavor（vendor type）默认。
+    #[test]
+    fn model_capabilities_registered_real_value_and_flavor_fallback() {
+        let config = catalog_test_config(
+            "anthropic",
+            vec![ModelCatalogEntry {
+                model_id: "claude-sonnet-4-20250514".into(),
+                context_window: 200_000,
+                max_output_tokens: Some(8192),
+                supports_tools: true,
+                supports_thinking: true,
+                ..Default::default()
+            }],
+        );
+        let cm = Arc::new(ConfigManager::new(config));
+        let manager = VendorManager::new(cm);
+
+        // 已登记：真实值非 0
+        let caps = manager.model_capabilities("anthropic", "claude-sonnet-4-20250514");
+        assert_eq!(caps.max_context_tokens, 200_000);
+        assert_eq!(caps.max_output_tokens, Some(8192));
+        assert!(caps.supports_thinking);
+
+        // 未登记：per-flavor 默认（openai 128k / anthropic 200k / 未知类型保守档）
+        assert_eq!(
+            manager
+                .model_capabilities("openai", "unregistered-model")
+                .max_context_tokens,
+            128_000
+        );
+        assert_eq!(
+            manager
+                .model_capabilities("anthropic", "unregistered-model")
+                .max_context_tokens,
+            200_000
+        );
+        assert_eq!(
+            manager
+                .model_capabilities("ollama", "local-model")
+                .max_context_tokens,
+            4_096
+        );
+    }
+
+    /// 热更新：POST /admin/config 语义（校验/快照/原子切换）登记条目后，
+    /// capabilities 查询立即反映（DynamicField 热读）。
+    #[test]
+    fn model_capabilities_reflect_hot_update_immediately() {
+        let config = catalog_test_config("openai", vec![]);
+        let cm = Arc::new(ConfigManager::new(config));
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        cm.set_path(dir.path().join("config.toml"));
+        let manager = VendorManager::new(cm.clone());
+
+        // 登记前：未登记回落 openai 默认 128k
+        assert_eq!(
+            manager
+                .model_capabilities("openai", "gpt-9-turbo")
+                .max_context_tokens,
+            128_000
+        );
+
+        let mut updated = cm.get_config();
+        updated.model_catalog = vec![ModelCatalogEntry {
+            model_id: "gpt-9-turbo".into(),
+            context_window: 400_000,
+            ..Default::default()
+        }];
+        cm.update_config(updated).expect("hot update");
+
+        assert_eq!(
+            manager
+                .model_capabilities("openai", "gpt-9-turbo")
+                .max_context_tokens,
+            400_000,
+            "热更新登记后 capabilities 立即反映"
+        );
+    }
+
+    /// vendor_id 便捷查询：按 vendor 配置的 type_ 分派 per-flavor 默认；
+    /// 未初始化/未知 vendor 返回 None。
+    #[tokio::test]
+    async fn model_capabilities_for_vendor_resolves_type() {
+        let config = catalog_test_config("anthropic", vec![]);
+        let cm = Arc::new(ConfigManager::new(config));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let caps = manager
+            .model_capabilities_for_vendor("v-pool-test", "unregistered-model")
+            .expect("vendor known");
+        assert_eq!(
+            caps.max_context_tokens, 200_000,
+            "未登记模型回落 vendor type 的默认"
+        );
+        assert!(
+            manager
+                .model_capabilities_for_vendor("ghost", "m")
+                .is_none(),
+            "未知 vendor 返回 None"
+        );
     }
 
     // ======== T005：按 key 指纹隔离的熔断计数（单测） ========

@@ -6,6 +6,25 @@ port = 8080
 path = "./data/llm_proxy.db"
 pool_size = 5
 
+# ---- 模型能力目录（T006）：[[model_catalog]] per-model 条目 ----
+# 字段对齐 agentstem ModelEntry；定价单位 =「currency 计价，每 1M tokens」
+# （对齐 estimate_usage_cost 口径，T007 计价消费）。无独立计价的缓存档填 0
+# （OpenAI 平台不单独计费 cache write）。登记条目 context_window 必须 > 0
+# 且 model_id 全局唯一；未登记模型回落 per-flavor 保守默认（openai 128k /
+# anthropic 200k / ollama 4096，见 config::model_catalog 文档）。
+# capabilities 查询：已登记返回真实值（TUI auto-compact 依赖非 0 窗口）。
+# [[model_catalog]]
+# model_id = "claude-sonnet-4-20250514"
+# context_window = 200000
+# input_price = 3.0
+# output_price = 15.0
+# cache_read_price = 0.3
+# cache_creation_price = 3.75
+# currency = "usd"
+# max_output_tokens = 8192
+# supports_tools = true
+# supports_thinking = true
+
 [[vendors]]
 id = "openai"
 name = "OpenAI"

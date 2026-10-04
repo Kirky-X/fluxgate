@@ -111,6 +111,7 @@ fn make_config(rules: Vec<RateLimitRule>) -> Config {
             strategy: "weighted".into(),
         }),
         pricing: vec![],
+        model_catalog: Vec::new(),
         // auth: None → 认证关闭，全部请求透传至限流中间件（租户维度按
         // 请求携带的 Bearer key 摘要分桶，无 key 归入 anonymous）
         auth: None,

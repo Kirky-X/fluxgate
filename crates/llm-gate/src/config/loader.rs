@@ -156,6 +156,71 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
         }
     }
 
+    // T006：[[model_catalog]] 段校验 —— model_id 去重（与 vendor/model id
+    // 同级唯一性约束，confers 字段级规则无法表达，保留手写）+ 登记条目
+    // context_window > 0（0 会让 agentstem TUI auto-compact 静默不装配）。
+    // 加载与 POST /admin/config 热更新共用本函数，两路同拒。
+    if config.model_catalog.len() > crate::config::model_catalog::MAX_MODEL_CATALOG_ENTRIES {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-catalog-too-many",
+                &[
+                    ("count", config.model_catalog.len().to_string()),
+                    (
+                        "cap",
+                        crate::config::model_catalog::MAX_MODEL_CATALOG_ENTRIES.to_string(),
+                    ),
+                ],
+            ),
+        });
+    }
+    let mut catalog_ids = std::collections::HashSet::new();
+    for entry in &config.model_catalog {
+        if entry.model_id.trim().is_empty() {
+            return Err(GateError::Config {
+                message: t_args("config-catalog-model-id-empty", &[]),
+            });
+        }
+        if !catalog_ids.insert(&entry.model_id) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-duplicate-catalog-model-id",
+                    &[("model", entry.model_id.clone())],
+                ),
+            });
+        }
+        if entry.context_window == 0 {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-catalog-context-window-zero",
+                    &[("model", entry.model_id.clone())],
+                ),
+            });
+        }
+        // 审查 LOW-1：价格有限（拒 NaN/Inf）且 ≥ 0——NaN 的比较恒 false、
+        // 负价是配置错误，两路同拒；T007 计价按此面消费
+        let prices = [
+            ("input_price", entry.input_price),
+            ("output_price", entry.output_price),
+            ("cache_read_price", entry.cache_read_price),
+            ("cache_creation_price", entry.cache_creation_price),
+        ];
+        for (field, price) in prices {
+            if !price.is_finite() || price < 0.0 {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-catalog-price-invalid",
+                        &[
+                            ("model", entry.model_id.clone()),
+                            ("field", field.to_string()),
+                            ("value", price.to_string()),
+                        ],
+                    ),
+                });
+            }
+        }
+    }
+
     // 窗口 <100ms 使 CB Open→HalfOpen 即刻转换：故障期退化为探针风暴，
     // 等于关闭熔断冷却。加载与 POST /admin/config 热更新共用本函数，两路同拒。
     if config.resilience.circuit_open_timeout_ms < 100 {

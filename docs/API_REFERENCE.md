@@ -27,6 +27,8 @@
   - [GET /admin/config](#get-adminconfig)
   - [POST /admin/config](#post-adminconfig)
   - [GET /admin/models](#get-adminmodels)
+  - [PUT /admin/models/:id](#put-adminmodelsid)
+  - [DELETE /admin/models/:id](#delete-adminmodelsid)
   - [POST /admin/models/:id](#post-adminmodelsid)
 - [健康检查](#健康检查)
   - [GET /api/v1/health](#get-apiv1health)
@@ -902,22 +904,45 @@ curl -X POST http://localhost:8080/admin/config \
 
 ### GET /admin/models
 
-返回全局模型配置（当前实现返回包含单个 `global_model` 的数组，或空数组）。
+返回模型能力目录（`[[model_catalog]]` 段）的条目列表。
+
+> **BREAKING（T006）**：响应形状由 `GlobalModelConfig` 数组（原 global_model
+> 单例包装）变更为 `ModelCatalogEntry` 数组——全局模型策略改经
+> [POST /admin/models/:id](#post-adminmodelsid)（`id = "global"`）或
+> [GET /admin/config](#get-adminconfig) 读写，不再并入本列表。
 
 **认证**: 需要 Bearer Token
 
-**响应**: `GlobalModelConfig` 数组
+**响应**: `ModelCatalogEntry` 数组（九字段，字段对齐 agentstem `ModelEntry`；定价单位 =「currency 计价，每 1M tokens」）
 
 ```json
 [
   {
-    "enabled": true,
-    "strategy": "weighted"
+    "model_id": "claude-sonnet-4-20250514",
+    "context_window": 200000,
+    "input_price": 3.0,
+    "output_price": 15.0,
+    "cache_read_price": 0.3,
+    "cache_creation_price": 3.75,
+    "currency": "usd",
+    "max_output_tokens": 8192,
+    "supports_tools": true,
+    "supports_thinking": true
   }
 ]
 ```
 
-当 `config.global_model` 为 `None` 时返回 `[]`。
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `model_id` | string | 模型全名（目录主键，全局唯一） |
+| `context_window` | u64 | 上下文窗口（tokens），登记条目必须 > 0 |
+| `input_price` / `output_price` | f64 | 输入/输出单价（currency，每 1M tokens） |
+| `cache_read_price` / `cache_creation_price` | f64 | 缓存读/写单价（同单位；无独立计价填 0） |
+| `currency` | string | `usd` \| `cny`（四价共用币种） |
+| `max_output_tokens` | u64 \| null | 最大输出 tokens（null = 厂商未公布） |
+| `supports_tools` / `supports_thinking` | bool | 能力位 |
+
+条目数上限 1024；未登记模型的能力查询回落 per-flavor 保守默认（openai 128k / anthropic 200k / ollama 4096，见 `config::model_catalog` 文档）。
 
 **错误码**: 无业务错误
 
@@ -930,9 +955,79 @@ curl http://localhost:8080/admin/models \
 
 ---
 
+### PUT /admin/models/:id
+
+upsert 单条目录条目（T006）：条目存在则整体替换，不存在则追加。原子 RMW（读-改-校验-落盘在写锁内完成），校验规则（唯一性 / 非零窗口 / 价格有限非负 / 条目上限 / `model_id` 非空白）与配置加载同源，两路同拒。
+
+**认证**: 需要 Bearer Token
+
+**Path 参数**:
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 模型全名（**权威标识**——body 中 `model_id` 被覆写为该值） |
+
+**请求体**: `ModelCatalogEntry`（同 [GET](#get-adminmodels) 条目形状；`model_id` 以 path 为准）
+
+**响应**:
+
+```json
+{
+  "success": true,
+  "message": "model claude-sonnet-4-20250514 upserted into the catalog"
+}
+```
+
+**错误码**: `validation_error`(400，`id == "global"` 保留键 / 校验失败) · `config_error`(500，落盘失败)
+
+**curl 示例**:
+
+```bash
+curl -X PUT http://localhost:8080/admin/models/claude-sonnet-4-20250514 \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model_id":"claude-sonnet-4-20250514","context_window":200000,"input_price":3.0,"output_price":15.0,"cache_read_price":0.3,"cache_creation_price":3.75,"currency":"usd","max_output_tokens":8192,"supports_tools":true,"supports_thinking":true}'
+```
+
+---
+
+### DELETE /admin/models/:id
+
+目录下条（T006）。原子 RMW；条目不存在时显性拒绝（禁止静默成功）。
+
+**认证**: 需要 Bearer Token
+
+**Path 参数**:
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 要移除的模型全名 |
+
+**响应**:
+
+```json
+{
+  "success": true,
+  "message": "model claude-sonnet-4-20250514 removed from the catalog"
+}
+```
+
+**错误码**: `validation_error`(400，条目不存在或 `id == "global"` 保留键) · `config_error`(500，落盘失败)
+
+**curl 示例**:
+
+```bash
+curl -X DELETE http://localhost:8080/admin/models/claude-sonnet-4-20250514 \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
 ### POST /admin/models/:id
 
-更新全局模型配置。当前仅支持 `id == "global"`，其他 ID 返回 `config_error`。
+更新全局模型策略段（`global_model`）。当前仅支持 `id == "global"`，其他 ID 返回 `config_error`。
+
+> **T006**：目录条目管理请用 [PUT](#put-adminmodelsid) / [DELETE](#delete-adminmodelsid) `/admin/models/:id`；`"global"` 为策略段保留键，PUT/DELETE 该键返回 `validation_error`(400)。
 
 **认证**: 需要 Bearer Token
 

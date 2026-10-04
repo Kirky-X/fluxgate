@@ -2067,6 +2067,7 @@ mod token_weighted_tickets {
             }],
             global_model: None,
             pricing: vec![],
+            model_catalog: Vec::new(),
             auth: None,
             cors: None,
             retry: llm_gate::config::RetrySection::default(),

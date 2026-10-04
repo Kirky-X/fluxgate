@@ -7,9 +7,14 @@ use serde::{Deserialize, Serialize};
 
 pub mod loader;
 pub mod manager;
+pub mod model_catalog;
 
 pub use loader::validate_config;
 pub use manager::ConfigManager;
+pub use model_catalog::{
+    capabilities_for, flavor_default_capabilities, ModelCapabilities, ModelCatalogEntry,
+    PricingCurrency,
+};
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ServerConfig {
@@ -1077,6 +1082,13 @@ pub struct Config {
     /// 价格表 — 用于成本计算。默认空 vec，未配置时 CostCalculator 全部返回 0.0
     #[serde(default)]
     pub pricing: Vec<PricingConfig>,
+    /// [[model_catalog]] 段 — per-model 能力/定价目录（T006/N6，字段对齐
+    /// agentstem ModelEntry）。缺省空 vec（未登记模型走 per-flavor 保守
+    /// 默认，见 model_catalog::flavor_default_capabilities）；定价单位为
+    /// 「每 1M tokens」（对齐 estimate_usage_cost 口径，T007 计价消费）。
+    /// 登记条目 context_window 必须 > 0 且 model_id 去重（validate_config）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_catalog: Vec<ModelCatalogEntry>,
     /// [auth] 段 — API Key 认证（摘要存储）。None = 配置中无该段，认证禁用
     #[serde(default)]
     pub auth: Option<AuthSection>,

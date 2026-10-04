@@ -27,8 +27,12 @@ web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "ro
 http = []
 # resilience feature：韧性模块门控（FallbackChain + 错误映射层）。熔断器已迁移
 # limiteron::circuit、重试延迟已迁移 limiteron::retry，无需独立第三方依赖
-resilience = []
-cost-tracking = ["dep:dashmap"]
+# resilience：本 crate（api 换路编排）与 llm-gate（FallbackChain + 错误
+# 映射层 + metrics 韧性观测）双侧门控，feature 转发保持单开关语义
+resilience = ["llm-gate/resilience"]
+# cost-tracking：过渡期双开——cost_tracker.rs 尚在 nexusflow（dep:dashmap），
+# llm-gate 侧 cost-tracker 已就位（转发）；utils 迁移后收敛为纯转发
+cost-tracking = ["dep:dashmap", "llm-gate/cost-tracking"]
 database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "protocol"]
 vendor-management = ["dep:reqwest", "dep:limiteron", "database"]
 # router 带 oxcache（recId=11 会话亲和表 / recId=12 响应缓存的存储层——
@@ -109,16 +113,12 @@ async-stream = { version = "0.3", optional = true }
 # map 能力暴露，不适合当 CostTracker 容器，故引入通用并发 map dashmap。
 # 版本取 6：cost_tracker.rs 使用 entry()/new() 现代 API，与 confers 的 dashmap 6.2 对齐；
 # dashmap 1.2（version="1" 解析到的版本）无 entry() 且 new() 需传 chunk 参数，API 不兼容。
+# 成本追踪并发 map（cost-tracking feature；utils 迁移后随迁 llm-gate）
 dashmap = { version = "6", optional = true }
-# 配置热更新地基：confers::dynamic::DynamicField 提供无锁内存热读态，
-# confers::loader::load_file 提供带路径防护/大小限制的文件加载，
-# confers::snapshot::SnapshotManager 提供更新前的时间戳快照与超量清理
-confers = { path = "../confers", default-features = false, features = ["toml", "dynamic", "snapshot"] }
 # API Key SHA256 摘要存储与常量时间比较（auth 层）
 sha2 = "0.10"
 hex = "0.4"
 sys-info = "0.9"
-toml = "1"
 
 # i18n — Fluent 双束（en/zh）+ 语言检测链基座；fluent 系走 crates.io，
 # 不经 [patch.crates-io]（该段仅重定向自研库）
@@ -127,6 +127,8 @@ unic-langid = { version = "0.9", default-features = false }
 sys-locale = { version = "0.3", default-features = false }
 
 [dev-dependencies]
+# config 系测试直接构造/解析 TOML（config 迁移后测试拆分随 llm-gate 走）
+toml = "1"
 tokio-test = "0.4"
 mockall = "0.15"
 mockall_double = "0.3"

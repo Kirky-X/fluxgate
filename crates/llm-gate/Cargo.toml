@@ -41,6 +41,8 @@ reqwest = { version = "0.13", features = ["json", "stream", "socks"], optional =
 limiteron = { path = "../../../limiteron", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "retry", "kit"], optional = true }
 oxcache = { path = "../../../oxcache", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 dashmap = { version = "6", optional = true }
+# 配置全量写回（persist_and_swap 的 toml::to_string_pretty）
+toml = "1"
 # 配置热更新地基（dynamic/snapshot/loader 三面，与 nexusflow 侧声明一致）
 confers = { path = "../../../confers", default-features = false, features = ["toml", "dynamic", "snapshot"] }
 # i18n — Fluent 双束（en/zh）+ 语言检测链基座

@@ -5,7 +5,10 @@
 
 // Smart LLM Proxy - Core Library
 
-pub mod config;
+// config 单 struct（13 段）+ ConfigManager/ConfigLoader/DynamicField 整体
+// 进 llm-gate（design.md D1.1：拆段会分裂 POST /admin/config 热更新语义）；
+// 门面 re-export 保持 nexusflow::config 路径可用
+pub use llm_gate::config;
 pub mod error;
 // i18n 引擎整体进 llm-gate（Fluent 目录随迁）；此处门面 re-export，
 // crate 内外统一经 nexusflow::i18n（= llm_gate::i18n）访问

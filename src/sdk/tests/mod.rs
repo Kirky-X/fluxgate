@@ -6,3 +6,4 @@ mod integration_admin;
 mod integration_chat;
 mod integration_embed;
 mod integration_stream;
+mod wire_test;

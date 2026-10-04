@@ -348,7 +348,8 @@ mod sdk_client_coverage {
             .unwrap()
     }
 
-    const CHAT_OK_BODY: &str = r#"{"id":"chatcmpl-1","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"Hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5},"vendor":"openai_main"}"#;
+    // T008：网关真实形状——无 vendor 键（response_to_external 不产出）
+    const CHAT_OK_BODY: &str = r#"{"id":"chatcmpl-1","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"Hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
 
     // -------- builder 构造与 Debug 脱敏 --------
 
@@ -433,10 +434,13 @@ mod sdk_client_coverage {
         assert_eq!(resp.id, "chatcmpl-1");
         assert_eq!(resp.model, "gpt-4");
         assert_eq!(resp.content, "Hi there");
-        assert_eq!(resp.prompt_tokens, 10);
-        assert_eq!(resp.completion_tokens, 5);
-        assert_eq!(resp.vendor, "openai_main");
-        assert_eq!(resp.finish_reason, "stop");
+        assert_eq!(resp.usage.prompt_tokens, 10);
+        assert_eq!(resp.usage.completion_tokens, 5);
+        // T008：网关响应无 vendor 键（旧 SDK vendor 字段恒空误导，已移除）
+        assert_eq!(
+            resp.finish_reason,
+            nexusflow::sdk::ChatFinishReason::Standard(nexusflow::sdk::StandardFinishReason::Stop)
+        );
     }
 
     /// 路由 hint 进 header（X-Vendor / X-Model）、Bearer 凭证与
@@ -475,6 +479,8 @@ mod sdk_client_coverage {
             messages: vec![nexusflow::sdk::ChatMessage {
                 role: ChatRole::User,
                 content: "hi".into(),
+                tool_call_id: None,
+                tool_calls: None,
             }],
             config: RequestConfig {
                 max_tokens: Some(50),
@@ -482,6 +488,9 @@ mod sdk_client_coverage {
                 model_hint: Some("claude-3".into()),
                 ..Default::default()
             },
+            tools: Vec::new(),
+            tool_choice: None,
+            vendor_extensions: Default::default(),
         };
         client.chat(&req).await.unwrap();
         mock.assert_async().await;
@@ -612,11 +621,16 @@ mod sdk_client_coverage {
             messages: vec![nexusflow::sdk::ChatMessage {
                 role: ChatRole::User,
                 content: "hi".into(),
+                tool_call_id: None,
+                tool_calls: None,
             }],
             config: RequestConfig {
                 vendor_hint: Some("openai_main".into()),
                 ..Default::default()
             },
+            tools: Vec::new(),
+            tool_choice: None,
+            vendor_extensions: Default::default(),
         };
         let mut stream = client.chat_stream(&req).await.unwrap();
 
@@ -632,7 +646,12 @@ mod sdk_client_coverage {
             second.delta.and_then(|d| d.content),
             Some("llo".to_string())
         );
-        assert_eq!(second.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            second.finish_reason,
+            Some(nexusflow::sdk::ChatFinishReason::Standard(
+                nexusflow::sdk::StandardFinishReason::Stop
+            ))
+        );
 
         assert!(stream.next().await.is_none(), "[DONE] 之后的流必须正常结束");
         mock.assert_async().await;
@@ -692,43 +711,53 @@ mod sdk_client_coverage {
     async fn admin_endpoints_parse_success_payloads() {
         let mut server = mockito::Server::new_async().await;
 
+        // T008 失配修复：GET /admin/models（目录九字段，原 /v1/models 无路由）
         server
-            .mock("GET", "/v1/models")
+            .mock("GET", "/admin/models")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":[{"id":"gpt-4","vendor":"openai_main"}]}"#)
+            .with_body(
+                r#"[{"model_id":"gpt-4","context_window":128000,"input_price":30.0,
+                    "output_price":60.0,"currency":"usd","supports_tools":true}]"#,
+            )
             .create_async()
             .await;
         let models = build_client(&server.url()).models().await.unwrap();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "gpt-4");
-        assert_eq!(models[0].vendor, "openai_main");
+        assert_eq!(models[0].model_id, "gpt-4");
+        assert_eq!(models[0].context_window, 128_000);
 
+        // 真实形状：{id,status,queue_length,key_pool?}
         server
             .mock("GET", "/admin/vendors")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"vendors":[{"id":"v1","name":"V1","enabled":true},{"id":"v2","name":"V2","enabled":false}]}"#,
+                r#"[{"id":"v1","status":"Available","queue_length":0},
+                    {"id":"v2","status":"Throttled","queue_length":2}]"#,
             )
             .create_async()
             .await;
         let vendors = build_client(&server.url()).vendors().await.unwrap();
         assert_eq!(vendors.len(), 2);
-        assert!(vendors[0].enabled);
-        assert!(!vendors[1].enabled);
+        assert_eq!(vendors[0].status, "Available");
+        assert_eq!(vendors[1].status, "Throttled");
+        assert_eq!(vendors[1].queue_length, 2);
 
+        // T008 失配修复：GET /api/v1/health（admin/health 不存在）
         server
-            .mock("GET", "/admin/health")
+            .mock("GET", "/api/v1/health")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"status":"ok","version":"0.1.0","vendors":3}"#)
+            .with_body(
+                r#"{"status":"ok","version":"0.1.0","timestamp":"2026-10-05T00:00:00+00:00"}"#,
+            )
             .create_async()
             .await;
         let health = build_client(&server.url()).health().await.unwrap();
         assert_eq!(health.status, "ok");
         assert_eq!(health.version, "0.1.0");
-        assert_eq!(health.vendors, 3);
+        assert_eq!(health.timestamp, "2026-10-05T00:00:00+00:00");
     }
 
     /// admin 端点非 2xx → Server{status, 响应原文}（models / health 代表）。
@@ -736,7 +765,7 @@ mod sdk_client_coverage {
     async fn admin_endpoints_map_error_statuses() {
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("GET", "/v1/models")
+            .mock("GET", "/admin/models")
             .with_status(503)
             .with_body("unavailable")
             .create_async()
@@ -751,7 +780,7 @@ mod sdk_client_coverage {
         }
 
         server
-            .mock("GET", "/admin/health")
+            .mock("GET", "/api/v1/health")
             .with_status(500)
             .with_body("db down")
             .create_async()

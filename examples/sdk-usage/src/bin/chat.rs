@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use nexusflow::sdk::{
-    ChatMessage, ChatRequest, ChatRole, NexusFlowClientBuilder, NexusFlowSdkError, RequestConfig,
+    ChatMessage, ChatRequest, NexusFlowClientBuilder, NexusFlowSdkError, RequestConfig,
 };
 
 fn require_env(name: &str) -> String {
@@ -34,14 +34,8 @@ async fn main() -> Result<(), NexusFlowSdkError> {
     let req = ChatRequest {
         model: "gpt-4".into(),
         messages: vec![
-            ChatMessage {
-                role: ChatRole::System,
-                content: "用一句中文回答。".into(),
-            },
-            ChatMessage {
-                role: ChatRole::User,
-                content: "一句话说明什么是熔断器。".into(),
-            },
+            ChatMessage::system("用一句中文回答。"),
+            ChatMessage::user("一句话说明什么是熔断器。"),
         ],
         config: RequestConfig {
             temperature: Some(0.2),
@@ -53,6 +47,9 @@ async fn main() -> Result<(), NexusFlowSdkError> {
             model_hint: Some("gpt-4".into()),
             ..RequestConfig::default()
         },
+        tools: Vec::new(),
+        tool_choice: None,
+        vendor_extensions: Default::default(),
     };
 
     // 认证失败单列提示（最常见故障是 key 配错），其余错误原样上抛
@@ -68,12 +65,13 @@ async fn main() -> Result<(), NexusFlowSdkError> {
     println!("{}", resp.content);
     println!("---");
     println!(
-        "model: {} | vendor: {} | finish_reason: {}",
-        resp.model, resp.vendor, resp.finish_reason
+        "model: {} | finish_reason: {}",
+        resp.model,
+        resp.finish_reason.as_wire()
     );
     println!(
-        "tokens: prompt={} completion={}",
-        resp.prompt_tokens, resp.completion_tokens
+        "tokens: prompt={} completion={} (cache_read={})",
+        resp.usage.prompt_tokens, resp.usage.completion_tokens, resp.usage.cache_read_tokens
     );
     Ok(())
 }

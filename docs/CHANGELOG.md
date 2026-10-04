@@ -12,10 +12,12 @@
 
 ### Changed
 
+- **BREAKING（T008）**：Rust SDK（`sdk` feature）类型与 admin 面重塑对齐网关真实形状——`ChatMessage.content` 支持多模态内容件（`ChatContent`），`ChatRequest` 增 tools/tool_choice/vendor_extensions/penalties；`ChatResponse` 移除恒空的 `vendor` 字段（网关响应不注入）、finish_reason 结构化为四变体枚举、usage 含 cache_read；`ChatStream` 解析 tool_calls 增量片段与 usage 尾帧；admin 失配修复——`models()` 改 `GET /admin/models`（原 `GET /v1/models` 网关未注册恒 404）、`health()` 改 `GET /api/v1/health`（原 `admin/health` 不存在）、`vendors()` 对齐运行面形状 `{id,status,queue_length,key_pool}`；新增 `upsert_model` / `delete_model`（目录 CRUD）。
 - **BREAKING（T006）**：`GET /admin/models` 响应形状由 `GlobalModelConfig` 数组（原 global_model 单例包装）变更为 `ModelCatalogEntry` 数组（九字段模型能力目录：context_window / 四档单价（currency，每 1M tokens）/ currency / max_output_tokens / supports_tools / supports_thinking）。全局模型策略改经 `POST /admin/models/global`（存量契约保留）或 `GET /admin/config` 读写。
 
 ### Added
 
+- **SDK 工具环与多模态（T008）**：SDK chat 面补齐 function calling（工具定义/选择/调用环回填消息）与多模态图片内容件（URL / base64 data URL），流式 chunk 携带 tool_calls 增量片段与 usage 尾帧——对齐 IR（D2）与网关出站真实形状（T004 后事件序）；SDK admin 面与网关路由表零差异由路由 diff 测试钉住。
 - **模型能力目录（T006）**：`[[model_catalog]]` 配置段（字段对齐 agentstem `ModelEntry`）+ `/admin/models` CRUD——`GET` 目录列表、`PUT /admin/models/:id` upsert（path 标识权威）、`DELETE /admin/models/:id` 下条（缺条显性 400 validation_error；`global` 为策略段保留键）。`llm-gate` 暴露 per-model 能力查询（`VendorManager::model_capabilities[_for_vendor]`）：已登记模型返回真实值（context_window > 0 强制校验——TUI auto-compact 依赖非 0 窗口），未登记回落 per-flavor 保守默认（openai 128k / anthropic 200k / ollama 4096）。定价单位契约：「currency 计价，每 1M tokens」（对齐 agentstem `estimate_usage_cost` 口径，T007 计价消费）。校验：model_id 去重/非空白、context_window > 0、价格有限非负、条目上限 1024（加载与 `POST /admin/config` 热更新两路同拒）。
 
 - **gRPC 服务器**（`grpc` feature，独立门控不进 `full`——sdforge grpc 编译期需 protoc）：`src/server/grpc.rs` 镜像 HTTP 封装方式——`[grpc]` 配置段（默认禁用，显式 `enabled = true` opt-in）、`build_app` 装配后经 `ServerHandle::take_grpc_server` 产出 `GrpcServer`、`serve` 走 sdforge `build_server_with_graceful_shutdown`（signal 后停止接受新连接、等待 in-flight 完成，与 HTTP 侧 axum `with_graceful_shutdown` 同语义，停机信号经 watch 广播共享）。服务面为 sdforge `sdforge.v1.SdForgeService` 门面（GetInfo / Call / CallStream，JSON over gRPC）：Call/CallStream 逐调用校验 `[auth]` 段 SHA256 摘要（`x-api-key` 或 `authorization: Bearer`，常量时间比较，语义对齐 HTTP 中间件；`[auth]` 缺段或禁用时放行），GetInfo 免认证（对应 HTTP `/health` 白名单位置）。TLS 不经 sdforge 终结（外部反代承担）。`#[forge(grpc_method = "...")]` handler 经 inventory 注册即可被门面路由。冒烟测试 `grpc_smoke_test` 走真实 tonic 链路（认证边界 / handler 路由 / 优雅停机 / 句柄幂等）。

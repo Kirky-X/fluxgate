@@ -555,8 +555,17 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 |:---|:-----|
 | 启用方式 | `nexusflow = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` 随该 feature 引入） |
 | 模块 | `chat` / `embed` / `stream` / `client`（`NexusFlowClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error` |
-| 类型导出 | `ChatMessage` / `ChatRequest` / `ChatResponse` / `EmbedRequest` / `EmbedResponse` / `ChatStream` 等 |
+| 类型导出 | `ChatMessage`（多模态 `ChatContent::Parts` / tool_calls）/ `ChatRequest`（tools / tool_choice / vendor_extensions / penalties）/ `ChatResponse`（结构化 finish_reason + 含 cache_read 的 usage + tool_calls）/ `EmbedRequest` / `EmbedResponse` / `ChatStream`（tool_calls 增量片段 + usage 尾帧）/ 目录 CRUD（`ModelCatalogInfo` / `ModelCatalogUpsert`）等 |
 | 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |
+
+> **T008 对齐说明**（SDK ↔ 网关零失配，路径/形状以路由表为准）：admin 面
+> `models()` 走 `GET /admin/models`（模型能力目录；旧 `GET /v1/models`
+> 网关未注册已废弃）、`health()` 走 `GET /api/v1/health`（旧
+> `admin/health` 不存在）、`vendors()` 返回运行面状态
+> `{id,status,queue_length,key_pool}`（非配置面 `{name,enabled}`）；
+> 新增 `upsert_model` / `delete_model`（目录 CRUD）。chat 响应**无
+> vendor 字段**（网关不注入，已移除恒空字段）；`finish_reason` 为结构化
+> 四变体枚举 + 自定义词透传。
 
 > `NexusFlowSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。超时模型：非流式请求（chat / embed）总超时缺省 30s（`NexusFlowClientBuilder::timeout`），可被 `RequestConfig.timeout` 逐请求覆盖；`chat_stream` 流式**不设总超时**（SSE 长流不被切断），连接停滞由 read_timeout（缺省 30s，按读重置）看护。
 

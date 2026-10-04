@@ -11,6 +11,8 @@ fn build_client(base_url: &str) -> crate::sdk::NexusFlowClient {
         .unwrap()
 }
 
+/// T008：网关真实响应形状——无 vendor 字段（核实：response_to_external
+/// 不产出），finish_reason 结构化，usage 含 prompt_tokens_details.cached_tokens
 #[tokio::test]
 async fn chat_success() {
     let mut server = mockito::Server::new_async().await;
@@ -20,7 +22,7 @@ async fn chat_success() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
-            r#"{"id":"chatcmpl-x","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2},"vendor":"openai"}"#,
+            r#"{"id":"chatcmpl-x","object":"chat.completion","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7,"prompt_tokens_details":{"cached_tokens":3}}}"#,
         )
         .create();
 
@@ -31,10 +33,167 @@ async fn chat_success() {
         .unwrap();
 
     assert_eq!(resp.content, "Hi");
-    assert_eq!(resp.vendor, "openai");
-    assert_eq!(resp.prompt_tokens, 5);
-    assert_eq!(resp.completion_tokens, 2);
-    assert_eq!(resp.finish_reason, "stop");
+    assert_eq!(resp.usage.prompt_tokens, 5);
+    assert_eq!(resp.usage.completion_tokens, 2);
+    assert_eq!(resp.usage.total_tokens, 7);
+    assert_eq!(
+        resp.usage.cache_read_tokens, 3,
+        "cache_read 摘自 cached_tokens"
+    );
+    assert_eq!(
+        resp.finish_reason,
+        crate::sdk::ChatFinishReason::Standard(crate::sdk::StandardFinishReason::Stop)
+    );
+}
+
+/// 模型发起工具环：非流式 message.tool_calls 解析（对齐网关
+/// response_to_external 产物：无 index，function.name/arguments）
+#[tokio::test]
+async fn chat_parses_response_tool_calls() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"id":"chatcmpl-t","model":"gpt-4","choices":[{"index":0,
+                "message":{"role":"assistant","content":"",
+                  "tool_calls":[{"id":"call_1","type":"function",
+                                 "function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},
+                "finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":10,"completion_tokens":20}}"#,
+        )
+        .create();
+
+    let client = build_client(&server.url());
+    let resp = client
+        .chat(&ChatRequest::new("gpt-4", "weather?"))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(resp.tool_calls[0].id, "call_1");
+    assert_eq!(resp.tool_calls[0].function.name, "get_weather");
+    assert!(resp.tool_calls[0].function.arguments.contains("SF"));
+    assert_eq!(
+        resp.finish_reason,
+        crate::sdk::ChatFinishReason::Standard(crate::sdk::StandardFinishReason::ToolCalls)
+    );
+}
+
+/// 工具面 wire：tools/tool_choice/vendor_extensions 进请求体（T008 扩全）
+#[tokio::test]
+async fn chat_sends_tools_and_vendor_extensions() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "tools": [{"function": {"name": "get_weather"}}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "thinking_mode": "off"
+        })))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"id":"x","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        )
+        .create();
+
+    let client = build_client(&server.url());
+    let request = ChatRequest::new("gpt-4", "hello")
+        .with_tools(
+            vec![crate::sdk::ChatTool {
+                function: crate::sdk::ChatToolDefinition {
+                    name: "get_weather".into(),
+                    description: None,
+                    parameters: serde_json::json!({"type":"object"}),
+                },
+            }],
+            Some(crate::sdk::ChatToolChoice::specific("get_weather")),
+        )
+        .with_vendor_extension("thinking_mode", serde_json::json!("off"))
+        .unwrap();
+    let resp = client.chat(&request).await.unwrap();
+    assert_eq!(resp.content, "ok");
+
+    mock.assert_async().await;
+}
+
+/// 多模态 content：Parts 数组 wire（图片 image_url 形状）
+#[tokio::test]
+async fn chat_sends_multimodal_parts() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
+                ]
+            }]
+        })))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"id":"x","model":"gpt-4o","choices":[{"message":{"role":"assistant","content":"a cat"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        )
+        .create();
+
+    let client = build_client(&server.url());
+    let mut request = ChatRequest::new("gpt-4o", "");
+    request.messages = vec![crate::sdk::ChatMessage::user(
+        crate::sdk::ChatContent::Parts(vec![
+            crate::sdk::ChatContentPart::text("what is this?"),
+            crate::sdk::ChatContentPart::image_url("https://example.com/a.png"),
+        ]),
+    )];
+    let resp = client.chat(&request).await.unwrap();
+    assert_eq!(resp.content, "a cat");
+
+    mock.assert_async().await;
+}
+
+/// tool 结果消息 wire：role=tool + tool_call_id
+#[tokio::test]
+async fn chat_sends_tool_result_message() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": "call_1",
+                    "function": {"name": "get_weather", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "sunny"}
+            ]
+        })))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"id":"x","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"sunny!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        )
+        .create();
+
+    let client = build_client(&server.url());
+    let mut request = ChatRequest::new("gpt-4", "");
+    request.messages = vec![
+        crate::sdk::ChatMessage::assistant_with_tool_calls(
+            crate::sdk::ChatContent::Text(String::new()),
+            vec![crate::sdk::ChatToolCall {
+                id: "call_1".into(),
+                function: crate::sdk::ChatToolFunction {
+                    name: "get_weather".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+        ),
+        crate::sdk::ChatMessage::tool("call_1", "sunny"),
+    ];
+    let resp = client.chat(&request).await.unwrap();
+    assert_eq!(resp.content, "sunny!");
+
+    mock.assert_async().await;
 }
 
 #[tokio::test]

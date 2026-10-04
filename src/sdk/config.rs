@@ -17,6 +17,10 @@ pub(crate) struct OpenAiParams {
     pub(crate) top_k: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) presence_penalty: Option<f32>,
     pub(crate) stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stop: Option<Vec<String>>,
@@ -32,6 +36,10 @@ pub struct RequestConfig {
     pub top_p: Option<f32>,
     pub top_k: Option<u32>,
     pub max_tokens: Option<u32>,
+    /// 频率惩罚（IR SamplingParams 同名语义；-2.0 ~ 2.0）
+    pub frequency_penalty: Option<f32>,
+    /// 存在惩罚（IR SamplingParams 同名语义）
+    pub presence_penalty: Option<f32>,
     pub stream: bool,
     /// 非流式请求（chat / embed）的总超时逐请求覆盖：Some(d) 取代客户端
     /// 默认（`NexusFlowClientBuilder::timeout`，缺省 30s）；对
@@ -52,6 +60,8 @@ impl RequestConfig {
             top_p: other.top_p.or(self.top_p),
             top_k: other.top_k.or(self.top_k),
             max_tokens: other.max_tokens.or(self.max_tokens),
+            frequency_penalty: other.frequency_penalty.or(self.frequency_penalty),
+            presence_penalty: other.presence_penalty.or(self.presence_penalty),
             stream: other.stream,
             timeout: other.timeout.or(self.timeout),
             vendor_hint: other
@@ -71,6 +81,8 @@ impl RequestConfig {
             top_p: self.top_p,
             top_k: self.top_k,
             max_tokens: self.max_tokens,
+            frequency_penalty: self.frequency_penalty,
+            presence_penalty: self.presence_penalty,
             stream: self.stream,
             stop: self.stop.clone(),
             user: self.user.clone(),

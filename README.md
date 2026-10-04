@@ -233,7 +233,7 @@ async fn main() -> Result<(), nexusflow::error::NexusFlowError> {
 **HTTP 客户端 SDK**（调用已部署网关，需 `sdk` feature）：
 
 ```rust
-use nexusflow::sdk::{ChatMessage, ChatRequest, ChatRole, NexusFlowClientBuilder, RequestConfig};
+use nexusflow::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, NexusFlowClientBuilder};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -242,20 +242,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .api_key(std::env::var("NEXUSFLOW_API_KEY")?)
         .build()?;
 
-    let resp = client
-        .chat(&ChatRequest {
-            model: "gpt-4".into(),
-            messages: vec![ChatMessage {
-                role: ChatRole::User,
-                content: "你好".into(),
+    // 便捷构造 + 请求级配置（temperature / max_tokens / hints 等经 RequestConfig）
+    let request = ChatRequest::new("gpt-4", "你好")
+        .with_tools(
+            vec![ChatTool {
+                function: ChatToolDefinition {
+                    name: "get_weather".into(),
+                    description: Some("查询天气".into()),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
             }],
-            config: RequestConfig::default(),
-        })
-        .await?;
+            Some(ChatToolChoice::auto()),
+        )
+        .with_vendor_extension("thinking_mode", serde_json::json!("off"))?; // 保留键（model/messages 等）会被拒绝
+
+    let resp = client.chat(&request).await?;
     println!("{}", resp.content);
+    for call in &resp.tool_calls {
+        println!("tool_call: {} {}", call.id, call.function.name);
+    }
+    println!(
+        "finish_reason: {} | tokens: {} + {} (cache_read: {})",
+        resp.finish_reason.as_wire(),
+        resp.usage.prompt_tokens,
+        resp.usage.completion_tokens,
+        resp.usage.cache_read_tokens
+    );
     Ok(())
 }
 ```
+
+> **T008 对齐**：`ChatMessage::content` 支持多模态内容件（`ChatContent::Parts`，图片 URL / base64 data URL）；tool 角色消息用 `ChatMessage::tool(tool_call_id, content)` 回填；admin 面走真实路由（目录 `GET/PUT/DELETE /admin/models`、健康 `GET /api/v1/health`、vendor 运行面状态）。
 
 > SDK 是「HTTP 客户端」（调用网关 REST API，含 SSE 流式），不是进程内直连路由核心；嵌入式直用 `nexusflow::server` 与 `nexusflow::api` 即可。
 

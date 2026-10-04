@@ -39,7 +39,13 @@ async fn main() -> Result<(), NexusFlowSdkError> {
             print!("{content}");
         }
         if let Some(reason) = &chunk.finish_reason {
-            println!("\n[流结束: {reason}]");
+            println!("\n[流结束: {}]", reason.as_wire());
+        }
+        if let Some(usage) = &chunk.usage {
+            eprintln!(
+                "[usage] prompt={} completion={} cache_read={}",
+                usage.prompt_tokens, usage.completion_tokens, usage.cache_read_tokens
+            );
         }
     }
     Ok(())

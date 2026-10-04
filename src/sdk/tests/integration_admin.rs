@@ -10,16 +10,82 @@ fn build_client(base_url: &str) -> crate::sdk::NexusFlowClient {
         .unwrap()
 }
 
+/// 路由 diff 防回归钉（T008）：SDK admin 面 (method, path) 清单必须全部
+/// 出现在网关路由表源码（`src/api/router_builder.rs` axum `.route()`
+/// 注册）中——SDK 方法与 server 实际路由的零差异契约。失配史：旧 SDK 打
+/// `GET /v1/models`（网关未注册）与 `GET /admin/health`（不存在）。
+#[test]
+fn sdk_admin_routes_are_subset_of_server_route_table() {
+    const ROUTE_TABLE_SRC: &str = include_str!("../../api/router_builder.rs");
+
+    // 精确注册模式（与 router_builder.rs 当前源码逐字对齐——审查 M3：
+    // 杜绝「路径串偶然出现」的误绿；多行 MethodRouter 链按源码拼装）
+    let expected = [
+        ".route(\"/admin/models\", get(admin::get_models))",
+        concat!(
+            ".route(\n            \"/admin/models/{id}\",\n",
+            "            post(admin::update_model)\n",
+            "                .put(admin::upsert_model)\n",
+            "                .delete(admin::delete_model),\n",
+            "        )"
+        ),
+        ".route(\"/admin/vendors\", get(admin::vendors))",
+    ];
+    for pattern in &expected {
+        assert!(
+            ROUTE_TABLE_SRC.contains(*pattern),
+            "网关路由表缺失注册模式: {pattern:?}"
+        );
+    }
+
+    // SDK (method, path) 清单逐项对位（方法 × 路径复合断言；POST global
+    // 为网关保留契约、SDK 不消费，不入清单——审查 M3 删死分支）
+    for (method, path) in crate::sdk::admin::sdk_routes::SDK_ADMIN_ROUTES {
+        match (*method, *path) {
+            ("PUT", "admin/models/{id}") => assert!(
+                ROUTE_TABLE_SRC.contains(".put(admin::upsert_model)"),
+                "PUT /admin/models/{{id}} 绑定缺失"
+            ),
+            ("DELETE", "admin/models/{id}") => assert!(
+                ROUTE_TABLE_SRC.contains(".delete(admin::delete_model)"),
+                "DELETE /admin/models/{{id}} 绑定缺失"
+            ),
+            ("GET", "admin/models") | ("GET", "admin/vendors") => {
+                // 已由 expected 精确模式覆盖
+            }
+            ("GET", "api/v1/health") => {
+                // 已由 forge 属性断言覆盖（health.rs 注册）
+            }
+            other => panic!("unexpected SDK route {other:?}"),
+        }
+    }
+
+    // 健康面：/api/v1/health 经 sdforge forge 属性注册（version="v1"，
+    // path="/health"）——属性漂移（version/path 改名）即 SDK health() 404
+    const HEALTH_SRC: &str = include_str!("../../api/health.rs");
+    assert!(
+        HEALTH_SRC.contains("version = \"v1\"") && HEALTH_SRC.contains("path = \"/health\""),
+        "health forge 注册属性漂移（SDK health() 打 /api/v1/health）"
+    );
+}
+
+/// GET /admin/models — 网关真实形状：`Vec<ModelCatalogEntry>` 九字段
 #[tokio::test]
-async fn models_returns_list() {
+async fn models_returns_catalog_entries() {
     let mut server = mockito::Server::new_async().await;
 
     server
-        .mock("GET", "/v1/models")
+        .mock("GET", "/admin/models")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
-            r#"{"data":[{"id":"gpt-4","vendor":"openai"},{"id":"claude-3","vendor":"anthropic"}]}"#,
+            r#"[
+                {"model_id":"claude-sonnet-4-20250514","context_window":200000,
+                 "input_price":3.0,"output_price":15.0,"cache_read_price":0.3,
+                 "cache_creation_price":3.75,"currency":"usd","max_output_tokens":8192,
+                 "supports_tools":true,"supports_thinking":true},
+                {"model_id":"gpt-4o","context_window":128000}
+            ]"#,
         )
         .create();
 
@@ -27,14 +93,92 @@ async fn models_returns_list() {
     let models = client.models().await.unwrap();
 
     assert_eq!(models.len(), 2);
-    assert_eq!(models[0].id, "gpt-4");
-    assert_eq!(models[0].vendor, "openai");
-    assert_eq!(models[1].id, "claude-3");
-    assert_eq!(models[1].vendor, "anthropic");
+    assert_eq!(models[0].model_id, "claude-sonnet-4-20250514");
+    assert_eq!(models[0].context_window, 200_000);
+    assert!((models[0].input_price - 3.0).abs() < 1e-9);
+    assert_eq!(models[0].currency, "usd");
+    assert_eq!(models[0].max_output_tokens, Some(8192));
+    assert!(models[0].supports_thinking);
+    // 缺省字段（serde default）：第二条目只带 model_id/context_window
+    assert_eq!(models[1].input_price, 0.0);
+    assert!(!models[1].supports_tools);
 }
 
+/// PUT /admin/models/{id} upsert → DELETE 下条（网关真实 success JSON）
 #[tokio::test]
-async fn vendors_returns_list() {
+async fn upsert_and_delete_model_roundtrip() {
+    let mut server = mockito::Server::new_async().await;
+
+    let put_mock = server
+        .mock("PUT", "/admin/models/gpt-4o")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "model_id": "gpt-4o",
+            "context_window": 128000
+        })))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"success":true,"message":"model gpt-4o upserted into the catalog"}"#)
+        .create();
+
+    let delete_mock = server
+        .mock("DELETE", "/admin/models/gpt-4o")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"success":true,"message":"model gpt-4o removed from the catalog"}"#)
+        .create();
+
+    let client = build_client(&server.url());
+    client
+        .upsert_model(
+            "gpt-4o",
+            &crate::sdk::ModelCatalogUpsert {
+                model_id: "gpt-4o".into(),
+                context_window: 128_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("upsert");
+
+    client.delete_model("gpt-4o").await.expect("delete");
+
+    put_mock.assert_async().await;
+    delete_mock.assert_async().await;
+}
+
+/// PUT /admin/models/global — 保留键显性 400（validation_error），SDK 映射
+/// Server 错误（status 字段区分）
+#[tokio::test]
+async fn put_global_reserved_key_maps_to_server_error() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("PUT", "/admin/models/global")
+        .with_status(400)
+        .with_body(r#"{"error":{"type":"validation_error","message":"reserved"}}"#)
+        .create();
+
+    let client = build_client(&server.url());
+    let err = client
+        .upsert_model(
+            "global",
+            &crate::sdk::ModelCatalogUpsert {
+                model_id: "global".into(),
+                context_window: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    match err {
+        NexusFlowSdkError::Server { status, .. } => assert_eq!(status, 400),
+        other => panic!("expected Server error, got {other:?}"),
+    }
+}
+
+/// GET /admin/vendors — 网关真实形状（运行面状态机词 + 队列深度 +
+/// key_pool 观测；T005/T006 后字段）
+#[tokio::test]
+async fn vendors_returns_runtime_status_shape() {
     let mut server = mockito::Server::new_async().await;
 
     server
@@ -42,7 +186,12 @@ async fn vendors_returns_list() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
-            r#"{"vendors":[{"id":"openai","name":"OpenAI","enabled":true},{"id":"anthropic","name":"Anthropic","enabled":false}]}"#,
+            r#"[
+                {"id":"openai_main","status":"Available","queue_length":0,
+                 "key_pool":{"envs":["OPENAI_API_KEY"],"size":2,"current_index":1,
+                             "fingerprints":["abcdef0123456789"]}},
+                {"id":"anthropic_main","status":"Throttled","queue_length":3}
+            ]"#,
         )
         .create();
 
@@ -50,31 +199,36 @@ async fn vendors_returns_list() {
     let vendors = client.vendors().await.unwrap();
 
     assert_eq!(vendors.len(), 2);
-    assert_eq!(vendors[0].id, "openai");
-    assert_eq!(vendors[0].name, "OpenAI");
-    assert!(vendors[0].enabled);
-    assert_eq!(vendors[1].id, "anthropic");
-    assert_eq!(vendors[1].name, "Anthropic");
-    assert!(!vendors[1].enabled);
+    assert_eq!(vendors[0].id, "openai_main");
+    assert_eq!(vendors[0].status, "Available");
+    assert_eq!(vendors[0].queue_length, 0);
+    let pool = vendors[0].key_pool.as_ref().expect("key_pool present");
+    assert_eq!(pool.size, 2);
+    assert_eq!(pool.current_index, 1);
+    assert_eq!(pool.envs, vec!["OPENAI_API_KEY"]);
+    assert_eq!(vendors[1].status, "Throttled");
+    assert!(vendors[1].key_pool.is_none(), "未初始化池为 None");
 }
 
+/// GET /api/v1/health — 网关真实形状（{status,version,timestamp}；无
+/// vendors 计数字段）
 #[tokio::test]
-async fn health_returns_status() {
+async fn health_returns_gateway_shape() {
     let mut server = mockito::Server::new_async().await;
 
     server
-        .mock("GET", "/admin/health")
+        .mock("GET", "/api/v1/health")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","version":"0.2.0","vendors":3}"#)
+        .with_body(r#"{"status":"ok","version":"0.1.0","timestamp":"2026-10-05T00:00:00+00:00"}"#)
         .create();
 
     let client = build_client(&server.url());
     let health = client.health().await.unwrap();
 
     assert_eq!(health.status, "ok");
-    assert_eq!(health.version, "0.2.0");
-    assert_eq!(health.vendors, 3);
+    assert_eq!(health.version, "0.1.0");
+    assert_eq!(health.timestamp, "2026-10-05T00:00:00+00:00");
 }
 
 #[tokio::test]
@@ -82,7 +236,7 @@ async fn models_500_returns_server_error() {
     let mut server = mockito::Server::new_async().await;
 
     server
-        .mock("GET", "/v1/models")
+        .mock("GET", "/admin/models")
         .with_status(500)
         .with_body("boom")
         .create();
@@ -116,7 +270,7 @@ async fn vendors_401_returns_server_error() {
 }
 
 /// 慢响应裸 TCP 服务器（mockito 无延迟 API）：按请求路径回对应 JSON
-/// body，但每个连接都先停滞 `delay` 再响应。
+/// body，但每个连接都先停滞 `delay` 再响应。形状对齐网关真实路由。
 async fn spawn_slow_admin_server(delay: Duration) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -143,13 +297,12 @@ async fn spawn_slow_admin_server(delay: Duration) -> String {
                 .nth(1)
                 .unwrap_or_default()
                 .to_vec();
-            let body: &[u8] = if path.ends_with(b"/v1/models") {
-                br#"{"data":[]}"#
-            } else if path.ends_with(b"/admin/vendors") {
-                br#"{"vendors":[]}"#
-            } else {
-                br#"{"status":"ok","version":"test","vendors":0}"#
-            };
+            let body: &[u8] =
+                if path.ends_with(b"/admin/models") || path.ends_with(b"/admin/vendors") {
+                    br#"[]"#
+                } else {
+                    br#"{"status":"ok","version":"test","timestamp":"t"}"#
+                };
             tokio::time::sleep(delay).await;
             let head = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",

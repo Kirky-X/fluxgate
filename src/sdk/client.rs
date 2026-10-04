@@ -116,14 +116,22 @@ mod tests {
             messages: &[ChatMessage {
                 role: ChatRole::User,
                 content: "hi".into(),
+                tool_call_id: None,
+                tool_calls: None,
             }],
             params: RequestConfig::default().openai_params(),
+            extras: WireExtras {
+                tools: &Vec::new(),
+                tool_choice: &None,
+                vendor_extensions: &std::collections::BTreeMap::new(),
+            },
         };
         let v = serde_json::to_value(&payload).unwrap();
         assert_eq!(v["model"], "gpt-4");
         assert_eq!(v["messages"][0]["content"], "hi");
         assert_eq!(v["stream"], false);
         assert!(v.get("temperature").is_none());
+        assert!(v.get("tools").is_none(), "空工具面省略");
         let rendered = v.to_string();
         assert!(
             !rendered.contains("null"),
@@ -226,13 +234,28 @@ impl NexusFlowClientBuilder {
 }
 
 /// chat 请求 wire 载荷：类型化单次序列化（不经 serde_json::Value 中间物，
-/// 未设配置字段由 [`OpenAiParams`] 省略）。
+/// 未设配置字段由 [`OpenAiParams`] 省略；工具面/vendor_extensions 由
+/// [`WireExtras`] flatten 合并）。
 #[derive(serde::Serialize)]
 struct ChatPayload<'a> {
     model: &'a str,
     messages: &'a [crate::sdk::chat::ChatMessage],
     #[serde(flatten)]
     params: crate::sdk::config::OpenAiParams,
+    #[serde(flatten)]
+    extras: WireExtras<'a>,
+}
+
+/// 工具面 + vendor_extensions 的 wire 视图（tools 空省略；extensions
+/// 顶层键经 flatten 合并进请求体）。
+#[derive(serde::Serialize)]
+struct WireExtras<'a> {
+    #[serde(skip_serializing_if = "std::vec::Vec::is_empty")]
+    tools: &'a Vec<crate::sdk::chat::ChatTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: &'a Option<crate::sdk::chat::ChatToolChoice>,
+    #[serde(flatten)]
+    vendor_extensions: &'a std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl NexusFlowClient {
@@ -244,6 +267,11 @@ impl NexusFlowClient {
             model: &req.model,
             messages: &req.messages,
             params: merged.openai_params(),
+            extras: WireExtras {
+                tools: &req.tools,
+                tool_choice: &req.tool_choice,
+                vendor_extensions: &req.vendor_extensions,
+            },
         };
 
         let url =
@@ -286,31 +314,7 @@ impl NexusFlowClient {
         }
 
         let v: serde_json::Value = resp.json().await?;
-
-        let choices = v["choices"]
-            .as_array()
-            .ok_or_else(|| NexusFlowSdkError::Protocol {
-                message: "missing choices array".into(),
-            })?;
-        let choice = choices.first().ok_or_else(|| NexusFlowSdkError::Protocol {
-            message: "empty choices array".into(),
-        })?;
-
-        Ok(ChatResponse {
-            id: v["id"].as_str().unwrap_or_default().to_string(),
-            model: v["model"].as_str().unwrap_or_default().to_string(),
-            content: choice["message"]["content"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            prompt_tokens: v["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-            completion_tokens: v["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32,
-            vendor: v["vendor"].as_str().unwrap_or_default().to_string(),
-            finish_reason: choice["finish_reason"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-        })
+        ChatResponse::from_wire(&v)
     }
 
     /// 发送流式 chat 请求。强制 `stream = true`，POST /v1/chat/completions，返回 ChatStream。
@@ -322,6 +326,11 @@ impl NexusFlowClient {
             model: &req.model,
             messages: &req.messages,
             params: merged.openai_params(),
+            extras: WireExtras {
+                tools: &req.tools,
+                tool_choice: &req.tool_choice,
+                vendor_extensions: &req.vendor_extensions,
+            },
         };
 
         let url =

@@ -174,3 +174,25 @@ async fn stream_errors_when_stall_exceeds_read_timeout() {
         "停滞切断应以上游读取错误呈现，实际: {err:?}"
     );
 }
+
+/// 审查 LOW：网关心跳帧（`{":":""}` 注释帧）不产出空 ChatChunk
+#[tokio::test]
+async fn heartbeat_frame_is_filtered() {
+    // 心跳帧 = 注释块 `{":":""}`（json! 构造防手写转义歧义）
+    let heartbeat = Bytes::from(format!("data: {}\n\n", serde_json::json!({":": ""})).to_string());
+    let content = Bytes::from(
+        "data: {\"id\":\"chunk-0\",\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n".to_string(),
+    );
+    let byte_stream = futures::stream::iter(vec![
+        Ok::<bytes::Bytes, reqwest::Error>(heartbeat),
+        Ok::<bytes::Bytes, reqwest::Error>(content),
+    ]);
+    let mut stream = ChatStream::from_bytes_stream(byte_stream);
+    let first = stream.next().await.unwrap().unwrap();
+    assert_eq!(
+        first.delta.as_ref().unwrap().content.as_deref(),
+        Some("x"),
+        "心跳帧被过滤，内容帧正常产出"
+    );
+    assert!(stream.next().await.is_none());
+}

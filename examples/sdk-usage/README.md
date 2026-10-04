@@ -18,10 +18,10 @@ export NEXUSFLOW_API_KEY="<网关签发的 key>"
 ## 运行
 
 ```bash
-cargo run -p nexusflow-example-sdk-usage --bin chat         # 非流式：完整 ChatRequest + RequestConfig 路由提示头，打印 token 用量与实际 vendor
+cargo run -p nexusflow-example-sdk-usage --bin chat         # 非流式：完整 ChatRequest + RequestConfig 路由提示头，打印 token 用量（含 cache_read）与 finish_reason
 cargo run -p nexusflow-example-sdk-usage --bin stream_chat  # 流式：chat_stream 逐 chunk 消费 SSE
 cargo run -p nexusflow-example-sdk-usage --bin embed        # embedding：两条文本向量，打印维度与用量
-cargo run -p nexusflow-example-sdk-usage --bin admin        # 运维：health / vendors / models
+cargo run -p nexusflow-example-sdk-usage --bin admin        # 运维：health（/api/v1/health）/ vendors（运行面状态+key_pool）/ models（能力目录）
 ```
 
 ## 说明

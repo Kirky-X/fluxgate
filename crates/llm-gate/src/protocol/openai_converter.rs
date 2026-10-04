@@ -9,6 +9,33 @@ use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// OpenAI 协议已显式映射进 IR 的顶层键（其余字段吸收进 vendor_extensions）。
+///
+/// 同时用作出站 merge 的 denylist（F1/M1，known_keys 反用）：协议键永不
+/// 由扩展表补入/覆写——stream 缺位注入、effort 经扩展表物化均被拦截。
+const OPENAI_KNOWN_KEYS: &[&str] = &[
+    "model",
+    "messages",
+    "system_prompt",
+    "temperature",
+    "max_tokens",
+    "stream",
+    "stop",
+    "top_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "logit_bias",
+    "user",
+    "sampling",
+    "thinking_config",
+    "effort",
+    "turn_index",
+    "tools",
+    "tool_choice",
+    "vendor_extensions",
+    "reasoning_effort",
+];
+
 pub struct OpenAIConverter;
 
 impl Default for OpenAIConverter {
@@ -62,9 +89,18 @@ impl ProtocolConverter for OpenAIConverter {
         // 解析工具选择策略
         let tool_choice = body.get("tool_choice").map(parse_tool_choice);
 
+        // T003：reasoning_effort → effort（OpenAI wire 词汇即 low/medium/high）
+        let effort = body
+            .get("reasoning_effort")
+            .and_then(|v| v.as_str())
+            .and_then(EffortLevel::from_wire);
+
         Ok(UnifiedRequest {
             model,
             messages,
+            // OpenAI 无顶层 system 参数（系统指令以 Role::System 消息表达），
+            // system_prompt 恒 None，出站反向合并见 request_to_external
+            system_prompt: None,
             temperature: body
                 .get("temperature")
                 .and_then(|v| v.as_f64())
@@ -100,18 +136,57 @@ impl ProtocolConverter for OpenAIConverter {
                 .get("user")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            // flat 槽已承接 temperature/top_p/penalties；sampling 不双写
+            // （OpenAI 无 top_k 概念，该类非标参数走 vendor_extensions 透传）
+            sampling: None,
+            thinking_config: None,
+            effort,
+            turn_index: None,
             tools,
             tool_choice,
+            // 未识别顶层字段（top_k/seed 等）吸收进扩展表，出站原样透传防丢
+            vendor_extensions: absorb_vendor_extensions(&body, OPENAI_KNOWN_KEYS),
         })
     }
 
     fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, GateError> {
-        // 将 UnifiedRequest 转换为 OpenAI 格式
-        let messages: Vec<Value> = request
-            .messages
-            .into_iter()
-            .map(message_to_openai)
-            .collect();
+        // 将 UnifiedRequest 转换为 OpenAI 格式。
+        // system_prompt 与 messages 内 Role::System 并存时，system_prompt
+        // 优先合并去重：相同文本只保留一份，不同文本并入首条 system 消息
+        // （system_prompt 在前）；仅当 system_prompt 存在时重排，否则消息
+        // 原位映射（行为兼容）。
+        let mut source_messages = request.messages;
+        let messages: Vec<Value> =
+            if let Some(system_prompt) = request.system_prompt.filter(|s| !s.is_empty()) {
+                let mut parts = vec![system_prompt.clone()];
+                source_messages.retain(|msg| {
+                    if msg.role != Role::System {
+                        return true;
+                    }
+                    match &msg.content {
+                        MessageContent::Text(text) if !text.is_empty() => {
+                            if *text == system_prompt {
+                                // 与 system_prompt 相同文本：去重剔除
+                                false
+                            } else {
+                                // 其余 System 文本并入首条 system 消息
+                                parts.push(text.clone());
+                                false
+                            }
+                        }
+                        // 非文本 System 消息原位保留（不参与合并）
+                        _ => true,
+                    }
+                });
+                let mut merged = vec![Message {
+                    role: Role::System,
+                    content: MessageContent::Text(parts.join("\n\n")),
+                }];
+                merged.extend(source_messages);
+                merged.into_iter().map(message_to_openai).collect()
+            } else {
+                source_messages.into_iter().map(message_to_openai).collect()
+            };
 
         let mut body = json!({
             "model": request.model,
@@ -153,6 +228,43 @@ impl ProtocolConverter for OpenAIConverter {
         if let Some(user) = request.user {
             body["user"] = json!(user);
         }
+        // T003：effort → reasoning_effort（OpenAI wire 词汇，小写）
+        if let Some(effort) = request.effort {
+            body["reasoning_effort"] = json!(effort.to_wire());
+        }
+        // T003：sampling 只补 flat 未设置的槽（flat 优先，不覆写）；
+        // top_k 非 OpenAI 标准参数，直出供兼容上游取用
+        if let Some(sampling) = &request.sampling {
+            if request.temperature.is_none() {
+                if let Some(temp) = sampling.temperature {
+                    body["temperature"] = json!(temp);
+                }
+            }
+            if request.top_p.is_none() {
+                if let Some(top_p) = sampling.top_p {
+                    body["top_p"] = json!(top_p);
+                }
+            }
+            if request.frequency_penalty.is_none() {
+                if let Some(fp) = sampling.frequency_penalty {
+                    body["frequency_penalty"] = json!(fp);
+                }
+            }
+            if request.presence_penalty.is_none() {
+                if let Some(pp) = sampling.presence_penalty {
+                    body["presence_penalty"] = json!(pp);
+                }
+            }
+            if let Some(top_k) = sampling.top_k {
+                body["top_k"] = json!(top_k);
+            }
+        }
+        // L1：thinking_config 无 OpenAI 等价槽，出站静默丢弃（跨厂商
+        // fallback 到 OpenAI 时思考预算不透传，属已知降级而非错误）
+        // F1/M1：vendor_extensions 顶层透传，denylist = 本协议 known_keys
+        // 反用——协议键（stream/reasoning_effort 等）永不由扩展表补入/覆写，
+        // 非协议键仍透传（D2 语义；跨协议严格上游 400 风险为显式 opt-in，D7）
+        merge_vendor_extensions(&mut body, &request.vendor_extensions, OPENAI_KNOWN_KEYS);
 
         Ok(body)
     }
@@ -161,7 +273,11 @@ impl ProtocolConverter for OpenAIConverter {
         let choices = response
             .choices
             .into_iter()
-            .map(|choice| {
+            .map(|mut choice| {
+                // 结构化槽优先回填原始槽（finish 有值且原始槽为空时）
+                if choice.finish_reason.is_none() {
+                    choice.finish_reason = choice.finish.map(|f| f.to_wire().to_string());
+                }
                 json!({
                     "index": choice.index,
                     "message": choice.message.map(message_to_openai),
@@ -170,17 +286,25 @@ impl ProtocolConverter for OpenAIConverter {
             })
             .collect::<Vec<_>>();
 
+        let mut usage = json!({
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        });
+        // T003：cache_read_tokens → prompt_tokens_details.cached_tokens
+        //（非零才携带；cache_creation/cost 无 OpenAI 槽，不产出）
+        if response.usage.cache_read_tokens > 0 {
+            usage["prompt_tokens_details"] =
+                json!({"cached_tokens": response.usage.cache_read_tokens});
+        }
+
         Ok(json!({
             "id": response.id,
             "object": "chat.completion",
             "created": response.created,
             "model": response.model,
             "choices": choices,
-            "usage": {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            },
+            "usage": usage,
         }))
     }
 
@@ -271,11 +395,14 @@ impl ProtocolConverter for OpenAIConverter {
                     .get("finish_reason")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                // T003：已知词双写结构化槽；未知词只留原始透传槽
+                let finish = finish_reason.as_deref().and_then(FinishReason::from_wire);
 
                 Some(Choice {
                     index: index as u32,
                     message,
                     finish_reason,
+                    finish,
                     logprobs: None,
                 })
             })
@@ -311,6 +438,14 @@ impl ProtocolConverter for OpenAIConverter {
             .map(|u| u as u32)
             .unwrap_or(prompt_tokens + completion_tokens);
 
+        // T003：prompt_tokens_details.cached_tokens → cache_read_tokens
+        //（OpenAI 无 cache_creation 概念，恒 0；u64 对齐 core Usage 宽度）
+        let cache_read_tokens = usage
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
         Ok(UnifiedResponse {
             id,
             object: "chat.completion".to_string(),
@@ -321,6 +456,10 @@ impl ProtocolConverter for OpenAIConverter {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                cache_read_tokens,
+                cache_creation_tokens: 0,
+                cost_usd: None,
+                cost_cny: None,
             },
         })
     }
@@ -342,22 +481,69 @@ impl ProtocolConverter for OpenAIConverter {
                     "finish_reason": finish_reason,
                 }],
             })),
+            // T003：流式工具调用片段 → delta.tool_calls（id/name 仅首片段携带）
+            StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                let mut fragment = json!({
+                    "index": index,
+                    "type": "function",
+                });
+                if !id.is_empty() {
+                    fragment["id"] = json!(id);
+                }
+                if name.is_some() || arguments.is_some() {
+                    let mut function = json!({});
+                    if let Some(name) = &name {
+                        function["name"] = json!(name);
+                    }
+                    if let Some(arguments) = &arguments {
+                        function["arguments"] = json!(arguments);
+                    }
+                    fragment["function"] = function;
+                }
+                Ok(json!({
+                    "id": format!("chunk-{}", index),
+                    "object": "chat.completion.chunk",
+                    "created": chrono::Utc::now().timestamp() as u64,
+                    "model": "unknown",
+                    "choices": [{
+                        "index": index,
+                        "delta": {"tool_calls": [fragment]},
+                        "finish_reason": Value::Null,
+                    }],
+                }))
+            }
             StreamChunk::Usage {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
-            } => Ok(json!({
-                "id": "usage",
-                "object": "chat.completion.chunk",
-                "created": 0,
-                "model": "unknown",
-                "choices": [],
-                "usage": {
+                cache_read_tokens,
+                cache_creation_tokens: _,
+                finish_reason: _,
+            } => {
+                // cache_creation 无 OpenAI 槽；finish_reason 恒 None
+                //（OpenAI 终止原因先行于 usage 尾帧）
+                let mut usage = json!({
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": total_tokens,
-                },
-            })),
+                });
+                if cache_read_tokens > 0 {
+                    usage["prompt_tokens_details"] = json!({"cached_tokens": cache_read_tokens});
+                }
+                Ok(json!({
+                    "id": "usage",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "unknown",
+                    "choices": [],
+                    "usage": usage,
+                }))
+            }
             StreamChunk::Heartbeat => Ok(json!({":": ""})),
         }
     }
@@ -411,10 +597,20 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
                 .and_then(|v| v.as_u64())
                 .map(|u| u as u32)
                 .unwrap_or(prompt + completion);
+            // T003：cached_tokens 同帧读取（cache_creation 无 OpenAI 概念）
+            let cache_read_tokens = usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|u| u as u32)
+                .unwrap_or(0);
             return Some(StreamChunk::Usage {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
                 total_tokens: total,
+                cache_read_tokens,
+                cache_creation_tokens: 0,
+                finish_reason: None,
             });
         }
     }
@@ -615,12 +811,21 @@ fn parse_content_block(json: &Value) -> Option<ContentBlock> {
         "image_url" => {
             let image_url = json.get("image_url")?.as_object()?;
             let url = image_url.get("url")?.as_str()?.to_string();
-            Some(ContentBlock::Image {
-                source: ImageSource {
-                    type_: "url".into(),
-                    media_type: "image/jpeg".into(),
-                    data: url,
+            // T003：URL 保真——https 直链 → Url 形态（不再硬编码 jpeg、
+            // 不再把 URL 塞进 data）；data URI → Base64 形态（media_type
+            // 从 URI 解析）
+            let source = match url.strip_prefix("data:") {
+                Some(rest) => match rest.split_once(";base64,") {
+                    Some((media_type, data)) => ImageSource::Base64 {
+                        media_type: media_type.to_string(),
+                        data: data.to_string(),
+                    },
+                    None => ImageSource::Url { url },
                 },
+                None => ImageSource::Url { url },
+            };
+            Some(ContentBlock::Image {
+                source,
                 detail: image_url
                     .get("detail")
                     .and_then(|v| v.as_str())
@@ -649,13 +854,23 @@ fn message_to_openai(msg: Message) -> Value {
                         "type": "text",
                         "text": text,
                     }),
-                    ContentBlock::Image { source, detail } => json!({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": format!("data:{};base64,{}", source.media_type, source.data),
-                            "detail": detail.clone().unwrap_or_else(|| "auto".into()),
-                        },
-                    }),
+                    ContentBlock::Image { source, detail } => {
+                        // T003：Base64 → data URI；Url → 直链原样（不再包
+                        // data: 前缀导致坏 URI）
+                        let url = match &source {
+                            ImageSource::Base64 { media_type, data } => {
+                                format!("data:{media_type};base64,{data}")
+                            }
+                            ImageSource::Url { url } => url.clone(),
+                        };
+                        json!({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": url,
+                                "detail": detail.clone().unwrap_or_else(|| "auto".into()),
+                            },
+                        })
+                    }
                     _ => json!({}),
                 })
                 .collect();

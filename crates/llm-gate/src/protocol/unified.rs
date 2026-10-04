@@ -6,17 +6,33 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// 统一请求结构
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 统一请求结构。
+///
+/// IR 字段对齐 agentstem core `CompletionRequest`（`crates/core/src/traits/types.rs:29-45`）。
+/// 双形态字段（flat 采样槽与 [`SamplingParams`]）并存：flat 为既有 wire
+/// 兼容槽，`sampling` 为 core 对齐槽；两侧转换器出站时 flat 优先、
+/// `sampling` 只补 flat 未设置的槽（不覆写）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UnifiedRequest {
     pub model: String,
     pub messages: Vec<Message>,
+    /// 规范系统提示槽（对齐 core `system_prompt`）。
+    ///
+    /// 单一事实源：Anthropic 入站将顶层 `system` 双写到本槽与首条
+    /// [`Role::System`] 消息（后者为兼容形态）；出站时 `system_prompt`
+    /// 优先，与 Role::System 消息文本合并去重（相同文本只保留一份，
+    /// `system_prompt` 在前）。OpenAI 入站不回填本槽（系统指令以
+    /// Role::System 消息形态表达）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub stream: bool,
+    /// 停止序列。字段名沿用 wire 惯例 `stop`，语义即 core 的
+    /// `stop_sequences`（不改名避免无谓 ripple）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stop: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -29,12 +45,136 @@ pub struct UnifiedRequest {
     pub logit_bias: HashMap<String, f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    /// core 对齐采样参数槽（temperature/top_k/top_p/penalties 全可选，
+    /// 对齐 core `SamplingParams` types.rs:14-25）。
+    ///
+    /// Option 双重可选语义：本槽 `Some` 表示请求显式携带采样参数；内部各
+    /// 字段 `None` 表示该维度沿用 provider 缺省。与 flat 槽并存时出站
+    /// flat 优先，本槽仅补 flat 未设置的槽（不覆写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<SamplingParams>,
+    /// 思考深度配置（对齐 core `ThinkingConfig` types.rs:199-207）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_config: Option<ThinkingConfig>,
+    /// 任务努力级别（对齐 core `EffortLevel` types.rs:661-691）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<EffortLevel>,
+    /// 当前轮次索引（core runner 逐轮注入，从 0 计；无 wire 表示——
+    /// 两侧协议均不映射，仅 IR/serde 承载）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_index: Option<u64>,
     /// 工具定义列表
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Tool>,
     /// 工具选择策略
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// 厂商扩展透传表：入站吸收未识别顶层字段（防丢），出站按原键名
+    /// 透传回顶层；目标协议 known_keys（denylist）永不由扩展表补入/覆写。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub vendor_extensions: HashMap<String, serde_json::Value>,
+}
+
+/// LLM 采样参数（对齐 core `SamplingParams`，`crates/core/src/traits/types.rs:14-25`）。
+///
+/// 全部可选：provider 侧有合理默认值，`None` 表示沿用默认。
+/// `top_k` 对齐 core 为 `u32`（任务文中「全 f32」以 core 证据为准）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SamplingParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+}
+
+/// 思考深度配置（对齐 core `ThinkingConfig`，`crates/core/src/traits/types.rs:199-207`）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ThinkingConfig {
+    /// 模型自适应决定思考预算
+    Adaptive,
+    /// 启用思考，指定 token 预算（u64 对齐 core 宽度 types.rs:203）
+    Enabled {
+        #[serde(default)]
+        budget_tokens: u64,
+    },
+    /// 禁用思考（默认）
+    #[default]
+    Disabled,
+}
+
+/// 任务努力级别（对齐 core `EffortLevel`，`crates/core/src/traits/types.rs:661-691`）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortLevel {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl EffortLevel {
+    /// wire 词汇（OpenAI `reasoning_effort` 同形）→ IR 枚举；未知词返回 `None`。
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+
+    /// IR 枚举 → wire 词汇（小写，OpenAI `reasoning_effort` 同形）。
+    pub fn to_wire(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+/// LLM 补全完成原因（对齐 core `FinishReason`，`crates/core/src/traits/types.rs:187-192`）。
+///
+/// 与 [`Choice::finish_reason`] 的原始透传槽构成双轨：结构化槽存已知词的
+/// 映射结果，未知词只进原始槽（不猜变体）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishReason {
+    Stop,
+    Length,
+    ToolCalls,
+    ContentFilter,
+}
+
+impl FinishReason {
+    /// 协议 wire 词汇（OpenAI finish_reason / Anthropic stop_reason 映射后
+    /// 的 IR 统一词汇）→ 结构化变体；未知词返回 `None`。
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "stop" => Some(Self::Stop),
+            "length" => Some(Self::Length),
+            "tool_calls" | "function_call" => Some(Self::ToolCalls),
+            "content_filter" => Some(Self::ContentFilter),
+            _ => None,
+        }
+    }
+
+    /// 结构化变体 → IR 统一 wire 词汇（OpenAI finish_reason 词汇）。
+    pub fn to_wire(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Length => "length",
+            Self::ToolCalls => "tool_calls",
+            Self::ContentFilter => "content_filter",
+        }
+    }
 }
 
 /// 工具选择策略
@@ -221,13 +361,19 @@ pub enum ContentBlock {
     },
 }
 
-/// 图片来源
+/// 图片来源。
+///
+/// 枚举化区分 base64 内联与远程 URL 两种形态（修复旧结构体把 URL 塞进
+/// `data` 并硬编码 jpeg 的往返失真）：
+/// - `Base64` 序列化为 `{"type":"base64","media_type":...,"data":...}`
+///   （与 Anthropic `source` 块同形，旧 IR 结构体形状向后兼容）；
+/// - `Url` 序列化为 `{"type":"url","url":...}`（OpenAI `image_url.url`
+///   直链与 Anthropic URL source 同形）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageSource {
-    #[serde(rename = "type")]
-    pub type_: String,
-    pub media_type: String,
-    pub data: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ImageSource {
+    Base64 { media_type: String, data: String },
+    Url { url: String },
 }
 
 /// 消息
@@ -249,19 +395,31 @@ pub struct UnifiedResponse {
     pub usage: TokenUsage,
 }
 
-/// 响应选择
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 响应选择。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Choice {
     pub index: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<Message>,
+    /// 原始透传槽：上游 finish_reason/stop_reason 词汇原样保留（含未知词）。
+    /// 与 [`Self::finish`] 结构化槽双轨并存：解析时已知词双写两槽，
+    /// 出站时结构化槽优先（`finish` 有值且 `finish_reason` 为空时回填）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
+    /// 结构化完成原因（对齐 core `FinishReason`；`None` = 上游词未知或未携带）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish: Option<FinishReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logprobs: Option<serde_json::Value>,
 }
 
-/// Token 使用统计
+/// Token 使用统计（对齐 core `Usage`，`crates/core/src/usage.rs:46-60`）。
+///
+/// cache 双字段为 prompt cache 记账：OpenAI 侧读
+/// `prompt_tokens_details.cached_tokens`（无 cache_creation 概念，恒 0），
+/// Anthropic 侧读 `cache_read_input_tokens` / `cache_creation_input_tokens`。
+/// cache 宽度 u64 对齐 core；cost 选 `f64` vs core 的 `f32` 为金额精度裁决
+/// （成本累加避免 f32 有效位损失，映射层转换）。
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
     #[serde(default)]
@@ -270,9 +428,34 @@ pub struct TokenUsage {
     pub completion_tokens: u32,
     #[serde(default)]
     pub total_tokens: u32,
+    /// 缓存读取 token 数（prompt cache hit；u64 对齐 core Usage 宽度）
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// 缓存创建 token 数（prompt cache miss / new cache entries；u64 对齐 core）
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    /// USD 计价成本（协议 wire 无成本字段，仅 IR/serde 承载）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// CNY 计价成本（协议 wire 无成本字段，仅 IR/serde 承载）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_cny: Option<f64>,
 }
 
-/// 流式响应块
+/// 流式响应块。
+///
+/// 与 core `StreamChunk`（types.rs:454-461）的映射：
+/// - `Content{finish_reason: Some(_)}` ↔ core `StreamChunk::Done`
+///   （终止语义由 Content 的 finish_reason 承担，不设独立 Done 变体）；
+/// - [`StreamChunk::ToolCall`] ↔ core `StreamChunk::ToolCallDelta`
+///   （并行工具 = 多 id 交错流）；
+/// - `Usage` ↔ core `StreamChunk::Usage`；
+/// - `Heartbeat` 为网关保心跳，无 core 对应。
+///
+/// 表示统一注意（N4 范围）：`Content` 携带 `MessageContent::ToolCalls`
+/// 为旧表示（OpenAI 入站解析路径现状，出站聚合语义依赖它）；N4 将把工具
+/// 流统一迁移到 [`StreamChunk::ToolCall`] 片段表示 + 多 index 交错状态机
+/// ——N4 范围由此扩为「表示统一」，而非仅并行交错补齐。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum StreamChunk {
@@ -283,11 +466,33 @@ pub enum StreamChunk {
         #[serde(default)]
         finish_reason: Option<String>,
     },
+    /// 流式工具调用片段（对齐 core `ToolCallDelta` types.rs:443-450）。
+    /// `id`/`name` 仅首片段携带（续片为空/None）；`arguments` 为增量分片。
+    #[serde(rename = "tool_call")]
+    ToolCall {
+        index: u32,
+        #[serde(default)]
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arguments: Option<String>,
+    },
+    /// 流式用量结算（取最后一次出现的值结算）。
+    /// `finish_reason` 承载与 usage 同帧到达的终止原因（Anthropic
+    /// `message_delta` 尾帧的 `delta.stop_reason` 映射结果；OpenAI 侧
+    /// 终止原因先行于 usage 尾帧，恒 `None`）。
     #[serde(rename = "usage")]
     Usage {
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
+        #[serde(default)]
+        cache_read_tokens: u32,
+        #[serde(default)]
+        cache_creation_tokens: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
     },
     #[serde(rename = "heartbeat")]
     Heartbeat,
@@ -321,4 +526,429 @@ pub struct EmbeddingUsage {
     pub prompt_tokens: u32,
     #[serde(default, rename = "total_tokens")]
     pub total_tokens: u32,
+}
+
+/// 入站吸收未识别顶层字段 → [`UnifiedRequest::vendor_extensions`]（透传防丢）。
+///
+/// `known_keys` 为该协议已显式映射进 IR 的键；其余顶层字段原样收进扩展表，
+/// 出站时按原键名透传（同协议往返零丢失）。
+pub(crate) fn absorb_vendor_extensions(
+    body: &serde_json::Value,
+    known_keys: &[&str],
+) -> HashMap<String, serde_json::Value> {
+    body.as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter(|(key, _)| !known_keys.contains(&key.as_str()))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 出站透传 [`UnifiedRequest::vendor_extensions`] → 顶层键。
+///
+/// `deny_keys` 为目标协议的合法键集（调用侧传入本协议 known_keys 反用）：
+/// 协议键永不由扩展表补入/覆写——消灭 stream 缺位注入与跨协议
+/// metadata/thinking 等计费行为键补入；非协议键原样透传（D2 透传语义，
+/// 跨协议严格上游 400 风险为显式 opt-in，裁决记录 D7）。
+pub(crate) fn merge_vendor_extensions(
+    body: &mut serde_json::Value,
+    extensions: &HashMap<String, serde_json::Value>,
+    deny_keys: &[&str],
+) {
+    if extensions.is_empty() {
+        return;
+    }
+    if let Some(obj) = body.as_object_mut() {
+        for (key, value) in extensions {
+            if deny_keys.contains(&key.as_str()) {
+                continue;
+            }
+            obj.entry(key.clone()).or_insert(value.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn vendor_extensions_absorb_and_merge_helpers() {
+        let body = json!({
+            "model": "m",
+            "messages": [],
+            "seed": 42,
+            "top_k": 40
+        });
+        let extensions = absorb_vendor_extensions(&body, &["model", "messages"]);
+        assert_eq!(extensions.len(), 2);
+        assert_eq!(extensions.get("seed"), Some(&json!(42)));
+
+        let mut out = json!({"model": "m"});
+        merge_vendor_extensions(&mut out, &extensions, &["model", "messages"]);
+        assert_eq!(out["seed"], 42);
+        assert_eq!(out["top_k"], 40);
+        assert_eq!(out["model"], "m");
+
+        // denylist（known_keys 反用）：协议键不得补入/覆写
+        let mut out = json!({"model": "real"});
+        let mut hostile = std::collections::HashMap::new();
+        hostile.insert("model".to_string(), json!("hijacked"));
+        hostile.insert("stream".to_string(), json!(true));
+        merge_vendor_extensions(&mut out, &hostile, &["model", "stream"]);
+        assert_eq!(out["model"], "real");
+        assert!(out.get("stream").is_none());
+
+        // 非对象 body 与空扩展表为 no-op
+        let mut scalar = json!(1);
+        merge_vendor_extensions(&mut scalar, &std::collections::HashMap::new(), &[]);
+        assert_eq!(scalar, json!(1));
+    }
+
+    #[test]
+    fn finish_reason_wire_mapping_table() {
+        // 四变体全映射（OpenAI 词汇）+ OpenAI 旧词汇 function_call
+        assert_eq!(FinishReason::from_wire("stop"), Some(FinishReason::Stop));
+        assert_eq!(
+            FinishReason::from_wire("length"),
+            Some(FinishReason::Length)
+        );
+        assert_eq!(
+            FinishReason::from_wire("tool_calls"),
+            Some(FinishReason::ToolCalls)
+        );
+        assert_eq!(
+            FinishReason::from_wire("function_call"),
+            Some(FinishReason::ToolCalls)
+        );
+        assert_eq!(
+            FinishReason::from_wire("content_filter"),
+            Some(FinishReason::ContentFilter)
+        );
+        // 未知词不猜变体
+        assert_eq!(FinishReason::from_wire("pause_turn"), None);
+        assert_eq!(FinishReason::from_wire(""), None);
+        // 反向一致
+        for wire in ["stop", "length", "tool_calls", "content_filter"] {
+            let finish = FinishReason::from_wire(wire).unwrap();
+            assert_eq!(finish.to_wire(), wire);
+        }
+    }
+
+    #[test]
+    fn finish_reason_serde_roundtrip() {
+        for finish in [
+            FinishReason::Stop,
+            FinishReason::Length,
+            FinishReason::ToolCalls,
+            FinishReason::ContentFilter,
+        ] {
+            let json = serde_json::to_value(finish).unwrap();
+            let back: FinishReason = serde_json::from_value(json).unwrap();
+            assert_eq!(back, finish);
+        }
+        assert_eq!(
+            serde_json::to_value(FinishReason::ToolCalls).unwrap(),
+            json!("tool_calls")
+        );
+    }
+
+    #[test]
+    fn effort_level_wire_and_serde() {
+        assert_eq!(EffortLevel::from_wire("low"), Some(EffortLevel::Low));
+        assert_eq!(EffortLevel::from_wire("medium"), Some(EffortLevel::Medium));
+        assert_eq!(EffortLevel::from_wire("high"), Some(EffortLevel::High));
+        assert_eq!(EffortLevel::from_wire("minimal"), None);
+        assert_eq!(EffortLevel::High.to_wire(), "high");
+        assert_eq!(
+            serde_json::to_value(EffortLevel::Medium).unwrap(),
+            json!("medium")
+        );
+        let back: EffortLevel = serde_json::from_value(json!("high")).unwrap();
+        assert_eq!(back, EffortLevel::High);
+    }
+
+    #[test]
+    fn thinking_config_serde_roundtrip() {
+        let enabled = ThinkingConfig::Enabled {
+            budget_tokens: 2048,
+        };
+        let json = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(json, json!({"type": "enabled", "budget_tokens": 2048}));
+        let back: ThinkingConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back, enabled);
+
+        assert_eq!(
+            serde_json::to_value(&ThinkingConfig::Adaptive).unwrap(),
+            json!({"type": "adaptive"})
+        );
+        let back: ThinkingConfig = serde_json::from_value(json!({"type": "adaptive"})).unwrap();
+        assert_eq!(back, ThinkingConfig::Adaptive);
+
+        let back: ThinkingConfig = serde_json::from_value(json!({"type": "disabled"})).unwrap();
+        assert_eq!(back, ThinkingConfig::Disabled);
+        assert_eq!(ThinkingConfig::default(), ThinkingConfig::Disabled);
+    }
+
+    #[test]
+    fn sampling_params_serde_roundtrip() {
+        let full = SamplingParams {
+            temperature: Some(0.7),
+            top_k: Some(40),
+            top_p: Some(0.9),
+            frequency_penalty: Some(0.5),
+            presence_penalty: Some(-0.2),
+        };
+        let json = serde_json::to_value(&full).unwrap();
+        let back: SamplingParams = serde_json::from_value(json).unwrap();
+        assert_eq!(back, full);
+
+        // 空参数全部跳过序列化
+        let empty_json = serde_json::to_value(SamplingParams::default()).unwrap();
+        assert_eq!(empty_json, json!({}));
+        let back: SamplingParams = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(back, SamplingParams::default());
+    }
+
+    #[test]
+    fn token_usage_cache_and_cost_fields() {
+        // 旧形状（仅三 token 字段）解析：cache 字段 serde default，成本 None
+        let legacy: TokenUsage = serde_json::from_value(
+            json!({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}),
+        )
+        .unwrap();
+        assert_eq!(legacy.cache_read_tokens, 0);
+        assert_eq!(legacy.cache_creation_tokens, 0);
+        assert!(legacy.cost_usd.is_none());
+        assert!(legacy.cost_cny.is_none());
+
+        let full = TokenUsage {
+            cache_read_tokens: 8,
+            cache_creation_tokens: 3,
+            cost_usd: Some(0.25),
+            cost_cny: Some(1.8),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&full).unwrap();
+        assert_eq!(json["cache_read_tokens"], 8);
+        assert_eq!(json["cache_creation_tokens"], 3);
+        let back: TokenUsage = serde_json::from_value(json).unwrap();
+        assert_eq!(back.cache_read_tokens, 8);
+        assert_eq!(back.cache_creation_tokens, 3);
+        assert_eq!(back.cost_usd, Some(0.25));
+        assert_eq!(back.cost_cny, Some(1.8));
+
+        // None 成本字段跳过序列化
+        let json = serde_json::to_value(TokenUsage::default()).unwrap();
+        assert!(json.get("cost_usd").is_none());
+        assert!(json.get("cost_cny").is_none());
+    }
+
+    #[test]
+    fn unified_request_new_fields_serde() {
+        // 旧形状解析：新字段全部 serde default
+        let legacy: UnifiedRequest = serde_json::from_value(json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap();
+        assert!(legacy.system_prompt.is_none());
+        assert!(legacy.sampling.is_none());
+        assert!(legacy.thinking_config.is_none());
+        assert!(legacy.effort.is_none());
+        assert!(legacy.turn_index.is_none());
+        assert!(legacy.vendor_extensions.is_empty());
+
+        // 全量新字段往返
+        let req = UnifiedRequest {
+            system_prompt: Some("be terse".into()),
+            sampling: Some(SamplingParams {
+                top_k: Some(40),
+                ..Default::default()
+            }),
+            thinking_config: Some(ThinkingConfig::Enabled {
+                budget_tokens: 1024,
+            }),
+            effort: Some(EffortLevel::High),
+            turn_index: Some(3),
+            vendor_extensions: [("x_custom".to_string(), json!({"flag": true}))]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["system_prompt"], "be terse");
+        assert_eq!(json["sampling"]["top_k"], 40);
+        assert_eq!(json["thinking_config"]["type"], "enabled");
+        assert_eq!(json["effort"], "high");
+        assert_eq!(json["turn_index"], 3);
+        assert_eq!(json["vendor_extensions"]["x_custom"]["flag"], true);
+        let back: UnifiedRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(back.system_prompt.as_deref(), Some("be terse"));
+        assert_eq!(back.sampling.unwrap().top_k, Some(40));
+        assert_eq!(
+            back.thinking_config,
+            Some(ThinkingConfig::Enabled {
+                budget_tokens: 1024
+            })
+        );
+        assert_eq!(back.effort, Some(EffortLevel::High));
+        assert_eq!(back.turn_index, Some(3));
+        assert!(back.vendor_extensions.contains_key("x_custom"));
+
+        // 新字段缺省时全部跳过序列化
+        let minimal = UnifiedRequest::default();
+        let json = serde_json::to_value(&minimal).unwrap();
+        for key in [
+            "system_prompt",
+            "sampling",
+            "thinking_config",
+            "effort",
+            "turn_index",
+            "vendor_extensions",
+        ] {
+            assert!(json.get(key).is_none(), "{key} 应被跳过");
+        }
+    }
+
+    #[test]
+    fn image_source_enum_serde() {
+        let base64 = ImageSource::Base64 {
+            media_type: "image/png".into(),
+            data: "aGk=".into(),
+        };
+        let json = serde_json::to_value(&base64).unwrap();
+        // 与 Anthropic source 块同形（旧 IR 结构体形状向后兼容）
+        assert_eq!(
+            json,
+            json!({"type": "base64", "media_type": "image/png", "data": "aGk="})
+        );
+        let back: ImageSource = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ImageSource::Base64 { .. }));
+
+        let url = ImageSource::Url {
+            url: "https://example.com/cat.png".into(),
+        };
+        let json = serde_json::to_value(&url).unwrap();
+        assert_eq!(
+            json,
+            json!({"type": "url", "url": "https://example.com/cat.png"})
+        );
+        let back: ImageSource = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ImageSource::Url { .. }));
+    }
+
+    #[test]
+    fn choice_finish_slot_serde() {
+        // 结构化槽与原始槽双轨：序列化同现、缺省跳过
+        let choice = Choice {
+            finish_reason: Some("tool_calls".into()),
+            finish: Some(FinishReason::ToolCalls),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&choice).unwrap();
+        assert_eq!(json["finish_reason"], "tool_calls");
+        assert_eq!(json["finish"], "tool_calls");
+        let back: Choice = serde_json::from_value(json).unwrap();
+        assert_eq!(back.finish, Some(FinishReason::ToolCalls));
+
+        let json = serde_json::to_value(Choice::default()).unwrap();
+        assert!(json.get("finish").is_none());
+        assert!(json.get("finish_reason").is_none());
+    }
+
+    #[test]
+    fn stream_chunk_tool_call_serde() {
+        let chunk = StreamChunk::ToolCall {
+            index: 0,
+            id: "call_1".into(),
+            name: Some("get_weather".into()),
+            arguments: Some("{\"city\":".into()),
+        };
+        let json = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(json["type"], "tool_call");
+        assert_eq!(json["id"], "call_1");
+        assert_eq!(json["name"], "get_weather");
+        assert_eq!(json["arguments"], "{\"city\":");
+        let back: StreamChunk = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, StreamChunk::ToolCall { .. }));
+
+        // 续片段：id/name 缺省
+        let cont: StreamChunk = serde_json::from_value(json!({
+            "type": "tool_call",
+            "index": 0,
+            "arguments": ":5}"
+        }))
+        .unwrap();
+        match cont {
+            StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(index, 0);
+                assert_eq!(id, "");
+                assert_eq!(name, None);
+                assert_eq!(arguments.as_deref(), Some(":5}"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_chunk_usage_cache_and_finish_fields() {
+        // 旧形状（三 token 字段）解析：cache 字段 default，finish_reason None
+        let legacy: StreamChunk = serde_json::from_value(json!({
+            "type": "usage",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15
+        }))
+        .unwrap();
+        match legacy {
+            StreamChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                finish_reason,
+            } => {
+                assert_eq!(
+                    (prompt_tokens, completion_tokens, total_tokens),
+                    (10, 5, 15)
+                );
+                assert_eq!((cache_read_tokens, cache_creation_tokens), (0, 0));
+                assert_eq!(finish_reason, None);
+            }
+            other => panic!("expected Usage, got {other:?}"),
+        }
+
+        // 新字段往返（Anthropic message_delta 尾帧形状）
+        let chunk = StreamChunk::Usage {
+            prompt_tokens: 25,
+            completion_tokens: 9,
+            total_tokens: 34,
+            cache_read_tokens: 12,
+            cache_creation_tokens: 4,
+            finish_reason: Some("tool_calls".into()),
+        };
+        let json = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(json["cache_read_tokens"], 12);
+        assert_eq!(json["cache_creation_tokens"], 4);
+        assert_eq!(json["finish_reason"], "tool_calls");
+        let back: StreamChunk = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            StreamChunk::Usage {
+                cache_read_tokens: 12,
+                finish_reason: Some(_),
+                ..
+            }
+        ));
+    }
 }

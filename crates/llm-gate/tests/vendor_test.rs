@@ -263,6 +263,7 @@ mod manager {
             user: None,
             tools: vec![],
             tool_choice: None,
+            ..Default::default()
         }
     }
 
@@ -1032,6 +1033,7 @@ mod manager {
                 user: None,
                 tools: vec![],
                 tool_choice: None,
+                ..Default::default()
             }
         }
 
@@ -2224,6 +2226,7 @@ mod manager_paths {
             user: None,
             tools: vec![],
             tool_choice: None,
+            ..Default::default()
         }
     }
 

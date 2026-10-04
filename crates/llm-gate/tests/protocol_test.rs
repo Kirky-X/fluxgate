@@ -522,6 +522,7 @@ mod converter {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                ..
             } => {
                 assert_eq!(
                     (*prompt_tokens, *completion_tokens, *total_tokens),
@@ -844,17 +845,8 @@ mod converter {
                     content: llm_gate::protocol::MessageContent::Text("Hi".into()),
                 },
             ],
-            temperature: None,
             max_tokens: Some(10),
-            stream: false,
-            stop: vec![],
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
-            logit_bias: Default::default(),
-            user: None,
-            tools: vec![],
-            tool_choice: None,
+            ..Default::default()
         };
 
         let external = converter
@@ -922,6 +914,7 @@ mod converter {
                     content: llm_gate::protocol::MessageContent::Text("ok".into()),
                 }),
                 finish_reason: finish.map(|s| s.to_string()),
+                finish: None,
                 logprobs: None,
             }],
             usage: llm_gate::protocol::TokenUsage::default(),
@@ -1021,17 +1014,7 @@ mod converter {
                 role: Role::User,
                 content: MessageContent::Text(text.into()),
             }],
-            temperature: None,
-            max_tokens: None,
-            stream: false,
-            stop: vec![],
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
-            logit_bias: Default::default(),
-            user: None,
-            tools: vec![],
-            tool_choice: None,
+            ..Default::default()
         }
     }
 
@@ -1107,10 +1090,13 @@ mod converter {
                 "tool_choice": {"type": "any"}
             }))
             .expect("object without function");
-        assert!(matches!(
-            unified.tool_choice,
-            Some(ToolChoice::Strategy(s)) if s == "auto"
-        ));
+        assert!(
+            matches!(
+                unified.tool_choice,
+                Some(ToolChoice::Strategy(s)) if s == "required"
+            ),
+            "Anthropic 原生 any 必须映射 IR required"
+        );
 
         let unified = converter
             .to_unified(json!({
@@ -1166,7 +1152,11 @@ mod converter {
         assert_eq!(external["temperature"], 0.5);
         assert_eq!(external["stream"], true);
         assert_eq!(external["stop_sequences"], json!(["END", "STOP"]));
-        assert_eq!(external["tool_choice"], "any");
+        assert_eq!(
+            external["tool_choice"],
+            json!({"type": "any"}),
+            "Strategy(any) 出站必须写 Anthropic 原生对象形状"
+        );
         assert_eq!(external["max_tokens"], 256);
 
         let tools = external["tools"].as_array().expect("tools array");
@@ -1184,7 +1174,7 @@ mod converter {
         );
     }
 
-    /// 出站 tool_choice Specific → Anthropic function 对象形状。
+    /// 出站 tool_choice Specific → Anthropic 原生 {"type":"tool","name"} 形状。
     #[tokio::test]
     async fn test_anthropic_request_to_external_specific_tool_choice() {
         let converter = AnthropicConverter::new();
@@ -1197,8 +1187,8 @@ mod converter {
         });
 
         let external = converter.request_to_external(request).expect("to external");
-        assert_eq!(external["tool_choice"]["type"], "function");
-        assert_eq!(external["tool_choice"]["function"]["name"], "get_weather");
+        assert_eq!(external["tool_choice"]["type"], "tool");
+        assert_eq!(external["tool_choice"]["name"], "get_weather");
     }
 
     /// 上游错误对象 → GateError::Protocol，type/message 进入错误文案。
@@ -1324,8 +1314,7 @@ mod converter {
                 delta: MessageContent::MultiModal(vec![
                     ContentBlock::Text { text: "a".into() },
                     ContentBlock::Image {
-                        source: ImageSource {
-                            type_: "base64".into(),
+                        source: ImageSource::Base64 {
                             media_type: "image/png".into(),
                             data: "Zm9v".into(),
                         },
@@ -1386,6 +1375,9 @@ mod converter {
                 prompt_tokens: 3,
                 completion_tokens: 7,
                 total_tokens: 10,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                finish_reason: None,
             })
             .expect("usage");
         assert_eq!(out["type"], "message_delta");
@@ -1422,6 +1414,9 @@ mod converter {
             prompt_tokens: 2,
             completion_tokens: 5,
             total_tokens: 7,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            finish_reason: None,
         }));
 
         let types: Vec<String> = events
@@ -1646,8 +1641,7 @@ mod converter {
                             text: "visual rules".into(),
                         },
                         ContentBlock::Image {
-                            source: ImageSource {
-                                type_: "base64".into(),
+                            source: ImageSource::Base64 {
                                 media_type: "image/png".into(),
                                 data: "Zm9v".into(),
                             },
@@ -1664,17 +1658,7 @@ mod converter {
                     content: MessageContent::Text("hi".into()),
                 },
             ],
-            temperature: None,
-            max_tokens: None,
-            stream: false,
-            stop: vec![],
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
-            logit_bias: Default::default(),
-            user: None,
-            tools: vec![],
-            tool_choice: None,
+            ..Default::default()
         };
 
         let external = converter.request_to_external(request).expect("to external");
@@ -1713,6 +1697,7 @@ mod converter {
                     content: MessageContent::Text("ok".into()),
                 }),
                 finish_reason: Some("content_filter".into()),
+                finish: Some(FinishReason::ContentFilter),
                 logprobs: None,
             }],
             usage: TokenUsage::default(),
@@ -1748,9 +1733,13 @@ mod converter {
                 ));
                 match &blocks[1] {
                     ContentBlock::Image { source, detail } => {
-                        assert_eq!(source.type_, "base64");
-                        assert_eq!(source.media_type, "image/png");
-                        assert_eq!(source.data, "aGk=");
+                        match source {
+                            ImageSource::Base64 { media_type, data } => {
+                                assert_eq!(media_type, "image/png");
+                                assert_eq!(data, "aGk=");
+                            }
+                            other => panic!("expected Base64 source, got {other:?}"),
+                        }
                         assert!(detail.is_none());
                     }
                     other => panic!("expected Image block, got {other:?}"),
@@ -1770,8 +1759,7 @@ mod converter {
                 text: "describe".into(),
             },
             ContentBlock::Image {
-                source: ImageSource {
-                    type_: "base64".into(),
+                source: ImageSource::Base64 {
                     media_type: "image/jpeg".into(),
                     data: "aGk=".into(),
                 },
@@ -1820,12 +1808,14 @@ mod converter {
                     },
                 }),
                 finish_reason: Some("tool_calls".into()),
+                finish: Some(FinishReason::ToolCalls),
                 logprobs: None,
             }],
             usage: TokenUsage {
                 prompt_tokens: 1,
                 completion_tokens: 1,
                 total_tokens: 2,
+                ..Default::default()
             },
         };
 
@@ -1895,8 +1885,7 @@ mod converter {
             presence_penalty: Some(0.2),
             logit_bias: Default::default(),
             user: Some("u-9".into()),
-            tools: vec![],
-            tool_choice: None,
+            ..Default::default()
         };
 
         let external = converter.request_to_external(request).expect("to external");
@@ -1987,8 +1976,7 @@ mod converter {
             ),
             (
                 MessageContent::MultiModal(vec![ContentBlock::Image {
-                    source: ImageSource {
-                        type_: "base64".into(),
+                    source: ImageSource::Base64 {
                         media_type: "image/png".into(),
                         data: "x".into(),
                     },
@@ -2040,6 +2028,9 @@ mod converter {
                 prompt_tokens: 5,
                 completion_tokens: 3,
                 total_tokens: 8,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                finish_reason: None,
             })
             .expect("usage chunk");
         assert_eq!(out["choices"], json!([]));
@@ -2216,8 +2207,14 @@ mod converter {
                 ));
                 match &blocks[1] {
                     ContentBlock::Image { source, detail } => {
-                        assert_eq!(source.type_, "url");
-                        assert_eq!(source.data, "https://example.com/a.png");
+                        // T003：URL 保真——https 直链进 Url 形态（旧实现硬编码
+                        // jpeg 并把 URL 塞 data 字段，往返产出坏 URI）
+                        match source {
+                            ImageSource::Url { url } => {
+                                assert_eq!(url, "https://example.com/a.png");
+                            }
+                            other => panic!("expected Url source, got {other:?}"),
+                        }
                         assert_eq!(detail.as_deref(), Some("high"));
                     }
                     other => panic!("expected Image, got {other:?}"),
@@ -2242,8 +2239,7 @@ mod converter {
                 text: "look".into(),
             },
             ContentBlock::Image {
-                source: ImageSource {
-                    type_: "base64".into(),
+                source: ImageSource::Base64 {
                     media_type: "image/png".into(),
                     data: "aGk=".into(),
                 },
@@ -2428,6 +2424,1037 @@ mod converter {
             openai.passthrough_response(body.clone()).unwrap(),
             body,
             "响应透传必须零改动"
+        );
+    }
+
+    // ==================== T003：IR 一次补全（design.md D2） ====================
+
+    use llm_gate::protocol::{EffortLevel, FinishReason, SamplingParams, ThinkingConfig};
+
+    /// UnifiedRequest 全字段字面量构造（覆盖 IR serde default 之外的显式路径）。
+    fn full_unified_request() -> UnifiedRequest {
+        UnifiedRequest {
+            model: "gpt-4".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            ..Default::default()
+        }
+    }
+
+    // ---- OpenAI：effort / vendor_extensions ----
+
+    /// 入站：reasoning_effort → effort；未识别顶层字段（top_k/seed）吸收进
+    /// vendor_extensions（防丢）；已知键不吸收。出站：双通道透传。
+    #[tokio::test]
+    async fn test_openai_effort_and_vendor_extensions_roundtrip() {
+        let openai = OpenAIConverter::new();
+        let unified = openai
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "high",
+                "top_k": 40,
+                "seed": 42
+            }))
+            .expect("to_unified");
+        assert_eq!(unified.effort, Some(EffortLevel::High));
+        assert_eq!(unified.vendor_extensions.get("seed"), Some(&json!(42)));
+        assert_eq!(unified.vendor_extensions.get("top_k"), Some(&json!(40)));
+        assert!(!unified.vendor_extensions.contains_key("model"));
+        assert!(!unified.vendor_extensions.contains_key("messages"));
+        assert!(!unified.vendor_extensions.contains_key("temperature"));
+
+        let out = openai.request_to_external(unified).expect("to external");
+        assert_eq!(out["reasoning_effort"], "high", "effort → reasoning_effort");
+        assert_eq!(out["seed"], 42, "vendor_extensions 顶层透传");
+        assert_eq!(out["top_k"], 40);
+    }
+
+    /// F1/M1 denylist：协议键永不由扩展表补入——openai 侧 stream 缺位
+    /// 注入与 effort 经扩展表物化均被拦截；非协议键仍透传。
+    #[tokio::test]
+    async fn test_openai_vendor_extensions_denylist_protocol_keys() {
+        let openai = OpenAIConverter::new();
+        let mut request = full_unified_request();
+        request.stream = false;
+        request
+            .vendor_extensions
+            .insert("stream".into(), json!(true));
+        request
+            .vendor_extensions
+            .insert("reasoning_effort".into(), json!("low"));
+        request
+            .vendor_extensions
+            .insert("x_allowed".into(), json!("pass"));
+
+        let out = openai.request_to_external(request).expect("to external");
+        assert!(
+            out.get("stream").is_none(),
+            "stream 协议键不得由扩展表补入（缺位注入消灭）"
+        );
+        assert!(
+            out.get("reasoning_effort").is_none(),
+            "effort 协议键只经类型化字段可达"
+        );
+        assert_eq!(out["x_allowed"], "pass", "非协议键仍透传（D2 语义）");
+    }
+
+    /// F1/M1 denylist：跨协议计费/行为键不得补入——anthropic 侧 thinking
+    /// 协议键过滤；metadata 为非协议键，同协议透传保留（400 风险 opt-in，D7）。
+    #[tokio::test]
+    async fn test_anthropic_vendor_extensions_denylist_protocol_keys() {
+        let anthropic = AnthropicConverter::new();
+        let mut request = minimal_unified_request("claude", "hi");
+        request.vendor_extensions.insert(
+            "thinking".into(),
+            json!({"type": "enabled", "budget_tokens": 1}),
+        );
+        request
+            .vendor_extensions
+            .insert("metadata".into(), json!({"user_id": "u"}));
+        request
+            .vendor_extensions
+            .insert("x_allowed".into(), json!("pass"));
+
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert!(
+            out.get("thinking").is_none(),
+            "thinking 协议键不得由扩展表补入（跨协议计费行为键消灭）"
+        );
+        assert_eq!(out["x_allowed"], "pass", "非协议键仍透传（D2 语义）");
+        assert_eq!(
+            out["metadata"]["user_id"], "u",
+            "metadata 非 IR 建模键，同协议透传保留"
+        );
+    }
+
+    /// 出站：sampling 只补 flat 未设置的槽（flat 优先不覆写）；sampling.top_k
+    /// 直出 top_k；effort → reasoning_effort 小写。
+    #[tokio::test]
+    async fn test_openai_request_to_external_sampling_and_effort() {
+        let openai = OpenAIConverter::new();
+        let mut request = full_unified_request();
+        request.temperature = Some(0.5);
+        request.sampling = Some(SamplingParams {
+            temperature: Some(0.9),
+            top_k: Some(40),
+            ..Default::default()
+        });
+        request.effort = Some(EffortLevel::Medium);
+
+        let out = openai.request_to_external(request).expect("to external");
+        assert_eq!(out["temperature"], 0.5, "flat 槽优先，sampling 不覆写");
+        assert_eq!(out["top_k"], 40);
+        assert_eq!(out["reasoning_effort"], "medium");
+    }
+
+    /// 出站：system_prompt → 首条 system 消息；与 Role::System 消息并存时
+    /// system_prompt 优先合并去重；messages 为空时新建。
+    #[tokio::test]
+    async fn test_openai_request_to_external_system_prompt_merge() {
+        let openai = OpenAIConverter::new();
+
+        // 并存去重：相同文本只保留一份
+        let mut request = full_unified_request();
+        request.system_prompt = Some("be terse".into());
+        request.messages.insert(
+            0,
+            Message {
+                role: Role::System,
+                content: MessageContent::Text("be terse".into()),
+            },
+        );
+        let out = openai.request_to_external(request).expect("to external");
+        let msgs = out["messages"].as_array().expect("messages");
+        assert_eq!(msgs.len(), 2, "重复 system 文本应去重");
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "be terse");
+        assert_eq!(msgs[1]["role"], "user");
+
+        // 不同文本：system_prompt 在前合并
+        let mut request = full_unified_request();
+        request.system_prompt = Some("new policy".into());
+        request.messages.insert(
+            0,
+            Message {
+                role: Role::System,
+                content: MessageContent::Text("old policy".into()),
+            },
+        );
+        let out = openai.request_to_external(request).expect("to external");
+        let msgs = out["messages"].as_array().expect("messages");
+        assert_eq!(msgs[0]["content"], "new policy\n\nold policy");
+
+        // messages 为空：新建首条 system 消息
+        let mut request = full_unified_request();
+        request.messages.clear();
+        request.system_prompt = Some("be terse".into());
+        let out = openai.request_to_external(request).expect("to external");
+        let msgs = out["messages"].as_array().expect("messages");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "be terse");
+
+        // 无 system_prompt：行为不变（system 消息原位保留）
+        let request = full_unified_request();
+        let out = openai.request_to_external(request).expect("to external");
+        assert!(out["messages"].as_array().unwrap().len() == 1);
+        assert!(out.get("system").is_none());
+    }
+
+    // ---- OpenAI：usage cache token + finish_reason 结构化 ----
+
+    /// 入站：prompt_tokens_details.cached_tokens → cache_read_tokens
+    ///（OpenAI 无 cache_creation 概念 → 0）；finish_reason 已知词双写结构化槽。
+    #[tokio::test]
+    async fn test_openai_parse_response_cache_tokens_and_finish() {
+        let openai = OpenAIConverter::new();
+        let parsed = openai
+            .parse_response(json!({
+                "id": "c1", "model": "gpt-4", "created": 1,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {
+                    "prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25,
+                    "prompt_tokens_details": {"cached_tokens": 8}
+                }
+            }))
+            .expect("parse_response");
+        assert_eq!(parsed.usage.cache_read_tokens, 8);
+        assert_eq!(parsed.usage.cache_creation_tokens, 0);
+        assert_eq!(parsed.choices[0].finish, Some(FinishReason::ToolCalls));
+        assert_eq!(
+            parsed.choices[0].finish_reason.as_deref(),
+            Some("tool_calls")
+        );
+
+        let parsed = openai
+            .parse_response(json!({
+                "id": "c1", "model": "gpt-4", "created": 1,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "content_filter"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+            .expect("parse_response");
+        assert_eq!(parsed.choices[0].finish, Some(FinishReason::ContentFilter));
+
+        // 未知词：结构化槽 None，原始槽原样保留
+        let parsed = openai
+            .parse_response(json!({
+                "id": "c1", "model": "gpt-4", "created": 1,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "exotic_reason"
+                }],
+                "usage": {}
+            }))
+            .expect("parse_response");
+        assert_eq!(parsed.choices[0].finish, None);
+        assert_eq!(
+            parsed.choices[0].finish_reason.as_deref(),
+            Some("exotic_reason")
+        );
+    }
+
+    /// 出站：cache_read_tokens → usage.prompt_tokens_details.cached_tokens
+    ///（非零才携带）；cache_creation 无 OpenAI 槽，不产出。
+    #[tokio::test]
+    async fn test_openai_response_to_external_cache_tokens() {
+        let openai = OpenAIConverter::new();
+        let response = UnifiedResponse {
+            id: "c1".into(),
+            object: "chat.completion".into(),
+            created: 1,
+            model: "gpt-4".into(),
+            choices: vec![Choice {
+                index: 0,
+                message: Some(Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("ok".into()),
+                }),
+                finish_reason: Some("stop".into()),
+                finish: Some(FinishReason::Stop),
+                logprobs: None,
+            }],
+            usage: TokenUsage {
+                prompt_tokens: 20,
+                completion_tokens: 5,
+                total_tokens: 25,
+                cache_read_tokens: 8,
+                cache_creation_tokens: 4,
+                cost_usd: None,
+                cost_cny: None,
+            },
+        };
+        let out = openai.response_to_external(response).expect("to external");
+        assert_eq!(out["usage"]["prompt_tokens_details"]["cached_tokens"], 8);
+        assert!(
+            out["usage"].get("cache_creation_tokens").is_none(),
+            "cache_creation 无 OpenAI 槽，不得外泄"
+        );
+
+        // 零值不携带 prompt_tokens_details
+        let parsed = openai
+            .parse_response(json!({
+                "id": "c2", "model": "gpt-4", "created": 1,
+                "choices": [], "usage": {}
+            }))
+            .expect("parse_response");
+        let out = openai.response_to_external(parsed).expect("to external");
+        assert!(out["usage"].get("prompt_tokens_details").is_none());
+    }
+
+    /// 流式：usage 尾帧带 prompt_tokens_details → Usage{cache_read_tokens}。
+    #[tokio::test]
+    async fn test_openai_stream_usage_frame_cache_tokens() {
+        let openai = OpenAIConverter::new();
+        let chunk = openai
+            .parse_stream_frame(
+                "{\"id\":\"x\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":7,\"total_tokens\":17,\"prompt_tokens_details\":{\"cached_tokens\":6}}}",
+            )
+            .expect("usage 尾帧应解析");
+        match chunk {
+            StreamChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: _,
+                cache_read_tokens,
+                cache_creation_tokens,
+                finish_reason,
+            } => {
+                assert_eq!((prompt_tokens, completion_tokens), (10, 7));
+                assert_eq!(cache_read_tokens, 6);
+                assert_eq!(cache_creation_tokens, 0);
+                assert_eq!(finish_reason, None);
+            }
+            other => panic!("expected Usage chunk, got {other:?}"),
+        }
+    }
+
+    // ---- OpenAI：StreamChunk::ToolCall ----
+
+    /// 出站：ToolCall → OpenAI delta.tool_calls 片段（首片段带 id/name，
+    /// 续片段省略）；该片段可经 parse_stream_frame 回读聚合。
+    #[tokio::test]
+    async fn test_openai_stream_tool_call_chunk_roundtrip() {
+        let openai = OpenAIConverter::new();
+        let out = openai
+            .stream_chunk_to_external(StreamChunk::ToolCall {
+                index: 0,
+                id: "call_1".into(),
+                name: Some("get_weather".into()),
+                arguments: Some("{\"city\":".into()),
+            })
+            .expect("tool_call chunk");
+        assert_eq!(out["choices"][0]["finish_reason"], serde_json::Value::Null);
+        let fragment = &out["choices"][0]["delta"]["tool_calls"][0];
+        assert_eq!(fragment["index"], 0);
+        assert_eq!(fragment["id"], "call_1");
+        assert_eq!(fragment["function"]["name"], "get_weather");
+        assert_eq!(fragment["function"]["arguments"], "{\"city\":");
+
+        // 续片段：id/name 为空时省略
+        let out = openai
+            .stream_chunk_to_external(StreamChunk::ToolCall {
+                index: 0,
+                id: String::new(),
+                name: None,
+                arguments: Some(":5}".into()),
+            })
+            .expect("tool_call continuation chunk");
+        let fragment = &out["choices"][0]["delta"]["tool_calls"][0];
+        assert!(fragment.get("id").is_none(), "空 id 应省略");
+        assert!(
+            fragment["function"].get("name").is_none(),
+            "None name 应省略"
+        );
+        assert_eq!(fragment["function"]["arguments"], ":5}");
+
+        // 回读：片段帧 → Content{ToolCalls}（既有聚合语义）
+        let chunk = openai
+            .parse_stream_frame(&out.to_string())
+            .expect("片段帧应回读");
+        match chunk {
+            StreamChunk::Content { delta, .. } => match delta {
+                MessageContent::ToolCalls(calls) => {
+                    assert!(calls[0].function.arguments.contains(":5}"));
+                }
+                other => panic!("expected ToolCalls, got {other:?}"),
+            },
+            other => panic!("expected Content chunk, got {other:?}"),
+        }
+    }
+
+    // ---- OpenAI：ImageSource::Url 保真 ----
+
+    /// 入站：https URL → Url 形态（不再硬编码 jpeg/塞 data）；data URI →
+    /// Base64 形态（media_type 从 URI 解析）。出站：Url 直出 url 字段。
+    #[tokio::test]
+    async fn test_openai_image_url_source_roundtrip() {
+        let openai = OpenAIConverter::new();
+        let unified = openai
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGk="}}
+                ]}]
+            }))
+            .expect("to_unified");
+        match &unified.messages[0].content {
+            MessageContent::MultiModal(blocks) => {
+                match &blocks[1] {
+                    ContentBlock::Image { source, .. } => match source {
+                        ImageSource::Url { url } => {
+                            assert_eq!(url, "https://example.com/cat.png");
+                        }
+                        other => panic!("expected Url source, got {other:?}"),
+                    },
+                    other => panic!("expected Image block, got {other:?}"),
+                }
+                match &blocks[2] {
+                    ContentBlock::Image { source, .. } => match source {
+                        ImageSource::Base64 { media_type, data } => {
+                            assert_eq!(media_type, "image/png");
+                            assert_eq!(data, "aGk=");
+                        }
+                        other => panic!("expected Base64 source, got {other:?}"),
+                    },
+                    other => panic!("expected Image block, got {other:?}"),
+                }
+            }
+            other => panic!("expected MultiModal, got {other:?}"),
+        }
+
+        // 出站：Url 直出（不得再包 data: 前缀）
+        let mut request = full_unified_request();
+        request.messages[0].content = MessageContent::MultiModal(vec![
+            ContentBlock::Image {
+                source: ImageSource::Url {
+                    url: "https://example.com/cat.png".into(),
+                },
+                detail: None,
+            },
+            ContentBlock::Image {
+                source: ImageSource::Base64 {
+                    media_type: "image/jpeg".into(),
+                    data: "aGk=".into(),
+                },
+                detail: None,
+            },
+        ]);
+        let out = openai.request_to_external(request).expect("to external");
+        let blocks = out["messages"][0]["content"].as_array().expect("content");
+        assert_eq!(
+            blocks[0]["image_url"]["url"], "https://example.com/cat.png",
+            "URL 必须原样直出，不得塞进 data 字段"
+        );
+        assert_eq!(blocks[1]["image_url"]["url"], "data:image/jpeg;base64,aGk=");
+    }
+
+    // ---- Anthropic：system_prompt 双写与合并 ----
+
+    /// 入站：顶层 system → Role::System 消息（兼容形态照旧）+ system_prompt
+    /// 回填（规范槽）。string 与 blocks 数组两形状。
+    #[tokio::test]
+    async fn test_anthropic_system_prompt_backfill() {
+        let anthropic = AnthropicConverter::new();
+        let unified = anthropic
+            .to_unified(json!({
+                "model": "claude",
+                "system": "be terse",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .expect("to_unified");
+        assert_eq!(unified.system_prompt.as_deref(), Some("be terse"));
+        match &unified.messages[0] {
+            Message {
+                role: Role::System,
+                content: MessageContent::Text(text),
+            } => assert_eq!(text, "be terse"),
+            other => panic!("expected leading System message, got {other:?}"),
+        }
+
+        let unified = anthropic
+            .to_unified(json!({
+                "model": "claude",
+                "system": [
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b"}
+                ],
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .expect("to_unified");
+        assert_eq!(unified.system_prompt.as_deref(), Some("a\nb"));
+    }
+
+    /// 出站：system_prompt → 顶层 system；与 Role::System 消息并存时
+    /// system_prompt 优先合并去重；仅 Role::System 消息时行为照旧。
+    #[tokio::test]
+    async fn test_anthropic_request_to_external_system_prompt_merge() {
+        let anthropic = AnthropicConverter::new();
+
+        // 仅 system_prompt
+        let mut request = minimal_unified_request("claude", "hi");
+        request.system_prompt = Some("be terse".into());
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert_eq!(out["system"], "be terse");
+
+        // 并存去重：相同文本一份
+        let mut request = minimal_unified_request("claude", "hi");
+        request.system_prompt = Some("be terse".into());
+        request.messages.insert(
+            0,
+            Message {
+                role: Role::System,
+                content: MessageContent::Text("be terse".into()),
+            },
+        );
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert_eq!(out["system"], "be terse", "相同文本只保留一份");
+
+        // 不同文本：system_prompt 优先在前
+        let mut request = minimal_unified_request("claude", "hi");
+        request.system_prompt = Some("new policy".into());
+        request.messages.insert(
+            0,
+            Message {
+                role: Role::System,
+                content: MessageContent::Text("old policy".into()),
+            },
+        );
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert_eq!(out["system"], "new policy\n\nold policy");
+
+        // 仅 Role::System 消息（无 system_prompt）：既有提升行为不变
+        let request = minimal_unified_request("claude", "hi");
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert!(
+            out.get("system").is_none(),
+            "无 system 内容不得出 system 键"
+        );
+    }
+
+    // ---- Anthropic：usage cache token ----
+
+    /// 入站：cache_read_input_tokens/cache_creation_input_tokens → IR cache 字段。
+    #[tokio::test]
+    async fn test_anthropic_parse_response_cache_tokens() {
+        let anthropic = AnthropicConverter::new();
+        let parsed = anthropic
+            .parse_response(json!({
+                "id": "m", "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {
+                    "input_tokens": 25, "output_tokens": 9,
+                    "cache_read_input_tokens": 12,
+                    "cache_creation_input_tokens": 4
+                }
+            }))
+            .expect("parse_response");
+        assert_eq!(parsed.usage.prompt_tokens, 25);
+        assert_eq!(parsed.usage.completion_tokens, 9);
+        assert_eq!(parsed.usage.cache_read_tokens, 12);
+        assert_eq!(parsed.usage.cache_creation_tokens, 4);
+    }
+
+    /// 出站：IR cache 字段 → cache_read_input_tokens/cache_creation_input_tokens
+    ///（非零才携带）。
+    #[tokio::test]
+    async fn test_anthropic_response_to_external_cache_tokens() {
+        let anthropic = AnthropicConverter::new();
+        let response = UnifiedResponse {
+            id: "m".into(),
+            object: "message".into(),
+            created: 0,
+            model: "claude".into(),
+            choices: vec![Choice {
+                index: 0,
+                message: Some(Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text("ok".into()),
+                }),
+                finish_reason: None,
+                finish: None,
+                logprobs: None,
+            }],
+            usage: TokenUsage {
+                prompt_tokens: 25,
+                completion_tokens: 9,
+                total_tokens: 34,
+                cache_read_tokens: 12,
+                cache_creation_tokens: 4,
+                cost_usd: None,
+                cost_cny: None,
+            },
+        };
+        let out = anthropic
+            .response_to_external(response)
+            .expect("to external");
+        assert_eq!(out["usage"]["cache_read_input_tokens"], 12);
+        assert_eq!(out["usage"]["cache_creation_input_tokens"], 4);
+
+        // 零值不携带
+        let response = UnifiedResponse {
+            id: "m".into(),
+            object: "message".into(),
+            created: 0,
+            model: "claude".into(),
+            choices: vec![Choice::default()],
+            usage: TokenUsage::default(),
+        };
+        let out = anthropic
+            .response_to_external(response)
+            .expect("to external");
+        assert!(out["usage"].get("cache_read_input_tokens").is_none());
+        assert!(out["usage"].get("cache_creation_input_tokens").is_none());
+    }
+
+    // ---- Anthropic：finish_reason 结构化（非流式全映射 + 流式 Stop/ToolCalls）----
+
+    /// 非流式：stop_reason → finish 结构化槽四变体映射（含未知词不猜变体）。
+    #[tokio::test]
+    async fn test_anthropic_parse_response_finish_structured() {
+        let anthropic = AnthropicConverter::new();
+        let cases = [
+            ("end_turn", FinishReason::Stop),
+            ("stop_sequence", FinishReason::Stop),
+            ("max_tokens", FinishReason::Length),
+            ("tool_use", FinishReason::ToolCalls),
+        ];
+        for (stop_reason, expected) in cases {
+            let parsed = anthropic
+                .parse_response(json!({
+                    "id": "m", "model": "claude",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": stop_reason,
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }))
+                .expect("parse_response");
+            assert_eq!(
+                parsed.choices[0].finish,
+                Some(expected),
+                "stop_reason={stop_reason}"
+            );
+        }
+
+        // 未知词：finish None，string 槽原样透传
+        let parsed = anthropic
+            .parse_response(json!({
+                "id": "m", "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "pause_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }))
+            .expect("parse_response");
+        assert_eq!(parsed.choices[0].finish, None);
+        assert_eq!(
+            parsed.choices[0].finish_reason.as_deref(),
+            Some("pause_turn")
+        );
+    }
+
+    /// 流式：message_delta 尾帧 stop_reason 与 usage 同帧到达 → Usage
+    /// finish_reason 承载（映射后）；cache token 同帧读取。
+    #[tokio::test]
+    async fn test_anthropic_stream_message_delta_stop_reason_and_cache() {
+        let anthropic = AnthropicConverter::new();
+        let chunk = anthropic
+            .parse_stream_frame(
+                "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":9,\"cache_read_input_tokens\":12,\"cache_creation_input_tokens\":4}}",
+            )
+            .expect("message_delta 应解析");
+        match chunk {
+            StreamChunk::Usage {
+                completion_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                finish_reason,
+                ..
+            } => {
+                assert_eq!(completion_tokens, 9);
+                assert_eq!(cache_read_tokens, 12);
+                assert_eq!(cache_creation_tokens, 4);
+                assert_eq!(finish_reason.as_deref(), Some("stop"));
+                assert_eq!(
+                    finish_reason.as_deref().and_then(FinishReason::from_wire),
+                    Some(FinishReason::Stop),
+                    "流式 Stop 变体"
+                );
+            }
+            other => panic!("expected Usage chunk, got {other:?}"),
+        }
+
+        let chunk = anthropic
+            .parse_stream_frame(
+                "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}",
+            )
+            .expect("message_delta 应解析");
+        match chunk {
+            StreamChunk::Usage { finish_reason, .. } => {
+                assert_eq!(
+                    finish_reason.as_deref().and_then(FinishReason::from_wire),
+                    Some(FinishReason::ToolCalls),
+                    "流式 ToolCalls 变体"
+                );
+            }
+            other => panic!("expected Usage chunk, got {other:?}"),
+        }
+
+        // 无 stop_reason：finish_reason None
+        let chunk = anthropic
+            .parse_stream_frame("{\"type\":\"message_delta\",\"usage\":{\"output_tokens\":3}}")
+            .expect("message_delta 应解析");
+        match chunk {
+            StreamChunk::Usage { finish_reason, .. } => assert_eq!(finish_reason, None),
+            other => panic!("expected Usage chunk, got {other:?}"),
+        }
+    }
+
+    // ---- Anthropic：tool_choice 原生形状 ----
+
+    /// 入站：Anthropic 原生 any/tool/auto/none → IR；OpenAI function 对象
+    /// 形状保持容错；标量兜底 auto。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_tool_choice_native_mapping() {
+        let anthropic = AnthropicConverter::new();
+        let parse = |tool_choice: serde_json::Value| {
+            anthropic
+                .to_unified(json!({
+                    "model": "claude",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": tool_choice
+                }))
+                .expect("to_unified")
+                .tool_choice
+        };
+
+        assert!(
+            matches!(parse(json!({"type": "any"})), Some(ToolChoice::Strategy(s)) if s == "required"),
+            "{{type:any}} 应映射 required"
+        );
+        assert!(
+            matches!(parse(json!({"type": "auto"})), Some(ToolChoice::Strategy(s)) if s == "auto"),
+        );
+        assert!(
+            matches!(parse(json!({"type": "none"})), Some(ToolChoice::Strategy(s)) if s == "none"),
+        );
+        match parse(json!({"type": "tool", "name": "get_weather"})) {
+            Some(ToolChoice::Specific { function, .. }) => {
+                assert_eq!(function.name, "get_weather");
+            }
+            other => panic!("expected Specific, got {other:?}"),
+        }
+    }
+
+    /// 出站：IR → Anthropic 原生形状（required→any；Specific→tool），
+    /// 不再写 OpenAI 形状。
+    #[tokio::test]
+    async fn test_anthropic_request_to_external_tool_choice_native_shape() {
+        let anthropic = AnthropicConverter::new();
+        let external_of = |tool_choice: ToolChoice| {
+            let mut request = minimal_unified_request("claude", "hi");
+            request.tool_choice = Some(tool_choice);
+            anthropic.request_to_external(request).expect("to external")["tool_choice"].clone()
+        };
+
+        assert_eq!(
+            external_of(ToolChoice::Strategy("required".into())),
+            json!({"type": "any"}),
+            "required 必须写 Anthropic any 形状"
+        );
+        assert_eq!(
+            external_of(ToolChoice::Strategy("any".into())),
+            json!({"type": "any"})
+        );
+        assert_eq!(
+            external_of(ToolChoice::Strategy("auto".into())),
+            json!({"type": "auto"})
+        );
+        assert_eq!(
+            external_of(ToolChoice::Specific {
+                choice_type: "function".into(),
+                function: ToolChoiceFunction {
+                    name: "get_weather".into(),
+                },
+            }),
+            json!({"type": "tool", "name": "get_weather"}),
+            "Specific 必须写 Anthropic tool 形状"
+        );
+
+        // L3："none" 省略 tool_choice 字段（Anthropic 传统词汇为
+        // auto/any/tool，无 none 形状；缺省即 auto 语义）
+        let mut request = minimal_unified_request("claude", "hi");
+        request.tool_choice = Some(ToolChoice::Strategy("none".into()));
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert!(
+            out.get("tool_choice").is_none(),
+            "none 必须省略 tool_choice 字段而非写未知词"
+        );
+    }
+
+    // ---- Anthropic：thinking_config / top_k / effort / vendor_extensions ----
+
+    /// 入站：thinking enabled+budget → Enabled；出站 Enabled → thinking 块；
+    /// Adaptive/Disabled 出站省略（保守选择，见待裁决项）。
+    #[tokio::test]
+    async fn test_anthropic_thinking_config_roundtrip() {
+        let anthropic = AnthropicConverter::new();
+        let unified = anthropic
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": "hi"}],
+                "thinking": {"type": "enabled", "budget_tokens": 2048}
+            }))
+            .expect("to_unified");
+        assert_eq!(
+            unified.thinking_config,
+            Some(ThinkingConfig::Enabled {
+                budget_tokens: 2048
+            })
+        );
+
+        let mut request = minimal_unified_request("claude", "hi");
+        request.thinking_config = Some(ThinkingConfig::Enabled {
+            budget_tokens: 2048,
+        });
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert_eq!(
+            out["thinking"],
+            json!({"type": "enabled", "budget_tokens": 2048})
+        );
+
+        // Adaptive：Anthropic 无对应，保守省略（不出站）
+        let mut request = minimal_unified_request("claude", "hi");
+        request.thinking_config = Some(ThinkingConfig::Adaptive);
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert!(out.get("thinking").is_none(), "Adaptive 保守省略");
+
+        // Disabled：Anthropic 缺省即禁用，省略
+        let mut request = minimal_unified_request("claude", "hi");
+        request.thinking_config = Some(ThinkingConfig::Disabled);
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert!(out.get("thinking").is_none());
+    }
+
+    /// 入站：top_k/temperature/top_p → sampling；出站 sampling.top_k → top_k，
+    /// temperature flat 优先、sampling 不覆写。
+    #[tokio::test]
+    async fn test_anthropic_sampling_top_k_roundtrip() {
+        let anthropic = AnthropicConverter::new();
+        let unified = anthropic
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": "hi"}],
+                "temperature": 0.5,
+                "top_p": 0.9,
+                "top_k": 40
+            }))
+            .expect("to_unified");
+        let sampling = unified.sampling.expect("sampling 应回填");
+        assert_eq!(sampling.temperature, Some(0.5));
+        assert_eq!(sampling.top_p, Some(0.9));
+        assert_eq!(sampling.top_k, Some(40));
+        assert_eq!(unified.temperature, Some(0.5), "flat 槽照旧");
+
+        let mut request = minimal_unified_request("claude", "hi");
+        request.temperature = Some(0.5);
+        request.sampling = Some(SamplingParams {
+            temperature: Some(0.9),
+            top_k: Some(40),
+            ..Default::default()
+        });
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert_eq!(out["temperature"], 0.5, "flat 优先，sampling 不覆写");
+        assert_eq!(out["top_k"], 40);
+    }
+
+    /// M2：Anthropic 无原生 effort——出站不写顶层 effort（first-party
+    /// 严格校验会 400）；effort 仅经 vendor_extensions 显式携带时可达上游
+    ///（denylist 不含 effort = opt-in，400 风险自担）。
+    #[tokio::test]
+    async fn test_anthropic_effort_option_via_vendor_extensions() {
+        let anthropic = AnthropicConverter::new();
+
+        // IR 类型化 effort 字段不物化顶层键（无条件写入已删除）
+        let mut request = minimal_unified_request("claude", "hi");
+        request.effort = Some(EffortLevel::High);
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert!(
+            out.get("effort").is_none(),
+            "IR effort 不得无条件物化为顶层 effort 键"
+        );
+
+        // 入站 effort → vendor_extensions 吸收，出站显式透传（opt-in）
+        let unified = anthropic
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": "hi"}],
+                "effort": "high"
+            }))
+            .expect("to_unified");
+        assert!(unified.effort.is_none(), "anthropic 入站不解析 effort");
+        assert_eq!(
+            unified.vendor_extensions.get("effort"),
+            Some(&json!("high")),
+            "effort 落扩展表（known_keys 不含 effort）"
+        );
+        let out = anthropic.request_to_external(unified).expect("to external");
+        assert_eq!(out["effort"], "high", "显式 opt-in 透传");
+
+        // denylist 仍拦截协议关键键覆写
+        let mut request = minimal_unified_request("claude", "hi");
+        request
+            .vendor_extensions
+            .insert("x_gateway".into(), json!({"flag": true}));
+        request
+            .vendor_extensions
+            .insert("model".into(), json!("hijacked"));
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert_eq!(out["x_gateway"]["flag"], true);
+        assert_eq!(out["model"], "claude", "扩展键不得覆写协议关键键");
+    }
+
+    // ---- Anthropic：StreamChunk::ToolCall ----
+
+    /// 入站：content_block_start(tool_use) 与 input_json_delta → ToolCall
+    /// 片段（并行工具 = 多 index 交错）。
+    #[tokio::test]
+    async fn test_anthropic_stream_tool_call_frames_parse_to_ir() {
+        let anthropic = AnthropicConverter::new();
+        let chunk = anthropic
+            .parse_stream_frame(
+                "{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_9\",\"name\":\"get_weather\",\"input\":{}}}",
+            )
+            .expect("tool_use start 应解析");
+        match chunk {
+            StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(index, 1);
+                assert_eq!(id, "toolu_9");
+                assert_eq!(name.as_deref(), Some("get_weather"));
+                assert_eq!(arguments, None);
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+
+        let chunk = anthropic
+            .parse_stream_frame(
+                "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}",
+            )
+            .expect("input_json_delta 应解析");
+        match chunk {
+            StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(index, 1);
+                assert_eq!(id, "", "续片段无 id");
+                assert_eq!(name, None);
+                assert_eq!(arguments.as_deref(), Some("{\"city\":"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+
+        // 文本块生命周期事件仍不映射 IR
+        assert!(anthropic
+            .parse_stream_frame(
+                "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}"
+            )
+            .is_none());
+    }
+
+    /// 出站：ToolCall 首片段 → content_block_start(tool_use)；续片段 →
+    /// content_block_delta(input_json_delta)。
+    #[tokio::test]
+    async fn test_anthropic_stream_tool_call_chunk_to_external() {
+        let anthropic = AnthropicConverter::new();
+        let out = anthropic
+            .stream_chunk_to_external(StreamChunk::ToolCall {
+                index: 2,
+                id: "toolu_9".into(),
+                name: Some("get_weather".into()),
+                arguments: None,
+            })
+            .expect("tool_use start");
+        assert_eq!(out["type"], "content_block_start");
+        assert_eq!(out["index"], 2);
+        assert_eq!(out["content_block"]["type"], "tool_use");
+        assert_eq!(out["content_block"]["id"], "toolu_9");
+        assert_eq!(out["content_block"]["name"], "get_weather");
+
+        let out = anthropic
+            .stream_chunk_to_external(StreamChunk::ToolCall {
+                index: 2,
+                id: String::new(),
+                name: None,
+                arguments: Some(":5}".into()),
+            })
+            .expect("input_json_delta");
+        assert_eq!(out["type"], "content_block_delta");
+        assert_eq!(out["index"], 2);
+        assert_eq!(out["delta"]["type"], "input_json_delta");
+        assert_eq!(out["delta"]["partial_json"], ":5}");
+    }
+
+    // ---- Anthropic：ImageSource::Url ----
+
+    /// 入站：source type url → Url 形态；出站 Url → {"type":"url","url"}。
+    #[tokio::test]
+    async fn test_anthropic_image_url_source_roundtrip() {
+        let anthropic = AnthropicConverter::new();
+        let unified = anthropic
+            .to_unified(json!({
+                "model": "claude",
+                "messages": [{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aGk="}}
+                ]}]
+            }))
+            .expect("to_unified");
+        match &unified.messages[0].content {
+            MessageContent::MultiModal(blocks) => {
+                assert!(
+                    matches!(&blocks[0], ContentBlock::Image { source: ImageSource::Url { url }, .. } if url == "https://example.com/cat.png"),
+                );
+                assert!(matches!(
+                    &blocks[1],
+                    ContentBlock::Image {
+                        source: ImageSource::Base64 { .. },
+                        ..
+                    }
+                ));
+            }
+            other => panic!("expected MultiModal, got {other:?}"),
+        }
+
+        let mut request = minimal_unified_request("claude", "");
+        request.messages[0].content = MessageContent::MultiModal(vec![ContentBlock::Image {
+            source: ImageSource::Url {
+                url: "https://example.com/cat.png".into(),
+            },
+            detail: None,
+        }]);
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert_eq!(
+            out["messages"][0]["content"][0]["source"],
+            json!({"type": "url", "url": "https://example.com/cat.png"})
         );
     }
 }
@@ -2690,6 +3717,13 @@ mod unified {
         assert!(req.stop.is_empty());
         assert!(req.tools.is_empty());
         assert!(req.tool_choice.is_none());
+        // T003 新字段 serde default
+        assert!(req.system_prompt.is_none());
+        assert!(req.sampling.is_none());
+        assert!(req.thinking_config.is_none());
+        assert!(req.effort.is_none());
+        assert!(req.turn_index.is_none());
+        assert!(req.vendor_extensions.is_empty());
     }
 
     #[test]
@@ -2732,17 +3766,7 @@ mod unified {
                 role: Role::User,
                 content: MessageContent::Text("Hi".to_string()),
             }],
-            temperature: None,
-            max_tokens: None,
-            stream: false,
-            stop: vec![],
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
-            logit_bias: HashMap::new(),
-            user: None,
-            tools: vec![],
-            tool_choice: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();
@@ -2750,6 +3774,12 @@ mod unified {
         assert!(!obj.contains_key("temperature"));
         assert!(!obj.contains_key("max_tokens"));
         assert!(!obj.contains_key("top_p"));
+        assert!(!obj.contains_key("system_prompt"));
+        assert!(!obj.contains_key("sampling"));
+        assert!(!obj.contains_key("thinking_config"));
+        assert!(!obj.contains_key("effort"));
+        assert!(!obj.contains_key("turn_index"));
+        assert!(!obj.contains_key("vendor_extensions"));
         assert!(!obj.contains_key("frequency_penalty"));
         assert!(!obj.contains_key("presence_penalty"));
         assert!(!obj.contains_key("user"));
@@ -2814,12 +3844,14 @@ mod unified {
                     content: MessageContent::Text("Hello".to_string()),
                 }),
                 finish_reason: Some("stop".to_string()),
+                finish: Some(FinishReason::Stop),
                 logprobs: None,
             }],
             usage: TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                ..Default::default()
             },
         };
         let json_str = serde_json::to_string(&resp).unwrap();
@@ -2829,6 +3861,7 @@ mod unified {
         assert_eq!(deserialized.model, "gpt-4");
         assert_eq!(deserialized.choices.len(), 1);
         assert_eq!(deserialized.usage.total_tokens, 15);
+        assert_eq!(deserialized.choices[0].finish, Some(FinishReason::Stop));
     }
 
     #[test]
@@ -2863,11 +3896,16 @@ mod unified {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
+            cache_read_tokens: 8,
+            cache_creation_tokens: 3,
+            ..Default::default()
         };
         let json = serde_json::to_value(&usage).unwrap();
         assert_eq!(json["prompt_tokens"], 100);
         assert_eq!(json["completion_tokens"], 50);
         assert_eq!(json["total_tokens"], 150);
+        assert_eq!(json["cache_read_tokens"], 8);
+        assert_eq!(json["cache_creation_tokens"], 3);
     }
 
     // ==================== Tool / ToolFunction / ToolParameters Tests ====================
@@ -3053,6 +4091,9 @@ mod unified {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            finish_reason: None,
         };
         let json = serde_json::to_value(&chunk).unwrap();
         assert_eq!(json["type"], "usage");
@@ -3067,6 +4108,7 @@ mod unified {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                ..
             } => {
                 assert_eq!(prompt_tokens, 10);
                 assert_eq!(completion_tokens, 5);
@@ -3135,13 +4177,12 @@ mod unified {
 
     #[test]
     fn test_image_source_serialize() {
-        let src = ImageSource {
-            type_: "base64".to_string(),
+        let src = ImageSource::Base64 {
             media_type: "image/png".to_string(),
             data: "iVBOR".to_string(),
         };
         let json = serde_json::to_value(&src).unwrap();
-        // "type_" serializes as "type" (serde rename)
+        // tag = "type"（snake_case 变体名），与旧 IR 结构体形状兼容
         assert_eq!(json["type"], "base64");
         assert!(json.get("type_").is_none());
         assert_eq!(json["media_type"], "image/png");

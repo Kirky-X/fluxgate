@@ -17,11 +17,13 @@ pub use openai_converter::OpenAIConverter;
 pub use sse_frame::{
     encode_sse_done, encode_sse_error, encode_sse_event, SseFrame, SseFrameParser,
 };
+pub(crate) use unified::{absorb_vendor_extensions, merge_vendor_extensions};
 pub use unified::{
-    Choice, ContentBlock, EmbeddingData, EmbeddingUsage, ImageSource, Message, MessageContent,
-    Role, StreamChunk, TokenUsage, Tool, ToolCall, ToolCallFunction, ToolChoice,
-    ToolChoiceFunction, ToolFunction, ToolParameterProperty, ToolParameters, ToolResult,
-    UnifiedEmbeddingResponse, UnifiedRequest, UnifiedResponse,
+    Choice, ContentBlock, EffortLevel, EmbeddingData, EmbeddingUsage, FinishReason, ImageSource,
+    Message, MessageContent, Role, SamplingParams, StreamChunk, ThinkingConfig, TokenUsage, Tool,
+    ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction,
+    ToolParameterProperty, ToolParameters, ToolResult, UnifiedEmbeddingResponse, UnifiedRequest,
+    UnifiedResponse,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -155,17 +157,7 @@ mod default_impl_tests {
         let req = UnifiedRequest {
             model: "m".into(),
             messages: vec![],
-            temperature: None,
-            max_tokens: None,
-            stream: false,
-            stop: vec![],
-            top_p: None,
-            frequency_penalty: None,
-            presence_penalty: None,
-            logit_bias: Default::default(),
-            user: None,
-            tools: vec![],
-            tool_choice: None,
+            ..Default::default()
         };
         let resp = UnifiedResponse {
             id: "r".into(),

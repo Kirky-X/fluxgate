@@ -77,6 +77,7 @@ fn make_unified_request() -> UnifiedRequest {
         user: None,
         tools: vec![],
         tool_choice: None,
+        ..Default::default()
     }
 }
 

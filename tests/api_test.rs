@@ -270,12 +270,14 @@ mod endpoints {
                     ),
                 }),
                 finish_reason: Some("stop".to_string()),
+                finish: None,
                 logprobs: None,
             }],
             usage: nexusflow::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                ..Default::default()
             },
         };
 
@@ -561,12 +563,14 @@ mod integration {
                     ),
                 }),
                 finish_reason: Some("stop".to_string()),
+                finish: None,
                 logprobs: None,
             }],
             usage: nexusflow::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                ..Default::default()
             },
         };
 

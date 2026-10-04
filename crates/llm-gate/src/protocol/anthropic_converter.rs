@@ -9,6 +9,32 @@ use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// Anthropic 协议已显式映射进 IR 的顶层键（其余字段吸收进 vendor_extensions）。
+///
+/// 不含 `effort`（M2）：Anthropic 无原生 effort，入站吸收进扩展表、出站经
+/// 扩展表显式透传（denylist 不含 effort = opt-in）；该常量同时用作出站
+/// merge 的 denylist（known_keys 反用）——协议键永不由扩展表补入/覆写。
+const ANTHROPIC_KNOWN_KEYS: &[&str] = &[
+    "model",
+    "messages",
+    "system",
+    "system_prompt",
+    "max_tokens",
+    "max_tokens_to_sample",
+    "stream",
+    "stop_sequences",
+    "temperature",
+    "top_p",
+    "top_k",
+    "tools",
+    "tool_choice",
+    "thinking",
+    "turn_index",
+    "sampling",
+    "thinking_config",
+    "vendor_extensions",
+];
+
 pub struct AnthropicConverter;
 
 impl Default for AnthropicConverter {
@@ -55,7 +81,10 @@ impl ProtocolConverter for AnthropicConverter {
         // recId=8④：顶层 system 参数 → 首条 System 消息（此前
         // `get("system")` 全仓零命中，system 指令整体丢失）。
         // Anthropic 的 system 支持 string 或 content blocks 数组两种形状。
+        // T003：同一文本双写 system_prompt（规范槽，单一事实源）；
+        // Role::System 消息保留为兼容形态。
         let mut all_messages = Vec::new();
+        let mut system_prompt: Option<String> = None;
         if let Some(system) = body.get("system") {
             let text = match system {
                 Value::String(s) => s.clone(),
@@ -67,6 +96,7 @@ impl ProtocolConverter for AnthropicConverter {
                 _ => String::new(),
             };
             if !text.is_empty() {
+                system_prompt = Some(text.clone());
                 all_messages.push(Message {
                     role: Role::System,
                     content: MessageContent::Text(text),
@@ -83,6 +113,8 @@ impl ProtocolConverter for AnthropicConverter {
             .unwrap_or_default();
 
         // Anthropic 的 tool_choice 映射到统一格式
+        // T003：原生形状 any/tool/auto/none 直读（any 即「必须用工具」，
+        // 映射 IR required）；OpenAI function 对象形状保留容错；标量兜底 auto。
         let tool_choice = body.get("tool_choice").map(|tc| match tc {
             Value::String(s) => ToolChoice::Strategy(s.clone()),
             Value::Object(obj) => {
@@ -98,19 +130,74 @@ impl ProtocolConverter for AnthropicConverter {
                         },
                     }
                 } else {
-                    ToolChoice::Strategy("auto".to_string())
+                    match obj.get("type").and_then(|t| t.as_str()) {
+                        Some("any") => ToolChoice::Strategy("required".to_string()),
+                        Some("tool") => ToolChoice::Specific {
+                            choice_type: "function".to_string(),
+                            function: ToolChoiceFunction {
+                                name: obj
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                            },
+                        },
+                        // auto/none 等原词进 Strategy，出站还原同名形状
+                        Some(other) => ToolChoice::Strategy(other.to_string()),
+                        None => ToolChoice::Strategy("auto".to_string()),
+                    }
                 }
             }
             _ => ToolChoice::Strategy("auto".to_string()),
         });
 
+        // T003：temperature/top_p/top_k → sampling（core 对齐槽）；
+        // temperature 同时保留 flat 槽双写（既有行为兼容）
+        let wire_temperature = body
+            .get("temperature")
+            .and_then(|v| v.as_f64())
+            .map(|f| f as f32);
+        let wire_top_p = body.get("top_p").and_then(|v| v.as_f64()).map(|f| f as f32);
+        let wire_top_k = body.get("top_k").and_then(|v| v.as_u64()).map(|u| u as u32);
+        let sampling = if wire_temperature.is_some() || wire_top_p.is_some() || wire_top_k.is_some()
+        {
+            Some(SamplingParams {
+                temperature: wire_temperature,
+                top_k: wire_top_k,
+                top_p: wire_top_p,
+                frequency_penalty: None,
+                presence_penalty: None,
+            })
+        } else {
+            None
+        };
+
+        // T003：thinking → thinking_config（enabled 无预算 → Adaptive，
+        // 「启用但不定预算」在 IR 的最近表达）；budget_tokens u64 对齐 core
+        let thinking_config =
+            body.get("thinking")
+                .and_then(|v| v.as_object())
+                .and_then(|t| match t.get("type").and_then(|v| v.as_str()) {
+                    Some("enabled") => {
+                        Some(match t.get("budget_tokens").and_then(|v| v.as_u64()) {
+                            Some(budget) => ThinkingConfig::Enabled {
+                                budget_tokens: budget,
+                            },
+                            None => ThinkingConfig::Adaptive,
+                        })
+                    }
+                    Some("disabled") => Some(ThinkingConfig::Disabled),
+                    _ => None,
+                });
+
+        // M2：effort 不进 IR（Anthropic 无原生概念）——入站落入
+        // vendor_extensions，出站经扩展表显式透传（opt-in）
+
         Ok(UnifiedRequest {
             model,
             messages: all_messages,
-            temperature: body
-                .get("temperature")
-                .and_then(|v| v.as_f64())
-                .map(|f| f as f32),
+            system_prompt,
+            temperature: wire_temperature,
             max_tokens: body
                 .get("max_tokens")
                 .or(body.get("max_tokens_to_sample"))
@@ -129,20 +216,32 @@ impl ProtocolConverter for AnthropicConverter {
                         .collect()
                 })
                 .unwrap_or_default(),
-            top_p: None,
+            top_p: wire_top_p,
             frequency_penalty: None,
             presence_penalty: None,
             logit_bias: HashMap::new(),
             user: None,
+            sampling,
+            thinking_config,
+            effort: None,
+            turn_index: None,
             tools,
             tool_choice,
+            vendor_extensions: absorb_vendor_extensions(&body, ANTHROPIC_KNOWN_KEYS),
         })
     }
 
     fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, GateError> {
         // recId=8④：Role::System 消息提升为 Anthropic 顶层 system 参数
-        // （Anthropic messages 数组不接受 system 角色，直接放入会被上游拒收）
-        let system_text = extract_system_text(&request.messages);
+        //（Anthropic messages 数组不接受 system 角色，直接放入会被上游拒收）。
+        // T003：system_prompt 为规范槽，出站优先合并——system_prompt 在前，
+        // 与 Role::System 消息文本去重合并（相同文本只保留一份）。
+        let mut system_parts = system_message_parts(&request.messages);
+        if let Some(system_prompt) = request.system_prompt.as_ref().filter(|s| !s.is_empty()) {
+            system_parts.retain(|text| text != system_prompt);
+            system_parts.insert(0, system_prompt.clone());
+        }
+        let system_text = system_parts.join("\n\n");
         let messages: Vec<Value> = request
             .messages
             .iter()
@@ -165,15 +264,24 @@ impl ProtocolConverter for AnthropicConverter {
             body["tools"] = json!(tools);
         }
 
-        // Anthropic tool_choice 转换
+        // T003：Anthropic tool_choice 出站写原生形状（required→any；
+        // Specific→tool；unknown 策略保守回退 auto），不再写 OpenAI 形状
         if let Some(tool_choice) = request.tool_choice {
-            body["tool_choice"] = match tool_choice {
-                ToolChoice::Strategy(s) => Value::String(s),
-                ToolChoice::Specific { function, .. } => json!({
-                    "type": "function",
-                    "function": { "name": function.name }
-                }),
+            // L3："none" 省略字段——Anthropic 传统词汇为 auto/any/tool，
+            // 无 none 形状；缺省即 auto 语义，不写未知词防上游 400
+            let choice = match &tool_choice {
+                ToolChoice::Strategy(s) => match s.as_str() {
+                    "required" | "any" => Some(json!({"type": "any"})),
+                    "none" => None,
+                    _ => Some(json!({"type": "auto"})),
+                },
+                ToolChoice::Specific { function, .. } => {
+                    Some(json!({"type": "tool", "name": function.name}))
+                }
             };
+            if let Some(choice) = choice {
+                body["tool_choice"] = choice;
+            }
         }
 
         if let Some(temp) = request.temperature {
@@ -188,6 +296,37 @@ impl ProtocolConverter for AnthropicConverter {
         if !request.stop.is_empty() {
             body["stop_sequences"] = json!(request.stop);
         }
+        // T003：sampling 补 Anthropic 缺省槽——top_k 直出；temperature/top_p
+        // 仅在 flat 槽未设置时补（flat 优先，不覆写）
+        if let Some(sampling) = &request.sampling {
+            if let Some(top_k) = sampling.top_k {
+                body["top_k"] = json!(top_k);
+            }
+            if request.temperature.is_none() {
+                if let Some(temp) = sampling.temperature {
+                    body["temperature"] = json!(temp);
+                }
+            }
+            if request.top_p.is_none() {
+                if let Some(top_p) = sampling.top_p {
+                    body["top_p"] = json!(top_p);
+                }
+            }
+        }
+        // T003：thinking_config → thinking 块。Enabled 带预算出站；
+        // Adaptive 与 Disabled 保守省略（Anthropic enabled 必须带
+        // budget_tokens，缺预算会被 400 拒收；disabled 为协议缺省——
+        // 待裁决项，见任务返回）
+        if let Some(ThinkingConfig::Enabled { budget_tokens }) = request.thinking_config {
+            body["thinking"] = json!({"type": "enabled", "budget_tokens": budget_tokens});
+        }
+        // M2：effort 不出站——Anthropic 无原生 effort，first-party 严格
+        // 校验会 400（原「透传给兼容上游」的前提失实）；effort 仅经
+        // vendor_extensions 显式携带时可达上游（denylist 不含 effort =
+        // opt-in，400 风险自担）
+        // F1/M1：vendor_extensions 顶层透传，denylist = 本协议 known_keys
+        // 反用——协议键永不由扩展表补入/覆写，非协议键仍透传（D2 语义）
+        merge_vendor_extensions(&mut body, &request.vendor_extensions, ANTHROPIC_KNOWN_KEYS);
 
         Ok(body)
     }
@@ -203,22 +342,40 @@ impl ProtocolConverter for AnthropicConverter {
             .map(message_to_anthropic)
             .unwrap_or_else(|| json!({ "content": "" }));
 
+        // T003：finish 结构化槽优先（未知词只在原始槽时走字符串映射）
+        let stop_reason = choice
+            .finish
+            .map(|finish| finish_reason_to_anthropic_stop_reason(finish.to_wire()))
+            .or_else(|| {
+                choice
+                    .finish_reason
+                    .as_deref()
+                    .map(finish_reason_to_anthropic_stop_reason)
+            })
+            .unwrap_or_else(|| "end_turn".into());
+
+        // T003：IR cache 字段 → cache_read/creation_input_tokens（非零才携带；
+        // cost 无 Anthropic 槽，不产出）
+        let mut usage = json!({
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+        });
+        if response.usage.cache_read_tokens > 0 {
+            usage["cache_read_input_tokens"] = json!(response.usage.cache_read_tokens);
+        }
+        if response.usage.cache_creation_tokens > 0 {
+            usage["cache_creation_input_tokens"] = json!(response.usage.cache_creation_tokens);
+        }
+
         Ok(json!({
             "id": response.id,
             "type": "message",
             "role": "assistant",
             "content": content,
             "model": response.model,
-            "stop_reason": choice
-                .finish_reason
-                .as_deref()
-                .map(finish_reason_to_anthropic_stop_reason)
-                .unwrap_or_else(|| "end_turn".into()),
+            "stop_reason": stop_reason,
             "stop_sequence": Value::Null,
-            "usage": {
-                "input_tokens": response.usage.prompt_tokens,
-                "output_tokens": response.usage.completion_tokens,
-            },
+            "usage": usage,
         }))
     }
 
@@ -326,11 +483,12 @@ impl ProtocolConverter for AnthropicConverter {
         };
 
         // recId=8⑤：stop_reason → finish_reason 静态映射（IR 统一存
-        // OpenAI 词汇；未知值原样保留）
+        // OpenAI 词汇；未知值原样保留）。T003：已知词双写结构化槽。
         let stop_reason = response
             .get("stop_reason")
             .and_then(|v| v.as_str())
             .map(anthropic_stop_reason_to_finish_reason);
+        let finish = stop_reason.as_deref().and_then(FinishReason::from_wire);
 
         let usage = response.get("usage").and_then(|v| v.as_object());
 
@@ -346,6 +504,16 @@ impl ProtocolConverter for AnthropicConverter {
             .map(|u| u as u32)
             .unwrap_or(0);
 
+        // T003：cache_read/creation_input_tokens → IR cache 字段（u64 对齐 core）
+        let cache_read_tokens = usage
+            .and_then(|v| v.get("cache_read_input_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cache_creation_tokens = usage
+            .and_then(|v| v.get("cache_creation_input_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
         Ok(UnifiedResponse {
             id,
             object: "message".to_string(),
@@ -355,12 +523,17 @@ impl ProtocolConverter for AnthropicConverter {
                 index: 0,
                 message,
                 finish_reason: stop_reason,
+                finish,
                 logprobs: None,
             }],
             usage: TokenUsage {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens: prompt_tokens + completion_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                cost_usd: None,
+                cost_cny: None,
             },
         })
     }
@@ -389,14 +562,23 @@ impl ProtocolConverter for AnthropicConverter {
                                 "type": "text",
                                 "text": text,
                             }),
-                            ContentBlock::Image { source, detail: _ } => json!({
-                                "type": "image",
-                                "source": {
-                                    "type": source.type_.clone(),
-                                    "media_type": source.media_type.clone(),
-                                    "data": source.data.clone(),
-                                },
-                            }),
+                            ContentBlock::Image { source, detail: _ } => match source {
+                                ImageSource::Base64 { media_type, data } => json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": data,
+                                    },
+                                }),
+                                ImageSource::Url { url } => json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "url",
+                                        "url": url,
+                                    },
+                                }),
+                            },
                             _ => json!({ "type": "unknown" }),
                         })
                         .collect(),
@@ -422,16 +604,67 @@ impl ProtocolConverter for AnthropicConverter {
                     "stop_reason": finish_reason,
                 }))
             }
+            // T003：流式工具调用片段 → Anthropic 原生事件——首片段（带 name）
+            // 为 content_block_start(tool_use)，续片段为
+            // content_block_delta(input_json_delta)；完整交错状态机随 N4
+            // 流式 parity 回归
+            StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                if let Some(name) = name {
+                    Ok(json!({
+                        "type": "content_block_start",
+                        "index": index,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": {},
+                        },
+                    }))
+                } else {
+                    Ok(json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": arguments.unwrap_or_default(),
+                        },
+                    }))
+                }
+            }
             StreamChunk::Usage {
                 prompt_tokens: _,
                 completion_tokens,
                 total_tokens: _,
-            } => Ok(json!({
-                "type": "message_delta",
-                "usage": {
+                cache_read_tokens,
+                cache_creation_tokens,
+                finish_reason,
+            } => {
+                // T003：finish_reason 随 Usage 到达时透传进 delta.stop_reason
+                //（IR 侧 Anthropic message_delta 尾帧的映射回流）
+                let delta = json!({
+                    "stop_reason": finish_reason,
+                    "stop_sequence": Value::Null,
+                });
+                let mut usage = json!({
                     "output_tokens": completion_tokens,
-                },
-            })),
+                });
+                if cache_read_tokens > 0 {
+                    usage["cache_read_input_tokens"] = json!(cache_read_tokens);
+                }
+                if cache_creation_tokens > 0 {
+                    usage["cache_creation_input_tokens"] = json!(cache_creation_tokens);
+                }
+                Ok(json!({
+                    "type": "message_delta",
+                    "delta": delta,
+                    "usage": usage,
+                }))
+            }
             StreamChunk::Heartbeat => Ok(json!({ "type": "ping" })),
         }
     }
@@ -445,11 +678,14 @@ impl ProtocolConverter for AnthropicConverter {
 ///
 /// Anthropic 流式事件的 `data` JSON 自带 `type` 字段：
 /// - `content_block_delta`（text_delta）→ [`StreamChunk::Content`]；
-/// - `message_delta`（usage.output_tokens 尾帧）→ [`StreamChunk::Usage`]
-///   （token 记账依赖它；其 `delta.stop_reason` 的流式传递后置与 recId=8
-///   工具流式一起回归）；
+/// - `content_block_delta`（input_json_delta）/ `content_block_start`
+///   （tool_use）→ [`StreamChunk::ToolCall`]（T003：并行工具 = 多 index
+///   交错流，id/name 仅首片段携带）；
+/// - `message_delta`（usage 尾帧）→ [`StreamChunk::Usage`]（token 记账
+///   依赖它；其 `delta.stop_reason` 同帧映射进 Usage 的 `finish_reason`，
+///   T003 流式 stop_reason 透传）；
 /// - `ping` → [`StreamChunk::Heartbeat`]；
-/// - `message_start`/`content_block_start`/`content_block_stop`/
+/// - `message_start`/`content_block_start`（text）/`content_block_stop`/
 ///   `message_stop` → `None`（生命周期事件，由出站侧
 ///   [`AnthropicStreamEncoder`] 状态机重建）；
 /// - `error` → `None`（manager 层分帧器 is_error 先行拦截终止）。
@@ -464,9 +700,47 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
     }
 
     match json.get("type").and_then(|v| v.as_str())? {
+        "content_block_start" => {
+            let block = json.get("content_block")?;
+            if block.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
+                // text 等非工具块为生命周期事件，由出站状态机重建
+                return None;
+            }
+            // 首片段以 name 存在性判定（N4 收口：块生命周期与参数增量
+            // 的按 index 配对统一进交错状态机后，改为显式状态跟踪）
+            Some(StreamChunk::ToolCall {
+                index: json.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                id: block
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                name: Some(
+                    block
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                arguments: None,
+            })
+        }
         "content_block_delta" => {
             let delta = json.get("delta")?;
-            // 首版仅 text delta（工具流式后置与 recId=8 一起回归）
+            // T003：工具参数增量 → ToolCall 续片段（id/name 由首片段携带）
+            if delta.get("type").and_then(|v| v.as_str()) == Some("input_json_delta") {
+                let partial = delta
+                    .get("partial_json")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                return Some(StreamChunk::ToolCall {
+                    index: json.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                    id: String::new(),
+                    name: None,
+                    arguments: Some(partial.to_string()),
+                });
+            }
+            // 首版仅 text delta（非 text 非工具增量不产出事件）
             let text = delta
                 .get("text")
                 .and_then(|v| v.as_str())
@@ -478,6 +752,14 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
             })
         }
         "message_delta" => {
+            // T003：delta.stop_reason 同帧映射（end_turn/stop_sequence→Stop、
+            // max_tokens→Length、tool_use→ToolCalls；未知词原样透传）
+            let finish_reason = json
+                .get("delta")
+                .and_then(|d| d.get("stop_reason"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(anthropic_stop_reason_to_finish_reason);
             let usage = json.get("usage");
             let output = usage
                 .and_then(|u| u.get("output_tokens"))
@@ -487,10 +769,23 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
                 .and_then(|u| u.get("input_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
+            let cache_read_tokens = usage
+                .and_then(|u| u.get("cache_read_input_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|u| u as u32)
+                .unwrap_or(0);
+            let cache_creation_tokens = usage
+                .and_then(|u| u.get("cache_creation_input_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|u| u as u32)
+                .unwrap_or(0);
             Some(StreamChunk::Usage {
                 prompt_tokens: input,
                 completion_tokens: output,
                 total_tokens: input + output,
+                cache_read_tokens,
+                cache_creation_tokens,
+                finish_reason,
             })
         }
         "ping" => Some(StreamChunk::Heartbeat),
@@ -586,9 +881,15 @@ impl AnthropicStreamEncoder {
             StreamChunk::Usage {
                 prompt_tokens,
                 completion_tokens,
+                finish_reason,
                 ..
             } => {
                 let mut events = Vec::new();
+                // T003：终止原因与 usage 同帧到达时（Anthropic 上游回流），
+                // 先更新 stop_reason 再发 message_delta
+                if let Some(reason) = finish_reason {
+                    self.stop_reason = Some(reason);
+                }
                 if !self.message_started {
                     events.push(self.message_start_event_with_input(prompt_tokens));
                 }
@@ -610,6 +911,39 @@ impl AnthropicStreamEncoder {
                     .to_string(),
                 );
                 events
+            }
+            // T003：工具片段按原生事件直通——首片段（带 name）content_block_start
+            // (tool_use)，续片段 content_block_delta(input_json_delta)；
+            // 跨 index 的交错块状态（并行工具）随 N4 流式 parity 回归
+            StreamChunk::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                if let Some(name) = name {
+                    vec![json!({
+                        "type": "content_block_start",
+                        "index": index,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": {},
+                        },
+                    })
+                    .to_string()]
+                } else {
+                    vec![json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": arguments.unwrap_or_default(),
+                        },
+                    })
+                    .to_string()]
+                }
             }
             StreamChunk::Heartbeat => vec![json!({ "type": "ping" }).to_string()],
         }
@@ -842,27 +1176,33 @@ fn aggregate_anthropic_tool_result(arr: &[Value]) -> ToolResult {
     }
 }
 
-/// 提取 System 消息文本 → Anthropic 顶层 system 参数（recId=8④）。
-/// 多条 System 消息以空行连接。
-fn extract_system_text(messages: &[Message]) -> String {
+/// 提取 System 消息文本片段（T003：返回分片列表供出站去重合并——
+/// system_prompt 优先在前，相同文本剔除）。非文本内容取文本块拼接，
+/// 空文本与纯非文本消息被过滤。
+fn system_message_parts(messages: &[Message]) -> Vec<String> {
     messages
         .iter()
         .filter(|m| m.role == Role::System)
-        .map(|m| match &m.content {
-            MessageContent::Text(s) => s.clone(),
-            MessageContent::MultiModal(blocks) => blocks
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => String::new(),
+        .filter_map(|m| match &m.content {
+            MessageContent::Text(s) if !s.is_empty() => Some(s.clone()),
+            MessageContent::MultiModal(blocks) => {
+                let joined = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if joined.is_empty() {
+                    None
+                } else {
+                    Some(joined)
+                }
+            }
+            _ => None,
         })
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+        .collect()
 }
 
 /// Anthropic stop_reason → OpenAI finish_reason 静态映射（recId=8⑤）。
@@ -897,12 +1237,19 @@ fn parse_anthropic_block(json: &Value) -> Option<ContentBlock> {
         }),
         "image" => {
             let source = json.get("source")?.as_object()?;
-            Some(ContentBlock::Image {
-                source: ImageSource {
-                    type_: source.get("type")?.as_str()?.to_string(),
+            // T003：base64 与 url 两种 source 形态；未知形态不猜变体
+            let source = match source.get("type").and_then(|v| v.as_str())? {
+                "base64" => ImageSource::Base64 {
                     media_type: source.get("media_type")?.as_str()?.to_string(),
                     data: source.get("data")?.as_str()?.to_string(),
                 },
+                "url" => ImageSource::Url {
+                    url: source.get("url")?.as_str()?.to_string(),
+                },
+                _ => return None,
+            };
+            Some(ContentBlock::Image {
+                source,
                 detail: None,
             })
         }
@@ -926,14 +1273,23 @@ fn message_to_anthropic(msg: &Message) -> Value {
                         "type": "text",
                         "text": text,
                     }),
-                    ContentBlock::Image { source, detail: _ } => json!({
-                        "type": "image",
-                        "source": {
-                            "type": source.type_,
-                            "media_type": source.media_type,
-                            "data": source.data,
-                        },
-                    }),
+                    ContentBlock::Image { source, detail: _ } => match source {
+                        ImageSource::Base64 { media_type, data } => json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data,
+                            },
+                        }),
+                        ImageSource::Url { url } => json!({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": url,
+                            },
+                        }),
+                    },
                     _ => json!({ "type": "unknown" }),
                 })
                 .collect();

@@ -683,6 +683,7 @@ mod preagg {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
+            ..Default::default()
         }
     }
 

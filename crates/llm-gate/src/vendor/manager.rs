@@ -3,8 +3,6 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-#[cfg(feature = "cost-tracking")]
-use super::CostCalculator;
 use super::{
     AdvancedRateLimiter, ConcurrencyLimiter, ConcurrencyPermit, PendingRequest, TokenBucket,
     VendorQueue, VendorState, VendorStatus,
@@ -650,6 +648,17 @@ impl VendorManager {
                     Self::cb_endpoint(&config),
                 );
 
+                // T007：anthropic 转换出站的缓存断点策略（条目覆盖或内置
+                // 默认；openai 型 None 不注入；透传路径字节保真不注入）
+                let cache_policy = if config.type_ == "anthropic" {
+                    Some(crate::config::model_catalog::cache_policy_for(
+                        &config_manager.read().model_catalog,
+                        &pending.request.model,
+                    ))
+                } else {
+                    None
+                };
+
                 let result = Self::perform_http_request(
                     &client,
                     &config,
@@ -662,6 +671,7 @@ impl VendorManager {
                     &metrics,
                     &instance,
                     &credential,
+                    cache_policy.as_ref(),
                 )
                 .await;
 
@@ -741,21 +751,59 @@ impl VendorManager {
                     // ConfigManager 现读 pricing 构建查找表，热更新的单价
                     // 立即生效；表规模为条目级（<100），每请求一次构建开销可忽略。
                     // 解析失败时 calculate 返回 0.0（CostTracker 静默 no-op）
+                    // cost-tracking：T007 计价改吃 model_catalog 四档（含
+                    // cache 档，币种随条目；cache 语义按 vendor 协议——
+                    // anthropic input 不含 cache 档 / openai 含）。未登记
+                    // 模型 None 不计价（防 0 价伪装免费，T006 语义延续）。
+                    // [[pricing]] 保留 SLA 因子消费（sla_v），旧
+                    // CostCalculator 至 T011 桥接切换后退役（D7.11）。
                     #[cfg(feature = "cost-tracking")]
                     {
-                        let calculator =
-                            CostCalculator::from_config(&config_manager.read().pricing);
-                        let cost_usd = calculator.calculate(
-                            &instance.vendor_id,
+                        use crate::vendor::cost::{
+                            estimate_cost_from_catalog, PromptCacheSemantics,
+                        };
+                        let semantics = if config.type_ == "anthropic" {
+                            PromptCacheSemantics::Exclusive
+                        } else {
+                            PromptCacheSemantics::Inclusive
+                        };
+                        let estimate = estimate_cost_from_catalog(
+                            &config_manager.read().model_catalog,
                             &response.model,
-                            response.usage.prompt_tokens,
-                            response.usage.completion_tokens,
+                            &response.usage,
+                            semantics,
                         );
-                        instance.cost_tracker.record(
-                            &instance.vendor_id,
-                            &response.model,
-                            cost_usd,
-                        );
+                        match estimate {
+                            Some(est) => {
+                                // CostTracker 单 USD 道：CNY 条目暂不落
+                                //（双币分道属 T011 桥接）——warn 显性（审查
+                                // F1：计费可见性过渡，防成本报表静默少计）
+                                if matches!(est.currency, crate::config::PricingCurrency::Usd) {
+                                    instance.cost_tracker.record(
+                                        &instance.vendor_id,
+                                        &response.model,
+                                        est.total_cost,
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        vendor = %instance.vendor_id,
+                                        model = %response.model,
+                                        cost_cny = est.total_cost,
+                                        "CNY-priced entry not recorded into USD cost tracker (T011 bridge pending)"
+                                    );
+                                }
+                            }
+                            None => {
+                                // 审查 LOW-1：未登记 model_catalog 不计价——
+                                // 成本报表静默少计需可观测
+                                tracing::debug!(
+                                    vendor = %instance.vendor_id,
+                                    model = %response.model,
+                                    "{}",
+                                    crate::i18n::t("vendor-cost-unregistered-model")
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -765,9 +813,9 @@ impl VendorManager {
     }
 
     /// （`--all-features` 下含 cfg(resilience) 门控的 circuit_breaker 共
-    /// 10 参——T005 追加 instance/credential 两出参（key 轮换与按 key 指纹
-    /// 熔断所需），超 clippy 默认阈值 7——转换器双向入参为协议转换所需，
-    /// 不打包重构。）
+    /// 11 参——T005 追加 instance/credential、T007 追加 cache_policy
+    ///（key 轮换/按 key 熔断/缓存断点注入所需），超 clippy 默认阈值 7
+    ///——转换器双向入参为协议转换所需，不打包重构。）
     #[allow(clippy::too_many_arguments)]
     async fn perform_http_request(
         client: &reqwest::Client,
@@ -780,6 +828,7 @@ impl VendorManager {
         metrics: &GlobalMetrics,
         instance: &VendorInstance,
         credential: &RequestCredential,
+        cache_policy: Option<&crate::config::model_catalog::CacheBreakpointPolicy>,
     ) -> Result<UnifiedResponse, GateError> {
         let converter: &dyn ProtocolConverter = match config.type_.as_str() {
             "openai" => openai,
@@ -791,8 +840,14 @@ impl VendorManager {
             }
         };
 
-        // Convert UnifiedRequest to Vendor Request (JSON)
-        let request_body = converter.request_to_external(request)?;
+        // Convert UnifiedRequest to Vendor Request (JSON)。
+        // T007：anthropic 型走缓存断点注入入口（策略由调用方按
+        // [[model_catalog]] 解析；None = 非 anthropic，走原编码）
+        let request_body = if let Some(policy) = cache_policy {
+            anthropic.request_to_external_with_cache_policy(request, policy)?
+        } else {
+            converter.request_to_external(request)?
+        };
 
         // 执行带重试的请求（resilience feature 启用时由 CircuitBreaker 包装）
         Self::execute_http_with_retry(
@@ -1664,7 +1719,20 @@ impl VendorManager {
         // 审查 M2：per-key 熔断键带 model 段（归一到配置模型身份；
         // request 被 move 前捕获，无 resilience 组合下仅作参数透传）
         let request_model = Self::cb_model(vendor_id, &config, &request.model).to_string();
-        let request_body = converter.request_to_external(request)?;
+
+        // T007：anthropic 转换流式出站同样注入缓存断点（透传流式不注入）
+        let cache_policy = (config.type_ == "anthropic").then(|| {
+            crate::config::model_catalog::cache_policy_for(
+                &self.config.read().model_catalog,
+                &request.model,
+            )
+        });
+        let request_body = if let Some(policy) = &cache_policy {
+            self.anthropic_converter
+                .request_to_external_with_cache_policy(request, policy)?
+        } else {
+            converter.request_to_external(request)?
+        };
 
         let request_builder = match credential.api_key() {
             Some(api_key) => {

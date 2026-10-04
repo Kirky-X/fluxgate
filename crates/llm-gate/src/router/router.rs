@@ -863,6 +863,14 @@ impl Router {
             }
         }
 
+        // T007：价格因子上下文（开关关闭时 None、零查询开销——逐位一致）
+        let price_factor_enabled = self.config.read().routing.price_factor_enabled;
+        let price_factors = if price_factor_enabled {
+            self.price_factor_multipliers(&candidates)
+        } else {
+            Vec::new()
+        };
+
         let mut weighted = Vec::with_capacity(candidates.len());
         // recId=14：SLA 虚拟队列打分上下文 — sla_v=0（默认）返回 None、
         // 零开销旁路（惩罚因子不参与权重）。候选集级预收集（缺价中位数、
@@ -891,9 +899,59 @@ impl Router {
             if let Some(lps) = &lps {
                 weight *= lps.factors[i];
             }
+            // T007：价格因子乘性修正（SLA/LPS 之后；定义与中性豁免见
+            // apply_price_factor doc）。开关关闭时整体跳过——路由行为与
+            // 现状逐位一致。
+            if price_factor_enabled {
+                if let Some(Some(factor)) = price_factors.get(i) {
+                    weight *= *factor;
+                }
+            }
             weighted.push((weight, (vendor, model)));
         }
         weighted
+    }
+
+    /// T007：价格因子 — model_catalog 单价参与加权路由。
+    ///
+    /// 因子定义：候选模型单价 `p = (input_price + output_price) / 2`（每
+    /// 1M tokens；cache 档不进因子——cache 命中率随负载变化，input/output
+    /// 基础对是稳定公布口径）；集合内已登记候选取 `min_p`，乘性修正
+    /// `weight ×= min_p / p ∈ (0,1]`——等价条件下低价候选权重不衰减、
+    /// 高价按价格比例衰减。中性豁免：未登记 / 0 价 / 非有限单价候选因子
+    /// 1.0（不奖励无定价者——与 recId=14 SLA 缺价中位数互为独立实现，
+    /// 数据源不同：本因子吃 [[model_catalog]]，SLA 吃 [[pricing]]）。
+    /// 单候选 / 空目录 / 无已登记候选整体中性。
+    ///
+    /// 查找用精确匹配（路由候选是 vendor 配置的精确模型身份；前缀回退属
+    /// 计价域——D7.11 非对称锚）。
+    fn price_factor_multipliers(
+        &self,
+        candidates: &[(VendorConfig, ModelConfig)],
+    ) -> Vec<Option<f64>> {
+        let catalog = &self.config.read().model_catalog;
+        if catalog.is_empty() {
+            return vec![None; candidates.len()];
+        }
+        let unit_price = |model_id: &str| -> Option<f64> {
+            catalog
+                .iter()
+                .find(|e| e.model_id == model_id)
+                .map(|e| (e.input_price + e.output_price) / 2.0)
+                .filter(|p| p.is_finite() && *p > 0.0)
+        };
+        let prices: Vec<Option<f64>> = candidates
+            .iter()
+            .map(|(_, m)| unit_price(&m.model_id))
+            .collect();
+        let min_p = prices
+            .iter()
+            .filter_map(|p| *p)
+            .fold(f64::INFINITY, f64::min);
+        if !min_p.is_finite() || min_p <= 0.0 {
+            return vec![None; candidates.len()];
+        }
+        prices.into_iter().map(|p| p.map(|p| min_p / p)).collect()
     }
 
     /// recId=4⑥：RNG 注入版选择 — 原无 seed 注入点的 `thread_rng` 直写拆出

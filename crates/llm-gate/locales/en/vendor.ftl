@@ -25,3 +25,4 @@ vendor-key-pool-truncated = key pool of vendor { $vendor } exceeds the cap of { 
 vendor-key-pool-fallback-legacy = key pool of vendor { $vendor } is empty (all envs missing); falling back to legacy single-key behavior
 vendor-key-rotated = vendor { $vendor } auth failure ({ $status }); key cursor advanced, the next attempt uses the next key
 vendor-key-pool-shrunk = key pool of vendor { $vendor } shrank from { $before } to { $after } keys ({ $missing } pool envs now missing)
+vendor-cost-unregistered-model = model not registered in model_catalog; not priced (cost report under-counts by design)

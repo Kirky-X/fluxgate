@@ -46,6 +46,7 @@ fn claude_entry() -> ModelCatalogEntry {
         max_output_tokens: Some(8192),
         supports_tools: true,
         supports_thinking: true,
+        cache_breakpoints: None,
     }
 }
 

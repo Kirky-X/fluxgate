@@ -24,6 +24,14 @@ pool_size = 5
 # max_output_tokens = 8192
 # supports_tools = true
 # supports_thinking = true
+# # 可选：Anthropic 自动缓存断点注入策略（T007，仅 anthropic 型 vendor
+# # 转换出站生效；与 supports_* 能力位正交）。缺省 = 启用 / 上限 4 /
+# # 锚序 tools→system→last_user（超限保留锚序尾部）。缓存写按 1.25×
+# # 计费、命中读按 0.1×——成本/性能取舍可按条目关闭。
+# [model_catalog.cache_breakpoints]
+# enabled = true
+# max_breakpoints = 4
+# anchors = ["tools", "system", "last_user"]
 
 [[vendors]]
 id = "openai"
@@ -88,3 +96,9 @@ vendor_id = "mock-anthropic"
 model_id = "claude-3-opus-20240229"
 input_per_1k_tokens = 0.015
 output_per_1k_tokens = 0.075
+
+# ---- 价格因子路由（T007）：[routing] 段可选开关 ----
+# model_catalog 单价参与加权路由（默认开启；目录为空或候选未登记时中性，
+# 等价条件下低价候选胜出）。关闭后路由行为与历史逐位一致。
+# [routing]
+# price_factor_enabled = true

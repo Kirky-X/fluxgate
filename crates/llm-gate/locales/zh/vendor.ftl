@@ -25,3 +25,4 @@ vendor-key-pool-truncated = 厂商 { $vendor } 的 key 池超出上限 { $cap }�
 vendor-key-pool-fallback-legacy = 厂商 { $vendor } 的 key 池为空（全部 env 缺失），回退既有单 key 行为
 vendor-key-rotated = 厂商 { $vendor } 认证失败 ({ $status })，已推进 key 轮换游标，下次尝试使用下一把 key
 vendor-key-pool-shrunk = 厂商 { $vendor } 的 key 池由 { $before } 把收缩至 { $after } 把（{ $missing } 个池 env 现缺失）
+vendor-cost-unregistered-model = 模型未登记 model_catalog，不计价（成本报表按设计少计）

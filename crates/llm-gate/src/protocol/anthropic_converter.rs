@@ -4,6 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use super::*;
+use crate::config::model_catalog::CacheBreakpointPolicy;
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
@@ -46,6 +47,24 @@ impl Default for AnthropicConverter {
 impl AnthropicConverter {
     pub fn new() -> Self {
         Self
+    }
+
+    /// T007：出站编码 + 自动缓存断点注入 — anthropic 型 vendor 转换路径
+    /// 专用入口（策略解析在 VendorManager 侧按 [[model_catalog]] 条目/
+    /// 内置默认完成；透传路径字节保真不注入）。
+    pub fn request_to_external_with_cache_policy(
+        &self,
+        request: UnifiedRequest,
+        policy: &CacheBreakpointPolicy,
+    ) -> Result<Value, GateError> {
+        let mut body = self.request_to_external(request)?;
+        let injected = inject_cache_control(&mut body, policy);
+        tracing::debug!(
+            model = %body.get("model").and_then(|v| v.as_str()).unwrap_or("?"),
+            injected,
+            "anthropic cache breakpoints injected"
+        );
+        Ok(body)
     }
 }
 
@@ -1577,4 +1596,137 @@ fn tool_to_anthropic(tool: &Tool) -> Value {
         "description": tool.function.description,
         "input_schema": params_obj,
     })
+}
+
+/// T007：Anthropic 自动缓存断点注入（纯函数，可测）。
+///
+/// 在 [`AnthropicConverter::request_to_external`] 产物上按锚点顺序标记
+/// `cache_control: {"type":"ephemeral"}`：
+/// - `"tools"` — tools 数组最后一个定义块；
+/// - `"system"` — system 段（字符串提升为单块数组后标记末块；数组标记末块）；
+/// - `"last_user"` — 最后一条 user 消息的最后一个内容块。
+///
+/// 候选锚点数超出 `policy.max_breakpoints` 时保留锚序**尾部**（丢弃头部
+/// ——头部锚更靠前缀、增量缓存命中率随对话增长低于尾部锚）；`enabled`
+/// 为假或上限为 0 不注入。返回实际注入数。未知锚名跳过（debug 显性）。
+pub fn inject_cache_control(body: &mut Value, policy: &CacheBreakpointPolicy) -> usize {
+    if !policy.enabled || policy.max_breakpoints == 0 {
+        return 0;
+    }
+    let cap = policy.max_breakpoints as usize;
+
+    // 1) 先做锚点规划（不改 body），再截断到尾部 max，最后统一应用——
+    //    截断语义 = 「保留锚序尾部 N 个」
+    enum Edit {
+        /// tools 末块标记
+        MarkTools,
+        /// system 字符串提升为单块数组（携带 text）
+        PromoteSystem { text: String },
+        /// system 数组末块标记
+        MarkSystemTail,
+        /// 最后一条 user 消息末块标记（content 为数组）
+        MarkLastUserTail,
+    }
+    let mut plan: Vec<Edit> = Vec::new();
+    for anchor in &policy.anchors {
+        match anchor.as_str() {
+            "tools" => {
+                if body
+                    .get("tools")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|a| !a.is_empty())
+                {
+                    plan.push(Edit::MarkTools);
+                }
+            }
+            "system" => match body.get("system") {
+                Some(Value::String(text)) => {
+                    plan.push(Edit::PromoteSystem { text: text.clone() });
+                }
+                Some(Value::Array(blocks)) if !blocks.is_empty() => {
+                    plan.push(Edit::MarkSystemTail);
+                }
+                _ => {}
+            },
+            "last_user" => {
+                let last_user_has_blocks = body
+                    .get("messages")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|msgs| {
+                        msgs.iter()
+                            .rev()
+                            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                            .is_some_and(|m| {
+                                m.get("content")
+                                    .is_some_and(|c| c.as_array().is_some_and(|a| !a.is_empty()))
+                            })
+                    });
+                if last_user_has_blocks {
+                    plan.push(Edit::MarkLastUserTail);
+                }
+            }
+            other => {
+                tracing::debug!(anchor = %other, "unknown cache breakpoint anchor, skipped");
+            }
+        }
+    }
+    if plan.len() > cap {
+        plan.drain(..plan.len() - cap);
+    }
+
+    // 2) 应用
+    let mut injected = 0usize;
+    for edit in plan {
+        match edit {
+            Edit::MarkTools => {
+                if let Some(last) = body
+                    .get_mut("tools")
+                    .and_then(|v| v.as_array_mut())
+                    .and_then(|a| a.last_mut())
+                    .and_then(|t| t.as_object_mut())
+                {
+                    last.insert("cache_control".into(), json!({"type": "ephemeral"}));
+                    injected += 1;
+                }
+            }
+            Edit::PromoteSystem { text } => {
+                body["system"] = json!([{
+                    "type": "text",
+                    "text": text,
+                    "cache_control": {"type": "ephemeral"},
+                }]);
+                injected += 1;
+            }
+            Edit::MarkSystemTail => {
+                if let Some(last) = body
+                    .get_mut("system")
+                    .and_then(|v| v.as_array_mut())
+                    .and_then(|a| a.last_mut())
+                    .and_then(|b| b.as_object_mut())
+                {
+                    last.insert("cache_control".into(), json!({"type": "ephemeral"}));
+                    injected += 1;
+                }
+            }
+            Edit::MarkLastUserTail => {
+                let target = body
+                    .get_mut("messages")
+                    .and_then(|v| v.as_array_mut())
+                    .and_then(|msgs| {
+                        msgs.iter_mut()
+                            .rev()
+                            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                    })
+                    .and_then(|m| m.get_mut("content"))
+                    .and_then(|c| c.as_array_mut())
+                    .and_then(|a| a.last_mut())
+                    .and_then(|b| b.as_object_mut());
+                if let Some(block) = target {
+                    block.insert("cache_control".into(), json!({"type": "ephemeral"}));
+                    injected += 1;
+                }
+            }
+        }
+    }
+    injected
 }

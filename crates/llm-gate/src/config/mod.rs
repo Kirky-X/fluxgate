@@ -572,6 +572,18 @@ pub struct RoutingSection {
     ///（那只是亲和键格式开关）。
     #[serde(default)]
     pub sla_v: f64,
+    /// T007：价格因子 — model_catalog 单价参与加权路由（**默认开启**）。
+    /// 因子定义：候选模型单价 p = (input_price + output_price) / 2（每
+    /// 1M tokens；cache 档不进因子——随负载变化，基础对是稳定公布口径）；
+    /// 乘性修正 `weight ×= min_p / p`（集合内已登记最低价者因子 1，高价按
+    /// 价格比例衰减）——等价条件下低价候选胜出。中性豁免：目录为空 /
+    /// 候选全部未登记 / 单候选 / 未登记或 0 价候选（因子 1.0，不奖励无
+    /// 定价者）。查找用精确匹配（路由候选是 vendor 配置的精确模型身份；
+    /// 前缀回退属计价域，D7.11 非对称锚）。**关闭时路由行为与现状逐位
+    /// 一致**（开关 off 直接跳过整个因子路径）。热生效：POST /admin/config
+    /// 下一请求即用新值。
+    #[serde(default = "default_price_factor_enabled")]
+    pub price_factor_enabled: bool,
     /// recId=14：目标服务水平 α（[0,1]）。虚拟队列对偶更新
     /// `Q ← max(0, Q + α − ŝ_selected)`（决策时更新，SLARouter Eq 4/5 的
     /// Lyapunov 语义）：α < ŝ（满意度达标）→ Q 衰减归 0；α > ŝ（服务
@@ -607,6 +619,10 @@ pub struct RoutingSection {
     /// 正则初值 = max(α²,1)·I（构造期定死，α 热更只影响探索半径）。默认 1.0。
     #[serde(default = "default_ucb_alpha")]
     pub ucb_alpha: f64,
+}
+
+fn default_price_factor_enabled() -> bool {
+    true
 }
 
 fn default_affinity_mode() -> String {
@@ -682,6 +698,7 @@ impl Default for RoutingSection {
             affinity_boost_factor: default_affinity_boost_factor(),
             affinity_tenant_scoped: false,
             sla_v: 0.0,
+            price_factor_enabled: default_price_factor_enabled(),
             sla_alpha: default_sla_alpha(),
             ucb_alpha: default_ucb_alpha(),
             lps_delta: 0.0,

@@ -80,6 +80,69 @@ pub struct ModelCatalogEntry {
     /// 是否支持思考模式
     #[serde(default)]
     pub supports_thinking: bool,
+    /// Anthropic 自动缓存断点注入策略（T007；anthropic 型 vendor 转换出站
+    /// 生效）。None = 用内置默认（启用 / 上限 4 / 锚序 tools→system→
+    /// last_user，见 [`CacheBreakpointPolicy`]）。与 supports_* 能力位
+    /// 正交——能力位描述模型能做什么，缓存断点是请求侧计费/性能工程。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_breakpoints: Option<CacheBreakpointPolicy>,
+}
+
+/// Anthropic 自动缓存断点注入策略（T007）。
+///
+/// 断点 = 出站请求内容块上的 `cache_control: {"type":"ephemeral"}` 标记
+/// （Anthropic prompt caching；平台单请求断点上限 4）。命中后续请求按
+/// 前缀缓存计费（cache read ≈ 0.1×输入价），未命中写缓存按 1.25×计费
+/// ——默认开启是成本/性能工程取舍，条目级可关。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct CacheBreakpointPolicy {
+    /// 注入开关（anthropic 型 vendor 转换出站）
+    #[serde(default = "default_cache_breakpoints_enabled")]
+    pub enabled: bool,
+    /// 断点数上限（候选锚点超出时保留锚序**尾部**、丢弃头部——尾部锚
+    /// 更贴近对话末端，增量缓存命中率高）。0 = 不注入。
+    #[serde(default = "default_max_cache_breakpoints")]
+    pub max_breakpoints: u8,
+    /// 锚点与应用顺序（溢出按序丢弃头部元素）：
+    /// - `"tools"` — tools 数组最后一个定义块（工具前缀最稳定）；
+    /// - `"system"` — system 段（字符串提升为单块数组后标记）；
+    /// - `"last_user"` — 最后一条 user 消息的最后一个内容块。
+    ///
+    /// 未知锚名忽略（显性 debug 日志）。
+    #[serde(default = "default_cache_breakpoint_anchors")]
+    pub anchors: Vec<String>,
+}
+
+fn default_cache_breakpoints_enabled() -> bool {
+    true
+}
+
+fn default_max_cache_breakpoints() -> u8 {
+    4
+}
+
+fn default_cache_breakpoint_anchors() -> Vec<String> {
+    vec!["tools".into(), "system".into(), "last_user".into()]
+}
+
+impl Default for CacheBreakpointPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: default_cache_breakpoints_enabled(),
+            max_breakpoints: default_max_cache_breakpoints(),
+            anchors: default_cache_breakpoint_anchors(),
+        }
+    }
+}
+
+/// 断点策略解析：目录精确命中且条目带覆盖 → 条目策略；否则内置默认
+/// （未登记模型同样注入——缓存断点是请求侧工程，不依赖登记）。
+pub fn cache_policy_for(catalog: &[ModelCatalogEntry], model_id: &str) -> CacheBreakpointPolicy {
+    catalog
+        .iter()
+        .find(|e| e.model_id == model_id)
+        .and_then(|e| e.cache_breakpoints.clone())
+        .unwrap_or_default()
 }
 
 /// 能力查询结果 — capabilities() 语义面（无定价；定价消费在 T007 计价）。
@@ -176,6 +239,7 @@ mod tests {
             max_output_tokens: Some(8192),
             supports_tools: true,
             supports_thinking: true,
+            cache_breakpoints: None,
         }
     }
 
@@ -318,6 +382,7 @@ currency = "eur"
             max_output_tokens: Some(16_384),
             supports_tools: true,
             supports_thinking: false,
+            cache_breakpoints: None,
         };
         let per_million = |tokens: u64, price: f64| (tokens as f64 / 1_000_000.0) * price;
         let cache_creation = per_million(100_000, gpt4o.cache_creation_price);
@@ -325,6 +390,60 @@ currency = "eur"
             cache_creation.abs() < 1e-9,
             "0 价档不产生成本（非虚构计价）"
         );
+    }
+
+    // ======== 断点策略（T007） ========
+
+    #[test]
+    fn cache_policy_entry_override_and_default_fallback() {
+        let mut catalog = vec![claude_entry()];
+        // 未覆盖条目 → 内置默认
+        let default_policy = super::cache_policy_for(&catalog, "claude-sonnet-4-20250514");
+        assert!(default_policy.enabled);
+        assert_eq!(default_policy.max_breakpoints, 4);
+        assert_eq!(default_policy.anchors, vec!["tools", "system", "last_user"]);
+
+        // 条目覆盖（capability 位正交：supports_thinking=false 仍可注入）
+        catalog[0].supports_thinking = false;
+        catalog[0].cache_breakpoints = Some(CacheBreakpointPolicy {
+            enabled: true,
+            max_breakpoints: 2,
+            anchors: vec!["system".into(), "last_user".into()],
+        });
+        let policy = super::cache_policy_for(&catalog, "claude-sonnet-4-20250514");
+        assert_eq!(policy.max_breakpoints, 2, "条目覆盖生效");
+        assert!(!catalog[0].supports_thinking, "能力位与注入策略正交");
+
+        // 未登记模型 → 内置默认（注入不依赖登记）
+        assert_eq!(
+            super::cache_policy_for(&catalog, "unregistered").max_breakpoints,
+            4
+        );
+    }
+
+    #[test]
+    fn cache_policy_toml_sub_table_roundtrip() {
+        let toml = r#"
+model_id = "claude-sonnet-4-20250514"
+context_window = 200000
+
+[cache_breakpoints]
+enabled = false
+max_breakpoints = 2
+anchors = ["system", "last_user"]
+"#;
+        let entry: ModelCatalogEntry = toml::from_str(toml).unwrap();
+        let policy = entry.cache_breakpoints.expect("sub-table parsed");
+        assert!(!policy.enabled);
+        assert_eq!(policy.max_breakpoints, 2);
+        assert_eq!(policy.anchors, vec!["system", "last_user"]);
+        // None 时不序列化（skip_serializing_if）
+        let minimal: ModelCatalogEntry =
+            toml::from_str("model_id = \"m\"\ncontext_window = 1").unwrap();
+        assert!(minimal.cache_breakpoints.is_none());
+        assert!(!toml::to_string(&minimal)
+            .unwrap()
+            .contains("cache_breakpoints"));
     }
 
     /// CNY 条目：币种随条目（T007 按 currency 分道 cost_usd/cost_cny 的输入）。

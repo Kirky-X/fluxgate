@@ -66,3 +66,6 @@ limiteron = { path = "../../../limiteron", features = ["test-clock"] }
 # mock 上游 HTTP 服务（vendor/router 集成测试）
 mockito = "1"
 futures-util = "0.3"
+# retry 预算测试用 paused clock（start_paused；独立 -p 测试不走 workspace
+# 依赖统一，test-util 必须显式声明）
+tokio = { version = "1", features = ["full", "test-util"] }

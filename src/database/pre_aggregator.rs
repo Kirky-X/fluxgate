@@ -145,17 +145,10 @@ impl TokenPreAggregator {
             return Ok(());
         }
 
-        let sql = r#"
-            INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens, cost_usd_sum)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(vendor, model, date, hour)
-            DO UPDATE SET
-                request_count = request_count + excluded.request_count,
-                total_tokens = total_tokens + excluded.total_tokens,
-                prompt_tokens = prompt_tokens + excluded.prompt_tokens,
-                completion_tokens = completion_tokens + excluded.completion_tokens,
-                cost_usd_sum = cost_usd_sum + excluded.cost_usd_sum
-        "#;
+        let session = self.repository.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let sql = upsert_token_usage_sql(backend);
 
         for (key, value) in entries {
             let values: Vec<sea_orm::Value> = vec![
@@ -170,18 +163,79 @@ impl TokenPreAggregator {
                 value.cost_usd_sum.into(),
             ];
 
-            let stmt = sea_orm::Statement::from_sql_and_values(
-                sea_orm::DatabaseBackend::Sqlite,
-                sql,
-                values,
-            );
-
-            let session = self.repository.pool.get_session("admin").await?;
-            let conn = session.connection()?;
+            let stmt = sea_orm::Statement::from_sql_and_values(backend, sql, values);
             conn.execute_raw(stmt).await?;
         }
 
         Ok(())
+    }
+}
+
+/// token_usage upsert 语句（纯函数，db-backend-selection T006）。
+/// sqlite（3.24+）与 postgres 共用 `ON CONFLICT DO UPDATE`（`excluded` 引用
+/// 新行）；mysql 无该语法，走 `ON DUPLICATE KEY UPDATE` + `VALUES(col)`。
+fn upsert_token_usage_sql(backend: sea_orm::DatabaseBackend) -> &'static str {
+    match backend {
+        sea_orm::DatabaseBackend::MySql => {
+            r#"
+            INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens, cost_usd_sum)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                request_count = request_count + VALUES(request_count),
+                total_tokens = total_tokens + VALUES(total_tokens),
+                prompt_tokens = prompt_tokens + VALUES(prompt_tokens),
+                completion_tokens = completion_tokens + VALUES(completion_tokens),
+                cost_usd_sum = cost_usd_sum + VALUES(cost_usd_sum)
+        "#
+        }
+        // DatabaseBackend 带 #[non_exhaustive]：其余（sqlite/postgres）ON CONFLICT 通用
+        _ => {
+            r#"
+            INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens, cost_usd_sum)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(vendor, model, date, hour)
+            DO UPDATE SET
+                request_count = request_count + excluded.request_count,
+                total_tokens = total_tokens + excluded.total_tokens,
+                prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+                completion_tokens = completion_tokens + excluded.completion_tokens,
+                cost_usd_sum = cost_usd_sum + excluded.cost_usd_sum
+        "#
+        }
+    }
+}
+
+#[cfg(test)]
+mod upsert_sql_tests {
+    use super::upsert_token_usage_sql;
+    use sea_orm::DatabaseBackend;
+
+    /// sqlite/pg 同走 ON CONFLICT（excluded 引用新行），mysql 走
+    /// ON DUPLICATE KEY UPDATE（R-schema-003）
+    #[test]
+    fn upsert_dialect_dispatch() {
+        for backend in [DatabaseBackend::Sqlite, DatabaseBackend::Postgres] {
+            let sql = upsert_token_usage_sql(backend);
+            assert!(
+                sql.contains("ON CONFLICT(vendor, model, date, hour)"),
+                "{backend:?}"
+            );
+            assert!(sql.contains("excluded.request_count"), "{backend:?}");
+        }
+        let sql = upsert_token_usage_sql(DatabaseBackend::MySql);
+        assert!(sql.contains("ON DUPLICATE KEY UPDATE"));
+        assert!(sql.contains("VALUES(request_count)"));
+        // 五个数值列全部自增累加
+        for col in [
+            "request_count",
+            "total_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "cost_usd_sum",
+        ] {
+            assert!(sql.contains(&format!("+ VALUES({col})")), "{col}");
+        }
+        assert!(!sql.contains("ON CONFLICT"));
     }
 }
 

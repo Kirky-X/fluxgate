@@ -153,9 +153,9 @@ impl Repository {
     }
 
     pub async fn log_request(&self, log: &RequestLog) -> Result<(), DbError> {
-        let stmt = Self::insert_log_statement(log);
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
+        let stmt = Self::insert_log_statement(log, conn.get_database_backend());
         conn.execute_raw(stmt).await?;
         Ok(())
     }
@@ -177,9 +177,10 @@ impl Repository {
         }
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
+        let backend = conn.get_database_backend();
         let tx = conn.begin().await?;
         for log in logs {
-            let stmt = Self::insert_log_statement(log);
+            let stmt = Self::insert_log_statement(log, backend);
             // sea-orm 2.0：预构建 Statement 走 execute_raw（execute 接收
             // StatementBuilder，即 sea_query 语句类型）
             if let Err(e) = tx.execute_raw(stmt).await {
@@ -192,8 +193,10 @@ impl Repository {
         Ok(())
     }
 
-    /// request_logs 的参数化 INSERT Statement（log_request / log_requests_batch 共用）
-    fn insert_log_statement(log: &RequestLog) -> Statement {
+    /// request_logs 的参数化 INSERT Statement（log_request / log_requests_batch
+    /// 共用）。语句本体系 `?` 占位符三端通用；backend 标注决定 sea-orm 的
+    /// 参数绑定翻译（postgres 下 `?` → `$n`），必须随连接后端而非写死。
+    fn insert_log_statement(log: &RequestLog, backend: DatabaseBackend) -> Statement {
         const SQL: &str = r#"
             INSERT INTO request_logs (
                 request_id, timestamp, endpoint, input_format,
@@ -224,7 +227,7 @@ impl Repository {
             log.cost_usd.into(),
         ];
 
-        Statement::from_sql_and_values(DatabaseBackend::Sqlite, SQL, values)
+        Statement::from_sql_and_values(backend, SQL, values)
     }
 
     pub async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<RequestLog>, DbError> {
@@ -253,9 +256,9 @@ impl Repository {
             values.push((filter.limit as i64).into());
         }
 
-        let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, &query, values);
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
+        let stmt = Statement::from_sql_and_values(conn.get_database_backend(), &query, values);
         let rows = conn.query_all_raw(stmt).await?;
 
         Ok(rows.iter().map(map_request_log).collect())
@@ -263,12 +266,21 @@ impl Repository {
 
     pub async fn search_logs(&self, keyword: &str, limit: u32) -> Result<Vec<RequestLog>, DbError> {
         let pattern = format!("%{}%", keyword);
-        let sql = r#"
+
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        // LIKE 的大小写语义随 collation 漂移：sqlite/mysql（默认 collation）
+        // ASCII 不区分大小写，postgres 区分——ILIKE 对齐 sqlite 既有行为
+        let like_op = Self::like_op(backend);
+        let sql = format!(
+            r#"
             SELECT * FROM request_logs
-            WHERE messages LIKE ? OR error_message LIKE ?
+            WHERE messages {like_op} ? OR error_message {like_op} ?
             ORDER BY timestamp DESC
             LIMIT ?
-        "#;
+        "#
+        );
 
         let values: Vec<Value> = vec![
             pattern.as_str().into(),
@@ -276,12 +288,18 @@ impl Repository {
             (limit as i64).into(),
         ];
 
-        let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values);
-        let session = self.pool.get_session("admin").await?;
-        let conn = session.connection()?;
+        let stmt = Statement::from_sql_and_values(backend, &sql, values);
         let rows = conn.query_all_raw(stmt).await?;
 
         Ok(rows.iter().map(map_request_log).collect())
+    }
+
+    /// 模糊匹配算子（纯函数）：postgres 用 ILIKE，其余后端 LIKE
+    fn like_op(backend: DatabaseBackend) -> &'static str {
+        match backend {
+            DatabaseBackend::Postgres => "ILIKE",
+            _ => "LIKE",
+        }
     }
 
     pub async fn get_token_stats(
@@ -301,9 +319,9 @@ impl Repository {
             )
         };
 
-        let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, &sql, values);
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
+        let stmt = Statement::from_sql_and_values(conn.get_database_backend(), &sql, values);
         let rows = conn.query_all_raw(stmt).await?;
 
         Ok(rows.iter().map(map_token_usage).collect())
@@ -311,9 +329,9 @@ impl Repository {
 
     pub async fn get_all_vendor_status(&self) -> Result<Vec<VendorStatusRecord>, DbError> {
         let sql = "SELECT * FROM vendor_status ORDER BY vendor";
-        let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, Vec::new());
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
+        let stmt = Statement::from_sql_and_values(conn.get_database_backend(), sql, Vec::new());
         let rows = conn.query_all_raw(stmt).await?;
 
         Ok(rows.iter().map(map_vendor_status).collect())

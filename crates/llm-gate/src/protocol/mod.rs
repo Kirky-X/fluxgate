@@ -17,12 +17,15 @@ pub use openai_converter::OpenAIConverter;
 pub use sse_frame::{
     encode_sse_done, encode_sse_error, encode_sse_event, SseFrame, SseFrameParser,
 };
-pub(crate) use unified::{absorb_vendor_extensions, merge_vendor_extensions};
+pub(crate) use unified::{
+    absorb_vendor_extensions, merge_vendor_extensions, validate_tool_schemas,
+};
 pub use unified::{
     Choice, ContentBlock, EffortLevel, EmbeddingData, EmbeddingUsage, FinishReason, ImageSource,
     Message, MessageContent, Role, SamplingParams, StreamChunk, ThinkingConfig, TokenUsage, Tool,
     ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolResult,
-    UnifiedEmbeddingResponse, UnifiedRequest, UnifiedResponse,
+    UnifiedEmbeddingResponse, UnifiedRequest, UnifiedResponse, MAX_TOOL_SCHEMA_BYTES,
+    MAX_TOOL_SCHEMA_DEPTH,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

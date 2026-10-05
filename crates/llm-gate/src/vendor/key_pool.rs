@@ -73,7 +73,11 @@ pub(crate) fn merged_key_env_names(config: &VendorConfig) -> Vec<String> {
 }
 
 /// 池解析结果（纯函数 [`resolve_key_pool`] 的产物）。
-#[derive(Debug, Default, PartialEq)]
+///
+/// Debug 手写脱敏：`keys` 只出 `[REDACTED n keys]` 数量（同
+/// [`RequestCredential`] 口径）；`missing` 为 env 名（非机密，同 config
+/// 暴露面）与截断计数保留可观测。
+#[derive(Default, PartialEq)]
 pub(crate) struct ResolvedPool {
     /// 实际 key 串（顺序 = env 名顺序；未设置或空值的 env 视同缺失跳过）
     pub keys: Vec<String>,
@@ -81,6 +85,18 @@ pub(crate) struct ResolvedPool {
     pub missing: Vec<String>,
     /// 超出 [`MAX_KEY_POOL`] 被截断的 env 名条数
     pub truncated: usize,
+}
+
+impl std::fmt::Debug for ResolvedPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // missing 只出计数——防「误将 key 原文填进 env 名位置」经 Debug 回显
+        // （与 log_resolution 只报序号+长度的脱敏约定同口径）。
+        f.debug_struct("ResolvedPool")
+            .field("keys", &format!("[REDACTED {} keys]", self.keys.len()))
+            .field("missing", &self.missing.len())
+            .field("truncated", &self.truncated)
+            .finish()
+    }
 }
 
 /// 池解析纯函数核（env 经 `lookup` 注入，可测）。
@@ -116,7 +132,13 @@ pub(crate) fn fingerprint_of(key: &str) -> String {
 }
 
 /// 请求级凭证——出站路径的 key 选择结果。
-#[derive(Debug, Clone, PartialEq)]
+///
+/// 安全审查遗留纵深：`Debug` 手写脱敏——`Pool` 臂不回显 key 原文，输出
+/// `Pool { key: "[REDACTED n chars]", fingerprint: ... }` 形态（对齐
+/// GateCandidate 的 `[REDACTED]` 脱敏口径）；指纹为进程内随机密钥哈希
+/// （见 [`fingerprint_of`]），非机密可观测。`LegacyEnv` 臂无字段
+/// （build 时读 env，不持凭证），无脱敏面。
+#[derive(Clone, PartialEq)]
 pub(crate) enum RequestCredential {
     /// 池命中：本次出站请求固定使用该 key（指纹参与熔断状态键）。
     /// 单请求内所有重试尝试复用同一 key（轮换生效于下次尝试）。
@@ -124,6 +146,19 @@ pub(crate) enum RequestCredential {
     /// 池空回退：既有 `api_key_env` 单 key 行为（build 时读 env，
     /// 缺失报 `Config` 错误——与历史逐位一致），不参与轮换与按 key 隔离。
     LegacyEnv,
+}
+
+impl std::fmt::Debug for RequestCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestCredential::Pool { key, fingerprint } => f
+                .debug_struct("Pool")
+                .field("key", &format!("[REDACTED {} chars]", key.len()))
+                .field("fingerprint", fingerprint)
+                .finish(),
+            RequestCredential::LegacyEnv => f.debug_struct("LegacyEnv").finish(),
+        }
+    }
 }
 
 impl RequestCredential {
@@ -163,7 +198,9 @@ pub struct KeyPoolInfo {
 
 /// 解析快照——实例持有的「按 env 名单解析出的 key 池」（env 模式专属；
 /// 内联注入模式见 [`PoolSnapshot`]）。
-#[derive(Debug, Default, PartialEq)]
+///
+/// Debug 手写脱敏同 [`ResolvedPool`]：`keys` 只出数量，env 名与计数保留。
+#[derive(Default, PartialEq)]
 struct ResolvedSnapshot {
     /// 最近一次解析的合并 env 名（变更检测键：名单变 → 全量重解析）
     names: Vec<String>,
@@ -173,6 +210,18 @@ struct ResolvedSnapshot {
     missing: usize,
     /// 被截断的 env 名条数
     truncated: usize,
+}
+
+impl std::fmt::Debug for ResolvedSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // names/missing 只出计数（同 ResolvedPool 脱敏口径）。
+        f.debug_struct("ResolvedSnapshot")
+            .field("names", &self.names.len())
+            .field("keys", &format!("[REDACTED {} keys]", self.keys.len()))
+            .field("missing", &self.missing)
+            .field("truncated", &self.truncated)
+            .finish()
+    }
 }
 
 /// 预解析 key 池快照（编程式注入面，A2 审查回写安全 HIGH 根治）。
@@ -191,10 +240,20 @@ struct ResolvedSnapshot {
 ///   由调用方管理（vendor 实例存活期内有效；实例重建或换 vendor_id 后
 ///   需重新注入）；
 /// - 空池（剔除空白项后无 key）等价 env 池耗尽：回退 legacy 单 key 行为
-///   （config `api_key_env` 现读，缺失则请求不带 Authorization 头）。
-#[derive(Debug, Clone, PartialEq)]
+///   （config `api_key_env` 现读，缺失则请求不带 Authorization 头）；
+/// - Debug 手写脱敏：`keys` 只出 `[REDACTED n keys]` 数量（指纹观测面在
+///   [`KeyPoolInfo`]，指纹非机密保留）。
+#[derive(Clone, PartialEq)]
 pub struct PoolSnapshot {
     keys: Vec<String>,
+}
+
+impl std::fmt::Debug for PoolSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolSnapshot")
+            .field("keys", &format!("[REDACTED {} keys]", self.keys.len()))
+            .finish()
+    }
 }
 
 impl PoolSnapshot {
@@ -612,6 +671,82 @@ mod tests {
         assert_ne!(a1, b, "不同 key 指纹互异（隔离的前提）");
         assert_eq!(a1.len(), 16, "16 位十六进制（对齐 provider_chain 语义）");
         assert!(a1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // ======== Debug 脱敏（安全审查遗留纵深） ========
+
+    /// `RequestCredential` 手工 Debug：Pool 臂不回显 key 原文（
+    /// `[REDACTED n chars]` 形态，对齐 GateCandidate 脱敏口径），指纹
+    /// 非机密保留可观测；LegacyEnv 臂无字段、无脱敏面。
+    #[test]
+    fn request_credential_debug_redacts_key_plaintext() {
+        // 测试假凭证（detect-secrets 已人工核阅误报豁免）
+        let secret = "super-secret-credential-12345"; // pragma: allowlist secret
+        let credential = RequestCredential::Pool {
+            key: secret.to_string(),
+            fingerprint: "0123456789abcdef".to_string(),
+        };
+        let dbg = format!("{credential:?}");
+        assert!(!dbg.contains(secret), "Debug 不得泄漏 key 原文: {dbg}");
+        assert!(
+            dbg.contains("[REDACTED 29 chars]"),
+            "脱敏形态须为 [REDACTED n chars]: {dbg}"
+        );
+        assert!(
+            dbg.contains("0123456789abcdef"),
+            "指纹非机密（进程内随机哈希），Debug 保留可观测: {dbg}"
+        );
+        assert_eq!(
+            format!("{:?}", RequestCredential::LegacyEnv),
+            "LegacyEnv",
+            "LegacyEnv 臂无敏感字段"
+        );
+    }
+
+    /// PoolSnapshot / ResolvedPool / ResolvedSnapshot 手工 Debug（批复 2
+    /// 顺手修）：keys 列表只出 `[REDACTED n keys]` 数量，不回显 key 原文；
+    /// env 名同样只出计数——防「误将 key 原文填进 env 名位置」经 Debug 回显
+    /// （与 log_resolution 只报序号+长度的约定同口径）。
+    #[test]
+    fn pool_structs_debug_redact_key_plaintext() {
+        // 测试假凭证（detect-secrets 已人工核阅误报豁免）
+        let secret = "inline-credential-value"; // pragma: allowlist secret
+        let snapshot = PoolSnapshot::from_keys([secret, "k2"]);
+        let dbg = format!("{snapshot:?}");
+        assert!(
+            !dbg.contains(secret),
+            "PoolSnapshot Debug 不得泄漏 key 原文: {dbg}"
+        );
+        assert!(dbg.contains("[REDACTED 2 keys]"), "脱敏形态: {dbg}");
+
+        let resolved = resolve_key_pool(
+            &["ENV_SET".to_string(), "ENV_MISSING".to_string()],
+            |name| (name == "ENV_SET").then(|| secret.to_string()),
+        );
+        let dbg = format!("{resolved:?}");
+        assert!(
+            !dbg.contains(secret),
+            "ResolvedPool Debug 不得泄漏 key 原文: {dbg}"
+        );
+        assert!(dbg.contains("[REDACTED 1 keys]"), "脱敏形态: {dbg}");
+        assert!(
+            dbg.contains("missing: 1"),
+            "env 名改计数口径（防误填原文回显）: {dbg}"
+        );
+
+        let snapshot_state = ResolvedSnapshot {
+            names: vec!["ENV_X".to_string()],
+            keys: vec![secret.to_string()],
+            missing: 0,
+            truncated: 0,
+        };
+        let dbg = format!("{snapshot_state:?}");
+        assert!(
+            !dbg.contains(secret),
+            "ResolvedSnapshot Debug 不得泄漏 key 原文: {dbg}"
+        );
+        assert!(dbg.contains("[REDACTED 1 keys]"), "脱敏形态: {dbg}");
+        assert!(dbg.contains("names: 1"), "env 名改计数口径: {dbg}");
     }
 
     // ======== 轮换顺序与耗尽回退 ========

@@ -125,11 +125,13 @@ impl ProtocolConverter for AnthropicConverter {
         all_messages.extend(messages);
 
         // 解析 Anthropic 格式的工具定义
-        let tools = body
+        let tools: Vec<Tool> = body
             .get("tools")
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(parse_anthropic_tool).collect())
             .unwrap_or_default();
+        // 工具 schema 体积/深度上限（A3 审查 F4 纵深）：超限请求级 400
+        validate_tool_schemas(&tools)?;
 
         // Anthropic 的 tool_choice 映射到统一格式
         // T003：原生形状 any/tool/auto/none 直读（any 即「必须用工具」，

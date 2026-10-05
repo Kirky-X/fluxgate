@@ -207,6 +207,65 @@ mod converter {
         assert!(unified.tool_choice.is_some());
     }
 
+    // ==================== Tool Schema Limits（A3 审查 F4 纵深） ====================
+
+    #[tokio::test]
+    async fn test_openai_to_unified_rejects_oversized_tool_schema() {
+        let converter = OpenAIConverter::new();
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "fat",
+                    "description": "d",
+                    "parameters": {"pad": "x".repeat(128 * 1024)}
+                }
+            }]
+        });
+        let err = converter.to_unified(request).unwrap_err();
+        assert_eq!(err.status_code(), 400, "超限 schema 请求级 400 拒绝");
+        assert!(matches!(err, llm_gate::GateError::Validation { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_openai_to_unified_accepts_bounded_tool_schema() {
+        let converter = OpenAIConverter::new();
+        // 恰在上限：嵌套深度 32（`{"type":"object"}` 为 1，数组包裹每层 +1）
+        let mut schema = json!({"type": "object"});
+        for _ in 0..31 {
+            schema = json!([schema]);
+        }
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {"name": "ok", "description": "d", "parameters": schema}
+            }]
+        });
+        let unified = converter.to_unified(request).unwrap();
+        assert_eq!(unified.tools.len(), 1, "边界内 schema 放行");
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_to_unified_rejects_overdeep_tool_schema() {
+        let converter = AnthropicConverter::new();
+        let mut schema = json!(0);
+        for _ in 0..33 {
+            schema = json!([schema]);
+        }
+        let request = json!({
+            "model": "claude-3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "deep", "description": "d", "input_schema": schema}]
+        });
+        let err = converter.to_unified(request).unwrap_err();
+        assert_eq!(err.status_code(), 400, "超深 schema 请求级 400 拒绝");
+        assert!(matches!(err, llm_gate::GateError::Validation { .. }));
+    }
+
     #[tokio::test]
     async fn test_openai_to_unified_with_tool_result() {
         let converter = OpenAIConverter::new();

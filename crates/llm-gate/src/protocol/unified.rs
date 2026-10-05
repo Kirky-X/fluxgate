@@ -3,6 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
+use crate::error::GateError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -244,6 +245,65 @@ pub struct ToolFunction {
     /// 其余静默丢失）。`Null` = 未携带（出站按协议缺省形状补齐）。
     #[serde(default)]
     pub parameters: Value,
+}
+
+/// 单个工具 `parameters` schema 的序列化字节上限（128 KiB）。
+///
+/// 应用层显式上限（A3 审查 F4 挂账，纵深防御）：schema 经
+/// [`ToolFunction::parameters`] 的 `Value` 原样透传进上游请求，既有防线
+/// 仅 axum 2 MB 请求体限 + serde_json 128 层递归限；本上限在入站解析处
+/// 把单 schema 体积收进显式拒绝（[`GateError::Validation`] → 请求级
+/// 400），避免任意大 schema 原样消耗上游带宽与 token 预算。128 KiB 远超
+/// 常见工具 schema 量级（典型 < 4 KiB），正常业务零感知。
+pub const MAX_TOOL_SCHEMA_BYTES: usize = 128 * 1024;
+
+/// 单个工具 `parameters` schema 的递归深度上限（32 层）。
+///
+/// serde_json 解析限 128 层（防栈溢出），本上限在应用层进一步收紧到
+/// JSON Schema 的合理嵌套量级（典型 ≤ 10 层）；超限入站 400 拒绝。
+pub const MAX_TOOL_SCHEMA_DEPTH: usize = 32;
+
+/// 计算 [`serde_json::Value`] 的递归深度：叶子（标量/Null）为 0，
+/// 容器为 1 + 子节点最大深度（空容器为 1）。
+pub(crate) fn json_depth(value: &Value) -> usize {
+    match value {
+        Value::Array(items) => 1 + items.iter().map(json_depth).max().unwrap_or(0),
+        Value::Object(map) => 1 + map.values().map(json_depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// 工具 schema 体积/深度上限校验（入站解析处，A3 审查 F4 纵深）。
+///
+/// 对每个 tool 的 `parameters` 依次校验：序列化字节数 ≤
+/// [`MAX_TOOL_SCHEMA_BYTES`]、递归深度 ≤ [`MAX_TOOL_SCHEMA_DEPTH`]；
+/// 超限返回 [`GateError::Validation`]（应用层映射请求级 400），`field`
+/// 携带出错工具下标 + 实测值 + 上限值（显性化，不静默截断）。
+pub(crate) fn validate_tool_schemas(tools: &[Tool]) -> Result<(), GateError> {
+    for (index, tool) in tools.iter().enumerate() {
+        let parameters = &tool.function.parameters;
+        let size = serde_json::to_vec(parameters)
+            .map_err(|e| GateError::Validation {
+                field: format!("tools[{index}].parameters: schema serialization failed: {e}"),
+            })?
+            .len();
+        if size > MAX_TOOL_SCHEMA_BYTES {
+            return Err(GateError::Validation {
+                field: format!(
+                    "tools[{index}].parameters: serialized size {size} bytes exceeds limit {MAX_TOOL_SCHEMA_BYTES}"
+                ),
+            });
+        }
+        let depth = json_depth(parameters);
+        if depth > MAX_TOOL_SCHEMA_DEPTH {
+            return Err(GateError::Validation {
+                field: format!(
+                    "tools[{index}].parameters: nesting depth {depth} exceeds limit {MAX_TOOL_SCHEMA_DEPTH}"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// 工具调用 - 助手消息中的工具调用请求
@@ -915,5 +975,117 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ======== 工具 schema 体积/深度上限（A3 审查 F4 纵深） ========
+
+    use crate::error::GateError;
+
+    fn tool_with_params(name: &str, parameters: Value) -> Tool {
+        Tool {
+            tool_type: "function".to_string(),
+            function: ToolFunction {
+                name: name.to_string(),
+                description: String::new(),
+                parameters,
+            },
+        }
+    }
+
+    /// 序列化后恰为 `target` 字节的 Value（`{"a":"xxx…"}` = 8 + pad 字节）。
+    fn value_of_serialized_size(target: usize) -> Value {
+        json!({ "a": "x".repeat(target - 8) })
+    }
+
+    /// 递归深度恰为 `depth` 的 Value（叶子上套 depth 层数组）。
+    fn value_of_depth(depth: usize) -> Value {
+        let mut v = json!(0);
+        for _ in 0..depth {
+            v = json!([v]);
+        }
+        v
+    }
+
+    #[test]
+    fn json_depth_counts_container_nesting() {
+        assert_eq!(json_depth(&json!(null)), 0, "叶子（Null/标量）深度为 0");
+        assert_eq!(json_depth(&json!(42)), 0);
+        assert_eq!(json_depth(&json!({"type": "object"})), 1, "空容器深度为 1");
+        assert_eq!(
+            json_depth(&json!({"a": [1, {"b": 2}]})),
+            3,
+            "容器 = 1 + 子节点最大深度"
+        );
+    }
+
+    #[test]
+    fn validate_tool_schemas_accepts_null_and_exact_boundaries() {
+        let tools = vec![
+            tool_with_params("no_params", Value::Null),
+            tool_with_params(
+                "fat_boundary",
+                value_of_serialized_size(MAX_TOOL_SCHEMA_BYTES),
+            ),
+            tool_with_params("deep_boundary", value_of_depth(MAX_TOOL_SCHEMA_DEPTH)),
+        ];
+        assert!(
+            validate_tool_schemas(&tools).is_ok(),
+            "未携带 schema 与恰在上限（128KB / 32 层）的 schema 必须放行"
+        );
+    }
+
+    #[test]
+    fn validate_tool_schemas_rejects_oversized_schema_with_locator_and_limits() {
+        let tools = vec![tool_with_params(
+            "fat",
+            value_of_serialized_size(MAX_TOOL_SCHEMA_BYTES + 1),
+        )];
+        let err = validate_tool_schemas(&tools).unwrap_err();
+        assert_eq!(err.status_code(), 400, "超限入站拒绝映射请求级 400");
+        assert!(matches!(err, GateError::Validation { .. }));
+        let GateError::Validation { field } = &err else {
+            panic!("expected Validation, got {err:?}")
+        };
+        assert!(
+            field.contains("tools[0].parameters"),
+            "定位到出错工具: {field}"
+        );
+        assert!(
+            field.contains(&MAX_TOOL_SCHEMA_BYTES.to_string()),
+            "显性化上限值: {field}"
+        );
+    }
+
+    #[test]
+    fn validate_tool_schemas_rejects_overdeep_schema() {
+        let tools = vec![tool_with_params(
+            "deep",
+            value_of_depth(MAX_TOOL_SCHEMA_DEPTH + 1),
+        )];
+        let err = validate_tool_schemas(&tools).unwrap_err();
+        let GateError::Validation { field } = &err else {
+            panic!("expected Validation, got {err:?}")
+        };
+        assert!(field.contains("depth"), "超深拒绝须显性化深度语义: {field}");
+        assert!(
+            field.contains(&MAX_TOOL_SCHEMA_DEPTH.to_string()),
+            "显性化上限值: {field}"
+        );
+    }
+
+    #[test]
+    fn validate_tool_schemas_reports_offending_tool_index() {
+        let tools = vec![
+            tool_with_params("ok", json!({"type": "object"})),
+            tool_with_params("fat", value_of_serialized_size(MAX_TOOL_SCHEMA_BYTES + 1)),
+        ];
+        let err = validate_tool_schemas(&tools).unwrap_err();
+        let GateError::Validation { field } = &err else {
+            panic!("expected Validation, got {err:?}")
+        };
+        assert!(
+            field.contains("tools[1].parameters"),
+            "第二个工具超限，定位下标须为 1: {field}"
+        );
     }
 }

@@ -80,11 +80,13 @@ impl ProtocolConverter for OpenAIConverter {
             .collect::<Result<Vec<_>, _>>()?;
 
         // 解析工具定义
-        let tools = body
+        let tools: Vec<Tool> = body
             .get("tools")
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(parse_openai_tool).collect())
             .unwrap_or_default();
+        // 工具 schema 体积/深度上限（A3 审查 F4 纵深）：超限请求级 400
+        validate_tool_schemas(&tools)?;
 
         // 解析工具选择策略
         let tool_choice = body.get("tool_choice").map(parse_tool_choice);

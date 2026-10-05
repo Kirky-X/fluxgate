@@ -10,6 +10,15 @@ use sea_orm::{
     Value,
 };
 
+/// LIKE 通配符转义（纯函数）：`\` → `\\`、`%` → `\%`、`_` → `\_`，
+/// 配合 SQL 侧 `ESCAPE ?`（转义符经绑定参数传入）让用户输入按字面匹配。
+pub(crate) fn escape_like(keyword: &str) -> String {
+    keyword
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// 按连接后端选择方言投影（db-backend-selection T004）。
 /// `schema.sql`（SQLite）为权威源；schema.postgres.sql / schema.mysql.sql 为
 /// 方言投影，头注释声明同步义务——权威源加表/加列时三处同改。
@@ -265,18 +274,26 @@ impl Repository {
     }
 
     pub async fn search_logs(&self, keyword: &str, limit: u32) -> Result<Vec<RequestLog>, DbError> {
-        let pattern = format!("%{}%", keyword);
+        // 通配符转义：keyword 中的 %/_ 按字面匹配（防止用户输入 % 全表通配）；
+        // 转义符 '\' 作为绑定参数传递——sqlite 无默认转义符必须显式 ESCAPE，
+        // pg/mysql 默认即反斜杠，显式子句语义一致，且规避三端字符串字面量
+        // 对反斜杠转义的方言差异
+        let pattern = format!("%{}%", escape_like(keyword));
 
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
         let backend = conn.get_database_backend();
         // LIKE 的大小写语义随 collation 漂移：sqlite/mysql（默认 collation）
-        // ASCII 不区分大小写，postgres 区分——ILIKE 对齐 sqlite 既有行为
+        // ASCII 不区分大小写，postgres 区分——ILIKE 对齐 sqlite 既有行为。
+        // 性能边界（审查 MEDIUM）：%kw% 前置通配在 postgres 下无法走 btree
+        // （LIKE 同样不可用，非回归）；request_logs 无界增长，数据达百万行
+        // 前建议加 pg_trgm GIN 索引（CREATE EXTENSION pg_trgm; ... USING gin
+        // (messages gin_trgm_ops)）——低频 admin 端点，暂不强制
         let like_op = Self::like_op(backend);
         let sql = format!(
             r#"
             SELECT * FROM request_logs
-            WHERE messages {like_op} ? OR error_message {like_op} ?
+            WHERE messages {like_op} ? ESCAPE ? OR error_message {like_op} ? ESCAPE ?
             ORDER BY timestamp DESC
             LIMIT ?
         "#
@@ -284,7 +301,9 @@ impl Repository {
 
         let values: Vec<Value> = vec![
             pattern.as_str().into(),
+            "\\".into(),
             pattern.as_str().into(),
+            "\\".into(),
             (limit as i64).into(),
         ];
 
@@ -465,6 +484,23 @@ mod schema_tests {
         assert!(mysql.contains("AUTO_INCREMENT"));
         assert!(mysql.contains("DOUBLE"));
         assert!(!mysql.contains("AUTOINCREMENT"));
+        // MySQL 要求 BLOB/TEXT 索引必须带前缀长度（ERROR 1170）：键规格列
+        // （PK/UNIQUE/索引覆盖）必须是 VARCHAR——性能审查 HIGH 闭合钉
+        assert!(!mysql.contains("TEXT UNIQUE"));
+        assert!(!mysql.contains("TEXT PRIMARY KEY"));
+        assert!(mysql.contains("request_id VARCHAR(255)"));
+        assert!(mysql.contains("vendor VARCHAR(255)"));
+        assert!(mysql.contains("actual_vendor VARCHAR(255)"));
+    }
+
+    /// LIKE 通配符转义：三类元字符 + 反斜杠优先（R-schema-003 关联的
+    /// search 输入面收敛，安全审查 LOW 闭合）
+    #[test]
+    fn escape_like_escapes_wildcards_and_backslash() {
+        assert_eq!(super::escape_like("abc"), "abc");
+        assert_eq!(super::escape_like("100%"), "100\\%");
+        assert_eq!(super::escape_like("a_b"), "a\\_b");
+        assert_eq!(super::escape_like("a\\%b"), "a\\\\\\%b");
     }
 
     /// 列探针语句分派：语句与结果键成对返回（R-schema-002）

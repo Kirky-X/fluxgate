@@ -5,7 +5,65 @@
 
 use crate::database::{LogFilter, RequestLog, TokenUsageRow, VendorStatusRecord};
 use dbnexus::{DbError, DbPool};
-use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, TransactionTrait, Value};
+use sea_orm::{
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, QueryResult, Statement, TransactionTrait,
+    Value,
+};
+
+/// 按连接后端选择方言投影（db-backend-selection T004）。
+/// `schema.sql`（SQLite）为权威源；schema.postgres.sql / schema.mysql.sql 为
+/// 方言投影，头注释声明同步义务——权威源加表/加列时三处同改。
+pub(crate) fn schema_sql_for_backend(backend: DatabaseBackend) -> &'static str {
+    match backend {
+        DatabaseBackend::Postgres => include_str!("schema.postgres.sql"),
+        DatabaseBackend::MySql => include_str!("schema.mysql.sql"),
+        // DatabaseBackend 带 #[non_exhaustive]：剩余可能（含未来新后端）回落权威源
+        _ => include_str!("schema.sql"),
+    }
+}
+
+/// schema 初始化单一实现（`Database::new` 与 `Repository::initialize` 共用，
+/// 消除两处逐语句循环副本）：按连接后端加载方言投影，逐语句 `execute_raw_ddl`；
+/// MySQL 另行幂等建索引（MySQL 8 无 `CREATE INDEX IF NOT EXISTS`，故方言
+/// 投影只含建表）。
+pub(crate) async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
+    let session = pool.get_session("admin").await?;
+    let backend = session.connection()?.get_database_backend();
+    for statement in schema_sql_for_backend(backend).split(';') {
+        let trimmed = statement.trim();
+        if !trimmed.is_empty() {
+            session.execute_raw_ddl(trimmed).await?;
+        }
+    }
+    if backend == DatabaseBackend::MySql {
+        ensure_indexes_mysql(session.connection()?).await?;
+    }
+    Ok(())
+}
+
+/// MySQL 索引幂等创建：`information_schema.statistics` 查存在性，缺则建。
+async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> {
+    const INDEXES: [(&str, &str, &str); 4] = [
+        ("idx_timestamp", "request_logs", "timestamp"),
+        ("idx_vendor", "request_logs", "actual_vendor"),
+        ("idx_model", "request_logs", "abstract_model"),
+        ("idx_request_id", "request_logs", "request_id"),
+    ];
+    for (index, table, column) in INDEXES {
+        let exists_sql = format!(
+            "SELECT INDEX_NAME FROM information_schema.statistics \
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}' AND INDEX_NAME = '{index}'"
+        );
+        let stmt = Statement::from_sql_and_values(DatabaseBackend::MySql, &exists_sql, Vec::new());
+        if !conn.query_all_raw(stmt).await?.is_empty() {
+            continue;
+        }
+        let create_sql = format!("CREATE INDEX {index} ON {table} ({column})");
+        let stmt = Statement::from_sql_and_values(DatabaseBackend::MySql, &create_sql, Vec::new());
+        conn.execute_raw(stmt).await?;
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct Repository {
@@ -18,16 +76,7 @@ impl Repository {
     }
 
     pub async fn initialize(&self) -> Result<(), DbError> {
-        let schema = include_str!("schema.sql");
-        {
-            let session = self.pool.get_session("admin").await?;
-            for statement in schema.split(';') {
-                let trimmed = statement.trim();
-                if !trimmed.is_empty() {
-                    session.execute_raw_ddl(trimmed).await?;
-                }
-            }
-        }
+        init_schema(&self.pool).await?;
 
         // 旧库迁移：v0.1 数据库可能缺少 cost_usd 列。
         // SQLite 不支持 ALTER TABLE ADD COLUMN IF NOT EXISTS 语法，
@@ -309,5 +358,68 @@ fn map_vendor_status(row: &QueryResult) -> VendorStatusRecord {
             .try_get::<Option<i64>>("", "window_reset_at")
             .unwrap_or(None),
         error_count: row.try_get("", "error_count").unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::schema_sql_for_backend;
+    use sea_orm::DatabaseBackend;
+
+    /// 断言只看 DDL：方言投影头注释含类型映射说明（"AUTOINCREMENT -> ..."、
+    /// "CREATE INDEX IF NOT EXISTS" 等字样），须剥离注释行再匹配
+    fn ddl(sql: &str) -> String {
+        sql.lines()
+            .filter(|l| !l.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 三后端投影均非空、均含四张表（db-backend-selection R-schema-001）
+    #[test]
+    fn all_backends_define_the_same_tables() {
+        for backend in [
+            DatabaseBackend::Sqlite,
+            DatabaseBackend::Postgres,
+            DatabaseBackend::MySql,
+        ] {
+            let sql = ddl(schema_sql_for_backend(backend));
+            assert!(!sql.is_empty(), "{backend:?}: 投影为空");
+            for table in [
+                "request_logs",
+                "token_usage",
+                "vendor_status",
+                "model_stats",
+            ] {
+                assert!(
+                    sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                    "{backend:?}: 缺表 {table}"
+                );
+            }
+        }
+    }
+
+    /// mysql 投影只含建表（索引由 ensure_indexes_mysql 幂等创建）；
+    /// sqlite/pg 投影自带 CREATE INDEX IF NOT EXISTS（R-schema-001/002）
+    #[test]
+    fn mysql_projection_defers_indexes_to_runtime() {
+        assert!(!ddl(schema_sql_for_backend(DatabaseBackend::MySql)).contains("CREATE INDEX"));
+        assert!(ddl(schema_sql_for_backend(DatabaseBackend::Sqlite))
+            .contains("CREATE INDEX IF NOT EXISTS"));
+        assert!(ddl(schema_sql_for_backend(DatabaseBackend::Postgres))
+            .contains("CREATE INDEX IF NOT EXISTS"));
+    }
+
+    /// 类型映射抽查：自增主键与浮点（R-schema-001）
+    #[test]
+    fn dialect_type_mappings() {
+        let pg = ddl(schema_sql_for_backend(DatabaseBackend::Postgres));
+        assert!(pg.contains("GENERATED ALWAYS AS IDENTITY"));
+        assert!(pg.contains("DOUBLE PRECISION"));
+        assert!(!pg.contains("AUTOINCREMENT"));
+        let mysql = ddl(schema_sql_for_backend(DatabaseBackend::MySql));
+        assert!(mysql.contains("AUTO_INCREMENT"));
+        assert!(mysql.contains("DOUBLE"));
+        assert!(!mysql.contains("AUTOINCREMENT"));
     }
 }

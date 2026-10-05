@@ -42,28 +42,13 @@ impl Database {
                 message: t_args("database-connect", &[("error", e.to_string())]),
             })?;
 
-        // 初始化 schema
-        let schema = include_str!("schema.sql");
-        let session = pool
-            .get_session("admin")
+        // 初始化 schema（与 Repository::initialize 共享单一实现，按连接后端
+        // 选择方言投影；MySQL 幂等建索引见 repository::init_schema）
+        crate::database::repository::init_schema(&pool)
             .await
             .map_err(|e| NexusFlowError::Database {
-                message: t_args("database-session", &[("error", e.to_string())]),
+                message: t_args("database-init-schema", &[("error", e.to_string())]),
             })?;
-
-        for statement in schema.split(';') {
-            let trimmed = statement.trim();
-            if !trimmed.is_empty() {
-                session
-                    .execute_raw_ddl(trimmed)
-                    .await
-                    .map_err(|e| NexusFlowError::Database {
-                        message: t_args("database-init-schema", &[("error", e.to_string())]),
-                    })?;
-            }
-        }
-
-        drop(session);
 
         let repository = std::sync::Arc::new(Repository::new(pool.clone()));
 

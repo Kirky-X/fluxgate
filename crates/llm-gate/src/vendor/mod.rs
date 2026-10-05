@@ -14,7 +14,7 @@ pub mod resilience;
 pub mod status;
 
 pub use cost::{CostCalculator, PricingEntry};
-pub use key_pool::KeyPoolInfo;
+pub use key_pool::{KeyPoolInfo, PoolSnapshot};
 pub use manager::{
     estimate_cost_json, estimate_cost_unified, TicketPolicy, VendorManager, WindowInfo,
 };

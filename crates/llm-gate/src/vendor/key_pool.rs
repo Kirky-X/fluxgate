@@ -161,9 +161,10 @@ pub struct KeyPoolInfo {
     pub fingerprints: Vec<String>,
 }
 
-/// 快照——实例持有的「解析后的 key 池」。
+/// 解析快照——实例持有的「按 env 名单解析出的 key 池」（env 模式专属；
+/// 内联注入模式见 [`PoolSnapshot`]）。
 #[derive(Debug, Default, PartialEq)]
-struct PoolSnapshot {
+struct ResolvedSnapshot {
     /// 最近一次解析的合并 env 名（变更检测键：名单变 → 全量重解析）
     names: Vec<String>,
     /// 解析后的 key 池（空 = 池耗尽/全缺 env）
@@ -174,9 +175,66 @@ struct PoolSnapshot {
     truncated: usize,
 }
 
+/// 预解析 key 池快照（编程式注入面，A2 审查回写安全 HIGH 根治）。
+///
+/// 由调用方以 **key 原文列表**直接构造（[`PoolSnapshot::from_keys`]），
+/// 经 [`crate::vendor::VendorManager::set_inline_key_pool`] 注入 vendor
+/// 实例，`select` 全程跳过 env 名单解析与环境变量读取（config 面仍只存
+/// env 名——注入是库 API 编程式能力，不改变 NexusFlow 的 config 暴露面
+/// 约定）。
+///
+/// 语义边界：
+/// - **指纹/游标与 env 池一致**：同一 `fingerprint_of`、同一轮换游标，
+///   401/403 推进游标轮换下一把，per-key 指纹熔断隔离照常生效；
+/// - **env 变更检测/重解析不适用**：内联池没有 env 名，名单比对与
+///   「env 值现读」分支整体跳过——池内容由调用方一次性给定，生命周期
+///   由调用方管理（vendor 实例存活期内有效；实例重建或换 vendor_id 后
+///   需重新注入）；
+/// - 空池（剔除空白项后无 key）等价 env 池耗尽：回退 legacy 单 key 行为
+///   （config `api_key_env` 现读，缺失则请求不带 Authorization 头）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoolSnapshot {
+    keys: Vec<String>,
+}
+
+impl PoolSnapshot {
+    /// 由 key 原文列表构造（顺序即轮换序；空白项剔除；上界
+    /// [`MAX_KEY_POOL`] 截断——与 env 池同界）。
+    pub fn from_keys<I, S>(keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let keys = keys
+            .into_iter()
+            .map(|k| k.as_ref().trim().to_string())
+            .filter(|k| !k.is_empty())
+            .take(MAX_KEY_POOL)
+            .collect();
+        Self { keys }
+    }
+
+    /// 池内 key 数（0 = 空池 → legacy 回退）。
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// key 原文只读视图（crate 内观测面——admin info 组装用，绝不出库）。
+    pub(crate) fn keys(&self) -> &[String] {
+        &self.keys
+    }
+
+    /// 是否为空池。
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
 /// vendor 实例持有的 key 池状态：解析快照 + 轮换游标。
 pub(crate) struct KeyPool {
-    snapshot: Mutex<PoolSnapshot>,
+    snapshot: Mutex<ResolvedSnapshot>,
+    /// 内联注入池（Some 时 select 全程跳过 env resolve，见 [`PoolSnapshot`]）。
+    inline: Mutex<Option<PoolSnapshot>>,
     /// 轮换游标：401/403 认证类失败 `fetch_add(1)`；出站取
     /// `keys[cursor % len]`。并发下多次 401 连续推进是保守方向（跳过
     /// 失败 key），游标语义只要求「下次尝试换下一把」。
@@ -188,7 +246,8 @@ impl KeyPool {
     /// 后续每次 [`Self::select`] 按需刷新（名单变更或 env 值变化）。
     pub(crate) fn new(config: &VendorConfig, vendor_id: &str) -> Self {
         let pool = Self {
-            snapshot: Mutex::new(PoolSnapshot::default()),
+            snapshot: Mutex::new(ResolvedSnapshot::default()),
+            inline: Mutex::new(None),
             cursor: AtomicUsize::new(0),
         };
         pool.select(config, vendor_id);
@@ -200,17 +259,25 @@ impl KeyPool {
     #[cfg(test)]
     fn default_for_test() -> Self {
         Self {
-            snapshot: Mutex::new(PoolSnapshot::default()),
+            snapshot: Mutex::new(ResolvedSnapshot::default()),
+            inline: Mutex::new(None),
             cursor: AtomicUsize::new(0),
         }
     }
 
+    /// 注入内联池（编程式；见 [`PoolSnapshot`]）。注入后 `select` 全程
+    /// 跳过 env resolve；重复注入以最后一次为准（调用方管理生命周期）。
+    pub(crate) fn set_inline(&self, snapshot: PoolSnapshot) {
+        *self.inline.lock().unwrap() = Some(snapshot);
+    }
+
     /// 请求级凭证选择——执行路径统一入口。
     ///
-    /// 名单变（配置热更新）→ 全量重解析并显性告警；名单不变 → env 值仍
-    /// 现读（env 值变化立即生效，与既有 per-attempt 读 env 语义一致），
-    /// 仅在结果变化时更新快照（避免日志刷屏）。池空回退
-    /// [`RequestCredential::LegacyEnv`]。
+    /// 内联池激活时直接按游标取 key（跳过 env resolve，见
+    /// [`PoolSnapshot`]）。env 模式：名单变（配置热更新）→ 全量重解析并
+    /// 显性告警；名单不变 → env 值仍现读（env 值变化立即生效，与既有
+    /// per-attempt 读 env 语义一致），仅在结果变化时更新快照（避免日志
+    /// 刷屏）。池空回退 [`RequestCredential::LegacyEnv`]。
     pub(crate) fn select(&self, config: &VendorConfig, vendor_id: &str) -> RequestCredential {
         self.select_with(config, vendor_id, &|name| std::env::var(name).ok())
     }
@@ -223,12 +290,25 @@ impl KeyPool {
         vendor_id: &str,
         lookup: &impl Fn(&str) -> Option<String>,
     ) -> RequestCredential {
+        // 内联池快路径：跳过 env 名单解析与变更检测（见 [`PoolSnapshot`]）
+        if let Some(inline) = self.inline.lock().unwrap().clone() {
+            if inline.keys.is_empty() {
+                return RequestCredential::LegacyEnv;
+            }
+            let index = self.cursor.load(Ordering::Relaxed) % inline.keys.len();
+            let key = inline.keys[index].clone();
+            return RequestCredential::Pool {
+                key,
+                fingerprint: fingerprint_of(&inline.keys[index]),
+            };
+        }
+
         let names = merged_key_env_names(config);
         let mut guard = self.snapshot.lock().unwrap();
         if guard.names != names {
             let resolved = resolve_key_pool(&names, |name| lookup(name));
             Self::log_resolution(vendor_id, &names, &resolved);
-            *guard = PoolSnapshot {
+            *guard = ResolvedSnapshot {
                 names,
                 keys: resolved.keys,
                 missing: resolved.missing.len(),
@@ -339,6 +419,12 @@ impl KeyPool {
     /// 池空（legacy 回退）返回 `None`。无 resilience 组合下仅单测消费。
     #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
     pub(crate) fn peek_current_fingerprint(&self) -> Option<String> {
+        if let Some(inline) = self.inline.lock().unwrap().clone() {
+            return (!inline.keys.is_empty()).then(|| {
+                let index = self.cursor.load(Ordering::Relaxed) % inline.keys.len();
+                fingerprint_of(&inline.keys[index])
+            });
+        }
         let guard = self.snapshot.lock().unwrap();
         let keys = &guard.keys;
         if keys.is_empty() {
@@ -352,7 +438,7 @@ impl KeyPool {
     /// 剩余尝试仍用启动时解析的同一 key。池未激活（keys 空）时 no-op。
     /// 多 key 池时显性 warn（size≤1 无轮换语义，401 上游告警已覆盖，不刷屏）。
     pub(crate) fn advance(&self, vendor_id: &str, status: u16) -> bool {
-        let len = self.snapshot.lock().unwrap().keys.len();
+        let len = self.active_pool_len();
         if len == 0 {
             return false;
         }
@@ -376,8 +462,31 @@ impl KeyPool {
         true
     }
 
+    /// 激活池长度（内联池优先，env 快照兜底）——游标取模与轮换判定的
+    /// 单一事实源。
+    fn active_pool_len(&self) -> usize {
+        if let Some(inline) = self.inline.lock().unwrap().clone() {
+            return inline.keys.len();
+        }
+        self.snapshot.lock().unwrap().keys.len()
+    }
+
     /// admin 观测快照（仅 env 名 / 数量 / 下标 / 指纹，绝无 key 原文）。
+    /// 内联池无 env 名，`envs` 为空列表、`size`/`fingerprints` 反映真实池。
     pub(crate) fn info(&self) -> KeyPoolInfo {
+        if let Some(inline) = self.inline.lock().unwrap().clone() {
+            let len = inline.keys.len();
+            return KeyPoolInfo {
+                envs: Vec::new(),
+                size: len,
+                current_index: if len == 0 {
+                    0
+                } else {
+                    self.cursor.load(Ordering::Relaxed) % len
+                },
+                fingerprints: inline.keys.iter().map(|k| fingerprint_of(k)).collect(),
+            };
+        }
         let guard = self.snapshot.lock().unwrap();
         let len = guard.keys.len();
         KeyPoolInfo {
@@ -639,5 +748,90 @@ mod tests {
         assert_eq!(info.size, 0);
         assert_eq!(info.current_index, 0);
         assert!(info.fingerprints.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod inline_tests {
+    //! 内联池注入面（A2 审查回写）：指纹/游标与 env 池一致，env resolve
+    //! 整体跳过，生命周期由调用方管理。
+
+    use super::*;
+
+    fn inline_vendor_config(api_key_env: &str) -> VendorConfig {
+        VendorConfig {
+            id: "gate-0".into(),
+            name: "Inline".into(),
+            type_: "openai".into(),
+            api_key_env: api_key_env.into(),
+            api_key_envs: vec![],
+            api_base: String::new(),
+            enabled: true,
+            priority: 1,
+            models: vec![],
+            rate_limit: crate::config::RateLimitConfig::Token {
+                max_tokens: 1000,
+                window_hours: None,
+                sliding: false,
+            },
+            concurrency: crate::config::ConcurrencyConfig::default(),
+            timeout_ms: 30_000,
+            stream_ttft_ms: 30_000,
+            stream_idle_ms: 30_000,
+        }
+    }
+
+    #[test]
+    fn from_keys_filters_blank_and_truncates() {
+        let pool = PoolSnapshot::from_keys([" k1 ", "", "  ", "k2"]);
+        assert_eq!(pool.len(), 2, "空白项剔除");
+        let many: Vec<String> = (0..(MAX_KEY_POOL + 3)).map(|i| format!("k{i}")).collect();
+        assert_eq!(
+            PoolSnapshot::from_keys(many).len(),
+            MAX_KEY_POOL,
+            "上界截断"
+        );
+        assert!(PoolSnapshot::from_keys(Vec::<String>::new()).is_empty());
+    }
+
+    #[test]
+    fn inline_select_skips_env_resolve_and_rotates() {
+        let pool = KeyPool::default_for_test();
+        pool.set_inline(PoolSnapshot::from_keys(["k-bad", "k-good"]));
+        let config = inline_vendor_config("OPENAI_API_KEY");
+        // lookup 若被咨询会返回该值——内联池必须无视 env
+        let credential = pool.select_with(&config, "gate-0", &|name| {
+            name.ends_with("API_KEY").then(|| "FROM-ENV".to_string())
+        });
+        match credential {
+            RequestCredential::Pool { key, fingerprint } => {
+                assert_eq!(key, "k-bad", "首发取游标 0");
+                assert_eq!(fingerprint, fingerprint_of("k-bad"), "指纹与 env 池同源");
+            }
+            other => panic!("内联池必须命中 Pool: {other:?}"),
+        }
+        // 401 推进游标 → 下一把
+        assert!(pool.advance("gate-0", 401));
+        match pool.select_with(&config, "gate-0", &|_| None) {
+            RequestCredential::Pool { key, .. } => assert_eq!(key, "k-good", "游标轮换语义一致"),
+            other => panic!("{other:?}"),
+        }
+        // admin 快照：envs 空（内联池无 env 名），指纹反映真实池
+        let info = pool.info();
+        assert!(info.envs.is_empty());
+        assert_eq!(info.size, 2);
+        assert_eq!(info.fingerprints.len(), 2);
+    }
+
+    #[test]
+    fn inline_empty_pool_falls_back_to_legacy() {
+        let pool = KeyPool::default_for_test();
+        pool.set_inline(PoolSnapshot::from_keys(Vec::<String>::new()));
+        let config = inline_vendor_config("OPENAI_API_KEY");
+        let credential = pool.select_with(&config, "gate-0", &|_| None);
+        assert!(
+            matches!(credential, RequestCredential::LegacyEnv),
+            "空内联池等价 env 池耗尽 → legacy 回退"
+        );
     }
 }

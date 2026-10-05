@@ -15,7 +15,7 @@ use crate::utils::metrics::GlobalMetrics;
 use crate::utils::retry::{retry_delay_for, ErrorCategory, RetryDelayPolicy};
 #[cfg(feature = "cost-tracking")]
 use crate::utils::CostTracker;
-use crate::vendor::key_pool::{KeyPool, KeyPoolInfo, RequestCredential};
+use crate::vendor::key_pool::{KeyPool, KeyPoolInfo, PoolSnapshot, RequestCredential};
 #[cfg(feature = "resilience")]
 use crate::vendor::resilience::error_map::{from_circuit_call, to_limiteron, GateErrorClassifier};
 use bytes::Bytes;
@@ -231,6 +231,11 @@ impl VendorInstance {
         self.key_pool.select(config, &self.vendor_id)
     }
 
+    /// 编程式内联 key 池热注入（见 [`KeyPool::set_inline`]）。
+    fn set_inline_key_pool(&self, snapshot: PoolSnapshot) {
+        self.key_pool.set_inline(snapshot);
+    }
+
     /// T005：401/403 认证类失败推进轮换游标（生效于下次尝试）。
     fn advance_key_cursor(&self, status: u16) {
         self.key_pool.advance(&self.vendor_id, status);
@@ -304,6 +309,11 @@ impl VendorInstance {
 pub struct VendorManager {
     config: Arc<ConfigManager>,
     instances: Arc<RwLock<std::collections::HashMap<String, Arc<VendorInstance>>>>,
+    /// 编程式内联 key 池（A2 审查回写：嵌入面以 key 原文注入，见
+    /// [`PoolSnapshot`]）——vendor_id → 快照。实例创建时消费并生效；
+    /// 实例已存在时 `set_inline_key_pool` 直接热注入。config 面仍只存
+    /// env 名（安全约定不变）。
+    inline_key_pools: Arc<std::sync::Mutex<std::collections::HashMap<String, PoolSnapshot>>>,
     client: reqwest::Client,
     openai_converter: Arc<OpenAIConverter>,
     anthropic_converter: Arc<AnthropicConverter>,
@@ -327,6 +337,7 @@ impl VendorManager {
         Self {
             config,
             instances: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            inline_key_pools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             // recId=4（W2）：连接阶段 10s 超时（此前 Client 零超时）
             client: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
@@ -356,6 +367,26 @@ impl VendorManager {
     /// 全局指标访问器 — 用于 /admin/metrics 端点
     pub fn metrics(&self) -> &Arc<GlobalMetrics> {
         &self.metrics
+    }
+
+    /// 注入编程式内联 key 池（A2 审查回写安全 HIGH 根治面；见
+    /// [`PoolSnapshot`]）。
+    ///
+    /// - 实例未创建：登记到 side-table，`initialize`/`get_or_create_instance`
+    ///   建实例时消费生效；
+    /// - 实例已存在：立即热注入（重复注入以最后一次为准）。
+    ///
+    /// 生命周期由调用方管理：env 变更检测/重解析对内联池不适用；若
+    /// vendor 实例被整体重建（当前实现不重建，仅首次创建），side-table
+    /// 兜底保证新实例仍取到注入池。
+    pub fn set_inline_key_pool(&self, vendor_id: &str, snapshot: PoolSnapshot) {
+        self.inline_key_pools
+            .lock()
+            .unwrap()
+            .insert(vendor_id.to_string(), snapshot.clone());
+        if let Some(instance) = self.instances.read().unwrap().get(vendor_id) {
+            instance.set_inline_key_pool(snapshot);
+        }
     }
 
     /// recId=8：`[routing].ewma_tau_ms` 热同步到 metrics — 每次延迟道落账前
@@ -478,8 +509,25 @@ impl VendorManager {
     /// T005：admin 观测——vendor 的 key 池快照（仅 env 名 / 数量 / 下标 /
     /// 指纹，绝不暴露 key 原文）。实例未初始化返回 `None`。
     pub fn key_pool_info(&self, vendor_id: &str) -> Option<KeyPoolInfo> {
-        let guard = self.instances.read().unwrap();
-        guard.get(vendor_id).map(|i| i.key_pool_info())
+        if let Some(instance) = self.instances.read().unwrap().get(vendor_id) {
+            return Some(instance.key_pool_info());
+        }
+        // 实例未创建：内联 side-table 观测（env 模式无预创建快照 → None；
+        // use crate::vendor::key_pool::fingerprint_of 直接复用同源指纹
+        self.inline_key_pools
+            .lock()
+            .unwrap()
+            .get(vendor_id)
+            .map(|snapshot| KeyPoolInfo {
+                envs: Vec::new(),
+                size: snapshot.len(),
+                current_index: 0,
+                fingerprints: snapshot
+                    .keys()
+                    .iter()
+                    .map(|k| crate::vendor::key_pool::fingerprint_of(k))
+                    .collect(),
+            })
     }
 
     /// recId=2：vendor 的 CircuitBreaker 句柄（instances 未初始化时 None）。
@@ -534,6 +582,17 @@ impl VendorManager {
             self.cost_tracker.clone(),
         ));
         guard.insert(vendor.id.clone(), instance.clone());
+        // 编程式内联 key 池：side-table 有登记则消费注入（见
+        // set_inline_key_pool；实例创建期一次性生效）
+        if let Some(snapshot) = self
+            .inline_key_pools
+            .lock()
+            .unwrap()
+            .get(&vendor.id)
+            .cloned()
+        {
+            instance.set_inline_key_pool(snapshot);
+        }
 
         // Spawn worker
         let instance_clone = instance.clone();

@@ -65,7 +65,10 @@ repos:
 
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        # 后端三组（db-*）互斥由 dbnexus 编译期守卫强制，--all-features 会把
+        # sqlite/postgres/mysql 同时打开必然编译失败——钩子跑 default 口径
+        # （full + db-sqlite），非 default 后端组合由 ci.yml 特性矩阵覆盖
+        entry: cargo clippy --workspace --all-targets -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false

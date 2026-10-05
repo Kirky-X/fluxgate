@@ -103,6 +103,7 @@ fn make_config(rules: Vec<RateLimitRule>) -> Config {
         database: DatabaseConfig {
             path: ":memory:".into(),
             pool_size: 1,
+            url: String::new(),
         },
         // vendors 为空：handler 走路由失败路径（非 429 响应），不影响限流断言
         vendors: vec![],

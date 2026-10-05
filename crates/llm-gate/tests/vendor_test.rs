@@ -2037,6 +2037,7 @@ mod token_weighted_tickets {
             database: llm_gate::config::DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors: vec![llm_gate::config::VendorConfig {
                 timeout_ms: 2_000,

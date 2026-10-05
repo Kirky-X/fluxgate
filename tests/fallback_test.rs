@@ -262,6 +262,7 @@ mod build_fallback_chain {
             database: DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors,
             global_model: Some(GlobalModelConfig {
@@ -410,6 +411,7 @@ mod cover_all_paths {
             database: DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors,
             global_model: Some(GlobalModelConfig {

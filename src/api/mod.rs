@@ -538,6 +538,7 @@ mod fallback_guard_tests {
             database: DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors,
             global_model: Some(GlobalModelConfig {
@@ -841,6 +842,7 @@ mod cooldown_retry_after {
             database: DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors,
             global_model: Some(GlobalModelConfig {

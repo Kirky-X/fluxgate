@@ -312,6 +312,7 @@ mod tests {
             database: DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors: vec![VendorConfig {
                 id: vendor_id.to_string(),

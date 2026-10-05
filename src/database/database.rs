@@ -3,6 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
+use crate::config::DatabaseConfig;
 use crate::database::Repository;
 use crate::error::NexusFlowError;
 use crate::i18n::t_args;
@@ -24,7 +25,11 @@ impl Database {
             }
         }
 
-        let url = normalize_sqlite_url(path);
+        let url = resolve_database_url(&DatabaseConfig {
+            path: path.to_string(),
+            pool_size,
+            url: String::new(),
+        })?;
 
         let config = DbConfig {
             url,
@@ -82,9 +87,32 @@ impl Database {
     }
 }
 
+/// 解析数据库连接 URL（db-backend-selection D2：URL 单一事实源）。
+///
+/// `config.url` 非空时原样优先（postgres://、mysql://、sqlite://…）；
+/// 否则回退 `path` 按 sqlite 文件库归一——该回退要求编译期启用 `db-sqlite`
+/// （nexusflow 层 feature；llm-gate 零存储假设，不感知后端轴），未启用时
+/// 返回带重建指引的错误。
+pub fn resolve_database_url(config: &DatabaseConfig) -> Result<String, NexusFlowError> {
+    if !config.url.is_empty() {
+        return Ok(config.url.clone());
+    }
+    #[cfg(not(feature = "db-sqlite"))]
+    {
+        Err(NexusFlowError::Database {
+            message: t_args("database-backend-missing", &[("path", config.path.clone())]),
+        })
+    }
+    #[cfg(feature = "db-sqlite")]
+    {
+        Ok(normalize_sqlite_url(&config.path))
+    }
+}
+
 /// 将原始路径规范化为 SeaORM/sqlx 接受的 SQLite URL。
 /// 文件路径追加 `mode=rwc`：sqlx 默认不创建不存在的库文件，网关首次启动
 /// 必须能自举建库。调用方已显式给出 mode 的 URL 原样保留。
+#[cfg(feature = "db-sqlite")]
 fn normalize_sqlite_url(path: &str) -> String {
     if path.contains(":memory:") {
         // 内存库无文件可建，规范化为标准形式
@@ -145,9 +173,55 @@ impl llm_gate::storage::RequestLogSink for Database {
     }
 }
 
-#[cfg(test)]
+// 全部用例依赖 sqlite 回退分支（path 归一）——仅 db-sqlite 构建下编译执行；
+// 非 db-sqlite 构建的 Err 分支由该 cfg 组合的编译检查覆盖（T008 门禁）
+#[cfg(all(test, feature = "db-sqlite"))]
 mod tests {
     use super::normalize_sqlite_url;
+    use super::resolve_database_url;
+    use crate::config::DatabaseConfig;
+
+    /// url 非空：原样优先，path 不参与（db-backend-selection D2）
+    #[test]
+    fn explicit_url_takes_precedence_over_path() {
+        let config = DatabaseConfig {
+            path: "./data/llm_proxy.db".to_string(),
+            pool_size: 10,
+            url: "postgres://db.internal:5432/nexusflow".to_string(),
+        };
+        assert_eq!(
+            resolve_database_url(&config).expect("resolve ok"),
+            "postgres://db.internal:5432/nexusflow"
+        );
+    }
+
+    /// url 空：path 走 sqlite 归一（mode=rwc 自举建库语义不变）
+    #[test]
+    fn empty_url_falls_back_to_sqlite_path() {
+        let config = DatabaseConfig {
+            path: "./data/llm_proxy.db".to_string(),
+            pool_size: 10,
+            url: String::new(),
+        };
+        assert_eq!(
+            resolve_database_url(&config).expect("resolve ok"),
+            "sqlite://./data/llm_proxy.db?mode=rwc"
+        );
+    }
+
+    /// url 空 + :memory:：规范化为标准内存库形式
+    #[test]
+    fn empty_url_memory_path_canonicalized() {
+        let config = DatabaseConfig {
+            path: ":memory:".to_string(),
+            pool_size: 1,
+            url: String::new(),
+        };
+        assert_eq!(
+            resolve_database_url(&config).expect("resolve ok"),
+            "sqlite::memory:"
+        );
+    }
 
     #[test]
     fn relative_path_gets_mode_rwc() {

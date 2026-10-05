@@ -38,6 +38,12 @@ pub struct DatabaseConfig {
     pub path: String,
     #[serde(default = "default_pool_size")]
     pub pool_size: u32,
+    /// 完整数据库 URL（postgres://、mysql://、sqlite://…）。非空时优先于
+    /// `path`（db-backend-selection D2：URL 单一事实源）；空值 = 旧语义，
+    /// `path` 由使用方按 sqlite 文件库回退处理。本 crate 零存储假设，
+    /// 不解析 scheme——后端合法性由连接期（dbnexus/sqlx）判定。
+    #[serde(default)]
+    pub url: String,
 }
 
 fn default_db_path() -> String {

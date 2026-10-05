@@ -79,6 +79,7 @@ mod vendor_fallback_integration {
             database: DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors,
             global_model: Some(GlobalModelConfig {

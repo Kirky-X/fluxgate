@@ -84,6 +84,7 @@ pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
         database: DatabaseConfig {
             path: ":memory:".into(),
             pool_size: 1,
+            url: String::new(),
         },
         vendors,
         global_model: Some(GlobalModelConfig {

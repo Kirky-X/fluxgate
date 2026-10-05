@@ -26,3 +26,4 @@ database-preagg-final-flush-failed = Final token aggregation flush failed: { $er
 utils-retry-unknown-error = Unknown error
 utils-retry-max-retries = Max retries exceeded
 utils-metrics-concentration = traffic concentration alert: routing may have collapsed onto a single vendor/model
+database-backend-missing = database.url is empty and the sqlite fallback for path { $path } requires the db-sqlite feature: rebuild with --features "full,db-sqlite", or set [database] url to a full connection URL

@@ -392,6 +392,7 @@ mod tests {
             database: crate::config::DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors: vec![],
             global_model: None,
@@ -462,6 +463,7 @@ mod tests {
             database: crate::config::DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors: vec![],
             global_model: None,
@@ -532,6 +534,7 @@ mod ttl_load_linking_tests {
             database: crate::config::DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
+                url: String::new(),
             },
             vendors: vec![],
             global_model: None,

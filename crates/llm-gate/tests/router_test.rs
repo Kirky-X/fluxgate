@@ -65,6 +65,7 @@ mod tests {
             database: DatabaseConfig {
                 path: "./test.db".to_string(),
                 pool_size: 5,
+                url: String::new(),
             },
             ..common::test_config(vec![openai, anthropic])
         }

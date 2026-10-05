@@ -64,6 +64,7 @@ mod endpoints {
             database: DatabaseConfig {
                 path: "./test.db".to_string(),
                 pool_size: 5,
+                url: String::new(),
             },
             ..common::test_config(vec![openai_main, anthropic_main])
         }
@@ -389,6 +390,7 @@ mod integration {
             database: DatabaseConfig {
                 path: "./test.db".to_string(),
                 pool_size: 5,
+                url: String::new(),
             },
             ..common::test_config(vec![v])
         }
@@ -864,6 +866,7 @@ mod admin {
             database: DatabaseConfig {
                 path: "./test.db".to_string(),
                 pool_size: 5,
+                url: String::new(),
             },
             ..common::test_config(vec![v])
         }

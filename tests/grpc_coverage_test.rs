@@ -35,6 +35,7 @@ fn test_config(grpc_port: u16) -> Config {
         database: DatabaseConfig {
             path: ":memory:".into(),
             pool_size: 1,
+            url: String::new(),
         },
         vendors: vec![VendorConfig {
             timeout_ms: 60_000,

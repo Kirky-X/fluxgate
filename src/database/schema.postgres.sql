@@ -2,6 +2,7 @@
 -- 权威源：schema.sql（SQLite）。本文件为方言投影——schema.sql 加列/加表时
 -- 必须同步本文件与 schema.mysql.sql。与权威源差异仅类型映射：
 --   INTEGER PRIMARY KEY AUTOINCREMENT -> BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY
+--   INTEGER（自增键以外） -> BIGINT（timestamp/status_code/token 计数/duration_ms）
 --   REAL -> DOUBLE PRECISION
 
 -- 请求日志表

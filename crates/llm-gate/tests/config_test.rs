@@ -525,6 +525,38 @@ weight = 1.0
     }
 
     #[test]
+    fn test_database_url_defaults_to_empty_when_absent() {
+        // db-backend-selection：旧配置（[database] 无 url 键）反序列化后
+        // url 必须为空串（serde default），由使用方按 path 走 sqlite 回退
+        let toml_str = r#"
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+path = "./data/llm_proxy.db"
+pool_size = 5
+
+[[vendors]]
+id = "openai_main"
+name = "OpenAI"
+type_ = "openai"
+api_key_env = "OPENAI_API_KEY"
+api_base = "https://api.openai.com/v1"
+enabled = true
+priority = 1
+models = []
+rate_limit = { type = "token", max_tokens = 1000000, window_hours = 24 }
+concurrency = { requests_per_second = 10 }
+"#;
+        let config: Config = toml::from_str(toml_str).expect("TOML parse should succeed");
+        assert_eq!(
+            config.database.url, "",
+            "missing url key should default to empty String"
+        );
+    }
+
+    #[test]
     fn test_pricing_config_struct_construction() {
         // 关键属性：PricingConfig 可独立构造与序列化
         let entry = PricingConfig {

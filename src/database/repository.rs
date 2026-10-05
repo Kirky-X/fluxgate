@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use crate::database::{LogFilter, RequestLog, TokenUsageRow, VendorStatusRecord};
-use dbnexus::{DbError, DbPool};
+use dbnexus::{DbError, DbPool, Session};
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, QueryResult, Statement, TransactionTrait,
     Value,
@@ -47,6 +47,26 @@ pub(crate) async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
     if backend == DatabaseBackend::MySql {
         ensure_indexes_mysql(session.connection()?).await?;
     }
+    // 迁移复用同一 session：测试池 max_connections=1，二次 get_session 会死等
+    migrate_v0_1_columns(&session, backend).await?;
+    Ok(())
+}
+
+/// v0.1 旧库列迁移（架构审查 HIGH-2 闭合）：原仅存于 `Repository::initialize`
+/// 而其全部调用点在测试模块——生产链 `Database::new` 只跑 DDL，缺列旧库每次
+/// 落日志必失败。并入 `init_schema` 使迁移随生产建链可达。各后端均无
+/// ALTER TABLE ADD COLUMN IF NOT EXISTS 的可移植写法，探针查列存在性，
+/// 缺则 ALTER；列类型随方言（REAL / DOUBLE / DOUBLE PRECISION）。
+async fn migrate_v0_1_columns(session: &Session, backend: DatabaseBackend) -> Result<(), DbError> {
+    let cost_type = match backend {
+        DatabaseBackend::MySql => "DOUBLE DEFAULT 0.0",
+        DatabaseBackend::Sqlite => "REAL DEFAULT 0.0",
+        _ => "DOUBLE PRECISION DEFAULT 0.0",
+    };
+    Repository::ensure_column_exists(session, backend, "request_logs", "cost_usd", cost_type)
+        .await?;
+    Repository::ensure_column_exists(session, backend, "token_usage", "cost_usd_sum", cost_type)
+        .await?;
     Ok(())
 }
 
@@ -84,35 +104,24 @@ impl Repository {
         Self { pool }
     }
 
+    /// 测试面入口（生产链走 `Database::new` → `init_schema`，迁移已并入后者）
     pub async fn initialize(&self) -> Result<(), DbError> {
-        init_schema(&self.pool).await?;
-
-        // 旧库迁移：v0.1 数据库可能缺少 cost_usd 列。
-        // 各后端均无 ALTER TABLE ADD COLUMN IF NOT EXISTS 的可移植写法，
-        // 探针查列存在性（sqlite PRAGMA / pg·mysql information_schema），
-        // 缺则 ALTER TABLE ADD COLUMN。
-        self.ensure_column_exists("request_logs", "cost_usd", "REAL DEFAULT 0.0")
-            .await?;
-        self.ensure_column_exists("token_usage", "cost_usd_sum", "REAL DEFAULT 0.0")
-            .await?;
-
-        Ok(())
+        init_schema(&self.pool).await
     }
 
     /// 检查指定表是否已有某列，不存在则 ALTER TABLE ADD COLUMN。
     /// 多后端（db-backend-selection T005）：探针语句随连接后端分派。
     async fn ensure_column_exists(
-        &self,
+        session: &Session,
+        backend: DatabaseBackend,
         table: &str,
         column: &str,
         column_def: &str,
     ) -> Result<(), DbError> {
-        let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
-        let backend = conn.get_database_backend();
 
         // 表名/列名仅来自本文件内的常量调用点，无用户输入拼接面
-        let (probe_sql, name_key) = Self::column_probe(backend, table, column);
+        let (probe_sql, name_key) = Repository::column_probe(backend, table, column);
         let stmt = Statement::from_sql_and_values(backend, &probe_sql, Vec::new());
         let rows = conn.query_all_raw(stmt).await?;
 
@@ -501,6 +510,96 @@ mod schema_tests {
         assert_eq!(super::escape_like("100%"), "100\\%");
         assert_eq!(super::escape_like("a_b"), "a\\_b");
         assert_eq!(super::escape_like("a\\%b"), "a\\\\\\%b");
+    }
+
+    /// 三投影逐列集合守卫（R-schema-001，架构审查 LOW-7）：每表全部列名
+    /// 必须在三份投影的对应建表段中出现——防「加列只改权威源」漂移
+    #[test]
+    fn column_sets_match_across_projections() {
+        let tables: [(&str, &[&str]); 4] = [
+            (
+                "request_logs",
+                &[
+                    "id",
+                    "request_id",
+                    "timestamp",
+                    "endpoint",
+                    "input_format",
+                    "abstract_model",
+                    "messages",
+                    "actual_vendor",
+                    "actual_model",
+                    "routing_strategy",
+                    "status_code",
+                    "response",
+                    "error_message",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "total_tokens",
+                    "duration_ms",
+                    "cost_usd",
+                ],
+            ),
+            (
+                "token_usage",
+                &[
+                    "id",
+                    "vendor",
+                    "model",
+                    "date",
+                    "hour",
+                    "request_count",
+                    "total_tokens",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "cost_usd_sum",
+                ],
+            ),
+            (
+                "vendor_status",
+                &[
+                    "vendor",
+                    "status",
+                    "last_updated",
+                    "window_used_tokens",
+                    "window_reset_at",
+                    "error_count",
+                ],
+            ),
+            (
+                "model_stats",
+                &[
+                    "id",
+                    "model",
+                    "vendor",
+                    "date",
+                    "request_count",
+                    "success_count",
+                    "error_count",
+                    "avg_duration_ms",
+                ],
+            ),
+        ];
+        for backend in [
+            DatabaseBackend::Sqlite,
+            DatabaseBackend::Postgres,
+            DatabaseBackend::MySql,
+        ] {
+            let sql = ddl(schema_sql_for_backend(backend));
+            for (table, cols) in tables {
+                let start = sql
+                    .find(&format!("CREATE TABLE IF NOT EXISTS {table}"))
+                    .unwrap_or_else(|| panic!("{backend:?}: 缺表 {table}"));
+                let seg = &sql[start..];
+                let seg = &seg[..seg.find(");").unwrap_or(seg.len())];
+                for &col in cols {
+                    assert!(
+                        seg.contains(&format!("    {col} ")),
+                        "{backend:?}/{table}: 建表段缺列 {col}"
+                    );
+                }
+            }
+        }
     }
 
     /// 列探针语句分派：语句与结果键成对返回（R-schema-002）

@@ -92,11 +92,14 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # db-* 三组互斥由 dbnexus 编译期守卫强制（db-backend-selection），
+      # --all-features 同时打开三个后端必然编译失败——clippy 跑 default 口径
+      # （full + db-sqlite），非 default 后端组合由 check/test 的特性矩阵覆盖
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   #-----------------------------------------------------------------------------
-  # 编译检查（默认特性 / 全特性）
+  # 编译检查（默认特性 / 三后端特性矩阵）
   #-----------------------------------------------------------------------------
   check:
     name: Check
@@ -120,8 +123,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check default features
         run: cargo check --workspace
-      - name: Check full features
-        run: cargo check --workspace --all-features
+      # --all-features 会同时启用互斥的 db-* 三组（dbnexus 守卫必触发），
+      # 改为按后端逐一检查；db-sqlite 已由 default 覆盖
+      - name: Check db-postgres features
+        run: cargo check --workspace --no-default-features --features "full,db-postgres"
+      - name: Check db-mysql features
+        run: cargo check --workspace --no-default-features --features "full,db-mysql"
 
   #-----------------------------------------------------------------------------
   # 测试（mockito/mockall 自包含，无外部服务依赖）
@@ -146,8 +153,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # --all-features 因 db-* 互斥不可用（同 check 注释）；测试跑 default
+      # 口径（full + db-sqlite，mockito/mockall 自包含）
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace
 
   #-----------------------------------------------------------------------------
   # 覆盖率（生成 + 上传 Codecov）
@@ -180,7 +189,9 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+        # --all-features 因 db-* 互斥不可用（同 check 注释）；覆盖率按 default
+        # 口径采集，与 test job 一致
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
       - name: Upload coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:

@@ -5,6 +5,20 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
+use nexusflow::config::DatabaseConfig;
+use nexusflow::database::resolve_database_url;
+
+/// 测试路径 → 解析后 URL（与 bootstrap 同一解析出口，sqlite 回退分支）。
+/// 文件作用域：batch_tx / database_gap 等兄弟模块经 `crate::resolve_sqlite_url` 复用。
+fn resolve_sqlite_url(path: &str) -> String {
+    resolve_database_url(&DatabaseConfig {
+        path: path.to_string(),
+        pool_size: 1,
+        url: String::new(),
+    })
+    .expect("resolve sqlite url")
+}
+
 #[cfg(test)]
 mod tests {
     use dbnexus::{DbConfig, DbPool};
@@ -549,6 +563,7 @@ mod tests {
 
 #[cfg(test)]
 mod batch_tx {
+    use crate::resolve_sqlite_url;
     use dbnexus::{DbConfig, DbPool};
     use nexusflow::database::{Database, LogFilter, Repository, RequestLog};
     use std::sync::Arc;
@@ -638,7 +653,7 @@ mod batch_tx {
         std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         assert!(!db_path.exists(), "前置：库文件尚不存在");
 
-        let db = Database::new(db_path.to_str().unwrap(), 1).await;
+        let db = Database::new(&resolve_sqlite_url(db_path.to_str().unwrap()), 1).await;
 
         assert!(db.is_ok(), "全新路径应能自举建库: {:?}", db.err());
         assert!(db_path.exists(), "Database::new 之后库文件应已创建");
@@ -1197,6 +1212,7 @@ mod async_logger_gap {
 
 #[cfg(test)]
 mod database_gap {
+    use crate::resolve_sqlite_url;
     use nexusflow::database::{Database, LogFilter, RequestLog};
     use nexusflow::error::NexusFlowError;
 
@@ -1227,7 +1243,9 @@ mod database_gap {
     /// close() 幂等无副作用。
     #[tokio::test]
     async fn database_new_memory_bootstrap_and_repository_accessor() {
-        let db = Database::new(":memory:", 1).await.expect("内存库自举成功");
+        let db = Database::new(&resolve_sqlite_url(":memory:"), 1)
+            .await
+            .expect("内存库自举成功");
         let repo = db.repository();
 
         repo.log_request(&sample_log()).await.expect("落库 ok");
@@ -1254,7 +1272,8 @@ mod database_gap {
         std::fs::write(&file, b"x").unwrap();
 
         let db_path = file.join("sub").join("db.sqlite");
-        let result = Database::new(db_path.to_string_lossy().as_ref(), 1).await;
+        let result =
+            Database::new(&resolve_sqlite_url(db_path.to_string_lossy().as_ref()), 1).await;
 
         match result {
             Err(NexusFlowError::Database { .. }) => {}
@@ -1276,7 +1295,7 @@ mod database_gap {
         let dir = std::env::temp_dir().join(format!("nx-db-as-dir-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let result = Database::new(dir.to_str().unwrap(), 1).await;
+        let result = Database::new(&resolve_sqlite_url(dir.to_str().unwrap()), 1).await;
         match result {
             Err(NexusFlowError::Database { .. }) => {}
             Err(other) => panic!("Expected Database error, got {other:?}"),

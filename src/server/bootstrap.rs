@@ -66,6 +66,7 @@ pub(crate) fn load_config(
 pub(crate) async fn assemble(
     config_manager: Arc<ConfigManager>,
 ) -> Result<Assembly, NexusFlowError> {
+    use crate::database::resolve_database_url;
     use crate::database::Database;
     use crate::protocol::AnthropicConverter;
     use crate::protocol::OpenAIConverter;
@@ -78,14 +79,14 @@ pub(crate) async fn assemble(
         let config = config_manager.read();
         config.database.clone()
     };
+    // URL 单一出口（db-backend-selection D2）：主库与下方 DI kit 共用同一
+    // 解析结果——url 配置优先，path 按编译期后端回退
+    let db_url = resolve_database_url(&db_config)?;
     tracing::info!(
         "{}",
-        t_args(
-            "main-initializing-database",
-            &[("path", db_config.path.clone())]
-        )
+        t_args("main-initializing-database", &[("path", db_url.clone())])
     );
-    let database = Arc::new(Database::new(&db_config.path, db_config.pool_size).await?);
+    let database = Arc::new(Database::new(&db_url, db_config.pool_size).await?);
     tracing::info!("{}", t("main-database-initialized"));
 
     let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
@@ -126,7 +127,7 @@ pub(crate) async fn assemble(
     {
         tracing::info!("{}", t("main-building-di-container"));
         let di_db_config = dbnexus::foundation::config::DbConfig {
-            url: format!("sqlite:{}", db_config.path),
+            url: db_url.clone(),
             pool_config: dbnexus::foundation::config::PoolConfig {
                 max_connections: db_config.pool_size,
                 min_connections: 1,

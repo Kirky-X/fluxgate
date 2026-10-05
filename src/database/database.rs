@@ -16,23 +16,15 @@ pub struct Database {
 }
 
 impl Database {
-    pub async fn new(path: &str, pool_size: u32) -> Result<Self, NexusFlowError> {
-        if let Some(parent) = std::path::Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| NexusFlowError::Database {
-                    message: t_args("database-create-dir", &[("error", e.to_string())]),
-                })?;
-            }
-        }
-
-        let url = resolve_database_url(&DatabaseConfig {
-            path: path.to_string(),
-            pool_size,
-            url: String::new(),
-        })?;
+    /// 接收**解析后的完整数据库 URL**（postgres://、mysql://、sqlite://…）。
+    /// 调用方经 [`resolve_database_url`] 从配置解析（bootstrap 单一出口）；
+    /// sqlite 文件库的父目录自举仅对 sqlite 形态生效，其余后端无文件系统
+    /// 语义直接跳过。
+    pub async fn new(url: &str, pool_size: u32) -> Result<Self, NexusFlowError> {
+        ensure_sqlite_parent_dir(url)?;
 
         let config = DbConfig {
-            url,
+            url: url.to_string(),
             pool_config: dbnexus::PoolConfig {
                 max_connections: pool_size,
                 // rc.5 校验 min <= max；PoolConfig::default() 的 min=5 会
@@ -85,6 +77,34 @@ impl Database {
     pub async fn close(&self) {
         // DbPool 在 Drop 时自动清理，无需显式关闭
     }
+}
+
+/// sqlite 文件库父目录自举（`Database::new` 既有语义：库文件可落在尚不
+/// 存在的目录）。仅 sqlite 文件形态有文件系统语义；从 URL 提取路径时剥掉
+/// scheme 前缀与 query（mode=rwc 等）。
+#[cfg(feature = "db-sqlite")]
+fn ensure_sqlite_parent_dir(url: &str) -> Result<(), NexusFlowError> {
+    if url.contains(":memory:") {
+        return Ok(());
+    }
+    let Some(path) = url.strip_prefix("sqlite://") else {
+        return Ok(());
+    };
+    let path = path.split('?').next().unwrap_or(path);
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| NexusFlowError::Database {
+                message: t_args("database-create-dir", &[("error", e.to_string())]),
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// 非 sqlite 构建无文件系统语义，恒成功。
+#[cfg(not(feature = "db-sqlite"))]
+fn ensure_sqlite_parent_dir(_url: &str) -> Result<(), NexusFlowError> {
+    Ok(())
 }
 
 /// 解析数据库连接 URL（db-backend-selection D2：URL 单一事实源）。

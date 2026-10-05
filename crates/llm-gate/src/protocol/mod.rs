@@ -21,9 +21,8 @@ pub(crate) use unified::{absorb_vendor_extensions, merge_vendor_extensions};
 pub use unified::{
     Choice, ContentBlock, EffortLevel, EmbeddingData, EmbeddingUsage, FinishReason, ImageSource,
     Message, MessageContent, Role, SamplingParams, StreamChunk, ThinkingConfig, TokenUsage, Tool,
-    ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction,
-    ToolParameterProperty, ToolParameters, ToolResult, UnifiedEmbeddingResponse, UnifiedRequest,
-    UnifiedResponse,
+    ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolResult,
+    UnifiedEmbeddingResponse, UnifiedRequest, UnifiedResponse,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

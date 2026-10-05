@@ -4,6 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// 统一请求结构。
@@ -236,51 +237,13 @@ pub struct ToolFunction {
     pub name: String,
     /// 函数描述
     pub description: String,
-    /// 函数参数 (JSON Schema 格式)
+    /// 函数参数 —— **JSON Schema 原样保真**（T008 M1 / D7.14 闭环，A3
+    /// 前置）：`serde_json::Value` 直存直出，不做结构化升降级——嵌套
+    /// schema / items / anyOf / $ref / 缺 type 属性等全量无损（A3 前的
+    /// 有损结构化仅幸存 type/properties/{type,description,enum}/required，
+    /// 其余静默丢失）。`Null` = 未携带（出站按协议缺省形状补齐）。
     #[serde(default)]
-    pub parameters: ToolParameters,
-}
-
-/// 函数参数定义
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolParameters {
-    /// 参数类型，通常为 "object"
-    #[serde(rename = "type", default = "default_param_type")]
-    pub param_type: String,
-    /// 属性定义
-    #[serde(default)]
-    pub properties: HashMap<String, ToolParameterProperty>,
-    /// 必需参数列表
-    #[serde(default)]
-    pub required: Vec<String>,
-}
-
-impl Default for ToolParameters {
-    fn default() -> Self {
-        Self {
-            param_type: "object".to_string(),
-            properties: HashMap::new(),
-            required: Vec::new(),
-        }
-    }
-}
-
-fn default_param_type() -> String {
-    "object".to_string()
-}
-
-/// 参数属性定义
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolParameterProperty {
-    /// 参数类型
-    #[serde(rename = "type")]
-    pub param_type: String,
-    /// 参数描述
-    #[serde(default)]
-    pub description: String,
-    /// 枚举值
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub enum_values: Vec<String>,
+    pub parameters: Value,
 }
 
 /// 工具调用 - 助手消息中的工具调用请求

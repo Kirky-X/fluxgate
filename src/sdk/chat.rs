@@ -214,10 +214,10 @@ pub struct ChatTool {
 
 /// 工具函数定义 — `parameters` 为 JSON Schema。
 ///
-/// ⚠️ **有损透传警告**（审查 M1）：网关出站经 `ToolParameters` 有损结构化
-/// ——仅映射扁平 `properties`（嵌套 object/items/anyOf/$ref 与缺 `type`
-/// 属性的键会被**静默丢弃**）。复杂 schema 会静默降级；保真透传改造
-/// 挂账（网关侧工具 schema 保真工单）。当前仅建议简单扁平参数 schema。
+/// **无损透传**（A3/T008 M1 闭环，原「有损透传警告」作废）：网关以
+/// `serde_json::Value` 原样直存直出（嵌套 schema/items/anyOf/$ref/缺
+/// `type` 属性全量保真）。注意：网关**不做 schema 校验**——schema 合法
+/// 性与上游模型兼容性由调用方自担（上游 4xx 原样回传）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatToolDefinition {
     pub name: String,

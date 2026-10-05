@@ -1046,68 +1046,13 @@ fn arguments_as_string(value: Option<&Value>) -> Option<String> {
     }
 }
 
-/// 解析 OpenAI 格式的工具定义
+/// 解析 OpenAI 格式的工具定义（T008 M1 / D7.14 闭环：parameters 原样
+/// `serde_json::Value` 保真透传——不做结构化升降级，嵌套 schema / items /
+/// anyOf / $ref / 缺 type 属性等全量无损）。
 fn parse_openai_tool(json: &Value) -> Option<Tool> {
     let obj = json.as_object()?;
     let func = obj.get("function")?.as_object()?;
-
-    // 解析参数
-    let parameters = func
-        .get("parameters")
-        .and_then(|p| p.as_object())
-        .map(|params| {
-            let properties: HashMap<String, ToolParameterProperty> = params
-                .get("properties")
-                .and_then(|p| p.as_object())
-                .map(|props| {
-                    props
-                        .iter()
-                        .filter_map(|(name, prop)| {
-                            let prop_obj = prop.as_object()?;
-                            Some((
-                                name.clone(),
-                                ToolParameterProperty {
-                                    param_type: prop_obj.get("type")?.as_str()?.to_string(),
-                                    description: prop_obj
-                                        .get("description")
-                                        .and_then(|d| d.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    enum_values: prop_obj
-                                        .get("enum")
-                                        .and_then(|e| e.as_array())
-                                        .map(|arr| {
-                                            arr.iter()
-                                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                                .collect()
-                                        })
-                                        .unwrap_or_default(),
-                                },
-                            ))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            ToolParameters {
-                param_type: params
-                    .get("type")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("object")
-                    .to_string(),
-                properties,
-                required: params
-                    .get("required")
-                    .and_then(|r| r.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            }
-        })
-        .unwrap_or_default();
+    let parameters = func.get("parameters").cloned().unwrap_or(Value::Null);
 
     Some(Tool {
         tool_type: obj
@@ -1127,45 +1072,19 @@ fn parse_openai_tool(json: &Value) -> Option<Tool> {
     })
 }
 
-/// 将工具转换为 OpenAI 格式
+/// 将工具转换为 OpenAI 格式（parameters 原样保真；未携带（Null）时
+/// 省略该键——OpenAI Chat Completions 中 parameters 为可选字段）。
 fn tool_to_openai(tool: &Tool) -> Value {
-    let mut params_obj = json!({
-        "type": tool.function.parameters.param_type,
+    let mut function = json!({
+        "name": tool.function.name,
+        "description": tool.function.description,
     });
-
-    if !tool.function.parameters.properties.is_empty() {
-        let properties: serde_json::Map<String, Value> = tool
-            .function
-            .parameters
-            .properties
-            .iter()
-            .map(|(name, prop)| {
-                let mut prop_obj = json!({
-                    "type": prop.param_type,
-                });
-                if !prop.description.is_empty() {
-                    prop_obj["description"] = json!(prop.description);
-                }
-                if !prop.enum_values.is_empty() {
-                    prop_obj["enum"] = json!(prop.enum_values);
-                }
-                (name.clone(), prop_obj)
-            })
-            .collect();
-        params_obj["properties"] = json!(properties);
+    if tool.function.parameters.is_object() {
+        function["parameters"] = tool.function.parameters.clone();
     }
-
-    if !tool.function.parameters.required.is_empty() {
-        params_obj["required"] = json!(tool.function.parameters.required);
-    }
-
     json!({
         "type": tool.tool_type,
-        "function": {
-            "name": tool.function.name,
-            "description": tool.function.description,
-            "parameters": params_obj,
-        }
+        "function": function,
     })
 }
 

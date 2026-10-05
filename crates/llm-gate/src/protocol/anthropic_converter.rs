@@ -1491,63 +1491,9 @@ fn parse_anthropic_tool(json: &Value) -> Option<Tool> {
         .unwrap_or("")
         .to_string();
 
-    // 解析输入模式
-    let parameters = obj
-        .get("input_schema")
-        .and_then(|s| s.as_object())
-        .map(|schema| {
-            let properties: HashMap<String, ToolParameterProperty> = schema
-                .get("properties")
-                .and_then(|p| p.as_object())
-                .map(|props| {
-                    props
-                        .iter()
-                        .filter_map(|(name, prop)| {
-                            let prop_obj = prop.as_object()?;
-                            Some((
-                                name.clone(),
-                                ToolParameterProperty {
-                                    param_type: prop_obj.get("type")?.as_str()?.to_string(),
-                                    description: prop_obj
-                                        .get("description")
-                                        .and_then(|d| d.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    enum_values: prop_obj
-                                        .get("enum")
-                                        .and_then(|e| e.as_array())
-                                        .map(|arr| {
-                                            arr.iter()
-                                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                                .collect()
-                                        })
-                                        .unwrap_or_default(),
-                                },
-                            ))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            ToolParameters {
-                param_type: schema
-                    .get("type")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("object")
-                    .to_string(),
-                properties,
-                required: schema
-                    .get("required")
-                    .and_then(|r| r.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            }
-        })
-        .unwrap_or_default();
+    // 解析输入模式（T008 M1 / D7.14 闭环：input_schema 原样 Value 保真
+    // 透传——嵌套 schema / items / anyOf / $ref / 缺 type 属性全量无损）
+    let parameters = obj.get("input_schema").cloned().unwrap_or(Value::Null);
 
     Some(Tool {
         tool_type: "function".to_string(),
@@ -1559,42 +1505,20 @@ fn parse_anthropic_tool(json: &Value) -> Option<Tool> {
     })
 }
 
-/// 将工具转换为 Anthropic 格式
+/// 将工具转换为 Anthropic 格式（input_schema 原样保真；未携带（Null）
+/// 时补协议最小形状 `{"type":"object"}`——Anthropic 工具定义必填
+/// input_schema）。
 fn tool_to_anthropic(tool: &Tool) -> Value {
-    let mut params_obj = json!({
-        "type": tool.function.parameters.param_type,
-    });
-
-    if !tool.function.parameters.properties.is_empty() {
-        let properties: serde_json::Map<String, Value> = tool
-            .function
-            .parameters
-            .properties
-            .iter()
-            .map(|(name, prop)| {
-                let mut prop_obj = json!({
-                    "type": prop.param_type,
-                });
-                if !prop.description.is_empty() {
-                    prop_obj["description"] = json!(prop.description);
-                }
-                if !prop.enum_values.is_empty() {
-                    prop_obj["enum"] = json!(prop.enum_values);
-                }
-                (name.clone(), prop_obj)
-            })
-            .collect();
-        params_obj["properties"] = json!(properties);
-    }
-
-    if !tool.function.parameters.required.is_empty() {
-        params_obj["required"] = json!(tool.function.parameters.required);
-    }
+    let input_schema = if tool.function.parameters.is_object() {
+        tool.function.parameters.clone()
+    } else {
+        json!({ "type": "object" })
+    };
 
     json!({
         "name": tool.function.name,
         "description": tool.function.description,
-        "input_schema": params_obj,
+        "input_schema": input_schema,
     })
 }
 

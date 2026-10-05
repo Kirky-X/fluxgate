@@ -1007,8 +1007,8 @@ mod converter {
 
     use llm_gate::protocol::{
         Choice, ContentBlock, ImageSource, Message, MessageContent, TokenUsage, Tool, ToolCall,
-        ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolParameterProperty,
-        ToolParameters, ToolResult, UnifiedRequest, UnifiedResponse,
+        ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolResult, UnifiedRequest,
+        UnifiedResponse,
     };
     use llm_gate::GateError;
 
@@ -2300,22 +2300,17 @@ mod converter {
             function: ToolFunction {
                 name: "get_weather".into(),
                 description: "Get weather".into(),
-                parameters: ToolParameters {
-                    param_type: "object".into(),
-                    properties: {
-                        let mut m = std::collections::HashMap::new();
-                        m.insert(
-                            "city".into(),
-                            ToolParameterProperty {
-                                param_type: "string".into(),
-                                description: "City name".into(),
-                                enum_values: vec!["Beijing".into(), "Shanghai".into()],
-                            },
-                        );
-                        m
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "City name",
+                            "enum": ["Beijing", "Shanghai"],
+                        },
                     },
-                    required: vec!["city".into()],
-                },
+                    "required": ["city"],
+                }),
             },
         }];
         request.tool_choice = Some(ToolChoice::Specific {
@@ -2364,15 +2359,14 @@ mod converter {
                 }]
             }))
             .expect("to_unified");
-        let prop = unified.tools[0]
-            .function
-            .parameters
-            .properties
-            .get("city")
-            .expect("city property");
+        // A3 保真改造：parameters 原样 Value——enum 数组原样幸存
         assert_eq!(
-            prop.enum_values,
-            vec!["Beijing".to_string(), "Shanghai".to_string()]
+            unified.tools[0].function.parameters["properties"]["city"]["enum"],
+            json!(["Beijing", "Shanghai"])
+        );
+        assert_eq!(
+            unified.tools[0].function.parameters["required"],
+            json!(["city"])
         );
     }
 
@@ -4133,7 +4127,6 @@ mod embedding {
 mod unified {
     use llm_gate::protocol::*;
     use serde_json::json;
-    use std::collections::HashMap;
 
     // ==================== Role Tests ====================
 
@@ -4519,7 +4512,8 @@ mod unified {
         let tool = Tool::default();
         assert_eq!(tool.tool_type, "function");
         assert_eq!(tool.function.name, "");
-        assert_eq!(tool.function.parameters.param_type, "object");
+        // A3 保真改造：parameters 为原样 Value，未携带即 Null
+        assert!(tool.function.parameters.is_null());
     }
 
     #[test]
@@ -4527,58 +4521,129 @@ mod unified {
         let func = ToolFunction::default();
         assert_eq!(func.name, "");
         assert_eq!(func.description, "");
-        assert_eq!(func.parameters.param_type, "object");
-        assert!(func.parameters.properties.is_empty());
-        assert!(func.parameters.required.is_empty());
-    }
-
-    #[test]
-    fn test_tool_parameters_default() {
-        let params = ToolParameters::default();
-        assert_eq!(params.param_type, "object");
-        assert!(params.properties.is_empty());
-        assert!(params.required.is_empty());
+        assert!(func.parameters.is_null());
     }
 
     #[test]
     fn test_tool_full_roundtrip() {
+        // A3 保真改造：parameters 原样 Value 往返（嵌套/枚举/required 全保真）
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "City name",
+                    "enum": ["Beijing", "Shanghai"],
+                },
+            },
+            "required": ["city"],
+        });
         let tool = Tool {
             tool_type: "function".to_string(),
             function: ToolFunction {
                 name: "get_weather".to_string(),
                 description: "Get weather".to_string(),
-                parameters: ToolParameters {
-                    param_type: "object".to_string(),
-                    properties: {
-                        let mut m = HashMap::new();
-                        m.insert(
-                            "city".to_string(),
-                            ToolParameterProperty {
-                                param_type: "string".to_string(),
-                                description: "City name".to_string(),
-                                enum_values: vec![],
-                            },
-                        );
-                        m
-                    },
-                    required: vec!["city".to_string()],
-                },
+                parameters: schema.clone(),
             },
         };
         let json_str = serde_json::to_string(&tool).unwrap();
         let deserialized: Tool = serde_json::from_str(&json_str).unwrap();
         assert_eq!(deserialized.function.name, "get_weather");
-        assert_eq!(deserialized.function.parameters.required.len(), 1);
-        assert_eq!(deserialized.function.parameters.required[0], "city");
+        assert_eq!(deserialized.function.parameters, schema, "原样往返保真");
         // Verify "type" rename (not "tool_type")
         let json_val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(json_val["type"], "function");
         assert!(json_val.get("tool_type").is_none());
         assert_eq!(json_val["function"]["name"], "get_weather");
         assert_eq!(json_val["function"]["parameters"]["type"], "object");
-        assert!(json_val["function"]["parameters"]
-            .get("param_type")
-            .is_none());
+    }
+
+    /// A3 保真验收（T008 M1 闭环）：嵌套 schema / anyOf / $ref / 缺 type
+    /// 属性——经公共转换面（to_unified 入站解析 → request_to_external 出站
+    /// 编码）原样幸存；anthropic 面 input_schema 同样原样 + 缺 schema 补
+    /// 协议最小形状。
+    #[test]
+    fn test_tool_parameters_fidelity_nested_anyof_ref_missing_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "target": { "anyOf": [{ "$ref": "#/$defs/city" }, { "type": "null" }] },
+                "nested": {
+                    "type": "object",
+                    "properties": { "deep": { "type": "array", "items": { "type": "integer" } } },
+                },
+                "legacy": { "description": "缺 type 属性（A3 前被静默丢弃）" },
+            },
+            "$defs": { "city": { "type": "string" } },
+            "required": ["target"],
+            "additionalProperties": false,
+        });
+        let wire_tool = json!({
+            "type": "function",
+            "function": {
+                "name": "fidelity",
+                "description": "schema 保真",
+                "parameters": schema.clone(),
+            },
+        });
+
+        // openai 面往返
+        let converter = OpenAIConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4",
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tools": [wire_tool.clone()],
+            }))
+            .expect("入站解析");
+        assert_eq!(unified.tools.len(), 1);
+        assert_eq!(unified.tools[0].function.parameters, schema, "入站原样幸存");
+
+        let encoded = converter.request_to_external(unified).expect("出站编码");
+        assert_eq!(
+            encoded["tools"][0]["function"]["parameters"], schema,
+            "出站无损"
+        );
+
+        // anthropic 面往返（input_schema）
+        let anthropic = AnthropicConverter::new();
+        let a_unified = anthropic
+            .to_unified(json!({
+                "model": "claude-3",
+                "max_tokens": 64,
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tools": [{
+                    "name": "fidelity",
+                    "description": "schema 保真",
+                    "input_schema": schema.clone(),
+                }],
+            }))
+            .expect("anthropic 入站解析");
+        assert_eq!(a_unified.tools[0].function.parameters, schema);
+
+        let a_encoded = anthropic
+            .request_to_external(a_unified)
+            .expect("anthropic 出站");
+        assert_eq!(
+            a_encoded["tools"][0]["input_schema"], schema,
+            "anthropic 出站无损"
+        );
+
+        // 缺 input_schema → 协议最小形状补齐
+        let a_bare = anthropic
+            .to_unified(json!({
+                "model": "claude-3",
+                "max_tokens": 64,
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tools": [{ "name": "bare", "description": "无 schema" }],
+            }))
+            .expect("anthropic 无 schema 入站");
+        let a_bare_encoded = anthropic.request_to_external(a_bare).expect("出站");
+        assert_eq!(
+            a_bare_encoded["tools"][0]["input_schema"],
+            json!({ "type": "object" }),
+            "anthropic 必填 input_schema 缺省补最小形状"
+        );
     }
 
     // ==================== ToolChoice Tests ====================
@@ -4793,31 +4858,6 @@ mod unified {
         assert_eq!(json["data"], "iVBOR");
     }
 
-    #[test]
-    fn test_tool_parameter_property_serialize() {
-        let prop = ToolParameterProperty {
-            param_type: "string".to_string(),
-            description: "A city name".to_string(),
-            enum_values: vec!["Beijing".to_string(), "Shanghai".to_string()],
-        };
-        let json = serde_json::to_value(&prop).unwrap();
-        // "param_type" serializes as "type" (serde rename)
-        assert_eq!(json["type"], "string");
-        assert!(json.get("param_type").is_none());
-        assert_eq!(json["description"], "A city name");
-        assert_eq!(json["enum_values"][0], "Beijing");
-        assert_eq!(json["enum_values"][1], "Shanghai");
-    }
-
-    #[test]
-    fn test_tool_parameter_property_empty_enum_skipped() {
-        let prop = ToolParameterProperty {
-            param_type: "string".to_string(),
-            description: "test".to_string(),
-            enum_values: vec![],
-        };
-        let json = serde_json::to_value(&prop).unwrap();
-        // empty enum_values should be skipped via skip_serializing_if
-        assert!(json.get("enum_values").is_none());
-    }
+    // A3 保真改造：ToolParameterProperty 结构体已删除（parameters 原样
+    // Value 透传，属性面保真由 schema 本身承载）——序列化测试随之退役。
 }

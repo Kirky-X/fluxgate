@@ -12,6 +12,7 @@ use axum::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use crate::config::{AuthSection, AuthTier, ConfigManager};
 use crate::i18n::t;
@@ -23,17 +24,28 @@ fn sha256_hex(input: &str) -> String {
 }
 
 /// 常量时间字节比较 — 消除摘要比较的时序侧信道。
-/// 前置长度检查会泄漏长度，但摘要长度恒为 64 hex，无实际信息量。
+/// 长度不等不做提前返回（O(1) 短路会泄漏长度信息）：两侧 pad 到最大
+/// 长度后经 [`ConstantTimeEq`] 全程扫描，执行时间只随最大长度变化。
+/// pad 补零使含 NUL 的前后缀对逐字节相等，长度判等必须折进结果防止
+/// 误判。调用方传入的都是 SHA256 hex（恒 64 字符）：≤64 走栈缓冲零
+/// 分配（本函数在 validate_key/tier_for_key 的每请求热路径上），更长
+/// 输入走堆缓冲防御兜底。
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
+    let max = a.len().max(b.len());
+    if max <= 64 {
+        let mut padded_a = [0u8; 64];
+        let mut padded_b = [0u8; 64];
+        padded_a[..a.len()].copy_from_slice(a);
+        padded_b[..b.len()].copy_from_slice(b);
+        bool::from(padded_a[..max].ct_eq(&padded_b[..max])) & (a.len() == b.len())
+    } else {
+        let mut padded_a = vec![0u8; max];
+        padded_a[..a.len()].copy_from_slice(a);
+        let mut padded_b = vec![0u8; max];
+        padded_b[..b.len()].copy_from_slice(b);
+        bool::from(padded_a.ct_eq(&padded_b)) & (a.len() == b.len())
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 /// API Key 认证状态
@@ -277,6 +289,20 @@ mod tests {
         assert!(!constant_time_eq("abc", "ab"));
         assert!(!constant_time_eq("", "a"));
         assert!(constant_time_eq("", ""));
+    }
+
+    #[test]
+    fn test_constant_time_eq_length_independent() {
+        // 长度不等恒 false，且不因 pad 补零产生误判：pad 使含 NUL 的
+        // 前后缀对逐字节相等，长度判等必须折进结果（防止只 pad 不查
+        // 长度的实现把 "ab\0"/"ab" 判成相等）
+        assert!(!constant_time_eq("ab\0", "ab"));
+        assert!(!constant_time_eq("ab", "ab\0"));
+        assert!(!constant_time_eq("ab\0c", "ab"));
+        // 摘要场景：64 hex 与其截断形态（前后缀关系）
+        assert!(!constant_time_eq(&KNOWN_HASH[..63], KNOWN_HASH));
+        assert!(!constant_time_eq(KNOWN_HASH, &KNOWN_HASH[..63]));
+        assert!(constant_time_eq(KNOWN_HASH, KNOWN_HASH));
     }
 
     #[test]

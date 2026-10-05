@@ -75,12 +75,19 @@ pub async fn token_stats(
 
 /// 全局指标快照 — 返回请求计数、错误率、平均延迟、各厂商细分指标，以及
 /// recId=9① 的日志背压丢弃计数（dropped_logs：channel 满被丢的日志条数）
+/// 与 secret gate 拒发丢弃计数（secret_scan_dropped：脱敏 fail-closed 丢
+/// 弃的日志条数）
 #[axum::debug_handler]
 pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, NexusFlowError> {
     let snapshot = state.vendor_manager.metrics().snapshot();
     let mut value = serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({}));
     value["dropped_logs"] =
         serde_json::json!(state.logger.as_ref().map(|l| l.dropped_logs()).unwrap_or(0));
+    value["secret_scan_dropped"] = serde_json::json!(state
+        .logger
+        .as_ref()
+        .map(|l| l.secret_scan_dropped())
+        .unwrap_or(0));
     Ok(Json(value))
 }
 

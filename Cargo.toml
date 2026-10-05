@@ -92,9 +92,16 @@ dbnexus = { path = "../dbnexus", default-features = false, features = ["permissi
 sea-orm = { version = "2.0.0-rc.42", default-features = false, optional = true }
 
 # 日志 — path dep 确保 oxcache/dbnexus/trait-kit 全部本地对齐。
-# 落库后端（sqlite/postgres）随 db-* 三组经 inklog?/<backend> 透传，不在此写死
-inklog = { path = "../inklog", default-features = false, features = ["http", "cli", "kit"], optional = true }
+# 落库后端（sqlite/postgres）随 db-* 三组经 inklog?/<backend> 透传，不在此写死。
+# fast-masking：掩码规则 literal 走 Aho-Corasick 单趟加速；secret-scan：出站
+# 裸 secret 值形态+熵扫描门（SecretPatternRegistry/SecretScanGate 导出）
+inklog = { path = "../inklog", default-features = false, features = ["http", "cli", "kit", "fast-masking", "secret-scan"], optional = true }
 tracing = "0.1"
+# log 门面 → tracing 事件桥：reqwest/sea-orm/tokio-tungstenite 等依赖经
+# log crate 输出，inklog LogAdapter 结构上只投 console+主 async 通道，
+# 自定义 sink 通道到不了——先装 LogTracer 让这些记录进统一 tracing 总线
+# （经 gate console sink 输出），inklog 自身 LogLogger 随之良性让位
+tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 tracing-subscriber = { version = "0.3", optional = true }
 
 # 流控 — path dep 本地源码；"retry" 提供重试原语（recId=7：
@@ -130,15 +137,21 @@ reqwest = { version = "0.13", features = ["json", "stream", "socks"], optional =
 eventsource-stream = { version = "0.2", default-features = false, optional = true }
 async-channel = { version = "2", optional = true }
 async-stream = { version = "0.3", optional = true }
-# API Key SHA256 摘要存储与常量时间比较（auth 层）
+# API Key SHA256 摘要存储与常量时间比较（auth 层）；subtle 已随 inklog
+# 在依赖树中（2.6.1），声明同款 default-features = false 只用 core 面
 sha2 = "0.10"
 hex = "0.4"
+subtle = { version = "2.6", default-features = false }
 sys-info = "0.9"
 
 
 [dev-dependencies]
 # config 系测试直接构造/解析 TOML（config 迁移后测试拆分随 llm-gate 走）
 toml = "1"
+# log 门面桥测试：LogTracer 转发断言需 log 宏与 tracing Layer 捕获面
+# （tracing-subscriber 主依赖为 optional，测试单独声明 registry 面）
+log = { version = "0.4", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
 # admin CRUD 测试的 ConfigManager 写路径：RAII 唯一临时目录（D7.6 同款，
 # 取代手写 temp_dir 固定路径）
 tempfile = "3"

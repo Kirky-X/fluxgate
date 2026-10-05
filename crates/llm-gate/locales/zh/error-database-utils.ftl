@@ -20,6 +20,7 @@ database-init-schema = 初始化 schema 失败：{ $error }
 database-logger-shutdown = 日志写入器已关闭
 database-logger-channel-closed = 异步日志写入器通道已关闭
 database-logger-flush-failed = 写入请求日志失败（共 { $count } 条）：{ $error }
+database-logger-secret-scan-dropped = 日志未通过出站密钥扫描已丢弃（累计 { $total } 条）：{ $error }
 database-preagg-flush-failed = token 聚合刷新失败：{ $error }
 database-preagg-final-flush-failed = 停机前最终 token 聚合刷新失败：{ $error }
 # utils-*: retry.rs Protocol source（进 HTTP 响应）与 metrics.rs 运维告警。

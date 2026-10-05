@@ -77,6 +77,12 @@ pub trait RequestLogSink: Send + Sync {
         0
     }
 
+    /// secret gate fail-closed 拒发计数：出站密钥扫描拒发而丢弃的日志
+    /// 条数。直写实现恒 0（默认）。
+    fn secret_scan_dropped(&self) -> u64 {
+        0
+    }
+
     /// 关停写入前沿（幂等）：管道实现补最终落盘后退出；直写实现默认
     /// 无操作。生产停机的最终 flush 由装配层经具体句柄承担，不依赖此方法。
     async fn shutdown(&self) -> Result<(), GateError> {

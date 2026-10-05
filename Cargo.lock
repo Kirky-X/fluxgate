@@ -832,7 +832,9 @@ dependencies = [
  "confers-macros",
  "dashmap",
  "fluent-bundle",
+ "hex",
  "indexmap",
+ "ipnet",
  "itoa",
  "moka",
  "regex",
@@ -840,12 +842,14 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_yaml_ng",
+ "sha2 0.11.0",
  "sys-locale",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "unic-langid",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -2517,6 +2521,7 @@ name = "inklog"
 version = "0.3.0-rc.6"
 dependencies = [
  "aes-gcm",
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "axum",
@@ -3078,6 +3083,7 @@ dependencies = [
  "inklog",
  "limiteron",
  "llm-gate",
+ "log",
  "mockall",
  "mockall_double",
  "mockito",
@@ -3090,6 +3096,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "subtle",
  "sys-info",
  "tempfile",
  "thiserror 2.0.18",
@@ -3100,6 +3107,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.0",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "trait-kit",
  "url",
@@ -6152,6 +6160,20 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
 
 [[package]]
 name = "zerotrie"

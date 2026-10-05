@@ -6,42 +6,13 @@
 use super::{Config, ConfigManager};
 use crate::error::GateError;
 use crate::i18n::t_args;
-use confers::types::{AnnotatedValue, ConfigValue};
+use confers::interface::ConfigProvider;
+use confers::security::rules::{JwtSecretValidator, SecurityValidator, ViolationSeverity};
+use confers::types::{AnnotatedValue, ConfigValue, SourceId};
+use std::collections::HashMap;
 use std::path::Path;
 
 const DEFAULT_CONFIG_PATH: &str = "config.toml";
-
-/// 把 confers 的 AnnotatedValue 树剥壳成裸 serde_json 值。
-///
-/// 手写原因：ConfigValue 未实现 serde Deserializer（confers/src/types.rs 仅
-/// 提供 Serialize，且 Array/Map 的元素是带 source/priority/location 元数据的
-/// AnnotatedValue 结构体序列化），无法直接反序列化为强类型；递归剥壳只保留
-/// `.inner` 裸值。这是 confers 当前版本的结构性缺口，非重复造轮子。
-fn annotated_to_json(v: &AnnotatedValue) -> serde_json::Value {
-    config_value_to_json(&v.inner)
-}
-
-fn config_value_to_json(v: &ConfigValue) -> serde_json::Value {
-    match v {
-        ConfigValue::Null => serde_json::Value::Null,
-        ConfigValue::Bool(b) => (*b).into(),
-        ConfigValue::I64(i) => (*i).into(),
-        ConfigValue::U64(u) => (*u).into(),
-        ConfigValue::F64(f) => (*f).into(),
-        ConfigValue::String(s) => s.as_str().into(),
-        ConfigValue::Bytes(b) => serde_json::to_value(b).unwrap_or(serde_json::Value::Null),
-        ConfigValue::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(annotated_to_json).collect())
-        }
-        ConfigValue::Map(m) => {
-            let mut map = serde_json::Map::new();
-            for (k, av) in m.iter() {
-                map.insert(k.to_string(), annotated_to_json(av));
-            }
-            serde_json::Value::Object(map)
-        }
-    }
-}
 
 pub struct ConfigLoader {
     path: String,
@@ -72,8 +43,13 @@ impl ConfigLoader {
             confers::loader::load_file(path, &loader_config).map_err(|e| GateError::Config {
                 message: t_args("config-load-failed", &[("error", e.to_string())]),
             })?;
-        let json = config_value_to_json(&annotated.inner);
-        let config: Config = serde_json::from_value(json).map_err(|e| GateError::Config {
+        // 强类型投影走 confers AnnotatedValue::to_typed（取代手写递归剥壳）：
+        // 元数据丢弃、Bytes→base64、非有限 F64→null 语义与 to_json 一致
+        // （confers/src/types.rs:930-942）。TOML 解析链不产生 Bytes 变体
+        // （confers/src/impl_/convert.rs 的 toml_value_to_config_value 无
+        // Bytes 分支），base64 语义对 TOML 加载路径不可观察。错误有意脱敏：
+        // 只报字段路径不回显出错值（配置值可能是密钥原文）。
+        let config: Config = annotated.to_typed().map_err(|e| GateError::Config {
             message: t_args("config-parse-failed", &[("error", e.to_string())]),
         })?;
 
@@ -89,10 +65,14 @@ impl ConfigLoader {
 /// 校验配置 — 加载路径（ConfigLoader::load）与更新路径
 /// （ConfigManager::update_config）共用。
 ///
-/// vendor/model id 去重是跨 Vec 条目的唯一性约束，confers::validator 的
-/// ValidationRule 仅支持字段级规则（MinLength/Range/Email 等，见
-/// confers/src/impl_/validator.rs:42-62），无法表达，故保留手写。
+/// 管理面弱密钥校验委托 confers security-rules 的 JwtSecretValidator 规则
+/// 内核（[`validate_admin_secrets`]）；vendor/model id 去重是跨 Vec 条目的
+/// 唯一性约束，confers::validator 的 ValidationRule 仅支持字段级规则
+///（MinLength/Range/Email 等，见 confers/src/impl_/validator.rs:42-62），
+/// 无法表达，故保留手写。
 pub fn validate_config(config: &Config) -> Result<(), GateError> {
+    validate_admin_secrets(config)?;
+
     let mut vendor_ids = std::collections::HashSet::new();
     for vendor in &config.vendors {
         if !vendor_ids.insert(&vendor.id) {
@@ -236,4 +216,141 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     }
 
     Ok(())
+}
+
+/// [auth] 段条目的 ConfigProvider 薄适配 — 把管理面密钥逐条挂到合成键
+/// （`auth.api_keys[{index}]` / `auth.keys[{index}].hash`）上，供
+/// JwtSecretValidator 按标量键读取（其规则内核只消费单个 string 键，见
+/// confers/src/security/rules/jwt.rs 的 with_secret_key）。
+struct AdminSecretProvider {
+    entries: HashMap<String, AnnotatedValue>,
+}
+
+impl AdminSecretProvider {
+    fn insert(&mut self, key: String, secret: &str) {
+        let annotated = AnnotatedValue::new(
+            ConfigValue::string(secret),
+            SourceId::new("llm-gate-config"),
+            key.clone(),
+        );
+        self.entries.insert(key, annotated);
+    }
+}
+
+impl ConfigProvider for AdminSecretProvider {
+    fn get_raw(&self, key: &str) -> Option<&AnnotatedValue> {
+        self.entries.get(key)
+    }
+
+    fn keys(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+}
+
+/// 管理面密钥启动校验 — `[auth].api_keys` 与 `[[auth.keys]].hash`
+/// 的配置契约是 SHA256 hex 摘要（64 个小写 hex 字符，api_keys 存储
+/// 约定见 config/mod.rs），/admin/* 管理路由与数据面共用同一认证
+/// 中间件，违约条目即无效或弱管理面凭证。
+///
+/// 两层校验：
+/// ① 形态契约（应用层业务约定）：长度 64 且全为小写 hex 字符（认证侧
+///    sha256_hex 经 hex::encode 恒输出小写，见 src 侧 auth 中间件，故
+///    契约按小写对齐）。认证对传入 key 现场算摘要后与存储值逐字节
+///    比对，非小写 hex-64 条目（含大写摘要——certutil/Get-FileHash 的
+///    真实输出形态）永远无法认证成功，属纯配置错误；confers 长度/
+///    弱词表拦不住「≥32 字节长口令误填当摘要」「大写摘要」这两类
+///    误填，由本层强制（FTL 宣称的 hex 契约以此为实现）。
+/// ② confers JwtSecretValidator 规则内核（最小长度 + 弱词表，词表不
+///    复制进本仓库；不接 CORS 校验器——其三键缺失语义会稳定误报），
+///    每条目一次 `with_secret_key` 适配标量读取形状。对已过形态关的
+///    条目当前无增量命中（64 小写 hex 必然 ≥32 字节且不可能是弱词表
+///    任何词）。继承边界：只有 Critical 级违规升级为拒绝启动，非
+///    Critical 级留 debug 日志痕迹不拦截——规则内核后续增强新增
+///    Critical 违规时本仓库自动继承拒绝行为。
+///
+/// 条目不达标 → 与其余配置校验同 fail-fast：加载拒绝启动、
+/// POST /admin/config 拒绝热更，防止误填明文在重启用时静默生效。
+/// `[auth]` 缺段或列表为空 = 无密钥可校验，直接放行（认证禁用是既有
+/// 合法形态；校验不看 enabled——条目落盘即按契约校验，与开关状态
+/// 无关）。错误明细按配置索引固定顺序拼装（api_keys 升序 → keys
+/// 升序；HashMap 随机序会让同一坏配置的重启日志文案漂移，妨碍日志
+/// 比对与告警去重），只报条目位置与规则结论，不回显条目原文（脱敏
+/// 先例同 env 告警）。
+fn validate_admin_secrets(config: &Config) -> Result<(), GateError> {
+    let Some(auth) = &config.auth else {
+        return Ok(());
+    };
+
+    // 固定序条目表：配置索引即遍历序（错误明细顺序跨重启稳定）
+    let mut entries: Vec<(String, &str)> = Vec::new();
+    for (index, key) in auth.api_keys.iter().enumerate() {
+        entries.push((format!("auth.api_keys[{index}]"), key));
+    }
+    for (index, entry) in auth.keys.iter().enumerate() {
+        entries.push((format!("auth.keys[{index}].hash"), &entry.hash));
+    }
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut provider = AdminSecretProvider {
+        entries: HashMap::new(),
+    };
+    let mut rejections: Vec<String> = Vec::new();
+    let mut shape_ok: Vec<String> = Vec::new();
+    for (label, secret) in &entries {
+        // 小写 hex-64：与认证侧 sha256_hex 输出形态逐位对齐（大写摘要
+        // 恒无法认证，放行只会把全量 401 推迟到重启后）。谓词必须是
+        // 「hex 字符且非大写」——单纯小写检查会放过非 hex 小写串
+        // （如 64 个 'x' 的长口令）
+        if secret.len() != 64
+            || !secret
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            rejections.push(format!(
+                "{label}: {}",
+                t_args(
+                    "config-admin-secret-not-hex-digest",
+                    &[("length", secret.len().to_string())],
+                )
+            ));
+            continue;
+        }
+        provider.insert(label.clone(), secret);
+        shape_ok.push(label.clone());
+    }
+
+    for key in &shape_ok {
+        let validator = JwtSecretValidator::new().with_secret_key(key.clone());
+        if let Err(violations) = validator.validate(&provider) {
+            for violation in violations {
+                if violation.severity == ViolationSeverity::Critical {
+                    rejections.push(format!("{key}: {}", violation.message));
+                } else {
+                    // 非 Critical（当前规则内核为 Warning 级）不构成拒绝
+                    // 启动，但必须留痕：规则内核后续增强新增违规时不会被
+                    // 零痕迹吞掉（错误显性化纪律）
+                    tracing::debug!(
+                        target: "llm_gate::config",
+                        key = %key,
+                        severity = ?violation.severity,
+                        "non-critical admin secret rule violation: {}",
+                        violation.message
+                    );
+                }
+            }
+        }
+    }
+
+    if rejections.is_empty() {
+        Ok(())
+    } else {
+        Err(GateError::Config {
+            message: t_args(
+                "config-weak-admin-secret",
+                &[("details", rejections.join("; "))],
+            ),
+        })
+    }
 }

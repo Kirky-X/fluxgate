@@ -79,8 +79,9 @@ impl Repository {
         init_schema(&self.pool).await?;
 
         // 旧库迁移：v0.1 数据库可能缺少 cost_usd 列。
-        // SQLite 不支持 ALTER TABLE ADD COLUMN IF NOT EXISTS 语法，
-        // 用 PRAGMA 检查列是否存在，不存在则 ALTER TABLE ADD COLUMN。
+        // 各后端均无 ALTER TABLE ADD COLUMN IF NOT EXISTS 的可移植写法，
+        // 探针查列存在性（sqlite PRAGMA / pg·mysql information_schema），
+        // 缺则 ALTER TABLE ADD COLUMN。
         self.ensure_column_exists("request_logs", "cost_usd", "REAL DEFAULT 0.0")
             .await?;
         self.ensure_column_exists("token_usage", "cost_usd_sum", "REAL DEFAULT 0.0")
@@ -90,7 +91,7 @@ impl Repository {
     }
 
     /// 检查指定表是否已有某列，不存在则 ALTER TABLE ADD COLUMN。
-    /// SQLite 兼容的 IF NOT EXISTS 迁移方案。
+    /// 多后端（db-backend-selection T005）：探针语句随连接后端分派。
     async fn ensure_column_exists(
         &self,
         table: &str,
@@ -99,22 +100,22 @@ impl Repository {
     ) -> Result<(), DbError> {
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
+        let backend = conn.get_database_backend();
 
-        // PRAGMA table_info 返回所有列信息
-        let pragma_sql = format!("PRAGMA table_info({})", table);
-        let stmt = Statement::from_sql_and_values(DatabaseBackend::Sqlite, &pragma_sql, Vec::new());
+        // 表名/列名仅来自本文件内的常量调用点，无用户输入拼接面
+        let (probe_sql, name_key) = Self::column_probe(backend, table, column);
+        let stmt = Statement::from_sql_and_values(backend, &probe_sql, Vec::new());
         let rows = conn.query_all_raw(stmt).await?;
 
         let column_exists = rows.iter().any(|row| {
-            row.try_get::<String>("", "name")
+            row.try_get::<String>("", name_key)
                 .map(|name| name == column)
                 .unwrap_or(false)
         });
 
         if !column_exists {
             let alter_sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def);
-            let stmt =
-                Statement::from_sql_and_values(DatabaseBackend::Sqlite, &alter_sql, Vec::new());
+            let stmt = Statement::from_sql_and_values(backend, &alter_sql, Vec::new());
             conn.execute_raw(stmt).await?;
             tracing::info!(
                 table = table,
@@ -124,6 +125,31 @@ impl Repository {
         }
 
         Ok(())
+    }
+
+    /// 列存在性探针语句与结果列名（纯函数，db-backend-selection T005）。
+    /// sqlite 的 PRAGMA table_info 返回键为 `name`，information_schema 为
+    /// `COLUMN_NAME`——语句与键随元组成对返回，调用方不再分支。
+    fn column_probe(backend: DatabaseBackend, table: &str, column: &str) -> (String, &'static str) {
+        match backend {
+            DatabaseBackend::Sqlite => (format!("PRAGMA table_info({table})"), "name"),
+            DatabaseBackend::MySql => (
+                format!(
+                    "SELECT COLUMN_NAME FROM information_schema.columns \
+                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}' AND COLUMN_NAME = '{column}'"
+                ),
+                "COLUMN_NAME",
+            ),
+            // DatabaseBackend 带 #[non_exhaustive]：其余服务端后端（含
+            // postgres）共用 ANSI information_schema，按当前 schema 限定
+            _ => (
+                format!(
+                    "SELECT COLUMN_NAME FROM information_schema.columns \
+                     WHERE TABLE_SCHEMA = current_schema() AND TABLE_NAME = '{table}' AND COLUMN_NAME = '{column}'"
+                ),
+                "COLUMN_NAME",
+            ),
+        }
     }
 
     pub async fn log_request(&self, log: &RequestLog) -> Result<(), DbError> {
@@ -421,5 +447,28 @@ mod schema_tests {
         assert!(mysql.contains("AUTO_INCREMENT"));
         assert!(mysql.contains("DOUBLE"));
         assert!(!mysql.contains("AUTOINCREMENT"));
+    }
+
+    /// 列探针语句分派：语句与结果键成对返回（R-schema-002）
+    #[test]
+    fn column_probe_dispatch_by_backend() {
+        use super::Repository;
+
+        let (sql, key) =
+            Repository::column_probe(DatabaseBackend::Sqlite, "request_logs", "cost_usd");
+        assert_eq!(sql, "PRAGMA table_info(request_logs)");
+        assert_eq!(key, "name");
+
+        let (sql, key) =
+            Repository::column_probe(DatabaseBackend::MySql, "request_logs", "cost_usd");
+        assert!(sql.contains("TABLE_SCHEMA = DATABASE()"));
+        assert!(sql.contains("TABLE_NAME = 'request_logs'"));
+        assert!(sql.contains("COLUMN_NAME = 'cost_usd'"));
+        assert_eq!(key, "COLUMN_NAME");
+
+        let (sql, key) =
+            Repository::column_probe(DatabaseBackend::Postgres, "request_logs", "cost_usd");
+        assert!(sql.contains("TABLE_SCHEMA = current_schema()"));
+        assert_eq!(key, "COLUMN_NAME");
     }
 }

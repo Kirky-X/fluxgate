@@ -7,6 +7,10 @@
 //! 部署或嵌入式调用）。此处仅保留 config_path 参数解析，缺省
 //! "config.toml" 的语义由 `server::run` 内部承担。
 
+// bin 装配链的 async 块在 mysql 组合下 trait 求解深度超默认 128 层
+// （sqlx mysql 类型层级更深；db-backend-selection T008 门禁发现）
+#![recursion_limit = "256"]
+
 #[tokio::main]
 async fn main() -> Result<(), nexusflow::error::NexusFlowError> {
     // 薄入口只读一个 CLI 配置路径进装配链，不进任何 exec/网络面；

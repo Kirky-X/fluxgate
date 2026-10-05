@@ -114,6 +114,32 @@ pub fn resolve_database_url(config: &DatabaseConfig) -> Result<String, NexusFlow
     }
 }
 
+/// 数据库 URL 日志脱敏 — `config.url` 契约支持 postgres://、mysql:// 等
+/// 惯例内嵌口令的形态（userinfo），原样进日志会把凭证泄进日志通道（脱敏
+/// 先例同 sdk client 的 Debug 输出与 llm-gate env 缺失告警）。剥除 userinfo
+/// 并以 `[REDACTED]` 显式标注「此处有凭证」，host/port/path 保留供排障定位；
+/// 无 userinfo 或非 scheme://host 形态（sqlite::memory:、裸路径）逐字节
+/// 原样返回。解析用 url crate（IPv6 主机/默认端口等边界），输出手工拼装——
+/// Url::to_string() 会把 userinfo 槽的 `[` `]` 百分号编码，日志不可读。
+pub fn redact_db_url(url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    if parsed.username().is_empty() && parsed.password().is_none() {
+        return url.to_string();
+    }
+    let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+    let query = parsed.query().map(|q| format!("?{q}")).unwrap_or_default();
+    format!(
+        "{}://[REDACTED]@{}{}{}{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or(""),
+        port,
+        parsed.path(),
+        query,
+    )
+}
+
 /// 将原始路径规范化为 SeaORM/sqlx 接受的 SQLite URL。
 /// 文件路径追加 `mode=rwc`：sqlx 默认不创建不存在的库文件，网关首次启动
 /// 必须能自举建库。调用方已显式给出 mode 的 URL 原样保留。
@@ -268,5 +294,51 @@ mod tests {
             normalize_sqlite_url("sqlite:///tmp/a.db?mode=rw"),
             "sqlite:///tmp/a.db?mode=rw"
         );
+    }
+}
+
+// 后端无关的纯字符串逻辑，不做 db-sqlite 门控——任意 db-* 组合下都必须
+// 编译执行（弱凭证入日志通道与后端选择正交）
+#[cfg(test)]
+mod redact_db_url_tests {
+    use super::redact_db_url;
+
+    /// server-side URL 内嵌口令（DatabaseConfig.url 契约形态）→ userinfo
+    /// 剥除并显式标注脱敏，host/port/path 原样保留（排障仍可定位实例）
+    #[test]
+    fn userinfo_credentials_are_stripped_with_marker() {
+        assert_eq!(
+            redact_db_url("postgres://alice:s3cret@db.internal:5432/nexusflow"),
+            "postgres://[REDACTED]@db.internal:5432/nexusflow"
+        );
+    }
+
+    /// 仅用户名无口令（口令常走连接参数/密管）同样剥除
+    #[test]
+    fn user_only_userinfo_is_stripped_too() {
+        assert_eq!(
+            redact_db_url("mysql://alice@db.internal/nexusflow"),
+            "mysql://[REDACTED]@db.internal/nexusflow"
+        );
+    }
+
+    /// 无 userinfo 的 URL 原样返回（逐字节不动，含 sqlite 归一产物）
+    #[test]
+    fn url_without_userinfo_is_untouched() {
+        assert_eq!(
+            redact_db_url("postgres://db.internal:5432/nexusflow"),
+            "postgres://db.internal:5432/nexusflow"
+        );
+        assert_eq!(
+            redact_db_url("sqlite://./data/llm_proxy.db?mode=rwc"),
+            "sqlite://./data/llm_proxy.db?mode=rwc"
+        );
+    }
+
+    /// 非 scheme://host 形态（内存库、裸路径）解析不了 userinfo，原样返回
+    #[test]
+    fn non_hierarchical_url_is_untouched() {
+        assert_eq!(redact_db_url("sqlite::memory:"), "sqlite::memory:");
+        assert_eq!(redact_db_url("./data/llm_proxy.db"), "./data/llm_proxy.db");
     }
 }

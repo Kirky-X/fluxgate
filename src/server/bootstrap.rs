@@ -66,6 +66,7 @@ pub(crate) fn load_config(
 pub(crate) async fn assemble(
     config_manager: Arc<ConfigManager>,
 ) -> Result<Assembly, NexusFlowError> {
+    use crate::database::redact_db_url;
     use crate::database::resolve_database_url;
     use crate::database::Database;
     use crate::protocol::AnthropicConverter;
@@ -82,9 +83,14 @@ pub(crate) async fn assemble(
     // URL 单一出口（db-backend-selection D2）：主库与下方 DI kit 共用同一
     // 解析结果——url 配置优先，path 按编译期后端回退
     let db_url = resolve_database_url(&db_config)?;
+    // 日志走脱敏形态：url 配置（postgres:// 等）惯例内嵌口令，原文只进
+    // 连接参数，绝不进日志通道（redact_db_url 剥 userinfo 留 host/port）
     tracing::info!(
         "{}",
-        t_args("main-initializing-database", &[("path", db_url.clone())])
+        t_args(
+            "main-initializing-database",
+            &[("path", redact_db_url(&db_url))],
+        )
     );
     let database = Arc::new(Database::new(&db_url, db_config.pool_size).await?);
     tracing::info!("{}", t("main-database-initialized"));

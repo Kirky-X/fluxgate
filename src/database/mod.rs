@@ -17,7 +17,7 @@ pub mod pre_aggregator;
 pub mod repository;
 
 pub use async_logger::{AsyncLogger, AsyncLoggerHandle};
-pub use database::{resolve_database_url, Database};
+pub use database::{redact_db_url, resolve_database_url, Database};
 pub use pre_aggregator::{TokenPreAggregator, TokenPreAggregatorHandle};
 pub use repository::Repository;
 

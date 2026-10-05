@@ -9,6 +9,7 @@ version = "0.1.0"
 edition = "2021"
 description = "纯路由核心库 — IR/协议转换/Vendor 管理/路由决策/韧性，零 axum 与存储假设"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
+license = "MIT"
 publish = false
 
 [lib]

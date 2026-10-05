@@ -4646,6 +4646,70 @@ mod unified {
         );
     }
 
+    /// A4/T012 跨厂商 × OpenAI 出站面（D7.13 扩项闭环，裁决 a 补合成）：
+    /// Anthropic 上游 stop_reason（经 message_delta 映射进 IR Usage 帧）→
+    /// OpenAI 出站 usage 帧 choices 终止槽合成；OpenAI 原生（None）零回归。
+    #[test]
+    fn test_cross_vendor_openai_outbound_usage_finish_reason_synthesis() {
+        let anthropic = AnthropicConverter::new();
+        let openai = OpenAIConverter::new();
+
+        // ① Anthropic message_delta（stop_reason end_turn + usage）→ IR Usage
+        //    finish_reason = Some("stop")
+        let ir_chunk = anthropic
+            .parse_stream_frame(
+                json!({
+                    "type": "message_delta",
+                    "delta": { "stop_reason": "end_turn" },
+                    "usage": { "input_tokens": 10, "output_tokens": 5,
+                               "cache_read_input_tokens": 4 }
+                })
+                .to_string()
+                .as_str(),
+            )
+            .expect("anthropic 尾帧解析");
+        let StreamChunk::Usage { finish_reason, .. } = ir_chunk else {
+            panic!("应为 Usage 帧");
+        };
+        assert_eq!(finish_reason.as_deref(), Some("stop"));
+
+        // ② OpenAI 出站：usage 帧 choices 终止槽合成
+        let external = openai
+            .stream_chunk_to_external(StreamChunk::Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cache_read_tokens: 4,
+                cache_creation_tokens: 0,
+                finish_reason: finish_reason.clone(),
+            })
+            .expect("openai 出站编码");
+        assert_eq!(
+            external["choices"][0]["finish_reason"],
+            json!("stop"),
+            "跨厂商终止原因必须合成进 usage 帧 choices 槽"
+        );
+        assert_eq!(external["choices"][0]["delta"], json!({}));
+        assert_eq!(external["usage"]["prompt_tokens"], 10);
+        assert_eq!(
+            external["usage"]["prompt_tokens_details"]["cached_tokens"],
+            4
+        );
+
+        // ③ OpenAI 原生（finish_reason None）→ 空 choices 零回归
+        let native = openai
+            .stream_chunk_to_external(StreamChunk::Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                finish_reason: None,
+            })
+            .expect("openai 原生出站");
+        assert_eq!(native["choices"], json!([]), "原生透传保持空 choices");
+    }
+
     // ==================== ToolChoice Tests ====================
 
     #[test]

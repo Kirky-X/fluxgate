@@ -523,10 +523,15 @@ impl ProtocolConverter for OpenAIConverter {
                 total_tokens,
                 cache_read_tokens,
                 cache_creation_tokens: _,
-                finish_reason: _,
+                finish_reason,
             } => {
-                // cache_creation 无 OpenAI 槽；finish_reason 恒 None
-                //（OpenAI 终止原因先行于 usage 尾帧）
+                // cache_creation 无 OpenAI 槽。
+                // 跨厂商合成（A4/T012，D7.13 扩项闭环）：finish_reason 有值
+                // 时（Anthropic 上游 stop_reason 经 T007 映射进 IR Usage 帧）
+                // 写入本帧 choices 终止槽——OpenAI wire 合法形状（usage 帧
+                // 可携带收尾 choices），OpenAI 面客户端自此能拿到跨厂商终止
+                // 原因；None（OpenAI 原生上游，终止先行于 usage 帧）保持
+                // 空 choices 原样透传，零回归。
                 let mut usage = json!({
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
@@ -535,12 +540,22 @@ impl ProtocolConverter for OpenAIConverter {
                 if cache_read_tokens > 0 {
                     usage["prompt_tokens_details"] = json!({"cached_tokens": cache_read_tokens});
                 }
+                // IR Usage.finish_reason 已是归一化 OpenAI wire 词
+                //（anthropic_stop_reason_to_finish_reason；未知词原样保真）
+                let choices = match &finish_reason {
+                    Some(fr) => json!([{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": fr,
+                    }]),
+                    None => json!([]),
+                };
                 Ok(json!({
                     "id": "usage",
                     "object": "chat.completion.chunk",
                     "created": 0,
                     "model": "unknown",
-                    "choices": [],
+                    "choices": choices,
                     "usage": usage,
                 }))
             }

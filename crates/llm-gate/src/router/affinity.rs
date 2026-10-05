@@ -151,16 +151,20 @@ mod tests {
         );
     }
 
-    /// TTL 活跃续期：50ms TTL 内每次 lookup 都重置过期点——连续 lookup
-    /// 跨越原 TTL 后值仍存活（活跃会话粘住）。
+    /// TTL 活跃续期：每次 lookup 都重置过期点——连续 lookup 跨越原 TTL
+    /// 后值仍存活（活跃会话粘住）。
+    ///
+    /// A4/T012 flake 前置加固：原参数（TTL 80ms / 步进 50ms）调度余量仅
+    /// 30ms，T008 期间在全量并发下曾复现抖动过期。现放大为 TTL 500ms /
+    /// 步进 300ms（余量 200ms ≫ 常规调度抖动；3 × 300ms = 900ms > 500ms
+    /// 保持「跨原 TTL 后仍存活」断言强度）——纯测试侧参数调整，生产
+    /// `DEFAULT_AFFINITY_TTL` 不变。
     #[tokio::test]
     async fn lookup_renews_ttl_for_active_sessions() {
-        let table = AffinityTable::with_memory_backend(Duration::from_millis(80));
+        let table = AffinityTable::with_memory_backend(Duration::from_millis(500));
         table.bind(None, "hot", "vendor-a").await;
-        // 3 × 50ms = 150ms > 原 TTL 80ms；若无续期，第三次 lookup 前
-        // 该键已过期
         for _ in 0..3 {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
             assert_eq!(
                 table.lookup(None, "hot").await.as_deref(),
                 Some("vendor-a"),

@@ -63,8 +63,8 @@
 <td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>智能路由</b><br><span style="color:#64748B">模型权重 × 队列 × 时间窗口（× 可选延迟 / 错误率）5 因子加权随机，温度平滑；可选 Power-of-Two-Choices、LinUCB 上下文老虎机、会话亲和、SLA 虚拟队列与 LPS 排队论前瞻</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>弹性容错</b><br><span style="color:#64748B">limiteron 熔断器（5 次失败开 30s，慢调用 60s 阈值防误判）、按状态码分类重试（429 尊重 Retry-After 展宽、5xx 指数退避）、priority 驱动的 Fallback 换路链（总尝试预算默认 8）</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>入站限流与准入</b><br><span style="color:#64748B">limiteron 滑动窗口全局限流 + <code>[[rate_limit.rules]]</code> 路径规则；拥塞感知优先级准入（按 API Key 档位 dedicated/guaranteed/elastic/spot 分级 shed）</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>弹性容错</b><br><span style="color:#64748B">limiteron 熔断器（5 次失败开 30s，慢调用 60s 阈值防误判）、按状态码分类重试（429 尊重 Retry-After 展宽、5xx 固定间隔 + 展宽）、priority 驱动的 Fallback 换路链（总尝试预算默认 8）</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>入站限流与准入</b><br><span style="color:#64748B">limiteron 滑动窗口全局限流 + <code>[[rate_limit.rules]]</code> 路径规则（未配置全局规则时，Governor 以内置令牌桶兜底）；拥塞感知优先级准入（按 API Key 档位 dedicated/guaranteed/elastic/spot 分级 shed）</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>安全认证</b><br><span style="color:#64748B">API Key 仅存 SHA256 摘要、常量时间比较；上游密钥只存环境变量名；吊销/轮换经配置热更新立即生效</span></td>
@@ -129,7 +129,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
 
 ## ⚙️ 配置概览
 
-运行时配置为单个 `config.toml`，共 13 个顶层段：
+运行时配置为单个 `config.toml`，共 15 个顶层段（`model_catalog` 与 `grpc` 见 [📖 用户指南](docs/USER_GUIDE.md)）：
 
 | 段 | 作用 | 热更新 |
 |----|------|--------|
@@ -187,7 +187,7 @@ flowchart TB
 
     subgraph GW["NexusFlow 网关（Axum 0.8 + sdforge）"]
         direction LR
-        MW["中间件管线<br/>auth（SHA256）· 滑动窗口限流 · 拥塞准入"]
+        MW["中间件管线<br/>auth（SHA256）· 滑动窗口限流（缺省令牌桶兜底）· 拥塞准入"]
         Handler["API 处理器<br/>路由提示提取 · 响应缓存"]
         Router["路由决策<br/>5 因子加权 · 亲和 · LinUCB"]
         Conv["协议转换<br/>OpenAI ↔ Anthropic · 零拷贝透传"]
@@ -274,6 +274,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 > **T008 对齐**：`ChatMessage::content` 支持多模态内容件（`ChatContent::Parts`，图片 URL / base64 data URL）；tool 角色消息用 `ChatMessage::tool(tool_call_id, content)` 回填；admin 面走真实路由（目录 `GET/PUT/DELETE /admin/models`、健康 `GET /api/v1/health`、vendor 运行面状态）。
 
+**数据库后端选择（编译期）**：`full` 本身不含数据库驱动，必须搭配一组 `db-*` feature；`default = ["full", "db-sqlite"]` 保持独立运行默认为 sqlite 文件库。
+
+| 构建目标 | feature 组合 |
+| --- | --- |
+| 独立运行（默认，sqlite） | `cargo run` |
+| 独立运行（PostgreSQL） | `cargo build --no-default-features --features "full,db-postgres"` |
+| 独立运行（MySQL） | `cargo build --no-default-features --features "full,db-mysql"` |
+| 库嵌入（自选后端） | `nexusflow = { default-features = false, features = ["full", "db-postgres"] }` |
+
+- 三组互斥由 dbnexus 编译期守卫强制（embedded 与 server-side 不可混），`--all-features` 会编译失败——这是预期行为，CI 与 pre-commit 均以显式特性矩阵替代
+- 配置侧 `[database] url`（完整连接 URL）非空时优先；留空则 `path` 按 sqlite 文件库回退（未编译 db-sqlite 时启动报 `database-backend-missing` 并附重建指引）
+- schema 与列迁移按连接后端自动分派（`schema.postgres.sql` / `schema.mysql.sql` 为 `schema.sql` 的方言投影，加表/加列时三处同改）
+
 > SDK 是「HTTP 客户端」（调用网关 REST API，含 SSE 流式），不是进程内直连路由核心；嵌入式直用 `nexusflow::server` 与 `nexusflow::api` 即可。
 
 ---
@@ -282,7 +295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 测试策略
 
-单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/`（20 个文件：路由、协议转换、厂商、熔断、重试、准入、SSE、成本、装配冒烟等），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
+单元测试内联于 `src/` 与 `crates/llm-gate/src/`（`#[cfg(test)]`），集成测试按功能域组织在顶层 `tests/`（20 个文件：端点、准入、SSE、数据库、装配冒烟、feature 组合矩阵等）与 `crates/llm-gate/tests/`（19 个文件：路由、协议转换、厂商、熔断、重试、成本等），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -294,17 +307,20 @@ cargo test --workspace --all-features
 
 ### 📊 测试规模
 
-截至当前版本：单元测试 235 个（`src/` 内联实测）、集成测试 700 个（`tests/` 30 个文件实测），合计 **935 个，0 ignored**。整体行覆盖率 97%+（`cargo llvm-cov --workspace --all-features`）。主要分布：
+截至当前版本（`cargo test --workspace --all-features` 实测）：单元测试 321 个（`src/` 118 + `crates/llm-gate/src/` 203 内联实测）、集成测试 771 个（顶层 `tests/` 20 文件 262 个 + `crates/llm-gate/tests/` 19 文件 509 个），合计 **1092 个，0 ignored**。整体行覆盖率 97%+（`cargo llvm-cov --workspace --all-features`）。主要分布：
 
-| 测试域 | 用例数 | 覆盖范围 |
-|--------|--------|----------|
-| vendor_test | 110 | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
-| protocol_test | 108 | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
-| api_test | 101 | 端点集成 / 缓存 / 换路 / 亲和 / admin |
-| router_test | 92 | 加权选择 / 亲和 / 提示路由 / 边界 |
-| retry / database / sse | 38 / 38 / 37 | 重试分类 / 落库查询与预聚合 / 流分帧与 SDK |
-| config / utils_coverage / fallback / admission | 20 / 19 / 17 / 16 | 配置加载 / 指标与限流边界 / 换路链 / 准入 |
-| bandit / config_coverage / circuit_breaker 等 | 其余 | 波段it 路由 / loader·manager 分支 / 熔断 / server·grpc 起服 / 装配冒烟 |
+| 测试域 | 用例数 | 位置 | 覆盖范围 |
+|--------|--------|------|----------|
+| protocol_test | 142 | crates/llm-gate/tests/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
+| vendor_test | 110 | crates/llm-gate/tests/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
+| api_test | 102 | tests/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
+| router_test | 91 | crates/llm-gate/tests/ | 加权选择 / 亲和 / 提示路由 / 边界 |
+| database / sse | 38 / 37 | tests/ | 落库查询与预聚合 / 流分帧与 SDK |
+| retry | 36 | crates/llm-gate/tests/ | 重试分类与延迟策略 |
+| config / utils_coverage | 27 / 19 | crates/llm-gate/tests/ | 配置加载 / 指标与限流边界 |
+| fallback / admission | 17 / 16 | tests/ | 换路链 / 准入 |
+| bandit / config_coverage / circuit_breaker | 13 / 13 / 10 | crates/llm-gate/tests/ | bandit 路由 / loader·manager 分支 / 熔断 |
+| server·grpc 起服 / 装配冒烟 / feature 组合矩阵 / key 池等 | 其余 100 | tests/ 与 crates/llm-gate/tests/ | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin |
 
 ---
 
@@ -434,7 +450,7 @@ NexusFlow 通过 Cargo path 依赖集成以下本地源码库（需同级目录�
 | [inklog](https://github.com/Kirky-X/inklog) | 结构化日志（HTTP / CLI / SQLite） |
 | [limiteron](https://github.com/Kirky-X/limiteron) | 限流 / 熔断 / 重试原语 |
 | [oxcache](https://github.com/Kirky-X/oxcache) | 统一缓存 API（会话亲和与响应缓存存储层） |
-| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP 服务框架（`#[service_api]` / 路由注册） |
+| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP 服务框架（`#[forge]` 宏 / 路由注册） |
 | [trait-kit](https://github.com/Kirky-X/trait-kit) | DI 容器（AsyncKit，4 module 拓扑组装） |
 
 ### 💝 特别感谢

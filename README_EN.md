@@ -63,8 +63,8 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 <td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>Smart routing</b><br><span style="color:#64748B">Weighted-random selection over 5 factors (model weight × queue × time window, plus optional latency / error rate) with temperature smoothing; optional Power-of-Two-Choices, LinUCB contextual bandit, session affinity, SLA virtual queue and LPS queueing lookahead</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>Resilience</b><br><span style="color:#64748B">limiteron circuit breaker (opens after 5 failures for 30s, slow-call threshold 60s avoids false trips), status-classified retries (429 honors Retry-After with spread, 5xx exponential backoff), priority-driven fallback chain (total attempt budget defaults to 8)</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>Inbound rate limiting & admission</b><br><span style="color:#64748B">limiteron sliding-window global limiter plus <code>[[rate_limit.rules]]</code> path rules; congestion-aware priority admission (per-key tiers dedicated/guaranteed/elastic/spot)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>Resilience</b><br><span style="color:#64748B">limiteron circuit breaker (opens after 5 failures for 30s, slow-call threshold 60s avoids false trips), status-classified retries (429 honors Retry-After with spread, 5xx fixed-interval delay + spread), priority-driven fallback chain (total attempt budget defaults to 8)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>Inbound rate limiting & admission</b><br><span style="color:#64748B">limiteron sliding-window global limiter plus <code>[[rate_limit.rules]]</code> path rules (with no global rules configured, the Governor falls back to its built-in token bucket); congestion-aware priority admission (per-key tiers dedicated/guaranteed/elastic/spot)</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>Secure auth</b><br><span style="color:#64748B">API keys stored only as SHA256 digests with constant-time comparison; upstream credentials referenced by environment variable name only; revocation/rotation takes effect immediately via hot reload</span></td>
@@ -129,7 +129,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
 
 ## ⚙️ Configuration Overview
 
-Runtime configuration is a single `config.toml` with 13 top-level sections:
+Runtime configuration is a single `config.toml` with 15 top-level sections (`model_catalog` and `grpc` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
 
 | Section | Purpose | Hot reload |
 |---------|---------|------------|
@@ -187,7 +187,7 @@ flowchart TB
 
     subgraph GW["NexusFlow Gateway (Axum 0.8 + sdforge)"]
         direction LR
-        MW["Middleware chain<br/>auth (SHA256) · sliding-window limiter · admission"]
+        MW["Middleware chain<br/>auth (SHA256) · sliding-window limiter (token-bucket fallback) · admission"]
         Handler["API handlers<br/>routing hints · response cache"]
         Router["Routing decision<br/>5-factor weighting · affinity · LinUCB"]
         Conv["Protocol conversion<br/>OpenAI ↔ Anthropic · zero-copy passthrough"]
@@ -234,7 +234,7 @@ async fn main() -> Result<(), nexusflow::error::NexusFlowError> {
 **HTTP client SDK** (talking to a deployed gateway, requires the `sdk` feature):
 
 ```rust
-use nexusflow::sdk::{ChatMessage, ChatRequest, ChatRole, NexusFlowClientBuilder, RequestConfig};
+use nexusflow::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, NexusFlowClientBuilder};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -243,20 +243,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .api_key(std::env::var("NEXUSFLOW_API_KEY")?)
         .build()?;
 
-    let resp = client
-        .chat(&ChatRequest {
-            model: "gpt-4".into(),
-            messages: vec![ChatMessage {
-                role: ChatRole::User,
-                content: "Hello".into(),
+    // Convenience constructor + request-level config
+    // (temperature / max_tokens / hints etc. go through RequestConfig)
+    let request = ChatRequest::new("gpt-4", "Hello")
+        .with_tools(
+            vec![ChatTool {
+                function: ChatToolDefinition {
+                    name: "get_weather".into(),
+                    description: Some("Look up the weather".into()),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
             }],
-            config: RequestConfig::default(),
-        })
-        .await?;
+            Some(ChatToolChoice::auto()),
+        )
+        .with_vendor_extension("thinking_mode", serde_json::json!("off"))?; // reserved keys (model/messages etc.) are rejected
+
+    let resp = client.chat(&request).await?;
     println!("{}", resp.content);
+    for call in &resp.tool_calls {
+        println!("tool_call: {} {}", call.id, call.function.name);
+    }
+    println!(
+        "finish_reason: {} | tokens: {} + {} (cache_read: {})",
+        resp.finish_reason.as_wire(),
+        resp.usage.prompt_tokens,
+        resp.usage.completion_tokens,
+        resp.usage.cache_read_tokens
+    );
     Ok(())
 }
 ```
+
+> **T008 alignment**: `ChatMessage::content` supports multimodal content parts (`ChatContent::Parts`, image URLs / base64 data URLs); tool-role messages are filled back with `ChatMessage::tool(tool_call_id, content)`; the admin surface uses real routes (catalog `GET/PUT/DELETE /admin/models`, health `GET /api/v1/health`, vendor runtime status).
+
+**Database backend selection (compile-time)**: `full` itself carries no database driver — it must be paired with one `db-*` feature group. `default = ["full", "db-sqlite"]` keeps the standalone default on the sqlite file store.
+
+| Build target | Feature set |
+| --- | --- |
+| Standalone (default, sqlite) | `cargo run` |
+| Standalone (PostgreSQL) | `cargo build --no-default-features --features "full,db-postgres"` |
+| Standalone (MySQL) | `cargo build --no-default-features --features "full,db-mysql"` |
+| Embedded library (own backend) | `nexusflow = { default-features = false, features = ["full", "db-postgres"] }` |
+
+- The three groups are mutually exclusive, enforced by dbnexus's compile-time guard (embedded and server-side backends cannot mix). `--all-features` therefore fails to compile — this is expected; CI and pre-commit use explicit feature matrices instead.
+- On the config side, `[database] url` (a full connection URL) takes precedence when set; when empty, `path` falls back to the sqlite file store (without the db-sqlite feature the startup fails with `database-backend-missing` and a rebuild hint).
+- Schema and column migrations dispatch on the connected backend (`schema.postgres.sql` / `schema.mysql.sql` are dialect projections of `schema.sql`; keep all three in sync when adding tables/columns).
 
 > The SDK is an "HTTP client" (calling the gateway REST API, including SSE streaming), not an in-process route-core binding; for embedding use `nexusflow::server` and `nexusflow::api` directly.
 
@@ -266,7 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 Strategy
 
-Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by domain in `tests/` (20 files: routing, protocol conversion, vendors, circuit breaking, retries, admission, SSE, cost, assembly smoke, etc.). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
+Unit tests live inline in `src/` and `crates/llm-gate/src/` (`#[cfg(test)]`); integration tests are organized by domain in the top-level `tests/` (20 files: endpoints, admission, SSE, database, assembly smoke, feature-combination matrix, etc.) and `crates/llm-gate/tests/` (19 files: routing, protocol conversion, vendors, circuit breaking, retries, cost, etc.). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
 
 ### ▶️ Commands (CI-consistent)
 
@@ -278,17 +309,20 @@ cargo test --workspace --all-features
 
 ### 📊 Scale
 
-As of the current version: 235 unit tests (measured inline in `src/`) and 700 integration tests (measured across 30 files in `tests/`) — **935 total, 0 ignored**. Overall line coverage is 97%+ (`cargo llvm-cov --workspace --all-features`). Main distribution:
+As of the current version (measured with `cargo test --workspace --all-features`): 321 unit tests (118 in `src/` + 203 in `crates/llm-gate/src/`, measured inline) and 771 integration tests (262 across 20 files in the top-level `tests/` + 509 across 19 files in `crates/llm-gate/tests/`) — **1092 total, 0 ignored**. Overall line coverage is 97%+ (`cargo llvm-cov --workspace --all-features`). Main distribution:
 
-| Test domain | Cases | Coverage |
-|-------------|-------|----------|
-| vendor_test | 110 | vendor management / rate limits / stream timeouts / health & metrics |
-| protocol_test | 108 | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
-| api_test | 101 | endpoint integration / caching / rerouting / affinity / admin |
-| router_test | 92 | weighted selection / affinity / hint routing / edges |
-| retry / database / sse | 38 / 38 / 37 | retry classes / persistence & pre-aggregation / stream framing & SDK |
-| config / utils_coverage / fallback / admission | 20 / 19 / 17 / 16 | config loading / metrics & limiter edges / fallback chain / admission |
-| bandit / config_coverage / circuit_breaker etc. | remainder | bandit routing / loader·manager branches / circuit / server·grpc serving / assembly smoke |
+| Test domain | Cases | Location | Coverage |
+|-------------|-------|----------|----------|
+| protocol_test | 142 | crates/llm-gate/tests/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
+| vendor_test | 110 | crates/llm-gate/tests/ | vendor management / rate limits / stream timeouts / health & metrics |
+| api_test | 102 | tests/ | endpoint integration / caching / rerouting / affinity / admin |
+| router_test | 91 | crates/llm-gate/tests/ | weighted selection / affinity / hint routing / edges |
+| database / sse | 38 / 37 | tests/ | persistence & pre-aggregation / stream framing & SDK |
+| retry | 36 | crates/llm-gate/tests/ | retry classes & delay policy |
+| config / utils_coverage | 27 / 19 | crates/llm-gate/tests/ | config loading / metrics & limiter edges |
+| fallback / admission | 17 / 16 | tests/ | fallback chain / admission |
+| bandit / config_coverage / circuit_breaker | 13 / 13 / 10 | crates/llm-gate/tests/ | bandit routing / loader·manager branches / circuit |
+| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (100) | tests/ & crates/llm-gate/tests/ | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin |
 
 ---
 
@@ -420,7 +454,7 @@ NexusFlow integrates the following local libraries via Cargo path dependencies (
 | [inklog](https://github.com/Kirky-X/inklog) | Structured logging (HTTP / CLI / SQLite) |
 | [limiteron](https://github.com/Kirky-X/limiteron) | Rate limiting / circuit breaking / retry primitives |
 | [oxcache](https://github.com/Kirky-X/oxcache) | Unified cache API (storage for affinity & response cache) |
-| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP service framework (`#[service_api]` / route registration) |
+| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP service framework (`#[forge]` macro / route registration) |
 | [trait-kit](https://github.com/Kirky-X/trait-kit) | DI container (AsyncKit, 4-module topology) |
 
 ### 💝 Special thanks

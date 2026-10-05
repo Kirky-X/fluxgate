@@ -3,7 +3,15 @@ host = "0.0.0.0"
 port = 8080
 
 [database]
+# 数据库后端为编译期选择（db-backend-selection）：默认构建 = full + db-sqlite
+# （本示例即 sqlite 文件库）。PostgreSQL/MySQL 以
+#   cargo build --no-default-features --features "full,db-postgres"   # 或 db-mysql
+# 构建，并配置完整连接 URL（三组互斥由 dbnexus 编译期守卫强制）：
+#   url = "postgres://127.0.0.1:5432/nexusflow"
+# url 非空时优先生效；留空则 path 按 sqlite 文件库处理（需 db-sqlite，
+# 否则启动报 database-backend-missing 并附重建指引）。
 path = "./data/llm_proxy.db"
+# url = ""
 pool_size = 5
 
 # ---- 模型能力目录（T006）：[[model_catalog]] per-model 条目 ----

@@ -17,8 +17,21 @@ path = "src/main.rs"
 required-features = ["full"]
 
 [features]
-default = ["full"]
+# default 携带 db-sqlite：独立运行（cargo run）默认仍为 sqlite 文件库，与
+# 历史行为逐位一致；库嵌入方用 default-features = false 自选后端。
+# 注意：`--features full` 单独使用不再含任何数据库后端——dbnexus 的
+# 「无数据库 feature」守卫会报编译错，full 必须搭配一个 db-* 组。
+default = ["full", "db-sqlite"]
 full = ["web-server", "database", "vendor-management", "router", "protocol", "infrastructure", "sdforge-integration", "logging", "resilience", "cost-tracking", "sdk"]
+# 数据库后端三组（互斥由 dbnexus 编译期守卫强制：embedded 与 server-side
+# 不可混，见 ../dbnexus/src/lib.rs 规则 2）。驱动选择交给使用方/部署方，
+# 不在依赖声明里写死——对齐 crawlrs db-* 透传模式（crawlrs/Cargo.toml
+# db-postgres/db-sqlite/db-mysql 组）。replica-routing 必须随任一后端透传：
+# inklog 的 dbnexus 集成无条件引用 DbConfig.replica_config。`?` 语法：仅当
+# dep:dbnexus/dep:inklog 已被 database/logging 激活时生效，不反向引入。
+db-sqlite = ["dbnexus?/sqlite", "dbnexus?/runtime-tokio-rustls", "dbnexus?/replica-routing", "inklog?/sqlite"]
+db-postgres = ["dbnexus?/postgres", "dbnexus?/runtime-tokio-rustls", "dbnexus?/replica-routing", "inklog?/postgres"]
+db-mysql = ["dbnexus?/mysql", "dbnexus?/runtime-tokio-rustls", "dbnexus?/replica-routing", "inklog?/mysql"]
 # database 显式入链：原 web-server→router→vendor-management→database 的
 # 传递依赖在解除 vendor-management→database 后改为显式声明（服务器装配
 # bootstrap 需要 Database，行为面与历史组合逐位一致）；dep:limiteron 供
@@ -72,12 +85,15 @@ tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.7", features = ["cors", "trace", "request-id"], optional = true }
 
-# 数据库 — path dep 本地源码（kit feature 暴露 integrations::kit::DbNexusModule）
-dbnexus = { path = "../dbnexus", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "permission", "sql-parser", "macros", "config-env", "with-time", "kit"], optional = true }
+# 数据库 — path dep 本地源码（kit feature 暴露 integrations::kit::DbNexusModule）。
+# 后端（sqlite/postgres/mysql）与 runtime 不在此声明——由 db-* 三组透传 feature
+# 按构建选择（Cargo feature 只加不减，写死会锁死单一后端）
+dbnexus = { path = "../dbnexus", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit"], optional = true }
 sea-orm = { version = "2.0.0-rc.42", default-features = false, optional = true }
 
-# 日志 — path dep 确保 oxcache/dbnexus/trait-kit 全部本地对齐
-inklog = { path = "../inklog", default-features = false, features = ["http", "cli", "sqlite", "kit"], optional = true }
+# 日志 — path dep 确保 oxcache/dbnexus/trait-kit 全部本地对齐。
+# 落库后端（sqlite/postgres）随 db-* 三组经 inklog?/<backend> 透传，不在此写死
+inklog = { path = "../inklog", default-features = false, features = ["http", "cli", "kit"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", optional = true }
 

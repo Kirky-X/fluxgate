@@ -377,3 +377,135 @@ async fn empty_rules_keep_default_governor_behavior() {
         );
     }
 }
+
+/// G5 新契约：全局 tower 层拒绝与 per-endpoint 429 同形——429 +
+/// Retry-After（窗口剩余秒）+ `router-rate-limit-exceeded` 体。
+#[tokio::test]
+async fn global_rule_rejection_carries_retry_after_and_standard_body() {
+    let app = build_app(vec![rate_rule("global-cap", None, 2)]).await;
+
+    for _ in 0..2 {
+        let resp = send(
+            app.clone(),
+            "POST",
+            "/v1/chat/completions",
+            Some("tenant-a"),
+            CHAT_BODY,
+        )
+        .await;
+        assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    let resp = send(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        Some("tenant-a"),
+        CHAT_BODY,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after = resp
+        .headers()
+        .get("Retry-After")
+        .expect("global 429 must carry Retry-After");
+    let secs: u64 = retry_after.to_str().unwrap().parse().unwrap();
+    assert!(secs >= 1, "Retry-After must be positive, got {secs}");
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        body,
+        nexusflow::i18n::t("router-rate-limit-exceeded"),
+        "global 429 body must match the standard rate-limit body"
+    );
+}
+
+/// 装配顺序锁定：认证在限流块外层——全局配额打满后，无效 key 的请求仍
+/// 先被认证拒绝（401），而非限流 429（若 tower 层跑到认证外层，此处将
+/// 得到 429）。
+#[tokio::test]
+async fn auth_runs_before_rate_limit_layers() {
+    use nexusflow::config::AuthSection;
+    let mut config = make_config(vec![rate_rule("global-cap", None, 1)]);
+    config.auth = Some(AuthSection {
+        enabled: true,
+        // sha256("test-good-key")
+        api_keys: vec![
+            "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303".to_string(),
+        ],
+        header: Default::default(),
+        keys: Vec::new(),
+    });
+    let config_manager = Arc::new(ConfigManager::new(config));
+    let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+    let pool = DbPool::with_config(DbConfig {
+        url: "sqlite::memory:".to_string(),
+        pool_config: dbnexus::PoolConfig {
+            max_connections: 1,
+            min_connections: 1,
+            ..Default::default()
+        },
+        admin_role: "admin".to_string(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let database = Arc::new(Database {
+        pool: pool.clone(),
+        repository: Arc::new(nexusflow::database::Repository::new(pool)),
+    });
+    let router = Arc::new(nexusflow::router::Router::new(
+        config_manager.clone(),
+        vendor_manager.clone(),
+    ));
+    let state = Arc::new(ApiState {
+        config: config_manager,
+        vendor_manager,
+        router,
+        openai_converter: Arc::new(OpenAIConverter::new()),
+        anthropic_converter: Arc::new(AnthropicConverter::new()),
+        database,
+        logger: None,
+        pre_aggregator: None,
+        affinity: None,
+        response_cache: None,
+        bandit: None,
+    });
+    let app = create_router(state).await;
+
+    // 好 key 第 1 次通过（非 429），第 2 次打满全局配额 → 429
+    let first = send(
+        app.clone(),
+        "POST",
+        "/v1/chat/completions",
+        Some("test-good-key"),
+        CHAT_BODY,
+    )
+    .await;
+    assert_ne!(first.status(), StatusCode::TOO_MANY_REQUESTS);
+    let second = send(
+        app.clone(),
+        "POST",
+        "/v1/chat/completions",
+        Some("test-good-key"),
+        CHAT_BODY,
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // 配额已空：坏 key 仍走认证 401（认证在 tower 层外侧）
+    let bad = send(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        Some("wrong-key"),
+        CHAT_BODY,
+    )
+    .await;
+    assert_eq!(
+        bad.status(),
+        StatusCode::UNAUTHORIZED,
+        "auth must run outside the rate-limit layers"
+    );
+}

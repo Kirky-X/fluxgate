@@ -6,8 +6,7 @@
 use crate::database::{LogFilter, RequestLog, TokenUsageRow, VendorStatusRecord};
 use dbnexus::{DbError, DbPool, Session};
 use sea_orm::{
-    ConnectionTrait, DatabaseBackend, DatabaseConnection, QueryResult, Statement, TransactionTrait,
-    Value,
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, QueryResult, Statement, Value,
 };
 
 /// LIKE 通配符转义（纯函数）：`\` → `\\`、`%` → `\%`、`_` → `\_`，
@@ -20,8 +19,10 @@ pub(crate) fn escape_like(keyword: &str) -> String {
 }
 
 /// 按连接后端选择方言投影（db-backend-selection T004）。
-/// `schema.sql`（SQLite）为权威源；schema.postgres.sql / schema.mysql.sql 为
-/// 方言投影，头注释声明同步义务——权威源加表/加列时三处同改。
+/// `schema.sql`（SQLite）为可读文档源；schema.postgres.sql / schema.mysql.sql
+/// 为方言投影。G4 后启动建表不再执行此处文本（sqlite/postgres/mysql 走
+/// `crate::database::migration` 的 FROZEN V1）；本函数仅服务非穷尽后端的
+/// 兜底 DDL 与投影一致性单测。
 pub(crate) fn schema_sql_for_backend(backend: DatabaseBackend) -> &'static str {
     match backend {
         DatabaseBackend::Postgres => include_str!("schema.postgres.sql"),
@@ -31,24 +32,44 @@ pub(crate) fn schema_sql_for_backend(backend: DatabaseBackend) -> &'static str {
     }
 }
 
-/// schema 初始化单一实现（`Database::new` 与 `Repository::initialize` 共用，
-/// 消除两处逐语句循环副本）：按连接后端加载方言投影，逐语句 `execute_raw_ddl`；
-/// MySQL 另行幂等建索引（MySQL 8 无 `CREATE INDEX IF NOT EXISTS`，故方言
-/// 投影只含建表）。
+/// schema 初始化单一实现（`Database::new` 与 `Repository::initialize` 共用）。
+///
+/// G4（absorb-sibling-libs T005）：sqlite/postgres/mysql 走 dbnexus
+/// `MigrationExecutor` 版本化迁移（V1，见 `crate::database::migration`）；
+/// 其余后端（`DatabaseBackend` 非穷尽扩展）回落旧逐语句 DDL。
+/// MySQL 索引仍由 `ensure_indexes_mysql` 幂等创建（MySQL 8 无
+/// `CREATE INDEX IF NOT EXISTS`，迁移重放必须幂等）。v0.1 列回填
+/// （`migrate_v0_1_columns`）保持在迁移之后——存量库基线化的一部分。
+/// 迁移失败直接返回 Err（`Database::new` 转启动 fail-fast，无静默降级）。
+/// session 逐段获取逐段释放：测试池 max_connections=1，同时持有两个
+/// session 会死等。
 pub(crate) async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
-    let session = pool.get_session("admin").await?;
-    let backend = session.connection()?.get_database_backend();
-    for statement in schema_sql_for_backend(backend).split(';') {
-        let trimmed = statement.trim();
-        if !trimmed.is_empty() {
-            session.execute_raw_ddl(trimmed).await?;
+    let backend = {
+        let session = pool.get_session("admin").await?;
+        session.connection()?.get_database_backend()
+    };
+    match backend {
+        DatabaseBackend::Postgres | DatabaseBackend::MySql | DatabaseBackend::Sqlite => {
+            crate::database::migration::apply_core_v1(pool).await?;
+        }
+        _ => {
+            let session = pool.get_session("admin").await?;
+            for statement in schema_sql_for_backend(backend).split(';') {
+                let trimmed = statement.trim();
+                if !trimmed.is_empty() {
+                    session.execute_raw_ddl(trimmed).await?;
+                }
+            }
         }
     }
     if backend == DatabaseBackend::MySql {
+        let session = pool.get_session("admin").await?;
         ensure_indexes_mysql(session.connection()?).await?;
     }
-    // 迁移复用同一 session：测试池 max_connections=1，二次 get_session 会死等
-    migrate_v0_1_columns(&session, backend).await?;
+    {
+        let session = pool.get_session("admin").await?;
+        migrate_v0_1_columns(&session, backend).await?;
+    }
     Ok(())
 }
 
@@ -172,49 +193,54 @@ impl Repository {
 
     pub async fn log_request(&self, log: &RequestLog) -> Result<(), DbError> {
         let session = self.pool.get_session("admin").await?;
-        let conn = session.connection()?;
-        let stmt = Self::insert_log_statement(log, conn.get_database_backend());
-        conn.execute_raw(stmt).await?;
+        let (sql, params) = Self::insert_log_parts(log);
+        session.execute_with_params(&sql, &params).await?;
         Ok(())
     }
 
-    /// recId=9①：单事务批量写入 — N 条 INSERT 包在一个事务里 commit，
-    /// 替换 AsyncLogger 逐条 await 的逐事务模式（SQLite 每 INSERT 一次
-    /// fsync，批量事务把 N 次 fsync 合为 1 次）。
+    /// recId:G4 单事务参数化批量写入 — N 条 INSERT 包在一个 dbnexus 事务里
+    /// commit（SQLite 每事务一次 fsync，N 次 fsync 合为 1 次），与旧 sea-orm
+    /// `begin()` 绕道语义等价（单事务批量 + 提交），但全程走 dbnexus 会话
+    /// 防御链（权限解析/慢查询指标/事务感知）。
     ///
-    /// 事务承载（与 plan 的偏差，以源码为准）：plan 写 `session.begin_transaction()`
-    /// 包 N 条 INSERT —— 实核实 dbnexus `Session::execute_raw(&self, sql: &str)`
-    /// 只接收裸 SQL（无参数绑定），事务内执行走 `tx.execute_unprepared`，
-    /// 需要手写转义（messages/response/error_message 是任意用户内容，
-    /// 引入注入面）。故改为 `session.connection()?.begin()` 取 sea-orm
-    /// `DatabaseTransaction`，参数化 Statement 循环执行后 `tx.commit()` ——
-    /// 语义等价（单事务批量 + 提交），绑定安全，连接仍来自 dbnexus 池。
+    /// 不用 `batch_execute_in_transaction`：它只收裸 SQL（`Vec<&str>`），用户
+    /// 内容（messages/response/error_message）需手写转义拼接，引入注入面；
+    /// 此处 `begin_transaction` + 逐条 `execute_with_params`（serde_json 参数
+    /// 绑定，无手写转义），单条失败回滚整批（不丢也不留半批）。
     pub async fn log_requests_batch(&self, logs: &[RequestLog]) -> Result<(), DbError> {
         if logs.is_empty() {
             return Ok(());
         }
         let session = self.pool.get_session("admin").await?;
-        let conn = session.connection()?;
-        let backend = conn.get_database_backend();
-        let tx = conn.begin().await?;
+        session.begin_transaction().await?;
+        let mut failed: Option<DbError> = None;
         for log in logs {
-            let stmt = Self::insert_log_statement(log, backend);
-            // sea-orm 2.0：预构建 Statement 走 execute_raw（execute 接收
-            // StatementBuilder，即 sea_query 语句类型）
-            if let Err(e) = tx.execute_raw(stmt).await {
-                // 单条失败回滚整批（事务语义：不丢也不留半批）
-                let _ = tx.rollback().await;
-                return Err(e.into());
+            let (sql, params) = Self::insert_log_parts(log);
+            if let Err(e) = session.execute_with_params(&sql, &params).await {
+                failed = Some(e);
+                break;
             }
         }
-        tx.commit().await?;
-        Ok(())
+        match failed {
+            // G3 复核 MEDIUM：commit 失败同样尝试回滚，不残留开事务连接
+            None => {
+                if let Err(e) = session.commit().await {
+                    let _ = session.rollback().await;
+                    return Err(e);
+                }
+                Ok(())
+            }
+            Some(e) => {
+                let _ = session.rollback().await;
+                Err(e)
+            }
+        }
     }
 
-    /// request_logs 的参数化 INSERT Statement（log_request / log_requests_batch
-    /// 共用）。语句本体系 `?` 占位符三端通用；backend 标注决定 sea-orm 的
-    /// 参数绑定翻译（postgres 下 `?` → `$n`），必须随连接后端而非写死。
-    fn insert_log_statement(log: &RequestLog, backend: DatabaseBackend) -> Statement {
+    /// request_logs 参数化 INSERT（`log_request`/`log_requests_batch` 共用）。
+    /// 占位符统一 `?`：`Statement::from_sql_and_values` 按 backend 标注翻译
+    ///（postgres 下 `?` → `$n`），调用方不再按后端分支。
+    fn insert_log_parts(log: &RequestLog) -> (String, Vec<serde_json::Value>) {
         const SQL: &str = r#"
             INSERT INTO request_logs (
                 request_id, timestamp, endpoint, input_format,
@@ -224,28 +250,26 @@ impl Repository {
                 cost_usd
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#;
-
-        let values: Vec<Value> = vec![
-            log.request_id.as_str().into(),
-            log.timestamp.into(),
-            log.endpoint.as_str().into(),
-            log.input_format.as_str().into(),
-            log.abstract_model.as_deref().into(),
-            log.messages.as_str().into(),
-            log.actual_vendor.as_str().into(),
-            log.actual_model.as_str().into(),
-            log.routing_strategy.as_str().into(),
-            log.status_code.into(),
-            log.response.as_deref().into(),
-            log.error_message.as_deref().into(),
-            log.prompt_tokens.into(),
-            log.completion_tokens.into(),
-            log.total_tokens.into(),
-            log.duration_ms.into(),
-            log.cost_usd.into(),
+        let params = vec![
+            serde_json::json!(log.request_id),
+            serde_json::json!(log.timestamp),
+            serde_json::json!(log.endpoint),
+            serde_json::json!(log.input_format),
+            serde_json::json!(log.abstract_model),
+            serde_json::json!(log.messages),
+            serde_json::json!(log.actual_vendor),
+            serde_json::json!(log.actual_model),
+            serde_json::json!(log.routing_strategy),
+            serde_json::json!(log.status_code),
+            serde_json::json!(log.response),
+            serde_json::json!(log.error_message),
+            serde_json::json!(log.prompt_tokens),
+            serde_json::json!(log.completion_tokens),
+            serde_json::json!(log.total_tokens),
+            serde_json::json!(log.duration_ms),
+            serde_json::json!(log.cost_usd),
         ];
-
-        Statement::from_sql_and_values(backend, SQL, values)
+        (SQL.to_string(), params)
     }
 
     pub async fn query_logs(&self, filter: &LogFilter) -> Result<Vec<RequestLog>, DbError> {

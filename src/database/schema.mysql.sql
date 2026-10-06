@@ -1,4 +1,6 @@
 -- MySQL 方言投影（db-backend-selection T004）
+-- 注（absorb-sibling-libs T005）：本文件现为可读文档。运行源是
+-- src/database/migration.rs 的 FROZEN V1（经 MigrationExecutor 执行）；
 -- 权威源：schema.sql（SQLite）。本文件为方言投影——schema.sql 加列/加表时
 -- 必须同步本文件与 schema.postgres.sql。与权威源差异仅类型映射：
 --   INTEGER PRIMARY KEY AUTOINCREMENT -> BIGINT AUTO_INCREMENT PRIMARY KEY

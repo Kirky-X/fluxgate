@@ -576,78 +576,24 @@ impl Router {
     ) -> Option<RoutingDecision> {
         let config = self.config.read();
 
-        let mut all_models: Vec<(VendorConfig, ModelConfig)> = Vec::new();
-        // recId=19(b)：因 CB/Throttled 被剔除的候选（fail-open 回落集）
-        let mut status_dropped: Vec<(VendorConfig, ModelConfig)> = Vec::new();
-
-        for vendor in &config.vendors {
-            if !vendor.enabled {
-                continue;
-            }
-            if excluded.iter().any(|e| e == &vendor.id) {
-                continue;
-            }
-
-            for model in &vendor.models {
-                if !model.enabled {
-                    continue;
-                }
-
-                if self.vendor_manager.get_status(&vendor.id).await != VendorStatus::Available {
-                    status_dropped.push((vendor.clone(), model.clone()));
-                    continue;
-                }
-
-                all_models.push((vendor.clone(), model.clone()));
-            }
-        }
+        let (mut all_models, status_dropped) = self
+            .collect_global_candidates(&config.vendors, excluded)
+            .await;
 
         if all_models.is_empty() {
             // recId=19(b)：fail-open 安全网（语义同 try_abstract_route 注释）
-            if !status_dropped.is_empty() && self.config.read().routing.fail_open_when_all_cooling {
-                tracing::warn!(
-                    count = status_dropped.len(),
-                    "{}",
-                    t("router-global-fail-open-engaged")
-                );
-                return Some(
-                    self.weighted_select(
-                        status_dropped,
-                        RoutingStrategy::Global,
-                        request_weight,
-                        None,
-                        sla_tenant,
-                    )
-                    .await,
-                );
-            }
-            return None;
+            return self
+                .global_fail_open(status_dropped, request_weight, sla_tenant)
+                .await;
         }
 
         // recId=10(1)：亲和 —— hard（默认）命中即返回；soft 评分 boost
         //（语义同 try_abstract_route 注释）
-        if let Some(bound) = self.affinity_hit(&all_models, session_key, tenant).await {
-            let routing = self.config.read().routing.clone();
-            if routing.affinity_mode.trim().eq_ignore_ascii_case("soft") {
-                let factor = routing.affinity_boost_factor.max(0.0);
-                return Some(
-                    self.weighted_select(
-                        all_models,
-                        RoutingStrategy::Global,
-                        request_weight,
-                        Some((&bound, factor)),
-                        sla_tenant,
-                    )
-                    .await,
-                );
-            }
-            if let Some((vendor, model)) = all_models.iter().find(|(v, _)| v.id == bound) {
-                return Some(RoutingDecision {
-                    vendor: vendor.clone(),
-                    model: model.clone(),
-                    strategy: RoutingStrategy::Global,
-                });
-            }
+        if let Some(decision) = self
+            .global_affinity_decision(&all_models, session_key, tenant, request_weight, sla_tenant)
+            .await
+        {
+            return Some(decision);
         }
 
         // recId=17：LPS 硬约束门控（语义同 try_abstract_route；默认关）
@@ -685,6 +631,108 @@ impl Router {
             )
             .await,
         )
+    }
+
+    /// 全局路径候选收集：enabled 过滤 + 排除集过滤 + 实时健康过滤
+    ///（CB/Throttled 候选入 status_dropped，供 recId=19(b) fail-open 回落）。
+    async fn collect_global_candidates(
+        &self,
+        vendors: &[VendorConfig],
+        excluded: &[String],
+    ) -> (
+        Vec<(VendorConfig, ModelConfig)>,
+        Vec<(VendorConfig, ModelConfig)>,
+    ) {
+        let mut all_models: Vec<(VendorConfig, ModelConfig)> = Vec::new();
+        let mut status_dropped: Vec<(VendorConfig, ModelConfig)> = Vec::new();
+
+        for vendor in vendors {
+            if !vendor.enabled {
+                continue;
+            }
+            if excluded.iter().any(|e| e == &vendor.id) {
+                continue;
+            }
+
+            for model in &vendor.models {
+                if !model.enabled {
+                    continue;
+                }
+
+                if self.vendor_manager.get_status(&vendor.id).await != VendorStatus::Available {
+                    status_dropped.push((vendor.clone(), model.clone()));
+                    continue;
+                }
+
+                all_models.push((vendor.clone(), model.clone()));
+            }
+        }
+        (all_models, status_dropped)
+    }
+
+    /// recId=19(b) fail-open 安全网：存在被 CB/Throttled 剔除的候选且
+    /// [routing].fail_open_when_all_cooling 开启 → 从回落集加权选择；
+    /// 否则 None（调用方继续后续路由阶段）。
+    async fn global_fail_open(
+        &self,
+        status_dropped: Vec<(VendorConfig, ModelConfig)>,
+        request_weight: Option<f64>,
+        sla_tenant: Option<&str>,
+    ) -> Option<RoutingDecision> {
+        if status_dropped.is_empty() || !self.config.read().routing.fail_open_when_all_cooling {
+            return None;
+        }
+        tracing::warn!(
+            count = status_dropped.len(),
+            "{}",
+            t("router-global-fail-open-engaged")
+        );
+        Some(
+            self.weighted_select(
+                status_dropped,
+                RoutingStrategy::Global,
+                request_weight,
+                None,
+                sla_tenant,
+            )
+            .await,
+        )
+    }
+
+    /// recId=10(1)：亲和决策 —— soft 模式命中即带 boost 加权选择（恒出
+    /// 决策）；hard 模式命中且绑定 vendor 在合格集合内直接选它；绑定
+    /// vendor 不在集合内则 None（调用方继续 LPS/LinUCB/加权阶段）。
+    async fn global_affinity_decision(
+        &self,
+        all_models: &[(VendorConfig, ModelConfig)],
+        session_key: Option<&str>,
+        tenant: Option<&str>,
+        request_weight: Option<f64>,
+        sla_tenant: Option<&str>,
+    ) -> Option<RoutingDecision> {
+        let bound = self.affinity_hit(all_models, session_key, tenant).await?;
+        let routing = self.config.read().routing.clone();
+        if routing.affinity_mode.trim().eq_ignore_ascii_case("soft") {
+            let factor = routing.affinity_boost_factor.max(0.0);
+            return Some(
+                self.weighted_select(
+                    all_models.to_vec(),
+                    RoutingStrategy::Global,
+                    request_weight,
+                    Some((&bound, factor)),
+                    sla_tenant,
+                )
+                .await,
+            );
+        }
+        all_models
+            .iter()
+            .find(|(v, _)| v.id == bound)
+            .map(|(vendor, model)| RoutingDecision {
+                vendor: vendor.clone(),
+                model: model.clone(),
+                strategy: RoutingStrategy::Global,
+            })
     }
 
     /// recId=11：会话亲和 boost — 命中 vendor 在合格集合内则直接选它，

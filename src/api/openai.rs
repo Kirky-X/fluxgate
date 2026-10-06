@@ -13,6 +13,26 @@ use axum::{extract::State, http::HeaderMap, response::IntoResponse, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use crate::api::response_cache::CacheOutcome;
+
+/// 流式响应公共头（透传与转换两条流式路径共用）。
+const STREAM_HEADERS: [(&str, &str); 3] = [
+    ("Content-Type", "text/event-stream"),
+    ("Cache-Control", "no-cache"),
+    ("Connection", "keep-alive"),
+];
+
+/// 单请求横切参数束 — 路由解析后一次构造，供派发失败收尾、缓存早退与
+/// 落库路径共用（收敛原 8 段重复收尾的长参数列表）。
+struct ChatDispatchCtx {
+    request_id: String,
+    start_time: std::time::Instant,
+    session_key: Option<String>,
+    api_key_hash: String,
+    // recId=15（评审修复 major）：奖励臂键（None = X-Vendor 直连跳过奖励）
+    linucb_reward_key: Option<String>,
+}
+
 #[axum::debug_handler]
 pub async fn chat_completions(
     State(state): State<Arc<ApiState>>,
@@ -41,12 +61,212 @@ pub async fn chat_completions(
     // 从已验证 key 派生；affinity_tenant_scoped 关闭时不参与键构造）
     let api_key_hash = crate::api::response_cache::cache_api_key_hash(&headers);
 
-    // 路由决策（支持 X-Vendor 和 X-Model 请求头；无 hints 时走亲和路由）。
+    // 路由决策（支持 X-Vendor 和 X-Model 请求头；无 hints 时走亲和路由）
+    let (decision, linucb_reward_key) = resolve_route(
+        &state,
+        model,
+        &headers,
+        hints,
+        session_key.as_deref(),
+        &api_key_hash,
+        &body,
+    )
+    .await?;
+
+    let ctx = ChatDispatchCtx {
+        request_id,
+        start_time,
+        session_key,
+        api_key_hash,
+        linucb_reward_key,
+    };
+
+    // 检查是否可以使用零拷贝透传（入站格式 OpenAI == 出站格式 OpenAI）。
+    // 透传路径不做工具 schema 上限校验（字节保真是透传的设计承诺，
+    // converter 入站校验不适用），兜底 = axum 体限 + auth + 限流。
+    let use_passthrough = decision.vendor.type_ == "openai";
+
+    if use_passthrough {
+        if stream {
+            // recId=2（二期）：cover_all_paths 开启时「首字节前换路」——
+            // Err（均发生在响应头前，manager check_stream_status 早退）排除
+            // 重派；Ok（流已建立）即交出 body，流中错误仍以 SSE error 事件
+            // 终止不再换路。关闭时单发直连，行为与历史逐位一致。
+            let (stream_response, decision) =
+                dispatch_with_fallback(&state, &ctx, model, &body, decision, true, |d| {
+                    let vendor_manager = state.vendor_manager.clone();
+                    let body = body.clone();
+                    async move {
+                        vendor_manager
+                            .execute_passthrough_stream_request(&d.vendor.id, body)
+                            .await
+                    }
+                })
+                .await?;
+
+            // recId=11：派发成功即回写亲和绑定（流后续错误由 metrics 记账）
+            // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
+            crate::api::bind_session_affinity(
+                &state,
+                &ctx.api_key_hash,
+                ctx.session_key.as_deref(),
+                &decision.vendor.id,
+            )
+            .await;
+
+            // recId=3 阶段一：透传流过分帧器逐帧原样转发（帧边界与上游一致），
+            // 替换旧的整块 bytes 直转 —— 后者无法检测上游中流 error 事件，
+            // 且错误中断会伪装成正常流结束
+            let body_stream = axum::body::Body::from_stream(
+                crate::api::sse::reframe_passthrough_stream(stream_response),
+            );
+
+            log_stream_dispatch(&state, &ctx, &decision, &body).await;
+
+            return Ok((STREAM_HEADERS, body_stream).into_response());
+        }
+
+        // recId=12：非流式透传的精确响应缓存（命中直接返回 HIT）
+        let cache_outcome = cache_probe(&state, &headers, &decision, &body).await;
+        if let Some(hit) = cache_hit_response(&state, &ctx, &decision, &body, &cache_outcome).await
+        {
+            return Ok(hit);
+        }
+
+        // 普通请求 - 零拷贝透传
+        // recId=2（一期）：cover_all_paths 开启时包换路 fallback 循环
+        //（resilience feature）——主 vendor 耗尽/429/5xx 时排除后重路由，
+        // actual_vendor 记最终成功者；关闭时单发直连，行为与历史逐位一致
+        let (response, decision) =
+            dispatch_with_fallback(&state, &ctx, model, &body, decision, true, |d| {
+                let vendor_manager = state.vendor_manager.clone();
+                let body = body.clone();
+                async move {
+                    vendor_manager
+                        .execute_passthrough_request(&d.vendor.id, body)
+                        .await
+                }
+            })
+            .await?;
+
+        // recId=11：执行成功回写亲和绑定（换路成功时 decision 已是最终
+        // 成功者——失败迁移绑定语义）；recId=12：未命中则回写响应缓存
+        // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
+        crate::api::rebind_session_affinity(
+            &state,
+            &ctx.api_key_hash,
+            ctx.session_key.as_deref(),
+            &decision.vendor.id,
+        )
+        .await;
+        persist_cache_miss(&state, &cache_outcome, &decision, &response).await;
+
+        log_success_dispatch(&state, &ctx, &decision, &body, &response).await;
+
+        // recId=12：缓存参与（Miss 回写完成）→ 响应带 X-Cache: MISS
+        return Ok(json_response_with_cache_flag(response, &cache_outcome));
+    }
+
+    // 转换路径：OpenAI → Unified → 目标厂商
+    let unified_request = state.openai_converter.to_unified(body.clone())?;
+
+    if stream {
+        // recId=3 阶段二：manager 返回分帧 + 反向解析后的 IR chunk 流
+        // recId=2（二期）：cover_all_paths 开启时「首字节前换路」（转换路径
+        // UnifiedRequest 任意 vendor type 均合法，不按协议过滤）；关闭时
+        // 单发直连，行为与历史逐位一致
+        let (chunk_stream, decision) =
+            dispatch_with_fallback(&state, &ctx, model, &body, decision, false, |d| {
+                let vendor_manager = state.vendor_manager.clone();
+                let unified_request = unified_request.clone();
+                async move {
+                    vendor_manager
+                        .execute_stream_request(&d.vendor.id, unified_request)
+                        .await
+                }
+            })
+            .await?;
+
+        // recId=11：派发成功即回写亲和绑定
+        // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
+        crate::api::bind_session_affinity(
+            &state,
+            &ctx.api_key_hash,
+            ctx.session_key.as_deref(),
+            &decision.vendor.id,
+        )
+        .await;
+
+        // IR → OpenAI 出站事件（存量 stream_chunk_to_external）。
+        // recId=14②：错误发带语义的 SSE error 事件后提前终止，不再补
+        // [DONE] —— 客户端与重试逻辑可分辨成败（旧实现错误后仍以 [DONE]
+        // 收尾伪装正常结束）
+        let converter = state.openai_converter.clone();
+        let body_stream = openai_sse_stream(converter, chunk_stream);
+
+        log_stream_dispatch(&state, &ctx, &decision, &body).await;
+
+        return Ok((STREAM_HEADERS, body_stream).into_response());
+    }
+
+    // 普通请求 - 通过 UnifiedRequest
+    // recId=12：非流式转换路径的精确响应缓存（命中直接返回 HIT）
+    let cache_outcome = cache_probe(&state, &headers, &decision, &body).await;
+    if let Some(hit) = cache_hit_response(&state, &ctx, &decision, &body, &cache_outcome).await {
+        return Ok(hit);
+    }
+
+    // recId=7⑤：单发调用包换路 fallback 循环（resilience feature）——
+    // 主 vendor 耗尽/429/5xx 时排除后重路由，actual_vendor 记最终成功者
+    let (unified_response, decision) =
+        dispatch_unified_request(&state, &ctx, model, &body, decision, unified_request).await?;
+
+    // 将统一响应转换回 OpenAI 格式
+    let response = state
+        .openai_converter
+        .response_to_external(unified_response)?;
+
+    // recId=11：执行成功回写亲和绑定（resilience 换路成功时 decision 已是
+    // 最终成功者——失败迁移绑定语义）；recId=12：缓存 Miss 回写
+    // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
+    crate::api::rebind_session_affinity(
+        &state,
+        &ctx.api_key_hash,
+        ctx.session_key.as_deref(),
+        &decision.vendor.id,
+    )
+    .await;
+    persist_cache_miss(&state, &cache_outcome, &decision, &response).await;
+
+    log_success_dispatch(&state, &ctx, &decision, &body, &response).await;
+
+    // recId=12：缓存参与 → 响应带 X-Cache 头（此处必为 MISS，HIT 已提前返回）
+    Ok(json_response_with_cache_flag(response, &cache_outcome))
+}
+
+/// recId=15/17/19：路由解析 — X-Vendor/X-Model hints 直连 vs 亲和 weighted
+/// 路由二选一；LinUCB 特征仅 selection="linucb"（热读）且 bandit 接线时
+/// 计算并参与选择，默认 weighted 档 None、零开销、行为与历史逐位一致；
+/// x-deadline-ms 头消费与否由 [routing].lps_deadline_gate 热读门控
+///（默认关闭不消费）。
+///
+/// 返回 (路由决策, LinUCB 奖励臂键)。臂键与选择侧同源归一（评审修复 major）：
+/// - X-Vendor 直连（try_vendor_route 单候选）臂未被咨询 → None 跳过奖励
+///   （「未选择不更新」，避免伪样本）；
+/// - X-Model → 该模型的归一键（route_with_hints 以其路由）；
+/// - 其余（含 auto → "__global__"）→ body.model 归一键。
+async fn resolve_route(
+    state: &Arc<ApiState>,
+    model: &str,
+    headers: &HeaderMap,
+    hints: RoutingHints,
+    session_key: Option<&str>,
+    api_key_hash: &str,
+    body: &Value,
+) -> Result<(RoutingDecision, Option<String>), NexusFlowError> {
     // recId=19(a)：X-Weight 请求级权重随 hints 传入——是否生效由
     // [routing].allow_request_weight 门控（Router 侧热读判定，关闭时忽略）
     let request_weight = hints.preferred_weight;
-    // recId=15：LinUCB 请求特征 — 仅 selection="linucb"（热读）且接线时
-    // 计算并参与选择；默认 weighted 档 None、零开销、行为与历史逐位一致。
     let linucb_x = if state.bandit.is_some()
         && state
             .config
@@ -56,16 +276,11 @@ pub async fn chat_completions(
             .trim()
             .eq_ignore_ascii_case("linucb")
     {
-        Some(crate::router::linucb_features_from_body(&body))
+        Some(crate::router::linucb_features_from_body(body))
     } else {
         None
     };
     let linucb_features = linucb_x.as_ref().map(|a| a.as_slice());
-    // recId=15（评审修复 major）：奖励臂键与选择侧同源归一——
-    // - X-Vendor 直连（try_vendor_route 单候选）臂未被咨询 → None 跳过
-    //   奖励（「未选择不更新」，避免伪样本）；
-    // - X-Model → 该模型的归一键（route_with_hints 以其路由）；
-    // - 其余（含 auto → "__global__"）→ body.model 归一键。
     let linucb_reward_key = if hints.preferred_vendor.is_some() {
         None
     } else {
@@ -73,8 +288,7 @@ pub async fn chat_completions(
             hints.preferred_model.as_deref().unwrap_or(model),
         ))
     };
-    // recId=17：x-deadline-ms 头（可选，非法值忽略）——消费与否由
-    // [routing].lps_deadline_gate 热读门控（默认关闭不消费）
+    // recId=17：x-deadline-ms 头（可选，非法值忽略）
     let lps_deadline_ms = headers
         .get("x-deadline-ms")
         .and_then(|v| v.to_str().ok())
@@ -88,7 +302,7 @@ pub async fn chat_completions(
                 hints.preferred_vendor.as_deref(),
                 hints.preferred_model.as_deref(),
                 request_weight,
-                Some(api_key_hash.as_str()),
+                Some(api_key_hash),
                 linucb_features,
                 lps_deadline_ms,
             )
@@ -98,8 +312,8 @@ pub async fn chat_completions(
             .router
             .route_weighted(
                 model,
-                session_key.as_deref(),
-                Some(api_key_hash.as_str()),
+                session_key,
+                Some(api_key_hash),
                 &[],
                 request_weight,
                 linucb_features,
@@ -107,715 +321,298 @@ pub async fn chat_completions(
             )
             .await?
     };
+    Ok((decision, linucb_reward_key))
+}
 
-    // 检查是否可以使用零拷贝透传（入站格式 OpenAI == 出站格式 OpenAI）。
-    // 透传路径不做工具 schema 上限校验（字节保真是透传的设计承诺，
-    // converter 入站校验不适用），兜底 = axum 体限 + auth + 限流。
-    let use_passthrough = decision.vendor.type_ == "openai";
+/// recId=9④ + recId=11：派发失败收尾单点 — 原实现 8 处（4 路径 ×
+/// resilience 开关）重复的「亲和解除 + 失败落库」收敛于此；换路耗尽与
+/// 单发失败同语义（recId=11：最终失败解除亲和绑定，避免旧键指向已失败
+/// vendor）。错误经调用方包装后透传。
+async fn on_dispatch_failure(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    body: &Value,
+    decision: &RoutingDecision,
+    error: NexusFlowError,
+) -> NexusFlowError {
+    let duration_ms = ctx.start_time.elapsed().as_millis() as i64;
+    crate::api::clear_session_affinity(state, &ctx.api_key_hash, ctx.session_key.as_deref()).await;
+    log_chat_failure(
+        state,
+        &ctx.request_id,
+        "openai",
+        decision,
+        body,
+        duration_ms,
+        &error,
+        ctx.linucb_reward_key.as_deref(),
+    )
+    .await;
+    error
+}
 
-    if use_passthrough {
-        // 零拷贝路径：直接透传请求体
-        if stream {
-            // recId=9④：失败在 ? 早退前补记（下同，四处执行点同款）
-            // recId=2（二期）：cover_all_paths 开启时「首字节前换路」——
-            // Err（均发生在响应头前，manager check_stream_status 早退）排除
-            // 重派；Ok（流已建立）即交出 body，流中错误仍以 SSE error 事件
-            // 终止不再换路。关闭时单发直连，行为与历史逐位一致。
-            #[cfg(feature = "resilience")]
-            let (stream_response, decision) = if state.config.read().resilience.cover_all_paths {
-                // decision clone 传参：Err 分支的失败落库需引用初始路由决策
-                match crate::api::execute_dispatch_with_fallback(
-                    &state,
-                    model,
-                    decision.clone(),
-                    true,
-                    |d| {
-                        let vendor_manager = state.vendor_manager.clone();
-                        let body = body.clone();
-                        async move {
-                            vendor_manager
-                                .execute_passthrough_stream_request(&d.vendor.id, body)
-                                .await
-                        }
-                    },
-                )
-                .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let e = NexusFlowError::from(e);
-                        let duration_ms = start_time.elapsed().as_millis() as i64;
-                        // recId=11：最终失败解除亲和绑定
-                        crate::api::clear_session_affinity(
-                            &state,
-                            &api_key_hash,
-                            session_key.as_deref(),
-                        )
-                        .await;
-                        log_chat_failure(
-                            &state,
-                            &request_id,
-                            "openai",
-                            &decision,
-                            &body,
-                            duration_ms,
-                            &e,
-                            linucb_reward_key.as_deref(),
-                        )
-                        .await;
-                        return Err(e);
-                    }
-                }
-            } else {
-                match state
-                    .vendor_manager
-                    .execute_passthrough_stream_request(&decision.vendor.id, body.clone())
-                    .await
-                {
-                    Ok(r) => (r, decision),
-                    Err(e) => {
-                        let e = NexusFlowError::from(e);
-                        let duration_ms = start_time.elapsed().as_millis() as i64;
-                        // recId=11：最终失败解除亲和绑定
-                        crate::api::clear_session_affinity(
-                            &state,
-                            &api_key_hash,
-                            session_key.as_deref(),
-                        )
-                        .await;
-                        log_chat_failure(
-                            &state,
-                            &request_id,
-                            "openai",
-                            &decision,
-                            &body,
-                            duration_ms,
-                            &e,
-                            linucb_reward_key.as_deref(),
-                        )
-                        .await;
-                        return Err(e);
-                    }
-                }
-            };
-            #[cfg(not(feature = "resilience"))]
-            let stream_response = match state
-                .vendor_manager
-                .execute_passthrough_stream_request(&decision.vendor.id, body.clone())
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    let e = NexusFlowError::from(e);
-                    let duration_ms = start_time.elapsed().as_millis() as i64;
-                    // recId=11：最终失败解除亲和绑定
-                    crate::api::clear_session_affinity(
-                        &state,
-                        &api_key_hash,
-                        session_key.as_deref(),
-                    )
-                    .await;
-                    log_chat_failure(
-                        &state,
-                        &request_id,
-                        "openai",
-                        &decision,
-                        &body,
-                        duration_ms,
-                        &e,
-                        linucb_reward_key.as_deref(),
-                    )
-                    .await;
-                    return Err(e);
-                }
-            };
-
-            // recId=11：派发成功即回写亲和绑定（流后续错误由 metrics 记账）
-            // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
-            crate::api::bind_session_affinity(
-                &state,
-                &api_key_hash,
-                session_key.as_deref(),
-                &decision.vendor.id,
-            )
-            .await;
-
-            // recId=3 阶段一：透传流过分帧器逐帧原样转发（帧边界与上游一致），
-            // 替换旧的整块 bytes 直转 —— 后者无法检测上游中流 error 事件，
-            // 且错误中断会伪装成正常流结束
-            let body_stream = axum::body::Body::from_stream(
-                crate::api::sse::reframe_passthrough_stream(stream_response),
-            );
-
-            let duration_ms = start_time.elapsed().as_millis() as i64;
-            // recId=4⑤：流式「派发处计」— metrics 已在 manager 层记账，
-            // handler 不重复计；日志按派发成功记 200
-            log_chat_request(
-                &state,
-                &request_id,
-                "openai",
-                &decision,
-                &body,
-                Some(&json!({"stream": true})),
-                duration_ms,
-                200,
-                None,
-                linucb_reward_key.as_deref(),
-            )
-            .await;
-
-            return Ok((
-                [
-                    ("Content-Type", "text/event-stream"),
-                    ("Cache-Control", "no-cache"),
-                    ("Connection", "keep-alive"),
-                ],
-                body_stream,
-            )
-                .into_response());
-        }
-
-        // recId=12：非流式透传的精确响应缓存（命中直接返回 HIT）
-        let cache_outcome = match state.response_cache.as_ref() {
-            Some(cache) => Some(
-                cache
-                    .check(
-                        &headers,
-                        &decision.vendor.id,
-                        &decision.model.model_id,
-                        &body,
-                    )
-                    .await,
-            ),
-            None => None,
-        };
-        if let Some(crate::api::response_cache::CacheOutcome::Hit(cached)) = &cache_outcome {
-            let duration_ms = start_time.elapsed().as_millis() as i64;
-            log_chat_request(
-                &state,
-                &request_id,
-                "openai",
-                &decision,
-                &body,
-                Some(cached),
-                duration_ms,
-                200,
-                None,
-                linucb_reward_key.as_deref(),
-            )
-            .await;
-            return Ok((
-                [("Content-Type", "application/json"), ("X-Cache", "HIT")],
-                Json(cached.clone()),
-            )
-                .into_response());
-        }
-
-        // 普通请求 - 零拷贝透传
-        // recId=2（一期）：cover_all_paths 开启时包换路 fallback 循环
-        //（resilience feature）——主 vendor 耗尽/429/5xx 时排除后重路由，
-        // actual_vendor 记最终成功者；关闭时单发直连，行为与历史逐位一致
-        #[cfg(feature = "resilience")]
-        let (response, decision) = if state.config.read().resilience.cover_all_paths {
-            // decision clone 传参：Err 分支的失败落库（recId=9④）需引用初始路由决策
-            match crate::api::execute_dispatch_with_fallback(
-                &state,
-                model,
-                decision.clone(),
-                true,
-                |d| {
-                    let vendor_manager = state.vendor_manager.clone();
-                    let body = body.clone();
-                    async move {
-                        vendor_manager
-                            .execute_passthrough_request(&d.vendor.id, body)
-                            .await
-                    }
-                },
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    let e = NexusFlowError::from(e);
-                    let duration_ms = start_time.elapsed().as_millis() as i64;
-                    // recId=11：最终失败解除亲和绑定
-                    crate::api::clear_session_affinity(
-                        &state,
-                        &api_key_hash,
-                        session_key.as_deref(),
-                    )
-                    .await;
-                    log_chat_failure(
-                        &state,
-                        &request_id,
-                        "openai",
-                        &decision,
-                        &body,
-                        duration_ms,
-                        &e,
-                        linucb_reward_key.as_deref(),
-                    )
-                    .await;
-                    return Err(e);
-                }
-            }
-        } else {
-            match state
-                .vendor_manager
-                .execute_passthrough_request(&decision.vendor.id, body.clone())
-                .await
-            {
-                Ok(r) => (r, decision),
-                Err(e) => {
-                    let e = NexusFlowError::from(e);
-                    let duration_ms = start_time.elapsed().as_millis() as i64;
-                    // recId=11：最终失败解除亲和绑定
-                    crate::api::clear_session_affinity(
-                        &state,
-                        &api_key_hash,
-                        session_key.as_deref(),
-                    )
-                    .await;
-                    log_chat_failure(
-                        &state,
-                        &request_id,
-                        "openai",
-                        &decision,
-                        &body,
-                        duration_ms,
-                        &e,
-                        linucb_reward_key.as_deref(),
-                    )
-                    .await;
-                    return Err(e);
-                }
-            }
-        };
-        #[cfg(not(feature = "resilience"))]
-        let response = match state
-            .vendor_manager
-            .execute_passthrough_request(&decision.vendor.id, body.clone())
-            .await
+/// cover_all_paths 三态派发（recId=2 一期/二期）：resilience 开启且开关
+/// 热读生效时走换路 fallback 循环（`decision.clone()` 供失败落库引用初始
+/// 决策），否则单发直连——`direct` 闭包即直连调用本体（与 fallback 循环
+/// 的派发闭包同构），行为两分支均与历史逐位一致。失败收尾经
+/// [`on_dispatch_failure`] 单点执行。
+///
+/// 泛型约定同 [`crate::api::execute_dispatch_with_fallback`]：闭包持有
+/// decision 所有权并返回不借用环境的 future（owned captures）。
+#[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
+async fn dispatch_with_fallback<T, F, Fut>(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    model: &str,
+    body: &Value,
+    decision: RoutingDecision,
+    same_protocol_only: bool,
+    direct: F,
+) -> Result<(T, RoutingDecision), NexusFlowError>
+where
+    F: Fn(RoutingDecision) -> Fut,
+    Fut: std::future::Future<Output = Result<T, GateError>>,
+{
+    #[cfg(feature = "resilience")]
+    if state.config.read().resilience.cover_all_paths {
+        return match crate::api::execute_dispatch_with_fallback(
+            state,
+            model,
+            decision.clone(),
+            same_protocol_only,
+            direct,
+        )
+        .await
         {
-            Ok(r) => r,
+            Ok(r) => Ok(r),
             Err(e) => {
-                let e = NexusFlowError::from(e);
-                let duration_ms = start_time.elapsed().as_millis() as i64;
-                // recId=11：最终失败解除亲和绑定
-                crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref())
-                    .await;
-                log_chat_failure(
-                    &state,
-                    &request_id,
-                    "openai",
-                    &decision,
-                    &body,
-                    duration_ms,
-                    &e,
-                    linucb_reward_key.as_deref(),
-                )
-                .await;
-                return Err(e);
+                Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
             }
-        };
-
-        // recId=11：执行成功回写亲和绑定（换路成功时 decision 已是最终
-        // 成功者——失败迁移绑定语义）；recId=12：未命中则回写响应缓存
-        // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
-        crate::api::rebind_session_affinity(
-            &state,
-            &api_key_hash,
-            session_key.as_deref(),
-            &decision.vendor.id,
-        )
-        .await;
-        if let Some(crate::api::response_cache::CacheOutcome::Miss(parts)) = &cache_outcome {
-            if let Some(cache) = state.response_cache.as_ref() {
-                // decision 此处即本路径最终成功者（cover_all_paths 换路后
-                // 已是最终 vendor；关闭时初始且唯一候选）——键维度与响应体
-                // 一致（评审修复 major#2）
-                cache
-                    .store(
-                        parts,
-                        &decision.vendor.id,
-                        &decision.model.model_id,
-                        &response,
-                    )
-                    .await;
-            }
-        }
-
-        let duration_ms = start_time.elapsed().as_millis() as i64;
-        log_chat_request(
-            &state,
-            &request_id,
-            "openai",
-            &decision,
-            &body,
-            Some(&response),
-            duration_ms,
-            200,
-            None,
-            linucb_reward_key.as_deref(),
-        )
-        .await;
-
-        // recId=12：缓存参与（Miss 回写完成）→ 响应带 X-Cache: MISS
-        return if cache_outcome
-            .as_ref()
-            .is_some_and(crate::api::response_cache::CacheOutcome::participated)
-        {
-            Ok((
-                [("Content-Type", "application/json"), ("X-Cache", "MISS")],
-                Json(response),
-            )
-                .into_response())
-        } else {
-            Ok(([("Content-Type", "application/json")], Json(response)).into_response())
         };
     }
-
-    // 转换路径：OpenAI → Unified → 目标厂商
-    let unified_request = state.openai_converter.to_unified(body.clone())?;
-
-    if stream {
-        // recId=3 阶段二：manager 返回分帧 + 反向解析后的 IR chunk 流
-        // recId=2（二期）：cover_all_paths 开启时「首字节前换路」（转换路径
-        // UnifiedRequest 任意 vendor type 均合法，不按协议过滤）；关闭时
-        // 单发直连，行为与历史逐位一致
-        #[cfg(feature = "resilience")]
-        let (chunk_stream, decision) = if state.config.read().resilience.cover_all_paths {
-            // decision clone 传参：Err 分支的失败落库需引用初始路由决策
-            match crate::api::execute_dispatch_with_fallback(
-                &state,
-                model,
-                decision.clone(),
-                false,
-                |d| {
-                    let vendor_manager = state.vendor_manager.clone();
-                    let unified_request = unified_request.clone();
-                    async move {
-                        vendor_manager
-                            .execute_stream_request(&d.vendor.id, unified_request)
-                            .await
-                    }
-                },
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    let e = NexusFlowError::from(e);
-                    let duration_ms = start_time.elapsed().as_millis() as i64;
-                    // recId=11：最终失败解除亲和绑定
-                    crate::api::clear_session_affinity(
-                        &state,
-                        &api_key_hash,
-                        session_key.as_deref(),
-                    )
-                    .await;
-                    log_chat_failure(
-                        &state,
-                        &request_id,
-                        "openai",
-                        &decision,
-                        &body,
-                        duration_ms,
-                        &e,
-                        linucb_reward_key.as_deref(),
-                    )
-                    .await;
-                    return Err(e);
-                }
-            }
-        } else {
-            match state
-                .vendor_manager
-                .execute_stream_request(&decision.vendor.id, unified_request)
-                .await
-            {
-                Ok(s) => (s, decision),
-                Err(e) => {
-                    let e = NexusFlowError::from(e);
-                    let duration_ms = start_time.elapsed().as_millis() as i64;
-                    // recId=11：最终失败解除亲和绑定
-                    crate::api::clear_session_affinity(
-                        &state,
-                        &api_key_hash,
-                        session_key.as_deref(),
-                    )
-                    .await;
-                    log_chat_failure(
-                        &state,
-                        &request_id,
-                        "openai",
-                        &decision,
-                        &body,
-                        duration_ms,
-                        &e,
-                        linucb_reward_key.as_deref(),
-                    )
-                    .await;
-                    return Err(e);
-                }
-            }
-        };
-        #[cfg(not(feature = "resilience"))]
-        let chunk_stream = match state
-            .vendor_manager
-            .execute_stream_request(&decision.vendor.id, unified_request)
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let e = NexusFlowError::from(e);
-                let duration_ms = start_time.elapsed().as_millis() as i64;
-                // recId=11：最终失败解除亲和绑定
-                crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref())
-                    .await;
-                log_chat_failure(
-                    &state,
-                    &request_id,
-                    "openai",
-                    &decision,
-                    &body,
-                    duration_ms,
-                    &e,
-                    linucb_reward_key.as_deref(),
-                )
-                .await;
-                return Err(e);
-            }
-        };
-
-        // recId=11：派发成功即回写亲和绑定
-        // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
-        crate::api::bind_session_affinity(
-            &state,
-            &api_key_hash,
-            session_key.as_deref(),
-            &decision.vendor.id,
-        )
-        .await;
-
-        // IR → OpenAI 出站事件（存量 stream_chunk_to_external）。
-        // recId=14②：错误发带语义的 SSE error 事件后提前终止，不再补
-        // [DONE] —— 客户端与重试逻辑可分辨成败（旧实现错误后仍以 [DONE]
-        // 收尾伪装正常结束）
-        let converter = state.openai_converter.clone();
-        let sse_stream = async_stream::stream! {
-            let mut chunk_stream = Box::pin(chunk_stream);
-            let mut errored = false;
-            while let Some(item) = futures::StreamExt::next(&mut chunk_stream).await {
-                match item {
-                    Ok(chunk) => match converter.stream_chunk_to_external(chunk) {
-                        Ok(event) => {
-                            yield Ok::<bytes::Bytes, std::io::Error>(
-                                crate::api::sse::encode_sse_event(&event.to_string(), None)
-                                    .into(),
-                            );
-                        }
-                        Err(e) => {
-                            errored = true;
-                            yield Ok(crate::api::sse::encode_sse_error(&e.to_string()).into());
-                            break;
-                        }
-                    },
-                    Err(e) => {
-                        errored = true;
-                        yield Ok(crate::api::sse::encode_sse_error(&e.to_string()).into());
-                        break;
-                    }
-                }
-            }
-            if !errored {
-                yield Ok(crate::api::sse::encode_sse_done().into());
-            }
-        };
-
-        let body_stream = axum::body::Body::from_stream(sse_stream);
-
-        // 记录流式请求日志 (简化) — recId=4⑤：metrics 在 manager 层记账，
-        // handler 不重复计；日志按派发成功记 200
-        let duration_ms = start_time.elapsed().as_millis() as i64;
-        log_chat_request(
-            &state,
-            &request_id,
-            "openai",
-            &decision,
-            &body,
-            Some(&json!({"stream": true})),
-            duration_ms,
-            200,
-            None,
-            linucb_reward_key.as_deref(),
-        )
-        .await;
-
-        return Ok((
-            [
-                ("Content-Type", "text/event-stream"),
-                ("Cache-Control", "no-cache"),
-                ("Connection", "keep-alive"),
-            ],
-            body_stream,
-        )
-            .into_response());
+    match direct(decision.clone()).await {
+        Ok(r) => Ok((r, decision)),
+        Err(e) => {
+            Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
+        }
     }
+}
 
-    // 普通请求 - 通过 UnifiedRequest
-    // recId=12：非流式转换路径的精确响应缓存（命中直接返回 HIT）
-    let cache_outcome = match state.response_cache.as_ref() {
+/// recId=7⑤：非流式转换路径派发 — resilience 开启时恒走换路 fallback
+/// 循环（execute_request_with_fallback：Throttled 原因追踪 + Retry-After
+/// 提示语义，与透传/流式的 cover_all_paths 门控路径不同源，不得合并）；
+/// 关闭时单发直连。失败收尾经 [`on_dispatch_failure`] 单点执行。
+#[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
+async fn dispatch_unified_request(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    model: &str,
+    body: &Value,
+    decision: RoutingDecision,
+    request: crate::protocol::UnifiedRequest,
+) -> Result<(crate::protocol::UnifiedResponse, RoutingDecision), NexusFlowError> {
+    #[cfg(feature = "resilience")]
+    {
+        return match crate::api::execute_request_with_fallback(
+            state,
+            model,
+            decision.clone(),
+            request,
+        )
+        .await
+        {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
+            }
+        };
+    }
+    #[cfg(not(feature = "resilience"))]
+    match state
+        .vendor_manager
+        .execute_request(&decision.vendor.id, request)
+        .await
+    {
+        Ok(r) => Ok((r, decision)),
+        Err(e) => {
+            Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
+        }
+    }
+}
+
+/// recId=12：缓存探测 — [cache] 未接线 → None（不参与）；命中/未命中/
+/// 关闭/不可缓存语义由 [`crate::api::response_cache::ResponseCache::check`]
+/// 判定。
+async fn cache_probe(
+    state: &Arc<ApiState>,
+    headers: &HeaderMap,
+    decision: &RoutingDecision,
+    body: &Value,
+) -> Option<CacheOutcome> {
+    match state.response_cache.as_ref() {
         Some(cache) => Some(
             cache
-                .check(
-                    &headers,
-                    &decision.vendor.id,
-                    &decision.model.model_id,
-                    &body,
-                )
+                .check(headers, &decision.vendor.id, &decision.model.model_id, body)
                 .await,
         ),
         None => None,
+    }
+}
+
+/// recId=12：HIT 早退 — 命中即记 200 日志并返回 `X-Cache: HIT` 响应；
+/// 未命中/不参与返回 None（调用方继续派发）。
+async fn cache_hit_response(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    decision: &RoutingDecision,
+    body: &Value,
+    cache_outcome: &Option<CacheOutcome>,
+) -> Option<axum::response::Response> {
+    let cached = match cache_outcome.as_ref()? {
+        CacheOutcome::Hit(cached) => cached,
+        _ => return None,
     };
-    if let Some(crate::api::response_cache::CacheOutcome::Hit(cached)) = &cache_outcome {
-        let duration_ms = start_time.elapsed().as_millis() as i64;
-        log_chat_request(
-            &state,
-            &request_id,
-            "openai",
-            &decision,
-            &body,
-            Some(cached),
-            duration_ms,
-            200,
-            None,
-            linucb_reward_key.as_deref(),
-        )
-        .await;
-        return Ok((
+    log_success_dispatch(state, ctx, decision, body, cached).await;
+    Some(
+        (
             [("Content-Type", "application/json"), ("X-Cache", "HIT")],
             Json(cached.clone()),
         )
-            .into_response());
-    }
-
-    // recId=7⑤：单发调用包换路 fallback 循环（resilience feature）——
-    // 主 vendor 耗尽/429/5xx 时排除后重路由，actual_vendor 记最终成功者
-    #[cfg(feature = "resilience")]
-    let (unified_response, decision) =
-        // decision clone 传参：Err 分支的失败落库（recId=9④）需引用初始路由决策
-        match crate::api::execute_request_with_fallback(&state, model, decision.clone(), unified_request)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let e = NexusFlowError::from(e);
-                let duration_ms = start_time.elapsed().as_millis() as i64;
-                // recId=11：换路 fallback 耗尽（最终失败）解除亲和绑定
-                crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref()).await;
-                log_chat_failure(
-                    &state,
-                    &request_id,
-                    "openai",
-                    &decision,
-                    &body,
-                    duration_ms,
-                    &e,
-                linucb_reward_key.as_deref(),
-            )
-                .await;
-                return Err(e);
-            }
-        };
-    #[cfg(not(feature = "resilience"))]
-    let unified_response = match state
-        .vendor_manager
-        .execute_request(&decision.vendor.id, unified_request)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let e = NexusFlowError::from(e);
-            let duration_ms = start_time.elapsed().as_millis() as i64;
-            // recId=11：最终失败解除亲和绑定
-            crate::api::clear_session_affinity(&state, &api_key_hash, session_key.as_deref()).await;
-            log_chat_failure(
-                &state,
-                &request_id,
-                "openai",
-                &decision,
-                &body,
-                duration_ms,
-                &e,
-                linucb_reward_key.as_deref(),
-            )
-            .await;
-            return Err(e);
-        }
-    };
-
-    // 将统一响应转换回 OpenAI 格式
-    let response = state
-        .openai_converter
-        .response_to_external(unified_response)?;
-
-    // recId=11：执行成功回写亲和绑定（resilience 换路成功时 decision 已是
-    // 最终成功者——失败迁移绑定语义）；recId=12：缓存 Miss 回写
-    // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
-    crate::api::rebind_session_affinity(
-        &state,
-        &api_key_hash,
-        session_key.as_deref(),
-        &decision.vendor.id,
+            .into_response(),
     )
-    .await;
-    if let Some(crate::api::response_cache::CacheOutcome::Miss(parts)) = &cache_outcome {
+}
+
+/// recId=12：Miss 回写 — 以最终 vendor/model 组装键（cover_all_paths 换路
+/// 后已是最终 vendor；非 resilience 即初始且唯一候选），键维度与响应体
+/// 一致（评审修复 major#2）。
+async fn persist_cache_miss(
+    state: &Arc<ApiState>,
+    cache_outcome: &Option<CacheOutcome>,
+    decision: &RoutingDecision,
+    response: &Value,
+) {
+    if let Some(CacheOutcome::Miss(parts)) = cache_outcome {
         if let Some(cache) = state.response_cache.as_ref() {
-            // recId=11 注释处 decision 已是 resilience 换路后的最终成功者
-            //（非 resilience 编译分支即初始且唯一候选）——以最终 vendor/model
-            // 组装键，键维度与响应体一致（评审修复 major#2）
             cache
                 .store(
                     parts,
                     &decision.vendor.id,
                     &decision.model.model_id,
-                    &response,
+                    response,
                 )
                 .await;
         }
     }
+}
 
-    // 记录日志
-    let duration_ms = start_time.elapsed().as_millis() as i64;
-    log_chat_request(
-        &state,
-        &request_id,
-        "openai",
-        &decision,
-        &body,
-        Some(&response),
-        duration_ms,
-        200,
-        None,
-        linucb_reward_key.as_deref(),
-    )
-    .await;
-
-    // recId=12：缓存参与 → 响应带 X-Cache 头（此处必为 MISS，HIT 已提前返回）
+/// recId=12：缓存参与 → 响应带 `X-Cache: MISS` 头（HIT 已早退，此处必为
+/// MISS 或不参与）；不参与则裸 JSON 头。
+fn json_response_with_cache_flag(
+    response: Value,
+    cache_outcome: &Option<CacheOutcome>,
+) -> axum::response::Response {
     if cache_outcome
         .as_ref()
-        .is_some_and(crate::api::response_cache::CacheOutcome::participated)
+        .is_some_and(CacheOutcome::participated)
     {
-        Ok((
+        (
             [("Content-Type", "application/json"), ("X-Cache", "MISS")],
             Json(response),
         )
-            .into_response())
+            .into_response()
     } else {
-        Ok(([("Content-Type", "application/json")], Json(response)).into_response())
+        ([("Content-Type", "application/json")], Json(response)).into_response()
     }
+}
+
+/// recId=3 阶段二 / recId=14②：IR chunk 流 → OpenAI 出站 SSE 事件流。
+/// 错误发带语义的 SSE error 事件后提前终止，不再补 [DONE] —— 客户端与
+/// 重试逻辑可分辨成败（旧实现错误后仍以 [DONE] 收尾伪装正常结束）。
+fn openai_sse_stream(
+    converter: Arc<dyn crate::protocol::ProtocolConverter>,
+    chunk_stream: impl futures::Stream<Item = Result<crate::protocol::StreamChunk, GateError>>
+        + Send
+        + 'static,
+) -> axum::body::Body {
+    let sse_stream = async_stream::stream! {
+        let mut chunk_stream = Box::pin(chunk_stream);
+        let mut errored = false;
+        while let Some(item) = futures::StreamExt::next(&mut chunk_stream).await {
+            match item {
+                Ok(chunk) => match converter.stream_chunk_to_external(chunk) {
+                    Ok(event) => {
+                        yield Ok::<bytes::Bytes, std::io::Error>(
+                            crate::api::sse::encode_sse_event(&event.to_string(), None)
+                                .into(),
+                        );
+                    }
+                    Err(e) => {
+                        errored = true;
+                        yield Ok(crate::api::sse::encode_sse_error(&e.to_string()).into());
+                        break;
+                    }
+                },
+                Err(e) => {
+                    errored = true;
+                    yield Ok(crate::api::sse::encode_sse_error(&e.to_string()).into());
+                    break;
+                }
+            }
+        }
+        if !errored {
+            yield Ok(crate::api::sse::encode_sse_done().into());
+        }
+    };
+    axum::body::Body::from_stream(sse_stream)
+}
+
+/// 流式派发成功日志（recId=4⑤：metrics 已在 manager 层记账，handler 不
+/// 重复计；日志按派发成功记 200，响应体为流占位标记）。
+async fn log_stream_dispatch(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    decision: &RoutingDecision,
+    body: &Value,
+) {
+    let duration_ms = ctx.start_time.elapsed().as_millis() as i64;
+    log_chat_request(
+        state,
+        &ctx.request_id,
+        "openai",
+        decision,
+        body,
+        Some(&json!({"stream": true})),
+        duration_ms,
+        200,
+        None,
+        ctx.linucb_reward_key.as_deref(),
+    )
+    .await;
+}
+
+/// 非流式派发成功日志（200；token 从响应 usage 取，语义见
+/// [`log_chat_request`]）。
+async fn log_success_dispatch(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    decision: &RoutingDecision,
+    body: &Value,
+    response: &Value,
+) {
+    let duration_ms = ctx.start_time.elapsed().as_millis() as i64;
+    log_chat_request(
+        state,
+        &ctx.request_id,
+        "openai",
+        decision,
+        body,
+        Some(response),
+        duration_ms,
+        200,
+        None,
+        ctx.linucb_reward_key.as_deref(),
+    )
+    .await;
 }
 
 /// recId=9③④⑥：异步日志 push — 构造 RequestLog 后 `logger.log()` push
@@ -843,7 +640,7 @@ async fn log_chat_request(
 ) {
     // recId=15：LinUCB 奖励回传 — 与落库记账同点（本函数收敛成功/失败
     // 两路，`response: None` = 失败）。臂键由 handler 按路由分支归一
-    // （评审修复 major，见 chat_completions 的 linucb_reward_key）。
+    // （评审修复 major，见 resolve_route 的 linucb_reward_key）。
     state.record_linucb_reward(
         linucb_arm_key,
         &decision.vendor.id,

@@ -278,9 +278,10 @@ pub(crate) async fn apply_core_v1(pool: &DbPool) -> Result<u32, DbError> {
     Ok(1)
 }
 
-/// 回滚核心 V1（运维/测试用：执行 DOWN 并删除 v1 历史行）。
-/// 当前仅测试调用（allow(dead_code)：运维面保留该入口）。
-#[allow(dead_code)]
+/// 回滚核心 V1（测试面：执行 DOWN 并删除 v1 历史行）。
+/// 唯一调用点是 [`live_tests`] 的 DOWN 断言，cfg 门控与该模块逐位一致：
+/// 非测试构建、以及非 db-sqlite 后端的测试构建均不参与编译。
+#[cfg(all(test, feature = "db-sqlite"))]
 pub(crate) async fn rollback_core_v1(pool: &DbPool) -> Result<(), DbError> {
     // 同 apply_core_v1：先释放 session（size=1 池防死等）。
     let (backend, conn) = {

@@ -26,3 +26,5 @@ database-preagg-final-flush-failed = Final token aggregation flush failed: { $er
 # utils-*: metrics.rs 运维告警。
 utils-metrics-concentration = traffic concentration alert: routing may have collapsed onto a single vendor/model
 database-backend-missing = database.url is empty and the sqlite fallback for path { $path } requires the db-sqlite feature: rebuild with --features "full,db-sqlite", or set [database] url to a full connection URL
+# repository.rs 缺列补列（V0.1 旧库迁移）。
+database-repo-column-migrated = migrated: added missing column { $column } to table { $table }

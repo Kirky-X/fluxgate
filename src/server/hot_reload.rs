@@ -30,6 +30,7 @@ use confers::watcher::{
 };
 
 use crate::config::{Config, ConfigManager};
+use crate::i18n::t_args;
 
 /// 热重载监听去抖（毫秒）：原子 rename 写穿透一次事件；编辑器多次保存
 /// 合并为一次重载。
@@ -201,7 +202,13 @@ pub(crate) async fn maybe_start_hot_reload(
             let sections = changed_sections(&bridge_manager.read(), &next);
             match bridge_manager.swap_memory((*next).clone()) {
                 Ok(()) => {
-                    tracing::info!("hot reload committed: sections={sections:?}");
+                    tracing::info!(
+                        "{}",
+                        t_args(
+                            "main-hot-reload-committed",
+                            &[("sections", format!("{sections:?}"))],
+                        )
+                    );
                 }
                 Err(e) => {
                     tracing::warn!("hot reload swap failed: {e}");
@@ -210,7 +217,13 @@ pub(crate) async fn maybe_start_hot_reload(
         }
     });
 
-    tracing::info!("hot reload watching {}", path.display());
+    tracing::info!(
+        "{}",
+        t_args(
+            "main-hot-reload-watching",
+            &[("path", path.display().to_string())],
+        )
+    );
     Some(reloader_handle)
 }
 

@@ -37,3 +37,6 @@ main-grpc-starting = 正在启动 gRPC 服务器：{ $addr }（由 sdforge 驱�
 main-grpc-stopped = gRPC 服务器已在 { $addr } 优雅停机
 main-grpc-server-error = gRPC 服务器错误：{ $error }
 main-grpc-drain-timeout = gRPC 排空超时（{ $secs } 秒）；进行中的请求可能已被丢弃
+# hot_reload.rs 运维可见 INFO。
+main-hot-reload-committed = 配置热重载已生效；变更段：{ $sections }
+main-hot-reload-watching = 配置热重载已监听文件：{ $path }

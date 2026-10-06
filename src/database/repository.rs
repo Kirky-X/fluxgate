@@ -4,6 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use crate::database::{LogFilter, RequestLog, TokenUsageRow, VendorStatusRecord};
+use crate::i18n::t_args;
 use dbnexus::{DbError, DbPool, Session};
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, QueryResult, Statement, Value,
@@ -159,7 +160,11 @@ impl Repository {
             tracing::info!(
                 table = table,
                 column = column,
-                "migrated: added missing column"
+                "{}",
+                t_args(
+                    "database-repo-column-migrated",
+                    &[("table", table.to_string()), ("column", column.to_string())],
+                )
             );
         }
 

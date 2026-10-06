@@ -16,12 +16,14 @@
 //! use llm_gate::i18n;
 //!
 //! i18n::init();                          // 可选预热
-//! i18n::t("vendor-unavailable");
-//! i18n::t_args("request-timeout", &[("vendor", "openai".into())]);
+//! i18n::t("vendor-upstream-stream-interrupted");
+//! i18n::t_args("admin-vendor-not-found", &[("id", "openai".into())]);
 //! i18n::set_locale("zh-CN").unwrap();    // 覆盖位优先于检测链
 //! ```
 //!
-//! 业务字符串迁移由下一阶段进行；本模块不含真实键。
+//! 缺键不 panic：回退链终结于 en 束，仍缺则原样返回键名——因此新增用户可见
+//! 串必须先登记 en 键（zh 同步补齐），键位对齐与引用存在性由
+//! `tests/i18n_parity_test.rs` 守卫。
 
 pub mod catalog;
 pub mod locale;

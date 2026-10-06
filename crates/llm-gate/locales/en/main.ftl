@@ -37,3 +37,6 @@ main-grpc-starting = Starting gRPC server: { $addr } (sdforge powered)
 main-grpc-stopped = gRPC server stopped gracefully at { $addr }
 main-grpc-server-error = gRPC server error: { $error }
 main-grpc-drain-timeout = gRPC drain timeout after { $secs }s; in-flight requests may have been dropped
+# hot_reload.rs 运维可见 INFO。
+main-hot-reload-committed = Hot reload committed; changed sections: { $sections }
+main-hot-reload-watching = Hot reload watching config file: { $path }

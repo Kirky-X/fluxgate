@@ -10,9 +10,11 @@
 //!
 //! - 热生效：每请求现读的段——retry/routing/cache/resilience/admission/
 //!   auth/pricing/model_catalog（读路径见各段 `config_manager.read()` 调用处）；
-//! - 拒绝（`ReloadRejected`，保旧快照继续服务）：构造期绑定或拓扑段——
-//!   vendors（实例拓扑）/server（监听绑定）/database（连接池）/grpc/cors
-//!   （建站装配）/rate_limit（Router 构造期建表），改动需重启进程生效；
+//! - 拒绝（`ReloadRejected`，保旧快照继续服务）：构造期绑定、拓扑段或
+//!   非热读段——vendors（实例拓扑）/server（监听绑定）/database（连接池）/
+//!   grpc/cors（建站装配）/rate_limit（Router 构造期建表）/docs（文档路由
+//!   建站挂载）/global_model（无每请求热读点，接受即静默空转），改动需
+//!   重启进程生效；
 //! - 解析失败同样保旧（loader Err → 失败计数 + 日志，当前配置不动）。
 //!
 //! 回路安全：admin 通道写文件（`update_config` 落盘）同样触发 watcher 事件，
@@ -63,6 +65,9 @@ impl PreCommitCheck<Config> for StructuralGate {
         if current.docs != candidate.docs {
             return Err("docs switch changed (router rebuild required)".to_string());
         }
+        if current.global_model != candidate.global_model {
+            return Err("global_model changed (no hot-read point; restart required)".to_string());
+        }
         Ok(())
     }
 }
@@ -84,9 +89,6 @@ impl ConfigProvider for EmptyProvider {
 /// 变更段名（日志留痕用，只记段名不记值——值可能是密钥）。
 fn changed_sections(old: &Config, new: &Config) -> Vec<&'static str> {
     let mut sections = Vec::new();
-    if old.global_model != new.global_model {
-        sections.push("global_model");
-    }
     if old.retry != new.retry {
         sections.push("retry");
     }
@@ -302,6 +304,16 @@ mod tests {
         assert!(
             gate.check(&limits).await.is_err(),
             "rate_limit 变更必须拒绝"
+        );
+
+        let mut gm = minimal_config();
+        gm.global_model = Some(crate::config::GlobalModelConfig {
+            enabled: true,
+            strategy: "other".to_string(),
+        });
+        assert!(
+            gate.check(&gm).await.is_err(),
+            "global_model 无热读点，必须拒绝（converge 缺口）"
         );
     }
 

@@ -208,7 +208,7 @@ async fn grpc_facade_serves_auth_and_shuts_down() {
 
 /// GrpcServerConfig 仅用于类型导入校验（NexusFlow 侧不直接构造 sdforge
 /// 配置——sdforge_grpc_config 为私有装配函数，此处锁定其公共依赖可达）。
-#[allow(dead_code)]
-fn _grpc_config_type_reachable() {
+#[test]
+fn grpc_config_type_reachable() {
     let _ = GrpcServerConfig::default();
 }

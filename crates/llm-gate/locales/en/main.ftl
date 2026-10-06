@@ -24,6 +24,10 @@ main-flushing-log-pipeline = Flushing log pipeline...
 main-async-logger-shutdown = Async logger shutdown: { $error }
 main-pre-aggregator-flush = Token pre-aggregator final flush: { $error }
 main-log-pipeline-flushed = Log pipeline flushed (dropped_logs={ $dropped })
+main-teardown-timeout = Teardown phase timeout: { $phases }
+main-teardown-error = Teardown coordinator error: { $error }
+main-inklog-shutdown = Inklog shutdown: { $error }
+main-inklog-shutdown-skipped = Inklog shutdown skipped (no manager hook registered)
 main-received-ctrl-c = Received Ctrl+C, initiating graceful shutdown
 main-received-sigterm = Received SIGTERM, initiating graceful shutdown
 main-ctrl-c-handler-failed = failed to install Ctrl+C handler

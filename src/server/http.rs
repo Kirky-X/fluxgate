@@ -36,15 +36,14 @@ pub async fn build_app(
     config_manager: Arc<ConfigManager>,
 ) -> Result<(Router, ServerHandle), NexusFlowError> {
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
-    let handle = ServerHandle::from_assembly(&assembly);
     let app = assemble_router(&config_manager, &assembly).await?;
     // gRPC 装配（feature = "grpc"）：禁用/缺段为 None，随句柄登记，
     // 由调用方 take_grpc_server 取出后启动
     #[cfg(feature = "grpc")]
-    {
-        let grpc = crate::server::grpc::build(&config_manager, &assembly)?;
-        handle.set_grpc_server(grpc);
-    }
+    let grpc = crate::server::grpc::build(&config_manager, &assembly)?;
+    let handle = ServerHandle::from_assembly(assembly);
+    #[cfg(feature = "grpc")]
+    handle.set_grpc_server(grpc);
     Ok((app, handle))
 }
 
@@ -59,17 +58,17 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     let _logger = bootstrap::init_logger().await?;
     let config_manager = bootstrap::load_config(config_path)?;
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
-    #[cfg(feature = "grpc")]
-    let mut handle = ServerHandle::from_assembly(&assembly);
-    #[cfg(not(feature = "grpc"))]
-    let handle = ServerHandle::from_assembly(&assembly);
     let app = assemble_router(&config_manager, &assembly).await?;
     // gRPC 装配（与 build_app 同一登记路径；take 于下方 serve 前）
     #[cfg(feature = "grpc")]
-    {
+    let mut handle = {
         let grpc = crate::server::grpc::build(&config_manager, &assembly)?;
+        let handle = ServerHandle::from_assembly(assembly);
         handle.set_grpc_server(grpc);
-    }
+        handle
+    };
+    #[cfg(not(feature = "grpc"))]
+    let handle = ServerHandle::from_assembly(assembly);
 
     let server_config = {
         let config = config_manager.read();
@@ -105,27 +104,38 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("{}", t("main-press-ctrl-c"));
 
-    // 停机广播：Ctrl+C/SIGTERM 一次触发，HTTP 与 gRPC 两路 graceful
-    // shutdown 共享同一信号（各持一个 ShutdownRx）
-    let mut shutdown_rx = crate::server::shutdown::spawn_shutdown_broadcaster();
+    // G9：停机信号走 sdforge graceful 默认触发（SIGTERM/Ctrl-C），HTTP
+    // 与 gRPC 各自注册（同一信号各自决断；旧 watch 广播已删除）。
+    // inklog manager 移交收尾钩子——替代 run 尾部隐式 drop，关闭成为
+    // 三阶段显式收尾的一部分（logger 仍由 _logger 活到收尾完成）。
+    {
+        let hook: crate::server::shutdown::InklogShutdownHook =
+            std::sync::Arc::new(move || _logger.shutdown().map_err(|e| e.to_string()));
+        handle.set_inklog_shutdown_hook(hook);
+    }
 
     // gRPC 服务器启动（[grpc] 段启用时；serve 内部打 starting/stopped 日志）
     #[cfg(feature = "grpc")]
     let grpc_task = match handle.take_grpc_server() {
-        Some(grpc) => {
-            let mut rx = shutdown_rx.clone();
-            Some(tokio::spawn(async move {
-                grpc.serve(async move { rx.fired().await }).await
-            }))
-        }
+        Some(grpc) => Some(tokio::spawn(async move {
+            grpc.serve(sdforge::http::default_shutdown_signal()).await
+        })),
         None => None,
     };
 
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_rx.fired().await;
-        })
-        .await;
+    // G9：serve 走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），
+    // 排空语义与旧 axum with_graceful_shutdown 一致（流式不断 permit）。
+    // 排空超时显式 30s（G3 复核 MEDIUM：默认配置不可见，挂起 handler
+    // 不得无限阻塞重启；超时强制中止并记日志）。
+    let result = sdforge::http::serve_with_graceful_shutdown(
+        app,
+        listener,
+        crate::server::shutdown::shutdown_signal(),
+        sdforge::http::GracefulShutdownConfig::with_drain_timeout(std::time::Duration::from_secs(
+            30,
+        )),
+    )
+    .await;
 
     match result {
         Ok(_) => tracing::info!("{}", t("main-server-stopped")),

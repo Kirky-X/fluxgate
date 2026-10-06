@@ -16,8 +16,9 @@
 //!   serve 结果映射与停机 flush 管道收尾
 //! - [`grpc`]（feature = "grpc"）：[grpc] 段装配、sdforge grpc 门面 +
 //!   [auth] 摘要 verifier、优雅停机 serve
-//! - [`handle`]：停机收尾句柄（flush worker 停机位 + 补刷，幂等）
-//! - [`shutdown`]：终止信号监听（SIGTERM/Ctrl+C）
+//! - [`handle`]：停机收尾句柄（三阶段协调器编排 flush，幂等）
+//! - [`shutdown`]：G9 停机编排（sdforge 三阶段信号/排空 + trait-kit
+//!   组件收尾协调器）
 //!
 //! ## 进程级约束
 //!

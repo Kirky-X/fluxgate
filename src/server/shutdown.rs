@@ -3,61 +3,268 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 终止信号监听（原 main.rs:305-329 平移）+ 多服务器共享停机广播。
+//! G9 优雅停机编排（absorb-sibling-libs T010）：
+//! 信号与排空走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），组件
+//! 收尾序经 trait-kit `AsyncShutdownCoordinator` 显式化——替代此前手写
+//! 信号 + watch 广播（`ShutdownRx`/`spawn_shutdown_broadcaster` 已删除）
+//! 与 `run()` 尾部隐式 drop inklog manager。
+//!
+//! 收尾序（serve 排空返回后执行）：
+//! 1. `StopRequests` — AsyncLogger 关停并补刷缓冲（停接日志 intake）；
+//! 2. `DrainQueue` — pre-aggregator 停机位 + 最终 flush（聚合落定）；
+//! 3. `CloseConnections` — inklog manager 关闭（日志通道终端）。
+//!
+//! 流式排空语义保持现状（不引入新 permit 语义——排空由 sdforge serve 层
+//! 承担，与旧 axum `with_graceful_shutdown` 同行为）。
 
-use crate::i18n::t;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-/// 监听终止信号触发优雅停机：先收到 SIGTERM/Ctrl+C 后 axum 会停止接受新连接，
-/// 等待 in-flight 请求完成再退出。
+use crate::database::{AsyncLoggerHandle, TokenPreAggregator};
+use crate::i18n::{t, t_args};
+
+/// inklog 关闭钩子（`run()` 注入 manager，真关停；嵌入式未注入时该阶段
+/// no-op）。同步签名即可（关停是短平快本地操作）。
+pub(crate) type InklogShutdownHook = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+/// 终止信号：sdforge 默认触发（SIGTERM/Ctrl-C，首个信号即决）。
 pub(crate) async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
+    sdforge::http::default_shutdown_signal().await;
+}
+
+/// 单钩子执行上限：trait-kit 阶段超时是钩子间软限制，挂起的单个钩子
+/// 不会被阶段超时打断——此处每个钩子体再包一层超时，真正有界（G3 复核
+/// MEDIUM）。超时记 warn 并继续后续阶段，不中断收尾。
+const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 构建三阶段收尾协调器（调用方 `shutdown().await` 执行；幂等由
+/// `ServerHandle::shutdown` 的 done 位保证，此处每次新建）。
+/// 注册理论上不失败（仅锁中毒时 Err）；失败记 warn 并继续组装剩余阶段，
+/// 不 panic（G3 复核 MEDIUM A-M17：生产路径 incident 中 panic 不可接受）。
+pub(crate) fn build_teardown_coordinator(
+    logger_handle: &Arc<AsyncLoggerHandle>,
+    pre_aggregator: &Arc<TokenPreAggregator>,
+    pa_shutdown: &Arc<AtomicBool>,
+    inklog_hook: Option<InklogShutdownHook>,
+) -> trait_kit::kit::shutdown::AsyncShutdownCoordinator {
+    use trait_kit::kit::shutdown::{AsyncShutdownCoordinator, ShutdownPhase};
+
+    let coordinator = AsyncShutdownCoordinator::new();
+
+    {
+        let logger_handle = logger_handle.clone();
+        coordinator
+            .register_hook(ShutdownPhase::StopRequests, move || {
+                let logger_handle = logger_handle.clone();
+                Box::pin(async move {
+                    match tokio::time::timeout(HOOK_TIMEOUT, logger_handle.shutdown()).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                "{}",
+                                t_args("main-async-logger-shutdown", &[("error", e.to_string())])
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!("teardown StopRequests hook timed out");
+                        }
+                    }
+                })
+            })
+            .unwrap_or_else(|e| {
+                tracing::warn!("teardown hook registration failed: {e}");
+            });
+    }
+
+    {
+        let pre_aggregator = pre_aggregator.clone();
+        let pa_shutdown = pa_shutdown.clone();
+        coordinator
+            .register_hook(ShutdownPhase::DrainQueue, move || {
+                let pre_aggregator = pre_aggregator.clone();
+                let pa_shutdown = pa_shutdown.clone();
+                Box::pin(async move {
+                    pa_shutdown.store(true, Ordering::Relaxed);
+                    match tokio::time::timeout(HOOK_TIMEOUT, pre_aggregator.flush()).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                "{}",
+                                t_args("main-pre-aggregator-flush", &[("error", e.to_string())])
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!("teardown DrainQueue hook timed out");
+                        }
+                    }
+                })
+            })
+            .unwrap_or_else(|e| {
+                tracing::warn!("teardown hook registration failed: {e}");
+            });
+    }
+
+    {
+        coordinator
+            .register_hook(ShutdownPhase::CloseConnections, move || {
+                Box::pin(async move {
+                    let run = async {
+                        match inklog_hook {
+                            Some(ref hook) => {
+                                if let Err(e) = hook() {
+                                    tracing::warn!(
+                                        "{}",
+                                        t_args("main-inklog-shutdown", &[("error", e.to_string())])
+                                    );
+                                }
+                            }
+                            None => {
+                                tracing::debug!("{}", t("main-inklog-shutdown-skipped"));
+                            }
+                        }
+                    };
+                    if tokio::time::timeout(HOOK_TIMEOUT, run).await.is_err() {
+                        tracing::warn!("teardown CloseConnections hook timed out");
+                    }
+                })
+            })
+            .unwrap_or_else(|e| {
+                tracing::warn!("teardown hook registration failed: {e}");
+            });
+    }
+
+    coordinator
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::Repository;
+    use dbnexus::{DbConfig, DbPool};
+
+    async fn memory_repository() -> Repository {
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("memory pool");
+        let repo = Repository::new(pool);
+        repo.initialize().await.expect("schema");
+        repo
+    }
+
+    /// 真实组件 wiring：三阶段全部执行——logger 关停、聚合落库、
+    /// inklog 钩子触发、停机位赋值。
+    #[tokio::test]
+    async fn teardown_runs_all_components_in_order() {
+        let repo = memory_repository().await;
+        let logger = Arc::new(AsyncLoggerHandle::new(crate::database::AsyncLogger::new(
+            std::sync::Arc::new(repo.clone()),
+            100,
+            std::time::Duration::from_secs(60),
+        )));
+        let aggregator = Arc::new(TokenPreAggregator::new(
+            std::sync::Arc::new(repo.clone()),
+            std::time::Duration::from_secs(60),
+        ));
+        let pa_shutdown = Arc::new(AtomicBool::new(false));
+        let inklog_ran = Arc::new(AtomicBool::new(false));
+        let inklog_ran_hook = inklog_ran.clone();
+        let hook: InklogShutdownHook = Arc::new(move || {
+            inklog_ran_hook.store(true, Ordering::Relaxed);
+            Ok(())
+        });
+
+        // 预聚合一条用量：DrainQueue 落定后该行必须在库里
+        aggregator
+            .record(
+                "t010-vendor",
+                "t010-model",
+                0.001,
+                &crate::protocol::TokenUsage::default(),
+            )
+            .await;
+
+        let coord = build_teardown_coordinator(&logger, &aggregator, &pa_shutdown, Some(hook));
+        let result = coord.shutdown().await.expect("shutdown");
+        assert!(result.is_ok(), "三阶段应全部按时完成");
+
+        assert!(
+            pa_shutdown.load(Ordering::Relaxed),
+            "DrainQueue 必须置位 pre-aggregator 停机位"
+        );
+        assert!(
+            inklog_ran.load(Ordering::Relaxed),
+            "CloseConnections 必须触发 inklog 钩子"
+        );
+        let stats = repo
+            .get_token_stats(Some("t010-vendor"))
             .await
-            .unwrap_or_else(|e| panic!("{}: {e:?}", t("main-ctrl-c-handler-failed")));
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sig = signal(SignalKind::terminate())
-            .unwrap_or_else(|e| panic!("{}: {e:?}", t("main-sigterm-handler-failed")));
-        sig.recv().await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("{}", t("main-received-ctrl-c")),
-        _ = terminate => tracing::info!("{}", t("main-received-sigterm")),
+            .expect("stats");
+        assert!(
+            stats
+                .iter()
+                .any(|r| r.model == "t010-model" && r.request_count >= 1),
+            "聚合必须落库，got {stats:?}"
+        );
     }
-}
 
-/// 共享停机信号：Ctrl+C/SIGTERM 一次触发，HTTP 与 gRPC 两路 graceful
-/// shutdown 各持一个 [`ShutdownRx`] 消费（axum `with_graceful_shutdown`
-/// 与 sdforge `serve_with_shutdown` 的 signal future 同源）。
-#[derive(Clone)]
-pub(crate) struct ShutdownRx(tokio::sync::watch::Receiver<bool>);
+    /// 超时强退路径（serve 排空层）：drain 超时后挂起的请求被强制中止，
+    /// serve 在超时量级内返回（不断 permit 语义——排空仍先尝试自然完成）。
+    #[tokio::test]
+    async fn serve_drain_timeout_force_aborts_hanging_requests() {
+        use std::time::{Duration, Instant};
+        use tokio::net::TcpListener;
 
-impl ShutdownRx {
-    /// 等待停机信号触发（sender 侧 drop 视为触发，防御消费方永挂）。
-    /// 以 `async move { rx.fired().await }` 形态作为 signal future 传入
-    /// axum / sdforge 的 graceful shutdown 入口。
-    pub(crate) async fn fired(&mut self) {
-        if *self.0.borrow_and_update() {
-            return;
+        let app = axum::Router::new().route(
+            "/hang",
+            axum::routing::get(|| async {
+                std::future::pending::<axum::response::Response>().await
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(sdforge::http::serve_with_graceful_shutdown(
+            app,
+            listener,
+            async move {
+                let _ = rx.await;
+            },
+            sdforge::http::GracefulShutdownConfig::with_drain_timeout(Duration::from_millis(200)),
+        ));
+
+        // 制造一个排空中挂起的请求
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        use tokio::io::AsyncWriteExt as _;
+        stream
+            .write_all(b"GET /hang HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let started = Instant::now();
+        if tx.send(()).is_err() {
+            // 接收端已走则 serve 已结束，无需触发
         }
-        let _ = self.0.changed().await;
+        let serve_result = tokio::time::timeout(Duration::from_secs(10), serve)
+            .await
+            .expect("serve 必须在超时量级内返回而非永久挂起")
+            .expect("serve 任务无 panic");
+        assert!(
+            serve_result.is_ok(),
+            "排空超时后 serve 必须干净返回: {serve_result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "drain 超时必须强制中止挂起请求"
+        );
     }
-}
-
-/// 启动停机广播任务：[`shutdown_signal`] 触发后向 watch channel 发送
-/// true，返回共享接收端（HTTP/grPC 各 clone）。
-pub(crate) fn spawn_shutdown_broadcaster() -> ShutdownRx {
-    let (tx, rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        let _ = tx.send(true);
-    });
-    ShutdownRx(rx)
 }

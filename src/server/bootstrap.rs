@@ -28,6 +28,9 @@ pub(crate) struct Assembly {
     pub(crate) logger_handle: Arc<AsyncLoggerHandle>,
     pub(crate) pre_aggregator: Arc<TokenPreAggregator>,
     pub(crate) pa_shutdown: Arc<AtomicBool>,
+    /// G10 热重载守护（`None` = 纯内存配置或监听失败；持有即监听生效，
+    /// drop 即停止）。
+    pub(crate) hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
 }
 
 /// 初始化日志系统（原 main.rs:22-29）。
@@ -258,6 +261,7 @@ pub(crate) async fn assemble(
         logger_handle,
         pre_aggregator,
         pa_shutdown,
+        hot_reloader: None,
     })
 }
 

@@ -24,6 +24,10 @@ main-flushing-log-pipeline = 正在刷新日志管道……
 main-async-logger-shutdown = 异步日志器停机：{ $error }
 main-pre-aggregator-flush = Token 预聚合器最终刷新：{ $error }
 main-log-pipeline-flushed = 日志管道已刷新（dropped_logs={ $dropped }）
+main-teardown-timeout = 收尾阶段超时：{ $phases }
+main-teardown-error = 收尾协调器错误：{ $error }
+main-inklog-shutdown = Inklog 关闭：{ $error }
+main-inklog-shutdown-skipped = 跳过 Inklog 关闭（未登记 manager 钩子）
 main-received-ctrl-c = 收到 Ctrl+C，开始优雅停机
 main-received-sigterm = 收到 SIGTERM，开始优雅停机
 main-ctrl-c-handler-failed = 安装 Ctrl+C 信号处理器失败

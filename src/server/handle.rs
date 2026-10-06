@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::database::{AsyncLoggerHandle, TokenPreAggregator};
 use crate::i18n::{t, t_args};
 use crate::server::bootstrap::Assembly;
+use crate::server::shutdown::InklogShutdownHook;
 
 /// 服务器停机收尾句柄（[`build_app`](crate::server::build_app) 与
 /// [`run`](crate::server::run) 产物之一）。
@@ -26,6 +27,13 @@ pub struct ServerHandle {
     pre_aggregator: Arc<TokenPreAggregator>,
     pa_shutdown: Arc<AtomicBool>,
     done: AtomicBool,
+    /// inklog 关闭钩子（`run()` 注入 manager；嵌入式未注入时收尾阶段 no-op）。
+    inklog_hook: std::sync::OnceLock<Option<InklogShutdownHook>>,
+    /// G10 热重载守护（装配期启动；随句柄存活，drop 即停止监听）。
+    /// 字段仅为持有所有权而存在（allow(dead_code)：读取只会发生在
+    /// 需要查询监听状态的未来运维面）。
+    #[allow(dead_code)]
+    hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
     #[cfg(feature = "grpc")]
     grpc_server: std::sync::OnceLock<Option<crate::server::grpc::GrpcServer>>,
 }
@@ -39,15 +47,23 @@ impl std::fmt::Debug for ServerHandle {
 }
 
 impl ServerHandle {
-    pub(crate) fn from_assembly(assembly: &Assembly) -> Self {
+    pub(crate) fn from_assembly(assembly: Assembly) -> Self {
         Self {
             logger_handle: assembly.logger_handle.clone(),
             pre_aggregator: assembly.pre_aggregator.clone(),
             pa_shutdown: assembly.pa_shutdown.clone(),
             done: AtomicBool::new(false),
+            inklog_hook: std::sync::OnceLock::new(),
+            hot_reloader: assembly.hot_reloader,
             #[cfg(feature = "grpc")]
             grpc_server: std::sync::OnceLock::new(),
         }
+    }
+
+    /// 登记 inklog 关闭钩子（`run()` 装配期一次性；重复调用为 no-op；
+    /// 未登记则收尾时该阶段跳过）。
+    pub(crate) fn set_inklog_shutdown_hook(&self, hook: InklogShutdownHook) {
+        let _ = self.inklog_hook.set(Some(hook));
     }
 
     /// 登记 gRPC 服务器（装配期一次性；重复调用为 no-op）。
@@ -64,11 +80,13 @@ impl ServerHandle {
         self.grpc_server.take().flatten()
     }
 
-    /// 优雅停机收尾（原 main.rs:277-299 平移，顺序逐位一致）：
-    /// 置位 pre-aggregator flush worker 停机位 → AsyncLogger 关停并补刷
-    /// 缓冲 → TokenPreAggregator 最终 flush → 汇报 dropped 日志数。
+    /// 优雅停机收尾（G9）：serve 排空返回后执行三阶段收尾——AsyncLogger
+    /// 关停补刷 → pre-aggregator 停机位 + 最终 flush → inklog 关闭——经
+    /// trait-kit `AsyncShutdownCoordinator` 显式编排（顺序见
+    /// `crate::server::shutdown::build_teardown_coordinator`）。
     ///
-    /// 幂等：重复调用为 no-op（首次调用后置位）。
+    /// 幂等：重复调用为 no-op（首次调用后置位）。阶段超时只告警不中断
+    /// 后续阶段（协调器语义），最后统一汇报 dropped 日志数。
     pub async fn shutdown(&self) {
         if self.done.swap(true, Ordering::Relaxed) {
             return;
@@ -76,18 +94,29 @@ impl ServerHandle {
         // recId=9：优雅停机 flush — serve 返回即 in-flight 请求已全部完成，
         // 此刻补最终 flush 保证缓冲中的日志与聚合数据不丢
         tracing::info!("{}", t("main-flushing-log-pipeline"));
-        if let Err(e) = self.logger_handle.shutdown().await {
-            tracing::warn!(
-                "{}",
-                t_args("main-async-logger-shutdown", &[("error", e.to_string())])
-            );
-        }
-        self.pa_shutdown.store(true, Ordering::Relaxed);
-        if let Err(e) = self.pre_aggregator.flush().await {
-            tracing::warn!(
-                "{}",
-                t_args("main-pre-aggregator-flush", &[("error", e.to_string())])
-            );
+        let coordinator = crate::server::shutdown::build_teardown_coordinator(
+            &self.logger_handle,
+            &self.pre_aggregator,
+            &self.pa_shutdown,
+            self.inklog_hook.get().cloned().flatten(),
+        );
+        match coordinator.shutdown().await {
+            Ok(result) if result.is_ok() => {}
+            Ok(result) => {
+                tracing::warn!(
+                    "{}",
+                    t_args(
+                        "main-teardown-timeout",
+                        &[("phases", format!("{:?}", result.timed_out_phases()))]
+                    )
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "{}",
+                    t_args("main-teardown-error", &[("error", e.to_string())])
+                );
+            }
         }
         tracing::info!(
             "{}",

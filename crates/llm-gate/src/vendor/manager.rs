@@ -1400,10 +1400,13 @@ impl VendorManager {
         if !status.is_success() {
             let retry_after = Self::parse_retry_after(response.headers());
             let text = response.text().await.unwrap_or_default();
+            let (error_type, error_code) = upstream_error_category(&text);
             tracing::warn!(
                 vendor = %config.id,
                 status = %status,
-                body = %text,
+                body_bytes = text.len(),
+                error_type = ?error_type,
+                error_code = ?error_code,
                 "{}",
                 crate::i18n::t("vendor-upstream-non-success")
             );
@@ -1770,10 +1773,13 @@ impl VendorManager {
         }
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
+        let (error_type, error_code) = upstream_error_category(&text);
         tracing::warn!(
             vendor = %vendor_id,
             status = %status,
-            body = %text,
+            body_bytes = text.len(),
+            error_type = ?error_type,
+            error_code = ?error_code,
             "{}",
             crate::i18n::t("vendor-stream-upstream-non-success")
         );
@@ -2381,10 +2387,13 @@ impl VendorManager {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
+            let (error_type, error_code) = upstream_error_category(&text);
             tracing::warn!(
                 vendor = %vendor_id,
                 status = %status,
-                body = %text,
+                body_bytes = text.len(),
+                error_type = ?error_type,
+                error_code = ?error_code,
                 "{}",
                 crate::i18n::t("vendor-upstream-non-success")
             );
@@ -2657,6 +2666,69 @@ impl VendorManager {
                 window_end: None,
             }),
         }
+    }
+}
+
+/// 提取上游错误体的机器可分类字段（`error.type` / `error.code`）。
+///
+/// 覆盖 OpenAI（`{"error":{"type":...,"code":...}}`）与 Anthropic
+///（`{"type":"error","error":{"type":...}}`）两种形状；非 JSON 或形状
+/// 不符返回 `(None, None)`。刻意不提取 `error.message`——厂商错误文案
+/// 可能回显请求敏感数据（如鉴权头），不得进入日志字段。
+fn upstream_error_category(text: &str) -> (Option<String>, Option<String>) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return (None, None);
+    };
+    let Some(error) = value.get("error") else {
+        return (None, None);
+    };
+    let category = |key: &str| {
+        error
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+    };
+    (category("type"), category("code"))
+}
+
+#[cfg(test)]
+mod upstream_error_category_tests {
+    use super::upstream_error_category;
+
+    #[test]
+    fn extracts_openai_error_type_and_code() {
+        let body = r#"{"error":{"message":"Invalid API key provided","type":"invalid_request_error","code":"invalid_api_key"}}"#;
+        assert_eq!(
+            upstream_error_category(body),
+            (
+                Some("invalid_request_error".to_string()),
+                Some("invalid_api_key".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn extracts_anthropic_error_type_without_code() {
+        let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+        assert_eq!(
+            upstream_error_category(body),
+            (Some("authentication_error".to_string()), None)
+        );
+    }
+
+    #[test]
+    fn non_json_body_yields_none_pair_no_leak_channel() {
+        // 回显类响应体（含鉴权头样式文本）：无 JSON 类别可提取，
+        // 且该文本不再进入任何日志字段（warn 只记 body_bytes）。
+        let body = "Authorization: Bearer sk-test-ABCDEFGHIJKLMNOPQRSTUVWXYZ was invalid";
+        assert_eq!(upstream_error_category(body), (None, None));
+    }
+
+    #[test]
+    fn json_without_error_shape_yields_none_pair() {
+        assert_eq!(upstream_error_category(r#"{"ok":true}"#), (None, None));
+        assert_eq!(upstream_error_category(""), (None, None));
     }
 }
 

@@ -21,3 +21,37 @@ pub use crate::protocol::sse_frame::{
     encode_sse_done, encode_sse_error, encode_sse_event, reframe_passthrough_stream, SseFrame,
     SseFrameParser,
 };
+
+/// 流式路径内部错误 → 客户端 `event: error` 帧的统一出口。
+///
+/// 内部错误详情（reqwest 等的 Display 可携带上游 vendor URL）只进
+/// `tracing` 日志；出站固定为无参安全 i18n 文本，与 REST 错误响应的
+/// 固定码纪律对齐——防止网关后端拓扑经错误原文外泄。
+pub fn stream_error_frame(e: &impl std::fmt::Display) -> String {
+    let safe_text = crate::i18n::t("vendor-upstream-stream-interrupted");
+    tracing::warn!(error = %e, "{safe_text}");
+    encode_sse_error(&safe_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stream_error_frame;
+
+    #[test]
+    fn stream_error_frame_hides_internal_detail() {
+        // reqwest Display 形态：携带上游 URL 的内部错误
+        let internal =
+            "error sending request for url (http://internal-vendor:8001/v1/chat/completions)";
+        let frame = stream_error_frame(&internal);
+        assert!(
+            frame.starts_with("event: error\ndata: "),
+            "帧格式不变: {frame:?}"
+        );
+        assert!(frame.ends_with("\n\n"), "双换行终止: {frame:?}");
+        assert!(
+            !frame.contains("internal-vendor"),
+            "不得泄露内部拓扑: {frame:?}"
+        );
+        assert!(!frame.contains(internal), "不得出站内部错误原文: {frame:?}");
+    }
+}

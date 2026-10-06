@@ -12,7 +12,7 @@
 use bytes::Bytes;
 use futures::Stream;
 
-use crate::i18n::{t, t_args};
+use crate::i18n::t;
 
 /// 编码普通 SSE 事件。
 ///
@@ -220,8 +220,7 @@ where
                             "{}",
                             t("protocol-passthrough-stream-interrupted")
                         );
-                        let msg =
-                            t_args("protocol-stream-interrupted", &[("error", e.to_string())]);
+                        let msg = t("protocol-stream-interrupted");
                         return Some((
                             Ok(Bytes::from(encode_sse_error(&msg))),
                             (parser, stream, true),

@@ -34,7 +34,7 @@ protocol-unknown-error = Unknown error
 protocol-anthropic-error = Anthropic error: { $type } - { $message }
 protocol-openai-error = OpenAI error: { $type } - { $message }
 protocol-passthrough-stream-interrupted = upstream passthrough stream interrupted
-protocol-stream-interrupted = upstream stream interrupted: { $error }
+protocol-stream-interrupted = upstream stream interrupted
 
 # ---- router/router.rs ----
 router-model-not-found = Model { $model } not found

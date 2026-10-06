@@ -656,13 +656,13 @@ fn openai_sse_stream(
                     }
                     Err(e) => {
                         errored = true;
-                        yield Ok(crate::api::sse::encode_sse_error(&e.to_string()).into());
+                        yield Ok(crate::api::sse::stream_error_frame(&e).into());
                         break;
                     }
                 },
                 Err(e) => {
                     errored = true;
-                    yield Ok(crate::api::sse::encode_sse_error(&e.to_string()).into());
+                    yield Ok(crate::api::sse::stream_error_frame(&e).into());
                     break;
                 }
             }

@@ -34,7 +34,7 @@ protocol-unknown-error = 未知错误
 protocol-anthropic-error = Anthropic 错误: { $type } - { $message }
 protocol-openai-error = OpenAI 错误: { $type } - { $message }
 protocol-passthrough-stream-interrupted = 上游透传流中断
-protocol-stream-interrupted = 上游流中断: { $error }
+protocol-stream-interrupted = 上游流中断
 
 # ---- router/router.rs ----
 router-model-not-found = 模型 { $model } 未找到

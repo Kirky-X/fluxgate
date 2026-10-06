@@ -304,7 +304,12 @@ async fn reframe_passthrough_converts_io_error_to_sse_error_event() {
     .await;
 
     assert!(out.contains("event: error"), "应产出 error 事件: {out}");
-    assert!(out.contains("connection reset"));
+    // 安全卫生契约：内部 io 错误详情（"connection reset"）只进日志，
+    // 出站为无参安全 i18n 文本，不带上游/内部错误原文。
+    assert!(
+        !out.contains("connection reset"),
+        "出站帧不得携带内部错误详情: {out}"
+    );
     assert!(!out.contains("[DONE]"));
 }
 

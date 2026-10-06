@@ -3236,6 +3236,7 @@ dependencies = [
  "confers",
  "dbnexus",
  "eventsource-stream",
+ "fluent-syntax",
  "futures",
  "futures-util",
  "hex",

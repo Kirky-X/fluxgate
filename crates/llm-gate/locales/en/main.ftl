@@ -40,3 +40,5 @@ main-grpc-drain-timeout = gRPC drain timeout after { $secs }s; in-flight request
 # hot_reload.rs 运维可见 INFO。
 main-hot-reload-committed = Hot reload committed; changed sections: { $sections }
 main-hot-reload-watching = Hot reload watching config file: { $path }
+main-hot-reload-watcher-unavailable = Hot reload watcher failed to start; continuing without hot reload
+main-hot-reload-swap-failed = Hot reload swap failed: { $error }

@@ -11,12 +11,17 @@
 //! 因此漏登记不会编译失败、也不会 panic，只把 `vendor-xxx` 这样的裸键吐给
 //! 用户——静默失效，必须由测试钉住。
 //!
-//! 两条断言：
+//! 三条断言：
 //! 1. 五个 `.ftl` 目录逐文件中 en 与 zh 的消息名集合相等（双向差集为空）；
 //! 2. 生产代码（`src/`、`crates/llm-gate/src/`）里 `t("…")`/`t_args("…")`
-//!    引用的每个键都在 en 目录登记（`zh` 由第 1 条保证同步存在）。
+//!    引用的每个键都在 en 目录登记（`zh` 由第 1 条保证同步存在）；
+//! 3. 每个目录经 fluent-syntax 解析零 Junk，且逐键 en/zh 占位符集合相等
+//!    （同样写坏的条目与占位符手误不再静默穿透）。
+//!
+//! 扫描边界：按 `t("`/`t_args("` 字面形态识别——键必须是字面量，动态键
+//! 静默漏检；`examples/` 不在扫描域，引入 i18n 时须同步扩域。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +40,11 @@ const DECLARED_FIXTURES: &[&str] = &["no-such-key"];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Fluent 目录根（磁盘源，编译期内嵌清单的对照面）。
+fn locales_dir() -> PathBuf {
+    repo_root().join("crates/llm-gate/locales")
 }
 
 /// 读取 `.ftl` 内的消息名集合：仅取顶格 `name =` 行，注释行（`#`）与缩进的
@@ -111,11 +121,28 @@ fn referenced_keys(file: &Path) -> BTreeSet<String> {
 
 #[test]
 fn en_and_zh_catalogs_have_identical_message_names() {
-    let root = repo_root();
+    let root = locales_dir();
+    // 守卫自守卫：磁盘目录与 CATALOGS 双向一致——新增 .ftl 漏登记清单时，
+    // 键位断言会静默跳过该目录（恰是本守卫要消灭的失败类），在此显式钉死。
+    let on_disk: BTreeSet<String> = fs::read_dir(root.join("en"))
+        .expect("locales/en 目录必须存在")
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "ftl"))
+        .filter_map(|e| {
+            e.path()
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+        })
+        .collect();
+    let listed: BTreeSet<String> = CATALOGS.iter().map(|c| (*c).to_string()).collect();
+    assert_eq!(
+        on_disk, listed,
+        "locales/en/*.ftl 与 CATALOGS 清单失配——新目录文件必须同步登记"
+    );
     let mut failures: Vec<String> = Vec::new();
     for catalog in CATALOGS {
-        let en = message_names(&root.join(format!("crates/llm-gate/locales/en/{catalog}.ftl")));
-        let zh = message_names(&root.join(format!("crates/llm-gate/locales/zh/{catalog}.ftl")));
+        let en = message_names(&root.join(format!("en/{catalog}.ftl")));
+        let zh = message_names(&root.join(format!("zh/{catalog}.ftl")));
         let en_only: Vec<_> = en.difference(&zh).cloned().collect();
         let zh_only: Vec<_> = zh.difference(&en).cloned().collect();
         if !en_only.is_empty() || !zh_only.is_empty() {
@@ -140,9 +167,7 @@ fn every_referenced_message_key_is_registered_in_en() {
     let root = repo_root();
     let registered: BTreeSet<String> = CATALOGS
         .iter()
-        .flat_map(|catalog| {
-            message_names(&root.join(format!("crates/llm-gate/locales/en/{catalog}.ftl")))
-        })
+        .flat_map(|catalog| message_names(&locales_dir().join(format!("en/{catalog}.ftl"))))
         .collect();
 
     let mut sources = Vec::new();
@@ -162,6 +187,117 @@ fn every_referenced_message_key_is_registered_in_en() {
         "代码引用了未登记的 i18n 键（运行时会把裸键名吐给用户）:\n{}",
         missing.join("\n")
     );
+}
+
+/// 提取资源内全部消息/术语的占位符名映射（键名 → 占位符集合）。
+fn message_placeholders(
+    resource: &fluent_syntax::ast::Resource<String>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut map = BTreeMap::new();
+    for entry in &resource.body {
+        let (name, value, attributes) = match entry {
+            fluent_syntax::ast::Entry::Message(m) => (&m.id.name, m.value.as_ref(), &m.attributes),
+            fluent_syntax::ast::Entry::Term(t) => (&t.id.name, Some(&t.value), &t.attributes),
+            _ => continue,
+        };
+        let mut vars = BTreeSet::new();
+        if let Some(pattern) = value {
+            collect_variables(pattern, &mut vars);
+        }
+        for attribute in attributes {
+            collect_variables(&attribute.value, &mut vars);
+        }
+        map.insert(name.clone(), vars);
+    }
+    map
+}
+
+fn collect_variables(pattern: &fluent_syntax::ast::Pattern<String>, out: &mut BTreeSet<String>) {
+    for element in &pattern.elements {
+        if let fluent_syntax::ast::PatternElement::Placeable { expression } = element {
+            collect_expression(expression, out);
+        }
+    }
+}
+
+fn collect_expression(
+    expression: &fluent_syntax::ast::Expression<String>,
+    out: &mut BTreeSet<String>,
+) {
+    match expression {
+        fluent_syntax::ast::Expression::Select { selector, variants } => {
+            collect_inline(selector, out);
+            for variant in variants {
+                collect_variables(&variant.value, out);
+            }
+        }
+        fluent_syntax::ast::Expression::Inline(inline) => collect_inline(inline, out),
+    }
+}
+
+fn collect_inline(
+    inline: &fluent_syntax::ast::InlineExpression<String>,
+    out: &mut BTreeSet<String>,
+) {
+    match inline {
+        fluent_syntax::ast::InlineExpression::VariableReference { id } => {
+            out.insert(id.name.clone());
+        }
+        fluent_syntax::ast::InlineExpression::Placeable { expression } => {
+            collect_expression(expression, out);
+        }
+        fluent_syntax::ast::InlineExpression::FunctionReference { arguments, .. }
+        | fluent_syntax::ast::InlineExpression::TermReference {
+            arguments: Some(arguments),
+            ..
+        } => {
+            for positional in &arguments.positional {
+                collect_inline(positional, out);
+            }
+            for named in &arguments.named {
+                collect_inline(&named.value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn catalogs_parse_without_junk_and_placeholders_align() {
+    for catalog in CATALOGS {
+        let mut maps = Vec::new();
+        for lang in ["en", "zh"] {
+            let path = locales_dir().join(format!("{lang}/{catalog}.ftl"));
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
+            let resource = fluent_syntax::parser::parse_runtime(source)
+                .unwrap_or_else(|e| panic!("{} 解析失败: {e:?}", path.display()));
+            let junk: Vec<&String> = resource
+                .body
+                .iter()
+                .filter_map(|entry| match entry {
+                    fluent_syntax::ast::Entry::Junk { content } => Some(content),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                junk.is_empty(),
+                "{} 存在 Junk 条目（运行时按缺键静默回退）: {junk:?}",
+                path.display()
+            );
+            maps.push(message_placeholders(&resource));
+        }
+        let (en_map, zh_map) = (&maps[0], &maps[1]);
+        for (name, en_vars) in en_map {
+            let Some(zh_vars) = zh_map.get(name) else {
+                continue; // 缺键由键位对齐断言报告，此处不重复
+            };
+            assert_eq!(
+                en_vars, zh_vars,
+                "{catalog}.ftl 键 {name} 的 en/zh 占位符不对齐——运行时会渲染 Missing 句柄或裸 $名"
+            );
+        }
+    }
 }
 
 #[test]

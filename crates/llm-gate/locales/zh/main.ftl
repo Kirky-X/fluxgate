@@ -40,3 +40,5 @@ main-grpc-drain-timeout = gRPC 排空超时（{ $secs } 秒）；进行中的请
 # hot_reload.rs 运维可见 INFO。
 main-hot-reload-committed = 配置热重载已生效；变更段：{ $sections }
 main-hot-reload-watching = 配置热重载已监听文件：{ $path }
+main-hot-reload-watcher-unavailable = 热重载监听启动失败；已继续运行但热重载不可用
+main-hot-reload-swap-failed = 配置热重载切换失败：{ $error }

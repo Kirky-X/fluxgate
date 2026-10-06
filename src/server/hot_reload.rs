@@ -166,7 +166,7 @@ pub(crate) async fn maybe_start_hot_reload(
         .await
         .ok()?;
     if !watcher.is_running() {
-        tracing::warn!("hot reload watcher failed to start, continuing without it");
+        tracing::warn!("{}", t_args("main-hot-reload-watcher-unavailable", &[]));
         return None;
     }
 
@@ -211,18 +211,25 @@ pub(crate) async fn maybe_start_hot_reload(
                     );
                 }
                 Err(e) => {
-                    tracing::warn!("hot reload swap failed: {e}");
+                    tracing::warn!(
+                        "{}",
+                        t_args("main-hot-reload-swap-failed", &[("error", e.to_string())],)
+                    );
                 }
             }
         }
     });
 
+    // 路径来自启动参数，过滤控制字符再入日志，防伪造日志行
+    let watching_path: String = path
+        .display()
+        .to_string()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
     tracing::info!(
         "{}",
-        t_args(
-            "main-hot-reload-watching",
-            &[("path", path.display().to_string())],
-        )
+        t_args("main-hot-reload-watching", &[("path", watching_path)],)
     );
     Some(reloader_handle)
 }

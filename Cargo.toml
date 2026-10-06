@@ -151,6 +151,8 @@ sys-info = "0.9"
 [dev-dependencies]
 # config 系测试直接构造/解析 TOML（config 迁移后测试拆分随 llm-gate 走）
 toml = "1"
+# i18n 键位守卫：严格解析 .ftl（零 Junk）与占位符抽取（与 fluent-bundle 同源语法树）
+fluent-syntax = { version = "0.12", default-features = false }
 # log 门面桥测试：LogTracer 转发断言需 log 宏与 tracing Layer 捕获面
 # （tracing-subscriber 主依赖为 optional，测试单独声明 registry 面）
 log = { version = "0.4", default-features = false, features = ["std"] }

@@ -34,7 +34,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  RUST_VERSION: '1.92'
+  RUST_VERSION: '1.97'
   # path 依赖的 7 个兄弟库，克隆到 $GITHUB_WORKSPACE/../ 下满足 ../<lib> 解析
   SIBLING_REPOS: 'confers dbnexus inklog limiteron oxcache sdforge trait-kit'
 
@@ -61,7 +61,7 @@ jobs:
           for repo in $SIBLING_REPOS; do
             git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
           done
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt
@@ -87,7 +87,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
@@ -117,7 +117,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -126,9 +126,11 @@ jobs:
       # --all-features 会同时启用互斥的 db-* 三组（dbnexus 守卫必触发），
       # 改为按后端逐一检查；db-sqlite 已由 default 覆盖
       - name: Check db-postgres features
-        run: cargo check --workspace --no-default-features --features "full,db-postgres"
+        # -p 限定到本包：workspace 形态会把示例成员的 default db-sqlite 拉入
+        # 特性联合，dbnexus 互斥守卫必触发（与 README 本地校验口径逐字一致）
+        run: cargo check -p nexusflow --no-default-features --features "full,db-postgres"
       - name: Check db-mysql features
-        run: cargo check --workspace --no-default-features --features "full,db-mysql"
+        run: cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
   #-----------------------------------------------------------------------------
   # 测试（mockito/mockall 自包含，无外部服务依赖）
@@ -149,7 +151,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -179,7 +181,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: llvm-tools-preview
@@ -208,7 +210,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Install cargo-audit

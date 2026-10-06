@@ -100,11 +100,16 @@ fn translate(key: &str, args: &[(&str, String)]) -> String {
 }
 
 /// 翻译无参消息。缺键返回键名本身，不 panic。
+///
+/// 键必须传字面量：键位守卫按调用点字面形态扫描源码，动态键会静默漏检。
 pub fn t(key: &str) -> String {
     translate(key, &[])
 }
 
 /// 翻译带 `{ $name }` 占位符的消息。缺键返回键名本身，不 panic。
+///
+/// 实参名必须与 FTL 占位符逐字一致（en/zh 占位符对齐由守卫测试断言）；
+/// 键必须传字面量，理由同 [`t`]。
 pub fn t_args(key: &str, args: &[(&str, String)]) -> String {
     translate(key, args)
 }
@@ -184,6 +189,35 @@ mod tests {
             zh_keys.sort();
             assert_eq!(en_keys, zh_keys, "'{en_name}' 的 en/zh 键集合不一致");
         }
+    }
+
+    /// 内嵌清单与磁盘目录双向一致：新增 .ftl 漏登记 EMBEDDED_LOCALES 时
+    /// 文件不会被打进二进制，运行时对该文件整族键缺键——在此钉死。
+    #[test]
+    fn embedded_manifest_matches_on_disk() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales/en");
+        let on_disk: std::collections::BTreeSet<String> = std::fs::read_dir(&dir)
+            .expect("locales/en 目录必须存在")
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "ftl"))
+            .filter_map(|e| {
+                e.path()
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+            })
+            .collect();
+        let embedded: std::collections::BTreeSet<String> = EMBEDDED_LOCALES
+            .iter()
+            .flat_map(|(_, files)| {
+                files
+                    .iter()
+                    .map(|(name, _)| name.strip_suffix(".ftl").unwrap_or(name).to_string())
+            })
+            .collect();
+        assert_eq!(
+            embedded, on_disk,
+            "EMBEDDED_LOCALES 与 locales/en/*.ftl 失配：新增目录文件必须同步嵌入"
+        );
     }
 
     #[test]

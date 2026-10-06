@@ -12,6 +12,7 @@ pub mod anthropic;
 pub mod global_state;
 pub mod health;
 pub mod openai;
+pub mod openapi_docs;
 pub mod readiness;
 pub mod response_cache;
 pub mod router_builder;

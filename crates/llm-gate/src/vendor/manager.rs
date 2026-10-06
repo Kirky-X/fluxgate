@@ -1944,14 +1944,29 @@ impl VendorManager {
         self.metrics
             .record_ttft(vendor_id, start.elapsed(), Instant::now());
 
-        // 字节流：permit move 进 unfold，流结束才释放（recId=5④）。
-        // recId=4（W2）：chunk 间 idle 超时 — bytes.next() 按 0-约定包
-        // timeout(stream_idle_ms)，超时产出 Err(Timeout) 并由下游分帧层
-        // 终止流（permit 随终止释放）；item 错误类型统一为 GateError。
+        // 字节流与分帧反解析装配（recId=5④ / recId=4（W2）/ recId=3 阶段二
+        // 的完整语义见 [`Self::idle_timeout_byte_stream`] /
+        // [`Self::framed_ir_stream`]——与透传流式共用同一实现）
         let idle = Duration::from_millis(config.stream_idle_ms);
+        let byte_stream = Self::idle_timeout_byte_stream(response, permit, idle, vendor_id);
+        Ok(Self::framed_ir_stream(byte_stream, vendor_id, converter))
+    }
+
+    /// recId=5④ + recId=4（W2）：上游响应体字节流装配 — permit move 进
+    /// unfold，流结束才释放（并发上限对流式请求真实生效）；chunk 间 idle
+    /// 超时（0=不限时）按 `stream_idle_ms` 包 timeout(bytes.next())，超时
+    /// 产出 Err(Timeout) 并由下游分帧层终止流（permit 随终止释放）；item
+    /// 错误类型统一为 GateError。转换流式与透传流式共用同一装配
+    ///（提取前两处逐位同构、各自维护一份）。
+    fn idle_timeout_byte_stream(
+        response: reqwest::Response,
+        permit: ConcurrencyPermit,
+        idle: Duration,
+        vendor_id: &str,
+    ) -> impl futures::Stream<Item = Result<Bytes, GateError>> {
         let vendor_template = vendor_id.to_string();
         let inner = Box::pin(response.bytes_stream());
-        let byte_stream = futures::stream::unfold((inner, permit), move |(mut inner, permit)| {
+        futures::stream::unfold((inner, permit), move |(mut inner, permit)| {
             // async move 块按值捕获，FnMut 闭包每轮 clone 出独立 owner
             let vendor_for_bytes = vendor_template.clone();
             async move {
@@ -1978,9 +1993,19 @@ impl VendorManager {
                     }
                 }
             }
-        });
+        })
+    }
 
-        // 分帧 + 反向解析：上游 SSE → IR StreamChunk（recId=3 阶段二）
+    /// recId=3 阶段二：上游 SSE 字节流 → 分帧 + 反向解析的 IR StreamChunk
+    /// 流。[DONE] 提前收流（OpenAI 终止标记）；上游中流错误语义化 Err
+    /// 提前终止（recId=14②）；EOF 冲刷残余帧（见 [`Self::flush_eof_chunk`]）。
+    /// Unfold 的 async 闭包非 Unpin —— Box::pin 后再返回，外层调用方
+    ///（StreamExt::next）要求流自身 Unpin。
+    fn framed_ir_stream(
+        byte_stream: impl futures::Stream<Item = Result<Bytes, GateError>> + Send + 'static,
+        vendor_id: &str,
+        converter: Arc<dyn ProtocolConverter>,
+    ) -> impl futures::Stream<Item = Result<StreamChunk, GateError>> {
         let vendor = vendor_id.to_string();
         let framed = futures::stream::unfold(
             (
@@ -2054,20 +2079,8 @@ impl VendorManager {
                         }
                         None => {
                             // EOF：冲刷残余帧后终止
-                            if let Some(frame) = parser.flush() {
-                                if !frame.is_error() {
-                                    if let Some(data) = frame.data {
-                                        if data.trim() != "[DONE]" {
-                                            if let Some(chunk) = converter.parse_stream_frame(&data)
-                                            {
-                                                return Some((
-                                                    Ok(chunk),
-                                                    (parser, bytes, true, vendor, converter),
-                                                ));
-                                            }
-                                        }
-                                    }
-                                }
+                            if let Some(chunk) = Self::flush_eof_chunk(&mut parser, &converter) {
+                                return Some((Ok(chunk), (parser, bytes, true, vendor, converter)));
                             }
                             return None;
                         }
@@ -2075,10 +2088,25 @@ impl VendorManager {
                 }
             },
         );
+        Box::pin(framed)
+    }
 
-        // Unfold 的 async 闭包非 Unpin —— Box::pin 后再返回，
-        // 外层调用方（StreamExt::next）要求流自身 Unpin
-        Ok(Box::pin(framed))
+    /// EOF 冲刷：`parser.flush()` 取残余帧，非错误且非 [DONE] 的可解析帧
+    /// 产出为最后一个 chunk；错误帧/终止标记/无 data 帧静默收流（与提取
+    /// 前行为逐位一致）。
+    fn flush_eof_chunk(
+        parser: &mut crate::protocol::SseFrameParser,
+        converter: &Arc<dyn ProtocolConverter>,
+    ) -> Option<StreamChunk> {
+        let frame = parser.flush()?;
+        if frame.is_error() {
+            return None;
+        }
+        let data = frame.data?;
+        if data.trim() == "[DONE]" {
+            return None;
+        }
+        converter.parse_stream_frame(&data)
     }
 
     /// 执行零拷贝透传请求
@@ -2418,38 +2446,10 @@ impl VendorManager {
 
         // recId=5④：与 execute_stream_request 同款 permit 生命周期 ——
         // permit move 进返回的 Stream，流结束才释放，并发上限对流式生效。
-        // recId=4（W2）：chunk 间 idle 超时（0=不限时）与转换流式同口径。
+        // recId=4（W2）：chunk 间 idle 超时（0=不限时）与转换流式同口径
+        //（装配实现见 [`Self::idle_timeout_byte_stream`]，两路共用）。
         let idle = Duration::from_millis(config.stream_idle_ms);
-        let vendor_template = vendor_id.to_string();
-        let inner = Box::pin(response.bytes_stream());
-        let stream = futures::stream::unfold((inner, permit), move |(mut inner, permit)| {
-            // async move 块按值捕获，FnMut 闭包每轮 clone 出独立 owner
-            let vendor_for_bytes = vendor_template.clone();
-            async move {
-                let next = if idle > Duration::ZERO {
-                    match timeout(idle, futures::StreamExt::next(&mut inner)).await {
-                        Ok(next) => next,
-                        Err(_) => {
-                            let vendor = vendor_for_bytes.clone();
-                            return Some((Err(GateError::Timeout { vendor }), (inner, permit)));
-                        }
-                    }
-                } else {
-                    futures::StreamExt::next(&mut inner).await
-                };
-                match next {
-                    Some(Ok(b)) => Some((Ok(b), (inner, permit))),
-                    Some(Err(e)) => {
-                        let vendor = vendor_for_bytes.clone();
-                        Some((Err(Self::outbound_send_error(&vendor, &e)), (inner, permit)))
-                    }
-                    None => {
-                        drop(permit);
-                        None
-                    }
-                }
-            }
-        });
+        let stream = Self::idle_timeout_byte_stream(response, permit, idle, vendor_id);
 
         // Unfold 的 async 闭包非 Unpin —— Box::pin 后再返回，
         // 外层调用方（StreamExt::next）要求流自身 Unpin

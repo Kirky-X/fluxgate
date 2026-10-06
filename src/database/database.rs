@@ -96,7 +96,7 @@ fn ensure_sqlite_parent_dir(_url: &str) -> Result<(), NexusFlowError> {
 ///
 /// `config.url` 非空时原样优先（postgres://、mysql://、sqlite://…）；
 /// 否则回退 `path` 按 sqlite 文件库归一——该回退要求编译期启用 `db-sqlite`
-/// （nexusflow 层 feature；llm-gate 零存储假设，不感知后端轴），未启用时
+/// （本 crate 的 feature；路由半边零存储假设，不感知后端轴），未启用时
 /// 返回带重建指引的错误。
 pub fn resolve_database_url(config: &DatabaseConfig) -> Result<String, NexusFlowError> {
     if !config.url.is_empty() {
@@ -116,7 +116,7 @@ pub fn resolve_database_url(config: &DatabaseConfig) -> Result<String, NexusFlow
 
 /// 数据库 URL 日志脱敏 — `config.url` 契约支持 postgres://、mysql:// 等
 /// 惯例内嵌口令的形态（userinfo），原样进日志会把凭证泄进日志通道（脱敏
-/// 先例同 sdk client 的 Debug 输出与 llm-gate env 缺失告警）。剥除 userinfo
+/// 先例同 sdk client 的 Debug 输出与 env 缺失告警）。剥除 userinfo
 /// 并以 `[REDACTED]` 显式标注「此处有凭证」，host/port/path 保留供排障定位；
 /// 无 userinfo 或非 scheme://host 形态（sqlite::memory:、裸路径）逐字节
 /// 原样返回。解析用 url crate（IPv6 主机/默认端口等边界），输出手工拼装——
@@ -165,27 +165,24 @@ fn normalize_sqlite_url(path: &str) -> String {
 }
 
 #[async_trait::async_trait]
-impl llm_gate::storage::RequestLogSink for Database {
-    async fn log(
-        &self,
-        log: llm_gate::storage::RequestLog,
-    ) -> Result<(), llm_gate::error::GateError> {
+impl crate::storage::RequestLogSink for Database {
+    async fn log(&self, log: crate::storage::RequestLog) -> Result<(), crate::error::GateError> {
         self.repository()
             .log_request(&log)
             .await
-            .map_err(|e| llm_gate::error::GateError::Config {
+            .map_err(|e| crate::error::GateError::Config {
                 message: format!("request log write failed: {e}"),
             })
     }
 
     async fn query_logs(
         &self,
-        filter: &llm_gate::storage::LogFilter,
-    ) -> Result<Vec<llm_gate::storage::RequestLog>, llm_gate::error::GateError> {
+        filter: &crate::storage::LogFilter,
+    ) -> Result<Vec<crate::storage::RequestLog>, crate::error::GateError> {
         self.repository()
             .query_logs(filter)
             .await
-            .map_err(|e| llm_gate::error::GateError::Config {
+            .map_err(|e| crate::error::GateError::Config {
                 message: format!("request log query failed: {e}"),
             })
     }
@@ -194,11 +191,11 @@ impl llm_gate::storage::RequestLogSink for Database {
         &self,
         keyword: &str,
         limit: u32,
-    ) -> Result<Vec<llm_gate::storage::RequestLog>, llm_gate::error::GateError> {
+    ) -> Result<Vec<crate::storage::RequestLog>, crate::error::GateError> {
         self.repository()
             .search_logs(keyword, limit)
             .await
-            .map_err(|e| llm_gate::error::GateError::Config {
+            .map_err(|e| crate::error::GateError::Config {
                 message: format!("request log search failed: {e}"),
             })
     }

@@ -5,33 +5,32 @@
 
 // Smart LLM Proxy - Core Library
 
-// config 单 struct（13 段）+ ConfigManager/ConfigLoader/DynamicField 整体
-// 进 llm-gate（design.md D1.1：拆段会分裂 POST /admin/config 热更新语义）；
-// 门面 re-export 保持 nexusflow::config 路径可用
-pub use llm_gate::config;
+// 路由半边（原 llm-gate crate，已并回单 crate）：config 单 struct（13 段）
+// + ConfigManager/ConfigLoader/DynamicField 整体在本模块（design.md D1.1：
+// 拆段会分裂 POST /admin/config 热更新语义）
+pub mod config;
 pub mod error;
-// i18n 引擎整体进 llm-gate（Fluent 目录随迁）；此处门面 re-export，
-// crate 内外统一经 nexusflow::i18n（= llm_gate::i18n）访问
-pub use llm_gate::i18n;
-// utils（metrics/retry/cost_tracker）整体进 llm-gate；门面 re-export 同 i18n
-pub use llm_gate::utils;
-// protocol IR 与双协议转换器整体进 llm-gate；门面 re-export 同 i18n
-pub use llm_gate::protocol;
-// 存储边界缝（RequestLogSink/UsageSink + 契约类型）定义在 llm-gate，
-// dbnexus 实现留在 database 模块（N2）；门面 re-export 同 protocol
-pub use llm_gate::storage;
+// i18n 引擎（Fluent 目录随迁），crate 内外统一经 nexusflow::i18n 访问
+pub mod i18n;
+// utils：metrics / retry / cost_tracker
+pub mod utils;
+// protocol：IR 与双协议转换器
+pub mod protocol;
+// 存储边界缝（RequestLogSink/UsageSink + 契约类型）定义于本模块，
+// dbnexus 实现留在 database 模块（N2）
+pub mod storage;
 
 #[cfg(feature = "database")]
 pub mod database;
 
 #[cfg(feature = "vendor-management")]
-pub use llm_gate::vendor;
+pub mod vendor;
 
 #[cfg(feature = "infrastructure")]
 pub mod infrastructure;
 
 #[cfg(feature = "router")]
-pub use llm_gate::router;
+pub mod router;
 
 #[cfg(feature = "web-server")]
 pub mod api;

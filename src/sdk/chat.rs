@@ -1,7 +1,7 @@
 //! Chat 请求/响应类型 — wire 契约对齐网关真实形状（D2/D7.11 口径）。
 //!
 //! SDK 零 crate 内依赖（独立客户端契约面）：类型自有、serde 对齐
-//! `llm_gate::protocol` IR 的线上投影——多模态内容件 / 工具调用片段 /
+//! `crate::protocol` IR 的线上投影——多模态内容件 / 工具调用片段 /
 //! 四变体 finish_reason / 含 cache_read 的 usage。`response_format` 等无
 //! IR 表达的参数**不造**（对齐 IR 现有表达）。
 

@@ -7,13 +7,13 @@
 //! 变成每次 `cargo test` 自动拦截的门禁。
 //!
 //! 背景：`i18n::t`/`t_args` 的缺键行为是**原样返回键名**（回退链
-//! 当前语言束 → en 束 → 键名，见 `crates/llm-gate/src/i18n/catalog.rs`），
+//! 当前语言束 → en 束 → 键名，见 `src/i18n/catalog.rs`），
 //! 因此漏登记不会编译失败、也不会 panic，只把 `vendor-xxx` 这样的裸键吐给
 //! 用户——静默失效，必须由测试钉住。
 //!
 //! 三条断言：
 //! 1. 五个 `.ftl` 目录逐文件中 en 与 zh 的消息名集合相等（双向差集为空）；
-//! 2. 生产代码（`src/`、`crates/llm-gate/src/`）里 `t("…")`/`t_args("…")`
+//! 2. 生产代码（`src/`）里 `t("…")`/`t_args("…")`
 //!    引用的每个键都在 en 目录登记（`zh` 由第 1 条保证同步存在）；
 //! 3. 每个目录经 fluent-syntax 解析零 Junk，且逐键 en/zh 占位符集合相等
 //!    （同样写坏的条目与占位符手误不再静默穿透）。
@@ -44,7 +44,7 @@ fn repo_root() -> PathBuf {
 
 /// Fluent 目录根（磁盘源，编译期内嵌清单的对照面）。
 fn locales_dir() -> PathBuf {
-    repo_root().join("crates/llm-gate/locales")
+    repo_root().join("locales")
 }
 
 /// 读取 `.ftl` 内的消息名集合：仅取顶格 `name =` 行，注释行（`#`）与缩进的
@@ -172,7 +172,6 @@ fn every_referenced_message_key_is_registered_in_en() {
 
     let mut sources = Vec::new();
     collect_rs_files(&root.join("src"), &mut sources);
-    collect_rs_files(&root.join("crates/llm-gate/src"), &mut sources);
 
     let mut missing: Vec<String> = Vec::new();
     for file in &sources {

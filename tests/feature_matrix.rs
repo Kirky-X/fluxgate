@@ -5,8 +5,8 @@
 
 //! nexusflow 应用面特性组合矩阵测试（自原 feature_matrix 按归属拆分）。
 //!
-//! 应用面 feature 只保留可见性断言；路由核心矩阵已随 llm-gate 走
-//! （crates/llm-gate/tests/feature_matrix.rs）。**语义变化（design.md D1）**：
+//! 应用面 feature 只保留可见性断言；路由核心矩阵见 gate_feature_matrix.rs。
+//! **语义变化（design.md D1）**：
 //! vendor-management→database 联动已解除——原「vendor-management 开启时
 //! database 必须也可用」的链条断言随之删除，database 现由 web-server 显式
 //! 携带（服务器装配 bootstrap 需要）与 database feature 自身声明。
@@ -19,8 +19,8 @@
 //! | `--features full`（default = full + db-sqlite） | OK | 全面向 sqlite 后端        |
 //! | `-p nexusflow --no-default-features --features "full,db-postgres"` | OK | server-side 后端 |
 //! | `-p nexusflow --no-default-features --features "full,db-mysql"`    | OK | server-side 后端 |
-//! | `--features database`            | OK   | database → protocol（llm-gate 转发）       |
-//! | `--features vendor-management`   | OK   | vendor-management → llm-gate/vendor-management |
+//! | `--features database`            | OK   | database → protocol                        |
+//! | `--features vendor-management`   | OK   | vendor-management 本模块直控               |
 //! | `--features router`              | OK   | router → vendor-management + oxcache       |
 //! | `--features web-server`          | OK   | web-server → router + sdforge + database   |
 //! | `--features infrastructure`      | OK   | infrastructure                              |

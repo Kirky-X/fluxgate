@@ -413,9 +413,9 @@ impl AsyncLoggerHandle {
 }
 
 #[async_trait::async_trait]
-impl llm_gate::storage::RequestLogSink for AsyncLoggerHandle {
-    async fn log(&self, log: RequestLog) -> Result<(), llm_gate::error::GateError> {
-        AsyncLoggerHandle::log(self, log).map_err(|e| llm_gate::error::GateError::Config {
+impl crate::storage::RequestLogSink for AsyncLoggerHandle {
+    async fn log(&self, log: RequestLog) -> Result<(), crate::error::GateError> {
+        AsyncLoggerHandle::log(self, log).map_err(|e| crate::error::GateError::Config {
             message: format!("async log push failed: {e}"),
         })
     }
@@ -428,10 +428,10 @@ impl llm_gate::storage::RequestLogSink for AsyncLoggerHandle {
         AsyncLoggerHandle::secret_scan_dropped(self)
     }
 
-    async fn shutdown(&self) -> Result<(), llm_gate::error::GateError> {
+    async fn shutdown(&self) -> Result<(), crate::error::GateError> {
         AsyncLoggerHandle::shutdown(self)
             .await
-            .map_err(|e| llm_gate::error::GateError::Config {
+            .map_err(|e| crate::error::GateError::Config {
                 message: format!("async logger shutdown failed: {e}"),
             })
     }

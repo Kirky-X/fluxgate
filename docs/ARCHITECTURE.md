@@ -1,6 +1,6 @@
 # NexusFlow 架构文档
 
-NexusFlow 是一个用 Rust 编写的 LLM 路由网关：对外统一暴露 OpenAI 与 Anthropic 协议端点，对内在多个模型厂商之间做加权多因子路由决策，并通过熔断、重试、回退链与拥塞准入保证调用弹性；请求日志与 Token 用量经有界队列异步落库，全程不影响响应路径。本文档基于 `src/` 与 `crates/llm-gate/src/` 实际代码结构（路由半边已抽为 `llm-gate` 纯路由核心库，应用 crate 经门面 re-export 保持 `nexusflow::config` 等路径可用），介绍 NexusFlow 的分层设计、模块划分、请求生命周期、路由决策算法以及配置、持久化与性能设计。
+NexusFlow 是一个用 Rust 编写的 LLM 路由网关：对外统一暴露 OpenAI 与 Anthropic 协议端点，对内在多个模型厂商之间做加权多因子路由决策，并通过熔断、重试、回退链与拥塞准入保证调用弹性；请求日志与 Token 用量经有界队列异步落库，全程不影响响应路径。本文档基于 `src/` 实际代码结构（原 `llm-gate` 纯路由核心库已并回单 crate，`nexusflow::config` 等公开路径不变），介绍 NexusFlow 的分层设计、模块划分、请求生命周期、路由决策算法以及配置、持久化与性能设计。
 
 ## 📋 目录
 
@@ -33,16 +33,16 @@ flowchart TB
     end
 
     subgraph Protocol ["协议层"]
-        PROTO["crates/llm-gate/src/protocol<br/>UnifiedRequest 统一中间表示<br/>OpenAI / Anthropic / embedding 转换器<br/>SSE 分帧与编码"]
+        PROTO["src/protocol<br/>UnifiedRequest 统一中间表示<br/>OpenAI / Anthropic / embedding 转换器<br/>SSE 分帧与编码"]
     end
 
     subgraph Routing ["路由层"]
-        ROUTER["crates/llm-gate/src/router<br/>加权多因子打分 / 三级决策<br/>LinUCB bandit / 会话亲和"]
+        ROUTER["src/router<br/>加权多因子打分 / 三级决策<br/>LinUCB bandit / 会话亲和"]
         HINTS["routing_hints<br/>X-Vendor / X-Model / X-Session-Id / X-Weight"]
     end
 
     subgraph Vendor ["厂商执行层"]
-        VM["crates/llm-gate/src/vendor<br/>VendorManager 编排"]
+        VM["src/vendor<br/>VendorManager 编排"]
         POOL["pool 连接池 / queue 厂商队列<br/>rate_limiter 限流与时段门控"]
         RES["resilience<br/>FallbackChain / 熔断 / 重试 / 错误映射"]
     end
@@ -52,10 +52,10 @@ flowchart TB
     end
 
     subgraph Support ["横切支撑"]
-        CFG["crates/llm-gate/src/config<br/>加载 / 校验 / 热更新 / 快照回滚"]
-        I18N["crates/llm-gate/src/i18n<br/>Fluent 双束 en/zh"]
+        CFG["src/config<br/>加载 / 校验 / 热更新 / 快照回滚"]
+        I18N["src/i18n<br/>Fluent 双束 en/zh"]
         DI["src/infrastructure<br/>trait-kit AsyncKit 组装"]
-        UTILS["crates/llm-gate/src/utils<br/>metrics / retry / cost_tracker"]
+        UTILS["src/utils<br/>metrics / retry / cost_tracker"]
     end
 
     UP["上游厂商 API"]
@@ -88,17 +88,17 @@ flowchart TB
 | 目录 / 文件 | 职责 |
 |---|---|
 | `src/api/` | HTTP 接入层：协议端点、中间件编排、请求处理主循环、运维端点 |
-| `crates/llm-gate/src/config/` | 配置结构体定义、文件加载校验、热更新事务写与快照回滚 |
+| `src/config/` | 配置结构体定义、文件加载校验、热更新事务写与快照回滚 |
 | `src/database/` | SQLite 持久化：异步批量日志、Token 小时预聚合、仓储与增量迁移 |
-| `crates/llm-gate/src/i18n/` | Fluent 国际化：编译期内嵌双束消息目录与语言检测链 |
+| `src/i18n/` | Fluent 国际化：编译期内嵌双束消息目录与语言检测链 |
 | `src/infrastructure/` | 基于 trait-kit `AsyncKit` 的依赖注入组装 |
 | `src/middleware/` | 认证中间件与拥塞感知准入中间件 |
-| `crates/llm-gate/src/protocol/` | OpenAI/Anthropic 统一中间表示、协议转换器、SSE 分帧编码 |
-| `crates/llm-gate/src/router/` | 路由决策核心：加权打分、LinUCB、会话亲和 |
-| `crates/llm-gate/src/utils/` | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器 |
-| `crates/llm-gate/src/vendor/` | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价 |
-| `src/error.rs` / `crates/llm-gate/src/error.rs` | `NexusFlowError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale） |
-| `src/lib.rs` | 应用 crate 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/vendor/router 经门面转发 llm-gate） |
+| `src/protocol/` | OpenAI/Anthropic 统一中间表示、协议转换器、SSE 分帧编码 |
+| `src/router/` | 路由决策核心：加权打分、LinUCB、会话亲和 |
+| `src/utils/` | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器 |
+| `src/vendor/` | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价 |
+| `src/error.rs` / `src/error.rs` | `NexusFlowError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale） |
+| `src/lib.rs` | 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/storage/vendor/router 路由半边 + api/server/database 应用面） |
 | `src/main.rs` | 二进制薄入口：仅解析 CLI 配置路径参数；装配链在 `src/server/bootstrap.rs`，建站与路由合并、serve 在 `src/server/http.rs` |
 
 ### src/api/
@@ -115,9 +115,9 @@ flowchart TB
 | `api/global_state.rs` | sdforge 宏 handler 的全局状态持有（`OnceCell` 持有 `ApiState`，弥补宏不支持 axum State 提取器） |
 | `api/routing_hints.rs` | 从请求头提取四个路由提示（X-Vendor / X-Model / X-Session-Id / X-Weight）；会话键缺失时兜底哈希 |
 | `api/response_cache.rs` | recId=12 精确响应缓存，存储落地 oxcache（见[响应缓存](#-响应缓存)） |
-| `api/sse.rs` | SSE 编码器与增量分帧器门面（实源 `crates/llm-gate/src/protocol/sse_frame.rs`，此处 re-export 保持引用路径） |
+| `api/sse.rs` | SSE 编码器与增量分帧器门面（实源 `src/protocol/sse_frame.rs`，此处 re-export 保持引用路径） |
 
-### crates/llm-gate/src/router/
+### src/router/
 
 | 文件 | 职责 |
 |---|---|
@@ -126,7 +126,7 @@ flowchart TB
 | `router/bandit.rs` | recId=15 LinUCB contextual bandit（selection 第三档） |
 | `router/affinity.rs` | recId=11 会话/前缀亲和表，oxcache 承载存储 |
 
-### crates/llm-gate/src/vendor/
+### src/vendor/
 
 | 文件 | 职责 |
 |---|---|
@@ -154,11 +154,11 @@ flowchart TB
 
 | 目录 | 文件与职责 |
 |---|---|
-| `crates/llm-gate/src/config/` | `mod.rs`：`Config` 结构体（15 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
+| `src/config/` | `mod.rs`：`Config` 结构体（15 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
 | `src/middleware/` | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`mod.rs`：中间件组织 |
-| `crates/llm-gate/src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3） |
-| `crates/llm-gate/src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器 |
-| `crates/llm-gate/src/i18n/` | `catalog.rs`：Fluent 双束编译期内嵌（`OnceLock` 静态缓存）；`locale.rs`：语言检测链与全局 locale 上下文；`mod.rs`：`t()`/`t_args()` 查找门面 |
+| `src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3） |
+| `src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器 |
+| `src/i18n/` | `catalog.rs`：Fluent 双束编译期内嵌（`OnceLock` 静态缓存）；`locale.rs`：语言检测链与全局 locale 上下文；`mod.rs`：`t()`/`t_args()` 查找门面 |
 | `src/infrastructure/` | `di.rs`：`AsyncKit` 四模块拓扑序组装与 `verify_kit` |
 
 ---
@@ -215,11 +215,11 @@ sequenceDiagram
 
 ## 🧭 路由决策
 
-路由决策是 NexusFlow 的核心，全部位于 `crates/llm-gate/src/router/`。
+路由决策是 NexusFlow 的核心，全部位于 `src/router/`。
 
 ### 三级决策顺序
 
-`route_inner` 按以下顺序尝试（`crates/llm-gate/src/router/router.rs:170`）。注意顺序是**先抽象模型、再直连**，最后才是全局池：
+`route_inner` 按以下顺序尝试（`src/router/router.rs:170`）。注意顺序是**先抽象模型、再直连**，最后才是全局池：
 
 ```mermaid
 flowchart TB
@@ -237,7 +237,7 @@ flowchart TB
 
 ### 加权打分公式
 
-`compute_weight`（`crates/llm-gate/src/router/router.rs:1660-1743`）：
+`compute_weight`（`src/router/router.rs:1660-1743`）：
 
 ```text
 weight = w_model·model.weight + w_queue·queue_factor
@@ -248,12 +248,12 @@ weight = w_model·model.weight + w_queue·queue_factor
 | 因子 | 含义 | 取值 |
 |---|---|---|
 | `model.weight` | 模型配置静态权重 | 配置值；非有限/≤0 归零保护 |
-| `queue_factor` | 厂商队列空闲度 | 队列长度 0 → 1.0；≥100 → 0.0（`crates/llm-gate/src/router/router.rs` 的 `queue_factor`） |
-| `window_factor` | 时段预算健康度 | 无窗口 0.5（中性）；预算耗尽 0；剩余 <300s 减半（`crates/llm-gate/src/router/router.rs` 的 `window_factor`） |
-| `latency_factor` | EWMA 延迟得分 | `ref/(ref+ewma_ms)`；无数据 0.5（`crates/llm-gate/src/router/router.rs` 的 `latency_factor`） |
-| `error_factor` | 错误率得分 | `1−ewma_err`；无数据 1.0（`crates/llm-gate/src/router/router.rs` 的 `error_factor`） |
+| `queue_factor` | 厂商队列空闲度 | 队列长度 0 → 1.0；≥100 → 0.0（`src/router/router.rs` 的 `queue_factor`） |
+| `window_factor` | 时段预算健康度 | 无窗口 0.5（中性）；预算耗尽 0；剩余 <300s 减半（`src/router/router.rs` 的 `window_factor`） |
+| `latency_factor` | EWMA 延迟得分 | `ref/(ref+ewma_ms)`；无数据 0.5（`src/router/router.rs` 的 `latency_factor`） |
+| `error_factor` | 错误率得分 | `1−ewma_err`；无数据 1.0（`src/router/router.rs` 的 `error_factor`） |
 
-默认系数（`crates/llm-gate/src/config/mod.rs` 的 `RoutingSection` 默认值）：
+默认系数（`src/config/mod.rs` 的 `RoutingSection` 默认值）：
 
 | 系数 | 默认值 | 说明 |
 |---|---|---|
@@ -267,7 +267,7 @@ weight = w_model·model.weight + w_queue·queue_factor
 
 ### 权重回退链
 
-候选权重的四级回退（`crates/llm-gate/src/router/router.rs` 的权重回退链），高一级生效即停止：
+候选权重的四级回退（`src/router/router.rs` 的权重回退链），高一级生效即停止：
 
 1. **请求级 `X-Weight` 头**（受 `[routing].allow_request_weight` 门控）；
 2. **`model.weight` 配置静态权重**；
@@ -276,28 +276,28 @@ weight = w_model·model.weight + w_queue·queue_factor
 
 ### 选择层
 
-打分之后的选择（`crates/llm-gate/src/router/router.rs` 的选择层）：
+打分之后的选择（`src/router/router.rs` 的选择层）：
 
 | 机制 | 行为 | 开关 |
 |---|---|---|
 | 温度平滑 | `w^(1/T)` 压平/放大权重分布 | `[routing].temperature` |
 | 轮盘赌 | 按平滑后权重随机；total ≤ 0 时均匀随机 | 默认路径 |
-| Power-of-Two-Choices | 随机取两候选，按 EWMA 延迟择优 | `[routing].selection == "power_of_two"`（`crates/llm-gate/src/router/router.rs` 的 `power_of_two_pick`） |
-| min+buffer 候选集 | 仅保留最低延迟加 buffer 余量内的候选 | `[routing].latency_buffer > 0`（`crates/llm-gate/src/router/router.rs` 的 `min_buffer_pick`） |
+| Power-of-Two-Choices | 随机取两候选，按 EWMA 延迟择优 | `[routing].selection == "power_of_two"`（`src/router/router.rs` 的 `power_of_two_pick`） |
+| min+buffer 候选集 | 仅保留最低延迟加 buffer 余量内的候选 | `[routing].latency_buffer > 0`（`src/router/router.rs` 的 `min_buffer_pick`） |
 
-负载信号单选（`[routing].load_signal`，`crates/llm-gate/src/router/router.rs`）：`"queue"`（默认）/ `"in_flight"` / `"in_flight_relative"` 三选一，决定 queue 维负载从哪个信号读取。
+负载信号单选（`[routing].load_signal`，`src/router/router.rs`）：`"queue"`（默认）/ `"in_flight"` / `"in_flight_relative"` 三选一，决定 queue 维负载从哪个信号读取。
 
 ### 可选增强因子
 
 | 机制 | recId | 开关 | 行为 |
 |---|---|---|---|
-| SLA 虚拟队列打分 | 14 | `sla_v > 0` | 惩罚因子乘权重，对偶变量随违约更新，以租户 hash（或 `"global"`）为键（`crates/llm-gate/src/router/router.rs` 的 SLA 对偶变量更新） |
-| LPS 排队论前瞻 | 17 | 默认关 | 软约束因子 + `x-deadline-ms` 头硬约束门控（超期候选直接排除）（`crates/llm-gate/src/router/router.rs` 的 `lps_penalty_context` / `lps_deadline_filter`） |
-| 失败率软降权 | — | `[resilience].failure_rate_gate` | 错误率超阈值的候选权重 ×0.1（`crates/llm-gate/src/router/router.rs` 的失败率软降权） |
+| SLA 虚拟队列打分 | 14 | `sla_v > 0` | 惩罚因子乘权重，对偶变量随违约更新，以租户 hash（或 `"global"`）为键（`src/router/router.rs` 的 SLA 对偶变量更新） |
+| LPS 排队论前瞻 | 17 | 默认关 | 软约束因子 + `x-deadline-ms` 头硬约束门控（超期候选直接排除）（`src/router/router.rs` 的 `lps_penalty_context` / `lps_deadline_filter`） |
+| 失败率软降权 | — | `[resilience].failure_rate_gate` | 错误率超阈值的候选权重 ×0.1（`src/router/router.rs` 的失败率软降权） |
 
 ### 会话亲和（recId=11）
 
-`crates/llm-gate/src/router/affinity.rs`，存储走 oxcache `CacheBackend`，不手写 map：
+`src/router/affinity.rs`，存储走 oxcache `CacheBackend`，不手写 map：
 
 - 键 `affinity:{session_key}`；`tenant_scoped` 开启时带 `api_key_hash` 前缀，与响应缓存的 `resp:` 命名空间隔离；
 - TTL 默认 1 小时，命中即续期；
@@ -307,7 +307,7 @@ weight = w_model·model.weight + w_queue·queue_factor
 
 ### 路由提示
 
-`src/api/routing_hints.rs` 提取四个请求头：`X-Vendor` / `X-Model` / `X-Session-Id` / `X-Weight`。`route_with_hints` 的优先级（`crates/llm-gate/src/router/router.rs:281`）：
+`src/api/routing_hints.rs` 提取四个请求头：`X-Vendor` / `X-Model` / `X-Session-Id` / `X-Weight`。`route_with_hints` 的优先级（`src/router/router.rs:281`）：
 
 ```text
 preferred_vendor 定点直连  >  preferred_model 抽象模型  >  默认加权决策
@@ -317,11 +317,11 @@ preferred_vendor 定点直连  >  preferred_model 抽象模型  >  默认加权�
 
 ### LinUCB contextual bandit（recId=15）
 
-`crates/llm-gate/src/router/bandit.rs`，selection 的第三档（`[routing].selection`，默认 `"weighted"` 即关闭）：
+`src/router/bandit.rs`，selection 的第三档（`[routing].selection`，默认 `"weighted"` 即关闭）：
 
 - **臂**：`(abstract_model, vendor_id)` 组合，每臂一个独立线性模型；
 - **打分**：闭式最小二乘 `θ̂ = A⁻¹b` + UCB 置信上界 `⟨x,θ̂⟩ + α√(xᵀA⁻¹x)`，argmax 选择，置信上界自动编码冷启动探索；
-- **特征**：5 维 `[1, ln(1+消息数), ln(1+body 字符数), 有 tools, 流式]`（`crates/llm-gate/src/router/bandit.rs` 的特征构造）；
+- **特征**：5 维 `[1, ln(1+消息数), ln(1+body 字符数), 有 tools, 流式]`（`src/router/bandit.rs` 的特征构造）；
 - **奖励**：成功 1 / 失败 0（代理奖励），由 API 层执行后回传（`src/api/state.rs:77-102`），更新只动被选臂；
 - **已知边界**：状态在内存，重启归零，不持久化。
 
@@ -329,11 +329,11 @@ preferred_vendor 定点直连  >  preferred_model 抽象模型  >  默认加权�
 
 ## 🛡️ 弹性与容错
 
-弹性机制分布在 `crates/llm-gate/src/vendor/resilience/`、`crates/llm-gate/src/utils/retry.rs` 与 API 层主循环。
+弹性机制分布在 `src/vendor/resilience/`、`src/utils/retry.rs` 与 API 层主循环。
 
 ### 回退链与换路循环
 
-- `FallbackChain`（`crates/llm-gate/src/vendor/resilience/fallback.rs`）：`FallbackTarget = vendor + model + priority`（数值越小优先级越高）。`Router::build_fallback_chain` 按配置中 vendors 的 priority 建链，trigger = All（`crates/llm-gate/src/router/router.rs:252`）。
+- `FallbackChain`（`src/vendor/resilience/fallback.rs`）：`FallbackTarget = vendor + model + priority`（数值越小优先级越高）。`Router::build_fallback_chain` 按配置中 vendors 的 priority 建链，trigger = All（`src/router/router.rs:252`）。
 - 换路循环消费在 API 层（`src/api/mod.rs` 的 `execute_request_with_fallback` / `execute_dispatch_with_fallback`）：
 
 ```mermaid
@@ -352,7 +352,7 @@ flowchart TB
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`crates/llm-gate/src/vendor/manager.rs:176-212`）：
+`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`src/vendor/manager.rs:176-212`）：
 
 | 参数 | 值 | 设计理由 |
 |---|---|---|
@@ -372,7 +372,7 @@ stateDiagram-v2
 
 ### 重试策略
 
-延迟计算委托 `limiteron::retry::delay_for_attempt`，按错误类别分类（`crates/llm-gate/src/utils/retry.rs:179` 的延迟选择函数、`crates/llm-gate/src/vendor/manager.rs` 的错误分类消费）：
+延迟计算委托 `limiteron::retry::delay_for_attempt`，按错误类别分类（`src/utils/retry.rs:179` 的延迟选择函数、`src/vendor/manager.rs` 的错误分类消费）：
 
 | 错误类别 | 延迟策略 |
 |---|---|
@@ -386,11 +386,11 @@ stateDiagram-v2
 
 ### 错误映射层
 
-`crates/llm-gate/src/vendor/resilience/error_map.rs`：limiteron 熔断器签名锁定 `LimiteronError`，而 NexusFlow 执行路径使用 `NexusFlowError`，映射层提供双向编码（`nexusflow:<variant>:<detail>` 前缀）；错误分类器（`FailureClassifier::is_counted_as_failure`）决定哪些错误计入熔断失败。
+`src/vendor/resilience/error_map.rs`：limiteron 熔断器签名锁定 `LimiteronError`，而 NexusFlow 执行路径使用 `NexusFlowError`，映射层提供双向编码（`nexusflow:<variant>:<detail>` 前缀）；错误分类器（`FailureClassifier::is_counted_as_failure`）决定哪些错误计入熔断失败。
 
 ### 连接池
 
-`crates/llm-gate/src/vendor/pool.rs`：复用单个 `reqwest::Client`（其内部自带连接池），外层 `tokio::sync::Semaphore` 限制最大并发请求数；`acquire()` 返回的 permit 在 drop 时自动释放，流式场景 permit 随流存活，对长连接真实计数（也是 admission 拥塞信号的来源）。
+`src/vendor/pool.rs`：复用单个 `reqwest::Client`（其内部自带连接池），外层 `tokio::sync::Semaphore` 限制最大并发请求数；`acquire()` 返回的 permit 在 drop 时自动释放，流式场景 permit 随流存活，对长连接真实计数（也是 admission 拥塞信号的来源）。
 
 ---
 
@@ -398,8 +398,8 @@ stateDiagram-v2
 
 | 组件 | 文件 | 职责 |
 |---|---|---|
-| `CostCalculator` | `crates/llm-gate/src/vendor/cost.rs` | 定价表来自热配置 `[[pricing]]`，按 `(prompt/1000)×in_price + (completion/1000)×out_price` 计算 USD；`(vendor_id, model_id)` 未命中计 0.0；每请求现读热配置，定价修改即时生效（`crates/llm-gate/src/vendor/manager.rs` 的定价热读点） |
-| `CostTracker` | `crates/llm-gate/src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径 |
+| `CostCalculator` | `src/vendor/cost.rs` | 定价表来自热配置 `[[pricing]]`，按 `(prompt/1000)×in_price + (completion/1000)×out_price` 计算 USD；`(vendor_id, model_id)` 未命中计 0.0；每请求现读热配置，定价修改即时生效（`src/vendor/manager.rs` 的定价热读点） |
+| `CostTracker` | `src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径 |
 
 **已知边界（如实标注）**：成本数据当前不落库——`request_logs.cost_usd` 恒写 `None`，`token_usage` 聚合的 `cost_usd_sum` 传 0.0；亦无 `/admin/cost` 端点。成本统计仅在进程内累积，重启归零。
 
@@ -442,7 +442,7 @@ flowchart LR
 
 ### 配置结构
 
-`Config` 顶层 16 段（`crates/llm-gate/src/config/mod.rs:1115-1165`）：
+`Config` 顶层 16 段（`src/config/mod.rs:1115-1165`）：
 
 | 段 | 说明 | 段 | 说明 |
 |---|---|---|---|
@@ -455,15 +455,15 @@ flowchart LR
 | `cors`（Option） | 跨域 | `model_catalog` | `[[model_catalog]]` 模型能力/定价目录（空目录时序列化省略） |
 | `grpc`（Option） | gRPC 服务器（缺段/禁用 = 不监听） | `docs` | OpenAPI 文档面开关（默认关 = 路由不存在） |
 
-**硬约束**：所有配置段必须进 `Config` 结构体——persist 是全量写回磁盘，结构体里没有的段会在写回时从文件中消失（`crates/llm-gate/src/config/mod.rs` 的 `Config` 字段文档注释）。
+**硬约束**：所有配置段必须进 `Config` 结构体——persist 是全量写回磁盘，结构体里没有的段会在写回时从文件中消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。
 
 ### 加载
 
-`confers::loader::load_file` 加载（自带 symlink 穿越与文件大小限制防护）→ serde 反序列化 → `validate_config`（vendor/model id 去重校验）。`crates/llm-gate/src/config/loader.rs` 负责把 confers 的 `AnnotatedValue` 树剥壳为裸 serde_json 值（confers 当前版本未实现 Deserializer 的结构性缺口，非重复造轮子）。
+`confers::loader::load_file` 加载（自带 symlink 穿越与文件大小限制防护）→ serde 反序列化 → `validate_config`（vendor/model id 去重校验）。`src/config/loader.rs` 负责把 confers 的 `AnnotatedValue` 树剥壳为裸 serde_json 值（confers 当前版本未实现 Deserializer 的结构性缺口，非重复造轮子）。
 
 ### 热更新写路径（事务语义）
 
-`ConfigManager.config` 是 `confers::dynamic::DynamicField<Config>`（arc-swap，读路径无锁）。写路径（`crates/llm-gate/src/config/manager.rs` 的 `update_config` / `update_config_with`）：
+`ConfigManager.config` 是 `confers::dynamic::DynamicField<Config>`（arc-swap，读路径无锁）。写路径（`src/config/manager.rs` 的 `update_config` / `update_config_with`）：
 
 ```mermaid
 flowchart LR
@@ -475,7 +475,7 @@ flowchart LR
 
 - 临时文件 + rename 保证断电不写坏配置；磁盘成功后才更新内存快照；
 - RMW（read-modify-write）场景使用 `update_config_with` 防丢失更新；
-- `SnapshotManager`（`crates/llm-gate/src/config/manager.rs`）：每次更新前把旧配置快照到 `config-backups/`，保留 10 份，`auth.api_keys` 打码后留痕。
+- `SnapshotManager`（`src/config/manager.rs`）：每次更新前把旧配置快照到 `config-backups/`，保留 10 份，`auth.api_keys` 打码后留痕。
 
 ### `/admin/config` 热更新边界
 
@@ -537,7 +537,7 @@ flowchart LR
 
 ## 🌐 国际化
 
-`crates/llm-gate/src/i18n/` + `crates/llm-gate/locales/`：
+`src/i18n/` + `locales/`：
 
 | 设计点 | 实现 |
 |---|---|

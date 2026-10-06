@@ -127,7 +127,7 @@ tier = "dedicated"
 
 | 字段 | 类型 | 默认值 | 说明 |
 |:-----|:-----|:-------|:-----|
-| `id` | String | 必填 | 厂商唯一标识；**跨条目去重校验**，重复导致配置加载失败（`crates/llm-gate/src/config/loader.rs`） |
+| `id` | String | 必填 | 厂商唯一标识；**跨条目去重校验**，重复导致配置加载失败（`src/config/loader.rs`） |
 | `name` | String | 必填 | 显示名 |
 | `type_` | String | 必填（TOML 键名 `type`） | `"openai"` 或 `"anthropic"` |
 | `api_key_env` | String | 必填 | 存放上游密钥的环境变量名 |
@@ -141,7 +141,7 @@ tier = "dedicated"
 | `stream_ttft_ms` | u64 | `60000` | 流式首包（响应头）超时（毫秒），`0` = 不限时 |
 | `stream_idle_ms` | u64 | `30000` | 流式相邻 chunk 间 idle 超时（毫秒），`0` = 不限时 |
 
-配置定义见 `crates/llm-gate/src/config/mod.rs`（`VendorConfig`）。
+配置定义见 `src/config/mod.rs`（`VendorConfig`）。
 
 ### models 子项
 
@@ -193,7 +193,7 @@ flowchart TB
     T --> S["selection 算法选择"]
 ```
 
-默认三维系数 `0.4 / 0.3 / 0.3` 与历史行为逐位一致；`w_latency` / `w_error` 默认 `0`（关闭），显式开启才生效。定义见 `crates/llm-gate/src/config/mod.rs`（`RoutingSection`），消费见 `crates/llm-gate/src/router/router.rs`。
+默认三维系数 `0.4 / 0.3 / 0.3` 与历史行为逐位一致；`w_latency` / `w_error` 默认 `0`（关闭），显式开启才生效。定义见 `src/config/mod.rs`（`RoutingSection`），消费见 `src/router/router.rs`。
 
 ### [routing] 字段与默认值
 
@@ -271,7 +271,7 @@ flowchart TB
 
 ### 熔断器行为
 
-per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `crates/llm-gate/src/vendor/manager.rs:176-212`。
+per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `src/vendor/manager.rs:176-212`。
 
 ---
 
@@ -362,7 +362,7 @@ max_requests = 100
 | `alpha_burst` | `1.0` | burst EWMA（到达速率）压制系数 |
 | `alpha_debt` | `4.0` | debt EWMA（被 shed 频度）压制系数 |
 
-准入优先级基准来自 **`[[auth.keys]]` 的 `tier` 档位**（`dedicated` > `guaranteed` > `elastic` > `spot`，见 `crates/llm-gate/src/config/mod.rs` 的 `AuthTier`），未声明的 key 落 `elastic` 档。
+准入优先级基准来自 **`[[auth.keys]]` 的 `tier` 档位**（`dedicated` > `guaranteed` > `elastic` > `spot`，见 `src/config/mod.rs` 的 `AuthTier`），未声明的 key 落 `elastic` 档。
 
 ---
 
@@ -377,7 +377,7 @@ max_requests = 100
 | `input_per_1k_tokens` | 输入单价（USD / 1k tokens） |
 | `output_per_1k_tokens` | 输出单价（USD / 1k tokens） |
 
-成本公式：`(prompt/1000)×input + (completion/1000)×output`，按 `(vendor_id, model_id)` 精确匹配查找（`crates/llm-gate/src/vendor/cost.rs`）。
+成本公式：`(prompt/1000)×input + (completion/1000)×output`，按 `(vendor_id, model_id)` 精确匹配查找（`src/vendor/cost.rs`）。
 
 ### 已知边界（如实声明）
 
@@ -426,7 +426,7 @@ flowchart TB
 
 ### 全量写回语义（重要）
 
-`persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`crates/llm-gate/src/config/mod.rs` 的 `Config` 字段文档注释）。不要在 config.toml 里放 NexusFlow 不认识的自定义段。
+`persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。不要在 config.toml 里放 NexusFlow 不认识的自定义段。
 
 ### 文件监听热重载
 
@@ -503,7 +503,7 @@ healthcheck:
 
 ### 日志语言
 
-管理端点与错误消息支持中英双语，由环境变量 **`NEXUSFLOW_LANG=en|zh`** 控制；未设置时按 `LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置检测，无法识别回退 `en`（`crates/llm-gate/src/i18n/locale.rs`）。
+管理端点与错误消息支持中英双语，由环境变量 **`NEXUSFLOW_LANG=en|zh`** 控制；未设置时按 `LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置检测，无法识别回退 `en`（`src/i18n/locale.rs`）。
 
 ### 故障排查速查
 

@@ -12,6 +12,8 @@
 
 ### Changed
 
+- **结构**：`crates/llm-gate` 路由核心库并回主 crate（撤销 N1 workspace 拆分）——config/i18n/protocol/storage/utils/vendor/router 模块直接位于 `src/`，Fluent 目录 `locales/` 移至仓库根（`include_str!` 相对路径不变），llm-gate 集成测试并入 `tests/`（`gate_` 前缀，共享 helper 迁至 `tests/gate_common/`）；`resilience`/`protocol`/`vendor-management`/`router`/`cost-tracking` feature 由「转发 llm-gate 同名 feature」改为直控本 crate 模块与 optional 依赖（单开关语义不变）；`GateError` 定义移至 `nexusflow::error::gate`（顶层 `nexusflow::error::GateError` re-export 保留，`nexusflow::config` 等全部公开路径不变；`llm-gate` 从未发布 crates.io，无外部消费方）。
+
 - **BREAKING**：Rust SDK（`sdk` feature）类型与 admin 面重塑对齐网关真实形状——`ChatMessage.content` 支持多模态内容件（`ChatContent`），`ChatRequest` 增 tools/tool_choice/vendor_extensions/penalties；`ChatResponse` 移除恒空的 `vendor` 字段（网关响应不注入）、finish_reason 结构化为四变体枚举、usage 含 cache_read；`ChatStream` 解析 tool_calls 增量片段与 usage 尾帧；admin 失配修复——`models()` 改 `GET /admin/models`（原 `GET /v1/models` 网关未注册恒 404）、`health()` 改 `GET /api/v1/health`（原 `admin/health` 不存在）、`vendors()` 对齐运行面形状 `{id,status,queue_length,key_pool}`；新增 `upsert_model` / `delete_model`（目录 CRUD）。
 - **BREAKING**：`GET /admin/models` 响应形状由 `GlobalModelConfig` 数组（原 global_model 单例包装）变更为 `ModelCatalogEntry` 数组（九字段模型能力目录：context_window / 四档单价（currency，每 1M tokens）/ currency / max_output_tokens / supports_tools / supports_thinking）。全局模型策略改经 `POST /admin/models/global`（存量契约保留）或 `GET /admin/config` 读写。
 

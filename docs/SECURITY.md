@@ -31,8 +31,8 @@ flowchart LR
     C[客户端请求] --> A["认证层<br/>SHA256 摘要 + 常量时间比较<br/>src/middleware/auth.rs"]
     A --> RL["入站限流<br/>limiteron 全局规则 + 端点表<br/>src/api/router_builder.rs"]
     RL --> AD["拥塞准入<br/>档位优先级 shed（默认关）<br/>src/middleware/admission.rs"]
-    AD --> R["路由与协议转换<br/>5 因子加权选择<br/>crates/llm-gate/src/router/"]
-    R --> O["出站弹性边界<br/>熔断 / 重试 / FallbackChain<br/>crates/llm-gate/src/vendor/"]
+    AD --> R["路由与协议转换<br/>5 因子加权选择<br/>src/router/"]
+    R --> O["出站弹性边界<br/>熔断 / 重试 / FallbackChain<br/>src/vendor/"]
     O --> V[(上游 LLM 厂商)]
 ```
 
@@ -98,7 +98,7 @@ flowchart LR
 
 上游厂商的 API Key 与网关自身的认证 key 完全隔离：
 
-- 厂商密钥在配置中只存**环境变量名**（`[[vendors]].api_key_env`，如 `"OPENAI_API_KEY"`），真实密钥经环境变量在运行时注入，**不落配置文件**（`crates/llm-gate/src/config/mod.rs` 的 `VendorConfig`，多 key 经 `api_key_envs` 声明）
+- 厂商密钥在配置中只存**环境变量名**（`[[vendors]].api_key_env`，如 `"OPENAI_API_KEY"`），真实密钥经环境变量在运行时注入，**不落配置文件**（`src/config/mod.rs` 的 `VendorConfig`，多 key 经 `api_key_envs` 声明）
 - 配置快照、`GET /admin/config` 返回值中只出现变量名，不出现密钥本体
 
 ---
@@ -147,11 +147,11 @@ flowchart LR
 
 ## 🔄 出站弹性边界
 
-对上游厂商的调用由三层弹性机制包裹（`crates/llm-gate/src/vendor/`），防止单厂商故障演变为网关级不可用或重试风暴。
+对上游厂商的调用由三层弹性机制包裹（`src/vendor/`），防止单厂商故障演变为网关级不可用或重试风暴。
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `crates/llm-gate/src/vendor/manager.rs:176-212`）：
+`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `src/vendor/manager.rs:176-212`）：
 
 | 参数 | 值 | 语义 |
 |:-----|:---|:-----|
@@ -199,7 +199,7 @@ flowchart LR
 
 ### 配置快照打码
 
-`POST /admin/config` 更新前自动落盘旧配置快照至 `config-backups/`（时间戳命名，保留 10 份，超量自动清理）；其中 `auth.api_keys` 经 confers Redacted 序列化**自动打码**（key 本身已是摘要，打码为双保险）——见 `crates/llm-gate/src/config/manager.rs`（`SnapshotManager`）。
+`POST /admin/config` 更新前自动落盘旧配置快照至 `config-backups/`（时间戳命名，保留 10 份，超量自动清理）；其中 `auth.api_keys` 经 confers Redacted 序列化**自动打码**（key 本身已是摘要，打码为双保险）——见 `src/config/manager.rs`（`SnapshotManager`）。
 
 ### 日志出站脱敏（secret gate）
 
@@ -278,7 +278,7 @@ flowchart LR
 
 | 边界 | 说明 | 部署建议 |
 |:-----|:-----|:---------|
-| 成本聚合仅存内存 | `CostTracker`（by_vendor / by_model 聚合，`crates/llm-gate/src/utils/cost_tracker.rs`）仅在内存累积，**重启清零**；逐请求成本不落库——生产日志构造 `cost_usd: None`、预聚合实参恒传 `0.0`（`src/api/openai.rs` / `src/api/anthropic.rs`），成本观测仅内存 `CostTracker` 一处 | 需要精确长期成本账时需自建统计；`request_logs` / `token_usage` 表的 `cost_usd` / `cost_usd_sum` 列仅为历史库兼容保留，生产路径恒写 NULL / 0.0 |
+| 成本聚合仅存内存 | `CostTracker`（by_vendor / by_model 聚合，`src/utils/cost_tracker.rs`）仅在内存累积，**重启清零**；逐请求成本不落库——生产日志构造 `cost_usd: None`、预聚合实参恒传 `0.0`（`src/api/openai.rs` / `src/api/anthropic.rs`），成本观测仅内存 `CostTracker` 一处 | 需要精确长期成本账时需自建统计；`request_logs` / `token_usage` 表的 `cost_usd` / `cost_usd_sum` 列仅为历史库兼容保留，生产路径恒写 NULL / 0.0 |
 | 请求消息明文落库 | `request_logs.messages` 列**明文存储请求消息**（含用户对话内容，见 `src/database/schema.sql`） | 部署者需自行加密磁盘（如 LUKS / 云盘加密）并严格控制数据库文件访问权限 |
 | 日志搜索为 LIKE 查询 | `GET /admin/logs/search` 对 `messages` / `error_message` 做关键词 LIKE 匹配；查询经参数化绑定（`Statement::from_sql_and_values`），**无 SQL 注入**，但关键词匹配会放大敏感内容读取面 | 限制 `/admin/*` 的网络暴露面，认证 key 仅发给可信运维 |
 

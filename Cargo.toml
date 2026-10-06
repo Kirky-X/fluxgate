@@ -42,22 +42,22 @@ web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "ro
 # 整体被 cfg 掉，#[forge] 站点路由（/health）静默丢失。此 feature 无实现体，
 # 仅作为宏门控开关随 web-server 启用。
 http = []
-# resilience feature：韧性模块门控（FallbackChain + 错误映射层）。熔断器已迁移
-# limiteron::circuit、重试延迟已迁移 limiteron::retry，无需独立第三方依赖
-# resilience：本 crate（api 换路编排）与 llm-gate（FallbackChain + 错误
-# 映射层 + metrics 韧性观测）双侧门控，feature 转发保持单开关语义
-resilience = ["llm-gate/resilience"]
-# cost-tracking：CostTracker 本体进 llm-gate，此处纯转发（dashmap 随迁）
-cost-tracking = ["llm-gate/cost-tracking"]
+# resilience：韧性模块门控（FallbackChain + 错误映射层 + metrics 韧性观测），
+# 与 api 侧换路编排同名单开关联动。熔断器已迁移 limiteron::circuit、重试
+# 延迟已迁移 limiteron::retry，无需独立第三方依赖
+resilience = []
+# cost-tracking：CostTracker 的分片锁并发 map
+cost-tracking = ["dep:dashmap"]
 database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "protocol"]
-# vendor 栈本体进 llm-gate（reqwest/limiteron/async-channel 随迁）；
-# database 联动解除（design.md D1 feature 图重切）——本 feature 收敛为纯转发
-vendor-management = ["llm-gate/vendor-management"]
-# router 本体进 llm-gate（含其 vendor-management 联动，转发保持单开关）；
-# dep:oxcache 留 nexusflow（response_cache/bootstrap 直用 CacheBackend）
-router = ["vendor-management", "llm-gate/router", "dep:oxcache"]
-# marker feature 随协议模块迁 llm-gate，此处纯转发
-protocol = ["llm-gate/protocol"]
+# vendor 栈（vendor 模块：reqwest 出站 + limiteron 限流/熔断原语 + 队列通道，
+# rand 供加权采样）；
+# database 联动已解除（design.md D1 feature 图重切）——不携带存储
+vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand", "dep:async-channel"]
+# router（router 模块，含 vendor-management 联动）；dep:oxcache 供
+# response_cache/bootstrap 直用 CacheBackend
+router = ["vendor-management", "dep:oxcache"]
+# marker feature（当前无 cfg 消费点；保留组合位与单开关语义）
+protocol = []
 infrastructure = ["dep:oxcache", "dep:trait-kit"]
 sdforge-integration = ["dep:sdforge"]
 # gRPC 服务器（sdforge grpc 门面）：独立 feature 不进 full——sdforge 的
@@ -76,9 +76,6 @@ sdk = ["dep:reqwest", "dep:eventsource-stream"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
 
 [dependencies]
-# 路由核心库（workspace 成员）：config/error/i18n/protocol/utils 门面随本
-# crate 常开复出，vendor/router/resilience/cost-tracking 由同名 feature 转发
-llm-gate = { path = "crates/llm-gate", default-features = false }
 # Web 框架
 axum = { version = "0.8", features = ["macros"], optional = true }
 tokio = { version = "1", features = ["full"] }
@@ -96,9 +93,10 @@ sea-orm = { version = "2.0.0-rc.42", default-features = false, optional = true }
 # fast-masking：掩码规则 literal 走 Aho-Corasick 单趟加速；secret-scan：出站
 # 裸 secret 值形态+熵扫描门（SecretPatternRegistry/SecretScanGate 导出）
 inklog = { path = "../inklog", default-features = false, features = ["http", "cli", "kit", "fast-masking", "secret-scan"], optional = true }
-# 配置热重载 — path dep 本地源码；仅 hot-reload-kit（watch +
-# progressive-reload），不启用 env（无 .env 自动加载）。
-confers = { path = "../confers", default-features = false, features = ["hot-reload-kit"] }
+# 配置热重载 — path dep 本地源码；config 模块的 dynamic/snapshot/loader
+# 三面 + json 强类型投影 + security-rules 弱密钥校验 + hot-reload-kit
+#（watch + progressive-reload），不启用 env（无 .env 自动加载）。
+confers = { path = "../confers", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
 tracing = "0.1"
 # log 门面 → tracing 事件桥：reqwest/sea-orm/tokio-tungstenite 等依赖经
 # log crate 输出，inklog LogAdapter 结构上只投 console+主 async 通道，
@@ -130,7 +128,7 @@ futures = "0.3"
 futures-util = "0.3"
 tokio-util = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
-rand = "0.8"
+rand = { version = "0.8", optional = true }
 once_cell = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"
@@ -140,6 +138,14 @@ reqwest = { version = "0.13", features = ["json", "stream", "socks"], optional =
 eventsource-stream = { version = "0.2", default-features = false, optional = true }
 async-channel = { version = "2", optional = true }
 async-stream = { version = "0.3", optional = true }
+# CostTracker 的分片锁并发 map（cost-tracking）
+dashmap = { version = "6", optional = true }
+# 配置全量写回（persist_and_swap 的 toml::to_string_pretty）
+toml = "1"
+# i18n — Fluent 双束（en/zh）+ 语言检测链基座（i18n 模块常开）
+fluent-bundle = { version = "0.16", default-features = false }
+unic-langid = { version = "0.9", default-features = false }
+sys-locale = { version = "0.3", default-features = false }
 # API Key SHA256 摘要存储与常量时间比较（auth 层）；subtle 已随 inklog
 # 在依赖树中（2.6.1），声明同款 default-features = false 只用 core 面
 sha2 = "0.10"
@@ -149,8 +155,8 @@ sys-info = "0.9"
 
 
 [dev-dependencies]
-# config 系测试直接构造/解析 TOML（config 迁移后测试拆分随 llm-gate 走）
-toml = "1"
+# retry 预算测试用 paused clock（start_paused）
+tokio = { version = "1", features = ["test-util"] }
 # i18n 键位守卫：严格解析 .ftl（零 Junk）与占位符抽取（与 fluent-bundle 同源语法树）
 fluent-syntax = { version = "0.12", default-features = false }
 # log 门面桥测试：LogTracer 转发断言需 log 宏与 tracing Layer 捕获面
@@ -188,7 +194,6 @@ oxcache = { path = "../oxcache" }
 
 [workspace]
 members = [
-    "crates/llm-gate",
     "examples/rest-http",
     "examples/sdk-usage",
     "examples/embedded-server",

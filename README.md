@@ -295,7 +295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 测试策略
 
-单元测试内联于 `src/` 与 `crates/llm-gate/src/`（`#[cfg(test)]`），集成测试按功能域组织在顶层 `tests/`（20 个文件：端点、准入、SSE、数据库、装配冒烟、feature 组合矩阵等）与 `crates/llm-gate/tests/`（19 个文件：路由、协议转换、厂商、熔断、重试、成本等），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
+单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在顶层 `tests/`（41 个文件：端点、准入、SSE、数据库、装配冒烟、路由、协议转换、厂商、熔断、重试、成本、feature 组合矩阵、i18n 键位守卫等），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -312,20 +312,20 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：单元测试 321 个（`src/` 118 + `crates/llm-gate/src/` 203 内联实测）、集成测试 771 个（顶层 `tests/` 20 文件 262 个 + `crates/llm-gate/tests/` 19 文件 509 个），合计 **1092 个，0 ignored**。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：单元测试 367 个（`src/` 内联）、集成测试 762 个（`tests/` 41 文件），合计 **1129 个，0 ignored**。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
-| protocol_test | 142 | crates/llm-gate/tests/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
-| vendor_test | 110 | crates/llm-gate/tests/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
+| protocol_test | 142 | tests/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
+| vendor_test | 110 | tests/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
 | api_test | 102 | tests/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
-| router_test | 91 | crates/llm-gate/tests/ | 加权选择 / 亲和 / 提示路由 / 边界 |
+| router_test | 91 | tests/ | 加权选择 / 亲和 / 提示路由 / 边界 |
 | database / sse | 38 / 37 | tests/ | 落库查询与预聚合 / 流分帧与 SDK |
-| retry | 36 | crates/llm-gate/tests/ | 重试分类与延迟策略 |
-| config / utils_coverage | 27 / 19 | crates/llm-gate/tests/ | 配置加载 / 指标与限流边界 |
+| retry | 25 | tests/ | 重试分类与延迟策略 |
+| config / utils_coverage | 28 / 19 | tests/ | 配置加载 / 指标与限流边界 |
 | fallback / admission | 17 / 16 | tests/ | 换路链 / 准入 |
-| bandit / config_coverage / circuit_breaker | 13 / 13 / 10 | crates/llm-gate/tests/ | bandit 路由 / loader·manager 分支 / 熔断 |
-| server·grpc 起服 / 装配冒烟 / feature 组合矩阵 / key 池等 | 其余 100 | tests/ 与 crates/llm-gate/tests/ | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin |
+| bandit / config_coverage / circuit_breaker | 13 / 14 / 9 | tests/ | bandit 路由 / loader·manager 分支 / 熔断 |
+| server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池等 | 其余 137 | tests/ | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 |
 
 ---
 

@@ -297,7 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 Strategy
 
-Unit tests live inline in `src/` and `crates/llm-gate/src/` (`#[cfg(test)]`); integration tests are organized by domain in the top-level `tests/` (20 files: endpoints, admission, SSE, database, assembly smoke, feature-combination matrix, etc.) and `crates/llm-gate/tests/` (19 files: routing, protocol conversion, vendors, circuit breaking, retries, cost, etc.). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
+Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by domain in the top-level `tests/` (41 files: endpoints, admission, SSE, database, assembly smoke, routing, protocol conversion, vendors, circuit breaking, retries, cost, feature-combination matrix, i18n key guard, etc.). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
 
 ### ▶️ Commands (CI-consistent)
 
@@ -315,20 +315,20 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): 321 unit tests (118 in `src/` + 203 in `crates/llm-gate/src/`, measured inline) and 771 integration tests (262 across 20 files in the top-level `tests/` + 509 across 19 files in `crates/llm-gate/tests/`) — **1092 total, 0 ignored**. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): 367 unit tests (inline in `src/`) and 762 integration tests (41 files in `tests/`) — **1129 total, 0 ignored**. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
-| protocol_test | 142 | crates/llm-gate/tests/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
-| vendor_test | 110 | crates/llm-gate/tests/ | vendor management / rate limits / stream timeouts / health & metrics |
+| protocol_test | 142 | tests/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
+| vendor_test | 110 | tests/ | vendor management / rate limits / stream timeouts / health & metrics |
 | api_test | 102 | tests/ | endpoint integration / caching / rerouting / affinity / admin |
-| router_test | 91 | crates/llm-gate/tests/ | weighted selection / affinity / hint routing / edges |
+| router_test | 91 | tests/ | weighted selection / affinity / hint routing / edges |
 | database / sse | 38 / 37 | tests/ | persistence & pre-aggregation / stream framing & SDK |
-| retry | 36 | crates/llm-gate/tests/ | retry classes & delay policy |
-| config / utils_coverage | 27 / 19 | crates/llm-gate/tests/ | config loading / metrics & limiter edges |
+| retry | 36 | tests/ | retry classes & delay policy |
+| config / utils_coverage | 27 / 19 | tests/ | config loading / metrics & limiter edges |
 | fallback / admission | 17 / 16 | tests/ | fallback chain / admission |
-| bandit / config_coverage / circuit_breaker | 13 / 13 / 10 | crates/llm-gate/tests/ | bandit routing / loader·manager branches / circuit |
-| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (100) | tests/ & crates/llm-gate/tests/ | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin |
+| bandit / config_coverage / circuit_breaker | 13 / 13 / 10 | tests/ | bandit routing / loader·manager branches / circuit |
+| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (100) | tests/ & tests/ | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin |
 
 ---
 

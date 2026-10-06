@@ -294,7 +294,7 @@ mod tests {
             enabled: true,
             priority: 1,
             models: Vec::new(),
-            rate_limit: llm_gate::config::RateLimitConfig::Token {
+            rate_limit: crate::config::RateLimitConfig::Token {
                 max_tokens: 1,
                 window_hours: Some(24),
                 sliding: false,
@@ -311,16 +311,13 @@ mod tests {
         assert!(gate.check(&server).await.is_err(), "server 变更必须拒绝");
 
         let mut limits = minimal_config();
-        limits
-            .rate_limit
-            .rules
-            .push(llm_gate::config::RateLimitRule {
-                id: "r".into(),
-                path: None,
-                per_tenant: true,
-                window_secs: 60,
-                max_requests: 1,
-            });
+        limits.rate_limit.rules.push(crate::config::RateLimitRule {
+            id: "r".into(),
+            path: None,
+            per_tenant: true,
+            window_secs: 60,
+            max_requests: 1,
+        });
         assert!(
             gate.check(&limits).await.is_err(),
             "rate_limit 变更必须拒绝"

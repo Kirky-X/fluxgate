@@ -2982,36 +2982,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
-name = "llm-gate"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "async-trait",
- "bytes",
- "chrono",
- "confers",
- "dashmap",
- "fluent-bundle",
- "futures",
- "futures-util",
- "limiteron",
- "mockito",
- "oxcache",
- "rand 0.8.7",
- "reqwest",
- "serde",
- "serde_json",
- "sys-locale",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tracing",
- "unic-langid",
- "uuid",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3234,8 +3204,10 @@ dependencies = [
  "bytes",
  "chrono",
  "confers",
+ "dashmap",
  "dbnexus",
  "eventsource-stream",
+ "fluent-bundle",
  "fluent-syntax",
  "futures",
  "futures-util",
@@ -3243,7 +3215,6 @@ dependencies = [
  "http-body",
  "inklog",
  "limiteron",
- "llm-gate",
  "log",
  "mockall",
  "mockall_double",
@@ -3259,6 +3230,7 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "sys-info",
+ "sys-locale",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3271,6 +3243,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "trait-kit",
+ "unic-langid",
  "url",
  "uuid",
 ]

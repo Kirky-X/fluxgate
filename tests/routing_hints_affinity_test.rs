@@ -13,22 +13,22 @@
 mod common;
 
 mod web_server_hints {
-    use llm_gate::config::ConfigManager;
-    use llm_gate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use llm_gate::router::Router;
-    use llm_gate::vendor::VendorManager;
+    use nexusflow::config::ConfigManager;
+    use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use nexusflow::router::Router;
+    use nexusflow::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Duration;
 
     /// 两 vendor 同 abstract 模型（shared-model）—— 亲和 boost 的最小场景
-    ///（与 llm-gate router_test affinity mod 的基座逐字段一致：并发上限 1 +
+    ///（与 gate_router_test affinity mod 的基座逐字段一致：并发上限 1 +
     /// shared-model 单模型）
-    fn make_two_vendor_config() -> llm_gate::config::Config {
+    fn make_two_vendor_config() -> nexusflow::config::Config {
         crate::common::ensure_test_api_key();
         let vendor = |id: &str| {
             let mut v = crate::common::base_vendor(id, String::new());
             v.name = format!("Vendor {id}");
-            v.models = vec![llm_gate::config::ModelConfig {
+            v.models = vec![nexusflow::config::ModelConfig {
                 model_id: "shared-model".to_string(),
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
@@ -38,8 +38,8 @@ mod web_server_hints {
             v.concurrency.max_concurrent_requests = Some(1);
             v
         };
-        llm_gate::config::Config {
-            server: llm_gate::config::ServerConfig {
+        nexusflow::config::Config {
+            server: nexusflow::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },

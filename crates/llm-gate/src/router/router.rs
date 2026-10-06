@@ -576,7 +576,7 @@ impl Router {
     ) -> Option<RoutingDecision> {
         let config = self.config.read();
 
-        let (mut all_models, status_dropped) = self
+        let (all_models, status_dropped) = self
             .collect_global_candidates(&config.vendors, excluded)
             .await;
 
@@ -588,13 +588,14 @@ impl Router {
         }
 
         // recId=10(1)：亲和 —— hard（默认）命中即返回；soft 评分 boost
-        //（语义同 try_abstract_route 注释）
-        if let Some(decision) = self
-            .global_affinity_decision(&all_models, session_key, tenant, request_weight, sla_tenant)
+        //（语义同 try_abstract_route 注释）；未命中候选集原样归还续用
+        let mut all_models = match self
+            .global_affinity_decision(all_models, session_key, tenant, request_weight, sla_tenant)
             .await
         {
-            return Some(decision);
-        }
+            Ok(decision) => return Some(decision),
+            Err(models) => models,
+        };
 
         // recId=17：LPS 硬约束门控（语义同 try_abstract_route；默认关）
         match self.lps_deadline_filter(&all_models, lps_deadline_ms) {
@@ -699,40 +700,47 @@ impl Router {
         )
     }
 
-    /// recId=10(1)：亲和决策 —— soft 模式命中即带 boost 加权选择（恒出
-    /// 决策）；hard 模式命中且绑定 vendor 在合格集合内直接选它；绑定
-    /// vendor 不在集合内则 None（调用方继续 LPS/LinUCB/加权阶段）。
+    /// recId=10(1)：亲和决策 —— soft 模式命中即带 boost 加权选择（候选集
+    /// 消费，零克隆）；hard 模式命中且绑定 vendor 在合格集合内直接选它；
+    /// 绑定 vendor 不在集合内则 Err 归还候选集（调用方继续 LPS/LinUCB/
+    /// 加权阶段）。
     async fn global_affinity_decision(
         &self,
-        all_models: &[(VendorConfig, ModelConfig)],
+        all_models: Vec<(VendorConfig, ModelConfig)>,
         session_key: Option<&str>,
         tenant: Option<&str>,
         request_weight: Option<f64>,
         sla_tenant: Option<&str>,
-    ) -> Option<RoutingDecision> {
-        let bound = self.affinity_hit(all_models, session_key, tenant).await?;
+    ) -> Result<RoutingDecision, Vec<(VendorConfig, ModelConfig)>> {
+        let bound = match self.affinity_hit(&all_models, session_key, tenant).await {
+            Some(bound) => bound,
+            None => return Err(all_models),
+        };
         let routing = self.config.read().routing.clone();
         if routing.affinity_mode.trim().eq_ignore_ascii_case("soft") {
+            // soft 命中：候选集消费进加权选择（原 move 语义，零克隆）
             let factor = routing.affinity_boost_factor.max(0.0);
-            return Some(
-                self.weighted_select(
-                    all_models.to_vec(),
+            return Ok(self
+                .weighted_select(
+                    all_models,
                     RoutingStrategy::Global,
                     request_weight,
                     Some((&bound, factor)),
                     sla_tenant,
                 )
-                .await,
-            );
+                .await);
         }
-        all_models
-            .iter()
-            .find(|(v, _)| v.id == bound)
-            .map(|(vendor, model)| RoutingDecision {
+        // hard 命中：绑定 vendor 在合格集合内直接选它（仅克隆选中项）；
+        // 未命中/绑定 vendor 不在集合内：候选集原样归还（调用方继续
+        // LPS/LinUCB/加权阶段）
+        match all_models.iter().find(|(v, _)| v.id == bound) {
+            Some((vendor, model)) => Ok(RoutingDecision {
                 vendor: vendor.clone(),
                 model: model.clone(),
                 strategy: RoutingStrategy::Global,
-            })
+            }),
+            None => Err(all_models),
+        }
     }
 
     /// recId=11：会话亲和 boost — 命中 vendor 在合格集合内则直接选它，

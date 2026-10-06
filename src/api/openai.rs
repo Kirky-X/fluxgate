@@ -123,9 +123,11 @@ async fn chat_passthrough_stream(
     // recId=2（二期）：cover_all_paths 开启时「首字节前换路」——
     // Err（均发生在响应头前，manager check_stream_status 早退）排除
     // 重派；Ok（流已建立）即交出 body，流中错误仍以 SSE error 事件
-    // 终止不再换路。关闭时单发直连，行为与历史逐位一致。
-    let (stream_response, decision) =
-        dispatch_with_fallback(state, ctx, model, body, decision, true, |d| {
+    // 终止不再换路。关闭时单发直连（decision 零克隆，历史语义）。
+    #[cfg(feature = "resilience")]
+    let outcome = if state.config.read().resilience.cover_all_paths {
+        // decision.clone() 进循环（原样）：失败收尾仍引用初始决策
+        crate::api::execute_dispatch_with_fallback(state, model, decision.clone(), true, |d| {
             let vendor_manager = state.vendor_manager.clone();
             let body = body.clone();
             async move {
@@ -134,7 +136,26 @@ async fn chat_passthrough_stream(
                     .await
             }
         })
-        .await?;
+        .await
+        .map_err(|e| Box::new((e, decision)))
+    } else {
+        dispatch_direct(
+            state
+                .vendor_manager
+                .execute_passthrough_stream_request(&decision.vendor.id, body.clone())
+                .await,
+            decision,
+        )
+    };
+    #[cfg(not(feature = "resilience"))]
+    let outcome = dispatch_direct(
+        state
+            .vendor_manager
+            .execute_passthrough_stream_request(&decision.vendor.id, body.clone())
+            .await,
+        decision,
+    );
+    let (stream_response, decision) = finish_dispatch(state, ctx, body, outcome).await?;
 
     // recId=11：派发成功即回写亲和绑定（流后续错误由 metrics 记账）
     // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
@@ -176,9 +197,11 @@ async fn chat_passthrough_json(
     // 普通请求 - 零拷贝透传
     // recId=2（一期）：cover_all_paths 开启时包换路 fallback 循环
     //（resilience feature）——主 vendor 耗尽/429/5xx 时排除后重路由，
-    // actual_vendor 记最终成功者；关闭时单发直连，行为与历史逐位一致
-    let (response, decision) =
-        dispatch_with_fallback(state, ctx, model, body, decision, true, |d| {
+    // actual_vendor 记最终成功者；关闭时单发直连（decision 零克隆，历史语义）
+    #[cfg(feature = "resilience")]
+    let outcome = if state.config.read().resilience.cover_all_paths {
+        // decision.clone() 进循环（原样）：失败收尾仍引用初始决策
+        crate::api::execute_dispatch_with_fallback(state, model, decision.clone(), true, |d| {
             let vendor_manager = state.vendor_manager.clone();
             let body = body.clone();
             async move {
@@ -187,7 +210,26 @@ async fn chat_passthrough_json(
                     .await
             }
         })
-        .await?;
+        .await
+        .map_err(|e| Box::new((e, decision)))
+    } else {
+        dispatch_direct(
+            state
+                .vendor_manager
+                .execute_passthrough_request(&decision.vendor.id, body.clone())
+                .await,
+            decision,
+        )
+    };
+    #[cfg(not(feature = "resilience"))]
+    let outcome = dispatch_direct(
+        state
+            .vendor_manager
+            .execute_passthrough_request(&decision.vendor.id, body.clone())
+            .await,
+        decision,
+    );
+    let (response, decision) = finish_dispatch(state, ctx, body, outcome).await?;
 
     // recId=11：执行成功回写亲和绑定（换路成功时 decision 已是最终
     // 成功者——失败迁移绑定语义）；recId=12：未命中则回写响应缓存
@@ -220,9 +262,12 @@ async fn chat_convert_stream(
     // recId=3 阶段二：manager 返回分帧 + 反向解析后的 IR chunk 流
     // recId=2（二期）：cover_all_paths 开启时「首字节前换路」（转换路径
     // UnifiedRequest 任意 vendor type 均合法，不按协议过滤）；关闭时
-    // 单发直连，行为与历史逐位一致
-    let (chunk_stream, decision) =
-        dispatch_with_fallback(state, ctx, model, body, decision, false, |d| {
+    // 单发直连（unified_request move，历史零克隆语义）
+    #[cfg(feature = "resilience")]
+    let outcome = if state.config.read().resilience.cover_all_paths {
+        // decision.clone() 进循环（原样）：失败收尾仍引用初始决策；
+        // 换路循环逐 attempt 克隆请求体（原 fallback 语义）
+        crate::api::execute_dispatch_with_fallback(state, model, decision.clone(), false, |d| {
             let vendor_manager = state.vendor_manager.clone();
             let unified_request = unified_request.clone();
             async move {
@@ -231,7 +276,26 @@ async fn chat_convert_stream(
                     .await
             }
         })
-        .await?;
+        .await
+        .map_err(|e| Box::new((e, decision)))
+    } else {
+        dispatch_direct(
+            state
+                .vendor_manager
+                .execute_stream_request(&decision.vendor.id, unified_request)
+                .await,
+            decision,
+        )
+    };
+    #[cfg(not(feature = "resilience"))]
+    let outcome = dispatch_direct(
+        state
+            .vendor_manager
+            .execute_stream_request(&decision.vendor.id, unified_request)
+            .await,
+        decision,
+    );
+    let (chunk_stream, decision) = finish_dispatch(state, ctx, body, outcome).await?;
 
     // recId=11：派发成功即回写亲和绑定
     // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
@@ -409,48 +473,31 @@ async fn on_dispatch_failure(
     error
 }
 
-/// cover_all_paths 三态派发（recId=2 一期/二期）：resilience 开启且开关
-/// 热读生效时走换路 fallback 循环（`decision.clone()` 供失败落库引用初始
-/// 决策），否则单发直连——`direct` 闭包即直连调用本体（与 fallback 循环
-/// 的派发闭包同构），行为两分支均与历史逐位一致。失败收尾经
-/// [`on_dispatch_failure`] 单点执行。
-///
-/// 泛型约定同 [`crate::api::execute_dispatch_with_fallback`]：闭包持有
-/// decision 所有权并返回不借用环境的 future（owned captures）。
-#[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
-async fn dispatch_with_fallback<T, F, Fut>(
+/// 直连单发结果 → 统一收尾形状：错误携带初始决策，供 [`finish_dispatch`]
+/// 单点失败收尾引用（直连分支 decision 全程零克隆，历史语义；Err 装箱
+/// 避免 result_large_err 的栈搬运）。
+fn dispatch_direct<T>(
+    result: Result<T, GateError>,
+    decision: RoutingDecision,
+) -> Result<(T, RoutingDecision), Box<(GateError, RoutingDecision)>> {
+    match result {
+        Ok(v) => Ok((v, decision)),
+        Err(e) => Err(Box::new((e, decision))),
+    }
+}
+
+/// recId=9④ + recId=11：派发结果收尾单点 —— Ok 原样透传；Err 走
+/// [`on_dispatch_failure`]（亲和解除 + 失败落库）后透传错误。
+async fn finish_dispatch<T>(
     state: &Arc<ApiState>,
     ctx: &ChatDispatchCtx,
-    model: &str,
     body: &Value,
-    decision: RoutingDecision,
-    same_protocol_only: bool,
-    direct: F,
-) -> Result<(T, RoutingDecision), NexusFlowError>
-where
-    F: Fn(RoutingDecision) -> Fut,
-    Fut: std::future::Future<Output = Result<T, GateError>>,
-{
-    #[cfg(feature = "resilience")]
-    if state.config.read().resilience.cover_all_paths {
-        return match crate::api::execute_dispatch_with_fallback(
-            state,
-            model,
-            decision.clone(),
-            same_protocol_only,
-            direct,
-        )
-        .await
-        {
-            Ok(r) => Ok(r),
-            Err(e) => {
-                Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
-            }
-        };
-    }
-    match direct(decision.clone()).await {
-        Ok(r) => Ok((r, decision)),
-        Err(e) => {
+    outcome: Result<(T, RoutingDecision), Box<(GateError, RoutingDecision)>>,
+) -> Result<(T, RoutingDecision), NexusFlowError> {
+    match outcome {
+        Ok(pair) => Ok(pair),
+        Err(boxed) => {
+            let (e, decision) = *boxed;
             Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
         }
     }

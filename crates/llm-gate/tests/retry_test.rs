@@ -21,9 +21,6 @@
 //! （recId=7⑤ 换 vendor fallback E2E 留 nexusflow tests/retry_test.rs——
 //! 经 api/ApiState 全栈驱动，属应用面。）
 
-#![allow(dead_code)]
-mod common;
-#[cfg(test)]
 mod tests {
     use llm_gate::utils::{extract_status_code, ErrorCategory};
     use std::time::Duration;

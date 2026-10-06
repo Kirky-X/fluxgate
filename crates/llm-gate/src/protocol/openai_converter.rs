@@ -773,7 +773,6 @@ fn merge_system_prompt_messages(
 
 /// T003：sampling 只补 flat 未设置的槽（flat 优先，不覆写）；
 /// top_k 非 OpenAI 标准参数，直出供兼容上游取用。
-#[allow(clippy::too_many_arguments)]
 fn apply_sampling_overrides(
     body: &mut Value,
     flat_temperature: Option<f32>,

@@ -152,121 +152,91 @@ impl ProtocolConverter for OpenAIConverter {
     }
 
     fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, GateError> {
-        // 将 UnifiedRequest 转换为 OpenAI 格式。
-        // system_prompt 与 messages 内 Role::System 并存时，system_prompt
-        // 优先合并去重：相同文本只保留一份，不同文本并入首条 system 消息
-        // （system_prompt 在前）；仅当 system_prompt 存在时重排，否则消息
-        // 原位映射（行为兼容）。
-        let mut source_messages = request.messages;
-        let messages: Vec<Value> =
-            if let Some(system_prompt) = request.system_prompt.filter(|s| !s.is_empty()) {
-                let mut parts = vec![system_prompt.clone()];
-                source_messages.retain(|msg| {
-                    if msg.role != Role::System {
-                        return true;
-                    }
-                    match &msg.content {
-                        MessageContent::Text(text) if !text.is_empty() => {
-                            if *text == system_prompt {
-                                // 与 system_prompt 相同文本：去重剔除
-                                false
-                            } else {
-                                // 其余 System 文本并入首条 system 消息
-                                parts.push(text.clone());
-                                false
-                            }
-                        }
-                        // 非文本 System 消息原位保留（不参与合并）
-                        _ => true,
-                    }
-                });
-                let mut merged = vec![Message {
-                    role: Role::System,
-                    content: MessageContent::Text(parts.join("\n\n")),
-                }];
-                merged.extend(source_messages);
-                merged.into_iter().map(message_to_openai).collect()
-            } else {
-                source_messages.into_iter().map(message_to_openai).collect()
-            };
+        // 逐字段解构：messages/system_prompt 先行合并消费，其余字段
+        // 以本地值参与组包（避免部分移动后的整结构体借用）
+        let UnifiedRequest {
+            model,
+            messages,
+            system_prompt,
+            tools,
+            tool_choice,
+            temperature,
+            max_tokens,
+            stream,
+            stop,
+            top_p,
+            frequency_penalty,
+            presence_penalty,
+            user,
+            effort,
+            sampling,
+            vendor_extensions,
+            ..
+        } = request;
+
+        let messages: Vec<Value> = merge_system_prompt_messages(messages, system_prompt)
+            .into_iter()
+            .map(message_to_openai)
+            .collect();
 
         let mut body = json!({
-            "model": request.model,
+            "model": model,
             "messages": messages,
         });
 
         // 添加工具定义
-        if !request.tools.is_empty() {
-            let tools: Vec<Value> = request.tools.iter().map(tool_to_openai).collect();
+        if !tools.is_empty() {
+            let tools: Vec<Value> = tools.iter().map(tool_to_openai).collect();
             body["tools"] = json!(tools);
         }
 
         // 添加工具选择策略
-        if let Some(tool_choice) = request.tool_choice {
+        if let Some(tool_choice) = tool_choice {
             body["tool_choice"] = tool_choice_to_openai(tool_choice);
         }
 
-        if let Some(temp) = request.temperature {
+        if let Some(temp) = temperature {
             body["temperature"] = json!(temp);
         }
-        if let Some(max) = request.max_tokens {
+        if let Some(max) = max_tokens {
             body["max_tokens"] = json!(max);
         }
-        if request.stream {
+        if stream {
             body["stream"] = json!(true);
         }
-        if !request.stop.is_empty() {
-            body["stop"] = json!(request.stop);
+        if !stop.is_empty() {
+            body["stop"] = json!(stop);
         }
-        if let Some(top_p) = request.top_p {
+        if let Some(top_p) = top_p {
             body["top_p"] = json!(top_p);
         }
-        if let Some(fp) = request.frequency_penalty {
+        if let Some(fp) = frequency_penalty {
             body["frequency_penalty"] = json!(fp);
         }
-        if let Some(pp) = request.presence_penalty {
+        if let Some(pp) = presence_penalty {
             body["presence_penalty"] = json!(pp);
         }
-        if let Some(user) = request.user {
+        if let Some(user) = user {
             body["user"] = json!(user);
         }
         // T003：effort → reasoning_effort（OpenAI wire 词汇，小写）
-        if let Some(effort) = request.effort {
+        if let Some(effort) = effort {
             body["reasoning_effort"] = json!(effort.to_wire());
         }
-        // T003：sampling 只补 flat 未设置的槽（flat 优先，不覆写）；
-        // top_k 非 OpenAI 标准参数，直出供兼容上游取用
-        if let Some(sampling) = &request.sampling {
-            if request.temperature.is_none() {
-                if let Some(temp) = sampling.temperature {
-                    body["temperature"] = json!(temp);
-                }
-            }
-            if request.top_p.is_none() {
-                if let Some(top_p) = sampling.top_p {
-                    body["top_p"] = json!(top_p);
-                }
-            }
-            if request.frequency_penalty.is_none() {
-                if let Some(fp) = sampling.frequency_penalty {
-                    body["frequency_penalty"] = json!(fp);
-                }
-            }
-            if request.presence_penalty.is_none() {
-                if let Some(pp) = sampling.presence_penalty {
-                    body["presence_penalty"] = json!(pp);
-                }
-            }
-            if let Some(top_k) = sampling.top_k {
-                body["top_k"] = json!(top_k);
-            }
-        }
+        apply_sampling_overrides(
+            &mut body,
+            temperature,
+            top_p,
+            frequency_penalty,
+            presence_penalty,
+            sampling.as_ref(),
+        );
         // L1：thinking_config 无 OpenAI 等价槽，出站静默丢弃（跨厂商
         // fallback 到 OpenAI 时思考预算不透传，属已知降级而非错误）
         // F1/M1：vendor_extensions 顶层透传，denylist = 本协议 known_keys
         // 反用——协议键（stream/reasoning_effort 等）永不由扩展表补入/覆写，
         // 非协议键仍透传（D2 语义；跨协议严格上游 400 风险为显式 opt-in，D7）
-        merge_vendor_extensions(&mut body, &request.vendor_extensions, OPENAI_KNOWN_KEYS);
+        merge_vendor_extensions(&mut body, &vendor_extensions, OPENAI_KNOWN_KEYS);
 
         Ok(body)
     }
@@ -761,97 +731,91 @@ fn parse_stream_tool_call_delta(json: &Value) -> Option<ToolCall> {
     })
 }
 
-fn parse_openai_message(json: &Value) -> Result<Message, GateError> {
-    let role = json
-        .get("role")
-        .and_then(|v| v.as_str())
-        .ok_or(GateError::Validation {
-            field: "role".into(),
-        })?;
-
-    let role = match role {
-        "system" => Role::System,
-        "user" => Role::User,
-        "assistant" => Role::Assistant,
-        "tool" => Role::Tool,
-        _ => {
-            return Err(GateError::Validation {
-                field: "role".into(),
-            })
-        }
+/// 将 UnifiedRequest 转换为 OpenAI 格式时的 system 消息合并：
+/// system_prompt 与 messages 内 Role::System 并存时，system_prompt
+/// 优先合并去重：相同文本只保留一份，不同文本并入首条 system 消息
+/// （system_prompt 在前）；仅当 system_prompt 存在时重排，否则消息
+/// 原位映射（行为兼容）。
+fn merge_system_prompt_messages(
+    mut source: Vec<Message>,
+    system_prompt: Option<String>,
+) -> Vec<Message> {
+    let Some(system_prompt) = system_prompt.filter(|s| !s.is_empty()) else {
+        return source;
     };
+    let mut parts = vec![system_prompt.clone()];
+    source.retain(|msg| {
+        if msg.role != Role::System {
+            return true;
+        }
+        match &msg.content {
+            MessageContent::Text(text) if !text.is_empty() => {
+                if *text == system_prompt {
+                    // 与 system_prompt 相同文本：去重剔除
+                    false
+                } else {
+                    // 其余 System 文本并入首条 system 消息
+                    parts.push(text.clone());
+                    false
+                }
+            }
+            // 非文本 System 消息原位保留（不参与合并）
+            _ => true,
+        }
+    });
+    let mut merged = vec![Message {
+        role: Role::System,
+        content: MessageContent::Text(parts.join("\n\n")),
+    }];
+    merged.extend(source);
+    merged
+}
+
+/// T003：sampling 只补 flat 未设置的槽（flat 优先，不覆写）；
+/// top_k 非 OpenAI 标准参数，直出供兼容上游取用。
+#[allow(clippy::too_many_arguments)]
+fn apply_sampling_overrides(
+    body: &mut Value,
+    flat_temperature: Option<f32>,
+    flat_top_p: Option<f32>,
+    flat_frequency_penalty: Option<f32>,
+    flat_presence_penalty: Option<f32>,
+    sampling: Option<&SamplingParams>,
+) {
+    let Some(sampling) = sampling else {
+        return;
+    };
+    if flat_temperature.is_none() {
+        if let Some(temp) = sampling.temperature {
+            body["temperature"] = json!(temp);
+        }
+    }
+    if flat_top_p.is_none() {
+        if let Some(top_p) = sampling.top_p {
+            body["top_p"] = json!(top_p);
+        }
+    }
+    if flat_frequency_penalty.is_none() {
+        if let Some(fp) = sampling.frequency_penalty {
+            body["frequency_penalty"] = json!(fp);
+        }
+    }
+    if flat_presence_penalty.is_none() {
+        if let Some(pp) = sampling.presence_penalty {
+            body["presence_penalty"] = json!(pp);
+        }
+    }
+    if let Some(top_k) = sampling.top_k {
+        body["top_k"] = json!(top_k);
+    }
+}
+
+fn parse_openai_message(json: &Value) -> Result<Message, GateError> {
+    let role = parse_message_role(json)?;
 
     let content = match json.get("content") {
-        Some(Value::String(s)) => {
-            // 检查是否有 tool_call_id（工具角色消息）
-            if role == Role::Tool {
-                let tool_call_id = json
-                    .get("tool_call_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                MessageContent::ToolResult(ToolResult {
-                    tool_call_id,
-                    function_name: String::new(),
-                    content: s.clone(),
-                    is_error: false,
-                })
-            } else if let Some(tool_calls) = parse_tool_calls_field(json) {
-                // recId=8②：String content + 顶层 tool_calls →
-                // TextWithToolCalls（此前 String 分支提前返回，tool_calls 丢失）
-                if s.is_empty() {
-                    MessageContent::ToolCalls(tool_calls)
-                } else {
-                    MessageContent::TextWithToolCalls {
-                        text: s.clone(),
-                        tool_calls,
-                    }
-                }
-            } else {
-                MessageContent::Text(s.clone())
-            }
-        }
-        Some(Value::Array(arr)) => {
-            // 检查是否包含工具调用块
-            let has_tool_calls = arr.iter().any(|block| {
-                block.get("type").and_then(|t| t.as_str()) == Some("tool_call")
-                    || block.get("function").is_some()
-            });
-
-            if has_tool_calls {
-                let tool_calls: Vec<ToolCall> = arr
-                    .iter()
-                    .filter_map(|block| {
-                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_call") {
-                            parse_tool_call(block)
-                        } else if block.get("function").is_some() {
-                            // 兼容格式：从 function 对象解析
-                            let func = block.get("function")?;
-                            Some(ToolCall {
-                                id: block.get("id")?.as_str()?.to_string(),
-                                call_type: "function".to_string(),
-                                function: ToolCallFunction {
-                                    name: func.get("name")?.as_str()?.to_string(),
-                                    arguments: arguments_as_string(func.get("arguments"))?,
-                                },
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                if !tool_calls.is_empty() {
-                    MessageContent::ToolCalls(tool_calls)
-                } else {
-                    let blocks = arr.iter().filter_map(parse_content_block).collect();
-                    MessageContent::MultiModal(blocks)
-                }
-            } else {
-                let blocks = arr.iter().filter_map(parse_content_block).collect();
-                MessageContent::MultiModal(blocks)
-            }
-        }
+        Some(Value::String(s)) => parse_string_content(json, &role, s),
+        Some(Value::Array(arr)) => parse_array_content(arr),
         None | Some(Value::Null) => {
             // content 字段缺失或为 null，检查是否有 tool_calls
             // （recId=8②：提取逻辑提为共用 helper）
@@ -869,6 +833,97 @@ fn parse_openai_message(json: &Value) -> Result<Message, GateError> {
     };
 
     Ok(Message { role, content })
+}
+
+/// role 字段解析：四合法角色之外一律 Validation 错误（缺失同样报 role）。
+fn parse_message_role(json: &Value) -> Result<Role, GateError> {
+    let role = json
+        .get("role")
+        .and_then(|v| v.as_str())
+        .ok_or(GateError::Validation {
+            field: "role".into(),
+        })?;
+
+    match role {
+        "system" => Ok(Role::System),
+        "user" => Ok(Role::User),
+        "assistant" => Ok(Role::Assistant),
+        "tool" => Ok(Role::Tool),
+        _ => Err(GateError::Validation {
+            field: "role".into(),
+        }),
+    }
+}
+
+/// String content：工具角色消息 → ToolResult；带顶层 tool_calls →
+/// TextWithToolCalls（recId=8②：此前 String 分支提前返回，tool_calls 丢失）；
+/// 否则纯文本。
+fn parse_string_content(json: &Value, role: &Role, s: &str) -> MessageContent {
+    // 检查是否有 tool_call_id（工具角色消息）
+    if *role == Role::Tool {
+        let tool_call_id = json
+            .get("tool_call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        return MessageContent::ToolResult(ToolResult {
+            tool_call_id,
+            function_name: String::new(),
+            content: s.to_string(),
+            is_error: false,
+        });
+    }
+    if let Some(tool_calls) = parse_tool_calls_field(json) {
+        if s.is_empty() {
+            MessageContent::ToolCalls(tool_calls)
+        } else {
+            MessageContent::TextWithToolCalls {
+                text: s.to_string(),
+                tool_calls,
+            }
+        }
+    } else {
+        MessageContent::Text(s.to_string())
+    }
+}
+
+/// Array content：含工具调用块 → ToolCalls（解析为空回退 MultiModal）；
+/// 纯多模态块 → MultiModal。
+fn parse_array_content(arr: &[Value]) -> MessageContent {
+    // 检查是否包含工具调用块
+    let has_tool_calls = arr.iter().any(|block| {
+        block.get("type").and_then(|t| t.as_str()) == Some("tool_call")
+            || block.get("function").is_some()
+    });
+    if has_tool_calls {
+        let tool_calls: Vec<ToolCall> = arr.iter().filter_map(parse_tool_call_block).collect();
+        if !tool_calls.is_empty() {
+            return MessageContent::ToolCalls(tool_calls);
+        }
+    }
+    let blocks = arr.iter().filter_map(parse_content_block).collect();
+    MessageContent::MultiModal(blocks)
+}
+
+/// 单个 content 数组块 → ToolCall：type=="tool_call" 走标准解析；
+/// 含 function 对象为兼容格式（从 function 对象解析）；其余块跳过。
+fn parse_tool_call_block(block: &Value) -> Option<ToolCall> {
+    if block.get("type").and_then(|t| t.as_str()) == Some("tool_call") {
+        parse_tool_call(block)
+    } else if block.get("function").is_some() {
+        // 兼容格式：从 function 对象解析
+        let func = block.get("function")?;
+        Some(ToolCall {
+            id: block.get("id")?.as_str()?.to_string(),
+            call_type: "function".to_string(),
+            function: ToolCallFunction {
+                name: func.get("name")?.as_str()?.to_string(),
+                arguments: arguments_as_string(func.get("arguments"))?,
+            },
+        })
+    } else {
+        None
+    }
 }
 
 fn parse_content_block(json: &Value) -> Option<ContentBlock> {

@@ -24,8 +24,26 @@ use axum::http::HeaderMap;
 use oxcache::backend::CacheBackend;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// 空值哨兵（与 oxcache `NULL_SENTINEL` 逐字节一致，互操作备用）。
+const NULL_SENTINEL_BYTES: &[u8] = b"\x00OXNULL";
+
+/// follower 等待 leader 回写的最长时长。超限后窃取领导权自行上游
+///（安全降级，不永久挂起）；覆盖上游 P99 时延。
+const FOLLOWER_WAIT: Duration = Duration::from_secs(30);
+
+/// 在途表上限：失败路径（上游错误不调 `store`）的条目靠超时窃取自愈，
+/// 上限保证最坏内存有界；超限的新 Miss 不登记直接上游（正确性不变，
+/// 只损失本次去重）。
+/// 在途 Miss 条目（leader 占位；`store()` 成功/失败都必须经
+/// `finish_flight` 释放，否则 followers 至多等一个 `FOLLOWER_WAIT`）。
+struct InFlightEntry {
+    notify: Arc<tokio::sync::Notify>,
+    since: Instant,
+}
 
 /// 响应缓存键前缀 — 与亲和表（recId=11）的 `affinity:` 命名空间隔离
 pub const RESPONSE_KEY_PREFIX: &str = "resp:";
@@ -132,6 +150,10 @@ pub struct ResponseCache {
     /// ewma_e2e_ms）与 Q（traffic_shares 份额）来源；比 VendorManager
     /// 更轻的依赖面。
     metrics: Arc<GlobalMetrics>,
+    /// G6 single-flight：在途 Miss 注册表（键 → leader 通知器）。`Arc` 包
+    /// 装使结构体保持 `Clone`。G3 复核性能 L2：临界区无 `.await`，用
+    /// `std::sync::Mutex`（tokio Mutex 过重）。
+    in_flight: Arc<std::sync::Mutex<HashMap<String, InFlightEntry>>>,
 }
 
 /// 缓存键中与 vendor/model 无关的维度（评审修复 major#2：Miss 不再携带
@@ -144,6 +166,9 @@ pub struct CacheKeyParts {
     pub api_key_hash: String,
     /// canonical body 字符串（键序无关的确定性序列化）
     pub canonical: String,
+    /// single-flight 代际令牌（G3 复核 MEDIUM A-M7）：`store()` 只删除
+    /// 同代占位，防止慢 leader 误删窃取者的新条目；仅本模块构造。
+    pub(crate) flight: Option<Arc<tokio::sync::Notify>>,
 }
 
 /// 单次缓存查询结果
@@ -176,6 +201,7 @@ impl ResponseCache {
             backend,
             config,
             metrics,
+            in_flight: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -259,9 +285,12 @@ impl ResponseCache {
         (l_term + q_term).clamp(0.0, 1.0)
     }
 
-    /// 查询缓存。返回 [`CacheOutcome`]：Disabled（不参与）/ Hit（缓存值）/
-    /// Miss（键的租户与 body 维度快照——store 时再拼最终 vendor/model）。
+    /// 查询缓存。返回 [`CacheOutcome`]：Disabled（不参与）/ Hit（缓存值，
+    /// 含空哨兵命中的 `Hit(Null)`）/ Miss（leader：上游调用后由 [`Self::store`]
+    /// 以最终 vendor/model 组装完整键回写）。
     ///
+    /// G6 single-flight：同 key 并发 Miss 只放行第一个（leader），其余
+    /// follower 等待 leader 回写后复用——N 并发同 key 上游只调用 1 次。
     /// 查询键以调用方传入的 vendor_id/model_id 组装（初始路由候选）；
     /// resilience 换路成功后回写键由 [`Self::store`] 以最终候选重建
     ///（评审修复 major#2）。
@@ -282,22 +311,141 @@ impl ResponseCache {
         let parts = CacheKeyParts {
             api_key_hash: cache_api_key_hash(headers),
             canonical,
+            flight: None,
         };
         let key = response_cache_key(&parts.api_key_hash, vendor_id, model_id, &parts.canonical);
         match self.backend.get(&key).await {
-            Ok(Some(bytes)) => match serde_json::from_slice::<Value>(&bytes) {
-                Ok(cached) => CacheOutcome::Hit(cached),
-                // 缓存值损坏视为 miss（下次成功后覆盖）
-                Err(_) => CacheOutcome::Miss(parts),
-            },
-            _ => CacheOutcome::Miss(parts),
+            Ok(Some(bytes)) => Self::decode_bytes(&bytes, parts),
+            _ => self.dedup_miss(key, parts).await,
         }
+    }
+
+    /// 后端字节解码：空哨兵 → `Hit(Null)`（短窗口内不再穿透）；损坏值
+    /// 视为 Miss（下次成功后覆盖）。
+    fn decode_bytes(bytes: &[u8], parts: CacheKeyParts) -> CacheOutcome {
+        if bytes == NULL_SENTINEL_BYTES {
+            return CacheOutcome::Hit(Value::Null);
+        }
+        match serde_json::from_slice::<Value>(bytes) {
+            Ok(cached) => CacheOutcome::Hit(cached),
+            Err(_) => CacheOutcome::Miss(parts),
+        }
+    }
+
+    /// Miss 去重：首个 Miss 登记为 leader（调用方上游）；并发同 key 为
+    /// follower，等待 leader `store()` 后重读复用。leader 崩溃（无 store）
+    /// 时 follower 超时后窃取领导权，不永久挂起；远古泄漏条目直接窃取。
+    async fn dedup_miss(&self, key: String, mut parts: CacheKeyParts) -> CacheOutcome {
+        const MAX_IN_FLIGHT: usize = 4096;
+        let (notify, is_leader) = {
+            let mut guard = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match guard.get(&key) {
+                Some(entry) if entry.since.elapsed() < FOLLOWER_WAIT => {
+                    (entry.notify.clone(), false)
+                }
+                _ => {
+                    if guard.len() >= MAX_IN_FLIGHT && !Self::evict_one_stale(&mut guard) {
+                        // 有界降级：不登记，直接上游（见常量注释）
+                        return CacheOutcome::Miss(parts);
+                    }
+                    let notify = Arc::new(tokio::sync::Notify::new());
+                    guard.insert(
+                        key.clone(),
+                        InFlightEntry {
+                            notify: notify.clone(),
+                            since: Instant::now(),
+                        },
+                    );
+                    (notify, true)
+                }
+            }
+        };
+        if is_leader {
+            parts.flight = Some(notify);
+            return CacheOutcome::Miss(parts);
+        }
+        let _ = tokio::time::timeout(FOLLOWER_WAIT, notify.notified()).await;
+        match self.backend.get(&key).await {
+            Ok(Some(bytes)) => Self::decode_bytes(bytes.as_ref(), parts),
+            _ => {
+                let notify = Arc::new(tokio::sync::Notify::new());
+                self.in_flight
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(
+                        key,
+                        InFlightEntry {
+                            notify: notify.clone(),
+                            since: Instant::now(),
+                        },
+                    );
+                parts.flight = Some(notify);
+                CacheOutcome::Miss(parts)
+            }
+        }
+    }
+
+    /// 释放指定键的在途占位并唤醒 followers。代际令牌一致才删除——慢
+    /// leader 不得误删窃取者的新条目（G3 复核 MEDIUM A-M7）；令牌缺失
+    /// （未登记的 Miss）时按旧语义无条件删（无条目即 no-op）。
+    async fn finish_flight(&self, key: &str, flight: Option<&Arc<tokio::sync::Notify>>) {
+        let mut guard = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let remove = match (guard.get(key), flight) {
+            (Some(entry), Some(token)) => Arc::ptr_eq(&entry.notify, token),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if remove {
+            if let Some(entry) = guard.remove(key) {
+                entry.notify.notify_waiters();
+            }
+        }
+    }
+
+    /// 驱逐一个超期未认领的在途条目（满表时自清洁）；无可驱逐返回 false。
+    fn evict_one_stale(map: &mut HashMap<String, InFlightEntry>) -> bool {
+        let stale = map
+            .iter()
+            .find(|(_, e)| e.since.elapsed() >= FOLLOWER_WAIT)
+            .map(|(k, _)| k.clone());
+        match stale {
+            Some(k) => {
+                map.remove(&k);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// G6：对称 TTL 抖动（与 oxcache `apply_jitter` 同口径）：
+    /// `ttl×(1+factor×u)`，u∈[-1,1]；factor≤0 或 u 非有限时原样返回。
+    /// 纯函数（随机源由调用方注入）， floor 1ms。
+    /// 分叉说明（G3 复核 MEDIUM A-M8）：oxcache 的实现为 `pub(super)`，
+    /// 且哨兵常量所在 `core` 模块未公开，无法引用——此处复刻口径，
+    /// 语义与库一致（对称界、1ms 下限、关闭即原样）。
+    fn apply_ttl_jitter(ttl: Duration, factor: f64, uniform_minus1_1: f64) -> Duration {
+        if factor.is_nan() || factor <= 0.0 || !uniform_minus1_1.is_finite() {
+            return ttl;
+        }
+        let jittered = ttl.as_millis() as f64 * (1.0 + factor * uniform_minus1_1.clamp(-1.0, 1.0));
+        Duration::from_millis(jittered.max(1.0) as u64)
     }
 
     /// 成功响应回写缓存——以**最终成功服务**的 vendor_id/model_id 组装键
     ///（resilience 换路成功后即 fallback 的最终候选，保证键维度与响应体
     /// 一致；TTL 由 [cache].ttl_secs 热读 + 类别乘数 + 负载联动（recId=12，
     /// vendor 维度 L_p/Q）；存取失败静默降级——缓存故障不得影响请求成功率）。
+    ///
+    /// G6：写入 TTL 叠加 `ttl_jitter` 对称抖动（同批键过期不齐峰，关闭时
+    /// 精确）；Null 响应写空哨兵（`null_cache_ttl_secs` 短窗口，窗口内
+    /// check 直接 `Hit(Null)` 不再穿透）。回写后释放 single-flight 占位
+    ///（失败路径同样释放，followers 不永久挂起）。
     pub async fn store(
         &self,
         parts: &CacheKeyParts,
@@ -306,13 +454,30 @@ impl ResponseCache {
         response: &Value,
     ) {
         let key = response_cache_key(&parts.api_key_hash, vendor_id, model_id, &parts.canonical);
-        if let Ok(bytes) = serde_json::to_vec(response) {
-            let ttl = self.ttl(vendor_id, model_id);
+        if response.is_null() {
+            let ttl = Duration::from_secs(self.config.read().cache.null_cache_ttl_secs.max(1));
             let _ = self
                 .backend
-                .set(Arc::from(key), Arc::new(bytes), Some(ttl))
+                .set(
+                    Arc::from(key.clone()),
+                    Arc::new(NULL_SENTINEL_BYTES.to_vec()),
+                    Some(ttl),
+                )
+                .await;
+            self.finish_flight(&key, parts.flight.as_ref()).await;
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec(response) {
+            let ttl = self.ttl(vendor_id, model_id);
+            let factor = self.config.read().cache.ttl_jitter;
+            let uniform = rand::random::<f64>() * 2.0 - 1.0;
+            let ttl = Self::apply_ttl_jitter(ttl, factor, uniform);
+            let _ = self
+                .backend
+                .set(Arc::from(key.clone()), Arc::new(bytes), Some(ttl))
                 .await;
         }
+        self.finish_flight(&key, parts.flight.as_ref()).await;
     }
 }
 
@@ -636,5 +801,192 @@ mod ttl_load_linking_tests {
             ..Default::default()
         });
         assert_eq!(cache.ttl("cold-vendor", "m1"), Duration::from_secs(300));
+    }
+}
+
+#[cfg(test)]
+mod single_flight_and_sentinel_tests {
+    //! G6：并发防击穿（single-flight）+ TTL 抖动 + 空哨兵负缓存。
+
+    use super::*;
+    use crate::config::Config;
+
+    fn make_cache(cache: CacheSection) -> ResponseCache {
+        let config = Config {
+            rate_limit: Default::default(),
+            server: crate::config::ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            database: crate::config::DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+                url: String::new(),
+            },
+            vendors: vec![],
+            global_model: None,
+            pricing: vec![],
+            model_catalog: Vec::new(),
+            auth: None,
+            cors: None,
+            retry: Default::default(),
+            routing: Default::default(),
+            cache,
+            admission: Default::default(),
+            grpc: None,
+            resilience: Default::default(),
+            docs: Default::default(),
+        };
+        ResponseCache::new(
+            Arc::new(oxcache::backend::default_memory_backend()),
+            Arc::new(crate::config::ConfigManager::new(config)),
+            Arc::new(crate::utils::metrics::GlobalMetrics::new()),
+        )
+    }
+
+    fn enabled_cache() -> ResponseCache {
+        make_cache(CacheSection {
+            enabled: true,
+            ttl_secs: 300,
+            ..Default::default()
+        })
+    }
+
+    fn test_body() -> Value {
+        serde_json::json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+    }
+
+    /// 抖动纯函数：关闭时精确；开启时对称界内；非法输入原样。
+    #[test]
+    fn ttl_jitter_shapes_and_bounds() {
+        let base = Duration::from_secs(300);
+        assert_eq!(ResponseCache::apply_ttl_jitter(base, 0.0, 1.0), base);
+        assert_eq!(ResponseCache::apply_ttl_jitter(base, -0.5, 1.0), base);
+        assert_eq!(ResponseCache::apply_ttl_jitter(base, f64::NAN, 1.0), base);
+        assert_eq!(ResponseCache::apply_ttl_jitter(base, 0.1, f64::NAN), base);
+        assert_eq!(
+            ResponseCache::apply_ttl_jitter(base, 0.1, 1.0),
+            Duration::from_millis(330_000)
+        );
+        assert_eq!(
+            ResponseCache::apply_ttl_jitter(base, 0.1, -1.0),
+            Duration::from_millis(270_000)
+        );
+        assert_eq!(ResponseCache::apply_ttl_jitter(base, 0.1, 0.0), base);
+        // floor 1ms
+        assert_eq!(
+            ResponseCache::apply_ttl_jitter(Duration::ZERO, 0.5, -1.0),
+            Duration::from_millis(1)
+        );
+    }
+
+    /// N=8 并发同 key：仅 leader 见 Miss（上游 1 次），followers 全部复用
+    /// 回写 Hit；回写后新检查直接 Hit。
+    #[tokio::test]
+    async fn concurrent_same_key_upstream_runs_once() {
+        let cache = enabled_cache();
+        let body = test_body();
+        let headers = HeaderMap::new();
+
+        let CacheOutcome::Miss(parts) = cache.check(&headers, "v", "m", &body).await else {
+            panic!("leader 首次检查必须 Miss");
+        };
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let c = cache.clone();
+            let b = body.clone();
+            handles.push(tokio::spawn(async move {
+                c.check(&HeaderMap::new(), "v", "m", &b).await
+            }));
+        }
+        // 让 followers 全部 park 到 leader 条目上
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let response = serde_json::json!({"id": "r1"});
+        cache.store(&parts, "v", "m", &response).await;
+
+        let mut hits = 0;
+        for h in handles {
+            match tokio::time::timeout(Duration::from_secs(5), h)
+                .await
+                .expect("join 超时")
+                .expect("任务 panic")
+            {
+                CacheOutcome::Hit(v) => {
+                    assert_eq!(v, response);
+                    hits += 1;
+                }
+                other => panic!("follower 必须复用 leader 回写，got {other:?}"),
+            }
+        }
+        assert_eq!(hits, 8, "8 个并发 followers 全部 Hit（上游只 1 次）");
+
+        let outcome = cache.check(&headers, "v", "m", &body).await;
+        assert!(
+            matches!(outcome, CacheOutcome::Hit(_)),
+            "回写后新检查直接 Hit"
+        );
+    }
+
+    /// 空响应写哨兵：窗口内 check 直接 Hit(Null) 不再穿透；后端存的是
+    /// 哨兵字节而非值。
+    #[tokio::test]
+    async fn null_response_is_negative_cached() {
+        let cache = enabled_cache();
+        let body = test_body();
+        let headers = HeaderMap::new();
+
+        let CacheOutcome::Miss(parts) = cache.check(&headers, "v", "m", &body).await else {
+            panic!("首次检查必须 Miss");
+        };
+        cache.store(&parts, "v", "m", &Value::Null).await;
+
+        let outcome = cache.check(&headers, "v", "m", &body).await;
+        assert!(
+            matches!(outcome, CacheOutcome::Hit(Value::Null)),
+            "哨兵窗口内必须 Hit(Null) 不再穿透，got {outcome:?}"
+        );
+
+        let key = response_cache_key(&parts.api_key_hash, "v", "m", &parts.canonical);
+        let bytes = cache
+            .backend
+            .get(&key)
+            .await
+            .expect("backend 读")
+            .expect("哨兵必须落盘");
+        assert_eq!(bytes.as_slice(), b"\x00OXNULL".as_slice());
+    }
+
+    /// 哨兵窗口过期后允许再次穿透（负缓存是短窗口，不是永久屏蔽）。
+    #[tokio::test]
+    async fn null_sentinel_expires_after_window() {
+        let cache = make_cache(CacheSection {
+            enabled: true,
+            ttl_secs: 300,
+            null_cache_ttl_secs: 1,
+            ..Default::default()
+        });
+        let body = test_body();
+        let headers = HeaderMap::new();
+
+        let CacheOutcome::Miss(parts) = cache.check(&headers, "v", "m", &body).await else {
+            panic!("首次检查必须 Miss");
+        };
+        cache.store(&parts, "v", "m", &Value::Null).await;
+        assert!(
+            matches!(
+                cache.check(&headers, "v", "m", &body).await,
+                CacheOutcome::Hit(Value::Null)
+            ),
+            "窗口内 Hit(Null)"
+        );
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            matches!(
+                cache.check(&headers, "v", "m", &body).await,
+                CacheOutcome::Miss(_)
+            ),
+            "窗口过期后允许再次穿透"
+        );
     }
 }

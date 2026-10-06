@@ -823,6 +823,15 @@ pub struct CacheSection {
     /// recId=12：类别乘数表（缺省空 = 全部 1.0；与负载联动开关独立生效）
     #[serde(default)]
     pub categories: Vec<CacheCategory>,
+    /// G6：TTL 抖动系数（默认 0 = 关闭，保持现状精确 TTL）。>0 时写入
+    /// TTL 按对称抖动 `ttl×(1±factor)`（与 oxcache `apply_jitter` 同口径），
+    /// 同批键过期不齐峰。热读：每次 store 现读。
+    #[serde(default)]
+    pub ttl_jitter: f64,
+    /// G6：空响应负缓存窗口（秒，默认 60）。store() 收到 Null 响应时写
+    /// 哨兵而非值，窗口内 check() 直接 Hit(Null) 不再穿透上游。
+    #[serde(default = "default_cache_null_cache_ttl_secs")]
+    pub null_cache_ttl_secs: u64,
 }
 
 fn default_cache_ttl_secs() -> u64 {
@@ -849,6 +858,10 @@ fn default_cache_q_target() -> f64 {
     0.5
 }
 
+fn default_cache_null_cache_ttl_secs() -> u64 {
+    60
+}
+
 impl Default for CacheSection {
     fn default() -> Self {
         Self {
@@ -861,6 +874,8 @@ impl Default for CacheSection {
             l_target: default_cache_l_target(),
             q_target: default_cache_q_target(),
             categories: Vec::new(),
+            ttl_jitter: 0.0,
+            null_cache_ttl_secs: default_cache_null_cache_ttl_secs(),
         }
     }
 }

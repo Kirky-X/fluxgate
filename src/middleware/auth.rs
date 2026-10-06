@@ -191,11 +191,24 @@ pub async fn api_auth_middleware(
     // 排除健康检查端点。
     // /api/v1/health 是实际注册路径：sdforge #[forge(version = "v1")] 宏会把
     // path 加 /api/v1 版本前缀（sdforge-macros lib.rs:1886）。
-    // 入站限流中间件有另一份独立的健康检查白名单（含 /healthz、/ready），
-    // 维护于 src/api/router_builder.rs 的 rate_limit_middleware，两处各自
-    // 独立、语义不共享。
+    // 入站限流侧有另一份独立的健康检查白名单（含 /healthz、/ready、
+    // /readyz、/metrics），维护于 src/api/router_builder.rs 的
+    // is_quota_exempt_path，两处各自独立、语义不共享。
+    // G7：/readyz（就绪探针）与 /metrics（指标抓取）同样豁免——基础设施
+    // 端点无调用方 key，认证无从谈起。
+    // G11：文档面（/api-docs/*、/swagger-ui/*）同样豁免——开关本身即
+    // 访问门（默认关闭），打开后浏览器可用性要求无 key 可达。
     let path = request.uri().path();
-    if path == "/health" || path == "/api/v1/health" || path == "/" {
+    if path == "/health"
+        || path == "/api/v1/health"
+        || path == "/"
+        || path == "/readyz"
+        || path == "/metrics"
+        || path.starts_with("/api-docs/")
+        || path == "/api-docs"
+        || path.starts_with("/swagger-ui/")
+        || path == "/swagger-ui"
+    {
         return Ok(next.run(request).await);
     }
 

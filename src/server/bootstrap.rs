@@ -249,6 +249,10 @@ pub(crate) async fn assemble(
     crate::api::init_global_state(api_state.clone());
     tracing::info!("{}", t("main-global-state-initialized"));
 
+    // G7：就绪探针注册（sdforge 全局表，装配期一次性；检查读既有句柄，
+    // 不发起上游请求）。
+    crate::api::readiness::register_readiness_checks(&api_state, &database.pool);
+
     Ok(Assembly {
         api_state,
         logger_handle,

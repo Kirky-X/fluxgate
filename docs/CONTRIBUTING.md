@@ -88,21 +88,21 @@ projects/
 
 ## 🏗️ 项目结构
 
-`src/` 共 54 个 `.rs` 文件，按目录职责划分：
+`src/` 共 46 个 `.rs` 文件，路由半边抽为 `crates/llm-gate/` 纯路由核心库（35 个 `.rs`，应用 crate 经门面 re-export 保持 `nexusflow::config` 等路径可用），按目录职责划分：
 
 | 目录 | 职责 | 关键文件 |
 |:-----|:-----|:---------|
 | `src/api/` | REST 端点与路由构建 | `router_builder.rs`（中间件挂载）、`admin.rs`、`openai.rs`、`anthropic.rs`、`sse.rs`、`response_cache.rs` |
-| `src/config/` | TOML 配置加载 / 校验 / 热更新 | `mod.rs`（Config 结构与默认值）、`manager.rs`、`loader.rs` |
+| `crates/llm-gate/src/config/` | TOML 配置加载 / 校验 / 热更新 | `mod.rs`（Config 结构与默认值）、`manager.rs`、`loader.rs`、`model_catalog.rs` |
 | `src/database/` | SQLite 持久化 | `repository.rs`、`async_logger.rs`（异步批量写）、`pre_aggregator.rs`（Token 预聚合） |
-| `src/i18n/` | Fluent 双语目录（en/zh）与 locale 检测 | `catalog.rs`、`locale.rs` |
+| `crates/llm-gate/src/i18n/` | Fluent 双语目录（en/zh）与 locale 检测 | `catalog.rs`、`locale.rs` |
 | `src/infrastructure/` | trait-kit AsyncKit DI 组装 | `di.rs` |
 | `src/middleware/` | 认证 / 拥塞准入中间件 | `auth.rs`、`admission.rs` |
-| `src/protocol/` | OpenAI ↔ Anthropic 协议转换 | `unified.rs`、`openai_converter.rs`、`anthropic_converter.rs`、`sse_frame.rs` |
-| `src/router/` | 路由调度 | `router.rs`（5 因子加权）、`affinity.rs`、`bandit.rs` |
-| `src/vendor/` | 厂商管理 | `manager.rs`、`rate_limiter.rs`、`pool.rs`、`queue.rs`、`resilience/`（FallbackChain + 错误映射） |
-| `src/utils/` | 成本追踪 / 全局指标 / 重试工具 | `cost_tracker.rs`、`metrics.rs`、`retry.rs` |
-| `src/error.rs` | `NexusFlowError` 统一错误（含 HTTP 映射） | — |
+| `crates/llm-gate/src/protocol/` | OpenAI ↔ Anthropic 协议转换 | `unified.rs`、`openai_converter.rs`、`anthropic_converter.rs`、`sse_frame.rs` |
+| `crates/llm-gate/src/router/` | 路由调度 | `router.rs`（5 因子加权）、`affinity.rs`、`bandit.rs` |
+| `crates/llm-gate/src/vendor/` | 厂商管理 | `manager.rs`、`rate_limiter.rs`、`pool.rs`、`queue.rs`、`key_pool.rs`、`resilience/`（FallbackChain + 错误映射） |
+| `crates/llm-gate/src/utils/` | 成本追踪 / 全局指标 / 重试工具 | `cost_tracker.rs`、`metrics.rs`、`retry.rs` |
+| `src/error.rs` / `crates/llm-gate/src/error.rs` | `NexusFlowError` / `GateError` 统一错误（含 HTTP 映射） | — |
 | `src/lib.rs` / `src/main.rs` | lib 公共 API 与薄启动入口（装配链在 `src/server`） | — |
 
 两个辅助位置：
@@ -111,7 +111,8 @@ projects/
 |:-----|:-----|
 | `src/server` | **服务器装配链**库模块（`all(web-server, logging)` 门控）：bootstrap / http / handle / shutdown，`run()` 起服、`build_app()` 返回 `(Router, ServerHandle)`（停机 flush 收尾，幂等；同进程二次装配 panic，见 `# Panics` 文档） |
 | `src/sdk` | **Rust 客户端 SDK** 模块（`sdk` feature 门控）：chat / embed / models / vendors / health，含 SSE 流式（原顶层 `sdk/` 独立 crate 已并入） |
-| `tests/` | **21 个集成测试文件**（HTTP 全链路 / 配置示例断言 / feature 组合矩阵等） |
+| `tests/` | **顶层集成测试**（20 个 `.rs` 文件：HTTP 全链路 / 配置示例断言 / feature 组合矩阵等，含 `common/` 辅助） |
+| `crates/llm-gate/tests/` | **路由核心集成测试**（19 个 `.rs` 文件：路由 / 协议转换 / 厂商 / 熔断 / 重试 / 成本等，含 `common/` 辅助） |
 
 > 架构惯例：`mod.rs` 只保留接口与 re-export，具体实现放独立文件（如 `router/router.rs`、`config/manager.rs`）。新增代码请遵循同一惯例。
 
@@ -172,7 +173,7 @@ cargo test --all-features --test router_test   # 单个集成测试文件
 
 ## 🚩 Feature 纪律
 
-`Cargo.toml` 定义 **10 个 feature**，`default = ["full"]`（全启用）：
+`Cargo.toml` 定义 **11 个 feature**，`default = ["full"]`（全启用）：
 
 | Feature | 门控内容 |
 |:--------|:---------|
@@ -186,6 +187,7 @@ cargo test --all-features --test router_test   # 单个集成测试文件
 | `logging` | inklog |
 | `resilience` | FallbackChain + 错误映射层（熔断/重试已迁 limiteron） |
 | `cost-tracking` | dashmap + CostTracker 成本追踪 |
+| `sdk` | Rust 客户端 SDK（reqwest + eventsource-stream） |
 
 纪律要求：
 

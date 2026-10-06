@@ -39,7 +39,7 @@ curl http://127.0.0.1:8080/api/v1/health
 | `X-Session-Id: <key>` | 会话亲和键；缺失时兜底 `sha256(messages[0] 前 2KB)` 截断 hex |
 | `X-Weight: <正数>` | 请求级权重，需 `[routing].allow_request_weight = true` 才生效（默认忽略） |
 
-**代码位置**：`src/api/routing_hints.rs`（头提取）、`src/router/router.rs:279-341`（`route_with_hints`，X-Vendor 未命中即报错）
+**代码位置**：`src/api/routing_hints.rs`（头提取）、`crates/llm-gate/src/router/router.rs:281`（`route_with_hints`，X-Vendor 未命中即报错）
 
 ---
 
@@ -57,9 +57,9 @@ curl http://127.0.0.1:8080/api/v1/health
 
 `persist` 采用**全量写回语义**：每次 `POST /admin/config` 落盘时以 `toml::to_string_pretty` 把整个 `Config` 结构体写回 config.toml。所有段必须定义在 `Config` 结构体里（`[resilience]` 等段的落地正是为此），**未进结构体的未知段在 TOML 反序列化时被静默丢弃**，首次热更写回后即从磁盘消失。
 
-不要在 config.toml 里放 NexusFlow 不认识的自定义段；如需扩展，须先在 `src/config/mod.rs` 的 `Config` 结构体中加字段。
+不要在 config.toml 里放 NexusFlow 不认识的自定义段；如需扩展，须先在 `crates/llm-gate/src/config/mod.rs` 的 `Config` 结构体中加字段。
 
-**代码位置**：`src/config/mod.rs:830-839`（`[resilience]` 段文档注释中的硬约束说明）
+**代码位置**：`crates/llm-gate/src/config/mod.rs`（`Config` 结构体字段文档注释中的「persist 全量写回」硬约束说明）
 
 ### ❓ `/admin/logs` 传了 `end_time` 为什么没过滤？
 
@@ -82,7 +82,7 @@ curl "http://127.0.0.1:8080/admin/logs/search?vendor=timeout"
 
 设置环境变量 **`NEXUSFLOW_LANG=en|zh`**（项目级覆盖，优先级最高）。未设置时按检测链回退：`LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置（sys-locale），全部无法识别回退 `en`。`zh_CN` / `zh_TW` 等 zh 系均映射到 `zh`。
 
-**代码位置**：`src/i18n/locale.rs`（`detect_from` 检测链）
+**代码位置**：`crates/llm-gate/src/i18n/locale.rs`（`detect_from` 检测链）
 
 ---
 
@@ -124,7 +124,7 @@ curl "http://127.0.0.1:8080/admin/logs/search?vendor=timeout"
 1. **定价表未命中**：成本按 `(vendor_id, model_id)` 精确匹配 `[[pricing]]` 定价表，未配置该段、或表中的 vendor/model 与实际路由结果不完全一致时，`calculate` 直接返回 `0.0`（不阻塞响应）。
 2. **已知边界**：即使算出非零成本，当前也只累加进**内存 `CostTracker`**——请求日志表 `request_logs.cost_usd` 恒为 `None`（日志条目构造时固定填 `None`），且没有 `/admin/cost` 查询端点，跨重启无成本持久化查询。
 
-**代码位置**：`src/vendor/cost.rs:55-71`（未命中返回 0.0）
+**代码位置**：`crates/llm-gate/src/vendor/cost.rs:57`（`calculate` 未命中返回 0.0）
 
 ---
 
@@ -142,7 +142,7 @@ per-vendor 熔断器（limiteron CircuitBreaker）状态机：
 
 慢调用防误判：慢调用判定线为 **60 秒 / 100% 比例**——LLM 成功调用常态超过通用默认（500ms），若不抬高，混合流量下慢调用率轻易过阈导致与真实失败无关的熔断；取 60s / 1.0 后慢调用路径在混合流量下失活，熔断由真实失败驱动。
 
-**代码位置**：`src/vendor/manager.rs:150-155`（`nexusflow_circuit_config`：`CircuitBreakerConfig::new(5, 3, 30s)` + 慢调用双参数）
+**代码位置**：`crates/llm-gate/src/vendor/manager.rs:168-173`（`gate_circuit_config`：`CircuitBreakerConfig::new(5, 3, 30s)` + 慢调用双参数）
 
 ---
 

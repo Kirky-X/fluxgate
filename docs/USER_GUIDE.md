@@ -127,7 +127,7 @@ tier = "dedicated"
 
 | 字段 | 类型 | 默认值 | 说明 |
 |:-----|:-----|:-------|:-----|
-| `id` | String | 必填 | 厂商唯一标识；**跨条目去重校验**，重复导致配置加载失败（`src/config/loader.rs`） |
+| `id` | String | 必填 | 厂商唯一标识；**跨条目去重校验**，重复导致配置加载失败（`crates/llm-gate/src/config/loader.rs`） |
 | `name` | String | 必填 | 显示名 |
 | `type_` | String | 必填（TOML 键名 `type`） | `"openai"` 或 `"anthropic"` |
 | `api_key_env` | String | 必填 | 存放上游密钥的环境变量名 |
@@ -141,7 +141,7 @@ tier = "dedicated"
 | `stream_ttft_ms` | u64 | `60000` | 流式首包（响应头）超时（毫秒），`0` = 不限时 |
 | `stream_idle_ms` | u64 | `30000` | 流式相邻 chunk 间 idle 超时（毫秒），`0` = 不限时 |
 
-配置定义见 `src/config/mod.rs`（`VendorConfig`）。
+配置定义见 `crates/llm-gate/src/config/mod.rs`（`VendorConfig`）。
 
 ### models 子项
 
@@ -193,7 +193,7 @@ flowchart TB
     T --> S["selection 算法选择"]
 ```
 
-默认三维系数 `0.4 / 0.3 / 0.3` 与历史行为逐位一致；`w_latency` / `w_error` 默认 `0`（关闭），显式开启才生效。定义见 `src/config/mod.rs`（`RoutingSection`），消费见 `src/router/router.rs`。
+默认三维系数 `0.4 / 0.3 / 0.3` 与历史行为逐位一致；`w_latency` / `w_error` 默认 `0`（关闭），显式开启才生效。定义见 `crates/llm-gate/src/config/mod.rs`（`RoutingSection`），消费见 `crates/llm-gate/src/router/router.rs`。
 
 ### [routing] 字段与默认值
 
@@ -271,7 +271,7 @@ flowchart TB
 
 ### 熔断器行为
 
-per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `src/vendor/manager.rs:150-155`。
+per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `crates/llm-gate/src/vendor/manager.rs:168-173`。
 
 ---
 
@@ -292,12 +292,16 @@ per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开�
 | `l_target` | `1000.0` | 延迟目标（毫秒，ewma_e2e_ms 口径） |
 | `q_target` | `0.5` | 流量份额目标（0..1） |
 | `[[cache.categories]]` | 空 | 按模型前缀的 TTL 类别乘数表 |
+| `ttl_jitter` | `0.0` | TTL 抖动系数（absorb-sibling-libs G6；>0 时写入 TTL 按 `ttl×(1±factor)` 对称抖动，同批键过期不齐峰） |
+| `null_cache_ttl_secs` | `60` | 空响应负缓存窗口秒数（absorb-sibling-libs G6；Null 响应写哨兵，窗口内直接命中不再穿透上游） |
 
 ### 缓存门控与跳过
 
 - **只有确定性请求会查/写缓存**：`stream == false` 且 `tools` 为空 且 `temperature == 0`（或缺省）。
 - 请求携带 **`X-No-Cache: 1`** 强制回源（不读不写；兼容别名 `X-Skip-Cache`）。
 - `[[cache.categories]]` 单条字段：`model_id_prefix`（模型名前缀）+ `multiplier`（TTL 乘数）；无命中的模型乘数 1.0。
+- **并发防击穿**（absorb-sibling-libs G6）：同 key 并发 Miss 只放行一次上游（leader），其余等待回写后复用；leader 失败时 30s 超时后由等待者接管，不永久挂起。
+- **空响应负缓存**：上游 Null 结果写哨兵（`null_cache_ttl_secs` 窗口），窗口内直接命中空值不再穿透，过期后允许再穿透。
 
 ```toml
 [cache]
@@ -358,7 +362,7 @@ max_requests = 100
 | `alpha_burst` | `1.0` | burst EWMA（到达速率）压制系数 |
 | `alpha_debt` | `4.0` | debt EWMA（被 shed 频度）压制系数 |
 
-准入优先级基准来自 **`[[auth.keys]]` 的 `tier` 档位**（`dedicated` > `guaranteed` > `elastic` > `spot`，见 `src/config/mod.rs` 的 `AuthTier`），未声明的 key 落 `elastic` 档。
+准入优先级基准来自 **`[[auth.keys]]` 的 `tier` 档位**（`dedicated` > `guaranteed` > `elastic` > `spot`，见 `crates/llm-gate/src/config/mod.rs` 的 `AuthTier`），未声明的 key 落 `elastic` 档。
 
 ---
 
@@ -373,7 +377,7 @@ max_requests = 100
 | `input_per_1k_tokens` | 输入单价（USD / 1k tokens） |
 | `output_per_1k_tokens` | 输出单价（USD / 1k tokens） |
 
-成本公式：`(prompt/1000)×input + (completion/1000)×output`，按 `(vendor_id, model_id)` 精确匹配查找（`src/vendor/cost.rs`）。
+成本公式：`(prompt/1000)×input + (completion/1000)×output`，按 `(vendor_id, model_id)` 精确匹配查找（`crates/llm-gate/src/vendor/cost.rs`）。
 
 ### 已知边界（如实声明）
 
@@ -391,7 +395,6 @@ max_requests = 100
 |:-----|:-----|
 | `GET /admin/config` | 读取当前生效配置 |
 | `POST /admin/config` | **全量覆盖**更新（body 为完整 Config JSON/TOML 结构，不是增量 patch） |
-| `POST /admin/vendors/{id}` | 原子 RMW 更新单厂商 |
 | `POST /admin/models/global` | 原子 RMW 更新全局模型策略（路径 id 约定为 `global`） |
 
 RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落盘，并发互斥不丢更新（`src/api/admin.rs`）。
@@ -401,7 +404,7 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 | 类别 | 段 | 生效方式 |
 |:-----|:---|:---------|
 | 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`、`resilience`、`admission`、`pricing`、`global_model` | `POST /admin/config` 后下一请求即用新值 |
-| 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池） | 修改后须重启进程 |
+| 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑） | 修改后须重启进程 |
 
 > ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组当前**只检测 `server` 与 `cors` 两段**（`src/api/admin.rs:134-163`）。`rate_limit` / `concurrency` / `database` 的重启要求在代码注释中声明，不会出现在数组里——改这些段后请自行安排重启。
 
@@ -423,7 +426,15 @@ flowchart TB
 
 ### 全量写回语义（重要）
 
-`persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`src/config/mod.rs:830-839` 注释）。不要在 config.toml 里放 NexusFlow 不认识的自定义段。
+`persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`crates/llm-gate/src/config/mod.rs` 的 `Config` 字段文档注释）。不要在 config.toml 里放 NexusFlow 不认识的自定义段。
+
+### 文件监听热重载（absorb-sibling-libs G10）
+
+除 `POST /admin/config` 外，网关启动时若配置来自文件，会旁挂文件监听（去抖 500ms，监听父目录以兼容原子 rename 写盘）：
+
+- **热生效段**：`retry` / `routing` / `cache` / `resilience` / `admission` / `auth` / `pricing` / `model_catalog`——文件改动后下一请求即用新值（只切内存，不落盘；与 admin 写盘内容一致时跳过，不成环）。
+- **结构变更拒绝**：`vendors`（实例拓扑）、`server`、`database`、`grpc`、`cors`、`rate_limit`、`docs` 改动触发 `ReloadRejected`——旧快照继续服务，失败计数 + 日志留痕，改后须重启。
+- `docs` 段改动同样拒绝（路由建站期固化，见上表需重启段）。
 
 ---
 
@@ -472,6 +483,8 @@ healthcheck:
   start_period: 10s
 ```
 
+就绪与指标（absorb-sibling-libs G7）：`/readyz` 聚合 DB 池/`oxcache`/vendor 三项真实检查（全绿 200，任一失败 503），`/metrics` 为 Prometheus 文本（RED 维度）。两者均免认证免限流——**仅建议内网抓取**，公网绑定即信息披露（G3 复核 LOW-5）。
+
 ---
 
 ## 📟 运维手册
@@ -480,7 +493,7 @@ healthcheck:
 
 | 端点 | 说明 |
 |:-----|:-----|
-| `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`）。⚠️ **`end_time` 已知不生效**：`LogFilter` 有该字段但查询 SQL 未实现对应分支（`src/database/repository.rs:153-185`） |
+| `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断，absorb-sibling-libs G3 复核）。⚠️ **`end_time` 已知不生效**：`LogFilter` 有该字段但查询 SQL 未实现对应分支（`src/database/repository.rs:153-185`） |
 | `GET /admin/logs/search?vendor=<关键词>&limit=` | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs:47`） |
 | `GET /admin/stats/tokens?vendor=` | 小时级 Token 用量统计（`token_usage` 预聚合表） |
 | `GET /admin/metrics` | 全局指标快照：请求计数、错误率、平均延迟、各厂商细分，含 `dropped_logs`（日志通道背压丢弃计数） |
@@ -490,7 +503,7 @@ healthcheck:
 
 ### 日志语言
 
-管理端点与错误消息支持中英双语，由环境变量 **`NEXUSFLOW_LANG=en|zh`** 控制；未设置时按 `LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置检测，无法识别回退 `en`（`src/i18n/locale.rs`）。
+管理端点与错误消息支持中英双语，由环境变量 **`NEXUSFLOW_LANG=en|zh`** 控制；未设置时按 `LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置检测，无法识别回退 `en`（`crates/llm-gate/src/i18n/locale.rs`）。
 
 ### 故障排查速查
 

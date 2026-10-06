@@ -103,12 +103,13 @@ HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API
 | `database_error` | 500 Internal Server Error | 数据库操作失败、IO 错误 |
 | `routing_error` | 500 Internal Server Error | 路由决策失败（无可用厂商等） |
 
-> **限流与准入（网关侧，独立于上述错误码）**：
+> **限流与准入（网关侧，独立于上述错误码；absorb-sibling-libs G5 起 tower 化）**：
 >
-> - 入站限流中间件（`rate_limit_middleware`）由两层组成：`[[rate_limit.rules]]` 端点规则表（`path` 前缀匹配、按租户分桶）+ `limiteron::Governor` 全局规则层。
+> - 入站限流中间件由两层组成：`[[rate_limit.rules]]` 端点规则表（`path` 前缀匹配、按租户分桶）+ limiteron tower 全局规则层（一规则一 `KeyedRateLimitLayer`，按租户摘要分桶；空规则时为共享 TokenBucket(100, 10/s) 兜底）。
 > - 端点规则超限 → `429 Too Many Requests` + `Retry-After` 头（重置秒数），body 为 JSON，`error.message` 文案随 locale（zh `"已超过速率限制"` / en `"Rate limit exceeded"`）。
-> - 全局规则超速 → `429 Too Many Requests`，文案同上；被拉入封禁名单 → `403 Forbidden`，文案随 locale（zh `"访问被拒绝"` / en `"Access denied"`）。
-> - 限流白名单路径（不进入限流检查）：`/health`、`/healthz`、`/ready`、`/api/v1/health`。
+> - 全局规则超速 → `429 Too Many Requests` + `Retry-After` 头（窗口剩余秒），文案同上；旧 `Governor` 路径的无头 429 与 `403` 封禁分支已删除（规则 ban 恒为 None）。
+> - 限流白名单路径（不进入限流检查）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs/*`、`/swagger-ui/*`。
+> - 每次响应（含 429）均回传 **`X-Request-Id`** 响应头：透传客户端所带 ID，未带时网关生成（`req-` 前缀）；同请求 tracing span 携带该 ID（absorb-sibling-libs G8）。
 > - **准入层**（拥塞感知优先级准入，`src/middleware/admission.rs`）：`[admission].enabled`（默认 `false`）开启后，网关并发占用率（Σ 在途 / Σ 并发上限）达到 `congestion_threshold`（默认 `0.9`）时，优先级低于当前在途最小档位的请求被直接卸载（shed），返回 `429 Too Many Requests` + `Retry-After: 1`，文案随 locale（zh `"准入被拒绝（拥塞）"`）。请求档位（dedicated/guaranteed/elastic/spot）由 `[auth].keys` 子表按 API key 声明，未声明的 key 缺省 `elastic`。健康检查路径永不卸载。
 
 ---
@@ -499,7 +500,7 @@ curl "http://localhost:8080/admin/logs/search?vendor=Hello&limit=50" \
 ]
 ```
 
-> `cost_usd_sum` 字段当前恒为 `0.0`（成本未落库）：API 层写入预聚合器时成本实参恒传 `0.0`，按 `[pricing]` 单价计算出的 USD 成本仅累计进内存指标，未进入 `token_usage` 表。
+> `cost_usd_sum` 字段当前恒为 `0.0`（成本不持久化）：API 层写入预聚合器时成本实参恒传 `0.0`，按 `[pricing]` 单价计算出的 USD 成本仅累计进内存指标，未进入 `token_usage` 表。
 
 **错误码**: `database_error`(500)
 
@@ -619,17 +620,26 @@ curl http://localhost:8080/admin/metrics \
   {
     "id": "mock-openai",
     "status": "Available",
-    "queue_length": 0
+    "queue_length": 0,
+    "key_pool": {
+      "envs": ["MOCK_OPENAI_KEY"],
+      "size": 1,
+      "current_index": 0,
+      "fingerprints": ["a1b2c3d4e5f60718"]
+    }
   },
   {
     "id": "mock-anthropic",
     "status": "Busy",
-    "queue_length": 3
+    "queue_length": 3,
+    "key_pool": null
   }
 ]
 ```
 
 `status` 为 `VendorStatus` 枚举的 `Debug` 输出，可能值：`Available` | `Busy` | `Throttled` | `Unavailable`。
+
+`key_pool` 为厂商 key 池观测信息（`KeyPoolInfo`：env 名列表 / 解析成功的 key 数量 / 当前游标下标 / 各 key 的 16 位十六进制指纹，**绝不暴露 key 原文**）；厂商无 key 池信息时为 `null`。
 
 状态判定为实时计算：厂商被限流窗口挡住时表现为 `Throttled`；熔断器（`[resilience]` 特性）处于 Open 且探测窗口未到时表现为 `Unavailable`（探测窗口已过则放行探测流量）；厂商 ID 不存在或 `enabled = false` 同样表现为 `Unavailable`。
 
@@ -662,11 +672,17 @@ curl http://localhost:8080/admin/vendors \
 {
   "id": "mock-openai",
   "status": "Available",
-  "queue_length": 0
+  "queue_length": 0,
+  "key_pool": {
+    "envs": ["MOCK_OPENAI_KEY"],
+    "size": 1,
+    "current_index": 0,
+    "fingerprints": ["a1b2c3d4e5f60718"]
+  }
 }
 ```
 
-当厂商 ID 不存在时，`status` 返回 `"Unavailable"`。状态判定语义同 [GET /admin/vendors](#get-adminvendors)。
+当厂商 ID 不存在时，`status` 返回 `"Unavailable"`。状态判定语义同 [GET /admin/vendors](#get-adminvendors)；`key_pool` 字段语义同上。
 
 **错误码**: 无业务错误
 
@@ -715,7 +731,7 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
 
 ### GET /admin/config
 
-返回当前运行时配置（完整 `Config` 结构，共 13 个顶层段：`server`、`database`、`vendors`、`global_model`、`pricing`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`）。
+返回当前运行时配置（完整 `Config` 结构，共 15 个顶层段：`server`、`database`、`vendors`、`global_model`、`pricing`、`model_catalog`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`、`grpc`；其中 `model_catalog` 为空目录、`grpc` 段缺省时在响应中省略 / 序列化为 `null`）。
 
 **认证**: 需要 Bearer Token
 
@@ -771,6 +787,20 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
     "enabled": true,
     "strategy": "weighted"
   },
+  "model_catalog": [
+    {
+      "model_id": "claude-sonnet-4-20250514",
+      "context_window": 200000,
+      "input_price": 3.0,
+      "output_price": 15.0,
+      "cache_read_price": 0.3,
+      "cache_creation_price": 3.75,
+      "currency": "usd",
+      "max_output_tokens": 8192,
+      "supports_tools": true,
+      "supports_thinking": true
+    }
+  ],
   "pricing": [
     {
       "vendor_id": "mock-openai",
@@ -838,7 +868,8 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
     "alpha_slo": 2.0,
     "alpha_burst": 1.0,
     "alpha_debt": 4.0
-  }
+  },
+  "grpc": null
 }
 ```
 
@@ -850,7 +881,7 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
 {"type": "token", "max_tokens": 10000000, "window_hours": 24, "sliding": false}
 ```
 
-> `[auth]`、`[cors]` 两段在配置文件中缺省时序列化为 `null`；`pricing` 缺省为空数组 `[]`。
+> `[auth]`、`[cors]`、`[grpc]` 三段在配置文件中缺省时序列化为 `null`；`pricing` 缺省为空数组 `[]`；`model_catalog` 为空目录时整体省略（`skip_serializing_if`）。vendor 条目配置了多 key 池时含 `api_key_envs` 数组（只存环境变量名，空时省略）。
 
 **错误码**: 无业务错误
 
@@ -869,7 +900,7 @@ curl http://localhost:8080/admin/config \
 
 **认证**: 需要 Bearer Token
 
-**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，13 个顶层段）
+**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，15 个顶层段）
 
 **响应**:
 
@@ -877,7 +908,8 @@ curl http://localhost:8080/admin/config \
 {
   "success": true,
   "message": "配置已更新；vendors/pricing/auth 立即生效",
-  "restart_required": []
+  "restart_required": [],
+  "applies_to_new_instances": []
 }
 ```
 
@@ -886,8 +918,9 @@ curl http://localhost:8080/admin/config \
 | `success` | boolean | 固定 `true` |
 | `message` | string | 更新结果描述（随 locale） |
 | `restart_required` | array | 需重启才能生效的段名列表 |
+| `applies_to_new_instances` | array | 仅对新建 vendor 实例生效的配置键列表（当前仅 `resilience.circuit_open_timeout_ms`——vendor 实例按 id 惰性创建后进程级缓存，熔断窗口变更不对既有实例生效） |
 
-> 生效语义：`server` 或 `cors` 段变更时，`restart_required` 包含对应段名（`"server"` / `"cors"`），`message` 会提示这些段需重启后生效——两段在建站期被固化（axum Router 的 layer 在构造时编译），运行期不可热换；其余段（vendors/pricing/auth 等）热生效。`[rate_limit]` 段在 Router 构造期消费，热更新不生效（当前实现未列入 `restart_required` 提示，重启后生效）。
+> 生效语义：`server` 或 `cors` 段变更时，`restart_required` 包含对应段名（`"server"` / `"cors"`），`message` 会提示这些段需重启后生效——两段在建站期被固化（axum Router 的 layer 在构造时编译），运行期不可热换；`resilience.circuit_open_timeout_ms` 变更时列入 `applies_to_new_instances`（对新建 vendor 实例生效）；其余段（vendors/pricing/auth 等）热生效。`[rate_limit]` 段在 Router 构造期消费，热更新不生效（当前实现未列入 `restart_required` 提示，重启后生效）。
 
 **错误码**: `config_error`(500，更新失败或反序列化失败)
 
@@ -913,7 +946,7 @@ curl -X POST http://localhost:8080/admin/config \
 
 **认证**: 需要 Bearer Token
 
-**响应**: `ModelCatalogEntry` 数组（九字段，字段对齐 agentstem `ModelEntry`；定价单位 =「currency 计价，每 1M tokens」）
+**响应**: `ModelCatalogEntry` 数组（十一字段，字段对齐 agentstem `ModelEntry`；定价单位 =「currency 计价，每 1M tokens」）
 
 ```json
 [
@@ -941,6 +974,7 @@ curl -X POST http://localhost:8080/admin/config \
 | `currency` | string | `usd` \| `cny`（四价共用币种） |
 | `max_output_tokens` | u64 \| null | 最大输出 tokens（null = 厂商未公布） |
 | `supports_tools` / `supports_thinking` | bool | 能力位 |
+| `cache_breakpoints` | object | Anthropic 自动缓存断点注入策略（可选，serde default；缺省 = 用内置默认——启用 / 上限 4 / 锚序 tools→system→last_user）；未配置时该字段在响应中**整体省略**（`skip_serializing_if`） |
 
 条目数上限 1024；未登记模型的能力查询回落 per-flavor 保守默认（openai 128k / anthropic 200k / ollama 4096，见 `config::model_catalog` 文档）。
 
@@ -1102,6 +1136,23 @@ curl -X POST http://localhost:8080/admin/models/global \
 
 ```bash
 curl http://localhost:8080/api/v1/health
+```
+
+### GET /readyz
+
+就绪探针：聚合 DB 池、`oxcache` 后端、vendor 管理器三项真实组件检查（absorb-sibling-libs G7，只读句柄，不打上游）。全绿 `200 {"status":"ready"}`，任一失败 `503 {"status":"unavailable"}`。**认证**: 无需。**限流**: 豁免。建议仅内网抓取（未认证端点）。
+
+### GET /metrics
+
+Prometheus 文本指标出口（`Content-Type: text/plain; version=0.0.4`），RED 维度（`sdforge_http_requests_total` / `sdforge_http_request_duration_seconds`，路由标签归一）。**认证**: 无需。**限流**: 豁免。建议仅内网抓取。
+
+### 文档面（需 `[docs].enabled = true`，默认关闭）
+
+OpenAPI 文档面（absorb-sibling-libs G11）：`GET /api-docs/openapi.json`（主 REST 端点 + 管理面 + 健康面路径）与 Swagger UI（`/swagger-ui/`）。默认配置下两路由不存在（404）；开关打开后可达，免认证免限流（开关本身即访问门）。
+
+```toml
+[docs]
+enabled = true
 ```
 
 ---

@@ -4766,13 +4766,22 @@ mod api_handler_coverage {
             .shutdown()
             .await
             .expect("shutdown");
-        tokio::time::sleep(Duration::from_millis(150)).await;
 
-        let logs = state
-            .database
-            .query_logs(&LogFilter::default())
-            .await
-            .expect("query logs");
+        // flush 完成时点受并行测试负载影响（固定 sleep 在高负载下会先于
+        // 落库断言）——改为有界轮询：正常路径首查即得，超时上限远宽于
+        // 正常 flush 耗时。
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let logs = loop {
+            let logs = state
+                .database
+                .query_logs(&LogFilter::default())
+                .await
+                .expect("query logs");
+            if !logs.is_empty() || std::time::Instant::now() >= deadline {
+                break logs;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
         assert_eq!(logs.len(), 1);
         let messages = &logs[0].messages;
         assert!(

@@ -113,6 +113,7 @@ pub async fn chat_completions(
 
 /// 透传流式路径（recId=2 二期/3 阶段一/11/10(3)）：派发 → 首绑定亲和 →
 /// 分帧转发 → 流式日志 → SSE 响应。
+#[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
 async fn chat_passthrough_stream(
     state: &Arc<ApiState>,
     ctx: &ChatDispatchCtx,
@@ -180,6 +181,7 @@ async fn chat_passthrough_stream(
 
 /// 透传非流式路径（recId=2 一期/12/11/10(3)）：缓存探测 → 派发 → 迁移
 /// 重绑定 → Miss 回写 → 成功日志 → X-Cache 响应。
+#[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
 async fn chat_passthrough_json(
     state: &Arc<ApiState>,
     ctx: &ChatDispatchCtx,
@@ -251,6 +253,7 @@ async fn chat_passthrough_json(
 
 /// 转换流式路径（recId=2 二期/3 阶段二/14②/11/10(3)）：派发 → 首绑定
 /// 亲和 → IR→OpenAI 出站事件流 → 流式日志 → SSE 响应。
+#[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
 async fn chat_convert_stream(
     state: &Arc<ApiState>,
     ctx: &ChatDispatchCtx,

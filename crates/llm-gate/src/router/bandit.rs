@@ -137,14 +137,11 @@ fn augment_with_identity(a: &[f64], d: usize) -> Vec<f64> {
     m
 }
 
-/// 部分主元高斯-约当消元（就地）。主元幅度低于阈值（奇异）或主元非有限
-/// 时返回 None（正则初值下仅 NaN 污染可触发）。
-fn gauss_jordan_eliminate(m: &mut [f64], d: usize) -> Option<()> {
-    let w = 2 * d;
-    const PIVOT_EPS: f64 = 1e-12;
-    for col in 0..d {
-        // 部分主元：当前列绝对值最大的行
-        let (pivot_row, pivot_mag) = (col..d).map(|r| (r, m[r * w + col].abs())).fold(
+/// 部分主元：`col` 列对角线以下（含）绝对值最大的行 (row, |m[row,col]|)。
+fn select_pivot(m: &[f64], d: usize, w: usize, col: usize) -> (usize, f64) {
+    (col..d)
+        .map(|r| (r, m[r * w + col].abs()))
+        .fold(
             (col, 0.0_f64),
             |(bi, bm), (r, mag)| {
                 if mag > bm {
@@ -153,7 +150,17 @@ fn gauss_jordan_eliminate(m: &mut [f64], d: usize) -> Option<()> {
                     (bi, bm)
                 }
             },
-        );
+        )
+}
+
+/// 部分主元高斯-约当消元（就地）。主元幅度低于阈值（奇异）或主元非有限
+/// 时返回 None（正则初值下仅 NaN 污染可触发）。
+fn gauss_jordan_eliminate(m: &mut [f64], d: usize) -> Option<()> {
+    let w = 2 * d;
+    const PIVOT_EPS: f64 = 1e-12;
+    for col in 0..d {
+        // 部分主元：当前列绝对值最大的行
+        let (pivot_row, pivot_mag) = select_pivot(m, d, w, col);
         if !pivot_mag.is_finite() || pivot_mag < PIVOT_EPS {
             return None; // 奇异
         }

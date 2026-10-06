@@ -88,138 +88,196 @@ pub async fn chat_completions(
 
     if use_passthrough {
         if stream {
-            // recId=2（二期）：cover_all_paths 开启时「首字节前换路」——
-            // Err（均发生在响应头前，manager check_stream_status 早退）排除
-            // 重派；Ok（流已建立）即交出 body，流中错误仍以 SSE error 事件
-            // 终止不再换路。关闭时单发直连，行为与历史逐位一致。
-            let (stream_response, decision) =
-                dispatch_with_fallback(&state, &ctx, model, &body, decision, true, |d| {
-                    let vendor_manager = state.vendor_manager.clone();
-                    let body = body.clone();
-                    async move {
-                        vendor_manager
-                            .execute_passthrough_stream_request(&d.vendor.id, body)
-                            .await
-                    }
-                })
-                .await?;
-
-            // recId=11：派发成功即回写亲和绑定（流后续错误由 metrics 记账）
-            // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
-            crate::api::bind_session_affinity(
-                &state,
-                &ctx.api_key_hash,
-                ctx.session_key.as_deref(),
-                &decision.vendor.id,
-            )
-            .await;
-
-            // recId=3 阶段一：透传流过分帧器逐帧原样转发（帧边界与上游一致），
-            // 替换旧的整块 bytes 直转 —— 后者无法检测上游中流 error 事件，
-            // 且错误中断会伪装成正常流结束
-            let body_stream = axum::body::Body::from_stream(
-                crate::api::sse::reframe_passthrough_stream(stream_response),
-            );
-
-            log_stream_dispatch(&state, &ctx, &decision, &body).await;
-
-            return Ok((STREAM_HEADERS, body_stream).into_response());
+            return chat_passthrough_stream(&state, &ctx, model, &body, decision).await;
         }
-
-        // recId=12：非流式透传的精确响应缓存（命中直接返回 HIT）
-        let cache_outcome = cache_probe(&state, &headers, &decision, &body).await;
-        if let Some(hit) = cache_hit_response(&state, &ctx, &decision, &body, &cache_outcome).await
-        {
-            return Ok(hit);
-        }
-
-        // 普通请求 - 零拷贝透传
-        // recId=2（一期）：cover_all_paths 开启时包换路 fallback 循环
-        //（resilience feature）——主 vendor 耗尽/429/5xx 时排除后重路由，
-        // actual_vendor 记最终成功者；关闭时单发直连，行为与历史逐位一致
-        let (response, decision) =
-            dispatch_with_fallback(&state, &ctx, model, &body, decision, true, |d| {
-                let vendor_manager = state.vendor_manager.clone();
-                let body = body.clone();
-                async move {
-                    vendor_manager
-                        .execute_passthrough_request(&d.vendor.id, body)
-                        .await
-                }
-            })
-            .await?;
-
-        // recId=11：执行成功回写亲和绑定（换路成功时 decision 已是最终
-        // 成功者——失败迁移绑定语义）；recId=12：未命中则回写响应缓存
-        // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
-        crate::api::rebind_session_affinity(
-            &state,
-            &ctx.api_key_hash,
-            ctx.session_key.as_deref(),
-            &decision.vendor.id,
-        )
-        .await;
-        persist_cache_miss(&state, &cache_outcome, &decision, &response).await;
-
-        log_success_dispatch(&state, &ctx, &decision, &body, &response).await;
-
-        // recId=12：缓存参与（Miss 回写完成）→ 响应带 X-Cache: MISS
-        return Ok(json_response_with_cache_flag(response, &cache_outcome));
+        return chat_passthrough_json(&state, &ctx, &headers, model, &body, decision).await;
     }
 
     // 转换路径：OpenAI → Unified → 目标厂商
     let unified_request = state.openai_converter.to_unified(body.clone())?;
 
     if stream {
-        // recId=3 阶段二：manager 返回分帧 + 反向解析后的 IR chunk 流
-        // recId=2（二期）：cover_all_paths 开启时「首字节前换路」（转换路径
-        // UnifiedRequest 任意 vendor type 均合法，不按协议过滤）；关闭时
-        // 单发直连，行为与历史逐位一致
-        let (chunk_stream, decision) =
-            dispatch_with_fallback(&state, &ctx, model, &body, decision, false, |d| {
-                let vendor_manager = state.vendor_manager.clone();
-                let unified_request = unified_request.clone();
-                async move {
-                    vendor_manager
-                        .execute_stream_request(&d.vendor.id, unified_request)
-                        .await
-                }
-            })
-            .await?;
+        return chat_convert_stream(&state, &ctx, model, &body, decision, unified_request).await;
+    }
+    chat_convert_json(
+        &state,
+        &ctx,
+        &headers,
+        model,
+        &body,
+        decision,
+        unified_request,
+    )
+    .await
+}
 
-        // recId=11：派发成功即回写亲和绑定
-        // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
-        crate::api::bind_session_affinity(
-            &state,
-            &ctx.api_key_hash,
-            ctx.session_key.as_deref(),
-            &decision.vendor.id,
-        )
-        .await;
+/// 透传流式路径（recId=2 二期/3 阶段一/11/10(3)）：派发 → 首绑定亲和 →
+/// 分帧转发 → 流式日志 → SSE 响应。
+async fn chat_passthrough_stream(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    model: &str,
+    body: &Value,
+    decision: RoutingDecision,
+) -> Result<axum::response::Response, NexusFlowError> {
+    // recId=2（二期）：cover_all_paths 开启时「首字节前换路」——
+    // Err（均发生在响应头前，manager check_stream_status 早退）排除
+    // 重派；Ok（流已建立）即交出 body，流中错误仍以 SSE error 事件
+    // 终止不再换路。关闭时单发直连，行为与历史逐位一致。
+    let (stream_response, decision) =
+        dispatch_with_fallback(state, ctx, model, body, decision, true, |d| {
+            let vendor_manager = state.vendor_manager.clone();
+            let body = body.clone();
+            async move {
+                vendor_manager
+                    .execute_passthrough_stream_request(&d.vendor.id, body)
+                    .await
+            }
+        })
+        .await?;
 
-        // IR → OpenAI 出站事件（存量 stream_chunk_to_external）。
-        // recId=14②：错误发带语义的 SSE error 事件后提前终止，不再补
-        // [DONE] —— 客户端与重试逻辑可分辨成败（旧实现错误后仍以 [DONE]
-        // 收尾伪装正常结束）
-        let converter = state.openai_converter.clone();
-        let body_stream = openai_sse_stream(converter, chunk_stream);
+    // recId=11：派发成功即回写亲和绑定（流后续错误由 metrics 记账）
+    // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
+    crate::api::bind_session_affinity(
+        state,
+        &ctx.api_key_hash,
+        ctx.session_key.as_deref(),
+        &decision.vendor.id,
+    )
+    .await;
 
-        log_stream_dispatch(&state, &ctx, &decision, &body).await;
+    // recId=3 阶段一：透传流过分帧器逐帧原样转发（帧边界与上游一致），
+    // 替换旧的整块 bytes 直转 —— 后者无法检测上游中流 error 事件，
+    // 且错误中断会伪装成正常流结束
+    let body_stream =
+        axum::body::Body::from_stream(crate::api::sse::reframe_passthrough_stream(stream_response));
 
-        return Ok((STREAM_HEADERS, body_stream).into_response());
+    log_stream_dispatch(state, ctx, &decision, body).await;
+
+    Ok((STREAM_HEADERS, body_stream).into_response())
+}
+
+/// 透传非流式路径（recId=2 一期/12/11/10(3)）：缓存探测 → 派发 → 迁移
+/// 重绑定 → Miss 回写 → 成功日志 → X-Cache 响应。
+async fn chat_passthrough_json(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    headers: &HeaderMap,
+    model: &str,
+    body: &Value,
+    decision: RoutingDecision,
+) -> Result<axum::response::Response, NexusFlowError> {
+    // recId=12：非流式透传的精确响应缓存（命中直接返回 HIT）
+    let cache_outcome = cache_probe(state, headers, &decision, body).await;
+    if let Some(hit) = cache_hit_response(state, ctx, &decision, body, &cache_outcome).await {
+        return Ok(hit);
     }
 
+    // 普通请求 - 零拷贝透传
+    // recId=2（一期）：cover_all_paths 开启时包换路 fallback 循环
+    //（resilience feature）——主 vendor 耗尽/429/5xx 时排除后重路由，
+    // actual_vendor 记最终成功者；关闭时单发直连，行为与历史逐位一致
+    let (response, decision) =
+        dispatch_with_fallback(state, ctx, model, body, decision, true, |d| {
+            let vendor_manager = state.vendor_manager.clone();
+            let body = body.clone();
+            async move {
+                vendor_manager
+                    .execute_passthrough_request(&d.vendor.id, body)
+                    .await
+            }
+        })
+        .await?;
+
+    // recId=11：执行成功回写亲和绑定（换路成功时 decision 已是最终
+    // 成功者——失败迁移绑定语义）；recId=12：未命中则回写响应缓存
+    // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
+    crate::api::rebind_session_affinity(
+        state,
+        &ctx.api_key_hash,
+        ctx.session_key.as_deref(),
+        &decision.vendor.id,
+    )
+    .await;
+    persist_cache_miss(state, &cache_outcome, &decision, &response).await;
+
+    log_success_dispatch(state, ctx, &decision, body, &response).await;
+
+    // recId=12：缓存参与（Miss 回写完成）→ 响应带 X-Cache: MISS
+    Ok(json_response_with_cache_flag(response, &cache_outcome))
+}
+
+/// 转换流式路径（recId=2 二期/3 阶段二/14②/11/10(3)）：派发 → 首绑定
+/// 亲和 → IR→OpenAI 出站事件流 → 流式日志 → SSE 响应。
+async fn chat_convert_stream(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    model: &str,
+    body: &Value,
+    decision: RoutingDecision,
+    unified_request: crate::protocol::UnifiedRequest,
+) -> Result<axum::response::Response, NexusFlowError> {
+    // recId=3 阶段二：manager 返回分帧 + 反向解析后的 IR chunk 流
+    // recId=2（二期）：cover_all_paths 开启时「首字节前换路」（转换路径
+    // UnifiedRequest 任意 vendor type 均合法，不按协议过滤）；关闭时
+    // 单发直连，行为与历史逐位一致
+    let (chunk_stream, decision) =
+        dispatch_with_fallback(state, ctx, model, body, decision, false, |d| {
+            let vendor_manager = state.vendor_manager.clone();
+            let unified_request = unified_request.clone();
+            async move {
+                vendor_manager
+                    .execute_stream_request(&d.vendor.id, unified_request)
+                    .await
+            }
+        })
+        .await?;
+
+    // recId=11：派发成功即回写亲和绑定
+    // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
+    crate::api::bind_session_affinity(
+        state,
+        &ctx.api_key_hash,
+        ctx.session_key.as_deref(),
+        &decision.vendor.id,
+    )
+    .await;
+
+    // IR → OpenAI 出站事件（存量 stream_chunk_to_external）。
+    // recId=14②：错误发带语义的 SSE error 事件后提前终止，不再补
+    // [DONE] —— 客户端与重试逻辑可分辨成败（旧实现错误后仍以 [DONE]
+    // 收尾伪装正常结束）
+    let converter = state.openai_converter.clone();
+    let body_stream = openai_sse_stream(converter, chunk_stream);
+
+    log_stream_dispatch(state, ctx, &decision, body).await;
+
+    Ok((STREAM_HEADERS, body_stream).into_response())
+}
+
+/// 转换非流式路径（recId=7⑤/12/11/10(3)）：缓存探测 → 派发（resilience
+/// 恒走换路循环）→ 统一响应回转 → 迁移重绑定 → Miss 回写 → 成功日志 →
+/// X-Cache 响应。
+async fn chat_convert_json(
+    state: &Arc<ApiState>,
+    ctx: &ChatDispatchCtx,
+    headers: &HeaderMap,
+    model: &str,
+    body: &Value,
+    decision: RoutingDecision,
+    unified_request: crate::protocol::UnifiedRequest,
+) -> Result<axum::response::Response, NexusFlowError> {
     // 普通请求 - 通过 UnifiedRequest
     // recId=12：非流式转换路径的精确响应缓存（命中直接返回 HIT）
-    let cache_outcome = cache_probe(&state, &headers, &decision, &body).await;
-    if let Some(hit) = cache_hit_response(&state, &ctx, &decision, &body, &cache_outcome).await {
+    let cache_outcome = cache_probe(state, headers, &decision, body).await;
+    if let Some(hit) = cache_hit_response(state, ctx, &decision, body, &cache_outcome).await {
         return Ok(hit);
     }
 
     // recId=7⑤：单发调用包换路 fallback 循环（resilience feature）——
     // 主 vendor 耗尽/429/5xx 时排除后重路由，actual_vendor 记最终成功者
     let (unified_response, decision) =
-        dispatch_unified_request(&state, &ctx, model, &body, decision, unified_request).await?;
+        dispatch_unified_request(state, ctx, model, body, decision, unified_request).await?;
 
     // 将统一响应转换回 OpenAI 格式
     let response = state
@@ -230,15 +288,15 @@ pub async fn chat_completions(
     // 最终成功者——失败迁移绑定语义）；recId=12：缓存 Miss 回写
     // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
     crate::api::rebind_session_affinity(
-        &state,
+        state,
         &ctx.api_key_hash,
         ctx.session_key.as_deref(),
         &decision.vendor.id,
     )
     .await;
-    persist_cache_miss(&state, &cache_outcome, &decision, &response).await;
+    persist_cache_miss(state, &cache_outcome, &decision, &response).await;
 
-    log_success_dispatch(&state, &ctx, &decision, &body, &response).await;
+    log_success_dispatch(state, ctx, &decision, body, &response).await;
 
     // recId=12：缓存参与 → 响应带 X-Cache 头（此处必为 MISS，HIT 已提前返回）
     Ok(json_response_with_cache_flag(response, &cache_outcome))

@@ -15,6 +15,10 @@ config-catalog-too-many = model catalog has { $count } entries; the cap is { $ca
 config-catalog-model-id-empty = model catalog entry has an empty model_id (whitespace only)
 config-catalog-price-invalid = model catalog entry { $model } has invalid { $field } = { $value }; prices must be finite and >= 0
 config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) is below the 100ms floor: a too-short window flips the circuit straight from Open to Half-Open, degrading failure recovery into a probe storm
+# $details 为固定序条目明细：位置 + 规则结论（本仓库形态契约或 confers
+# JwtSecretValidator 规则内核），只含长度数字，不含条目原文
+config-weak-admin-secret = Admin-plane secret rejected at startup (entries must be lowercase SHA256 hex digests): { $details }
+config-admin-secret-not-hex-digest = not a lowercase SHA256 hex digest (expected 64 lowercase hex chars, got { $length } bytes)
 
 # ---- config/manager.rs ----
 config-snapshot-serialize-failed = Config snapshot skipped: failed to serialize old config

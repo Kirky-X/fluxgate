@@ -15,6 +15,10 @@ config-catalog-too-many = 模型目录条目数 { $count } 超过上限 { $cap }
 config-catalog-model-id-empty = 模型目录条目的 model_id 为空（仅空白字符）
 config-catalog-price-invalid = 模型目录条目 { $model } 的 { $field } = { $value } 非法；价格必须为有限非负数
 config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) 低于下限 100ms：窗口过短会使熔断 Open 态立即转入半开，故障期退化为探针风暴
+# $details 为固定序条目明细：位置 + 规则结论（本仓库形态契约或 confers
+# JwtSecretValidator 规则内核），只含长度数字，不含条目原文
+config-weak-admin-secret = 管理面密钥校验未通过，拒绝启动（条目必须为小写 SHA256 hex 摘要）: { $details }
+config-admin-secret-not-hex-digest = 不是小写 SHA256 hex 摘要（应为 64 个小写十六进制字符，实际 { $length } 字节）
 
 # ---- config/manager.rs ----
 config-snapshot-serialize-failed = 配置快照跳过：旧配置序列化失败

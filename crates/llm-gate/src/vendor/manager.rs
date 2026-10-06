@@ -734,195 +734,241 @@ impl VendorManager {
                 }
             };
 
-            let client = client.clone();
-            let instance = instance.clone();
-            let openai = openai.clone();
-            let anthropic = anthropic.clone();
-            let config_manager = config_manager.clone();
-            let metrics = metrics.clone();
+            tokio::spawn(Self::process_dequeued(
+                instance.clone(),
+                client.clone(),
+                openai.clone(),
+                anthropic.clone(),
+                config_manager.clone(),
+                metrics.clone(),
+                config,
+                pending,
+                permit_result,
+            ));
+        }
+    }
 
-            tokio::spawn(async move {
-                // Hold permit
-                let _permit = permit_result;
+    /// 单条出队请求的执行任务（[`Self::process_vendor_queue`] 的
+    /// tokio::spawn 体）：凭证选择/按 key 熔断器/缓存断点策略装配 →
+    /// perform_http_request → 执行结局记账 → 成功路径配额与成本记账 →
+    /// 回传结果。
+    #[allow(clippy::too_many_arguments)]
+    async fn process_dequeued(
+        instance: Arc<VendorInstance>,
+        client: reqwest::Client,
+        openai: Arc<OpenAIConverter>,
+        anthropic: Arc<AnthropicConverter>,
+        config_manager: Arc<ConfigManager>,
+        metrics: Arc<GlobalMetrics>,
+        config: VendorConfig,
+        pending: PendingRequest,
+        permit: ConcurrencyPermit,
+    ) {
+        // Hold permit
+        let _permit = permit;
 
-                // recId=7④：[retry] 段热读 —— 每请求现读，POST /admin/config
-                // 更新后下一次重试循环即用新参数
-                let retry_cfg = config_manager.read().retry.clone();
+        // recId=7④：[retry] 段热读 —— 每请求现读，POST /admin/config
+        // 更新后下一次重试循环即用新参数
+        let retry_cfg = config_manager.read().retry.clone();
 
-                // T005：请求级凭证选择（池命中 → 当前 key；池空 → legacy
-                // 单 key 行为）+ 按（model, endpoint, key 指纹）选熔断器
-                //（审查 M2 维度补全）。key 在请求启动时固定——本请求所有
-                // 重试尝试复用同一 key（轮换生效于下次请求，见
-                // execute_http_with_retry_policy 的 401/403 分支）。
-                let credential = instance.select_request_key(&config);
-                #[cfg(feature = "resilience")]
-                let circuit_breaker = instance.circuit_breaker_for(
-                    &credential,
-                    Self::cb_model(&instance.vendor_id, &config, &pending.request.model),
-                    Self::cb_endpoint(&config),
+        // T005：请求级凭证选择（池命中 → 当前 key；池空 → legacy
+        // 单 key 行为）+ 按（model, endpoint, key 指纹）选熔断器
+        //（审查 M2 维度补全）。key 在请求启动时固定——本请求所有
+        // 重试尝试复用同一 key（轮换生效于下次请求，见
+        // execute_http_with_retry_policy 的 401/403 分支）。
+        let credential = instance.select_request_key(&config);
+        #[cfg(feature = "resilience")]
+        let circuit_breaker = instance.circuit_breaker_for(
+            &credential,
+            Self::cb_model(&instance.vendor_id, &config, &pending.request.model),
+            Self::cb_endpoint(&config),
+        );
+
+        // T007：anthropic 转换出站的缓存断点策略（条目覆盖或内置
+        // 默认；openai 型 None 不注入；透传路径字节保真不注入）
+        let cache_policy = if config.type_ == "anthropic" {
+            Some(crate::config::model_catalog::cache_policy_for(
+                &config_manager.read().model_catalog,
+                &pending.request.model,
+            ))
+        } else {
+            None
+        };
+
+        // pending.request 拆出局部绑定：perform 消费请求体后，
+        // pending 其余字段（记账时间戳/回传通道）仍可整结构体借用
+        let request = pending.request;
+        let result = Self::perform_http_request(
+            &client,
+            &config,
+            request,
+            &openai,
+            &anthropic,
+            &retry_cfg,
+            #[cfg(feature = "resilience")]
+            &circuit_breaker,
+            &metrics,
+            &instance,
+            &credential,
+            cache_policy.as_ref(),
+        )
+        .await;
+
+        Self::record_outcome(
+            &instance,
+            &metrics,
+            &config_manager,
+            pending.enqueued_at,
+            pending.dequeued_at,
+            &result,
+        );
+
+        // 成功路径：原子扣减 token 使用统计（recId=5）+ 累加成本。
+        if let Ok(ref response) = result {
+            Self::charge_success_usage(&instance, &config_manager, &config, response).await;
+        }
+
+        let _ = pending.response_tx.send(result);
+    }
+
+    /// 执行结局记账（观测信号）：成功清错误计数；失败累加错误计数。
+    /// 路由状态不在此回写（评审 blocker 实测复现的恢复死锁）：回写
+    /// mark_unavailable/mark_throttled 会让 router 的 ==Available 过滤
+    /// 永久排除该 vendor，而恢复通路（探针/窗口重置）都要求有请求先
+    /// 到达 —— 恶性循环。熔断/限流判定已全部实时化于 get_status。
+    ///
+    /// recId=4③：metrics 同点记账 —— 延迟口径 = enqueued_at 起算
+    /// （排队 + 限流 + HTTP 全程），成功/失败各记一次 record_request，
+    /// 失败另记 record_error。此前转换路径零指标。
+    ///
+    /// recId=8（口径分道）：本点 duration 是「排队+执行全程」口径，
+    /// 落 e2e 道；排队段（入队 → worker 取走）单列 queue 道。
+    /// 成败都记（与 record_request 同拍，不影响成败计数）。
+    fn record_outcome(
+        instance: &Arc<VendorInstance>,
+        metrics: &Arc<GlobalMetrics>,
+        config_manager: &Arc<ConfigManager>,
+        enqueued_at: Instant,
+        dequeued_at: Option<Instant>,
+        result: &Result<UnifiedResponse, GateError>,
+    ) {
+        metrics.set_ewma_tau_ms(config_manager.read().routing.ewma_tau_ms);
+        let duration = enqueued_at.elapsed();
+        let lane_now = Instant::now();
+        if let Some(dequeued_at) = dequeued_at {
+            metrics.record_queue(
+                &instance.vendor_id,
+                dequeued_at.saturating_duration_since(enqueued_at),
+                lane_now,
+            );
+        }
+        metrics.record_e2e(&instance.vendor_id, duration, lane_now);
+        match result {
+            Ok(_) => {
+                instance.state.mark_available();
+                instance.state.reset_error();
+                metrics.record_request(&instance.vendor_id, true, duration);
+                // recId=7（W5）：失败率滑窗双记（纯观测，常开）
+                metrics.record_vendor_outcome_at(&instance.vendor_id, true, Instant::now());
+            }
+            Err(e) => {
+                instance.state.inc_error();
+                metrics.record_request(&instance.vendor_id, false, duration);
+                metrics.record_error(&instance.vendor_id, &e.to_string());
+                // recId=7（W5）：失败率滑窗双记 —— 失败（含 429）计入
+                // failures。429 感知：该计数独立于 CB 分类器
+                //（error_map.rs 对 RateLimited 不计 CB 失败），
+                // 不影响 CB 自身的 failure_count。
+                metrics.record_vendor_outcome_at(&instance.vendor_id, false, Instant::now());
+                // recId=9（W5）：重试维度失败计数（守门器 r 的分母）—
+                // 仅转换路径（有 per-vendor 重试循环）的记账点累加，
+                // 与 retried_attempts 同路径口径；透传/流式无重试
+                // 循环，不计入。
+                metrics.record_failed_request_before_retry();
+            }
+        }
+    }
+
+    /// 成功路径：原子扣减 token 使用统计（recId=5：CAS 全有全无，
+    /// 剩余不足时拒绝记账不超卖）+ 累加成本。
+    /// 仅 Token 变体记账（评审 major）：Interval/TimeWindow/None 无
+    /// 配额语义，跳过以免误导性 underflow 告警。
+    #[cfg_attr(not(feature = "cost-tracking"), allow(unused_variables))]
+    async fn charge_success_usage(
+        instance: &Arc<VendorInstance>,
+        config_manager: &Arc<ConfigManager>,
+        config: &VendorConfig,
+        response: &UnifiedResponse,
+    ) {
+        if instance.advanced_limiter.accounts_tokens() {
+            let tokens = response.usage.total_tokens as u64;
+            let charged = instance.advanced_limiter.consume_tokens(tokens).await;
+            if !charged {
+                tracing::warn!(
+                    vendor = %instance.vendor_id,
+                    tokens,
+                    "{}",
+                    crate::i18n::t("vendor-token-quota-underflow")
                 );
+            }
+        }
 
-                // T007：anthropic 转换出站的缓存断点策略（条目覆盖或内置
-                // 默认；openai 型 None 不注入；透传路径字节保真不注入）
-                let cache_policy = if config.type_ == "anthropic" {
-                    Some(crate::config::model_catalog::cache_policy_for(
-                        &config_manager.read().model_catalog,
-                        &pending.request.model,
-                    ))
-                } else {
-                    None
-                };
-
-                let result = Self::perform_http_request(
-                    &client,
-                    &config,
-                    pending.request,
-                    &openai,
-                    &anthropic,
-                    &retry_cfg,
-                    #[cfg(feature = "resilience")]
-                    &circuit_breaker,
-                    &metrics,
-                    &instance,
-                    &credential,
-                    cache_policy.as_ref(),
-                )
-                .await;
-
-                // 执行结局记账（观测信号）：成功清错误计数；失败累加错误计数。
-                // 路由状态不在此回写（评审 blocker 实测复现的恢复死锁）：回写
-                // mark_unavailable/mark_throttled 会让 router 的 ==Available 过滤
-                // 永久排除该 vendor，而恢复通路（探针/窗口重置）都要求有请求先
-                // 到达 —— 恶性循环。熔断/限流判定已全部实时化于 get_status。
-                //
-                // recId=4③：metrics 同点记账 —— 延迟口径 = enqueued_at 起算
-                // （排队 + 限流 + HTTP 全程），成功/失败各记一次 record_request，
-                // 失败另记 record_error。此前转换路径零指标。
-                //
-                // recId=8（口径分道）：本点 duration 是「排队+执行全程」口径，
-                // 落 e2e 道；排队段（入队 → worker 取走）单列 queue 道。
-                // 成败都记（与 record_request 同拍，不影响成败计数）。
-                metrics.set_ewma_tau_ms(config_manager.read().routing.ewma_tau_ms);
-                let duration = pending.enqueued_at.elapsed();
-                let lane_now = Instant::now();
-                if let Some(dequeued_at) = pending.dequeued_at {
-                    metrics.record_queue(
-                        &instance.vendor_id,
-                        dequeued_at.saturating_duration_since(pending.enqueued_at),
-                        lane_now,
+        // cost-tracking：按 (vendor, model) 计算 USD 并累加。
+        // pricing 读取点改为热配置（recId=13）：每次计算时从
+        // ConfigManager 现读 pricing 构建查找表，热更新的单价
+        // 立即生效；表规模为条目级（<100），每请求一次构建开销可忽略。
+        // 解析失败时 calculate 返回 0.0（CostTracker 静默 no-op）
+        // cost-tracking：T007 计价改吃 model_catalog 四档（含
+        // cache 档，币种随条目；cache 语义按 vendor 协议——
+        // anthropic input 不含 cache 档 / openai 含）。未登记
+        // 模型 None 不计价（防 0 价伪装免费，T006 语义延续）。
+        // [[pricing]] 保留 SLA 因子消费（sla_v），旧
+        // CostCalculator 至 T011 桥接切换后退役（D7.11）。
+        #[cfg(feature = "cost-tracking")]
+        {
+            use crate::vendor::cost::{estimate_cost_from_catalog, PromptCacheSemantics};
+            let semantics = if config.type_ == "anthropic" {
+                PromptCacheSemantics::Exclusive
+            } else {
+                PromptCacheSemantics::Inclusive
+            };
+            let estimate = estimate_cost_from_catalog(
+                &config_manager.read().model_catalog,
+                &response.model,
+                &response.usage,
+                semantics,
+            );
+            match estimate {
+                Some(est) => {
+                    // CostTracker 单 USD 道：CNY 条目暂不落
+                    //（双币分道属 T011 桥接）——warn 显性（审查
+                    // F1：计费可见性过渡，防成本报表静默少计）
+                    if matches!(est.currency, crate::config::PricingCurrency::Usd) {
+                        instance.cost_tracker.record(
+                            &instance.vendor_id,
+                            &response.model,
+                            est.total_cost,
+                        );
+                    } else {
+                        tracing::warn!(
+                            vendor = %instance.vendor_id,
+                            model = %response.model,
+                            cost_cny = est.total_cost,
+                            "CNY-priced entry not recorded into USD cost tracker (T011 bridge pending)"
+                        );
+                    }
+                }
+                None => {
+                    // 审查 LOW-1：未登记 model_catalog 不计价——
+                    // 成本报表静默少计需可观测
+                    tracing::debug!(
+                        vendor = %instance.vendor_id,
+                        model = %response.model,
+                        "{}",
+                        crate::i18n::t("vendor-cost-unregistered-model")
                     );
                 }
-                metrics.record_e2e(&instance.vendor_id, duration, lane_now);
-                match &result {
-                    Ok(_) => {
-                        instance.state.mark_available();
-                        instance.state.reset_error();
-                        metrics.record_request(&instance.vendor_id, true, duration);
-                        // recId=7（W5）：失败率滑窗双记（纯观测，常开）
-                        metrics.record_vendor_outcome_at(&instance.vendor_id, true, Instant::now());
-                    }
-                    Err(e) => {
-                        instance.state.inc_error();
-                        metrics.record_request(&instance.vendor_id, false, duration);
-                        metrics.record_error(&instance.vendor_id, &e.to_string());
-                        // recId=7（W5）：失败率滑窗双记 —— 失败（含 429）计入
-                        // failures。429 感知：该计数独立于 CB 分类器
-                        //（error_map.rs 对 RateLimited 不计 CB 失败），
-                        // 不影响 CB 自身的 failure_count。
-                        metrics.record_vendor_outcome_at(
-                            &instance.vendor_id,
-                            false,
-                            Instant::now(),
-                        );
-                        // recId=9（W5）：重试维度失败计数（守门器 r 的分母）—
-                        // 仅转换路径（有 per-vendor 重试循环）的记账点累加，
-                        // 与 retried_attempts 同路径口径；透传/流式无重试
-                        // 循环，不计入。
-                        metrics.record_failed_request_before_retry();
-                    }
-                }
-
-                // 成功路径：原子扣减 token 使用统计（recId=5：CAS 全有全无，
-                // 剩余不足时拒绝记账不超卖）+ 累加成本。
-                // 仅 Token 变体记账（评审 major）：Interval/TimeWindow/None 无
-                // 配额语义，跳过以免误导性 underflow 告警。
-                if let Ok(ref response) = result {
-                    if instance.advanced_limiter.accounts_tokens() {
-                        let tokens = response.usage.total_tokens as u64;
-                        let charged = instance.advanced_limiter.consume_tokens(tokens).await;
-                        if !charged {
-                            tracing::warn!(
-                                vendor = %instance.vendor_id,
-                                tokens,
-                                "{}",
-                                crate::i18n::t("vendor-token-quota-underflow")
-                            );
-                        }
-                    }
-
-                    // cost-tracking：按 (vendor, model) 计算 USD 并累加。
-                    // pricing 读取点改为热配置（recId=13）：每次计算时从
-                    // ConfigManager 现读 pricing 构建查找表，热更新的单价
-                    // 立即生效；表规模为条目级（<100），每请求一次构建开销可忽略。
-                    // 解析失败时 calculate 返回 0.0（CostTracker 静默 no-op）
-                    // cost-tracking：T007 计价改吃 model_catalog 四档（含
-                    // cache 档，币种随条目；cache 语义按 vendor 协议——
-                    // anthropic input 不含 cache 档 / openai 含）。未登记
-                    // 模型 None 不计价（防 0 价伪装免费，T006 语义延续）。
-                    // [[pricing]] 保留 SLA 因子消费（sla_v），旧
-                    // CostCalculator 至 T011 桥接切换后退役（D7.11）。
-                    #[cfg(feature = "cost-tracking")]
-                    {
-                        use crate::vendor::cost::{
-                            estimate_cost_from_catalog, PromptCacheSemantics,
-                        };
-                        let semantics = if config.type_ == "anthropic" {
-                            PromptCacheSemantics::Exclusive
-                        } else {
-                            PromptCacheSemantics::Inclusive
-                        };
-                        let estimate = estimate_cost_from_catalog(
-                            &config_manager.read().model_catalog,
-                            &response.model,
-                            &response.usage,
-                            semantics,
-                        );
-                        match estimate {
-                            Some(est) => {
-                                // CostTracker 单 USD 道：CNY 条目暂不落
-                                //（双币分道属 T011 桥接）——warn 显性（审查
-                                // F1：计费可见性过渡，防成本报表静默少计）
-                                if matches!(est.currency, crate::config::PricingCurrency::Usd) {
-                                    instance.cost_tracker.record(
-                                        &instance.vendor_id,
-                                        &response.model,
-                                        est.total_cost,
-                                    );
-                                } else {
-                                    tracing::warn!(
-                                        vendor = %instance.vendor_id,
-                                        model = %response.model,
-                                        cost_cny = est.total_cost,
-                                        "CNY-priced entry not recorded into USD cost tracker (T011 bridge pending)"
-                                    );
-                                }
-                            }
-                            None => {
-                                // 审查 LOW-1：未登记 model_catalog 不计价——
-                                // 成本报表静默少计需可观测
-                                tracing::debug!(
-                                    vendor = %instance.vendor_id,
-                                    model = %response.model,
-                                    "{}",
-                                    crate::i18n::t("vendor-cost-unregistered-model")
-                                );
-                            }
-                        }
-                    }
-                }
-
-                let _ = pending.response_tx.send(result);
-            });
+            }
         }
     }
 
@@ -1275,171 +1321,27 @@ impl VendorManager {
         retry_policy
             .execute_with(
                 || async {
-                    // 构建带认证的请求（recId=4：per-attempt 总超时，从 send
-                    // 起算）。T005：池命中用固定 key；legacy 回退在 build 时
-                    // 读 env（缺失报 Config 错误——与历史逐位一致）。
-                    let builder = match credential.api_key() {
-                        Some(api_key) => Self::apply_attempt_timeout(
-                            Self::build_authed_request_with_key(
-                                client, config, &url, true, api_key,
-                            )
-                            .map_err(AttemptFailure::Fatal)?,
-                            config,
-                        ),
-                        None => Self::apply_attempt_timeout(
-                            Self::build_authed_request(client, config, &url, true)
-                                .map_err(AttemptFailure::Fatal)?,
-                            config,
-                        ),
-                    };
-
-                    let response = match builder.json(&request_body).send().await {
-                        Ok(resp) => resp,
-                        Err(e) => {
-                            return Err(AttemptFailure::Network {
-                                transient: e.is_timeout() || e.is_connect(),
-                            });
-                        }
-                    };
-
-                    let status = response.status();
-                    if !status.is_success() {
-                        // Retry-After 头须在消费 body 前读取
-                        let retry_after = Self::parse_retry_after(response.headers());
-                        let text = response.text().await.unwrap_or_default();
-                        tracing::warn!(
-                            vendor = %config.id,
-                            status = %status,
-                            body = %text,
-                            "{}",
-                            crate::i18n::t("vendor-upstream-non-success")
-                        );
-                        // T005：401/403 认证类失败推进 key 轮换游标——生效于
-                        // 下次请求；本请求的剩余尝试（若有）仍用同一 key
-                        if Self::is_auth_failure_status(status) {
-                            instance.advance_key_cursor(status.as_u16());
-                        }
-                        return Err(AttemptFailure::Http {
-                            status: status.as_u16(),
-                            retry_after,
-                            error: GateError::VendorUnavailable {
-                                vendor: crate::i18n::t_args(
-                                    "vendor-upstream-status",
-                                    &[
-                                        ("vendor", config.id.clone()),
-                                        ("status", status.to_string()),
-                                    ],
-                                ),
-                            },
-                        });
-                    }
-
-                    // 解析响应（recId=4：per-attempt 超时在 body 读取阶段触发
-                    // 时映射 Timeout，与真正的解析失败区分）
-                    let response_json: Value = match response.json().await {
-                        Ok(json) => json,
-                        Err(e) if e.is_timeout() => {
-                            return Err(AttemptFailure::Fatal(GateError::Timeout {
-                                vendor: config.id.clone(),
-                            }));
-                        }
-                        Err(e) => {
-                            return Err(AttemptFailure::Fatal(GateError::VendorUnavailable {
-                                vendor: crate::i18n::t_args(
-                                    "vendor-parse-error",
-                                    &[("error", e.to_string())],
-                                ),
-                            }));
-                        }
-                    };
-
+                    let builder =
+                        Self::build_authed_attempt_builder(client, config, &url, credential)?;
+                    let response =
+                        Self::send_attempt(builder, &request_body, config, instance).await?;
+                    let response_json = Self::read_attempt_json(response, config).await?;
                     converter
                         .parse_response(response_json)
                         .map_err(AttemptFailure::Fatal)
                 },
-                // 决策闭包：业务分类留应用（机制归库——见函数 doc）。
-                // `attempt` 从 1 起，指即将进行的第几次重试。
                 |attempt, failure| {
-                    // 分类：网络瞬时 → RetryableShort；状态码在可重试集合内
-                    // 才参与分类（集合外一律 Fatal）
-                    let (category, retry_after) = match failure {
-                        AttemptFailure::Network { transient: true } => {
-                            (Some(ErrorCategory::RetryableShort), None)
-                        }
-                        AttemptFailure::Http {
-                            status,
-                            retry_after,
-                            ..
-                        } => (
-                            if retry_cfg.retryable_status_codes.contains(status) {
-                                Some(ErrorCategory::from_status_code(*status))
-                            } else {
-                                None
-                            },
-                            *retry_after,
-                        ),
-                        // 非瞬时网络错误 / 终结失败不可重试
-                        _ => (None, None),
-                    };
-                    let Some(category) = category.filter(ErrorCategory::is_retryable) else {
-                        return RetryDecision::Stop;
-                    };
-
-                    // per-category 上限：网络瞬时错误固定 2 次（独立于
-                    // [retry].max_retries，旧循环逐位语义）；状态码路径收紧到
-                    // [retry].max_retries（硬上限已放宽到两者最大值）
-                    let max_retries = match category {
-                        ErrorCategory::RetryableShort => {
-                            ErrorCategory::RetryableShort.max_retries()
-                        }
-                        _ => retry_cfg.max_retries,
-                    };
-                    if attempt > max_retries {
-                        return RetryDecision::Stop;
-                    }
-
-                    // recId=9（W5）：重试维度计数（守门器 r 的分子）——仅对
-                    // 实际将要发生的重试记一笔（Stop 前置拦截不计数）
-                    metrics.record_retry_attempt();
-
-                    // 延迟：Retry-After 展宽优先，否则按分类取退避（纯函数，
-                    // RNG 注入；临时 ThreadRng 不跨 await）
-                    let policy_delay =
-                        retry_delay_for(category, attempt, &policy, &mut rand::thread_rng());
-                    let delay = match retry_after {
-                        Some(ra) => spread_delay(ra, &policy, &mut rand::thread_rng()),
-                        None => policy_delay,
-                    };
-                    // G3 安全封顶：恶意上游回超大 Retry-After（如 3600s）会
-                    // 占住 worker + 并发许可——指示值截断至上限（默认预算
-                    // 关闭时唯一的防线），截断即记 warn（异常路径，低频）。
-                    let delay = {
-                        const MAX_UPSTREAM_WAIT: Duration = Duration::from_secs(30);
-                        if delay > MAX_UPSTREAM_WAIT {
-                            tracing::warn!(
-                                vendor = %config.id,
-                                status = ?retry_after,
-                                capped_secs = MAX_UPSTREAM_WAIT.as_secs(),
-                                "upstream retry wait truncated",
-                            );
-                            MAX_UPSTREAM_WAIT
-                        } else {
-                            delay
-                        }
-                    };
-
-                    // recId=9（W5）：预算超限放弃——闭包内 Stop，库原样返回
-                    // 最后错误（网络 / 5xx·429 语义由出口映射保留）
-                    if let Some(b) = budget {
-                        if crate::utils::retry::budget_exceeded(budget_anchor, b, delay) {
-                            return RetryDecision::Stop;
-                        }
-                    }
-
-                    // 全分支 RetryAfter 原样回传 delay（库按该值精确睡眠，
-                    // 无库内二次抖动采样）——预算检查值与实际等待同值，
-                    // 恢复旧循环「一算、一查、一睡」的精确判定
-                    RetryDecision::RetryAfter(delay)
+                    // 决策闭包：业务分类留应用（机制归库——见函数 doc）。
+                    Self::decide_retry_delay(
+                        attempt,
+                        failure,
+                        retry_cfg,
+                        &policy,
+                        budget,
+                        budget_anchor,
+                        metrics,
+                        config,
+                    )
                 },
             )
             .await
@@ -1450,6 +1352,189 @@ impl VendorManager {
                 AttemptFailure::Http { error, .. } => error,
                 AttemptFailure::Fatal(error) => error,
             })
+    }
+
+    /// 单次尝试的带认证请求构建（recId=4：per-attempt 总超时，从 send
+    /// 起算）。T005：池命中用固定 key；legacy 回退在 build 时读 env
+    ///（缺失报 Config 错误——与历史逐位一致）。
+    fn build_authed_attempt_builder(
+        client: &reqwest::Client,
+        config: &VendorConfig,
+        url: &str,
+        credential: &RequestCredential,
+    ) -> Result<reqwest::RequestBuilder, AttemptFailure> {
+        let builder = match credential.api_key() {
+            Some(api_key) => Self::apply_attempt_timeout(
+                Self::build_authed_request_with_key(client, config, url, true, api_key)
+                    .map_err(AttemptFailure::Fatal)?,
+                config,
+            ),
+            None => Self::apply_attempt_timeout(
+                Self::build_authed_request(client, config, url, true)
+                    .map_err(AttemptFailure::Fatal)?,
+                config,
+            ),
+        };
+        Ok(builder)
+    }
+
+    /// 单次尝试的发送与非 2xx 处理：Retry-After 头须在消费 body 前读取；
+    /// T005：401/403 认证类失败推进 key 轮换游标——生效于下次请求；
+    /// 本请求的剩余尝试（若有）仍用同一 key。
+    async fn send_attempt(
+        builder: reqwest::RequestBuilder,
+        request_body: &Value,
+        config: &VendorConfig,
+        instance: &VendorInstance,
+    ) -> Result<reqwest::Response, AttemptFailure> {
+        let response = match builder.json(request_body).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                return Err(AttemptFailure::Network {
+                    transient: e.is_timeout() || e.is_connect(),
+                });
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let retry_after = Self::parse_retry_after(response.headers());
+            let text = response.text().await.unwrap_or_default();
+            tracing::warn!(
+                vendor = %config.id,
+                status = %status,
+                body = %text,
+                "{}",
+                crate::i18n::t("vendor-upstream-non-success")
+            );
+            if Self::is_auth_failure_status(status) {
+                instance.advance_key_cursor(status.as_u16());
+            }
+            return Err(AttemptFailure::Http {
+                status: status.as_u16(),
+                retry_after,
+                error: GateError::VendorUnavailable {
+                    vendor: crate::i18n::t_args(
+                        "vendor-upstream-status",
+                        &[
+                            ("vendor", config.id.clone()),
+                            ("status", status.to_string()),
+                        ],
+                    ),
+                },
+            });
+        }
+        Ok(response)
+    }
+
+    /// 解析响应（recId=4：per-attempt 超时在 body 读取阶段触发时映射
+    /// Timeout，与真正的解析失败区分）。
+    async fn read_attempt_json(
+        response: reqwest::Response,
+        config: &VendorConfig,
+    ) -> Result<Value, AttemptFailure> {
+        match response.json().await {
+            Ok(json) => Ok(json),
+            Err(e) if e.is_timeout() => Err(AttemptFailure::Fatal(GateError::Timeout {
+                vendor: config.id.clone(),
+            })),
+            Err(e) => Err(AttemptFailure::Fatal(GateError::VendorUnavailable {
+                vendor: crate::i18n::t_args("vendor-parse-error", &[("error", e.to_string())]),
+            })),
+        }
+    }
+
+    /// 重试决策：分类 → per-category 上限 → 重试计数 → 延迟计算
+    ///（Retry-After 展宽优先 + G3 恶意值封顶）→ 预算检查。
+    /// `attempt` 从 1 起，指即将进行的第几次重试。
+    #[allow(clippy::too_many_arguments)]
+    fn decide_retry_delay(
+        attempt: u32,
+        failure: &AttemptFailure,
+        retry_cfg: &RetrySection,
+        policy: &RetryDelayPolicy,
+        budget: Option<Duration>,
+        budget_anchor: tokio::time::Instant,
+        metrics: &GlobalMetrics,
+        config: &VendorConfig,
+    ) -> RetryDecision {
+        // 分类：网络瞬时 → RetryableShort；状态码在可重试集合内
+        // 才参与分类（集合外一律 Fatal）
+        let (category, retry_after) = match failure {
+            AttemptFailure::Network { transient: true } => {
+                (Some(ErrorCategory::RetryableShort), None)
+            }
+            AttemptFailure::Http {
+                status,
+                retry_after,
+                ..
+            } => (
+                if retry_cfg.retryable_status_codes.contains(status) {
+                    Some(ErrorCategory::from_status_code(*status))
+                } else {
+                    None
+                },
+                *retry_after,
+            ),
+            // 非瞬时网络错误 / 终结失败不可重试
+            _ => (None, None),
+        };
+        let Some(category) = category.filter(ErrorCategory::is_retryable) else {
+            return RetryDecision::Stop;
+        };
+
+        // per-category 上限：网络瞬时错误固定 2 次（独立于
+        // [retry].max_retries，旧循环逐位语义）；状态码路径收紧到
+        // [retry].max_retries（硬上限已放宽到两者最大值）
+        let max_retries = match category {
+            ErrorCategory::RetryableShort => ErrorCategory::RetryableShort.max_retries(),
+            _ => retry_cfg.max_retries,
+        };
+        if attempt > max_retries {
+            return RetryDecision::Stop;
+        }
+
+        // recId=9（W5）：重试维度计数（守门器 r 的分子）——仅对
+        // 实际将要发生的重试记一笔（Stop 前置拦截不计数）
+        metrics.record_retry_attempt();
+
+        // 延迟：Retry-After 展宽优先，否则按分类取退避（纯函数，
+        // RNG 注入；临时 ThreadRng 不跨 await）
+        let policy_delay = retry_delay_for(category, attempt, policy, &mut rand::thread_rng());
+        let delay = match retry_after {
+            Some(ra) => spread_delay(ra, policy, &mut rand::thread_rng()),
+            None => policy_delay,
+        };
+        // G3 安全封顶：恶意上游回超大 Retry-After（如 3600s）会
+        // 占住 worker + 并发许可——指示值截断至上限（默认预算
+        // 关闭时唯一的防线），截断即记 warn（异常路径，低频）。
+        let delay = {
+            const MAX_UPSTREAM_WAIT: Duration = Duration::from_secs(30);
+            if delay > MAX_UPSTREAM_WAIT {
+                tracing::warn!(
+                    vendor = %config.id,
+                    status = ?retry_after,
+                    capped_secs = MAX_UPSTREAM_WAIT.as_secs(),
+                    "upstream retry wait truncated",
+                );
+                MAX_UPSTREAM_WAIT
+            } else {
+                delay
+            }
+        };
+
+        // recId=9（W5）：预算超限放弃——闭包内 Stop，库原样返回
+        // 最后错误（网络 / 5xx·429 语义由出口映射保留）
+        if let Some(b) = budget {
+            if crate::utils::retry::budget_exceeded(budget_anchor, b, delay) {
+                return RetryDecision::Stop;
+            }
+        }
+
+        // 全分支 RetryAfter 原样回传 delay（库按该值精确睡眠，
+        // 无库内二次抖动采样）——预算检查值与实际等待同值，
+        // 恢复旧循环「一算、一查、一睡」的精确判定
+        RetryDecision::RetryAfter(delay)
     }
 
     /// 读取 vendor 的实时路由状态（recId=5② async 化；评审 blocker 后全面

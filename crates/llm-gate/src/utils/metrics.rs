@@ -1489,13 +1489,14 @@ mod tests {
     #[cfg(feature = "resilience")]
     #[test]
     fn rate_limited_counts_in_failure_window_but_not_circuit_breaker() {
-        use crate::vendor::resilience::error_map::{to_limiteron, GateErrorClassifier};
+        use crate::vendor::resilience::error_map::GateErrorClassifier;
         use limiteron::circuit::FailureClassifier as _;
 
         let classifier = GateErrorClassifier;
-        let encoded = to_limiteron(&crate::error::GateError::RateLimited { vendor: "v".into() });
         assert!(
-            !classifier.is_counted_as_failure(&encoded),
+            !classifier.is_counted_as_failure(&crate::error::GateError::RateLimited {
+                vendor: "v".into()
+            }),
             "CB 分类器对 RateLimited 必须无感（既有语义，对照基线）"
         );
 

@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 熔断器测试（recId=2）— 直接驱动 `limiteron::circuit::CircuitBreaker`。
+//! 熔断器测试（recId=2）— 直接驱动 `limiteron::circuit::CircuitBreaker<GateError>`。
 //!
 //! 手写三态机已删除（HalfOpen 死锁：默认 success_threshold=3 +
 //! half_open_max_calls=1，half_open_calls 从不在探针间清零，首个探针
@@ -13,41 +13,56 @@
 //! 1. 5 次可重试失败 → Open（failure_threshold=5）
 //! 2. 死锁回归：超时后探针连续成功 3 次 → Closed（手写版此场景永久卡 HalfOpen）
 //! 3. 探针失败 → 立即回 Open
-//! 4. 映射层单测：to/from 往返还原、解析失败降级路径、分类器 variant 语义
+//! 4. GateError 分类器 variant 语义（直判 GateError——G3 泛型收口后无前缀串解码）
+//! 5. 业务错误无损穿透：GateError 即熔断器错误类型，execute 出口变体与
+//!    详情不变（前缀串双向编解码删除后，原 from_limiteron 的有损降级路径不复存在）
+//! 6. from_circuit_call：CB Open 拒绝 → `VendorUnavailable{(circuit open)}` 形态
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
 use limiteron::circuit::{
     CircuitBreaker, CircuitBreakerConfig, CircuitCallError, FailureClassifier,
 };
-use limiteron::error::{CircuitState, LimiteronError};
+use limiteron::error::CircuitState;
 use llm_gate::error::GateError;
-use llm_gate::vendor::resilience::{
-    from_limiteron, is_circuit_open_error, to_limiteron, GateErrorClassifier,
-};
+use llm_gate::vendor::resilience::{from_circuit_call, is_circuit_open_error, GateErrorClassifier};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// failure_threshold=5 / success_threshold=3 / timeout=30s（生产同款配置），
-/// 错误分类器与 manager 接线一致（GateError 前缀分类器）。
-fn make_cb() -> (CircuitBreaker, Arc<limiteron::MockClock>) {
-    let clock = Arc::new(limiteron::MockClock::new());
-    let clock_dyn: Arc<dyn limiteron::Clock> = clock.clone();
-    let config = CircuitBreakerConfig::new(5, 3, Duration::from_secs(30))
-        .error_classifier(Arc::new(GateErrorClassifier));
-    (CircuitBreaker::with_clock(config, clock_dyn), clock)
+/// failure_threshold=5 / success_threshold=3 / timeout=30s（生产同款参数，
+/// 与 manager::gate_circuit_config 逐位一致），错误分类器同源
+/// （GateErrorClassifier）。自定义 E=GateError 经 `with_error_classifier`
+/// 构造（limiteron 的 `new` 仅在 LimiteronError 特化上提供），阈值经
+/// pub 字段显式对齐旧 `new(5, 3, 30s)`。
+fn gate_test_config() -> CircuitBreakerConfig<GateError> {
+    let mut config = CircuitBreakerConfig::with_error_classifier(Arc::new(GateErrorClassifier))
+        .slow_call_duration_threshold(Duration::from_secs(60))
+        .slow_call_rate_threshold(1.0);
+    config.failure_threshold = 5;
+    config.success_threshold = 3;
+    config.timeout = Duration::from_secs(30);
+    config
 }
 
-/// 桩异步操作：返回以映射层编码的上游不可用错误（计失败）
-fn failing_op() -> impl FnOnce() -> std::future::Ready<Result<(), LimiteronError>> {
+fn make_cb() -> (CircuitBreaker<GateError>, Arc<limiteron::MockClock>) {
+    let clock = Arc::new(limiteron::MockClock::new());
+    let clock_dyn: Arc<dyn limiteron::Clock> = clock.clone();
+    (
+        CircuitBreaker::with_clock(gate_test_config(), clock_dyn),
+        clock,
+    )
+}
+
+/// 桩异步操作：返回上游不可用错误（计失败）
+fn failing_op() -> impl FnOnce() -> std::future::Ready<Result<(), GateError>> {
     || {
-        std::future::ready(Err(to_limiteron(&GateError::VendorUnavailable {
+        std::future::ready(Err(GateError::VendorUnavailable {
             vendor: "vendor_a".into(),
-        })))
+        }))
     }
 }
 
-fn ok_op() -> impl FnOnce() -> std::future::Ready<Result<u32, LimiteronError>> {
+fn ok_op() -> impl FnOnce() -> std::future::Ready<Result<u32, GateError>> {
     || std::future::ready(Ok(1))
 }
 
@@ -58,7 +73,7 @@ async fn five_retryable_failures_open_the_circuit() {
     let (cb, _clock) = make_cb();
 
     for i in 0..5 {
-        let result: Result<(), CircuitCallError<LimiteronError>> = cb.execute(failing_op()).await;
+        let result: Result<(), CircuitCallError<GateError>> = cb.execute(failing_op()).await;
         assert!(result.is_err(), "call {} should fail", i);
     }
 
@@ -67,7 +82,7 @@ async fn five_retryable_failures_open_the_circuit() {
     // 第 6 次调用被拒绝且不执行操作（生产中 = 无 HTTP 调用）
     let executed = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let executed_c = executed.clone();
-    let result: Result<(), CircuitCallError<LimiteronError>> = cb
+    let result: Result<(), CircuitCallError<GateError>> = cb
         .execute(move || {
             let executed = executed_c.clone();
             async move {
@@ -90,11 +105,11 @@ async fn rate_limited_errors_do_not_trip_the_circuit() {
     let (cb, _clock) = make_cb();
 
     for _ in 0..10 {
-        let result: Result<(), CircuitCallError<LimiteronError>> = cb
+        let result: Result<(), CircuitCallError<GateError>> = cb
             .execute(|| {
-                std::future::ready(Err(to_limiteron(&GateError::RateLimited {
+                std::future::ready(Err(GateError::RateLimited {
                     vendor: "vendor_a".into(),
-                })))
+                }))
             })
             .await;
         assert!(result.is_err());
@@ -103,7 +118,7 @@ async fn rate_limited_errors_do_not_trip_the_circuit() {
     assert_eq!(
         cb.get_state().await,
         CircuitState::Closed,
-        "RateLimited 载荷不计失败，不应熔断"
+        "RateLimited 不计失败，不应熔断"
     );
 }
 
@@ -132,18 +147,17 @@ async fn rate_limited_errors_do_not_trip_the_circuit() {
 async fn slow_call_rate_threshold_one_requires_all_slow() {
     let clock = Arc::new(limiteron::MockClock::new());
     let clock_dyn: Arc<dyn limiteron::Clock> = clock.clone();
-    let config = CircuitBreakerConfig::new(5, 3, Duration::from_secs(30))
+    let config = CircuitBreakerConfig::with_error_classifier(Arc::new(GateErrorClassifier))
         .slow_call_duration_threshold(Duration::from_millis(100))
-        .slow_call_rate_threshold(1.0)
-        .error_classifier(Arc::new(GateErrorClassifier));
+        .slow_call_rate_threshold(1.0);
     let cb = CircuitBreaker::with_clock(config, clock_dyn);
 
     // 快调用先到：rate 0/1 = 0.0
-    let result: Result<u32, CircuitCallError<LimiteronError>> = cb.execute(ok_op()).await;
+    let result: Result<u32, CircuitCallError<GateError>> = cb.execute(ok_op()).await;
     assert!(result.is_ok());
     // 随后 2 次慢调用：rate 1/2 = 0.5、2/3 ≈ 0.67，全程 < 1.0
     for i in 0..2 {
-        let result: Result<u32, CircuitCallError<LimiteronError>> = cb
+        let result: Result<u32, CircuitCallError<GateError>> = cb
             .execute(|| async {
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 Ok(1)
@@ -166,7 +180,7 @@ async fn half_open_recovers_to_closed_after_three_probe_successes() {
     let (cb, clock) = make_cb();
 
     for _ in 0..5 {
-        let _: Result<(), CircuitCallError<LimiteronError>> = cb.execute(failing_op()).await;
+        let _: Result<(), CircuitCallError<GateError>> = cb.execute(failing_op()).await;
     }
     assert_eq!(cb.get_state().await, CircuitState::Open);
 
@@ -174,15 +188,15 @@ async fn half_open_recovers_to_closed_after_three_probe_successes() {
     clock.advance(Duration::from_secs(31));
 
     // 探针 1：Open → HalfOpen 转换并成功
-    let result: Result<u32, CircuitCallError<LimiteronError>> = cb.execute(ok_op()).await;
+    let result: Result<u32, CircuitCallError<GateError>> = cb.execute(ok_op()).await;
     assert!(result.is_ok());
     assert_eq!(cb.get_state().await, CircuitState::HalfOpen);
 
     // 探针 2、3 连续成功：success_count 达到阈值 3 → Closed
     // （手写版在 half_open_max_calls=1 下永久卡死于此场景）
-    let result: Result<u32, CircuitCallError<LimiteronError>> = cb.execute(ok_op()).await;
+    let result: Result<u32, CircuitCallError<GateError>> = cb.execute(ok_op()).await;
     assert!(result.is_ok());
-    let result: Result<u32, CircuitCallError<LimiteronError>> = cb.execute(ok_op()).await;
+    let result: Result<u32, CircuitCallError<GateError>> = cb.execute(ok_op()).await;
     assert!(result.is_ok());
 
     assert_eq!(
@@ -199,14 +213,14 @@ async fn failing_probe_reopens_immediately() {
     let (cb, clock) = make_cb();
 
     for _ in 0..5 {
-        let _: Result<(), CircuitCallError<LimiteronError>> = cb.execute(failing_op()).await;
+        let _: Result<(), CircuitCallError<GateError>> = cb.execute(failing_op()).await;
     }
     assert_eq!(cb.get_state().await, CircuitState::Open);
 
     clock.advance(Duration::from_secs(31));
 
     // 超时后的首个探针失败 → 立即重新熔断
-    let result: Result<(), CircuitCallError<LimiteronError>> = cb.execute(failing_op()).await;
+    let result: Result<(), CircuitCallError<GateError>> = cb.execute(failing_op()).await;
     assert!(result.is_err());
     assert_eq!(
         cb.get_state().await,
@@ -215,9 +229,55 @@ async fn failing_probe_reopens_immediately() {
     );
 }
 
-// ============ ④ 映射层单测 ============
+// ============ ④ 分类器 variant 语义（直判 GateError） ============
 
-/// 断言两个 NexusFlowError 同 variant 且字段一致（NexusFlowError 未派生
+#[test]
+fn classifier_counts_failures_by_variant_semantics() {
+    let classifier = GateErrorClassifier;
+    // 上游故障类：计失败
+    assert!(
+        classifier.is_counted_as_failure(&GateError::VendorUnavailable { vendor: "v".into() }),
+        "VendorUnavailable（上游故障）必须计失败"
+    );
+    assert!(
+        classifier.is_counted_as_failure(&GateError::Timeout { vendor: "v".into() }),
+        "Timeout（上游故障）必须计失败"
+    );
+    // 网关自身保护 / 客户端侧：不计失败
+    assert!(
+        !classifier.is_counted_as_failure(&GateError::RateLimited { vendor: "v".into() }),
+        "RateLimited 是网关自身保护信号，不计失败"
+    );
+    assert!(
+        !classifier.is_counted_as_failure(&GateError::Validation {
+            field: "model".into()
+        }),
+        "Validation 是客户端侧问题，不计失败"
+    );
+    assert!(
+        !classifier.is_counted_as_failure(&GateError::Protocol {
+            source: "bad body".into(),
+            inner: None,
+        }),
+        "Protocol 是客户端侧问题，不计失败"
+    );
+    // 保守计失败：config / routing / all_vendors_throttled
+    assert!(classifier.is_counted_as_failure(&GateError::Config {
+        message: "x".into()
+    }));
+    assert!(classifier.is_counted_as_failure(&GateError::Routing {
+        message: "x".into()
+    }));
+    assert!(
+        classifier.is_counted_as_failure(&GateError::AllVendorsThrottled {
+            retry_after_secs: 1
+        })
+    );
+}
+
+// ============ ⑤ 业务错误无损穿透熔断器（G3 泛型收口） ============
+
+/// 断言两个 GateError 同 variant 且字段一致（GateError 未派生
 /// PartialEq；Protocol 的 inner 源链不参与比较）。
 fn assert_same_error(a: &GateError, b: &GateError) {
     match (a, b) {
@@ -245,86 +305,83 @@ fn assert_same_error(a: &GateError, b: &GateError) {
         (GateError::Routing { message: x }, GateError::Routing { message: y }) => {
             assert_eq!(x, y)
         }
+        (
+            GateError::AllVendorsThrottled {
+                retry_after_secs: x,
+            },
+            GateError::AllVendorsThrottled {
+                retry_after_secs: y,
+            },
+        ) => {
+            assert_eq!(x, y)
+        }
         _ => panic!("variant mismatch: {:?} vs {:?}", a, b),
     }
 }
 
-#[test]
-fn to_and_from_limiteron_roundtrip_all_variants() {
-    let cases = vec![
-        GateError::VendorUnavailable {
+/// G3 泛型收口核心保证：GateError 直接作为 `CircuitBreaker<GateError>` 的
+/// 错误类型，execute 出口（`CircuitCallError::Inner`）的错误变体与详情
+/// 不变——删除前缀串双向编解码后错误无损传递。此前 `from_limiteron` 对
+/// 「无法识别的载荷」有损降级为 `VendorUnavailable`，该风险路径已不复存在。
+#[tokio::test]
+async fn business_errors_pass_through_breaker_losslessly() {
+    // GateError 无 Clone（Protocol 内含 Box<dyn Error>）——每用例经工厂
+    // 构造两份：一份作为穿透输入，一份作为出口对照。
+    let cases: Vec<Box<dyn Fn() -> GateError>> = vec![
+        Box::new(|| GateError::VendorUnavailable {
             vendor: "mock-openai (500: Internal Server Error)".into(),
-        },
-        GateError::Timeout {
+        }),
+        Box::new(|| GateError::Timeout {
             vendor: "mock-anthropic".into(),
-        },
-        GateError::RateLimited {
+        }),
+        Box::new(|| GateError::RateLimited {
             vendor: "mock-openai".into(),
-        },
-        GateError::Validation {
+        }),
+        Box::new(|| GateError::Validation {
             field: "model".into(),
-        },
-        GateError::Protocol {
+        }),
+        Box::new(|| GateError::Protocol {
             source: "detail: with: colons".into(),
             inner: None,
-        },
-        GateError::Config {
+        }),
+        Box::new(|| GateError::Config {
             message: "bad [retry] section".into(),
-        },
-        GateError::Routing {
+        }),
+        Box::new(|| GateError::Routing {
             message: "no vendor".into(),
-        },
+        }),
+        Box::new(|| GateError::AllVendorsThrottled {
+            retry_after_secs: 7,
+        }),
     ];
 
-    for original in &cases {
-        let mapped = to_limiteron(original);
-        // 编码形态：带前缀的 Other
-        match &mapped {
-            LimiteronError::Other(payload) => {
-                assert!(
-                    payload.starts_with("llm-gate:"),
-                    "payload should carry llm-gate: prefix, got: {}",
-                    payload
-                );
+    for factory in cases {
+        // 每变体独立熔断器：单次失败远低于阈值 5，全程保持 Closed——
+        // 错误语义（计数与否）由 ④ 与 manager 侧集成测试承载
+        let expected = factory();
+        let cb = CircuitBreaker::<GateError>::with_dependencies(gate_test_config());
+        let result: Result<(), CircuitCallError<GateError>> =
+            cb.execute(move || std::future::ready(Err(factory()))).await;
+        match result {
+            Err(CircuitCallError::Inner(passthrough)) => {
+                assert_same_error(&expected, &passthrough);
             }
-            other => panic!("to_limiteron should produce Other, got {:?}", other),
+            other => panic!(
+                "业务错误必须经 Inner 原样透传，实际 {:?}（原始 {:?}）",
+                other.map(|_| ()),
+                expected
+            ),
         }
-        let restored = from_limiteron(mapped, "vendor_a");
-        assert_same_error(original, &restored);
+        assert_eq!(cb.get_state().await, CircuitState::Closed);
     }
 }
 
-#[test]
-fn database_payload_degrades_after_variant_freeze() {
-    // 变体集冻结（design.md D1.3）：Database 留 nexusflow、llm-gate 映射层
-    // 不再引用——`llm-gate:database:*` 载荷自冻结起走有损降级
-    //（VendorUnavailable，详情保留在 vendor 串中）。
-    let restored = from_limiteron(
-        LimiteronError::Other("llm-gate:database:sqlite busy".into()),
-        "vendor_a",
-    );
-    match restored {
-        GateError::VendorUnavailable { vendor } => {
-            assert!(
-                vendor.contains("sqlite busy"),
-                "降级形态必须保留原始 detail: {vendor}"
-            );
-            assert!(
-                vendor.contains("vendor_a"),
-                "降级形态必须携带 vendor 标识: {vendor}"
-            );
-        }
-        other => panic!("database 载荷应降级为 VendorUnavailable，实际 {other:?}"),
-    }
-}
+// ============ ⑥ from_circuit_call：CB Open 拒绝的还原形态 ============
 
 #[test]
-fn from_limiteron_limit_error_maps_to_circuit_open() {
-    // CB Open / half-open 准入超限的拒绝串 → "…(circuit open)"
-    let err = from_limiteron(
-        LimiteronError::LimitError("Circuit breaker open, request rejected".into()),
-        "vendor_a",
-    );
+fn from_circuit_call_open_maps_to_circuit_open_form() {
+    // CB Open / half-open 准入超限的拒绝 → "…(circuit open)"
+    let err = from_circuit_call(CircuitCallError::Open, "vendor_a");
     match &err {
         GateError::VendorUnavailable { vendor } => {
             assert_eq!(vendor, "vendor_a (circuit open)");
@@ -337,69 +394,19 @@ fn from_limiteron_limit_error_maps_to_circuit_open() {
     }));
 }
 
+/// Inner 臂原样透传（与 ⑤ 的 execute 出口同语义的直接单元证明）。
 #[test]
-fn from_limiteron_degrades_unrecognizable_payloads() {
-    // 带前缀但 variant 无法识别 → 降级 VendorUnavailable
-    let err = from_limiteron(
-        LimiteronError::Other("llm-gate:unknown_variant:boom".into()),
+fn from_circuit_call_inner_is_lossless() {
+    let err = from_circuit_call(
+        CircuitCallError::Inner(GateError::Timeout {
+            vendor: "vendor_a".into(),
+        }),
         "vendor_a",
     );
-    match &err {
-        GateError::VendorUnavailable { vendor } => {
-            assert!(
-                vendor.starts_with("vendor_a (circuit error:"),
-                "degraded error should keep vendor id, got: {}",
-                vendor
-            );
-            assert!(vendor.contains("unknown_variant:boom"));
-        }
-        other => panic!("expected degraded VendorUnavailable, got {:?}", other),
-    }
-    assert!(!is_circuit_open_error(&err));
-
-    // 完全无关的库内错误 → 降级
-    let err = from_limiteron(LimiteronError::BanError("banned".into()), "vendor_a");
-    assert!(matches!(err, GateError::VendorUnavailable { .. }));
-    assert!(!is_circuit_open_error(&err));
-}
-
-#[test]
-fn classifier_counts_failures_by_variant_semantics() {
-    let classifier = GateErrorClassifier;
-    // 上游故障类：计失败
-    assert!(
-        classifier.is_counted_as_failure(&to_limiteron(&GateError::VendorUnavailable {
-            vendor: "v".into()
-        }))
+    assert_same_error(
+        &GateError::Timeout {
+            vendor: "vendor_a".into(),
+        },
+        &err,
     );
-    assert!(
-        classifier.is_counted_as_failure(&to_limiteron(&GateError::Timeout { vendor: "v".into() }))
-    );
-    // 网关自身保护 / 客户端侧：不计失败
-    assert!(
-        !classifier.is_counted_as_failure(&to_limiteron(&GateError::RateLimited {
-            vendor: "v".into()
-        }))
-    );
-    assert!(
-        !classifier.is_counted_as_failure(&to_limiteron(&GateError::Validation {
-            field: "model".into()
-        }))
-    );
-    assert!(
-        !classifier.is_counted_as_failure(&to_limiteron(&GateError::Protocol {
-            source: "bad body".into(),
-            inner: None,
-        }))
-    );
-    // 保守计失败：config/database/routing 与未知载荷
-    assert!(
-        classifier.is_counted_as_failure(&to_limiteron(&GateError::Config {
-            message: "x".into()
-        }))
-    );
-    assert!(classifier.is_counted_as_failure(&LimiteronError::Other("alien".into())));
-    // 库自身保护机制错误：不计失败（对齐 DefaultFailureClassifier）
-    assert!(!classifier.is_counted_as_failure(&LimiteronError::LimitError("rejected".into())));
-    assert!(!classifier.is_counted_as_failure(&LimiteronError::CircuitBreakerError("open".into())));
 }

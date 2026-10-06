@@ -12,17 +12,18 @@ use crate::error::GateError;
 use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
 use crate::protocol::{StreamChunk, UnifiedRequest, UnifiedResponse};
 use crate::utils::metrics::GlobalMetrics;
-use crate::utils::retry::{retry_delay_for, ErrorCategory, RetryDelayPolicy};
+use crate::utils::retry::{retry_delay_for, spread_delay, ErrorCategory, RetryDelayPolicy};
 #[cfg(feature = "cost-tracking")]
 use crate::utils::CostTracker;
 use crate::vendor::key_pool::{KeyPool, KeyPoolInfo, PoolSnapshot, RequestCredential};
 #[cfg(feature = "resilience")]
-use crate::vendor::resilience::error_map::{from_circuit_call, to_limiteron, GateErrorClassifier};
+use crate::vendor::resilience::error_map::{from_circuit_call, GateErrorClassifier};
 use bytes::Bytes;
 #[cfg(feature = "resilience")]
 use limiteron::circuit::{CircuitBreaker, CircuitBreakerConfig};
 #[cfg(feature = "resilience")]
 use limiteron::error::CircuitState;
+use limiteron::retry::{RetryDecision, RetryPolicy};
 use reqwest;
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
@@ -124,8 +125,10 @@ struct VendorInstance {
     key_pool: KeyPool,
     /// vendor 级熔断器 — legacy 回退（池空）请求的执行熔断器；池命中
     /// 请求改用 per-key 指纹熔断器（见 `circuit_breaker_for`）。
+    /// G3：错误类型即 [`GateError`]（业务错误经 `CircuitCallError::Inner`
+    /// 无损透传，无前缀串编解码）。
     #[cfg(feature = "resilience")]
-    circuit_breaker: Arc<CircuitBreaker>,
+    circuit_breaker: Arc<CircuitBreaker<GateError>>,
     /// T005：per-key 指纹熔断器注册表 — 熔断状态键维度对齐 provider_chain.rs:199-214 的 breaker_state_key：**vendor_id + model + endpoint + key 指纹**（vendor_id 由实例域隐含，map 挂在实例上；键三元 = (model, endpoint, 指纹)）——同 key 同 model 跨请求共享计数，不同 key / 不同 model 互相隔离。legacy 回退不经此表。
     ///
     /// 审查 F1 上界声明：活跃指纹 ≤ 8×名单变更次数（`MAX_KEY_POOL` ×
@@ -134,8 +137,7 @@ struct VendorInstance {
     /// 维度——条目上界 = 活跃指纹数 × 活跃 model 数（由路由 model 白名单
     /// 与客户端实际用量约束），字节级有界。
     #[cfg(feature = "resilience")]
-    per_key_circuit_breakers:
-        std::sync::Mutex<std::collections::HashMap<(String, String, String), Arc<CircuitBreaker>>>,
+    per_key_circuit_breakers: PerKeyCircuitBreakers,
     /// T005：per-key 熔断器构造参数（实例创建时取自 [resilience] 段快照，
     /// 与 `circuit_breaker` 同源；vendor 实例构造期定死，restart-required，
     /// 与既有 CB 窗口语义一致）。
@@ -147,6 +149,12 @@ struct VendorInstance {
 
 /// recId=1：生产熔断器配置的单一构造点（tests/circuit_breaker_test.rs 与
 /// manager 测试同源引用，生产接线与测试证明合一）。
+///
+/// G3 泛型收口：错误类型即 [`GateError`]（业务错误经
+/// `CircuitCallError::Inner` 无损透传）。limiteron 的
+/// `CircuitBreakerConfig::new` 仅在 `LimiteronError` 特化上提供
+/// （types.rs:193），自定义 `E` 经 `with_error_classifier` 构造——阈值
+/// 经 pub 字段逐位对齐旧 `new(5, 3, open_timeout)`。
 ///
 /// 缺陷背景：`CircuitBreakerConfig::new` 之后慢调用参数取 limiteron 默认
 /// duration=500ms / rate=0.5（../limiteron src/constants.rs:106/111），
@@ -165,12 +173,41 @@ struct VendorInstance {
 /// 残余触发场景「窗口内 100% 调用皆 >60s 且全成功」在 W2 默认值下与
 /// 失败路径触发条件重合，行为一致。
 #[cfg(feature = "resilience")]
-pub(crate) fn gate_circuit_config(open_timeout: std::time::Duration) -> CircuitBreakerConfig {
-    CircuitBreakerConfig::new(5, 3, open_timeout)
+pub(crate) fn gate_circuit_config(
+    open_timeout: std::time::Duration,
+) -> CircuitBreakerConfig<GateError> {
+    let mut config = CircuitBreakerConfig::with_error_classifier(Arc::new(GateErrorClassifier))
         .slow_call_duration_threshold(Duration::from_secs(60))
-        .slow_call_rate_threshold(1.0)
-        .error_classifier(Arc::new(GateErrorClassifier))
+        .slow_call_rate_threshold(1.0);
+    config.failure_threshold = 5;
+    config.success_threshold = 3;
+    config.timeout = open_timeout;
+    config
 }
+
+/// G3：单次 HTTP 尝试的失败信号（机制/信号分离——信号在此产生，业务
+/// 决策在 [`RetryPolicy::execute_with`] 的 decide 闭包，出口映射保留
+/// 各自的错误语义）。
+#[derive(Debug)]
+enum AttemptFailure {
+    /// send 阶段网络错误；`transient` = 超时/连接类（RetryableShort 候选）
+    Network { transient: bool },
+    /// 上游非 2xx：状态码 + `Retry-After` 头 + 已成形错误（i18n 语义串）
+    Http {
+        status: u16,
+        retry_after: Option<Duration>,
+        error: GateError,
+    },
+    /// 终结失败（构建 / 解析 / 协议转换错误），原样透传不重试
+    Fatal(GateError),
+}
+
+/// T005：per-key 指纹熔断器表（键三元 = (model, endpoint, key 指纹)，
+/// G3 泛型收口后错误类型为 [`GateError`]）。
+#[cfg(feature = "resilience")]
+type PerKeyCircuitBreakers = std::sync::Mutex<
+    std::collections::HashMap<(String, String, String), Arc<CircuitBreaker<GateError>>>,
+>;
 
 impl VendorInstance {
     fn new(
@@ -250,29 +287,38 @@ impl VendorInstance {
         credential: &RequestCredential,
         model: &str,
         endpoint: &str,
-    ) -> Arc<CircuitBreaker> {
+    ) -> Arc<CircuitBreaker<GateError>> {
         self.circuit_breaker_for_fp(credential.fingerprint(), model, endpoint)
     }
 
     /// [`Self::circuit_breaker_for`] 的指纹直入版（`None` = legacy 回退）。
+    ///
+    /// 容量守卫（G3 安全修复）：表键含客户端侧 model/endpoint（`cb_model`
+    /// 回落原始串时攻击者可控），无界增长即内存 DoS。条目达上限后新维度
+    /// 退化到 vendor 级熔断器（语义 = legacy 回退，无新状态，内存有界）。
     #[cfg(feature = "resilience")]
     fn circuit_breaker_for_fp(
         &self,
         fingerprint: Option<&str>,
         model: &str,
         endpoint: &str,
-    ) -> Arc<CircuitBreaker> {
+    ) -> Arc<CircuitBreaker<GateError>> {
+        const MAX_PER_KEY_CIRCUIT_BREAKERS: usize = 2048;
         match fingerprint {
             Some(fp) => {
                 let mut guard = self.per_key_circuit_breakers.lock().unwrap();
-                guard
-                    .entry((model.to_string(), endpoint.to_string(), fp.to_string()))
-                    .or_insert_with(|| {
-                        Arc::new(CircuitBreaker::new(gate_circuit_config(
-                            self.circuit_open_timeout,
-                        )))
-                    })
-                    .clone()
+                let key = (model.to_string(), endpoint.to_string(), fp.to_string());
+                if let Some(cb) = guard.get(&key) {
+                    return cb.clone();
+                }
+                if guard.len() >= MAX_PER_KEY_CIRCUIT_BREAKERS {
+                    return self.circuit_breaker.clone();
+                }
+                let cb = Arc::new(CircuitBreaker::new(gate_circuit_config(
+                    self.circuit_open_timeout,
+                )));
+                guard.insert(key, cb.clone());
+                cb
             }
             None => self.circuit_breaker.clone(),
         }
@@ -285,7 +331,7 @@ impl VendorInstance {
     fn peek_circuit_breakers_for_fingerprint(
         &self,
         fingerprint: Option<&str>,
-    ) -> Vec<Arc<CircuitBreaker>> {
+    ) -> Vec<Arc<CircuitBreaker<GateError>>> {
         match fingerprint {
             Some(fp) => {
                 let guard = self.per_key_circuit_breakers.lock().unwrap();
@@ -448,7 +494,7 @@ impl VendorManager {
     /// HalfOpen → HalfOpen；其余 → Closed。空集由调用方守卫（回落语义
     /// 各不相同）。
     #[cfg(feature = "resilience")]
-    async fn aggregate_circuit_state(breakers: &[Arc<CircuitBreaker>]) -> CircuitState {
+    async fn aggregate_circuit_state(breakers: &[Arc<CircuitBreaker<GateError>>]) -> CircuitState {
         let mut all_open = true;
         let mut any_half_open = false;
         for cb in breakers {
@@ -541,7 +587,7 @@ impl VendorManager {
         credential: &RequestCredential,
         model: &str,
         endpoint: &str,
-    ) -> Option<Arc<CircuitBreaker>> {
+    ) -> Option<Arc<CircuitBreaker<GateError>>> {
         let guard = self.instances.read().unwrap();
         guard
             .get(vendor_id)
@@ -698,7 +744,7 @@ impl VendorManager {
                 // 单 key 行为）+ 按（model, endpoint, key 指纹）选熔断器
                 //（审查 M2 维度补全）。key 在请求启动时固定——本请求所有
                 // 重试尝试复用同一 key（轮换生效于下次请求，见
-                // execute_http_with_retry_inner 的 401/403 分支）。
+                // execute_http_with_retry_policy 的 401/403 分支）。
                 let credential = instance.select_request_key(&config);
                 #[cfg(feature = "resilience")]
                 let circuit_breaker = instance.circuit_breaker_for(
@@ -883,7 +929,7 @@ impl VendorManager {
         openai: &OpenAIConverter,
         anthropic: &AnthropicConverter,
         retry_cfg: &RetrySection,
-        #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker>,
+        #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker<GateError>>,
         metrics: &GlobalMetrics,
         instance: &VendorInstance,
         credential: &RequestCredential,
@@ -1092,15 +1138,15 @@ impl VendorManager {
 
     /// 执行带重试的 HTTP 请求。
     ///
-    /// 启用 `resilience` feature 时由 `limiteron::circuit::CircuitBreaker`
-    /// 包装（recId=2）：
+    /// 启用 `resilience` feature 时由
+    /// `limiteron::circuit::CircuitBreaker<GateError>` 包装（recId=2，G3
+    /// 泛型收口后错误类型即 [`GateError`]）：
     /// - Closed/HalfOpen 状态下放行至内部重试逻辑；
     /// - Open（含 half-open 准入超限）状态下直接拒绝，经
-    ///   [`from_limiteron`] 还原为 `VendorUnavailable{... (circuit open)}`，
+    ///   [`from_circuit_call`] 还原为 `VendorUnavailable{... (circuit open)}`，
     ///   无 HTTP 调用；
-    /// - 执行路径错误是 GateError，经 [`to_limiteron`] 编码进库签名
-    ///   要求的 `Result<T, LimiteronError>`，计失败与否由
-    ///   [`GateErrorClassifier`] 按 variant 语义判定。
+    /// - 执行路径错误原样透传（`CircuitCallError::Inner`，无损），计失败
+    ///   与否由 [`GateErrorClassifier`] 按 variant 语义判定。
     ///
     /// T005：`credential` 固定本请求的 key（池命中时所有重试尝试复用；
     /// 401/403 认证类失败推进轮换游标，生效于下次请求）。
@@ -1111,7 +1157,7 @@ impl VendorManager {
         request_body: Value,
         converter: &dyn ProtocolConverter,
         retry_cfg: &RetrySection,
-        #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker>,
+        #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker<GateError>>,
         metrics: &GlobalMetrics,
         instance: &VendorInstance,
         credential: &RequestCredential,
@@ -1121,7 +1167,7 @@ impl VendorManager {
             let vendor_id = config.id.clone();
             let result = circuit_breaker
                 .execute(|| async {
-                    Self::execute_http_with_retry_inner(
+                    Self::execute_http_with_retry_policy(
                         client,
                         config,
                         request_body.clone(),
@@ -1132,7 +1178,6 @@ impl VendorManager {
                         credential,
                     )
                     .await
-                    .map_err(|e| to_limiteron(&e))
                 })
                 .await;
             result.map_err(|e| from_circuit_call(e, &vendor_id))
@@ -1140,7 +1185,7 @@ impl VendorManager {
         #[cfg(not(feature = "resilience"))]
         {
             let _ = retry_cfg;
-            Self::execute_http_with_retry_inner(
+            Self::execute_http_with_retry_policy(
                 client,
                 config,
                 request_body,
@@ -1154,24 +1199,39 @@ impl VendorManager {
         }
     }
 
-    /// HTTP 请求 + 自管重试薄循环（recId=7）。
+    /// HTTP 请求 + 库管重试循环（G3：`limiteron RetryPolicy::execute_with`）。
     /// 在 `resilience` feature 启用时由 `execute_http_with_retry` 经 CB 包装后调用。
     ///
-    /// recId=7 变更：
-    /// - 延迟计算迁 `limiteron::retry::delay_for_attempt`（经
-    ///   `retry_delay_for` 纯函数），修掉旧实现「先自增再取指数」的
-    ///   2s 起步偏移，且 429 退避叠加 jitter；
-    /// - 429 优先采用上游 `Retry-After` 头；
-    /// - 可重试状态码集合与 max_retries 热读 Config `[retry]` 段
-    ///   （POST /admin/config 更新后立即生效）。
+    /// 机制/信号分离（G3）：重试循环机制（attempt 计数、硬上限、睡眠）
+    /// 归库（`RetryPolicy::execute_with`，limiteron src/retry.rs:310，硬
+    /// 上限与重试预算先于决策检查——决策只能收紧、不能扩大上限）；业务
+    /// 决策全部在 `decide` 闭包——状态码集合分类（可重试集合热读 Config
+    /// `[retry]` 段，POST /admin/config 更新后立即生效）、per-category
+    /// 上限、时间预算（recId=9，超限 `Stop` 返回最后错误）、逐次延迟值。
     ///
-    /// 注：不走 `RetryPolicy::execute`（limiteron src/retry.rs:147 签名
-    /// 无 per-attempt 延迟注入点），Retry-After 分支需要自管薄循环。
+    /// 决策映射（所有可重试分支均回 `RetryDecision::RetryAfter`——库按
+    /// 回传值精确睡眠，不封顶 `max_delay`、不叠加库内二次抖动采样，
+    /// recId=9 预算投影与实际等待同值，恢复旧循环「一算、一查、一睡」
+    /// 的精确判定）：
+    /// - 上游 `Retry-After` 头（429/503，recId=7③）→ 值经 [`spread_delay`]
+    ///   全范围展宽后原样回传（指示契约，合理性由本闭包对秒数形式的
+    ///   解析兜底）；
+    /// - 429 无头 → [`retry_delay_for`] 指数档位（参数同 `[retry]` 段
+    ///   initial_delay/factor/max_delay/jitter，与旧 `delay_for_attempt`
+    ///   逐位一致）；
+    /// - 5xx 固定间隔 / 网络线性退避 → 分类延迟（业务信号）；
+    /// - 集合外状态码 / 非瞬时网络错误 / 构建·解析失败 → `Stop`（原样
+    ///   返回触发错误）。
+    ///
+    /// 硬上限说明：`RetryPolicy` 的 `max_retries` 取
+    /// `max([retry].max_retries, 2)`——网络瞬时错误的重试独立于
+    /// `[retry].max_retries`（旧循环逐位语义，RetryableShort 固定 2 次），
+    /// 状态码路径的上限由决策闭包收紧到 `[retry].max_retries`。
     ///
     /// T005：`credential` 池命中时所有尝试用同一 key（不在单请求内换 key
     /// 重试）；401/403 认证类失败推进轮换游标——生效于下次请求。
     #[allow(clippy::too_many_arguments)]
-    async fn execute_http_with_retry_inner(
+    async fn execute_http_with_retry_policy(
         client: &reqwest::Client,
         config: &VendorConfig,
         request_body: Value,
@@ -1194,147 +1254,193 @@ impl VendorManager {
         };
         let budget_anchor = tokio::time::Instant::now();
 
-        // attempt = 已执行的重试次数（首次调用为 0）
-        let mut attempt = 0u32;
+        // 硬上限 = max([retry].max_retries, 网络瞬时固定上限 2)——见函数 doc。
+        let hard_max_retries = retry_cfg
+            .max_retries
+            .max(ErrorCategory::RetryableShort.max_retries());
+        let retry_policy = RetryPolicy::new(hard_max_retries, policy.initial_delay)
+            .with_factor(policy.factor)
+            .with_max_delay(policy.max_delay)
+            .with_jitter(policy.jitter);
 
-        loop {
-            // 构建带认证的请求（recId=4：per-attempt 总超时，从 send 起算）。
-            // T005：池命中用固定 key；legacy 回退在 build 时读 env
-            //（缺失报 Config 错误——与历史逐位一致）。
-            let builder = match credential.api_key() {
-                Some(api_key) => {
-                    let builder =
-                        Self::build_authed_request_with_key(client, config, &url, true, api_key)?;
-                    Self::apply_attempt_timeout(builder, config)
-                }
-                None => {
-                    let builder = Self::build_authed_request(client, config, &url, true)?;
-                    Self::apply_attempt_timeout(builder, config)
-                }
-            };
+        retry_policy
+            .execute_with(
+                || async {
+                    // 构建带认证的请求（recId=4：per-attempt 总超时，从 send
+                    // 起算）。T005：池命中用固定 key；legacy 回退在 build 时
+                    // 读 env（缺失报 Config 错误——与历史逐位一致）。
+                    let builder = match credential.api_key() {
+                        Some(api_key) => Self::apply_attempt_timeout(
+                            Self::build_authed_request_with_key(
+                                client, config, &url, true, api_key,
+                            )
+                            .map_err(AttemptFailure::Fatal)?,
+                            config,
+                        ),
+                        None => Self::apply_attempt_timeout(
+                            Self::build_authed_request(client, config, &url, true)
+                                .map_err(AttemptFailure::Fatal)?,
+                            config,
+                        ),
+                    };
 
-            // 发送请求
-            let response = match builder.json(&request_body).send().await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    // 网络错误 - 判断是否可重试（RetryableShort：最多 2 次）
-                    let is_transient = e.is_timeout() || e.is_connect();
-                    if is_transient && attempt < ErrorCategory::RetryableShort.max_retries() {
-                        attempt += 1;
-                        // recId=9（W5）：重试维度计数（守门器 r 的分子）
-                        metrics.record_retry_attempt();
-                        // recId=5：RNG 注入（RetryableShort 分支不消耗 RNG，
-                        // 签名统一）；临时 ThreadRng 不跨 await
-                        let delay = retry_delay_for(
-                            ErrorCategory::RetryableShort,
-                            attempt,
-                            None,
-                            &policy,
-                            &mut rand::thread_rng(),
-                        );
-                        // recId=9（W5）：预算超限放弃 —— 返回最后错误
-                        //（此处即网络错误的 VendorUnavailable 映射）
-                        if let Some(b) = budget {
-                            if crate::utils::retry::budget_exceeded(budget_anchor, b, delay) {
-                                return Err(GateError::VendorUnavailable {
-                                    vendor: config.id.clone(),
-                                });
-                            }
+                    let response = match builder.json(&request_body).send().await {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            return Err(AttemptFailure::Network {
+                                transient: e.is_timeout() || e.is_connect(),
+                            });
                         }
-                        tokio::time::sleep(delay).await;
-                        continue;
+                    };
+
+                    let status = response.status();
+                    if !status.is_success() {
+                        // Retry-After 头须在消费 body 前读取
+                        let retry_after = Self::parse_retry_after(response.headers());
+                        let text = response.text().await.unwrap_or_default();
+                        tracing::warn!(
+                            vendor = %config.id,
+                            status = %status,
+                            body = %text,
+                            "{}",
+                            crate::i18n::t("vendor-upstream-non-success")
+                        );
+                        // T005：401/403 认证类失败推进 key 轮换游标——生效于
+                        // 下次请求；本请求的剩余尝试（若有）仍用同一 key
+                        if Self::is_auth_failure_status(status) {
+                            instance.advance_key_cursor(status.as_u16());
+                        }
+                        return Err(AttemptFailure::Http {
+                            status: status.as_u16(),
+                            retry_after,
+                            error: GateError::VendorUnavailable {
+                                vendor: crate::i18n::t_args(
+                                    "vendor-upstream-status",
+                                    &[
+                                        ("vendor", config.id.clone()),
+                                        ("status", status.to_string()),
+                                    ],
+                                ),
+                            },
+                        });
                     }
-                    return Err(GateError::VendorUnavailable {
-                        vendor: config.id.clone(),
-                    });
-                }
-            };
 
-            let status = response.status();
+                    // 解析响应（recId=4：per-attempt 超时在 body 读取阶段触发
+                    // 时映射 Timeout，与真正的解析失败区分）
+                    let response_json: Value = match response.json().await {
+                        Ok(json) => json,
+                        Err(e) if e.is_timeout() => {
+                            return Err(AttemptFailure::Fatal(GateError::Timeout {
+                                vendor: config.id.clone(),
+                            }));
+                        }
+                        Err(e) => {
+                            return Err(AttemptFailure::Fatal(GateError::VendorUnavailable {
+                                vendor: crate::i18n::t_args(
+                                    "vendor-parse-error",
+                                    &[("error", e.to_string())],
+                                ),
+                            }));
+                        }
+                    };
 
-            // 判断响应状态并决定是否重试
-            if !status.is_success() {
-                // Retry-After 头须在消费 body 前读取
-                let retry_after = Self::parse_retry_after(response.headers());
-                let text = response.text().await.unwrap_or_default();
-                tracing::warn!(
-                    vendor = %config.id,
-                    status = %status,
-                    body = %text,
-                    "{}",
-                    crate::i18n::t("vendor-upstream-non-success")
-                );
-                // T005：401/403 认证类失败推进 key 轮换游标——生效于下次
-                // 请求；本请求的剩余尝试（若有）仍用同一 key
-                if Self::is_auth_failure_status(status) {
-                    instance.advance_key_cursor(status.as_u16());
-                }
-                let error = GateError::VendorUnavailable {
-                    vendor: crate::i18n::t_args(
-                        "vendor-upstream-status",
-                        &[
-                            ("vendor", config.id.clone()),
-                            ("status", status.to_string()),
-                        ],
-                    ),
-                };
+                    converter
+                        .parse_response(response_json)
+                        .map_err(AttemptFailure::Fatal)
+                },
+                // 决策闭包：业务分类留应用（机制归库——见函数 doc）。
+                // `attempt` 从 1 起，指即将进行的第几次重试。
+                |attempt, failure| {
+                    // 分类：网络瞬时 → RetryableShort；状态码在可重试集合内
+                    // 才参与分类（集合外一律 Fatal）
+                    let (category, retry_after) = match failure {
+                        AttemptFailure::Network { transient: true } => {
+                            (Some(ErrorCategory::RetryableShort), None)
+                        }
+                        AttemptFailure::Http {
+                            status,
+                            retry_after,
+                            ..
+                        } => (
+                            if retry_cfg.retryable_status_codes.contains(status) {
+                                Some(ErrorCategory::from_status_code(*status))
+                            } else {
+                                None
+                            },
+                            *retry_after,
+                        ),
+                        // 非瞬时网络错误 / 终结失败不可重试
+                        _ => (None, None),
+                    };
+                    let Some(category) = category.filter(ErrorCategory::is_retryable) else {
+                        return RetryDecision::Stop;
+                    };
 
-                // 可重试集合进配置：状态码在集合内才参与分类（集合外一律 Fatal）
-                let category = if retry_cfg.retryable_status_codes.contains(&status.as_u16()) {
-                    ErrorCategory::from_status_code(status.as_u16())
-                } else {
-                    ErrorCategory::Fatal
-                };
+                    // per-category 上限：网络瞬时错误固定 2 次（独立于
+                    // [retry].max_retries，旧循环逐位语义）；状态码路径收紧到
+                    // [retry].max_retries（硬上限已放宽到两者最大值）
+                    let max_retries = match category {
+                        ErrorCategory::RetryableShort => {
+                            ErrorCategory::RetryableShort.max_retries()
+                        }
+                        _ => retry_cfg.max_retries,
+                    };
+                    if attempt > max_retries {
+                        return RetryDecision::Stop;
+                    }
 
-                if category.is_retryable() && attempt < retry_cfg.max_retries {
-                    attempt += 1;
-                    // recId=9（W5）：重试维度计数（守门器 r 的分子）
+                    // recId=9（W5）：重试维度计数（守门器 r 的分子）——仅对
+                    // 实际将要发生的重试记一笔（Stop 前置拦截不计数）
                     metrics.record_retry_attempt();
-                    // recId=5：Retry-After / 5xx 分支全范围展宽（RNG 注入，
-                    // 临时 ThreadRng 不跨 await）
-                    let delay = retry_delay_for(
-                        category,
-                        attempt,
-                        retry_after,
-                        &policy,
-                        &mut rand::thread_rng(),
-                    );
-                    // recId=9（W5）：预算超限放弃 —— 返回最后错误（保持其
-                    // 5xx/429 语义）
+
+                    // 延迟：Retry-After 展宽优先，否则按分类取退避（纯函数，
+                    // RNG 注入；临时 ThreadRng 不跨 await）
+                    let policy_delay =
+                        retry_delay_for(category, attempt, &policy, &mut rand::thread_rng());
+                    let delay = match retry_after {
+                        Some(ra) => spread_delay(ra, &policy, &mut rand::thread_rng()),
+                        None => policy_delay,
+                    };
+                    // G3 安全封顶：恶意上游回超大 Retry-After（如 3600s）会
+                    // 占住 worker + 并发许可——指示值截断至上限（默认预算
+                    // 关闭时唯一的防线），截断即记 warn（异常路径，低频）。
+                    let delay = {
+                        const MAX_UPSTREAM_WAIT: Duration = Duration::from_secs(30);
+                        if delay > MAX_UPSTREAM_WAIT {
+                            tracing::warn!(
+                                vendor = %config.id,
+                                status = ?retry_after,
+                                capped_secs = MAX_UPSTREAM_WAIT.as_secs(),
+                                "upstream retry wait truncated",
+                            );
+                            MAX_UPSTREAM_WAIT
+                        } else {
+                            delay
+                        }
+                    };
+
+                    // recId=9（W5）：预算超限放弃——闭包内 Stop，库原样返回
+                    // 最后错误（网络 / 5xx·429 语义由出口映射保留）
                     if let Some(b) = budget {
                         if crate::utils::retry::budget_exceeded(budget_anchor, b, delay) {
-                            return Err(error);
+                            return RetryDecision::Stop;
                         }
                     }
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
 
-                return Err(error);
-            }
-
-            // 解析响应（recId=4：per-attempt 超时在 body 读取阶段触发时
-            // 映射 Timeout，与真正的解析失败区分）
-            let response_json: Value = match response.json().await {
-                Ok(json) => json,
-                Err(e) if e.is_timeout() => {
-                    return Err(GateError::Timeout {
-                        vendor: config.id.clone(),
-                    });
-                }
-                Err(e) => {
-                    return Err(GateError::VendorUnavailable {
-                        vendor: crate::i18n::t_args(
-                            "vendor-parse-error",
-                            &[("error", e.to_string())],
-                        ),
-                    });
-                }
-            };
-
-            // 转换为统一响应格式
-            return converter.parse_response(response_json);
-        }
+                    // 全分支 RetryAfter 原样回传 delay（库按该值精确睡眠，
+                    // 无库内二次抖动采样）——预算检查值与实际等待同值，
+                    // 恢复旧循环「一算、一查、一睡」的精确判定
+                    RetryDecision::RetryAfter(delay)
+                },
+            )
+            .await
+            .map_err(|failure| match failure {
+                AttemptFailure::Network { .. } => GateError::VendorUnavailable {
+                    vendor: config.id.clone(),
+                },
+                AttemptFailure::Http { error, .. } => error,
+                AttemptFailure::Fatal(error) => error,
+            })
     }
 
     /// 读取 vendor 的实时路由状态（recId=5② async 化；评审 blocker 后全面
@@ -1421,7 +1527,7 @@ impl VendorManager {
     /// src/circuit/types.rs:397）。Open 而无失败时间戳（异常态）时对齐
     /// 库内保守拒绝语义（types.rs:420-428）。
     #[cfg(feature = "resilience")]
-    async fn circuit_probe_ready(circuit_breaker: &Arc<CircuitBreaker>) -> bool {
+    async fn circuit_probe_ready(circuit_breaker: &Arc<CircuitBreaker<GateError>>) -> bool {
         let stats = circuit_breaker.get_stats().await;
         match stats.last_failure_time {
             Some(last_failure) => {
@@ -1553,7 +1659,7 @@ impl VendorManager {
     ///
     /// 流式路径此前不查上游状态码：非 2xx 时错误 JSON 正文会被当作 SSE 流
     /// 原样透传给客户端（伪 200 流），客户端与重试逻辑无法分辨成败。
-    /// 此处对齐非流式路径（`execute_http_with_retry_inner`）的既有写法：
+    /// 此处对齐非流式路径（`execute_http_with_retry_policy`）的既有写法：
     /// 读 body 记 warn 转 `GateError`，经 error.rs 固定 IntoResponse
     /// 映射 —— 429 → `RateLimited`（映射 429，客户端可退避重试），
     /// 其余非 2xx → `VendorUnavailable`（映射 503）。
@@ -1696,9 +1802,7 @@ impl VendorManager {
                     model,
                     Self::cb_endpoint(config),
                 ) {
-                    let result = circuit_breaker
-                        .execute(|| async { send().await.map_err(|e| to_limiteron(&e)) })
-                        .await;
+                    let result = circuit_breaker.execute(&send).await;
                     return result.map_err(|e| from_circuit_call(e, vendor_id));
                 }
             }
@@ -2036,9 +2140,9 @@ impl VendorManager {
 
     /// recId=2（一期）：cover_all_paths 开启时，透传非流式由 per-vendor
     /// CircuitBreaker 包裹 —— 与 [`Self::execute_http_with_retry`] 同款
-    /// `execute` + [`to_limiteron`]/[`from_limiteron`] 包装（CB 拒绝还原为
-    /// `VendorUnavailable{vendor: "{id} (circuit open)"}`，其余错误往返
-    /// 无损）；关闭时直连 inner，行为与历史逐位一致。
+    /// `execute` + [`from_circuit_call`] 包装（CB 拒绝还原为
+    /// `VendorUnavailable{vendor: "{id} (circuit open)"}`，业务错误经
+    /// `Inner` 无损透传）；关闭时直连 inner，行为与历史逐位一致。
     async fn execute_passthrough_request_covered(
         &self,
         vendor_id: &str,
@@ -2082,7 +2186,6 @@ impl VendorManager {
                                 credential,
                             )
                             .await
-                            .map_err(|e| to_limiteron(&e))
                         })
                         .await;
                     return result.map_err(|e| from_circuit_call(e, vendor_id));
@@ -2867,14 +2970,11 @@ mod tests {
         // 共享计数的语义后果：5 次失败令 key A 的指纹熔断器触阈 Open，
         // key B 的熔断器全程 Closed 不受污染
         for _ in 0..5 {
-            let _: Result<
-                u32,
-                limiteron::circuit::CircuitCallError<limiteron::error::LimiteronError>,
-            > = cb_a1
+            let _: Result<u32, limiteron::circuit::CircuitCallError<GateError>> = cb_a1
                 .execute(|| async {
-                    Err(to_limiteron(&GateError::VendorUnavailable {
+                    Err(GateError::VendorUnavailable {
                         vendor: "v-pool-test".into(),
-                    }))
+                    })
                 })
                 .await;
         }
@@ -2937,14 +3037,11 @@ mod tests {
 
         // 语义后果：model-a 通道 5 次失败触阈 Open，model-b 通道保持 Closed
         for _ in 0..5 {
-            let _: Result<
-                u32,
-                limiteron::circuit::CircuitCallError<limiteron::error::LimiteronError>,
-            > = cb_m1
+            let _: Result<u32, limiteron::circuit::CircuitCallError<GateError>> = cb_m1
                 .execute(|| async {
-                    Err(to_limiteron(&GateError::VendorUnavailable {
+                    Err(GateError::VendorUnavailable {
                         vendor: "v-pool-test".into(),
-                    }))
+                    })
                 })
                 .await;
         }
@@ -3019,13 +3116,10 @@ mod tests {
 
         for i in 0..3 {
             // execute 的 Open 态拒绝以 CircuitCallError::Open 独立承载（rc.6）
-            let result: Result<
-                u32,
-                limiteron::circuit::CircuitCallError<limiteron::error::LimiteronError>,
-            > = cb
+            let result: Result<u32, limiteron::circuit::CircuitCallError<GateError>> = cb
                 .execute(|| async {
                     tokio::time::sleep(Duration::from_millis(800)).await;
-                    Ok::<u32, limiteron::error::LimiteronError>(1)
+                    Ok::<u32, GateError>(1)
                 })
                 .await;
             assert!(result.is_ok(), "slow call {} should succeed", i);

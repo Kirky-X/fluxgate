@@ -10,9 +10,7 @@ pub mod retry;
 pub mod cost_tracker;
 
 pub use metrics::{GlobalMetrics, MetricsSnapshot, VendorMetrics};
-pub use retry::{
-    extract_status_code, is_retryable_error, BackoffStrategy, ErrorCategory, RetryStrategy,
-};
+pub use retry::{extract_status_code, ErrorCategory};
 
 #[cfg(feature = "cost-tracking")]
 pub use cost_tracker::{CostSnapshot, CostTracker};

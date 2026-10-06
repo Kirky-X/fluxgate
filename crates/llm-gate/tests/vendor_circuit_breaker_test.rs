@@ -95,7 +95,7 @@ const OPENAI_SUCCESS_BODY: &str = r#"{
 #[tokio::test]
 async fn circuit_opens_after_five_failures_and_route_excludes_vendor() {
     let mut server_a = mockito::Server::new_async().await;
-    // Fatal 4xx：execute_http_with_retry_inner 不做状态码重试，每请求至多
+    // Fatal 4xx：execute_http_with_retry_policy 不做状态码重试，每请求至多
     // 1 次命中——expect_at_most(5) 锁上界（≥6 即存在隐藏重试，失败）。
     // 不用精确 expect(5)：全量并行下 localhost 瞬态连接失败会把失败计入
     // 熔断（VendorUnavailable）但不产生 HTTP 命中（实测：Open 断言通过而

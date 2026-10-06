@@ -327,7 +327,10 @@ fn loader_reports_toml_syntax_and_type_errors_distinctly() {
         other => panic!("非法 TOML 必须报 Config 错误，实际 {other:?}"),
     }
 
-    // 类型不匹配（port 为字符串）→ serde 解析层错误（config-parse-failed）
+    // 类型不匹配（port 为字符串）→ serde 解析层错误（config-parse-failed）。
+    // 经 confers AnnotatedValue::to_typed 投影后错误有意脱敏：只携带字段
+    // 路径（server.port），绝不回显出错值——配置值可能是密钥原文，回显会
+    // 经错误通道泄进日志/HTTP 响应（confers/src/types.rs to_typed 错误构造）。
     let mismatch = temp_toml(
         "type-mismatch.toml",
         r#"
@@ -351,11 +354,152 @@ concurrency = { requests_per_second = 1 }
                 "解析错误键必须注册进 FTL 目录"
             );
             assert!(
-                message.contains("not-a-number"),
-                "解析错误应携带出错值: {message}"
+                message.contains("server.port"),
+                "解析错误必须携带字段路径: {message}"
+            );
+            assert!(
+                !message.contains("not-a-number"),
+                "解析错误不得回显出错值（防密钥误填泄入错误通道）: {message}"
             );
         }
         other => panic!("类型不匹配必须报 Config 错误，实际 {other:?}"),
+    }
+}
+
+/// [auth] 管理面密钥启动拒绝：`api_keys` 与 `[[auth.keys]].hash` 的配置
+/// 契约是 SHA256 hex 摘要（64 个小写 hex 字符），违约条目必须在加载路径
+/// fail-fast 拒绝，防止无效/弱凭证在重启用时静默生效。校验分两层（与
+/// loader.rs validate_admin_secrets 的双层描述一致）：
+/// ① 形态契约（本仓库强制）：64 位小写 hex——用例 ①②④⑤ 均在本层被拒
+///    （"changeme"/"short"/长口令不是小写 hex-64，大写摘要被小写关拦下）；
+/// ② confers JwtSecretValidator 规则内核（长度 + 弱词表，词表不复制进
+///    本仓库）：过形态关的条目必然 ≥32 字节且不可能是弱词表任何词，
+///    内核对真实输入恒 Ok、路径当前不可达，为规则内核后续增强保留
+///    前向继承钩子（故无内核分支的独立测试用例）。
+/// 错误信息只报条目位置与规则结论，不回显条目原文（脱敏先例同
+/// validate_config 的 env 告警）。
+#[test]
+fn loader_rejects_weak_admin_secrets_at_startup() {
+    const VENDOR_TOML: &str = r#"
+[server]
+host = "127.0.0.1"
+[database]
+[[vendors]]
+id = "weak_secret_vendor"
+name = "A"
+type_ = "openai"
+api_key_env = "K"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+"#;
+
+    // ① api_keys 明文误填 → 形态契约层拒绝（非小写 hex-64；confers 内核
+    //    长度/弱词表路径对真实输入不可达，见函数头注释），报条目位置
+    let path = temp_toml(
+        "weak-api-key.toml",
+        &format!("{VENDOR_TOML}\n[auth]\napi_keys = [\"changeme\"]\n"),
+    );
+    match load_from(&path).map(|_| ()) {
+        Err(GateError::Config { message }) => {
+            assert!(
+                message.contains("auth.api_keys[0]"),
+                "弱密钥错误必须报条目位置: {message}"
+            );
+            assert!(
+                !message.contains("changeme"),
+                "弱密钥错误不得回显条目原文: {message}"
+            );
+        }
+        other => panic!("明文误填 api_keys 必须拒绝启动，实际 {other:?}"),
+    }
+
+    // ② [[auth.keys]].hash 同形态同拒（档位表条目也是管理面凭证）
+    let path = temp_toml(
+        "weak-tier-hash.toml",
+        &format!("{VENDOR_TOML}\n[auth]\n[[auth.keys]]\nhash = \"short\"\ntier = \"dedicated\"\n"),
+    );
+    match load_from(&path).map(|_| ()) {
+        Err(GateError::Config { message }) => {
+            assert!(
+                message.contains("auth.keys[0].hash"),
+                "档位表弱摘要错误必须报条目位置: {message}"
+            );
+        }
+        other => panic!("弱 hash 条目必须拒绝启动，实际 {other:?}"),
+    }
+
+    // ③ 合法摘要形态放行：64 位小写十六进制（认证侧 sha256_hex 的输出
+    //    形态）过形态关逐位可用
+    let digest = "a".repeat(64);
+    let path = temp_toml(
+        "strong-api-key.toml",
+        &format!("{VENDOR_TOML}\n[auth]\napi_keys = [\"{digest}\"]\n"),
+    );
+    load_from(&path).expect("SHA256 hex 摘要形态的密钥必须放行");
+
+    // ④ 64 字节非 hex 明文（长口令误填当摘要）→ 形态契约拒绝。这是
+    //    confers 长度（≥32 字节）/弱词表检查拦不住的最常见误填形态——
+    //    错误消息宣称 SHA256 hex 契约，形态检查必须真实强制该契约。
+    let long_passphrase = "x".repeat(64);
+    let path = temp_toml(
+        "long-plaintext-api-key.toml",
+        &format!("{VENDOR_TOML}\n[auth]\napi_keys = [\"{long_passphrase}\"]\n"),
+    );
+    match load_from(&path).map(|_| ()) {
+        Err(GateError::Config { message }) => {
+            assert!(
+                message.contains("auth.api_keys[0]"),
+                "非 hex 明文错误必须报条目位置: {message}"
+            );
+            assert!(
+                !message.contains(&long_passphrase),
+                "错误不得回显条目原文: {message}"
+            );
+        }
+        other => panic!("64 字节非 hex 明文误填必须拒绝启动，实际 {other:?}"),
+    }
+
+    // ⑤ 大写 hex 摘要同样拒绝：认证侧 sha256_hex 经 hex::encode 恒输出
+    //    小写（src/middleware/auth.rs）并逐字节比较，大写条目（certutil /
+    //    Get-FileHash 的真实输出形态）能过宽形态关却永远无法认证任何
+    //    key——重启后全量 401 的惰性误填，必须在形态关拦下。
+    let upper_digest = "A".repeat(64);
+    let path = temp_toml(
+        "upper-digest-api-key.toml",
+        &format!("{VENDOR_TOML}\n[auth]\napi_keys = [\"{upper_digest}\"]\n"),
+    );
+    match load_from(&path).map(|_| ()) {
+        Err(GateError::Config { message }) => {
+            assert!(
+                message.contains("auth.api_keys[0]"),
+                "大写摘要错误必须报条目位置: {message}"
+            );
+            assert!(
+                !message.contains(&upper_digest),
+                "错误不得回显条目原文: {message}"
+            );
+        }
+        other => panic!("大写 hex 摘要条目必须拒绝启动，实际 {other:?}"),
+    }
+
+    // ⑥ 多条目同时不达标 → 错误明细按配置索引固定顺序列出（api_keys
+    //    升序）。随机序会让同一份坏配置重启后日志文案漂移，妨碍日志
+    //    比对与告警去重。
+    let path = temp_toml(
+        "multi-weak-api-key.toml",
+        &format!("{VENDOR_TOML}\n[auth]\napi_keys = [\"bad-one\", \"{digest}\", \"bad-two\"]\n"),
+    );
+    match load_from(&path).map(|_| ()) {
+        Err(GateError::Config { message }) => {
+            let first = message.find("auth.api_keys[0]").expect("必须报条目 [0]");
+            let second = message.find("auth.api_keys[2]").expect("必须报条目 [2]");
+            assert!(first < second, "错误明细必须按配置索引顺序列出: {message}");
+            assert!(
+                !message.contains("bad-one") && !message.contains("bad-two"),
+                "错误不得回显条目原文: {message}"
+            );
+        }
+        other => panic!("多条弱条目必须拒绝启动，实际 {other:?}"),
     }
 }
 

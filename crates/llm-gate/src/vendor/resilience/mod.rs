@@ -11,9 +11,8 @@
 //! finalize_transition）且提供假时钟注入，故删除等价手写。
 //! resilience 模块现仅存：
 //! - [`FallbackChain`]（供 API 层换路 fallback，recId=7）
-//! - [`error_map`]：GateError ↔ LimiteronError 双向映射
-//!   （limiteron `execute`/`FailureClassifier` 签名锁定 LimiteronError，
-//!   非等价手写熔断逻辑）
+//! - [`error_map`]：GateError 直驱 `CircuitBreaker<GateError>` 的分类
+//!   与 Open 还原（G3 泛型收口后错误无损透传，无前缀串编解码）
 //!
 //! ConnectionPool 位于 `crate::vendor::pool`（vendor 顶层模块），
 //! 不在 resilience 子模块内 — pool 不依赖 resilience feature。
@@ -21,7 +20,5 @@
 pub mod error_map;
 pub mod fallback;
 
-pub use error_map::{
-    from_circuit_call, from_limiteron, is_circuit_open_error, to_limiteron, GateErrorClassifier,
-};
+pub use error_map::{from_circuit_call, is_circuit_open_error, GateErrorClassifier};
 pub use fallback::{FallbackChain, FallbackTarget, FallbackTrigger};

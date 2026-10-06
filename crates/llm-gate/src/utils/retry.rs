@@ -11,14 +11,17 @@
 //! - 500, 502, 503: 重试 3 次，间隔 1s
 //! - 网络超时: 重试 2 次
 //!
-//! # Feature 门控
+//! # 组成（G3 后）
 //!
-//! `with_retry` 为手写实现（按 `ErrorCategory` 分类，签名
-//! `with_retry(f, initial_error)`）。重试延迟计算已迁移
-//! `limiteron::retry::delay_for_attempt`（recId=7，见 [`retry_delay_for`]）。
+//! 重试主循环在 `vendor::manager`（`limiteron RetryPolicy::execute_with`，
+//! 决策闭包持业务分类）；本模块仅存纯函数支撑面：错误分类
+//!（[`ErrorCategory`]）、延迟计算（[`retry_delay_for`] / [`spread_delay`]）、
+//! 时间预算（[`budget_exceeded`]）、放大守门器（[`amplification`] /
+//! [`critical_failure_fraction`] / [`amplification_guard`]）与
+//! [`extract_status_code`]。第二份手写重试实现（`with_retry` /
+//! `RetryStrategy` / `BackoffStrategy` / `is_retryable_error`）已随 G3
+//! 删除——生产与测试均无消费者，锁定其行为的测试一并移除。
 
-use crate::error::GateError;
-use crate::i18n::t;
 // 仅 vendor-management 分支使用（spread_delay/retry_delay_for 同在该 feature 下）
 #[cfg(feature = "vendor-management")]
 use rand::Rng;
@@ -82,65 +85,6 @@ impl ErrorCategory {
     }
 }
 
-/// 重试策略
-#[derive(Debug, Clone)]
-pub struct RetryStrategy {
-    pub max_retries: u32,
-    pub backoff: BackoffStrategy,
-}
-
-impl RetryStrategy {
-    /// 根据错误分类创建重试策略
-    pub fn for_category(category: ErrorCategory) -> Self {
-        match category {
-            ErrorCategory::Fatal => Self {
-                max_retries: 0,
-                backoff: BackoffStrategy::None,
-            },
-            ErrorCategory::RetryableExponential => Self {
-                max_retries: 5,
-                backoff: BackoffStrategy::Exponential {
-                    base_ms: 1000,
-                    max_ms: 16000,
-                },
-            },
-            ErrorCategory::RetryableFixed => Self {
-                max_retries: 3,
-                backoff: BackoffStrategy::Fixed { interval_ms: 1000 },
-            },
-            ErrorCategory::RetryableShort => Self {
-                max_retries: 2,
-                backoff: BackoffStrategy::Fixed { interval_ms: 500 },
-            },
-        }
-    }
-}
-
-/// 回退策略
-#[derive(Debug, Clone)]
-pub enum BackoffStrategy {
-    /// 无回退
-    None,
-    /// 指数回退
-    Exponential { base_ms: u64, max_ms: u64 },
-    /// 固定间隔
-    Fixed { interval_ms: u64 },
-}
-
-impl BackoffStrategy {
-    /// 计算指定尝试次数的延迟
-    pub fn delay(&self, attempt: u32) -> Duration {
-        match self {
-            Self::None => Duration::from_millis(0),
-            Self::Exponential { base_ms, max_ms } => {
-                let exp_delay = base_ms * 2u64.pow(attempt.min(4));
-                Duration::from_millis(exp_delay.min(*max_ms))
-            }
-            Self::Fixed { interval_ms } => Duration::from_millis(*interval_ms),
-        }
-    }
-}
-
 /// 提取 HTTP 状态码
 pub fn extract_status_code(error: &str) -> u16 {
     // 尝试从错误消息中提取状态码
@@ -158,19 +102,6 @@ pub fn extract_status_code(error: &str) -> u16 {
         }
     }
     500 // 默认返回服务器错误
-}
-
-/// 判断错误是否可重试
-pub fn is_retryable_error(error: &GateError) -> bool {
-    match error {
-        GateError::VendorUnavailable { vendor, .. } => {
-            let code = extract_status_code(vendor);
-            let category = ErrorCategory::from_status_code(code);
-            category.is_retryable()
-        }
-        GateError::Timeout { .. } => true,
-        _ => false,
-    }
 }
 
 /// 重试延迟策略参数（recId=7：来自 Config [retry] 段的热读快照）
@@ -216,30 +147,24 @@ impl RetryDelayPolicy {
     }
 }
 
-/// 纯延迟选择函数（recId=7③）：`Retry-After` 优先覆盖，否则按分类取退避。
+/// 纯延迟选择函数（recId=7③）：按分类取退避（G3 后 `Retry-After` 头
+/// 不再经本函数覆盖——上游指示值由 `vendor::manager` 的决策闭包映射为
+/// `RetryDecision::RetryAfter`，时长生产端是 [`spread_delay`]）。
 ///
-/// - 429 带 `Retry-After` 头 → 以上游指示为 base 全范围展宽
-///   `[ra, ra + spread_jitter × ra)`（优先级最高；spread_jitter=0 时
-///   原样采用）
-/// - `RetryableExponential`（429 无头）→ `limiteron::retry::delay_for_attempt`
+/// - `RetryableExponential`（429）→ `limiteron::retry::delay_for_attempt`
 ///   （指数 + jitter + max_delay 封顶；jitter=0 时确定性可单测）
 /// - `RetryableFixed`（5xx）→ `[1s, 1s + spread_jitter × 1s)`
 ///   （spread_jitter=0 时固定 1s）
 /// - `RetryableShort`（网络错误）→ 500ms × attempt
 /// - `Fatal` → 0（调用方不应重试）
 ///
-/// recId=5：`Retry-After` 与 5xx 两个分支补全范围抖动——修复前延迟为
-/// 常量（恒 `ra` / 恒 1s），上游同一 `Retry-After` 下所有并发在同一刻
-/// 唤醒重试（同步惊群）。RNG 经 `&mut dyn rand::RngCore` 注入（对齐
-/// `router::weighted_select_with` 的注入模式）：spread_jitter=0 时不消耗
-/// RNG，确定性可单测；生产传 `rand::thread_rng()`。
+/// recId=5：5xx 分支带全范围抖动——修复前延迟为常量（恒 1s），所有并发
+/// 在同一刻唤醒重试（同步惊群）。RNG 经 `&mut dyn rand::RngCore` 注入
+/// （对齐 `router::weighted_select_with` 的注入模式）：spread_jitter=0 时
+/// 不消耗 RNG，确定性可单测；生产传 `rand::thread_rng()`。
 ///
 /// 纯函数无 IO，可脱离 HTTP 栈单测（规避 tests/vendor_circuit_breaker_test.rs
 /// 书面记录的 paused-clock 与 mockito IO 冲突陷阱）。
-///
-/// 注（recId=7③ 如实注明）：`RetryPolicy::execute` 无 per-attempt 延迟
-/// 注入点（limiteron src/retry.rs:147 签名固定），429 的 Retry-After
-/// 分支因此落在自管薄循环中调用本函数，而非 RetryPolicy。
 ///
 /// Feature 门控：指数分支依赖 `limiteron::retry`（vendor-management 引入），
 /// 唯一调用方 `vendor::manager` 同在该 feature 下。
@@ -247,13 +172,9 @@ impl RetryDelayPolicy {
 pub fn retry_delay_for(
     category: ErrorCategory,
     attempt: u32,
-    retry_after: Option<Duration>,
     policy: &RetryDelayPolicy,
     rng: &mut dyn rand::RngCore,
 ) -> Duration {
-    if let Some(ra) = retry_after {
-        return spread_delay(ra, policy, rng);
-    }
     match category {
         ErrorCategory::RetryableExponential => limiteron::retry::delay_for_attempt(
             attempt.max(1),
@@ -272,13 +193,17 @@ pub fn retry_delay_for(
 
 /// recId=5：`base + U(0, spread_jitter) × base` 的全范围展宽。
 ///
+/// G3 后是对上游 `Retry-After` 头的时长生产端：manager 的重试决策闭包把
+/// 「429/503 读到的上游指示值」经本函数展宽后映射为
+/// `RetryDecision::RetryAfter(duration)`（库按指示值原样睡眠，不封顶
+/// `max_delay`、不叠加策略抖动——指示契约由调用方负责合理性）。
+///
 /// spread_jitter <= 0 恒等 base（回滚阀：旧行为确定性可单测）；半开区间
 /// 上界由 `gen_range(0.0..spread)` 保证（永不取 spread 本身）。
 /// 全范围抖动（recId=5）：`base + U(0, spread_jitter)×base`，消除
-/// Retry-After / 固定间隔分支的同步惊群。唯一调用方 retry_delay_for
-/// 在 vendor-management 下（其唯一调用方 vendor::manager 同在该 feature）。
+/// Retry-After / 固定间隔分支的同步惊群。
 #[cfg(feature = "vendor-management")]
-fn spread_delay(
+pub fn spread_delay(
     base: Duration,
     policy: &RetryDelayPolicy,
     rng: &mut dyn rand::RngCore,
@@ -345,69 +270,6 @@ pub fn amplification_guard(r: f64, f: f64, c: f64, lambda: f64) -> (bool, bool) 
     (tighten, diverge)
 }
 
-/// 执行带重试的请求
-///
-/// 手写实现 — 按 `ErrorCategory` 分类决定是否重试与退避。
-#[allow(clippy::too_many_arguments)]
-pub async fn with_retry<F, Fut, T>(
-    mut f: F,
-    initial_error: Option<GateError>,
-) -> Result<T, GateError>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, GateError>>,
-{
-    // 确定初始错误类别
-    let initial_category = if let Some(ref err) = initial_error {
-        match err {
-            GateError::Timeout { .. } => ErrorCategory::RetryableShort,
-            GateError::VendorUnavailable { vendor, .. } => {
-                let code = extract_status_code(vendor);
-                ErrorCategory::from_status_code(code)
-            }
-            _ => ErrorCategory::Fatal,
-        }
-    } else {
-        return (f)().await;
-    };
-
-    let strategy = RetryStrategy::for_category(initial_category);
-
-    if strategy.max_retries == 0 {
-        return Err(initial_error.unwrap_or(GateError::Protocol {
-            source: t("utils-retry-unknown-error"),
-            inner: None,
-        }));
-    }
-
-    let mut last_error = initial_error;
-
-    for attempt in 0..strategy.max_retries {
-        // 执行请求
-        match (f)().await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                // 检查错误是否仍然可重试
-                if !is_retryable_error(&e) {
-                    return Err(e);
-                }
-                last_error = Some(e);
-
-                // 计算延迟
-                let delay = strategy.backoff.delay(attempt);
-                if delay > Duration::from_secs(0) {
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or(GateError::Protocol {
-        source: t("utils-retry-max-retries"),
-        inner: None,
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,25 +294,6 @@ mod tests {
             ErrorCategory::from_status_code(503),
             ErrorCategory::RetryableFixed
         );
-    }
-
-    #[test]
-    fn test_backoff_delay() {
-        let exponential = BackoffStrategy::Exponential {
-            base_ms: 1000,
-            max_ms: 16000,
-        };
-
-        assert_eq!(exponential.delay(0), Duration::from_millis(1000));
-        assert_eq!(exponential.delay(1), Duration::from_millis(2000));
-        assert_eq!(exponential.delay(2), Duration::from_millis(4000));
-        assert_eq!(exponential.delay(3), Duration::from_millis(8000));
-        assert_eq!(exponential.delay(4), Duration::from_millis(16000));
-        assert_eq!(exponential.delay(5), Duration::from_millis(16000)); // capped
-
-        let fixed = BackoffStrategy::Fixed { interval_ms: 1000 };
-        assert_eq!(fixed.delay(0), Duration::from_millis(1000));
-        assert_eq!(fixed.delay(10), Duration::from_millis(1000));
     }
 
     #[test]

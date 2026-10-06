@@ -23,8 +23,6 @@ database-logger-flush-failed = Failed to write request logs (batch of { $count }
 database-logger-secret-scan-dropped = Log dropped by outbound secret scan (total { $total }): { $error }
 database-preagg-flush-failed = Failed to flush token aggregation: { $error }
 database-preagg-final-flush-failed = Final token aggregation flush failed: { $error }
-# utils-*: retry.rs Protocol source（进 HTTP 响应）与 metrics.rs 运维告警。
-utils-retry-unknown-error = Unknown error
-utils-retry-max-retries = Max retries exceeded
+# utils-*: metrics.rs 运维告警。
 utils-metrics-concentration = traffic concentration alert: routing may have collapsed onto a single vendor/model
 database-backend-missing = database.url is empty and the sqlite fallback for path { $path } requires the db-sqlite feature: rebuild with --features "full,db-sqlite", or set [database] url to a full connection URL

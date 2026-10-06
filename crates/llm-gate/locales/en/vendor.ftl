@@ -18,7 +18,6 @@ vendor-stream-upstream-non-success = streaming upstream returned non-success sta
 vendor-upstream-stream-interrupted = upstream stream interrupted
 vendor-token-quota-underflow = token quota underflow: usage not accounted (would exceed window cap)
 vendor-pool-semaphore-closed = connection pool semaphore closed: { $error }
-vendor-circuit-error = { $vendor } (circuit error: { $detail })
 # ---- key_pool.rs（T005 vendor 内 key 池）----
 vendor-key-pool-env-missing = key pool environment variable #{ $index } (value length { $length }) of vendor { $vendor } is not set; skipped — verify it is an environment variable NAME, not a key pasted by mistake
 vendor-key-pool-truncated = key pool of vendor { $vendor } exceeds the cap of { $cap }; truncated ({ $dropped } dropped)

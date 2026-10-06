@@ -23,8 +23,6 @@ database-logger-flush-failed = 写入请求日志失败（共 { $count } 条）�
 database-logger-secret-scan-dropped = 日志未通过出站密钥扫描已丢弃（累计 { $total } 条）：{ $error }
 database-preagg-flush-failed = token 聚合刷新失败：{ $error }
 database-preagg-final-flush-failed = 停机前最终 token 聚合刷新失败：{ $error }
-# utils-*: retry.rs Protocol source（进 HTTP 响应）与 metrics.rs 运维告警。
-utils-retry-unknown-error = 未知错误
-utils-retry-max-retries = 已达最大重试次数
+# utils-*: metrics.rs 运维告警。
 utils-metrics-concentration = 流量集中度告警：路由可能已收敛到单一厂商/模型
 database-backend-missing = database.url 为空，path { $path } 的 sqlite 回退需要 db-sqlite feature：以 --features "full,db-sqlite" 重建，或在 [database] url 配置完整连接 URL

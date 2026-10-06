@@ -119,7 +119,13 @@ pub fn linucb_invert(a: &[f64], d: usize) -> Option<Vec<f64>> {
     if a.iter().any(|v| !v.is_finite()) {
         return None;
     }
-    // 增广矩阵 [A | I]，2d 列行主序
+    let mut m = augment_with_identity(a, d);
+    gauss_jordan_eliminate(&mut m, d)?;
+    extract_inverse(&m, d)
+}
+
+/// 增广矩阵 [A | I]（2d 列行主序）。
+fn augment_with_identity(a: &[f64], d: usize) -> Vec<f64> {
     let w = 2 * d;
     let mut m = vec![0.0; d * w];
     for i in 0..d {
@@ -128,6 +134,13 @@ pub fn linucb_invert(a: &[f64], d: usize) -> Option<Vec<f64>> {
         }
         m[i * w + d + i] = 1.0;
     }
+    m
+}
+
+/// 部分主元高斯-约当消元（就地）。主元幅度低于阈值（奇异）或主元非有限
+/// 时返回 None（正则初值下仅 NaN 污染可触发）。
+fn gauss_jordan_eliminate(m: &mut [f64], d: usize) -> Option<()> {
+    let w = 2 * d;
     const PIVOT_EPS: f64 = 1e-12;
     for col in 0..d {
         // 部分主元：当前列绝对值最大的行
@@ -142,7 +155,7 @@ pub fn linucb_invert(a: &[f64], d: usize) -> Option<Vec<f64>> {
             },
         );
         if !pivot_mag.is_finite() || pivot_mag < PIVOT_EPS {
-            return None; // 奇异（正则初值下仅 NaN 污染可触发）
+            return None; // 奇异
         }
         if pivot_row != col {
             for j in 0..w {
@@ -166,6 +179,12 @@ pub fn linucb_invert(a: &[f64], d: usize) -> Option<Vec<f64>> {
             }
         }
     }
+    Some(())
+}
+
+/// 提取右半 [I] 部分为逆矩阵；消元中途溢出/污染（非有限元素）返回 None。
+fn extract_inverse(m: &[f64], d: usize) -> Option<Vec<f64>> {
+    let w = 2 * d;
     let mut inv = vec![0.0; d * d];
     for i in 0..d {
         for j in 0..d {

@@ -31,6 +31,7 @@ pub use http::{build_app, run};
 
 mod bootstrap;
 mod handle;
+mod hot_reload;
 mod http;
 mod shutdown;
 

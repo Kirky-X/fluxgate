@@ -34,32 +34,40 @@ impl ConfigLoader {
             });
         }
 
-        // confers::loader::load_file：路径防护（symlink 穿越/大小限制/格式探测，
-        // confers/src/impl_/loader.rs:578）。LoaderConfig 默认拒绝绝对路径
-        // （防不可信输入穿越）；此处路径来自操作者显式 CLI 参数（可信输入），
-        // 放行绝对路径，symlink 检查与 max_size 防护保留默认开启。
-        let loader_config = confers::loader::LoaderConfig::new().allow_absolute();
-        let annotated =
-            confers::loader::load_file(path, &loader_config).map_err(|e| GateError::Config {
-                message: t_args("config-load-failed", &[("error", e.to_string())]),
-            })?;
-        // 强类型投影走 confers AnnotatedValue::to_typed（取代手写递归剥壳）：
-        // 元数据丢弃、Bytes→base64、非有限 F64→null 语义与 to_json 一致
-        // （confers/src/types.rs:930-942）。TOML 解析链不产生 Bytes 变体
-        // （confers/src/impl_/convert.rs 的 toml_value_to_config_value 无
-        // Bytes 分支），base64 语义对 TOML 加载路径不可观察。错误有意脱敏：
-        // 只报字段路径不回显出错值（配置值可能是密钥原文）。
-        let config: Config = annotated.to_typed().map_err(|e| GateError::Config {
-            message: t_args("config-parse-failed", &[("error", e.to_string())]),
-        })?;
-
-        validate_config(&config)?;
+        let config = load_config_from_path(path)?;
 
         let manager = ConfigManager::new(config);
         // 路径记忆：update_config 写回同一路径，消灭硬编码 CWD "config.toml"
         manager.set_path(path.to_path_buf());
         Ok(manager)
     }
+}
+
+/// 从路径解析并校验配置（加载路径与 G10 热重载共用；热重载不触发落盘）。
+pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
+    // confers::loader::load_file：路径防护（symlink 穿越/大小限制/格式探测，
+    // confers/src/impl_/loader.rs:578）。LoaderConfig 默认拒绝绝对路径
+    // （防不可信输入穿越）；此处路径来自操作者显式 CLI 参数或热重载监听
+    // 的自有配置文件（可信输入），放行绝对路径，symlink 检查与 max_size
+    // 防护保留默认开启。
+    let loader_config = confers::loader::LoaderConfig::new().allow_absolute();
+    let annotated =
+        confers::loader::load_file(path, &loader_config).map_err(|e| GateError::Config {
+            message: t_args("config-load-failed", &[("error", e.to_string())]),
+        })?;
+    // 强类型投影走 confers AnnotatedValue::to_typed（取代手写递归剥壳）：
+    // 元数据丢弃、Bytes→base64、非有限 F64→null 语义与 to_json 一致
+    // （confers/src/types.rs:930-942）。TOML 解析链不产生 Bytes 变体
+    // （confers/src/impl_/convert.rs 的 toml_value_to_config_value 无
+    // Bytes 分支），base64 语义对 TOML 加载路径不可观察。错误有意脱敏：
+    // 只报字段路径不回显出错值（配置值可能是密钥原文）。
+    let config: Config = annotated.to_typed().map_err(|e| GateError::Config {
+        message: t_args("config-parse-failed", &[("error", e.to_string())]),
+    })?;
+
+    validate_config(&config)?;
+
+    Ok(config)
 }
 
 /// 校验配置 — 加载路径（ConfigLoader::load）与更新路径

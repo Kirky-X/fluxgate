@@ -255,13 +255,15 @@ pub(crate) async fn assemble(
     // G7：就绪探针注册（sdforge 全局表，装配期一次性；检查读既有句柄，
     // 不发起上游请求）。
     crate::api::readiness::register_readiness_checks(&api_state, &database.pool);
+    // G10：配置热重载（旁挂；纯内存配置或监听失败时为 None，行为不变）。
+    let hot_reloader = crate::server::hot_reload::maybe_start_hot_reload(&config_manager).await;
 
     Ok(Assembly {
         api_state,
         logger_handle,
         pre_aggregator,
         pa_shutdown,
-        hot_reloader: None,
+        hot_reloader,
     })
 }
 

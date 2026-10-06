@@ -124,6 +124,18 @@ impl ConfigManager {
         self.persist_and_swap(new_config)
     }
 
+    /// 内存态热交换（G10 热重载桥接用）：校验后只切内存，不落盘。
+    /// 磁盘仍是操作者编辑的源文件；落盘只走 `update_config`（admin 通道）。
+    /// 写锁同样持有——与 admin 并发写互斥，内存与磁盘最终一致。
+    pub fn swap_memory(&self, new_config: Config) -> Result<(), GateError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        validate_config(&new_config)?;
+        self.config.update(new_config);
+        Ok(())
+    }
     /// 原子 read-modify-write：在写锁内读当前配置 → 应用闭包 → 校验落盘切换。
     ///
     /// 供 admin 的 update_vendor/update_model 等 RMW 端点使用，替代

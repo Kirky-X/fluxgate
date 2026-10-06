@@ -25,6 +25,10 @@ pub struct LogQuery {
     pub limit: Option<u32>,
 }
 
+/// 管理面列表上限：`limit` 无夹断时任一有效 key 可拖全表装 Vec（OOM
+/// 向量，G3 复核 HIGH）。默认 100（现状），上限 1000。
+const ADMIN_LIST_MAX_LIMIT: u32 = 1000;
+
 #[axum::debug_handler]
 pub async fn logs(
     State(state): State<Arc<ApiState>>,
@@ -35,7 +39,7 @@ pub async fn logs(
         end_time: params.end_time,
         vendor: params.vendor,
         model: params.model,
-        limit: params.limit.unwrap_or(100),
+        limit: params.limit.unwrap_or(100).min(ADMIN_LIST_MAX_LIMIT),
     };
 
     let logs = state.database.query_logs(&filter).await?;
@@ -48,7 +52,7 @@ pub async fn search_logs(
     Query(params): Query<LogQuery>,
 ) -> Result<Json<Value>, NexusFlowError> {
     let keyword = params.vendor.unwrap_or_default();
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).min(ADMIN_LIST_MAX_LIMIT);
 
     let logs = state.database.search_logs(&keyword, limit).await?;
     Ok(Json(serde_json::json!(logs)))

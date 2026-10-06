@@ -12,6 +12,7 @@ pub mod anthropic;
 pub mod global_state;
 pub mod health;
 pub mod openai;
+pub mod readiness;
 pub mod response_cache;
 pub mod router_builder;
 pub mod routing_hints;
@@ -555,6 +556,7 @@ mod fallback_guard_tests {
             admission: Default::default(),
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
+            docs: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
@@ -859,6 +861,7 @@ mod cooldown_retry_after {
             admission: Default::default(),
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
+            docs: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));

@@ -46,7 +46,8 @@ pub mod server;
 pub mod sdk;
 
 pub use config::{
-    Config, ConfigManager, DatabaseConfig, ModelConfig, PricingConfig, ServerConfig, VendorConfig,
+    Config, ConfigManager, DatabaseConfig, DocsSection, ModelConfig, PricingConfig, ServerConfig,
+    VendorConfig,
 };
 pub use error::{GateError, NexusFlowError};
 

@@ -354,6 +354,7 @@ mod tests {
             admission: Default::default(),
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
+            docs: Default::default(),
         }
     }
 

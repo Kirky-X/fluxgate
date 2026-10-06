@@ -279,6 +279,7 @@ mod build_fallback_chain {
             admission: Default::default(),
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
+            docs: Default::default(),
         };
         let cm = Arc::new(ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm.clone()));
@@ -431,6 +432,7 @@ mod cover_all_paths {
                 cover_all_paths,
                 ..Default::default()
             },
+            docs: Default::default(),
         }
     }
 

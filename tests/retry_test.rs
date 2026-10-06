@@ -102,6 +102,7 @@ mod vendor_fallback_integration {
             admission: Default::default(),
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
+            docs: Default::default(),
         }
     }
 

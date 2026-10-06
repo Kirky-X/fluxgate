@@ -92,6 +92,7 @@ fn test_config(grpc_port: u16) -> Config {
             http2_keepalive_timeout_secs: Some(5),
         }),
         resilience: nexusflow::config::ResilienceSection::default(),
+        docs: Default::default(),
     }
 }
 

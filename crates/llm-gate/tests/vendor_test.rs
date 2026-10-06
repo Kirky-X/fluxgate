@@ -2077,6 +2077,7 @@ mod token_weighted_tickets {
             admission: Default::default(),
             grpc: None,
             resilience: llm_gate::config::ResilienceSection::default(),
+            docs: Default::default(),
         };
         let cm = Arc::new(llm_gate::config::ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm));

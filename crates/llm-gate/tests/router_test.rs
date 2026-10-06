@@ -200,6 +200,7 @@ mod tests {
             admission: Default::default(),
             grpc: None,
             resilience: llm_gate::config::ResilienceSection::default(),
+            docs: Default::default(),
         };
 
         let config_manager = Arc::new(ConfigManager::new(disabled_config));
@@ -233,6 +234,7 @@ mod tests {
             admission: Default::default(),
             grpc: None,
             resilience: llm_gate::config::ResilienceSection::default(),
+            docs: Default::default(),
         };
 
         let config_manager = Arc::new(ConfigManager::new(disabled_config));

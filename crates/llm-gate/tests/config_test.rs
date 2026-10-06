@@ -331,6 +331,7 @@ mod tests {
             admission: Default::default(),
             grpc: None,
             resilience: llm_gate::config::ResilienceSection::default(),
+            docs: Default::default(),
         }
     }
 

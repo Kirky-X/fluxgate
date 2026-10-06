@@ -418,6 +418,7 @@ mod tests {
             routing: Default::default(),
             cache: Default::default(),
             resilience: Default::default(),
+            docs: Default::default(),
             admission: Default::default(),
             grpc: None,
         }

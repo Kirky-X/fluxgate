@@ -123,6 +123,7 @@ fn make_config(rules: Vec<RateLimitRule>) -> Config {
         admission: Default::default(),
         grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
+        docs: Default::default(),
         rate_limit: RateLimitSection { rules },
     }
 }

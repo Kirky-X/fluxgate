@@ -184,6 +184,11 @@ impl ResponseCache {
         self.config.read().cache.enabled
     }
 
+    /// 后端可用性探针（G7 就绪检查用）：`health_check` 透传，错误转字符串。
+    pub async fn probe_backend(&self) -> Result<(), String> {
+        self.backend.health_check().await.map_err(|e| e.to_string())
+    }
+
     /// recId=12：TTL 三段式 —
     /// 1. `base = ttl_secs × 类别乘数`（[[cache.categories]] 按 model_id
     ///    前缀匹配，(endpoint, model) 划分的零开销近似；无命中 1.0）；
@@ -410,6 +415,7 @@ mod tests {
             admission: Default::default(),
             grpc: None,
             resilience: Default::default(),
+            docs: Default::default(),
         });
         let cache = ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),
@@ -481,6 +487,7 @@ mod tests {
             admission: Default::default(),
             grpc: None,
             resilience: Default::default(),
+            docs: Default::default(),
         });
         let cache = ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),
@@ -548,6 +555,7 @@ mod ttl_load_linking_tests {
             admission: Default::default(),
             grpc: None,
             resilience: Default::default(),
+            docs: Default::default(),
         }
     }
 

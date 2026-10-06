@@ -1144,6 +1144,19 @@ pub struct Config {
     /// gRPC 服务器禁用（不监听 gRPC 端口，行为与历史逐位一致）
     #[serde(default)]
     pub grpc: Option<GrpcConfig>,
+    /// [docs] 段 — OpenAPI/Swagger UI 出口（G11）。缺段时关闭。
+    #[serde(default)]
+    pub docs: DocsSection,
+}
+
+/// [docs] 段 — OpenAPI 文档面开关（absorb-sibling-libs G11）。
+/// `enabled = false`（默认）时 /api-docs 与 Swagger UI 路由不存在（404）；
+/// 运维显式打开后可达（静态文档面，免认证免限流——开关本身即访问门）。
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
+pub struct DocsSection {
+    /// OpenAPI JSON + Swagger UI 是否挂载（默认 false）。
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// 单条定价配置 — vendor + model 维度的输入/输出 token 单价（每 1k tokens，USD）

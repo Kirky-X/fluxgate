@@ -101,5 +101,6 @@ pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
         admission: Default::default(),
         grpc: None,
         resilience: Default::default(),
+        docs: Default::default(),
     }
 }

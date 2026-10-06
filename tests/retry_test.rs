@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
+#![cfg(all(feature = "web-server", feature = "resilience"))]
 
 //! recId=7⑤：换 vendor fallback E2E（HTTP 全链路，留在 nexusflow 应用面）。
 //!
@@ -9,11 +10,8 @@
 //! 测试随 llm-gate 走（tests/retry_test.rs），本文件只留经 api/ApiState
 //! 全栈的 fallback 集成（依赖 api/database/web-server 门控）。
 
-#![allow(dead_code)]
 mod common;
 
-#[cfg(test)]
-#[cfg(all(feature = "web-server", feature = "resilience"))]
 mod vendor_fallback_integration {
     use axum::{body::Body, http::Request, routing::post, Router};
     use dbnexus::{DbConfig, DbPool};

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
+#![cfg(feature = "web-server")]
 
 //! RoutingHints 兜底会话键 → 亲和绑定集成（N1 自 router_test 拆出）。
 //!
@@ -9,10 +10,8 @@
 //! axum 假设不下沉）；本测试验证「无 X-Session-Id 时同前缀 messages 哈希
 //! → 同兜底会话键 → 亲和粘住同 vendor」的跨层语义，随 api 留 nexusflow。
 
-#![allow(dead_code)]
 mod common;
 
-#[cfg(feature = "web-server")]
 mod web_server_hints {
     use llm_gate::config::ConfigManager;
     use llm_gate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};

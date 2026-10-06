@@ -80,7 +80,16 @@ pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
 /// 无法表达，故保留手写。
 pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_admin_secrets(config)?;
+    validate_vendor_entries(config)?;
+    warn_missing_api_key_envs(config);
+    validate_model_catalog(config)?;
+    validate_resilience_circuit(config)?;
+    Ok(())
+}
 
+/// vendor id 全局唯一 + 每 vendor 内 model id 唯一（跨 Vec 条目的唯一性
+/// 约束，confers::validator 的字段级规则无法表达，保留手写）。
+fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
     let mut vendor_ids = std::collections::HashSet::new();
     for vendor in &config.vendors {
         if !vendor_ids.insert(&vendor.id) {
@@ -109,9 +118,14 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
             }
         }
     }
+    Ok(())
+}
 
-    // 安全 L4 脱敏：缺失告警不回显配置原文（用户可能误将 key 原文当作
-    // env 名填入配置，回显会把密钥泄进日志）——只报值长度/序号 + 核对提示。
+/// 安全 L4 脱敏：缺失告警不回显配置原文（用户可能误将 key 原文当作
+/// env 名填入配置，回显会把密钥泄进日志）——只报值长度/序号 + 核对提示。
+/// T005：key 池显式列表逐名校验（缺失只告警不拒——池解析时跳过缺失名
+/// 并显性化，与 api_key_env 同一宽容级别）。
+fn warn_missing_api_key_envs(config: &Config) {
     for vendor in &config.vendors {
         if std::env::var(&vendor.api_key_env).is_err() {
             tracing::warn!(
@@ -125,8 +139,6 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
                 )
             );
         }
-        // T005：key 池显式列表逐名校验（缺失只告警不拒——池解析时跳过
-        // 缺失名并显性化，与 api_key_env 同一宽容级别）
         for (index, env) in vendor.api_key_envs.iter().enumerate() {
             if std::env::var(env).is_err() {
                 tracing::warn!(
@@ -143,11 +155,13 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
             }
         }
     }
+}
 
-    // T006：[[model_catalog]] 段校验 —— model_id 去重（与 vendor/model id
-    // 同级唯一性约束，confers 字段级规则无法表达，保留手写）+ 登记条目
-    // context_window > 0（0 会让 agentstem TUI auto-compact 静默不装配）。
-    // 加载与 POST /admin/config 热更新共用本函数，两路同拒。
+/// T006：[[model_catalog]] 段校验 —— 条目数上限、model_id 去重（与
+/// vendor/model id 同级唯一性约束，confers 字段级规则无法表达，保留手写）、
+/// 登记条目 context_window > 0（0 会让 agentstem TUI auto-compact 静默
+/// 不装配）。加载与 POST /admin/config 热更新共用本函数，两路同拒。
+fn validate_model_catalog(config: &Config) -> Result<(), GateError> {
     if config.model_catalog.len() > crate::config::model_catalog::MAX_MODEL_CATALOG_ENTRIES {
         return Err(GateError::Config {
             message: t_args(
@@ -185,32 +199,42 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
-        // 审查 LOW-1：价格有限（拒 NaN/Inf）且 ≥ 0——NaN 的比较恒 false、
-        // 负价是配置错误，两路同拒；T007 计价按此面消费
-        let prices = [
-            ("input_price", entry.input_price),
-            ("output_price", entry.output_price),
-            ("cache_read_price", entry.cache_read_price),
-            ("cache_creation_price", entry.cache_creation_price),
-        ];
-        for (field, price) in prices {
-            if !price.is_finite() || price < 0.0 {
-                return Err(GateError::Config {
-                    message: t_args(
-                        "config-catalog-price-invalid",
-                        &[
-                            ("model", entry.model_id.clone()),
-                            ("field", field.to_string()),
-                            ("value", price.to_string()),
-                        ],
-                    ),
-                });
-            }
+        validate_catalog_prices(entry)?;
+    }
+    Ok(())
+}
+
+/// 审查 LOW-1：价格有限（拒 NaN/Inf）且 ≥ 0——NaN 的比较恒 false、
+/// 负价是配置错误，两路同拒；T007 计价按此面消费。
+fn validate_catalog_prices(
+    entry: &crate::config::model_catalog::ModelCatalogEntry,
+) -> Result<(), GateError> {
+    let prices = [
+        ("input_price", entry.input_price),
+        ("output_price", entry.output_price),
+        ("cache_read_price", entry.cache_read_price),
+        ("cache_creation_price", entry.cache_creation_price),
+    ];
+    for (field, price) in prices {
+        if !price.is_finite() || price < 0.0 {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-catalog-price-invalid",
+                    &[
+                        ("model", entry.model_id.clone()),
+                        ("field", field.to_string()),
+                        ("value", price.to_string()),
+                    ],
+                ),
+            });
         }
     }
+    Ok(())
+}
 
-    // 窗口 <100ms 使 CB Open→HalfOpen 即刻转换：故障期退化为探针风暴，
-    // 等于关闭熔断冷却。加载与 POST /admin/config 热更新共用本函数，两路同拒。
+/// 窗口 <100ms 使 CB Open→HalfOpen 即刻转换：故障期退化为探针风暴，
+/// 等于关闭熔断冷却。加载与 POST /admin/config 热更新共用本函数，两路同拒。
+fn validate_resilience_circuit(config: &Config) -> Result<(), GateError> {
     if config.resilience.circuit_open_timeout_ms < 100 {
         return Err(GateError::Config {
             message: t_args(
@@ -222,7 +246,6 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
             ),
         });
     }
-
     Ok(())
 }
 

@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
-//! G11（T012）：OpenAPI 文档面——默认关闭（404），开关打开后可达，
+//! OpenAPI 文档面——默认关闭（404），开关打开后可达，
 //! JSON 含主端点路径。
 
 use axum::{body::Body, http::Request, http::StatusCode, Router};

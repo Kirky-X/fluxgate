@@ -136,7 +136,7 @@ flowchart TB
 | `vendor/rate_limiter.rs` | `TokenBucket`/`ConcurrencyLimiter`（limiteron 包装器）+ 时段门控统一判定（recId=13，含跨午夜窗口） |
 | `vendor/status.rs` | `VendorStatus`/`VendorState`：原子状态机与错误计数（Available/Unavailable 等） |
 | `vendor/cost.rs` | `CostCalculator`：(vendor_id, model_id) 维度定价表查找与 USD 计算 |
-| `vendor/key_pool.rs` | 多 key 池：逐 env 名解析、轮转游标与指纹观测（T005） |
+| `vendor/key_pool.rs` | 多 key 池：逐 env 名解析、轮转游标与指纹观测 |
 | `vendor/resilience/fallback.rs` | `FallbackChain`：按 priority 升序链式回退 |
 | `vendor/resilience/error_map.rs` | `GateErrorClassifier`：实现 limiteron `FailureClassifier<GateError>`（业务错误直通熔断器，无损穿透） |
 
@@ -154,7 +154,7 @@ flowchart TB
 
 | 目录 | 文件与职责 |
 |---|---|
-| `crates/llm-gate/src/config/` | `mod.rs`：`Config` 结构体（15 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录（T006/T007） |
+| `crates/llm-gate/src/config/` | `mod.rs`：`Config` 结构体（15 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
 | `src/middleware/` | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`mod.rs`：中间件组织 |
 | `crates/llm-gate/src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3） |
 | `crates/llm-gate/src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器 |

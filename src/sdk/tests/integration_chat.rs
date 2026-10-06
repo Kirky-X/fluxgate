@@ -11,7 +11,7 @@ fn build_client(base_url: &str) -> crate::sdk::NexusFlowClient {
         .unwrap()
 }
 
-/// T008：网关真实响应形状——无 vendor 字段（核实：response_to_external
+/// 网关真实响应形状——无 vendor 字段（核实：response_to_external
 /// 不产出），finish_reason 结构化，usage 含 prompt_tokens_details.cached_tokens
 #[tokio::test]
 async fn chat_success() {
@@ -81,7 +81,7 @@ async fn chat_parses_response_tool_calls() {
     );
 }
 
-/// 工具面 wire：tools/tool_choice/vendor_extensions 进请求体（T008 扩全）
+/// 工具面 wire：tools/tool_choice/vendor_extensions 进请求体（扩全）
 #[tokio::test]
 async fn chat_sends_tools_and_vendor_extensions() {
     let mut server = mockito::Server::new_async().await;

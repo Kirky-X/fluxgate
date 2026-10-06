@@ -274,7 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-> **T008 alignment**: `ChatMessage::content` supports multimodal content parts (`ChatContent::Parts`, image URLs / base64 data URLs); tool-role messages are filled back with `ChatMessage::tool(tool_call_id, content)`; the admin surface uses real routes (catalog `GET/PUT/DELETE /admin/models`, health `GET /api/v1/health`, vendor runtime status).
+> **SDK alignment**: `ChatMessage::content` supports multimodal content parts (`ChatContent::Parts`, image URLs / base64 data URLs); tool-role messages are filled back with `ChatMessage::tool(tool_call_id, content)`; the admin surface uses real routes (catalog `GET/PUT/DELETE /admin/models`, health `GET /api/v1/health`, vendor runtime status).
 
 **Database backend selection (compile-time)**: `full` itself carries no database driver — it must be paired with one `db-*` feature group. `default = ["full", "db-sqlite"]` keeps the standalone default on the sqlite file store.
 

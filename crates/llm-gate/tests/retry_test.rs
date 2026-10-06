@@ -162,7 +162,7 @@ mod tests {
             }
         }
 
-        /// G3 等价迁移（原 retry_after_header_takes_precedence）：上游
+        /// 等价迁移（原 retry_after_header_takes_precedence）：上游
         /// `Retry-After` 值的时长生产端在 spread_jitter=0 时原样采用上游
         /// 指示（manager 决策闭包将其映射为 RetryDecision::RetryAfter）。
         #[test]

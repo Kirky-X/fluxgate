@@ -5,7 +5,7 @@
 
 //! GateError 直驱熔断器的分类与还原层。
 //!
-//! G3 泛型收口：`limiteron::circuit::CircuitBreaker<E>` 的 `execute`
+//! 泛型收口：`limiteron::circuit::CircuitBreaker<E>` 的 `execute`
 //! （limiteron src/circuit/types.rs:463）与 `FailureClassifier<E>`
 //! （types.rs:44）均为泛型——本 crate 执行路径的错误 [`GateError`]
 //! 直接作为 `E`，业务错误经 `CircuitCallError::Inner` 原样透传，

@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! G4 核心表版本化迁移（absorb-sibling-libs T005）。
+//! 核心表版本化迁移。
 //!
 //! 运行源唯一性：sqlite/postgres/mysql 的启动建表只走本模块的 FROZEN V1
 //!（经 dbnexus `MigrationExecutor`），不再逐语句执行 `schema.*.sql`。
@@ -216,7 +216,7 @@ DROP TABLE IF EXISTS request_logs;
 /// 按连接后端构造 V1 迁移文件（内存嵌入，无目录依赖——`-- UP`/`-- DOWN`
 /// 标记行供 `MigrationExecutor` 切分；UP 体内无以 UP/DOWN 开头的行）。
 /// 未知后端返回 Err（调用方回落旧 DDL；静默按 sqlite 会在 exotic 后端上
-/// 建错表——G3 复核 MEDIUM A-M11）。
+/// 建错表）。
 pub(crate) fn core_migration_file(backend: DatabaseBackend) -> Result<MigrationFile, DbError> {
     let (label, up) = match backend {
         DatabaseBackend::Postgres => ("postgres", UP_POSTGRES),
@@ -367,7 +367,7 @@ mod content_tests {
         }
     }
 
-    /// FROZEN V1 与文档 schema.sql 表集合一致（G3 复核 MEDIUM A-M11）：
+    /// FROZEN V1 与文档 schema.sql 表集合一致
     /// 双源并存，表集合漂移即红——文档改了必须同步出新迁移版本，
     /// 禁止静默改 V1。
     #[test]
@@ -450,7 +450,7 @@ mod live_tests {
         executor.get_all_versions()
     }
 
-    /// v0.1 旧库表形态（无 cost 列）：手工建表模拟存量库，迁移历史为空。
+    /// V0.1 旧库表形态（无 cost 列）：手工建表模拟存量库，迁移历史为空。
     const LEGACY_TABLES_NO_COST: [&str; 4] = [
         "CREATE TABLE request_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT UNIQUE NOT NULL, timestamp INTEGER NOT NULL, endpoint TEXT NOT NULL, input_format TEXT NOT NULL, abstract_model TEXT, messages TEXT NOT NULL, actual_vendor TEXT NOT NULL, actual_model TEXT NOT NULL, routing_strategy TEXT NOT NULL, status_code INTEGER, response TEXT, error_message TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, duration_ms INTEGER)",
         "CREATE TABLE token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor TEXT NOT NULL, model TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, request_count INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0, UNIQUE(vendor, model, date, hour))",
@@ -542,7 +542,7 @@ mod live_tests {
         assert!(table_names(&pool).await.contains("request_logs"));
     }
 
-    /// 存量库（手工建表、历史为空，缺 cost 列模拟 v0.1 旧库）：启动不报错、
+    /// 存量库（手工建表、历史为空，缺 cost 列模拟 V0.1 旧库）：启动不报错、
     /// 不重复建表、缺列回填、记 v1、可正常写入。
     #[tokio::test]
     async fn existing_db_without_history_is_baselined() {

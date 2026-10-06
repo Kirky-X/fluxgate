@@ -18,7 +18,7 @@ pub(crate) fn escape_like(keyword: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// 按连接后端选择方言投影（db-backend-selection T004）。
+/// 按连接后端选择方言投影。
 /// `schema.sql`（SQLite）为可读文档源；schema.postgres.sql / schema.mysql.sql
 /// 为方言投影。G4 后启动建表不再执行此处文本（sqlite/postgres/mysql 走
 /// `crate::database::migration` 的 FROZEN V1）；本函数仅服务非穷尽后端的
@@ -34,7 +34,7 @@ pub(crate) fn schema_sql_for_backend(backend: DatabaseBackend) -> &'static str {
 
 /// schema 初始化单一实现（`Database::new` 与 `Repository::initialize` 共用）。
 ///
-/// G4（absorb-sibling-libs T005）：sqlite/postgres/mysql 走 dbnexus
+/// sqlite/postgres/mysql 走 dbnexus
 /// `MigrationExecutor` 版本化迁移（V1，见 `crate::database::migration`）；
 /// 其余后端（`DatabaseBackend` 非穷尽扩展）回落旧逐语句 DDL。
 /// MySQL 索引仍由 `ensure_indexes_mysql` 幂等创建（MySQL 8 无
@@ -73,7 +73,7 @@ pub(crate) async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
     Ok(())
 }
 
-/// v0.1 旧库列迁移（架构审查 HIGH-2 闭合）：原仅存于 `Repository::initialize`
+/// V0.1 旧库列迁移：原仅存于 `Repository::initialize`
 /// 而其全部调用点在测试模块——生产链 `Database::new` 只跑 DDL，缺列旧库每次
 /// 落日志必失败。并入 `init_schema` 使迁移随生产建链可达。各后端均无
 /// ALTER TABLE ADD COLUMN IF NOT EXISTS 的可移植写法，探针查列存在性，
@@ -131,7 +131,7 @@ impl Repository {
     }
 
     /// 检查指定表是否已有某列，不存在则 ALTER TABLE ADD COLUMN。
-    /// 多后端（db-backend-selection T005）：探针语句随连接后端分派。
+    /// 多后端：探针语句随连接后端分派。
     async fn ensure_column_exists(
         session: &Session,
         backend: DatabaseBackend,
@@ -166,7 +166,7 @@ impl Repository {
         Ok(())
     }
 
-    /// 列存在性探针语句与结果列名（纯函数，db-backend-selection T005）。
+    /// 列存在性探针语句与结果列名（纯函数）。
     /// sqlite 的 PRAGMA table_info 返回键为 `name`，information_schema 为
     /// `COLUMN_NAME`——语句与键随元组成对返回，调用方不再分支。
     fn column_probe(backend: DatabaseBackend, table: &str, column: &str) -> (String, &'static str) {
@@ -222,7 +222,7 @@ impl Repository {
             }
         }
         match failed {
-            // G3 复核 MEDIUM：commit 失败同样尝试回滚，不残留开事务连接
+            // commit 失败同样尝试回滚，不残留开事务连接
             None => {
                 if let Err(e) = session.commit().await {
                     let _ = session.rollback().await;
@@ -518,7 +518,7 @@ mod schema_tests {
         assert!(mysql.contains("DOUBLE"));
         assert!(!mysql.contains("AUTOINCREMENT"));
         // MySQL 要求 BLOB/TEXT 索引必须带前缀长度（ERROR 1170）：键规格列
-        // （PK/UNIQUE/索引覆盖）必须是 VARCHAR——性能审查 HIGH 闭合钉
+        // （PK/UNIQUE/索引覆盖）必须是 VARCHAR（回归钉住）
         assert!(!mysql.contains("TEXT UNIQUE"));
         assert!(!mysql.contains("TEXT PRIMARY KEY"));
         assert!(mysql.contains("request_id VARCHAR(255)"));
@@ -527,7 +527,7 @@ mod schema_tests {
     }
 
     /// LIKE 通配符转义：三类元字符 + 反斜杠优先（R-schema-003 关联的
-    /// search 输入面收敛，安全审查 LOW 闭合）
+    /// search 输入面收敛）
     #[test]
     fn escape_like_escapes_wildcards_and_backslash() {
         assert_eq!(super::escape_like("abc"), "abc");
@@ -536,7 +536,7 @@ mod schema_tests {
         assert_eq!(super::escape_like("a\\%b"), "a\\\\\\%b");
     }
 
-    /// 三投影逐列集合守卫（R-schema-001，架构审查 LOW-7）：每表全部列名
+    /// 三投影逐列集合守卫（R-schema-001）：每表全部列名
     /// 必须在三份投影的对应建表段中出现——防「加列只改权威源」漂移
     #[test]
     fn column_sets_match_across_projections() {

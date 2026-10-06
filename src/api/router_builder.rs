@@ -57,14 +57,14 @@ fn is_quota_exempt_path(path: &str) -> bool {
         || path == "/swagger-ui"
 }
 
-/// G5/G9：请求级租户摘要——端点中间件（最外层自有中间件）计算一次，
+/// 请求级租户摘要——端点中间件（最外层自有中间件）计算一次，
 /// 经 extensions 传递，tower 键提取器与准入中间件复用（每请求 1 次
-/// SHA256；G3 复核性能 H1）。直连 tower/准入层的单测无 extension 时
+/// SHA256）。直连 tower/准入层的单测无 extension 时
 /// 回退现场计算，行为一致。
 #[derive(Debug, Clone)]
 pub(crate) struct TenantDigest(pub String);
 
-/// G5：租户摘要键提取器 — 键 = 已验证 API key 的 SHA256 摘要
+/// 租户摘要键提取器 — 键 = 已验证 API key 的 SHA256 摘要
 ///（`cache_api_key_hash`，无 key 归入固定 anonymous 桶；关闭 auth 时
 /// 伪造 key 的摘要各异，高基数由 QuotaLimiter 1 万 key 上限约束）。
 /// 健康白名单路径返回 `None`（tower 层直通不限流）。
@@ -92,7 +92,7 @@ impl<B> RequestKey<B> for TenantKeyExtractor {
     }
 }
 
-/// G5：全局规则门 — per-tenant 配额（QuotaLimiter 固定窗口）或空规则
+/// 全局规则门 — per-tenant 配额（QuotaLimiter 固定窗口）或空规则
 /// 默认兜底（TokenBucket 100/10，与旧 `Governor::new()` 默认逐位一致，
 /// 共享桶）。拒绝时把窗口剩余秒记入 `last_retry_after_secs` 供响应器渲染。
 /// 内层限流器经 `Arc` 共享，使门整体 `Clone`（axum `Router::layer` 要求）。
@@ -105,7 +105,7 @@ enum GateLimiter {
 #[derive(Clone)]
 struct GlobalGate {
     inner: GateLimiter,
-    /// 拒绝秒数槽（G3 复核 LOW S-L9：多租户并发拒绝下存在秒级错位，
+    /// 拒绝秒数槽（多租户并发拒绝下存在秒级错位，
     /// 量级 ≤ 窗口且仅影响等待时长，无正确性影响，故接受共享槽）。
     last_retry_after_secs: Arc<AtomicU64>,
     /// 拒绝时回传的 Retry-After 回退值（配额门法取规则窗口；令牌桶取 1，
@@ -122,7 +122,7 @@ impl Limiter for GlobalGate {
         }
     }
 
-    /// 失败语义统一 fail-open（G3 复核 HIGH）：后端故障放行（与端点表
+    /// 失败语义统一 fail-open：后端故障放行（与端点表
     /// `Err` 分支、旧 Governor `Err` 分支一致）；仅真实配额耗尽拒绝。
     /// Quota 拒绝回保守整窗秒数（避免二次 `check_retry_after` 重复扣费）。
     async fn check(&self, key: &str) -> Result<(), limiteron::LimiteronError> {
@@ -158,9 +158,9 @@ impl Limiter for GlobalGate {
     }
 }
 
-/// G5：全局层拒绝响应 — 429 + `Retry-After: 窗口剩余秒` + 体
+/// 全局层拒绝响应 — 429 + `Retry-After: 窗口剩余秒` + 体
 /// `t("router-rate-limit-exceeded")`，与 per-endpoint 429 同形（旧全局
-/// Governor 拒绝无 Retry-After 头，此处为变更点，见任务验收）。
+/// Governor 拒绝无 Retry-After 头，此处为变更点）。
 #[derive(Debug, Clone)]
 struct GlobalRejectResponder {
     retry_after_secs: Arc<AtomicU64>,
@@ -260,7 +260,7 @@ where
         Box::pin(async move {
             match keyed_service.call(req).await {
                 Ok(resp) => Ok(resp),
-                // G3 复核 LOW S-L10：内层错误原文不进响应体（信息外泄），
+                // 内层错误原文不进响应体（信息外泄），
                 // 只记 warn，调用方收通用 500（内层为 Route 时不可达）。
                 Err(err) => {
                     tracing::warn!("global rate limit layer error: {err}");
@@ -275,7 +275,7 @@ where
     }
 }
 
-/// G5：全局 tower 限流层（同构叠放，一规则一层）。
+/// 全局 tower 限流层（同构叠放，一规则一层）。
 type GlobalRateLimitLayer = GlobalTowerLayer;
 
 /// 构造单条全局 tower 层（配额门法与拒绝响应器共享同一秒数槽）。
@@ -367,7 +367,7 @@ impl EndpointLimitTable {
         spec: &EndpointRuleSpec,
         tenant: &str,
     ) -> Arc<ShardedSlidingWindowLimiter> {
-        // G3 复核 LOW S-L11：锁毒化不 panic（取锁内值继续，内存态仍一致）。
+        // 锁毒化不 panic（取锁内值继续，内存态仍一致）。
         let mut guard = self
             .limiters
             .lock()
@@ -416,7 +416,7 @@ async fn endpoint_limit_middleware(
     // recId=3：租户 id = 已验证 API key 的 SHA256 摘要（本中间件在 auth
     // 之后运行——axum layer 顺序 auth 外层；沿用 response_cache 先例：
     // 无 key 请求归入固定 anonymous 租户）。存入 extensions 供下游
-    // tower 层与准入中间件复用（G3 复核性能 H1：每请求只算一次）。
+    // tower 层与准入中间件复用（每请求只算一次）。
     let tenant = cache_api_key_hash(request.headers());
     request
         .extensions_mut()
@@ -466,8 +466,7 @@ async fn admission_middleware(
     let admission = state.admission.clone();
     let admission_config = admission.config_handle();
 
-    // recId=3：租户 id 与端点中间件同源（extensions 复用，无则回退计算；
-    // G3 复核性能 H1）。
+    // recId=3：租户 id 与端点中间件同源（extensions 复用，无则回退计算）。
     let tenant: std::borrow::Cow<'_, str> = match request.extensions().get::<TenantDigest>() {
         Some(digest) => std::borrow::Cow::Borrowed(digest.0.as_str()),
         None => std::borrow::Cow::Owned(cache_api_key_hash(request.headers())),
@@ -477,10 +476,10 @@ async fn admission_middleware(
     // 默认 false = 判定旁路、行为与现状逐位一致）。请求档位经
     // [auth].keys 表（认证已在本中间件外层通过）。
     let tier = tier_for_request(admission_config.as_ref(), request.headers());
-    // G7：RED 记录（sdforge 全局 registry，供 /metrics 抓取；与内部
+    // RED 记录（sdforge 全局 registry，供 /metrics 抓取；与内部
     // GlobalMetrics 并存不迁移）。路由标签走静态模板表归一（通配段不
     // 爆炸基数）；基础设施自观察（/metrics、/readyz）不计入。
-    // G3 复核性能 M1：标签与方法零分配（&'static / 小串克隆一次），span
+    // 标签与方法零分配（&'static / 小串克隆一次），span
     // 延迟到准入通过后创建（拒绝路径不支付）。
     let method = request.method().as_str().to_string();
     let route_label: &'static str = metrics_route_label(request.uri().path());
@@ -488,7 +487,7 @@ async fn admission_middleware(
     let started = std::time::Instant::now();
     match admission.admit(tier, &tenant, now_unix_ms()) {
         Ok(guard) => {
-            // G9 请求追踪：sdforge context 中间件（最外层）已把 X-Request-Id
+            // 请求追踪：sdforge context 中间件（最外层）已把 X-Request-Id
             // 注入请求头（缺失则生成）并挂 task_local；此处再把 id 绑到
             // tracing span，同请求日志经 span 关联 request_id（中间件层注入，
             // 不改 inklog 配置）。
@@ -531,7 +530,7 @@ async fn admission_middleware(
     }
 }
 
-/// G7：RED 路由标签归一——已知路由模板精确匹配，`{id}` 通配段逐段比对，
+/// RED 路由标签归一——已知路由模板精确匹配，`{id}` 通配段逐段比对，
 /// 未知路径归 `unmatched`（基数有界）。
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
@@ -689,7 +688,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
             get(admin::get_config).post(admin::update_config),
         )
         .route("/admin/models", get(admin::get_models))
-        // T006：目录 CRUD —— POST {id} 保留 global 策略更新（存量契约），
+        // 目录 CRUD —— POST {id} 保留 global 策略更新（存量契约），
         // PUT/DELETE 承载目录条目 upsert/下条
         .route(
             "/admin/models/{id}",
@@ -697,14 +696,14 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
                 .put(admin::upsert_model)
                 .delete(admin::delete_model),
         );
-    // G7：Prometheus 指标出口（/metrics）与就绪探针（/readyz）由
+    // Prometheus 指标出口（/metrics）与就绪探针（/readyz）由
     // sdforge 站点（build_with_config）在合并侧自挂（同一 handler +
     // 同一全局注册表）；create_router 侧再挂会导致 merge 时重复路由
     // panic。直连 create_router 的调用方用 sdforge::health::mount_probes
     //（/readyz）或手动挂载 metrics handler 补齐。
     // /api/v1/health（forge 存活探针）保留不变。
 
-    // G11：文档面按开关挂载（默认关 → /api-docs 与 /swagger-ui 不存在）。
+    // 文档面按开关挂载（默认关 → /api-docs 与 /swagger-ui 不存在）。
     // 合并点在 with_state 之后（两侧均为 Router<()>，无状态 handlers）。
     // 开关直读 config（不经 openapi_docs 模块——该模块只承载 inventory
     // 注册，与挂载解耦）。
@@ -717,7 +716,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         limit_state.clone(),
         admission_middleware,
     ));
-    // G5：全局 tower 层叠在端点限流内侧、准入外侧（执行序：端点 → 全局 →
+    // 全局 tower 层叠在端点限流内侧、准入外侧（执行序：端点 → 全局 →
     // 准入；axum 后声明的 layer 更靠外，故逆序叠，以保持配置序执行）。
     let router = global_layers
         .into_iter()
@@ -727,7 +726,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .layer(from_fn_with_state(limit_state, endpoint_limit_middleware))
         .layer(from_fn_with_state(state.config.clone(), auth_middleware))
         .layer(TraceLayer::new_for_http())
-        // G9：请求追踪最外层——X-Request-Id 解析/生成 + task_local 挂载 +
+        // 请求追踪最外层——X-Request-Id 解析/生成 + task_local 挂载 +
         // 响应头回传（sdforge context）；span 关联在准入中间件内完成。
         .layer(axum::middleware::from_fn(
             sdforge::context::context_middleware,
@@ -790,7 +789,7 @@ mod tests {
     /// tests/rate_limit_test.rs 的集成形态无论白名单代码存在与否都会过。
     /// 本用例 route 先于 layer 构建：`/health` 白名单豁免断言 +
     /// `/limited` 对照组（第 2 次 429）共同证明中间件真实挂载且生效；
-    /// G5 起白名单由端点中间件与 tower 键提取器双重执行，此处锁定两者。
+    /// 白名单由端点中间件与 tower 键提取器双重执行，此处锁定两者。
     #[tokio::test]
     async fn health_check_bypasses_endpoint_rate_limit() {
         // 规则刻意覆盖 /health 前缀：白名单若失效，第 2 次 GET /health
@@ -912,7 +911,7 @@ mod tests {
         );
     }
 
-    /// 空规则默认兜底（G3 复核 MEDIUM A-M16）：TokenBucket(100, 10/s)    /// 共享桶——100 次内全放行，第 101 次拒绝（与旧 Governor::new()
+    /// 空规则默认兜底：TokenBucket(100, 10/s) 共享桶——100 次内全放行，第 101 次拒绝（与旧 Governor::new()
     /// 默认一致；租户维度不分桶）。
     #[tokio::test]
     async fn default_gate_matches_legacy_token_bucket_semantics() {
@@ -939,7 +938,7 @@ mod tests {
         );
     }
 
-    /// 注册表↔指标一致性（G3 复核 MEDIUM A-M13）：inventory 里每条路径在
+    /// 注册表↔指标一致性：inventory 里每条路径在
     /// RED 标签表里都有归一模板（/readyz、/metrics 除外——记录层跳过二者，
     /// 模板表已同步移除，归 unmatched 即正确）。
     #[test]

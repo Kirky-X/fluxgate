@@ -1,4 +1,4 @@
-//! T008 — SDK 类型层 serde 往返测试（对齐 T003 unified.rs serde 测试口径：
+//! SDK 类型层 serde 往返测试（对齐 unified.rs serde 测试口径
 //! 构造全字段 → 序列化 wire 断言 → 反序列化往返相等）。
 //!
 //! SDK 类型自有（零 crate 内依赖），wire 形状以网关真实产出为锚：
@@ -141,11 +141,11 @@ fn chat_response_parses_gateway_wire() {
         ChatFinishReason::Standard(StandardFinishReason::ToolCalls)
     );
     assert_eq!(resp.usage.cache_read_tokens, 80);
-    // wire 无 vendor 键（ChatResponse 不再有 vendor 字段——T008 BREAKING）
+    // wire 无 vendor 键（ChatResponse 不再有 vendor 字段—— BREAKING）
     assert!(wire.get("vendor").is_none());
 }
 
-/// 流式帧解析（网关 T004 后真实事件序）：内容帧 → 工具片段帧 →
+/// 流式帧解析（网关 后真实事件序）：内容帧 → 工具片段帧 →
 /// usage 尾帧 → [DONE]
 #[tokio::test]
 async fn stream_parses_gateway_event_sequence() {

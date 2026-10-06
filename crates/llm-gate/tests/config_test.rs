@@ -572,7 +572,7 @@ concurrency = { requests_per_second = 10 }
         assert!((entry.output_per_1k_tokens - 0.075).abs() < f64::EPSILON);
     }
 
-    // ======== T006：[[model_catalog]] 校验（validate_config） ========
+    // ======== [[model_catalog]] 校验（validate_config） ========
 
     /// 登记条目 model_id 去重（与 vendor/model id 同级唯一性约束）
     #[test]
@@ -659,9 +659,9 @@ concurrency = { requests_per_second = 10 }
         validate_config(&config).expect("empty catalog must pass");
     }
 
-    // ======== T006 审查回写：价格/空白 id/条目上限 ========
+    // ======== 审查回写：价格/空白 id/条目上限 ========
 
-    /// 审查 LOW-1：四个价格字段必须有限（拒 NaN/Inf）且 ≥ 0——
+    /// 审查：四个价格字段必须有限（拒 NaN/Inf）且 ≥ 0——
     /// NaN 比较恒 false、负价是配置错误，加载与热更新两路同拒
     #[test]
     fn catalog_rejects_non_finite_and_negative_prices() {
@@ -718,7 +718,7 @@ concurrency = { requests_per_second = 10 }
         validate_config(&config).expect("zero and finite positive prices must pass");
     }
 
-    /// 审查 LOW-3：model_id trim 后非空（全空白 id 拒绝）
+    /// 审查：model_id trim 后非空（全空白 id 拒绝）
     #[test]
     fn catalog_rejects_blank_model_id() {
         let mut config = create_test_config();
@@ -731,7 +731,7 @@ concurrency = { requests_per_second = 10 }
         assert!(matches!(err, GateError::Config { .. }));
     }
 
-    /// 审查 LOW-3：目录条目上限 1024——超限拒绝、恰在限额放行
+    /// 审查：目录条目上限 1024——超限拒绝、恰在限额放行
     #[test]
     fn catalog_rejects_over_cap_and_admits_at_cap() {
         let build_entry = |i: usize| ModelCatalogEntry {

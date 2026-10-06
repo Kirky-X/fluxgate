@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! G7 就绪探针（absorb-sibling-libs T008）：真实组件检查经 sdforge
+//! 就绪探针：真实组件检查经 sdforge
 //! `AsyncReadinessCheck` 注册，`/readyz` 聚合（200 ready / 503 unavailable）。
 //! 检查只读既有句柄，不发起真实上游请求。现有 `#[forge]` /api/v1/health
 //! 保留（存活探针），readyz 为就绪探针，两者语义分离。
@@ -12,7 +12,7 @@ use crate::api::state::ApiState;
 use dbnexus::DbPool;
 
 /// DB 池探针：取 admin 会话 + `SELECT 1` 往返。任一环节失败即 unhealthy。
-/// details 只给固定码（G3 复核 MEDIUM：探针免认证，错误原文不外泄；
+/// details 只给固定码（探针免认证，错误原文不外泄；
 /// 原文进 tracing 日志供排障）。
 pub(crate) async fn db_pool_check(pool: &DbPool) -> sdforge::health::CheckOutcome {
     match pool.get_session("admin").await {
@@ -73,7 +73,7 @@ pub(crate) async fn cache_backend_check(
 
 /// vendor 管理器探针：读既有句柄（fleet 并发占用），不发起上游请求。
 /// 读锁可得即 healthy（details carrying 容量信号供排障）。
-/// 性质说明（G3 复核 MEDIUM A-M6）：这是 wiring 存活探针，不是健康门——
+/// 性质说明：这是 wiring 存活探针，不是健康门——
 /// 空 vendors 系合法状态（测试/闲置网关），不判 degraded。
 pub(crate) async fn vendor_manager_check(
     manager: &std::sync::Arc<crate::vendor::VendorManager>,
@@ -89,7 +89,7 @@ pub(crate) async fn vendor_manager_check(
 /// 注册全部就绪检查（bootstrap 装配期一次性调用；sdforge 注册表进程全局，
 /// 重复注册仅追加同名条目——生产单进程单次装配）。
 /// 进程级 Once 守卫：同进程二次装配（测试多 build_app）不再重复注册，
-/// 避免 /readyz 重复执行同名检查（G3 复核 MEDIUM）。
+/// 避免 /readyz 重复执行同名检查。
 pub fn register_readiness_checks(api_state: &ApiState, db_pool: &DbPool) {
     static REGISTERED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     if REGISTERED.set(()).is_err() {

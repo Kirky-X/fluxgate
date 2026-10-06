@@ -238,7 +238,7 @@ pub struct ToolFunction {
     pub name: String,
     /// 函数描述
     pub description: String,
-    /// 函数参数 —— **JSON Schema 原样保真**（T008 M1 / D7.14 闭环，A3
+    /// 函数参数 —— **JSON Schema 原样保真**（M1 / D7.14 闭环，A3
     /// 前置）：`serde_json::Value` 直存直出，不做结构化升降级——嵌套
     /// schema / items / anyOf / $ref / 缺 type 属性等全量无损（A3 前的
     /// 有损结构化仅幸存 type/properties/{type,description,enum}/required，
@@ -475,7 +475,7 @@ pub struct TokenUsage {
 /// - `Usage` ↔ core `StreamChunk::Usage`；
 /// - `Heartbeat` 为网关保心跳，无 core 对应。
 ///
-/// 表示统一（T004 已落地）：双侧流式工具路径的规范表示为
+/// 表示统一（已落地）：双侧流式工具路径的规范表示为
 /// [`StreamChunk::ToolCall`] 片段流（openai 单片段帧直接映射；
 /// anthropic 帧类型显式判定）。`Content` 携带 `MessageContent::ToolCalls`
 /// 仅为旧表示回退——openai 单帧多片段 / 片段与 finish_reason 同帧的

@@ -5,7 +5,7 @@ admin-vendor-limit-auto-managed = Vendor rate-limit state is managed automatical
 admin-config-updated-immediate = Config updated; vendors/pricing/auth take effect immediately
 admin-config-updated-restart-required = Config updated; vendors/pricing/auth take effect immediately; { $sections } take effect after restart
 admin-vendor-not-found = Vendor { $id } not found
-# ---- T006：/admin/models 模型能力目录 CRUD ----
+# ---- /admin/models 模型能力目录 CRUD ----
 admin-model-upserted = model { $model } upserted into the catalog
 admin-model-not-found = model { $model } not found in the catalog
 admin-model-deleted = model { $model } removed from the catalog

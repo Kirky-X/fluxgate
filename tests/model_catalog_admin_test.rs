@@ -7,7 +7,7 @@
     any(feature = "db-sqlite", feature = "db-postgres", feature = "db-mysql")
 ))]
 
-//! 集成测试 — /admin/models 模型能力目录 CRUD（T006/N6）。
+//! 集成测试 — /admin/models 模型能力目录 CRUD（N6）。
 //!
 //! 直调 handler（同 api_test 模式，绕过路由/认证装配——认证沿用既有
 //! admin 中间件，与本 CRUD 逻辑正交）。覆盖：
@@ -299,7 +299,7 @@ async fn post_global_updates_strategy_section() {
     assert!(models.is_empty());
 }
 
-/// 审查 LOW-2：PUT/DELETE /admin/models/global 显式拒绝——global 为全局
+/// 审查：PUT/DELETE /admin/models/global 显式拒绝——global 为全局
 /// 策略段保留键（update_model 的 POST 契约），禁止旁路改写
 #[tokio::test]
 async fn put_and_delete_global_are_rejected_explicitly() {
@@ -334,7 +334,7 @@ async fn put_and_delete_global_are_rejected_explicitly() {
     }
 }
 
-/// 审查架构 LOW-1：HTTP 层 MethodRouter 绑定断言——经真实 create_router
+/// 审查：HTTP 层 MethodRouter 绑定断言——经真实 create_router
 /// 装配打 PUT/DELETE/GET（防路由装配笔误：方法错绑/路径错拼在 handler
 /// 直调测试中不可见）。
 #[tokio::test]

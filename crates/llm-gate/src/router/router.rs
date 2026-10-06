@@ -919,7 +919,7 @@ impl Router {
             }
         }
 
-        // T007：价格因子上下文（开关关闭时 None、零查询开销——逐位一致）
+        // 价格因子上下文（开关关闭时 None、零查询开销——逐位一致）
         let price_factor_enabled = self.config.read().routing.price_factor_enabled;
         let price_factors = if price_factor_enabled {
             self.price_factor_multipliers(&candidates)
@@ -955,7 +955,7 @@ impl Router {
             if let Some(lps) = &lps {
                 weight *= lps.factors[i];
             }
-            // T007：价格因子乘性修正（SLA/LPS 之后；定义与中性豁免见
+            // 价格因子乘性修正（SLA/LPS 之后；定义与中性豁免见
             // apply_price_factor doc）。开关关闭时整体跳过——路由行为与
             // 现状逐位一致。
             if price_factor_enabled {
@@ -968,7 +968,7 @@ impl Router {
         weighted
     }
 
-    /// T007：价格因子 — model_catalog 单价参与加权路由。
+    /// 价格因子 — model_catalog 单价参与加权路由。
     ///
     /// 因子定义：候选模型单价 `p = (input_price + output_price) / 2`（每
     /// 1M tokens；cache 档不进因子——cache 命中率随负载变化，input/output

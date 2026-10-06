@@ -611,7 +611,7 @@ mod converter {
                 "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\"\"}}]},\"finish_reason\":null}]}",
             )
             .expect("tool_call delta 帧不应被丢弃");
-        // T004 表示统一：单片段帧 → ToolCall 片段（id/name 首片段携带）
+        // 表示统一：单片段帧 → ToolCall 片段（id/name 首片段携带）
         match chunk {
             StreamChunk::ToolCall {
                 index,
@@ -1371,7 +1371,7 @@ mod converter {
         assert_eq!(out["delta"]["type"], "text_delta");
         assert_eq!(out["delta"]["text"], "hello");
         assert_eq!(out["content_block"]["text"], "hello");
-        // T004：stop_reason 出站映射 Anthropic 词表（stop→end_turn）
+        // stop_reason 出站映射 Anthropic 词表（stop→end_turn）
         assert_eq!(out["stop_reason"], "end_turn");
 
         let out = converter
@@ -2273,7 +2273,7 @@ mod converter {
                 ));
                 match &blocks[1] {
                     ContentBlock::Image { source, detail } => {
-                        // T003：URL 保真——https 直链进 Url 形态（旧实现硬编码
+                        // URL 保真——https 直链进 Url 形态（旧实现硬编码
                         // jpeg 并把 URL 塞 data 字段，往返产出坏 URI）
                         match source {
                             ImageSource::Url { url } => {
@@ -2487,7 +2487,7 @@ mod converter {
         );
     }
 
-    // ==================== T003：IR 一次补全（design.md D2） ====================
+    // ==================== IR 一次补全（design.md D2） ====================
 
     use llm_gate::protocol::{EffortLevel, FinishReason, SamplingParams, ThinkingConfig};
 
@@ -2839,7 +2839,7 @@ mod converter {
         );
         assert_eq!(fragment["function"]["arguments"], ":5}");
 
-        // 回读：片段帧 → ToolCall 续片段（T004 表示统一）
+        // 回读：片段帧 → ToolCall 续片段（表示统一）
         let chunk = openai
             .parse_stream_frame(&out.to_string())
             .expect("片段帧应回读");
@@ -3344,7 +3344,7 @@ mod converter {
         assert_eq!(out["top_k"], 40);
     }
 
-    /// M2：Anthropic 无原生 effort——出站不写顶层 effort（first-party
+    /// Anthropic 无原生 effort——出站不写顶层 effort（first-party
     /// 严格校验会 400）；effort 仅经 vendor_extensions 显式携带时可达上游
     ///（denylist 不含 effort = opt-in，400 风险自担）。
     #[tokio::test]
@@ -3523,7 +3523,7 @@ mod converter {
         );
     }
 
-    // ==================== T004：流式工具链 golden（表示统一） ====================
+    // ==================== 流式工具链 golden（表示统一） ====================
 
     use std::collections::BTreeMap;
 
@@ -3535,7 +3535,7 @@ mod converter {
         arguments: String,
     }
 
-    /// T004 golden 聚合器：显式状态跟踪 index → {id, name, arguments 缓冲}
+    /// golden 聚合器：显式状态跟踪 index → {id, name, arguments 缓冲}
     ///（审查 F3 收口——不依赖 name 存在性判定），双侧入站与交叉往返共用。
     struct ToolCallAggregator {
         slots: BTreeMap<u32, AggregatedCall>,
@@ -4060,7 +4060,7 @@ mod converter {
         );
     }
 
-    /// LOW-4：id 与 name 均空的退化槽（畸形输入）刷写时跳过，不产出
+    /// id 与 name 均空的退化槽（畸形输入）刷写时跳过，不产出
     /// tool_use 块（tracing::warn 显性化），事件序保持合法；Some("") 与
     /// 空串同判。
     #[tokio::test]
@@ -4373,7 +4373,7 @@ mod unified {
         assert!(req.stop.is_empty());
         assert!(req.tools.is_empty());
         assert!(req.tool_choice.is_none());
-        // T003 新字段 serde default
+        // 新字段 serde default
         assert!(req.system_prompt.is_none());
         assert!(req.sampling.is_none());
         assert!(req.thinking_config.is_none());
@@ -4617,7 +4617,7 @@ mod unified {
         assert_eq!(json_val["function"]["parameters"]["type"], "object");
     }
 
-    /// A3 保真验收（T008 M1 闭环）：嵌套 schema / anyOf / $ref / 缺 type
+    /// 保真验收（M1 闭环）：嵌套 schema / anyOf / $ref / 缺 type
     /// 属性——经公共转换面（to_unified 入站解析 → request_to_external 出站
     /// 编码）原样幸存；anthropic 面 input_schema 同样原样 + 缺 schema 补
     /// 协议最小形状。
@@ -4705,7 +4705,7 @@ mod unified {
         );
     }
 
-    /// A4/T012 跨厂商 × OpenAI 出站面（D7.13 扩项闭环，裁决 a 补合成）：
+    /// A4/ 跨厂商 × OpenAI 出站面（D7.13 扩项闭环，裁决 a 补合成）
     /// Anthropic 上游 stop_reason（经 message_delta 映射进 IR Usage 帧）→
     /// OpenAI 出站 usage 帧 choices 终止槽合成；OpenAI 原生（None）零回归。
     #[test]

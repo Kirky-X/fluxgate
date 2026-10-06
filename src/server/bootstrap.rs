@@ -28,7 +28,7 @@ pub(crate) struct Assembly {
     pub(crate) logger_handle: Arc<AsyncLoggerHandle>,
     pub(crate) pre_aggregator: Arc<TokenPreAggregator>,
     pub(crate) pa_shutdown: Arc<AtomicBool>,
-    /// G10 热重载守护（`None` = 纯内存配置或监听失败；持有即监听生效，
+    /// 热重载守护（`None` = 纯内存配置或监听失败；持有即监听生效，
     /// drop 即停止）。
     pub(crate) hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
 }
@@ -252,10 +252,10 @@ pub(crate) async fn assemble(
     crate::api::init_global_state(api_state.clone());
     tracing::info!("{}", t("main-global-state-initialized"));
 
-    // G7：就绪探针注册（sdforge 全局表，装配期一次性；检查读既有句柄，
+    // 就绪探针注册（sdforge 全局表，装配期一次性；检查读既有句柄，
     // 不发起上游请求）。
     crate::api::readiness::register_readiness_checks(&api_state, &database.pool);
-    // G10：配置热重载（旁挂；纯内存配置或监听失败时为 None，行为不变）。
+    // 配置热重载（旁挂；纯内存配置或监听失败时为 None，行为不变）。
     let hot_reloader = crate::server::hot_reload::maybe_start_hot_reload(&config_manager).await;
 
     Ok(Assembly {

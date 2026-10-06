@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! G9 优雅停机编排（absorb-sibling-libs T010）：
+//! 优雅停机编排
 //! 信号与排空走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），组件
 //! 收尾序经 trait-kit `AsyncShutdownCoordinator` 显式化——替代此前手写
 //! 信号 + watch 广播（`ShutdownRx`/`spawn_shutdown_broadcaster` 已删除）
@@ -33,14 +33,14 @@ pub(crate) async fn shutdown_signal() {
 }
 
 /// 单钩子执行上限：trait-kit 阶段超时是钩子间软限制，挂起的单个钩子
-/// 不会被阶段超时打断——此处每个钩子体再包一层超时，真正有界（G3 复核
-/// MEDIUM）。超时记 warn 并继续后续阶段，不中断收尾。
+/// 不会被阶段超时打断——此处每个钩子体再包一层超时，真正有界。
+/// 超时记 warn 并继续后续阶段，不中断收尾。
 const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 构建三阶段收尾协调器（调用方 `shutdown().await` 执行；幂等由
 /// `ServerHandle::shutdown` 的 done 位保证，此处每次新建）。
 /// 注册理论上不失败（仅锁中毒时 Err）；失败记 warn 并继续组装剩余阶段，
-/// 不 panic（G3 复核 MEDIUM A-M17：生产路径 incident 中 panic 不可接受）。
+/// 不 panic（生产路径 incident 中 panic 不可接受）。
 pub(crate) fn build_teardown_coordinator(
     logger_handle: &Arc<AsyncLoggerHandle>,
     pre_aggregator: &Arc<TokenPreAggregator>,

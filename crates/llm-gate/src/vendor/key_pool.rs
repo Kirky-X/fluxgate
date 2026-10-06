@@ -133,7 +133,7 @@ pub(crate) fn fingerprint_of(key: &str) -> String {
 
 /// 请求级凭证——出站路径的 key 选择结果。
 ///
-/// 安全审查遗留纵深：`Debug` 手写脱敏——`Pool` 臂不回显 key 原文，输出
+/// 纵深防御：`Debug` 手写脱敏——`Pool` 臂不回显 key 原文，输出
 /// `Pool { key: "[REDACTED n chars]", fingerprint: ... }` 形态（对齐
 /// GateCandidate 的 `[REDACTED]` 脱敏口径）；指纹为进程内随机密钥哈希
 /// （见 [`fingerprint_of`]），非机密可观测。`LegacyEnv` 臂无字段
@@ -375,7 +375,7 @@ impl KeyPool {
             };
         } else {
             // 名单未变：env 值现读，仅结果变化时落快照（热更新立即生效）。
-            // T005 审查 M3/L4：收缩与全缺同样显性（禁止静默），明细只报
+            // 收缩与全缺同样显性（禁止静默），明细只报
             // 数量不回显 env 名（脱敏约定见模块 doc）。
             let resolved = resolve_key_pool(&names, |name| lookup(name));
             if resolved.keys != guard.keys {
@@ -673,7 +673,7 @@ mod tests {
         assert!(a1.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    // ======== Debug 脱敏（安全审查遗留纵深） ========
+    // ======== Debug 脱敏（纵深防御） ========
 
     /// `RequestCredential` 手工 Debug：Pool 臂不回显 key 原文（
     /// `[REDACTED n chars]` 形态，对齐 GateCandidate 脱敏口径），指纹

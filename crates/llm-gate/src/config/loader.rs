@@ -121,9 +121,9 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
     Ok(())
 }
 
-/// 安全 L4 脱敏：缺失告警不回显配置原文（用户可能误将 key 原文当作
+/// 脱敏：缺失告警不回显配置原文（用户可能误将 key 原文当作
 /// env 名填入配置，回显会把密钥泄进日志）——只报值长度/序号 + 核对提示。
-/// T005：key 池显式列表逐名校验（缺失只告警不拒——池解析时跳过缺失名
+/// key 池显式列表逐名校验（缺失只告警不拒——池解析时跳过缺失名
 /// 并显性化，与 api_key_env 同一宽容级别）。
 fn warn_missing_api_key_envs(config: &Config) {
     for vendor in &config.vendors {
@@ -157,7 +157,7 @@ fn warn_missing_api_key_envs(config: &Config) {
     }
 }
 
-/// T006：[[model_catalog]] 段校验 —— 条目数上限、model_id 去重（与
+/// [[model_catalog]] 段校验 —— 条目数上限、model_id 去重（与
 /// vendor/model id 同级唯一性约束，confers 字段级规则无法表达，保留手写）、
 /// 登记条目 context_window > 0（0 会让 agentstem TUI auto-compact 静默
 /// 不装配）。加载与 POST /admin/config 热更新共用本函数，两路同拒。
@@ -204,8 +204,8 @@ fn validate_model_catalog(config: &Config) -> Result<(), GateError> {
     Ok(())
 }
 
-/// 审查 LOW-1：价格有限（拒 NaN/Inf）且 ≥ 0——NaN 的比较恒 false、
-/// 负价是配置错误，两路同拒；T007 计价按此面消费。
+/// 审查：价格有限（拒 NaN/Inf）且 ≥ 0——NaN 的比较恒 false、
+/// 负价是配置错误，两路同拒； 计价按此面消费。
 fn validate_catalog_prices(
     entry: &crate::config::model_catalog::ModelCatalogEntry,
 ) -> Result<(), GateError> {

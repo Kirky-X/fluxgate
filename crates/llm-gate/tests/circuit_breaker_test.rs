@@ -319,7 +319,7 @@ fn assert_same_error(a: &GateError, b: &GateError) {
     }
 }
 
-/// G3 泛型收口核心保证：GateError 直接作为 `CircuitBreaker<GateError>` 的
+/// 泛型收口核心保证：GateError 直接作为 `CircuitBreaker<GateError>` 的
 /// 错误类型，execute 出口（`CircuitCallError::Inner`）的错误变体与详情
 /// 不变——删除前缀串双向编解码后错误无损传递。此前 `from_limiteron` 对
 /// 「无法识别的载荷」有损降级为 `VendorUnavailable`，该风险路径已不复存在。

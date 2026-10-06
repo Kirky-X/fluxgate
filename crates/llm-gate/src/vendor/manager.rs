@@ -121,15 +121,15 @@ struct VendorInstance {
     /// recId=18：token 加权票据策略 — None = 未开启（单票据，现状）
     ticket: Option<TicketPolicy>,
     advanced_limiter: AdvancedRateLimiter,
-    /// T005：key 池（解析快照 + 轮换游标）。池空回退 legacy 单 key 行为。
+    /// key 池（解析快照 + 轮换游标）。池空回退 legacy 单 key 行为。
     key_pool: KeyPool,
     /// vendor 级熔断器 — legacy 回退（池空）请求的执行熔断器；池命中
     /// 请求改用 per-key 指纹熔断器（见 `circuit_breaker_for`）。
-    /// G3：错误类型即 [`GateError`]（业务错误经 `CircuitCallError::Inner`
+    /// 错误类型即 [`GateError`]（业务错误经 `CircuitCallError::Inner`
     /// 无损透传，无前缀串编解码）。
     #[cfg(feature = "resilience")]
     circuit_breaker: Arc<CircuitBreaker<GateError>>,
-    /// T005：per-key 指纹熔断器注册表 — 熔断状态键维度对齐 provider_chain.rs:199-214 的 breaker_state_key：**vendor_id + model + endpoint + key 指纹**（vendor_id 由实例域隐含，map 挂在实例上；键三元 = (model, endpoint, 指纹)）——同 key 同 model 跨请求共享计数，不同 key / 不同 model 互相隔离。legacy 回退不经此表。
+    /// per-key 指纹熔断器注册表 — 熔断状态键维度对齐 provider_chain.rs:199-214 的 breaker_state_key：**vendor_id + model + endpoint + key 指纹**（vendor_id 由实例域隐含，map 挂在实例上；键三元 = (model, endpoint, 指纹)）——同 key 同 model 跨请求共享计数，不同 key / 不同 model 互相隔离。legacy 回退不经此表。
     ///
     /// 审查 F1 上界声明：活跃指纹 ≤ 8×名单变更次数（`MAX_KEY_POOL` ×
     /// 热更新重解析次数，旧指纹条目随池收缩自然失活）；(model, endpoint)
@@ -138,7 +138,7 @@ struct VendorInstance {
     /// 与客户端实际用量约束），字节级有界。
     #[cfg(feature = "resilience")]
     per_key_circuit_breakers: PerKeyCircuitBreakers,
-    /// T005：per-key 熔断器构造参数（实例创建时取自 [resilience] 段快照，
+    /// per-key 熔断器构造参数（实例创建时取自 [resilience] 段快照，
     /// 与 `circuit_breaker` 同源；vendor 实例构造期定死，restart-required，
     /// 与既有 CB 窗口语义一致）。
     #[cfg(feature = "resilience")]
@@ -150,7 +150,7 @@ struct VendorInstance {
 /// recId=1：生产熔断器配置的单一构造点（tests/circuit_breaker_test.rs 与
 /// manager 测试同源引用，生产接线与测试证明合一）。
 ///
-/// G3 泛型收口：错误类型即 [`GateError`]（业务错误经
+/// 泛型收口：错误类型即 [`GateError`]（业务错误经
 /// `CircuitCallError::Inner` 无损透传）。limiteron 的
 /// `CircuitBreakerConfig::new` 仅在 `LimiteronError` 特化上提供
 /// （types.rs:193），自定义 `E` 经 `with_error_classifier` 构造——阈值
@@ -185,7 +185,7 @@ pub(crate) fn gate_circuit_config(
     config
 }
 
-/// G3：单次 HTTP 尝试的失败信号（机制/信号分离——信号在此产生，业务
+/// 单次 HTTP 尝试的失败信号（机制/信号分离——信号在此产生，业务
 /// 决策在 [`RetryPolicy::execute_with`] 的 decide 闭包，出口映射保留
 /// 各自的错误语义）。
 #[derive(Debug)]
@@ -202,8 +202,8 @@ enum AttemptFailure {
     Fatal(GateError),
 }
 
-/// T005：per-key 指纹熔断器表（键三元 = (model, endpoint, key 指纹)，
-/// G3 泛型收口后错误类型为 [`GateError`]）。
+/// per-key 指纹熔断器表（键三元 = (model, endpoint, key 指纹)，
+/// 泛型收口后错误类型为 [`GateError`]）。
 #[cfg(feature = "resilience")]
 type PerKeyCircuitBreakers = std::sync::Mutex<
     std::collections::HashMap<(String, String, String), Arc<CircuitBreaker<GateError>>>,
@@ -252,7 +252,7 @@ impl VendorInstance {
                 // 与历史硬编码逐位一致。
                 gate_circuit_config(circuit_open_timeout),
             )),
-            // T005：key 池构造期解析一次（缺 env 逐名显性 warn）
+            // key 池构造期解析一次（缺 env 逐名显性 warn）
             key_pool: KeyPool::new(config, &config.id),
             #[cfg(feature = "resilience")]
             per_key_circuit_breakers: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -263,7 +263,7 @@ impl VendorInstance {
         }
     }
 
-    /// T005：请求级凭证选择（池命中 → 当前 key + 指纹；池空 → legacy）。
+    /// 请求级凭证选择（池命中 → 当前 key + 指纹；池空 → legacy）。
     fn select_request_key(&self, config: &VendorConfig) -> RequestCredential {
         self.key_pool.select(config, &self.vendor_id)
     }
@@ -273,12 +273,12 @@ impl VendorInstance {
         self.key_pool.set_inline(snapshot);
     }
 
-    /// T005：401/403 认证类失败推进轮换游标（生效于下次尝试）。
+    /// 401/403 认证类失败推进轮换游标（生效于下次尝试）。
     fn advance_key_cursor(&self, status: u16) {
         self.key_pool.advance(&self.vendor_id, status);
     }
 
-    /// T005：本次凭证应使用的熔断器 — 池命中按（model, endpoint, key 指纹）
+    /// 本次凭证应使用的熔断器 — 池命中按（model, endpoint, key 指纹）
     /// 取（get_or_create，同 key 同 model 跨请求共享计数、不同 key /
     /// 不同 model 独立，审查 M2 维度补全），legacy 回退用 vendor 级。
     #[cfg(feature = "resilience")]
@@ -306,7 +306,7 @@ impl VendorInstance {
         const MAX_PER_KEY_CIRCUIT_BREAKERS: usize = 2048;
         match fingerprint {
             Some(fp) => {
-                // G3 复核 LOW（T014 LOW-4）：锁毒化不 panic，取锁内值继续
+                // 锁毒化不 panic，取锁内值继续
                 //（与 response_cache 同策略；毒化源于别处 bug，限流面降级
                 // 不应放大为崩溃）。
                 let mut guard = self
@@ -330,7 +330,7 @@ impl VendorInstance {
         }
     }
 
-    /// T005：只读指定指纹的**全部 model 通道**熔断器（不创建）——路由
+    /// 只读指定指纹的**全部 model 通道**熔断器（不创建）——路由
     /// 观测热路径与观测 API 的聚合输入；`None`（legacy 回退）返回
     /// vendor 级单元素。指定指纹尚无任何请求（表空）返回空 Vec。
     #[cfg(feature = "resilience")]
@@ -354,7 +354,7 @@ impl VendorInstance {
         }
     }
 
-    /// T005：admin 观测（仅 env 名 / 数量 / 下标 / 指纹，绝无 key 原文）。
+    /// admin 观测（仅 env 名 / 数量 / 下标 / 指纹，绝无 key 原文）。
     fn key_pool_info(&self) -> KeyPoolInfo {
         self.key_pool.info()
     }
@@ -467,7 +467,7 @@ impl VendorManager {
     /// worker 完成分支同步回写 VendorState（见 process_vendor_queue），
     /// router 的 `== Available` 过滤借同步状态自动生效。
     ///
-    /// T005（审查 M2）：读**当前 key 指纹 × 全部 model 通道**的聚合状态
+    /// 读**当前 key 指纹 × 全部 model 通道**的聚合状态
     /// （键维度 vendor_id+model+endpoint+指纹）——全部通道 Open 才报 Open
     /// （模型无关 peek 的保守聚合），任一 HalfOpen 报 HalfOpen；指纹尚无
     /// 请求（表空）回落 vendor 级熔断器（Closed 等价，与历史一致）。
@@ -482,7 +482,7 @@ impl VendorManager {
         Some(Self::aggregate_circuit_state(&breakers).await)
     }
 
-    /// T005：按 key 指纹直读聚合熔断状态——per-key 隔离的观测入口
+    /// 按 key 指纹直读聚合熔断状态——per-key 隔离的观测入口
     /// （坏 key 熔断不污染其他 key 的可见性证明面）。指定指纹尚无任何
     /// model 通道请求时返回 `None`（只读 peek，不创建）。
     #[cfg(feature = "resilience")]
@@ -532,7 +532,7 @@ impl VendorManager {
         guard.get(vendor_id).cloned()
     }
 
-    /// T006：per-model 能力查询 — capabilities() 语义面（路由决策/响应面/
+    /// per-model 能力查询 — capabilities() 语义面（路由决策/响应面/
     /// 网关客户端适配器可取）。已登记模型返回目录真实值（context_window
     /// 非 0——agentstem agent_session.rs:3290-3291 auto-compact 静默不装配
     /// 守卫）；未登记回落 per-flavor（vendor type）保守默认
@@ -550,7 +550,7 @@ impl VendorManager {
         )
     }
 
-    /// T006：[`Self::model_capabilities`] 的 vendor_id 便捷版 — 按 vendor
+    /// [`Self::model_capabilities`] 的 vendor_id 便捷版 — 按 vendor
     /// 配置的 `type_` 分派 per-flavor 默认；未知 vendor 返回 `None`。
     pub fn model_capabilities_for_vendor(
         &self,
@@ -561,7 +561,7 @@ impl VendorManager {
         Some(self.model_capabilities(&vendor_type, model_id))
     }
 
-    /// T005：admin 观测——vendor 的 key 池快照（仅 env 名 / 数量 / 下标 /
+    /// admin 观测——vendor 的 key 池快照（仅 env 名 / 数量 / 下标 /
     /// 指纹，绝不暴露 key 原文）。实例未初始化返回 `None`。
     pub fn key_pool_info(&self, vendor_id: &str) -> Option<KeyPoolInfo> {
         if let Some(instance) = self.instances.read().unwrap().get(vendor_id) {
@@ -587,7 +587,7 @@ impl VendorManager {
 
     /// recId=2：vendor 的 CircuitBreaker 句柄（instances 未初始化时 None）。
     /// 仅供 cover_all_paths 覆盖路径取用；路由过滤不读 CB（见 get_status doc）。
-    /// T005（审查 M2）：按本次请求凭证 + model + endpoint 取——池命中用
+    /// 按本次请求凭证 + model + endpoint 取——池命中用
     /// per-key 指纹熔断器（键含 model/endpoint 维度）。
     #[cfg(feature = "resilience")]
     fn circuit_breaker_for(
@@ -771,7 +771,7 @@ impl VendorManager {
         // 更新后下一次重试循环即用新参数
         let retry_cfg = config_manager.read().retry.clone();
 
-        // T005：请求级凭证选择（池命中 → 当前 key；池空 → legacy
+        // 请求级凭证选择（池命中 → 当前 key；池空 → legacy
         // 单 key 行为）+ 按（model, endpoint, key 指纹）选熔断器
         //（审查 M2 维度补全）。key 在请求启动时固定——本请求所有
         // 重试尝试复用同一 key（轮换生效于下次请求，见
@@ -784,7 +784,7 @@ impl VendorManager {
             Self::cb_endpoint(&config),
         );
 
-        // T007：anthropic 转换出站的缓存断点策略（条目覆盖或内置
+        // anthropic 转换出站的缓存断点策略（条目覆盖或内置
         // 默认；openai 型 None 不注入；透传路径字节保真不注入）
         let cache_policy = if config.type_ == "anthropic" {
             Some(crate::config::model_catalog::cache_policy_for(
@@ -1001,7 +1001,7 @@ impl VendorManager {
         };
 
         // Convert UnifiedRequest to Vendor Request (JSON)。
-        // T007：anthropic 型走缓存断点注入入口（策略由调用方按
+        // anthropic 型走缓存断点注入入口（策略由调用方按
         // [[model_catalog]] 解析；None = 非 anthropic，走原编码）
         let request_body = if let Some(policy) = cache_policy {
             anthropic.request_to_external_with_cache_policy(request, policy)?
@@ -1086,7 +1086,7 @@ impl VendorManager {
         Self::build_authed_request_with_key(client, config, url, include_content_type, &api_key)
     }
 
-    /// T005：以指定 key 构建带认证 header 的 RequestBuilder（池命中路径）。
+    /// 以指定 key 构建带认证 header 的 RequestBuilder（池命中路径）。
     fn build_authed_request_with_key(
         client: &reqwest::Client,
         config: &VendorConfig,
@@ -1113,13 +1113,13 @@ impl VendorManager {
         Ok(builder)
     }
 
-    /// T005：认证类失败判定（provider_chain 切换触发集合的 401/403）——
+    /// 认证类失败判定（provider_chain 切换触发集合的 401/403）——
     /// 唯一推进 key 轮换游标的状态码集合。
     fn is_auth_failure_status(status: reqwest::StatusCode) -> bool {
         matches!(status.as_u16(), 401 | 403)
     }
 
-    /// T005（审查 M2）：per-key 熔断键的 endpoint 段——配置面 api_base
+    /// per-key 熔断键的 endpoint 段——配置面 api_base
     /// 身份（对齐 provider_chain 候选 endpoint 语义：空 = 默认端点）。
     /// 无 resilience 组合下不参与 CB 选路（仅签名统一）。
     #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
@@ -1131,7 +1131,7 @@ impl VendorManager {
         }
     }
 
-    /// T005（审查 M2）：per-key 熔断键的 model 段——归一到**配置面模型
+    /// per-key 熔断键的 model 段——归一到**配置面模型
     /// 身份**（vendor.models 的 model_id）：
     /// - 先剥离 router 直达语法的 `{vendor_id}.` 前缀（与
     ///   `Router::try_direct_route` 的 `splitn(2, '.')` 语义一致）——hint
@@ -1203,7 +1203,7 @@ impl VendorManager {
     /// - 执行路径错误原样透传（`CircuitCallError::Inner`，无损），计失败
     ///   与否由 [`GateErrorClassifier`] 按 variant 语义判定。
     ///
-    /// T005：`credential` 固定本请求的 key（池命中时所有重试尝试复用；
+    /// `credential` 固定本请求的 key（池命中时所有重试尝试复用；
     /// 401/403 认证类失败推进轮换游标，生效于下次请求）。
     #[allow(clippy::too_many_arguments)]
     async fn execute_http_with_retry(
@@ -1283,7 +1283,7 @@ impl VendorManager {
     /// `[retry].max_retries`（旧循环逐位语义，RetryableShort 固定 2 次），
     /// 状态码路径的上限由决策闭包收紧到 `[retry].max_retries`。
     ///
-    /// T005：`credential` 池命中时所有尝试用同一 key（不在单请求内换 key
+    /// `credential` 池命中时所有尝试用同一 key（不在单请求内换 key
     /// 重试）；401/403 认证类失败推进轮换游标——生效于下次请求。
     #[allow(clippy::too_many_arguments)]
     async fn execute_http_with_retry_policy(
@@ -1379,7 +1379,7 @@ impl VendorManager {
     }
 
     /// 单次尝试的发送与非 2xx 处理：Retry-After 头须在消费 body 前读取；
-    /// T005：401/403 认证类失败推进 key 轮换游标——生效于下次请求；
+    /// 401/403 认证类失败推进 key 轮换游标——生效于下次请求；
     /// 本请求的剩余尝试（若有）仍用同一 key。
     async fn send_attempt(
         builder: reqwest::RequestBuilder,
@@ -1508,7 +1508,7 @@ impl VendorManager {
             Some(ra) => spread_delay(ra, policy, &mut rand::thread_rng()),
             None => policy_delay,
         };
-        // G3 安全封顶：恶意上游回超大 Retry-After（如 3600s）会
+        // 安全封顶：恶意上游回超大 Retry-After（如 3600s）会
         // 占住 worker + 并发许可——指示值截断至上限（默认预算
         // 关闭时唯一的防线），截断即记 warn（异常路径，低频）。
         let delay = {
@@ -1570,7 +1570,7 @@ impl VendorManager {
 
         #[cfg(feature = "resilience")]
         {
-            // T005（审查 M2）：读当前 key 指纹 × 全部 model 通道的聚合判定
+            // 读当前 key 指纹 × 全部 model 通道的聚合判定
             // ——全部通道 Open 且无一越过冷却窗才判 Unavailable（模型无关
             // peek 的保守聚合；任一通道 Closed/HalfOpen/可探测则放行）。
             // 表空（当前指纹尚无请求）回落 vendor 级熔断器（历史语义）。
@@ -1783,7 +1783,7 @@ impl VendorManager {
             "{}",
             crate::i18n::t("vendor-stream-upstream-non-success")
         );
-        // T005：401/403 认证类失败推进 key 轮换游标——生效于下次请求
+        // 401/403 认证类失败推进 key 轮换游标——生效于下次请求
         //（流式派发单次尝试，无请求内重试，与转换非流式语义一致）
         if Self::is_auth_failure_status(status) {
             let instance = {
@@ -1963,7 +1963,7 @@ impl VendorManager {
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url(&config)?;
 
-        // T005：请求级凭证选择——key 在请求启动时固定（池命中用当前 key，
+        // 请求级凭证选择——key 在请求启动时固定（池命中用当前 key，
         // 池空回退 legacy 读 env）
         let credential = instance.select_request_key(&config);
 
@@ -1983,7 +1983,7 @@ impl VendorManager {
         // request 被 move 前捕获，无 resilience 组合下仅作参数透传）
         let request_model = Self::cb_model(vendor_id, &config, &request.model).to_string();
 
-        // T007：anthropic 转换流式出站同样注入缓存断点（透传流式不注入）
+        // anthropic 转换流式出站同样注入缓存断点（透传流式不注入）
         let cache_policy = (config.type_ == "anthropic").then(|| {
             crate::config::model_catalog::cache_policy_for(
                 &self.config.read().model_catalog,
@@ -2277,7 +2277,7 @@ impl VendorManager {
         request_body: Value,
         path: &str,
     ) -> Result<Value, GateError> {
-        // T005：请求级凭证选择（池命中 → 当前 key；池空 → legacy 读 env）。
+        // 请求级凭证选择（池命中 → 当前 key；池空 → legacy 读 env）。
         // 实例不存在时不取配置——错误语义交由 inner 的实例查找
         //（VendorUnavailable，与历史一致）。
         let instance = {
@@ -2368,7 +2368,7 @@ impl VendorManager {
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url_at(&config, path)?;
 
-        // T005：池命中用请求启动时固定的 key；legacy 回退读 env
+        // 池命中用请求启动时固定的 key；legacy 回退读 env
         let builder = match credential.api_key() {
             Some(api_key) => {
                 Self::build_authed_request_with_key(&self.client, &config, &url, true, api_key)?
@@ -2397,7 +2397,7 @@ impl VendorManager {
                 "{}",
                 crate::i18n::t("vendor-upstream-non-success")
             );
-            // T005：401/403 认证类失败推进 key 轮换游标——生效于下次请求
+            // 401/403 认证类失败推进 key 轮换游标——生效于下次请求
             if Self::is_auth_failure_status(status) {
                 instance.advance_key_cursor(status.as_u16());
             }
@@ -2493,7 +2493,7 @@ impl VendorManager {
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url(&config)?;
 
-        // T005：请求级凭证选择——key 在请求启动时固定（池命中用当前 key，
+        // 请求级凭证选择——key 在请求启动时固定（池命中用当前 key，
         // 池空回退 legacy 读 env）
         let credential = instance.select_request_key(&config);
 
@@ -2923,7 +2923,7 @@ mod tests {
 
     // ======== T006：per-model 能力目录查询 ========
 
-    /// T006：带 model_catalog 的 Config 基座（单 vendor，type 可调）
+    /// 带 model_catalog 的 Config 基座（单 vendor，type 可调）
     fn catalog_test_config(vendor_type: &str, catalog: Vec<ModelCatalogEntry>) -> Config {
         let mut vendor = pool_vendor_config("NEXUSFLOW_T006_CAP", "NEXUSFLOW_T006_CAP");
         vendor.type_ = vendor_type.into();

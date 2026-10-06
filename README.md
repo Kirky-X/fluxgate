@@ -272,7 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-> **T008 对齐**：`ChatMessage::content` 支持多模态内容件（`ChatContent::Parts`，图片 URL / base64 data URL）；tool 角色消息用 `ChatMessage::tool(tool_call_id, content)` 回填；admin 面走真实路由（目录 `GET/PUT/DELETE /admin/models`、健康 `GET /api/v1/health`、vendor 运行面状态）。
+> **SDK 对齐**：`ChatMessage::content` 支持多模态内容件（`ChatContent::Parts`，图片 URL / base64 data URL）；tool 角色消息用 `ChatMessage::tool(tool_call_id, content)` 回填；admin 面走真实路由（目录 `GET/PUT/DELETE /admin/models`、健康 `GET /api/v1/health`、vendor 运行面状态）。
 
 **数据库后端选择（编译期）**：`full` 本身不含数据库驱动，必须搭配一组 `db-*` feature；`default = ["full", "db-sqlite"]` 保持独立运行默认为 sqlite 文件库。
 

@@ -103,13 +103,13 @@ HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API
 | `database_error` | 500 Internal Server Error | 数据库操作失败、IO 错误 |
 | `routing_error` | 500 Internal Server Error | 路由决策失败（无可用厂商等） |
 
-> **限流与准入（网关侧，独立于上述错误码；absorb-sibling-libs G5 起 tower 化）**：
+> **限流与准入（网关侧，独立于上述错误码；tower 化实现）**：
 >
 > - 入站限流中间件由两层组成：`[[rate_limit.rules]]` 端点规则表（`path` 前缀匹配、按租户分桶）+ limiteron tower 全局规则层（一规则一 `KeyedRateLimitLayer`，按租户摘要分桶；空规则时为共享 TokenBucket(100, 10/s) 兜底）。
 > - 端点规则超限 → `429 Too Many Requests` + `Retry-After` 头（重置秒数），body 为 JSON，`error.message` 文案随 locale（zh `"已超过速率限制"` / en `"Rate limit exceeded"`）。
 > - 全局规则超速 → `429 Too Many Requests` + `Retry-After` 头（窗口剩余秒），文案同上；旧 `Governor` 路径的无头 429 与 `403` 封禁分支已删除（规则 ban 恒为 None）。
 > - 限流白名单路径（不进入限流检查）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs/*`、`/swagger-ui/*`。
-> - 每次响应（含 429）均回传 **`X-Request-Id`** 响应头：透传客户端所带 ID，未带时网关生成（`req-` 前缀）；同请求 tracing span 携带该 ID（absorb-sibling-libs G8）。
+> - 每次响应（含 429）均回传 **`X-Request-Id`** 响应头：透传客户端所带 ID，未带时网关生成（`req-` 前缀）；同请求 tracing span 携带该 ID。
 > - **准入层**（拥塞感知优先级准入，`src/middleware/admission.rs`）：`[admission].enabled`（默认 `false`）开启后，网关并发占用率（Σ 在途 / Σ 并发上限）达到 `congestion_threshold`（默认 `0.9`）时，优先级低于当前在途最小档位的请求被直接卸载（shed），返回 `429 Too Many Requests` + `Retry-After: 1`，文案随 locale（zh `"准入被拒绝（拥塞）"`）。请求档位（dedicated/guaranteed/elastic/spot）由 `[auth].keys` 子表按 API key 声明，未声明的 key 缺省 `elastic`。健康检查路径永不卸载。
 
 ---
@@ -939,7 +939,7 @@ curl -X POST http://localhost:8080/admin/config \
 
 返回模型能力目录（`[[model_catalog]]` 段）的条目列表。
 
-> **BREAKING（T006）**：响应形状由 `GlobalModelConfig` 数组（原 global_model
+> **BREAKING**：响应形状由 `GlobalModelConfig` 数组（原 global_model
 > 单例包装）变更为 `ModelCatalogEntry` 数组——全局模型策略改经
 > [POST /admin/models/:id](#post-adminmodelsid)（`id = "global"`）或
 > [GET /admin/config](#get-adminconfig) 读写，不再并入本列表。
@@ -991,7 +991,7 @@ curl http://localhost:8080/admin/models \
 
 ### PUT /admin/models/:id
 
-upsert 单条目录条目（T006）：条目存在则整体替换，不存在则追加。原子 RMW（读-改-校验-落盘在写锁内完成），校验规则（唯一性 / 非零窗口 / 价格有限非负 / 条目上限 / `model_id` 非空白）与配置加载同源，两路同拒。
+upsert 单条目录条目：条目存在则整体替换，不存在则追加。原子 RMW（读-改-校验-落盘在写锁内完成），校验规则（唯一性 / 非零窗口 / 价格有限非负 / 条目上限 / `model_id` 非空白）与配置加载同源，两路同拒。
 
 **认证**: 需要 Bearer Token
 
@@ -1027,7 +1027,7 @@ curl -X PUT http://localhost:8080/admin/models/claude-sonnet-4-20250514 \
 
 ### DELETE /admin/models/:id
 
-目录下条（T006）。原子 RMW；条目不存在时显性拒绝（禁止静默成功）。
+目录下条。原子 RMW；条目不存在时显性拒绝（禁止静默成功）。
 
 **认证**: 需要 Bearer Token
 
@@ -1061,7 +1061,7 @@ curl -X DELETE http://localhost:8080/admin/models/claude-sonnet-4-20250514 \
 
 更新全局模型策略段（`global_model`）。当前仅支持 `id == "global"`，其他 ID 返回 `config_error`。
 
-> **T006**：目录条目管理请用 [PUT](#put-adminmodelsid) / [DELETE](#delete-adminmodelsid) `/admin/models/:id`；`"global"` 为策略段保留键，PUT/DELETE 该键返回 `validation_error`(400)。
+> 目录条目管理请用 [PUT](#put-adminmodelsid) / [DELETE](#delete-adminmodelsid) `/admin/models/:id`；`"global"` 为策略段保留键，PUT/DELETE 该键返回 `validation_error`(400)。
 
 **认证**: 需要 Bearer Token
 
@@ -1140,7 +1140,7 @@ curl http://localhost:8080/api/v1/health
 
 ### GET /readyz
 
-就绪探针：聚合 DB 池、`oxcache` 后端、vendor 管理器三项真实组件检查（absorb-sibling-libs G7，只读句柄，不打上游）。全绿 `200 {"status":"ready"}`，任一失败 `503 {"status":"unavailable"}`。**认证**: 无需。**限流**: 豁免。建议仅内网抓取（未认证端点）。
+就绪探针：聚合 DB 池、`oxcache` 后端、vendor 管理器三项真实组件检查（只读句柄，不打上游）。全绿 `200 {"status":"ready"}`，任一失败 `503 {"status":"unavailable"}`。**认证**: 无需。**限流**: 豁免。建议仅内网抓取（未认证端点）。
 
 ### GET /metrics
 
@@ -1148,7 +1148,7 @@ Prometheus 文本指标出口（`Content-Type: text/plain; version=0.0.4`），R
 
 ### 文档面（需 `[docs].enabled = true`，默认关闭）
 
-OpenAPI 文档面（absorb-sibling-libs G11）：`GET /api-docs/openapi.json`（主 REST 端点 + 管理面 + 健康面路径）与 Swagger UI（`/swagger-ui/`）。默认配置下两路由不存在（404）；开关打开后可达，免认证免限流（开关本身即访问门）。
+OpenAPI 文档面：`GET /api-docs/openapi.json`（主 REST 端点 + 管理面 + 健康面路径）与 Swagger UI（`/swagger-ui/`）。默认配置下两路由不存在（404）；开关打开后可达，免认证免限流（开关本身即访问门）。
 
 ```toml
 [docs]

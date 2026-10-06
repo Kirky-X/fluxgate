@@ -353,7 +353,7 @@ mod sdk_client_coverage {
             .unwrap()
     }
 
-    // T008：网关真实形状——无 vendor 键（response_to_external 不产出）
+    // 网关真实形状——无 vendor 键（response_to_external 不产出）
     const CHAT_OK_BODY: &str = r#"{"id":"chatcmpl-1","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"Hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
 
     // -------- builder 构造与 Debug 脱敏 --------
@@ -441,7 +441,7 @@ mod sdk_client_coverage {
         assert_eq!(resp.content, "Hi there");
         assert_eq!(resp.usage.prompt_tokens, 10);
         assert_eq!(resp.usage.completion_tokens, 5);
-        // T008：网关响应无 vendor 键（旧 SDK vendor 字段恒空误导，已移除）
+        // 网关响应无 vendor 键（旧 SDK vendor 字段恒空误导，已移除）
         assert_eq!(
             resp.finish_reason,
             nexusflow::sdk::ChatFinishReason::Standard(nexusflow::sdk::StandardFinishReason::Stop)
@@ -716,7 +716,7 @@ mod sdk_client_coverage {
     async fn admin_endpoints_parse_success_payloads() {
         let mut server = mockito::Server::new_async().await;
 
-        // T008 失配修复：GET /admin/models（目录九字段，原 /v1/models 无路由）
+        // 失配修复：GET /admin/models（目录九字段，原 /v1/models 无路由）
         server
             .mock("GET", "/admin/models")
             .with_status(200)
@@ -749,7 +749,7 @@ mod sdk_client_coverage {
         assert_eq!(vendors[1].status, "Throttled");
         assert_eq!(vendors[1].queue_length, 2);
 
-        // T008 失配修复：GET /api/v1/health（admin/health 不存在）
+        // 失配修复：GET /api/v1/health（admin/health 不存在）
         server
             .mock("GET", "/api/v1/health")
             .with_status(200)

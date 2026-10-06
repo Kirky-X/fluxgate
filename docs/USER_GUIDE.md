@@ -292,15 +292,15 @@ per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开�
 | `l_target` | `1000.0` | 延迟目标（毫秒，ewma_e2e_ms 口径） |
 | `q_target` | `0.5` | 流量份额目标（0..1） |
 | `[[cache.categories]]` | 空 | 按模型前缀的 TTL 类别乘数表 |
-| `ttl_jitter` | `0.0` | TTL 抖动系数（absorb-sibling-libs G6；>0 时写入 TTL 按 `ttl×(1±factor)` 对称抖动，同批键过期不齐峰） |
-| `null_cache_ttl_secs` | `60` | 空响应负缓存窗口秒数（absorb-sibling-libs G6；Null 响应写哨兵，窗口内直接命中不再穿透上游） |
+| `ttl_jitter` | `0.0` | TTL 抖动系数（>0 时写入 TTL 按 `ttl×(1±factor)` 对称抖动，同批键过期不齐峰） |
+| `null_cache_ttl_secs` | `60` | 空响应负缓存窗口秒数（Null 响应写哨兵，窗口内直接命中不再穿透上游） |
 
 ### 缓存门控与跳过
 
 - **只有确定性请求会查/写缓存**：`stream == false` 且 `tools` 为空 且 `temperature == 0`（或缺省）。
 - 请求携带 **`X-No-Cache: 1`** 强制回源（不读不写；兼容别名 `X-Skip-Cache`）。
 - `[[cache.categories]]` 单条字段：`model_id_prefix`（模型名前缀）+ `multiplier`（TTL 乘数）；无命中的模型乘数 1.0。
-- **并发防击穿**（absorb-sibling-libs G6）：同 key 并发 Miss 只放行一次上游（leader），其余等待回写后复用；leader 失败时 30s 超时后由等待者接管，不永久挂起。
+- **并发防击穿**：同 key 并发 Miss 只放行一次上游（leader），其余等待回写后复用；leader 失败时 30s 超时后由等待者接管，不永久挂起。
 - **空响应负缓存**：上游 Null 结果写哨兵（`null_cache_ttl_secs` 窗口），窗口内直接命中空值不再穿透，过期后允许再穿透。
 
 ```toml
@@ -428,7 +428,7 @@ flowchart TB
 
 `persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`crates/llm-gate/src/config/mod.rs` 的 `Config` 字段文档注释）。不要在 config.toml 里放 NexusFlow 不认识的自定义段。
 
-### 文件监听热重载（absorb-sibling-libs G10）
+### 文件监听热重载
 
 除 `POST /admin/config` 外，网关启动时若配置来自文件，会旁挂文件监听（去抖 500ms，监听父目录以兼容原子 rename 写盘）：
 
@@ -483,7 +483,7 @@ healthcheck:
   start_period: 10s
 ```
 
-就绪与指标（absorb-sibling-libs G7）：`/readyz` 聚合 DB 池/`oxcache`/vendor 三项真实检查（全绿 200，任一失败 503），`/metrics` 为 Prometheus 文本（RED 维度）。两者均免认证免限流——**仅建议内网抓取**，公网绑定即信息披露（G3 复核 LOW-5）。
+就绪与指标：`/readyz` 聚合 DB 池/`oxcache`/vendor 三项真实检查（全绿 200，任一失败 503），`/metrics` 为 Prometheus 文本（RED 维度）。两者均免认证免限流——**仅建议内网抓取**，公网绑定即信息披露。
 
 ---
 
@@ -493,7 +493,7 @@ healthcheck:
 
 | 端点 | 说明 |
 |:-----|:-----|
-| `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断，absorb-sibling-libs G3 复核）。⚠️ **`end_time` 已知不生效**：`LogFilter` 有该字段但查询 SQL 未实现对应分支（`src/database/repository.rs:153-185`） |
+| `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断）。⚠️ **`end_time` 已知不生效**：`LogFilter` 有该字段但查询 SQL 未实现对应分支（`src/database/repository.rs:153-185`） |
 | `GET /admin/logs/search?vendor=<关键词>&limit=` | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs:47`） |
 | `GET /admin/stats/tokens?vendor=` | 小时级 Token 用量统计（`token_usage` 预聚合表） |
 | `GET /admin/metrics` | 全局指标快照：请求计数、错误率、平均延迟、各厂商细分，含 `dropped_logs`（日志通道背压丢弃计数） |
@@ -571,7 +571,7 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 | 类型导出 | `ChatMessage`（多模态 `ChatContent::Parts` / tool_calls）/ `ChatRequest`（tools / tool_choice / vendor_extensions / penalties）/ `ChatResponse`（结构化 finish_reason + 含 cache_read 的 usage + tool_calls）/ `EmbedRequest` / `EmbedResponse` / `ChatStream`（tool_calls 增量片段 + usage 尾帧）/ 目录 CRUD（`ModelCatalogInfo` / `ModelCatalogUpsert`）等 |
 | 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |
 
-> **T008 对齐说明**（SDK ↔ 网关零失配，路径/形状以路由表为准）：admin 面
+> **SDK 对齐说明**（SDK ↔ 网关零失配，路径/形状以路由表为准）：admin 面
 > `models()` 走 `GET /admin/models`（模型能力目录；旧 `GET /v1/models`
 > 网关未注册已废弃）、`health()` 走 `GET /api/v1/health`（旧
 > `admin/health` 不存在）、`vendors()` 返回运行面状态

@@ -1,7 +1,7 @@
 //! SSE 流式解码 — 使用 eventsource-stream 解析网关 SSE 事件。
 //!
-//! T008：解码面对齐网关出站真实事件形状（`stream_chunk_to_external` 产物，
-//! T004 后携带工具调用片段）：
+//! 解码面对齐网关出站真实事件形状（`stream_chunk_to_external` 产物，
+//! 后携带工具调用片段）
 //! - 内容帧：`{id:"chunk-{index}",choices:[{index,delta:{content},finish_reason}]}`；
 //! - 工具帧：`delta.tool_calls:[{index,type,id?,function:{name?,arguments?}}]`
 //!   （id/name 仅首片段携带，arguments 为增量分片——对齐 IR

@@ -194,9 +194,9 @@ pub async fn api_auth_middleware(
     // 入站限流侧有另一份独立的健康检查白名单（含 /healthz、/ready、
     // /readyz、/metrics），维护于 src/api/router_builder.rs 的
     // is_quota_exempt_path，两处各自独立、语义不共享。
-    // G7：/readyz（就绪探针）与 /metrics（指标抓取）同样豁免——基础设施
+    // /readyz（就绪探针）与 /metrics（指标抓取）同样豁免——基础设施
     // 端点无调用方 key，认证无从谈起。
-    // G11：文档面（/api-docs/*、/swagger-ui/*）同样豁免——开关本身即
+    // 文档面（/api-docs/*、/swagger-ui/*）同样豁免——开关本身即
     // 访问门（默认关闭），打开后浏览器可用性要求无 key 可达。
     let path = request.uri().path();
     if path == "/health"

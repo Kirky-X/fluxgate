@@ -1,4 +1,4 @@
-//! Admin / health 端点客户端方法 — 路径与形状对齐网关真实路由表（T008
+//! Admin / health 端点客户端方法 — 路径与形状对齐网关真实路由表（
 //! 失配修复；防回归钉见 `tests/integration_admin.rs` 的路由 diff 测试）。
 
 use serde::Deserialize;
@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::sdk::client::NexusFlowClient;
 use crate::sdk::error::NexusFlowSdkError;
 
-/// 模型能力目录条目 — 对齐网关 `GET /admin/models`（T006 目录）。
+/// 模型能力目录条目 — 对齐网关 `GET /admin/models`（目录）。
 /// 定价单位 =「currency 计价，每 1M tokens」。
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ModelCatalogInfo {
@@ -67,7 +67,7 @@ pub struct ModelCatalogUpsert {
     pub supports_tools: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_thinking: Option<bool>,
-    /// 工具面（T007）：anthropic 型 vendor 转换出站的缓存断点策略，
+    /// 工具面：anthropic 型 vendor 转换出站的缓存断点策略，
     /// 形状对齐 `[[model_catalog.cache_breakpoints]]` 子表（审查 LOW：
     /// 镜像类型化结构体取代裸 Value——upsert 面拼写错误在编译期暴露）
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -75,7 +75,7 @@ pub struct ModelCatalogUpsert {
 }
 
 /// vendor 运行时状态 — 对齐网关 `GET /admin/vendors` 真实形状
-///（{id,status,queue_length} + T005 key_pool；旧 {id,name,enabled} 为
+///（{id,status,queue_length} + key_pool；旧 {id,name,enabled} 为
 /// 配置面形状，运行面不存在）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct VendorStatusInfo {
@@ -132,9 +132,9 @@ fn admin_model_url(base_url: &url::Url, model_id: &str) -> Result<url::Url, Nexu
 }
 
 impl NexusFlowClient {
-    /// GET /admin/models — 模型能力目录列表（T006 目录，含定价/能力位）。
+    /// GET /admin/models — 模型能力目录列表（目录，含定价/能力位）。
     ///
-    /// 失配修复（T008）：旧实现打 `GET /v1/models`——网关**未注册**该
+    /// 失配修复：旧实现打 `GET /v1/models`——网关**未注册**该
     /// 路由（恒 404），且 `{data:[{id,vendor}]}` 形状无对应实现；现对齐
     /// 目录路由语义。
     pub async fn models(&self) -> Result<Vec<ModelCatalogInfo>, NexusFlowSdkError> {
@@ -167,7 +167,7 @@ impl NexusFlowClient {
         Ok(resp.json().await?)
     }
 
-    /// PUT /admin/models/{model_id} — upsert 目录条目（T006；path 标识
+    /// PUT /admin/models/{model_id} — upsert 目录条目（path 标识
     /// 权威，载荷 model_id 被网关覆写）。
     pub async fn upsert_model(
         &self,
@@ -236,7 +236,7 @@ impl NexusFlowClient {
 
     /// GET /api/v1/health — 服务健康状态。
     ///
-    /// 失配修复（T008）：旧实现打 `GET /admin/health`——网关不存在该
+    /// 失配修复：旧实现打 `GET /admin/health`——网关不存在该
     /// 路由（`/health` 为 sdforge 明文 "OK"，JSON 健康面在
     /// `/api/v1/health`）；且旧 `HealthStatus.vendors` 字段在线上不存在
     ///（缺字段反序列化必败）。

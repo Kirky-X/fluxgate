@@ -987,7 +987,7 @@ mod admin {
         assert!(vendors[0].enabled);
     }
 
-    /// T006：GET /admin/models 响应面为目录条目列表（create_test_config
+    /// GET /admin/models 响应面为目录条目列表（create_test_config
     /// 未登记条目 → 空 vec）；全局模型策略改经 /admin/config 或
     /// POST /admin/models/global 读写，不并入本列表。
     #[tokio::test]
@@ -5224,7 +5224,7 @@ mod api_handler_coverage {
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["success"], true);
 
-        // T006：GET /admin/models 响应面为目录条目（global 策略读 config 面）
+        // GET /admin/models 响应面为目录条目（global 策略读 config 面）
         assert!(
             admin::get_models(State(state.clone()))
                 .await

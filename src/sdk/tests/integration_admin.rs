@@ -10,7 +10,7 @@ fn build_client(base_url: &str) -> crate::sdk::NexusFlowClient {
         .unwrap()
 }
 
-/// 路由 diff 防回归钉（T008）：SDK admin 面 (method, path) 清单必须全部
+/// 路由 diff 防回归钉：SDK admin 面 (method, path) 清单必须全部
 /// 出现在网关路由表源码（`src/api/router_builder.rs` axum `.route()`
 /// 注册）中——SDK 方法与 server 实际路由的零差异契约。失配史：旧 SDK 打
 /// `GET /v1/models`（网关未注册）与 `GET /admin/health`（不存在）。
@@ -18,7 +18,7 @@ fn build_client(base_url: &str) -> crate::sdk::NexusFlowClient {
 fn sdk_admin_routes_are_subset_of_server_route_table() {
     const ROUTE_TABLE_SRC: &str = include_str!("../../api/router_builder.rs");
 
-    // 精确注册模式（与 router_builder.rs 当前源码逐字对齐——审查 M3：
+    // 精确注册模式（与 router_builder.rs 当前源码逐字对齐——
     // 杜绝「路径串偶然出现」的误绿；多行 MethodRouter 链按源码拼装）
     let expected = [
         ".route(\"/admin/models\", get(admin::get_models))",
@@ -39,7 +39,7 @@ fn sdk_admin_routes_are_subset_of_server_route_table() {
     }
 
     // SDK (method, path) 清单逐项对位（方法 × 路径复合断言；POST global
-    // 为网关保留契约、SDK 不消费，不入清单——审查 M3 删死分支）
+    // 为网关保留契约、SDK 不消费，不入清单—— 删死分支）
     for (method, path) in crate::sdk::admin::sdk_routes::SDK_ADMIN_ROUTES {
         match (*method, *path) {
             ("PUT", "admin/models/{id}") => assert!(
@@ -176,7 +176,7 @@ async fn put_global_reserved_key_maps_to_server_error() {
 }
 
 /// GET /admin/vendors — 网关真实形状（运行面状态机词 + 队列深度 +
-/// key_pool 观测；T005/T006 后字段）
+/// key_pool 观测； 后字段）
 #[tokio::test]
 async fn vendors_returns_runtime_status_shape() {
     let mut server = mockito::Server::new_async().await;

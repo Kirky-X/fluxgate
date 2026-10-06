@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! T007 验收 — Anthropic 自动缓存断点注入：位置/数量单测（含超限回退
+//! 验收 — Anthropic 自动缓存断点注入：位置/数量单测（含超限回退
 //! 「保留锚序尾部」）与注入开关。
 
 use llm_gate::config::model_catalog::{cache_policy_for, CacheBreakpointPolicy};

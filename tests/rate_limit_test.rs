@@ -378,7 +378,7 @@ async fn empty_rules_keep_default_governor_behavior() {
     }
 }
 
-/// G5 新契约：全局 tower 层拒绝与 per-endpoint 429 同形——429 +
+/// 新契约：全局 tower 层拒绝与 per-endpoint 429 同形——429 +
 /// Retry-After（窗口剩余秒）+ `router-rate-limit-exceeded` 体。
 #[tokio::test]
 async fn global_rule_rejection_carries_retry_after_and_standard_body() {

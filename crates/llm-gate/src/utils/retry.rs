@@ -193,7 +193,7 @@ pub fn retry_delay_for(
 
 /// recId=5：`base + U(0, spread_jitter) × base` 的全范围展宽。
 ///
-/// G3 后是对上游 `Retry-After` 头的时长生产端：manager 的重试决策闭包把
+/// 本函数是对上游 `Retry-After` 头的时长生产端：manager 的重试决策闭包把
 /// 「429/503 读到的上游指示值」经本函数展宽后映射为
 /// `RetryDecision::RetryAfter(duration)`（库按指示值原样睡眠，不封顶
 /// `max_delay`、不叠加策略抖动——指示契约由调用方负责合理性）。

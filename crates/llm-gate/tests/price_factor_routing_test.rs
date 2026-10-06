@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! T007 验收 — 价格因子路由：等价条件下低价候选胜出；开关关闭行为与
+//! 验收 — 价格因子路由：等价条件下低价候选胜出；开关关闭行为与
 //! 现状逐位一致（权重向量精确相等）。
 //!
 //! 因子定义（router.rs `price_factor_multipliers` doc 同源）：候选单价

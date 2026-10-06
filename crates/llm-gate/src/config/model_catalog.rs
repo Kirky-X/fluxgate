@@ -3,14 +3,14 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! per-model 能力/定价目录（T006/N6）——`[[model_catalog]]` 段的类型与
+//! per-model 能力/定价目录（N6）——`[[model_catalog]]` 段的类型与
 //! 查询纯函数。
 //!
 //! 字段对齐 agentstem `crates/providers/src/model_catalog.rs:18-39` 的
 //! `ModelEntry`（实现不复用旧代码；agentstem 侧静态内置表 + 前缀匹配的
 //! 查询形态不迁——llm-gate 目录由配置面/admin CRUD 显式登记）。
 //!
-//! **定价单位口径（T007 计价消费的契约）**：四个价格字段均为
+//! **定价单位口径（计价消费的契约）** 四个价格字段均为
 //! 「currency 计价，**每 1M tokens**」——对齐 agentstem
 //! `model_catalog.rs:178-197 estimate_usage_cost` 的
 //! `per_million(tokens, price) = (tokens / 1_000_000) * price` 公式。
@@ -40,7 +40,7 @@ pub enum PricingCurrency {
     Cny,
 }
 
-/// 目录条目上限（审查 LOW-2/3）：防配置爆炸——admin upsert 无上限会拖垮
+/// 目录条目上限（审查 /3）：防配置爆炸——admin upsert 无上限会拖垮
 /// persist_and_swap 全量写回与 GET 列表面；超限 validate_config 拒绝
 /// （加载与热更新两路同拒）。
 pub const MAX_MODEL_CATALOG_ENTRIES: usize = 1024;
@@ -80,7 +80,7 @@ pub struct ModelCatalogEntry {
     /// 是否支持思考模式
     #[serde(default)]
     pub supports_thinking: bool,
-    /// Anthropic 自动缓存断点注入策略（T007；anthropic 型 vendor 转换出站
+    /// Anthropic 自动缓存断点注入策略（anthropic 型 vendor 转换出站
     /// 生效）。None = 用内置默认（启用 / 上限 4 / 锚序 tools→system→
     /// last_user，见 [`CacheBreakpointPolicy`]）。与 supports_* 能力位
     /// 正交——能力位描述模型能做什么，缓存断点是请求侧计费/性能工程。
@@ -88,7 +88,7 @@ pub struct ModelCatalogEntry {
     pub cache_breakpoints: Option<CacheBreakpointPolicy>,
 }
 
-/// Anthropic 自动缓存断点注入策略（T007）。
+/// Anthropic 自动缓存断点注入策略。
 ///
 /// 断点 = 出站请求内容块上的 `cache_control: {"type":"ephemeral"}` 标记
 /// （Anthropic prompt caching；平台单请求断点上限 4）。命中后续请求按
@@ -145,7 +145,7 @@ pub fn cache_policy_for(catalog: &[ModelCatalogEntry], model_id: &str) -> CacheB
         .unwrap_or_default()
 }
 
-/// 能力查询结果 — capabilities() 语义面（无定价；定价消费在 T007 计价）。
+/// 能力查询结果 — capabilities() 语义面（无定价；定价消费在 vendor/cost 计价）。
 /// 字段名对齐 agentstem 消费方（`max_context_tokens` 为
 /// agent_session.rs:3290-3291 auto-compact 判读的字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,7 +173,7 @@ pub struct ModelCapabilities {
 ///   不会破坏不支持工具的本地模型）；
 /// - 未知 vendor type 一律回落 ollama 档（最小窗口的保守兜底）。
 ///
-/// 价格不进默认表：未登记模型不计价（T007 计价按目录命中与否显式
+/// 价格不进默认表：未登记模型不计价（计价按目录命中与否显式
 /// 处理，0 价默认表会伪装成「免费」事实）。
 pub fn flavor_default_capabilities(vendor_type: &str) -> ModelCapabilities {
     match vendor_type {
@@ -202,7 +202,7 @@ pub fn flavor_default_capabilities(vendor_type: &str) -> ModelCapabilities {
 /// 目录查询：精确 model_id 命中 → 目录真实值；未命中 → per-flavor
 /// （vendor type）保守默认。精确匹配（不做前缀匹配——登记面是显式
 /// admin CRUD，模糊命中会造成「登记即全局生效」的意外面；前缀计价
-/// 匹配属 T007 计价消费的裁决域）。
+/// 匹配属 计价消费的裁决域）。
 pub fn capabilities_for(
     catalog: &[ModelCatalogEntry],
     vendor_type: &str,
@@ -222,7 +222,7 @@ pub fn capabilities_for(
 
 #[cfg(test)]
 mod tests {
-    //! 目录单元测试（T006 验收）：serde 面 / 能力查询回落 / 定价契约。
+    //! 目录单元测试（验收）：serde 面 / 能力查询回落 / 定价契约。
 
     use super::*;
 
@@ -345,10 +345,10 @@ currency = "eur"
         );
     }
 
-    // ======== 定价契约（T007 计价消费） ========
+    // ======== 定价契约（计价消费） ========
 
     /// 单位口径契约：价格字段为「每 1M tokens」——对齐 agentstem
-    /// estimate_usage_cost 的 per_million 公式。T007 的 CostCalculator
+    /// estimate_usage_cost 的 per_million 公式。CostCalculator
     /// 迁移必须复现本式（含缓存档），本测试为回归锚。
     #[test]
     fn pricing_contract_per_1m_tokens_semantics() {
@@ -392,7 +392,7 @@ currency = "eur"
         );
     }
 
-    // ======== 断点策略（T007） ========
+    // ======== 断点策略 ========
 
     #[test]
     fn cache_policy_entry_override_and_default_fallback() {
@@ -446,7 +446,7 @@ anchors = ["system", "last_user"]
             .contains("cache_breakpoints"));
     }
 
-    /// CNY 条目：币种随条目（T007 按 currency 分道 cost_usd/cost_cny 的输入）。
+    /// CNY 条目：币种随条目（按 currency 分道 cost_usd/cost_cny 的输入）。
     #[test]
     fn cny_entry_carries_currency() {
         let entry: ModelCatalogEntry = toml::from_str(

@@ -171,11 +171,11 @@ impl TokenPreAggregator {
     }
 }
 
-/// token_usage upsert 语句（纯函数，db-backend-selection T006）。
+/// token_usage upsert 语句（纯函数）。
 /// sqlite（3.24+）与 postgres 共用 `ON CONFLICT DO UPDATE`（`excluded` 引用
 /// 新行）；mysql 无该语法，走 `ON DUPLICATE KEY UPDATE` + `VALUES(col)`
 /// （MySQL 8.0.20+ 标 deprecated，仍全版本可用；row alias 新写法要求
-/// 8.0.20+，为兼容 5.7/8.0 早期版维持旧写法，审查 LOW-8 记录在案）。
+/// 8.0.20+，为兼容 5.7/8.0 早期版维持旧写法，审查 记录在案）。
 fn upsert_token_usage_sql(backend: sea_orm::DatabaseBackend) -> &'static str {
     match backend {
         sea_orm::DatabaseBackend::MySql => {

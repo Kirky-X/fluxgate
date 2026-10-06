@@ -205,7 +205,7 @@ cargo test --all-features --test router_test   # 单个集成测试文件
 
 ```text
 feat(cost): add CostTracker with dashmap sharding and atomic accumulation
-fix(security): fix critical security issues from diting review (T042)
+fix(security): fix critical security issues from security review
 refactor(database): 用 dbnexus 替换 sqlx 数据库层
 ```
 

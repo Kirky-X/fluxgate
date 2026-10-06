@@ -8,7 +8,7 @@
 //! "config.toml" 的语义由 `server::run` 内部承担。
 
 // bin 装配链的 async 块在 mysql 组合下 trait 求解深度超默认 128 层
-// （sqlx mysql 类型层级更深；db-backend-selection T008 门禁发现）
+// （sqlx mysql 类型层级更深； 门禁发现）
 #![recursion_limit = "256"]
 
 #[tokio::main]

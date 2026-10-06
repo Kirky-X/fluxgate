@@ -29,7 +29,7 @@ pub struct ServerHandle {
     done: AtomicBool,
     /// inklog 关闭钩子（`run()` 注入 manager；嵌入式未注入时收尾阶段 no-op）。
     inklog_hook: std::sync::OnceLock<Option<InklogShutdownHook>>,
-    /// G10 热重载守护（装配期启动；随句柄存活，drop 即停止监听）。
+    /// 热重载守护（装配期启动；随句柄存活，drop 即停止监听）。
     /// 监听是否装配经 [`Debug`] 暴露（`hot_reload_watcher` 字段），
     /// 嵌入式调用方据此查询热重载面状态。
     hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,

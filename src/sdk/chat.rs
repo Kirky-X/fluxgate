@@ -1,4 +1,4 @@
-//! Chat 请求/响应类型 — wire 契约对齐网关真实形状（T008，D2/D7.11 口径）。
+//! Chat 请求/响应类型 — wire 契约对齐网关真实形状（D2/D7.11 口径）。
 //!
 //! SDK 零 crate 内依赖（独立客户端契约面）：类型自有、serde 对齐
 //! `llm_gate::protocol` IR 的线上投影——多模态内容件 / 工具调用片段 /
@@ -214,7 +214,7 @@ pub struct ChatTool {
 
 /// 工具函数定义 — `parameters` 为 JSON Schema。
 ///
-/// **无损透传**（A3/T008 M1 闭环，原「有损透传警告」作废）：网关以
+/// **无损透传**（A3/ M1 闭环，原「有损透传警告」作废）：网关以
 /// `serde_json::Value` 原样直存直出（嵌套 schema/items/anyOf/$ref/缺
 /// `type` 属性全量保真）。注意：网关**不做 schema 校验**——schema 合法
 /// 性与上游模型兼容性由调用方自担（上游 4xx 原样回传）。
@@ -439,7 +439,7 @@ impl ChatRequest {
 }
 
 /// Chat 响应 — finish_reason 结构化 + 含 cache_read 的 usage + 工具调用。
-/// 网关非流式响应**不携带 vendor 字段**（T008 核实：`response_to_external`
+/// 网关非流式响应**不携带 vendor 字段**（核实：`response_to_external`
 /// 产物无该键，旧 SDK `vendor` 字段恒空串误导，已移除——BREAKING 记录于
 /// docs/CHANGELOG.md）。
 #[derive(Debug, Clone)]
@@ -454,7 +454,7 @@ pub struct ChatResponse {
 }
 
 impl ChatResponse {
-    /// 从网关非流式响应 wire JSON 解析（T008：真实形状——choices[0]
+    /// 从网关非流式响应 wire JSON 解析（真实形状——choices[0]
     /// message{content,tool_calls?} + finish_reason + usage 可选携带
     /// prompt_tokens_details.cached_tokens）。
     pub(crate) fn from_wire(v: &serde_json::Value) -> Result<Self, NexusFlowSdkError> {

@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
-//! G8（T009）：请求追踪——响应头 `X-Request-Id` 回传 + tracing span 关联。
+//! 请求追踪——响应头 `X-Request-Id` 回传 + tracing span 关联。
 
 use axum::{body::Body, http::Request, http::StatusCode, Router};
 use dbnexus::{DbConfig, DbPool};

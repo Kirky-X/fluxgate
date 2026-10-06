@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! G10 配置热重载（absorb-sibling-libs T011）：`ConfigManager` 旁挂 confers
+//! 配置热重载：`ConfigManager` 旁挂 confers
 //! `HotReloader`（watch + progressive-reload），监听配置文件变更。
 //!
 //! 生效语义（保守白名单）：
@@ -152,7 +152,7 @@ pub(crate) async fn maybe_start_hot_reload(
         .with_pre_commit_check(Arc::new(StructuralGate {
             manager: manager.clone(),
         }));
-    // G3 复核 LOW S-L12：监听父目录而非单文件——admin 通道 tmp+rename
+    // 监听父目录而非单文件——admin 通道 tmp+rename
     // 原子写盘会换 inode，单文件监听在首次 rename 后永久失明；目录监听
     // 下目录内杂项事件（tmp 文件、config-backups 快照）触发的冗余重载
     // 由“内容一致跳过”终结，无副作用。

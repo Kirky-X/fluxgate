@@ -91,7 +91,7 @@ impl ProtocolConverter for OpenAIConverter {
         // 解析工具选择策略
         let tool_choice = body.get("tool_choice").map(parse_tool_choice);
 
-        // T003：reasoning_effort → effort（OpenAI wire 词汇即 low/medium/high）
+        // reasoning_effort → effort（OpenAI wire 词汇即 low/medium/high）
         let effort = body
             .get("reasoning_effort")
             .and_then(|v| v.as_str())
@@ -219,7 +219,7 @@ impl ProtocolConverter for OpenAIConverter {
         if let Some(user) = user {
             body["user"] = json!(user);
         }
-        // T003：effort → reasoning_effort（OpenAI wire 词汇，小写）
+        // effort → reasoning_effort（OpenAI wire 词汇，小写）
         if let Some(effort) = effort {
             body["reasoning_effort"] = json!(effort.to_wire());
         }
@@ -233,7 +233,7 @@ impl ProtocolConverter for OpenAIConverter {
         );
         // L1：thinking_config 无 OpenAI 等价槽，出站静默丢弃（跨厂商
         // fallback 到 OpenAI 时思考预算不透传，属已知降级而非错误）
-        // F1/M1：vendor_extensions 顶层透传，denylist = 本协议 known_keys
+        // F1/：vendor_extensions 顶层透传，denylist = 本协议 known_keys
         // 反用——协议键（stream/reasoning_effort 等）永不由扩展表补入/覆写，
         // 非协议键仍透传（D2 语义；跨协议严格上游 400 风险为显式 opt-in，D7）
         merge_vendor_extensions(&mut body, &vendor_extensions, OPENAI_KNOWN_KEYS);
@@ -263,7 +263,7 @@ impl ProtocolConverter for OpenAIConverter {
             "completion_tokens": response.usage.completion_tokens,
             "total_tokens": response.usage.total_tokens,
         });
-        // T003：cache_read_tokens → prompt_tokens_details.cached_tokens
+        // cache_read_tokens → prompt_tokens_details.cached_tokens
         //（非零才携带；cache_creation/cost 无 OpenAI 槽，不产出）
         if response.usage.cache_read_tokens > 0 {
             usage["prompt_tokens_details"] =
@@ -367,7 +367,7 @@ impl ProtocolConverter for OpenAIConverter {
                     .get("finish_reason")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                // T003：已知词双写结构化槽；未知词只留原始透传槽
+                // 已知词双写结构化槽；未知词只留原始透传槽
                 let finish = finish_reason.as_deref().and_then(FinishReason::from_wire);
 
                 Some(Choice {
@@ -410,7 +410,7 @@ impl ProtocolConverter for OpenAIConverter {
             .map(|u| u as u32)
             .unwrap_or(prompt_tokens + completion_tokens);
 
-        // T003：prompt_tokens_details.cached_tokens → cache_read_tokens
+        // prompt_tokens_details.cached_tokens → cache_read_tokens
         //（OpenAI 无 cache_creation 概念，恒 0；u64 对齐 core Usage 宽度）
         let cache_read_tokens = usage
             .get("prompt_tokens_details")
@@ -453,7 +453,7 @@ impl ProtocolConverter for OpenAIConverter {
                     "finish_reason": finish_reason,
                 }],
             })),
-            // T003：流式工具调用片段 → delta.tool_calls（id/name 仅首片段携带）
+            // 流式工具调用片段 → delta.tool_calls（id/name 仅首片段携带）
             StreamChunk::ToolCall {
                 index,
                 id,
@@ -498,8 +498,8 @@ impl ProtocolConverter for OpenAIConverter {
                 finish_reason,
             } => {
                 // cache_creation 无 OpenAI 槽。
-                // 跨厂商合成（A4/T012，D7.13 扩项闭环）：finish_reason 有值
-                // 时（Anthropic 上游 stop_reason 经 T007 映射进 IR Usage 帧）
+                // 跨厂商合成（A4/，D7.13 扩项闭环）：finish_reason 有值
+                // 时（Anthropic 上游 stop_reason 经 映射进 IR Usage 帧）
                 // 写入本帧 choices 终止槽——OpenAI wire 合法形状（usage 帧
                 // 可携带收尾 choices），OpenAI 面客户端自此能拿到跨厂商终止
                 // 原因；None（OpenAI 原生上游，终止先行于 usage 帧）保持
@@ -548,7 +548,7 @@ impl ProtocolConverter for OpenAIConverter {
 /// - 顶层 `usage` 帧（`stream_options.include_usage` 尾帧，choices 空）
 ///   → [`StreamChunk::Usage`]；
 /// - `choices[0].delta.tool_calls`（规范单片段帧）→
-///   [`StreamChunk::ToolCall`]（T004 表示统一：id/name 仅首片段携带，
+///   [`StreamChunk::ToolCall`]（表示统一：id/name 仅首片段携带，
 ///   arguments 为增量分片；多片段帧或与 finish_reason 同帧回退
 ///   Content{ToolCalls} 旧聚合表示，无损交付）；
 /// - `choices[0].delta.content` → [`StreamChunk::Content`]（Text delta）；
@@ -586,7 +586,7 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
                 .and_then(|v| v.as_u64())
                 .map(|u| u as u32)
                 .unwrap_or(prompt + completion);
-            // T003：cached_tokens 同帧读取（cache_creation 无 OpenAI 概念）
+            // cached_tokens 同帧读取（cache_creation 无 OpenAI 概念）
             let cache_read_tokens = usage
                 .get("prompt_tokens_details")
                 .and_then(|d| d.get("cached_tokens"))
@@ -614,7 +614,7 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
 
     let delta = choice.get("delta");
 
-    // T004：表示统一——tool_calls delta → ToolCall 片段流。
+    // 表示统一——tool_calls delta → ToolCall 片段流。
     // 规范形状：每帧恰一个片段（OpenAI 实践形状）→ [`StreamChunk::ToolCall`]
     // {index, id（续片缺省为空串）, name: Option, arguments: Option 增量}，
     // 消费方以显式聚合状态（index → {id, name, arguments 缓冲}）拼接。
@@ -672,7 +672,7 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
     })
 }
 
-/// 解析流式 tool_calls 单片段 → ToolCall 片段字段（T004 表示统一）。
+/// 解析流式 tool_calls 单片段 → ToolCall 片段字段（表示统一）。
 ///
 /// OpenAI 流式形状：id/name 仅首片段携带（续片缺省 → 空串/None），
 /// arguments 为增量分片；index 为并行工具槽位（消费方聚合状态按它拼接）。
@@ -700,7 +700,7 @@ fn parse_stream_tool_call_fragment(
     ))
 }
 
-/// 旧聚合表示路径的片段解析（T004：仅服务非规范形状回退——单帧多片段 /
+/// 旧聚合表示路径的片段解析（仅服务非规范形状回退——单帧多片段 /
 /// 与 finish_reason 同帧）。片段缺省字段以空串占位。
 fn parse_stream_tool_call_delta(json: &Value) -> Option<ToolCall> {
     let obj = json.as_object()?;
@@ -771,7 +771,7 @@ fn merge_system_prompt_messages(
     merged
 }
 
-/// T003：sampling 只补 flat 未设置的槽（flat 优先，不覆写）；
+/// sampling 只补 flat 未设置的槽（flat 优先，不覆写）；
 /// top_k 非 OpenAI 标准参数，直出供兼容上游取用。
 fn apply_sampling_overrides(
     body: &mut Value,
@@ -935,7 +935,7 @@ fn parse_content_block(json: &Value) -> Option<ContentBlock> {
         "image_url" => {
             let image_url = json.get("image_url")?.as_object()?;
             let url = image_url.get("url")?.as_str()?.to_string();
-            // T003：URL 保真——https 直链 → Url 形态（不再硬编码 jpeg、
+            // URL 保真——https 直链 → Url 形态（不再硬编码 jpeg、
             // 不再把 URL 塞进 data）；data URI → Base64 形态（media_type
             // 从 URI 解析）
             let source = match url.strip_prefix("data:") {
@@ -979,7 +979,7 @@ fn message_to_openai(msg: Message) -> Value {
                         "text": text,
                     }),
                     ContentBlock::Image { source, detail } => {
-                        // T003：Base64 → data URI；Url → 直链原样（不再包
+                        // Base64 → data URI；Url → 直链原样（不再包
                         // data: 前缀导致坏 URI）
                         let url = match &source {
                             ImageSource::Base64 { media_type, data } => {
@@ -1117,7 +1117,7 @@ fn arguments_as_string(value: Option<&Value>) -> Option<String> {
     }
 }
 
-/// 解析 OpenAI 格式的工具定义（T008 M1 / D7.14 闭环：parameters 原样
+/// 解析 OpenAI 格式的工具定义（M1 / D7.14 闭环：parameters 原样
 /// `serde_json::Value` 保真透传——不做结构化升降级，嵌套 schema / items /
 /// anyOf / $ref / 缺 type 属性等全量无损）。
 fn parse_openai_tool(json: &Value) -> Option<Tool> {

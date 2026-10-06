@@ -6,8 +6,8 @@
 
 //! VendorManager × CostTracker 集成测试。
 //!
-//! T007 起计价消费 [[model_catalog]]（四档含 cache；[[pricing]] 留 SLA
-//! 因子消费，至 T011 退役——D7.11）。
+//! 计价消费 [[model_catalog]]（四档含 cache；[[pricing]] 留 SLA
+//! 因子消费，至 退役——D7.11）。
 //!
 //! 验证属性（规则9）：
 //! 1. mock 200 + usage 响应后 CostTracker::total_usd() > 0.0
@@ -79,7 +79,7 @@ async fn setup_cost_test(
             host: "0.0.0.0".into(),
             port: 8080,
         },
-        // T007：定价面迁移——per-1k 0.03/0.06 ≡ per-1M 30.0/60.0（数值等价）
+        // 定价面迁移——per-1k 0.03/0.06 ≡ per-1M 30.0/60.0（数值等价）
         model_catalog: vec![ModelCatalogEntry {
             model_id: "gpt-4".into(),
             context_window: 128_000,
@@ -218,7 +218,7 @@ async fn test_cost_tracker_not_incremented_on_error_response() {
     );
 }
 
-/// T007 端到端 trace：Claude 计价不再失真——带 cache 档的 anthropic 响应
+/// 端到端 trace：Claude 计价不再失真——带 cache 档的 anthropic 响应
 /// usage（input_tokens 不含 cache 档，Exclusive 语义）经目录四档计价，
 /// cost 含 cache_read/cache_creation 两档（旧 [[pricing]] 双档公式对
 /// cache token 全部漏计）。
@@ -273,7 +273,7 @@ async fn claude_cache_token_usage_priced_with_cache_tiers() {
     .expect("no timeout")
     .expect("request ok");
 
-    // IR usage cache 档保真（T003 铺设的响应面）
+    // IR usage cache 档保真（铺设的响应面）
     assert_eq!(result.usage.cache_read_tokens, 2_000);
     assert_eq!(result.usage.cache_creation_tokens, 100_000);
 

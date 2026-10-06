@@ -906,7 +906,7 @@ mod repository_gap {
         }
     }
 
-    /// v0.1 旧库迁移：缺 cost_usd / cost_usd_sum 列时 initialize 补列，
+    /// V0.1 旧库迁移：缺 cost_usd / cost_usd_sum 列时 initialize 补列，
     /// 旧行取列默认值且可正常读回。
     #[tokio::test]
     async fn initialize_adds_missing_cost_columns_to_legacy_schema() {

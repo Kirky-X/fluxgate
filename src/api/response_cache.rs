@@ -150,8 +150,8 @@ pub struct ResponseCache {
     /// ewma_e2e_ms）与 Q（traffic_shares 份额）来源；比 VendorManager
     /// 更轻的依赖面。
     metrics: Arc<GlobalMetrics>,
-    /// G6 single-flight：在途 Miss 注册表（键 → leader 通知器）。`Arc` 包
-    /// 装使结构体保持 `Clone`。G3 复核性能 L2：临界区无 `.await`，用
+    /// single-flight：在途 Miss 注册表（键 → leader 通知器）。`Arc` 包
+    /// 装使结构体保持 `Clone`。临界区无 `.await`，用
     /// `std::sync::Mutex`（tokio Mutex 过重）。
     in_flight: Arc<std::sync::Mutex<HashMap<String, InFlightEntry>>>,
 }
@@ -166,7 +166,7 @@ pub struct CacheKeyParts {
     pub api_key_hash: String,
     /// canonical body 字符串（键序无关的确定性序列化）
     pub canonical: String,
-    /// single-flight 代际令牌（G3 复核 MEDIUM A-M7）：`store()` 只删除
+    /// single-flight 代际令牌：`store()` 只删除
     /// 同代占位，防止慢 leader 误删窃取者的新条目；仅本模块构造。
     pub(crate) flight: Option<Arc<tokio::sync::Notify>>,
 }
@@ -289,7 +289,7 @@ impl ResponseCache {
     /// 含空哨兵命中的 `Hit(Null)`）/ Miss（leader：上游调用后由 [`Self::store`]
     /// 以最终 vendor/model 组装完整键回写）。
     ///
-    /// G6 single-flight：同 key 并发 Miss 只放行第一个（leader），其余
+    /// single-flight：同 key 并发 Miss 只放行第一个（leader），其余
     /// follower 等待 leader 回写后复用——N 并发同 key 上游只调用 1 次。
     /// 查询键以调用方传入的 vendor_id/model_id 组装（初始路由候选）；
     /// resilience 换路成功后回写键由 [`Self::store`] 以最终候选重建
@@ -389,7 +389,7 @@ impl ResponseCache {
     }
 
     /// 释放指定键的在途占位并唤醒 followers。代际令牌一致才删除——慢
-    /// leader 不得误删窃取者的新条目（G3 复核 MEDIUM A-M7）；令牌缺失
+    /// leader 不得误删窃取者的新条目；令牌缺失
     /// （未登记的 Miss）时按旧语义无条件删（无条目即 no-op）。
     async fn finish_flight(&self, key: &str, flight: Option<&Arc<tokio::sync::Notify>>) {
         let mut guard = self
@@ -423,10 +423,10 @@ impl ResponseCache {
         }
     }
 
-    /// G6：对称 TTL 抖动（与 oxcache `apply_jitter` 同口径）：
+    /// 对称 TTL 抖动（与 oxcache `apply_jitter` 同口径）：
     /// `ttl×(1+factor×u)`，u∈[-1,1]；factor≤0 或 u 非有限时原样返回。
     /// 纯函数（随机源由调用方注入）， floor 1ms。
-    /// 分叉说明（G3 复核 MEDIUM A-M8）：oxcache 的实现为 `pub(super)`，
+    /// 分叉说明：oxcache 的实现为 `pub(super)`，
     /// 且哨兵常量所在 `core` 模块未公开，无法引用——此处复刻口径，
     /// 语义与库一致（对称界、1ms 下限、关闭即原样）。
     fn apply_ttl_jitter(ttl: Duration, factor: f64, uniform_minus1_1: f64) -> Duration {
@@ -442,7 +442,7 @@ impl ResponseCache {
     /// 一致；TTL 由 [cache].ttl_secs 热读 + 类别乘数 + 负载联动（recId=12，
     /// vendor 维度 L_p/Q）；存取失败静默降级——缓存故障不得影响请求成功率）。
     ///
-    /// G6：写入 TTL 叠加 `ttl_jitter` 对称抖动（同批键过期不齐峰，关闭时
+    /// 写入 TTL 叠加 `ttl_jitter` 对称抖动（同批键过期不齐峰，关闭时
     /// 精确）；Null 响应写空哨兵（`null_cache_ttl_secs` 短窗口，窗口内
     /// check 直接 `Hit(Null)` 不再穿透）。回写后释放 single-flight 占位
     ///（失败路径同样释放，followers 不永久挂起）。
@@ -806,7 +806,7 @@ mod ttl_load_linking_tests {
 
 #[cfg(test)]
 mod single_flight_and_sentinel_tests {
-    //! G6：并发防击穿（single-flight）+ TTL 抖动 + 空哨兵负缓存。
+    //! 并发防击穿（single-flight）+ TTL 抖动 + 空哨兵负缓存。
 
     use super::*;
     use crate::config::Config;

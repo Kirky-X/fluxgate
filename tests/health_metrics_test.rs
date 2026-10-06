@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
-//! G7（T008）：就绪探针 /readyz 与指标出口 /metrics。
+//! 就绪探针 /readyz 与指标出口 /metrics。
 //!
 //! - /readyz 聚合 sdforge 注册检查：全绿 200 `{"status":"ready"}`，任一
 //!   失败 503；探针免认证（现有 /api/v1/health 由 assembly_smoke_test 覆盖）。

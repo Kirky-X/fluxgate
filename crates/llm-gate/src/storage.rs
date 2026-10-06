@@ -49,7 +49,7 @@ pub struct LogFilter {
 }
 
 /// Token 用量按 (vendor, model, date, hour) 预聚合行。原 database::TokenUsage
-/// 显式改名消歧——与 IR 的 protocol::TokenUsage 同名易混（T002）。
+/// 显式改名消歧——与 IR 的 protocol::TokenUsage 同名易混。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsageRow {
     pub id: Option<i64>,

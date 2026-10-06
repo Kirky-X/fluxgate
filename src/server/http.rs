@@ -104,7 +104,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("{}", t("main-press-ctrl-c"));
 
-    // G9：停机信号走 sdforge graceful 默认触发（SIGTERM/Ctrl-C），HTTP
+    // 停机信号走 sdforge graceful 默认触发（SIGTERM/Ctrl-C），HTTP
     // 与 gRPC 各自注册（同一信号各自决断；旧 watch 广播已删除）。
     // inklog manager 移交收尾钩子——替代 run 尾部隐式 drop，关闭成为
     // 三阶段显式收尾的一部分（logger 仍由 _logger 活到收尾完成）。
@@ -123,9 +123,9 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
         None => None,
     };
 
-    // G9：serve 走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），
+    // serve 走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），
     // 排空语义与旧 axum with_graceful_shutdown 一致（流式不断 permit）。
-    // 排空超时显式 30s（G3 复核 MEDIUM：默认配置不可见，挂起 handler
+    // 排空超时显式 30s（默认配置不可见，挂起 handler
     // 不得无限阻塞重启；超时强制中止并记日志）。
     let result = sdforge::http::serve_with_graceful_shutdown(
         app,

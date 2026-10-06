@@ -26,7 +26,7 @@ pub struct LogQuery {
 }
 
 /// 管理面列表上限：`limit` 无夹断时任一有效 key 可拖全表装 Vec（OOM
-/// 向量，G3 复核 HIGH）。默认 100（现状），上限 1000。
+/// 向量）。默认 100（现状），上限 1000。
 const ADMIN_LIST_MAX_LIMIT: u32 = 1000;
 
 #[axum::debug_handler]
@@ -102,7 +102,7 @@ pub async fn vendors(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
     let vendors: Vec<Value> = statuses
         .iter()
         .map(|(id, status, queue_len)| {
-            // T005：key 池观测只暴露 env 名/数量/下标/指纹，绝不暴露 key 原文
+            // key 池观测只暴露 env 名/数量/下标/指纹，绝不暴露 key 原文
             let key_pool = state
                 .vendor_manager
                 .key_pool_info(id)
@@ -127,7 +127,7 @@ pub async fn vendor_status(
 ) -> Result<Json<Value>, NexusFlowError> {
     let status = state.vendor_manager.get_status(&id).await;
     let queue_len = state.vendor_manager.get_queue_length(&id);
-    // T005：key 池观测只暴露 env 名/数量/下标/指纹，绝不暴露 key 原文
+    // key 池观测只暴露 env 名/数量/下标/指纹，绝不暴露 key 原文
     let key_pool = state
         .vendor_manager
         .key_pool_info(&id)
@@ -236,7 +236,7 @@ pub async fn update_vendor(
     })))
 }
 
-/// GET /admin/models — 模型能力目录列表（T006）。
+/// GET /admin/models — 模型能力目录列表。
 ///
 /// 响应面从单 global_model 包装（历史形状错位：Config 只有单例策略段）
 /// 扩为 `Vec<ModelCatalogEntry>` 目录条目——sdk 客户端未消费本端点
@@ -258,7 +258,7 @@ pub async fn update_model(
     Json(model): Json<GlobalModelConfig>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
     // Config 只有单例 global_model: Option<GlobalModelConfig>（无 ID 字段），
-    // 约定 id == "global" 更新全局模型策略（T006 起目录条目走 PUT/DELETE）
+    // 约定 id == "global" 更新全局模型策略（目录条目走 PUT/DELETE）
     if id == "global" {
         // 原子 RMW（同 update_vendor）：读-改-校验-落盘在写锁内完成
         state.config.update_config_with(|config| {
@@ -276,7 +276,7 @@ pub async fn update_model(
     }
 }
 
-/// PUT /admin/models/{model_id} — upsert 单条目录条目（T006）。
+/// PUT /admin/models/{model_id} — upsert 单条目录条目。
 ///
 /// 原子 RMW（写锁内读-改-校验-落盘）：条目存在则整体替换，不存在则追加；
 /// 校验（model_id 去重 / context_window > 0）经 update_config_with 内的
@@ -288,7 +288,7 @@ pub async fn upsert_model(
     Path(model_id): Path<String>,
     Json(mut entry): Json<ModelCatalogEntry>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
-    // 审查 LOW-2：global 为全局策略段保留键（update_model 的 POST 契约），
+    // 审查：global 为全局策略段保留键（update_model 的 POST 契约），
     // 目录面显式拒绝——禁止借 PUT/DELETE 旁路改写策略段。Validation 变体
     // 映射 400（客户端侧请求问题；Config 变体映射 500 是服务端故障语义）
     if model_id == "global" {
@@ -314,7 +314,7 @@ pub async fn upsert_model(
     })))
 }
 
-/// DELETE /admin/models/{model_id} — 目录下条（T006）。
+/// DELETE /admin/models/{model_id} — 目录下条。
 ///
 /// 原子 RMW；条目不存在时显性 400（GateError 八核心变体无 NotFound，
 /// 冻结约束下以 Config 错误承载显性缺失，禁止静默成功）。
@@ -323,7 +323,7 @@ pub async fn delete_model(
     State(state): State<Arc<ApiState>>,
     Path(model_id): Path<String>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
-    // 审查 LOW-2：global 保留键（同 upsert_model，Validation → 400）
+    // 审查：global 保留键（同 upsert_model，Validation → 400）
     if model_id == "global" {
         return Err(NexusFlowError::from(GateError::Validation {
             field: format!("model_id={model_id} (reserved for global strategy)"),

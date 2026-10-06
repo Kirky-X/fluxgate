@@ -89,11 +89,11 @@ impl Default for CostCalculator {
     }
 }
 
-// ── T007：model_catalog 四档计价（cache token 进计价） ───────────────
+// ── model_catalog 四档计价（cache token 进计价） ───────────────
 //
 // D7.11 双表裁决：[[model_catalog]] 承载能力 + 四档单价（本节消费）；
 // [[pricing]] 留 SLA 因子（sla_v 惩罚项）与旧 [`CostCalculator`]，至
-// T011 桥接切换后退役——本节不读 [[pricing]]。
+// 桥接切换后退役——本节不读 [[pricing]]。
 
 use crate::config::model_catalog::ModelCatalogEntry;
 use crate::protocol::TokenUsage;
@@ -146,7 +146,7 @@ pub fn lookup_pricing_entry<'a>(
         .min_by(|a, b| a.model_id.cmp(&b.model_id))
 }
 
-/// 四档成本估算（T007）——未登记模型返回 `None`（显式缺失，调用方不得
+/// 四档成本估算——未登记模型返回 `None`（显式缺失，调用方不得
 /// 按 0 成本处理，防 0 价伪装免费；T006 语义延续）。
 ///
 /// 公式（per 1M tokens，币种随条目；semantics 决定非缓存基数的折算）：
@@ -187,7 +187,7 @@ pub fn estimate_cost_from_catalog(
 
 #[cfg(test)]
 mod catalog_pricing_tests {
-    //! T007 验收：cache 档计价 / 短名前缀命中 / 未登记 None / 非对称锚。
+    //! 覆盖：cache 档计价 / 短名前缀命中 / 未登记 None / 非对称锚。
 
     use super::*;
     use crate::config::model_catalog::ModelCatalogEntry;

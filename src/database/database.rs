@@ -205,7 +205,7 @@ impl llm_gate::storage::RequestLogSink for Database {
 }
 
 // 全部用例依赖 sqlite 回退分支（path 归一）——仅 db-sqlite 构建下编译执行；
-// 非 db-sqlite 构建的 Err 分支由该 cfg 组合的编译检查覆盖（T008 门禁）
+// 非 db-sqlite 构建的 Err 分支由该 cfg 组合的编译检查覆盖（门禁）
 #[cfg(all(test, feature = "db-sqlite"))]
 mod tests {
     use super::normalize_sqlite_url;
@@ -308,7 +308,8 @@ mod redact_db_url_tests {
     #[test]
     fn userinfo_credentials_are_stripped_with_marker() {
         assert_eq!(
-            redact_db_url("postgres://alice:s3cret@db.internal:5432/nexusflow"),
+            // 假夹具口令，非真实凭证：验证的正是脱敏行为本身
+            redact_db_url("postgres://alice:s3cret@db.internal:5432/nexusflow"), // pragma: allowlist secret
             "postgres://[REDACTED]@db.internal:5432/nexusflow"
         );
     }

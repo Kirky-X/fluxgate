@@ -60,7 +60,7 @@ pub struct VendorConfig {
     pub name: String,
     pub type_: String,
     pub api_key_env: String,
-    /// 多 key 池的显式 env 名列表（T005/N5）。语义对齐 agentstem
+    /// 多 key 池的显式 env 名列表（N5）。语义对齐 agentstem
     /// provider_chain.rs:226-236：显式列表优先于池 env——与 `api_key_env`
     /// （向后兼容单 env 名，旧配置逐位可用）合并去重定序，本列表在前。
     /// 池解析逐名读环境变量得实际 key 串，缺名的 env 跳过并显性告警；
@@ -578,7 +578,7 @@ pub struct RoutingSection {
     ///（那只是亲和键格式开关）。
     #[serde(default)]
     pub sla_v: f64,
-    /// T007：价格因子 — model_catalog 单价参与加权路由（**默认开启**）。
+    /// 价格因子 — model_catalog 单价参与加权路由（**默认开启**）。
     /// 因子定义：候选模型单价 p = (input_price + output_price) / 2（每
     /// 1M tokens；cache 档不进因子——随负载变化，基础对是稳定公布口径）；
     /// 乘性修正 `weight ×= min_p / p`（集合内已登记最低价者因子 1，高价按
@@ -823,12 +823,12 @@ pub struct CacheSection {
     /// recId=12：类别乘数表（缺省空 = 全部 1.0；与负载联动开关独立生效）
     #[serde(default)]
     pub categories: Vec<CacheCategory>,
-    /// G6：TTL 抖动系数（默认 0 = 关闭，保持现状精确 TTL）。>0 时写入
+    /// TTL 抖动系数（默认 0 = 关闭，保持现状精确 TTL）。>0 时写入
     /// TTL 按对称抖动 `ttl×(1±factor)`（与 oxcache `apply_jitter` 同口径），
     /// 同批键过期不齐峰。热读：每次 store 现读。
     #[serde(default)]
     pub ttl_jitter: f64,
-    /// G6：空响应负缓存窗口（秒，默认 60）。store() 收到 Null 响应时写
+    /// 空响应负缓存窗口（秒，默认 60）。store() 收到 Null 响应时写
     /// 哨兵而非值，窗口内 check() 直接 Hit(Null) 不再穿透上游。
     #[serde(default = "default_cache_null_cache_ttl_secs")]
     pub null_cache_ttl_secs: u64,
@@ -1120,10 +1120,10 @@ pub struct Config {
     /// 价格表 — 用于成本计算。默认空 vec，未配置时 CostCalculator 全部返回 0.0
     #[serde(default)]
     pub pricing: Vec<PricingConfig>,
-    /// [[model_catalog]] 段 — per-model 能力/定价目录（T006/N6，字段对齐
+    /// [[model_catalog]] 段 — per-model 能力/定价目录（N6，字段对齐
     /// agentstem ModelEntry）。缺省空 vec（未登记模型走 per-flavor 保守
     /// 默认，见 model_catalog::flavor_default_capabilities）；定价单位为
-    /// 「每 1M tokens」（对齐 estimate_usage_cost 口径，T007 计价消费）。
+    /// 「每 1M tokens」（对齐 estimate_usage_cost 口径，计价消费）。
     /// 登记条目 context_window 必须 > 0 且 model_id 去重（validate_config）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_catalog: Vec<ModelCatalogEntry>,

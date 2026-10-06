@@ -18,7 +18,7 @@
 
 因为健康检查的**注册路径是 `/api/v1/health`**。`src/api/health.rs:30-37` 的 `#[forge(version = "v1", path = "/health")]` 宏会自动给路径加 `/api/v1` 版本前缀后注册。
 
-裸 `/health` 出现在认证与限流中间件的放行白名单里（`/health`、`/healthz`、`/ready`、`/api/v1/health` 四条，见 `src/api/router_builder.rs:163-167`），但**没有任何路由注册在它上面**——白名单只保证「不会被中间件拦」，不等于「有 handler」。请统一使用：
+裸 `/health` 出现在**限流**白名单里（`is_quota_exempt_path` 十条：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/api/router_builder.rs:50-58`）。认证侧是**另一份独立白名单**（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、文档面两组，见 `src/middleware/auth.rs:201-210`）——两处各自独立、语义不共享，**`/healthz` 与 `/ready` 仅在限流侧豁免，认证仍要求带 key**。白名单只保证「不会被中间件拦」，不等于「有 handler」，而裸 `/health` **没有任何路由注册在它上面**。请统一使用：
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/health
@@ -26,7 +26,7 @@ curl http://127.0.0.1:8080/api/v1/health
 
 > Docker 的 `HEALTHCHECK` 与 `docker-compose` 探针现已对齐该路径（此前误配为裸 `/health` 已修正），详见 [用户指南 · Docker 部署](./USER_GUIDE.md#-docker-部署)。
 
-**代码位置**：`src/api/health.rs:30-37`、`src/api/router_builder.rs:163-167`
+**代码位置**：`src/api/health.rs:30-37`、`src/api/router_builder.rs:50-78`
 
 ### ❓ 如何指定某个厂商或模型？
 
@@ -51,7 +51,7 @@ curl http://127.0.0.1:8080/api/v1/health
 
 响应里的 `restart_required` 数组会列出需重启的段，但**当前只检测 `server` 与 `cors` 两段**——改了 `rate_limit` / `concurrency` / `database` 后不会出现在数组里，请自行安排重启。
 
-**代码位置**：`src/api/admin.rs:134-163`（update_config 的 restart_required 组装）
+**代码位置**：`src/api/admin.rs:176-206`（update_config 的 restart_required 组装）
 
 ### ❓ config.toml 被写回后自定义段消失了？
 
@@ -65,7 +65,7 @@ curl http://127.0.0.1:8080/api/v1/health
 
 已知限制。`LogFilter` 结构体有 `end_time` 字段，`/admin/logs` 也能接收该查询参数，但 `query_logs` 的 SQL 动态拼接**只实现了 `start_time` / `vendor` / `model` / `limit` 四个分支**，没有 `end_time` 对应的 `AND timestamp <= ?` 分支——参数被接收后未参与过滤。
 
-**代码位置**：`src/database/repository.rs:153-185`（`query_logs`，可见无 end_time 分支）
+**代码位置**：`src/database/repository.rs:280-313`（`query_logs`，可见无 end_time 分支）
 
 ### ❓ `/admin/logs/search` 的 `vendor` 参数为什么是搜索关键词？
 
@@ -76,7 +76,7 @@ curl http://127.0.0.1:8080/api/v1/health
 curl "http://127.0.0.1:8080/admin/logs/search?vendor=timeout"
 ```
 
-**代码位置**：`src/api/admin.rs:47`（`let keyword = params.vendor.unwrap_or_default()`）
+**代码位置**：`src/api/admin.rs:54`（`let keyword = params.vendor.unwrap_or_default()`）
 
 ### ❓ 如何切换消息语言？
 
@@ -99,7 +99,7 @@ curl "http://127.0.0.1:8080/admin/logs/search?vendor=timeout"
 
 先尝试 `Authorization: Bearer`，取不到再读 `x-api-key`。key 经 SHA256 摘要后与 `[auth].api_keys` 做常量时间比较；`[[auth.keys]]` 未声明的 key 档位缺省 `elastic`。整个 `[auth]` 段缺省时认证禁用（放行）。
 
-**代码位置**：`src/middleware/auth.rs:126-144`（`extract_api_key`）
+**代码位置**：`src/middleware/auth.rs:140-168`（`extract_api_key`）
 
 ### ❓ `POST /admin/vendors/:id/reset` 为什么是 no-op？
 
@@ -142,7 +142,7 @@ per-vendor 熔断器（limiteron CircuitBreaker）状态机：
 
 慢调用防误判：慢调用判定线为 **60 秒 / 100% 比例**——LLM 成功调用常态超过通用默认（500ms），若不抬高，混合流量下慢调用率轻易过阈导致与真实失败无关的熔断；取 60s / 1.0 后慢调用路径在混合流量下失活，熔断由真实失败驱动。
 
-**代码位置**：`crates/llm-gate/src/vendor/manager.rs:168-173`（`gate_circuit_config`：`CircuitBreakerConfig::new(5, 3, 30s)` + 慢调用双参数）
+**代码位置**：`crates/llm-gate/src/vendor/manager.rs:176-212`（`gate_circuit_config`：`CircuitBreakerConfig::new(5, 3, 30s)` + 慢调用双参数）
 
 ---
 

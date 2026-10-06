@@ -106,12 +106,12 @@ flowchart TB
 | 文件 | 职责 |
 |---|---|
 | `api/mod.rs` | 业务路由组装与请求处理主循环：换路重试循环、亲和 bind/clear 编排（`src/api/mod.rs:42-94`、`src/api/mod.rs:282-460`） |
-| `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:359-374`）；admission 准入判定挂载（`src/api/router_builder.rs:218-234`） |
+| `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:657-728`）；admission 准入判定挂载（`src/api/router_builder.rs:459-470`） |
 | `api/openai.rs` | `POST /v1/chat/completions`、`POST /v1/embeddings` 端点 |
 | `api/anthropic.rs` | `POST /v1/messages` 端点 |
 | `api/health.rs` | `/health` 健康检查端点 |
 | `api/admin.rs` | `/admin/*` 运维端点 handler（日志查询、指标、厂商状态、配置热更新、模型管理） |
-| `api/state.rs` | `ApiState` 应用状态聚合；LinUCB 奖励回传（`src/api/state.rs:73-98`） |
+| `api/state.rs` | `ApiState` 应用状态聚合；LinUCB 奖励回传（`src/api/state.rs:77-102`） |
 | `api/global_state.rs` | sdforge 宏 handler 的全局状态持有（`OnceCell` 持有 `ApiState`，弥补宏不支持 axum State 提取器） |
 | `api/routing_hints.rs` | 从请求头提取四个路由提示（X-Vendor / X-Model / X-Session-Id / X-Weight）；会话键缺失时兜底哈希 |
 | `api/response_cache.rs` | recId=12 精确响应缓存，存储落地 oxcache（见[响应缓存](#-响应缓存)） |
@@ -237,7 +237,7 @@ flowchart TB
 
 ### 加权打分公式
 
-`compute_weight`（`crates/llm-gate/src/router/router.rs:1604`）：
+`compute_weight`（`crates/llm-gate/src/router/router.rs:1660-1743`）：
 
 ```text
 weight = w_model·model.weight + w_queue·queue_factor
@@ -322,7 +322,7 @@ preferred_vendor 定点直连  >  preferred_model 抽象模型  >  默认加权�
 - **臂**：`(abstract_model, vendor_id)` 组合，每臂一个独立线性模型；
 - **打分**：闭式最小二乘 `θ̂ = A⁻¹b` + UCB 置信上界 `⟨x,θ̂⟩ + α√(xᵀA⁻¹x)`，argmax 选择，置信上界自动编码冷启动探索；
 - **特征**：5 维 `[1, ln(1+消息数), ln(1+body 字符数), 有 tools, 流式]`（`crates/llm-gate/src/router/bandit.rs` 的特征构造）；
-- **奖励**：成功 1 / 失败 0（代理奖励），由 API 层执行后回传（`src/api/state.rs:73-98`），更新只动被选臂；
+- **奖励**：成功 1 / 失败 0（代理奖励），由 API 层执行后回传（`src/api/state.rs:77-102`），更新只动被选臂；
 - **已知边界**：状态在内存，重启归零，不持久化。
 
 ---
@@ -352,7 +352,7 @@ flowchart TB
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`crates/llm-gate/src/vendor/manager.rs:168-173`）：
+`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`crates/llm-gate/src/vendor/manager.rs:176-212`）：
 
 | 参数 | 值 | 设计理由 |
 |---|---|---|
@@ -372,7 +372,7 @@ stateDiagram-v2
 
 ### 重试策略
 
-延迟计算委托 `limiteron::retry::delay_for_attempt`，按错误类别分类（`crates/llm-gate/src/utils/retry.rs:219` 的延迟选择函数、`crates/llm-gate/src/vendor/manager.rs` 的错误分类消费）：
+延迟计算委托 `limiteron::retry::delay_for_attempt`，按错误类别分类（`crates/llm-gate/src/utils/retry.rs:179` 的延迟选择函数、`crates/llm-gate/src/vendor/manager.rs` 的错误分类消费）：
 
 | 错误类别 | 延迟策略 |
 |---|---|
@@ -432,7 +432,7 @@ flowchart LR
     H -.异步.-> PA["TokenPreAggregator<br/>(vendor, model, date, hour) 小时粒度<br/>内存 buffer 60s 定期 drain UPSERT"]
 ```
 
-- 队列容量 1024、flush_interval 1s 在启动装配时构造，预聚合器同期启动（`src/server/bootstrap.rs:99-106`，装配链自原 main.rs 平移，顺序逐位一致）。
+- 队列容量 1024、flush_interval 1s 在启动装配时构造，预聚合器同期启动（`src/server/bootstrap.rs:152-156`，装配链自原 main.rs 平移，顺序逐位一致）。
 - 背压语义（recId=9）：`log()` 永不阻塞响应路径，丢弃量显式计数并暴露，而非静默吞掉。
 - 预聚合将小时级 Token 统计先行内存缓冲，定期 UPSERT，压平写放大。
 
@@ -442,7 +442,7 @@ flowchart LR
 
 ### 配置结构
 
-`Config` 顶层 15 段（`crates/llm-gate/src/config/mod.rs:1094-1141`）：
+`Config` 顶层 16 段（`crates/llm-gate/src/config/mod.rs:1115-1165`）：
 
 | 段 | 说明 | 段 | 说明 |
 |---|---|---|---|
@@ -453,7 +453,7 @@ flowchart LR
 | `pricing` | `[[pricing]]` 定价表 | `admission` | 拥塞准入 |
 | `auth`（Option） | API key 与档位 | `retry` | 重试与换路预算 |
 | `cors`（Option） | 跨域 | `model_catalog` | `[[model_catalog]]` 模型能力/定价目录（空目录时序列化省略） |
-| `grpc`（Option） | gRPC 服务器（缺段/禁用 = 不监听） | | |
+| `grpc`（Option） | gRPC 服务器（缺段/禁用 = 不监听） | `docs` | OpenAPI 文档面开关（默认关 = 路由不存在） |
 
 **硬约束**：所有配置段必须进 `Config` 结构体——persist 是全量写回磁盘，结构体里没有的段会在写回时从文件中消失（`crates/llm-gate/src/config/mod.rs` 的 `Config` 字段文档注释）。
 
@@ -488,7 +488,7 @@ flowchart LR
 
 ## 🚦 中间件管线
 
-管线顺序（`src/api/router_builder.rs:381-383`）：
+管线顺序（`src/api/router_builder.rs:719-728`）：
 
 ```mermaid
 flowchart LR

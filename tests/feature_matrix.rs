@@ -15,8 +15,10 @@
 //!
 //! | Feature 组合                      | 编译 | 依赖链                                     |
 //! |----------------------------------|------|-------------------------------------------|
-//! | `--all-features`                 | OK   | 全部                                       |
-//! | `--features full`（default）     | OK   | 全部                                       |
+//! | `--all-features`                 | ✗ 预期失败 | db-sqlite/postgres/mysql 三组互斥，dbnexus 编译期守卫必触发 `compile_error!` |
+//! | `--features full`（default = full + db-sqlite） | OK | 全面向 sqlite 后端        |
+//! | `-p nexusflow --no-default-features --features "full,db-postgres"` | OK | server-side 后端 |
+//! | `-p nexusflow --no-default-features --features "full,db-mysql"`    | OK | server-side 后端 |
 //! | `--features database`            | OK   | database → protocol（llm-gate 转发）       |
 //! | `--features vendor-management`   | OK   | vendor-management → llm-gate/vendor-management |
 //! | `--features router`              | OK   | router → vendor-management + oxcache       |
@@ -26,6 +28,12 @@
 //! | `--features sdk`                 | OK   | sdk（reqwest + eventsource-stream）         |
 //! | `--features "web-server logging grpc"` | OK | grpc → sdforge/grpc（需 protoc）      |
 //! | `--no-default-features`          | OK   | 门面 re-export（config/error/i18n/protocol/utils）|
+//!
+//! 【矩阵命令口径（重要）】非默认后端必须用 `-p nexusflow` 限定到本包：
+//! `cargo check --workspace --no-default-features --features "full,db-postgres"`
+//! 会失败——`examples/embedded-server` 以 `nexusflow = { path = "../.." }`
+//! 继承 default（含 db-sqlite），Cargo 特性联合把 sqlite 注入共享的
+//! dbnexus 依赖，与 db-postgres 同时置位即触发其互斥守卫。
 
 /// database feature：验证 Database 类型可访问
 #[cfg(feature = "database")]

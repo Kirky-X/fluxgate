@@ -151,7 +151,7 @@ flowchart LR
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `crates/llm-gate/src/vendor/manager.rs:168-173`）：
+`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `crates/llm-gate/src/vendor/manager.rs:176-212`）：
 
 | 参数 | 值 | 语义 |
 |:-----|:---|:-----|

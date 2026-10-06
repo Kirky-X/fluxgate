@@ -301,13 +301,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+# 非默认后端矩阵（必须 `-p nexusflow` 限定到本包，避开示例成员拉入 db-sqlite 后特性互斥）
+cargo check -p nexusflow --no-default-features --features "full,db-postgres"
+cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 ```
+
+口径说明：default 已携带 `full + db-sqlite`；`--all-features` 会同时打开三组互斥后端而必然编译失败（见上节），因此 clippy / test / 覆盖率均按 default 口径跑，非默认后端单独按包检查——与 `ci.yml` 逐字一致。
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace --all-features` 实测）：单元测试 321 个（`src/` 118 + `crates/llm-gate/src/` 203 内联实测）、集成测试 771 个（顶层 `tests/` 20 文件 262 个 + `crates/llm-gate/tests/` 19 文件 509 个），合计 **1092 个，0 ignored**。整体行覆盖率 97%+（`cargo llvm-cov --workspace --all-features`）。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：单元测试 321 个（`src/` 118 + `crates/llm-gate/src/` 203 内联实测）、集成测试 771 个（顶层 `tests/` 20 文件 262 个 + `crates/llm-gate/tests/` 19 文件 509 个），合计 **1092 个，0 ignored**。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
@@ -386,7 +391,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ### 🛠️ 开发环境
 
-工具链为 Rust 1.92（与 CI 一致）；提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。7 个兄弟库（confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit）需与本项目同级目录。
+工具链为 Rust 1.97（与 `Dockerfile` 钉版及兄弟库 MSRV 1.97.1 对齐）；提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。7 个兄弟库（confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit）需与本项目同级目录。
 
 ### 💖 贡献方式
 

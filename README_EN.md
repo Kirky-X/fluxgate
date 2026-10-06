@@ -303,13 +303,19 @@ Unit tests live inline in `src/` and `crates/llm-gate/src/` (`#[cfg(test)]`); in
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+# Non-default backend matrix (must scope to this package with `-p nexusflow`,
+# otherwise workspace members pull in db-sqlite and the backends collide)
+cargo check -p nexusflow --no-default-features --features "full,db-postgres"
+cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 ```
+
+Caliber note: default already carries `full + db-sqlite`; `--all-features` opens all three mutually exclusive backends and cannot compile (see the section above), so clippy / test / coverage run on the default caliber while non-default backends are checked per package — literally matching `ci.yml`.
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace --all-features`): 321 unit tests (118 in `src/` + 203 in `crates/llm-gate/src/`, measured inline) and 771 integration tests (262 across 20 files in the top-level `tests/` + 509 across 19 files in `crates/llm-gate/tests/`) — **1092 total, 0 ignored**. Overall line coverage is 97%+ (`cargo llvm-cov --workspace --all-features`). Main distribution:
+As of the current version (measured with `cargo test --workspace`): 321 unit tests (118 in `src/` + 203 in `crates/llm-gate/src/`, measured inline) and 771 integration tests (262 across 20 files in the top-level `tests/` + 509 across 19 files in `crates/llm-gate/tests/`) — **1092 total, 0 ignored**. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
@@ -390,7 +396,7 @@ See the [🤝 Contributing guide](docs/CONTRIBUTING.md) for the full workflow, c
 
 ### 🛠️ Development environment
 
-Toolchain is Rust 1.92 (CI-consistent); run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`). The 7 sibling libraries (confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit) must sit next to this project.
+Toolchain is Rust 1.97 (aligned with the `Dockerfile` pin and the siblings' MSRV 1.97.1); run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`). The 7 sibling libraries (confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit) must sit next to this project.
 
 ### 💖 Ways to contribute
 

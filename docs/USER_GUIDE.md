@@ -115,9 +115,9 @@ tier = "dedicated"
 
 ### 请求头与热读
 
-- 客户端携带 **`Authorization: Bearer <key>`**（优先）或 **`x-api-key: <key>`**（备用），提取逻辑见 `src/middleware/auth.rs:126-144`。
+- 客户端携带 **`Authorization: Bearer <key>`**（优先）或 **`x-api-key: <key>`**（备用），提取逻辑见 `src/middleware/auth.rs:140-168`。
 - 认证状态**每请求从热配置现读**：吊销 / 轮换 key、切换 `enabled`，`POST /admin/config` 后立即生效，无需重启。
-- 健康检查路径（`/health`、`/healthz`、`/ready`、`/api/v1/health`）在认证与限流白名单中，永不拦截。
+- 认证豁免路径（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/middleware/auth.rs:201-210`）无需 key；注意 `/healthz` 与 `/ready` 只在限流侧豁免，**认证仍要求带 key**。
 
 ---
 
@@ -271,7 +271,7 @@ flowchart TB
 
 ### 熔断器行为
 
-per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `crates/llm-gate/src/vendor/manager.rs:168-173`。
+per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `crates/llm-gate/src/vendor/manager.rs:176-212`。
 
 ---
 
@@ -347,7 +347,7 @@ max_requests = 100
 
 - `rules` 为空（缺省）= limiteron Governor 内置默认兜底规则，无端点表。
 - 超限返回 `429 + Retry-After`（取窗口重置剩余秒数）；限流器内部故障放行（fail-open）。
-- 健康检查路径（`/health`、`/healthz`、`/ready`、`/api/v1/health`）在限流白名单中（`src/api/router_builder.rs:163-167`）。
+- 限流豁免路径（`is_quota_exempt_path` 十条：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/api/router_builder.rs:50-58`）。
 - 端点表条目有硬上限（1024），auth 关闭时达到上限后新租户退化到共享桶，内存有界。
 
 ### [admission] 拥塞感知优先级准入
@@ -406,7 +406,7 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 | 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`、`resilience`、`admission`、`pricing`、`global_model` | `POST /admin/config` 后下一请求即用新值 |
 | 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑） | 修改后须重启进程 |
 
-> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组当前**只检测 `server` 与 `cors` 两段**（`src/api/admin.rs:134-163`）。`rate_limit` / `concurrency` / `database` 的重启要求在代码注释中声明，不会出现在数组里——改这些段后请自行安排重启。
+> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组当前**只检测 `server` 与 `cors` 两段**（`src/api/admin.rs:176-206`）。`rate_limit` / `concurrency` / `database` 的重启要求在代码注释中声明，不会出现在数组里——改这些段后请自行安排重启。
 
 ```mermaid
 flowchart TB
@@ -493,8 +493,8 @@ healthcheck:
 
 | 端点 | 说明 |
 |:-----|:-----|
-| `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断）。⚠️ **`end_time` 已知不生效**：`LogFilter` 有该字段但查询 SQL 未实现对应分支（`src/database/repository.rs:153-185`） |
-| `GET /admin/logs/search?vendor=<关键词>&limit=` | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs:47`） |
+| `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断）。⚠️ **`end_time` 已知不生效**：`LogFilter` 有该字段但查询 SQL 未实现对应分支（`src/database/repository.rs:280-313`） |
+| `GET /admin/logs/search?vendor=<关键词>&limit=` | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs:54`） |
 | `GET /admin/stats/tokens?vendor=` | 小时级 Token 用量统计（`token_usage` 预聚合表） |
 | `GET /admin/metrics` | 全局指标快照：请求计数、错误率、平均延迟、各厂商细分，含 `dropped_logs`（日志通道背压丢弃计数） |
 | `GET /admin/vendors` | 全部厂商状态与队列长度 |

@@ -56,7 +56,7 @@ toml = "1"
 # 配置热更新地基（dynamic/snapshot/loader 三面，与 nexusflow 侧声明一致）；
 # json = AnnotatedValue::to_typed 强类型投影（配置加载剥壳通道）；
 # security-rules = JwtSecretValidator 弱密钥启动校验（纯计算规则内核）
-confers = { path = "../../../confers", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules"] }
+confers = { path = "../../../confers", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
 # i18n — Fluent 双束（en/zh）+ 语言检测链基座
 fluent-bundle = { version = "0.16", default-features = false }
 unic-langid = { version = "0.9", default-features = false }

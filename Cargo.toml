@@ -65,7 +65,7 @@ sdforge-integration = ["dep:sdforge"]
 # 不引入该工具链前置。feature 名兼作 `#[forge]` 宏在目标 crate 上的
 # `cfg(feature = "grpc")` 门控（同 http = [] 的机制，见上注）。
 # 服务器模块另受 web-server + logging 门控（与 HTTP 共用装配链）。
-grpc = ["dep:sdforge", "sdforge/grpc"]
+grpc = ["dep:sdforge", "sdforge/grpc", "sdforge/graceful"]
 logging = ["dep:inklog"]
 # sdk：HTTP 客户端 SDK（src/sdk，调用已部署网关的 Rust 客户端）。
 # reqwest 复用 vendor-management 的 optional 依赖；eventsource-stream 仅做
@@ -88,7 +88,7 @@ tower-http = { version = "0.7", features = ["cors", "trace", "request-id"], opti
 # 数据库 — path dep 本地源码（kit feature 暴露 integrations::kit::DbNexusModule）。
 # 后端（sqlite/postgres/mysql）与 runtime 不在此声明——由 db-* 三组透传 feature
 # 按构建选择（Cargo feature 只加不减，写死会锁死单一后端）
-dbnexus = { path = "../dbnexus", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit"], optional = true }
+dbnexus = { path = "../dbnexus", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate"], optional = true }
 sea-orm = { version = "2.0.0-rc.42", default-features = false, optional = true }
 
 # 日志 — path dep 确保 oxcache/dbnexus/trait-kit 全部本地对齐。
@@ -96,6 +96,9 @@ sea-orm = { version = "2.0.0-rc.42", default-features = false, optional = true }
 # fast-masking：掩码规则 literal 走 Aho-Corasick 单趟加速；secret-scan：出站
 # 裸 secret 值形态+熵扫描门（SecretPatternRegistry/SecretScanGate 导出）
 inklog = { path = "../inklog", default-features = false, features = ["http", "cli", "kit", "fast-masking", "secret-scan"], optional = true }
+# 配置热重载 — path dep 本地源码；仅 hot-reload-kit（watch +
+# progressive-reload），不启用 env（无 .env 自动加载）。
+confers = { path = "../confers", default-features = false, features = ["hot-reload-kit"] }
 tracing = "0.1"
 # log 门面 → tracing 事件桥：reqwest/sea-orm/tokio-tungstenite 等依赖经
 # log crate 输出，inklog LogAdapter 结构上只投 console+主 async 通道，
@@ -112,10 +115,10 @@ limiteron = { path = "../limiteron", default-features = false, features = ["towe
 oxcache = { path = "../oxcache", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 
 # DI — path dep（本地源码 0.5.0-rc.7）
-trait-kit = { path = "../trait-kit", default-features = false, features = ["async"], optional = true }
+trait-kit = { path = "../trait-kit", default-features = false, features = ["async", "shutdown"], optional = true }
 
 # SDK 框架 — path dep（本地 0.5.0-rc.6 已修复 limiteron::FlowGuardError 不兼容问题）
-sdforge = { path = "../sdforge", default-features = false, features = ["http", "security", "streaming"], optional = true }
+sdforge = { path = "../sdforge", default-features = false, features = ["http", "security", "streaming", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
 
 # 序列化与核心
 serde = { version = "1", features = ["derive"] }

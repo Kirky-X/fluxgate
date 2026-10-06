@@ -30,9 +30,8 @@ pub struct ServerHandle {
     /// inklog 关闭钩子（`run()` 注入 manager；嵌入式未注入时收尾阶段 no-op）。
     inklog_hook: std::sync::OnceLock<Option<InklogShutdownHook>>,
     /// G10 热重载守护（装配期启动；随句柄存活，drop 即停止监听）。
-    /// 字段仅为持有所有权而存在（allow(dead_code)：读取只会发生在
-    /// 需要查询监听状态的未来运维面）。
-    #[allow(dead_code)]
+    /// 监听是否装配经 [`Debug`] 暴露（`hot_reload_watcher` 字段），
+    /// 嵌入式调用方据此查询热重载面状态。
     hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
     #[cfg(feature = "grpc")]
     grpc_server: std::sync::OnceLock<Option<crate::server::grpc::GrpcServer>>,
@@ -42,6 +41,7 @@ impl std::fmt::Debug for ServerHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerHandle")
             .field("shutdown_done", &self.done.load(Ordering::Relaxed))
+            .field("hot_reload_watcher", &self.hot_reloader.is_some())
             .finish()
     }
 }

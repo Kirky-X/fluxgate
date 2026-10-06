@@ -306,7 +306,13 @@ impl VendorInstance {
         const MAX_PER_KEY_CIRCUIT_BREAKERS: usize = 2048;
         match fingerprint {
             Some(fp) => {
-                let mut guard = self.per_key_circuit_breakers.lock().unwrap();
+                // G3 复核 LOW（T014 LOW-4）：锁毒化不 panic，取锁内值继续
+                //（与 response_cache 同策略；毒化源于别处 bug，限流面降级
+                // 不应放大为崩溃）。
+                let mut guard = self
+                    .per_key_circuit_breakers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let key = (model.to_string(), endpoint.to_string(), fp.to_string());
                 if let Some(cb) = guard.get(&key) {
                     return cb.clone();
@@ -334,7 +340,10 @@ impl VendorInstance {
     ) -> Vec<Arc<CircuitBreaker<GateError>>> {
         match fingerprint {
             Some(fp) => {
-                let guard = self.per_key_circuit_breakers.lock().unwrap();
+                let guard = self
+                    .per_key_circuit_breakers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 guard
                     .iter()
                     .filter(|((_, _, entry_fp), _)| entry_fp == fp)

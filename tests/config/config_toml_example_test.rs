@@ -1,11 +1,17 @@
-// 快速验证：config.toml 可被 nexusflow::config::Config 反序列化
+// 快速验证：config.example.toml 可被 nexusflow::config::Config 反序列化
+//
+// 事实源声明：随仓唯一的全量参考是 `config.example.toml`（运行时的
+// `config.toml` 是部署私有物、已进 .gitignore，CI 干净检出拿不到它）。
+// 本测试对示例做两类锁定：① 默认值结构锁定（复制即用 = 默认行为）；
+// ② 键存在性锁定（serde `#[serde(default)]` 会让缺席键静默过解析，只有
+// 显式键清单能测出示例过期）。新增配置项必须同步本文件与示例。
 #[test]
 fn config_toml_example_parses() {
-    let content = std::fs::read_to_string("config.toml").unwrap();
+    let content = std::fs::read_to_string("config.example.toml").unwrap();
     let config: nexusflow::config::Config = toml::from_str(&content).unwrap();
     assert_eq!(config.retry.max_retries, 3);
     assert_eq!(config.retry.max_total_attempts, 8);
-    // recId=5：同步惊群展宽默认全开（1.0）；回滚阀 = 0（见 config.toml 注释）
+    // recId=5：同步惊群展宽默认全开（1.0）；回滚阀 = 0（见 config.example.toml 注释）
     assert!((config.retry.spread_jitter - 1.0).abs() < 1e-9);
     // recId=9（W5）：重试时间预算默认 0 = 不限时、放大守门器默认 false
     //（双开关默认 → 单 vendor 重试与跨 vendor fallback 行为与现状逐位一致）
@@ -15,11 +21,11 @@ fn config_toml_example_parses() {
     // 静默过解析，解析断言测不出示例缺席）
     assert!(
         content.contains("retry_budget_secs"),
-        "config.toml 示例缺 retry_budget_secs 键"
+        "config.example.toml 示例缺 retry_budget_secs 键"
     );
     assert!(
         content.contains("amplification_gate"),
-        "config.toml 示例缺 amplification_gate 键"
+        "config.example.toml 示例缺 amplification_gate 键"
     );
     // recId=10：[routing] 段示例与默认行为一致（3D 权重、新维度全关）
     assert_eq!(config.routing.w_model, 0.4);
@@ -43,15 +49,15 @@ fn config_toml_example_parses() {
     // 示例文件必须显式带出三个新键（serde 缺省会让缺席键静默过解析）
     assert!(
         content.contains("allow_request_weight"),
-        "config.toml 示例缺 allow_request_weight 键"
+        "config.example.toml 示例缺 allow_request_weight 键"
     );
     assert!(
         content.contains("fail_open_when_all_cooling"),
-        "config.toml 示例缺 fail_open_when_all_cooling 键"
+        "config.example.toml 示例缺 fail_open_when_all_cooling 键"
     );
     assert!(
         content.contains("retry_after_hint"),
-        "config.toml 示例缺 retry_after_hint 键"
+        "config.example.toml 示例缺 retry_after_hint 键"
     );
     // recId=10：亲和软化三参数默认（hard 模式 = 现状逐位一致、boost 基准
     // 1.0 仅 soft 模式生效、租户隔离关 = legacy 键格式）
@@ -60,25 +66,28 @@ fn config_toml_example_parses() {
     assert!(!config.routing.affinity_tenant_scoped);
     assert!(
         content.contains("affinity_mode"),
-        "config.toml 示例缺 affinity_mode 键"
+        "config.example.toml 示例缺 affinity_mode 键"
     );
     assert!(
         content.contains("affinity_boost_factor"),
-        "config.toml 示例缺 affinity_boost_factor 键"
+        "config.example.toml 示例缺 affinity_boost_factor 键"
     );
     assert!(
         content.contains("affinity_tenant_scoped"),
-        "config.toml 示例缺 affinity_tenant_scoped 键"
+        "config.example.toml 示例缺 affinity_tenant_scoped 键"
     );
     // recId=14：SLA 虚拟队列打分项默认关（sla_v=0.0 → 惩罚因子不参与权重、
     // Q 不更新，路由行为与现状逐位一致；Po2C/latency_buffer 同款结构性
     // 锁定），sla_alpha 默认 0.95（目标服务水平）
     assert_eq!(config.routing.sla_v, 0.0);
     assert!((config.routing.sla_alpha - 0.95).abs() < 1e-9);
-    assert!(content.contains("sla_v"), "config.toml 示例缺 sla_v 键");
+    assert!(
+        content.contains("sla_v"),
+        "config.example.toml 示例缺 sla_v 键"
+    );
     assert!(
         content.contains("sla_alpha"),
-        "config.toml 示例缺 sla_alpha 键"
+        "config.example.toml 示例缺 sla_alpha 键"
     );
     // recId=15：selection 默认 "weighted"（上方已有断言——LinUCB 第三档
     // 不被咨询、无状态更新，Po2C 开关同款结构性锁定）；ucb_alpha 默认 1.0
@@ -86,7 +95,7 @@ fn config_toml_example_parses() {
     assert!((config.routing.ucb_alpha - 1.0).abs() < 1e-9);
     assert!(
         content.contains("ucb_alpha"),
-        "config.toml 示例缺 ucb_alpha 键"
+        "config.example.toml 示例缺 ucb_alpha 键"
     );
     // recId=16：[admission] 段默认关（enabled=false → 判定旁路、EWMA 不
     // 记账，行为与现状逐位一致；Po2C 开关同款结构性断言）；auth.keys
@@ -106,11 +115,11 @@ fn config_toml_example_parses() {
     );
     assert!(
         content.contains("congestion_threshold"),
-        "config.toml 示例缺 congestion_threshold 键"
+        "config.example.toml 示例缺 congestion_threshold 键"
     );
     assert!(
         content.contains("auth.keys"),
-        "config.toml 示例缺 auth.keys 注释示例"
+        "config.example.toml 示例缺 auth.keys 注释示例"
     );
     // recId=17：LPS 前瞻默认关（lps_delta=0.0 → Ŵ 不参与权重、
     // lps_deadline_gate=false → 不消费 deadline，行为与现状逐位一致）
@@ -119,11 +128,11 @@ fn config_toml_example_parses() {
     assert!((config.routing.default_deadline_ms - 10000.0).abs() < 1e-9);
     assert!(
         content.contains("lps_delta"),
-        "config.toml 示例缺 lps_delta 键"
+        "config.example.toml 示例缺 lps_delta 键"
     );
     assert!(
         content.contains("lps_deadline_gate"),
-        "config.toml 示例缺 lps_deadline_gate 键"
+        "config.example.toml 示例缺 lps_deadline_gate 键"
     );
     // recId=2：[resilience] 段示例与默认行为一致 —— cover_all_paths 默认
     // false（三条裸路径行为与历史逐位一致；Po2C selection 开关同款结构性断言）
@@ -136,7 +145,7 @@ fn config_toml_example_parses() {
     assert!((config.resilience.failure_rate_penalty - 0.1).abs() < 1e-9);
     assert_eq!(config.vendors[0].priority, 1);
     // recId=4：出站三层超时默认值（行为修复本体；0=对应层不限时的逃生阀
-    // 约定见 config.toml [[vendors]] 注释）
+    // 约定见 config.example.toml [[vendors]] 注释）
     assert_eq!(config.vendors[0].timeout_ms, 60_000);
     assert_eq!(config.vendors[0].stream_ttft_ms, 60_000);
     assert_eq!(config.vendors[0].stream_idle_ms, 30_000);
@@ -177,11 +186,11 @@ fn config_toml_example_parses() {
     );
     assert!(
         content.contains("ttl_load_linked"),
-        "config.toml 示例缺 ttl_load_linked 键"
+        "config.example.toml 示例缺 ttl_load_linked 键"
     );
     assert!(
         content.contains("cache.categories"),
-        "config.toml 示例缺 cache.categories 注释示例"
+        "config.example.toml 示例缺 cache.categories 注释示例"
     );
     // recId=18：token 加权票据默认关（单票据现状，行为逐位一致）
     assert!(!config.vendors[0].concurrency.token_weighted);
@@ -190,14 +199,14 @@ fn config_toml_example_parses() {
     assert_eq!(config.vendors[0].concurrency.token_ticket_default, 4096);
     assert!(
         content.contains("token_weighted"),
-        "config.toml 示例缺 token_weighted 注释"
+        "config.example.toml 示例缺 token_weighted 注释"
     );
     // [grpc] 段：示例显式禁用（enabled=false 与历史行为逐位一致），键齐全
     //（serde default 会让缺席键静默过解析，示例缺席必须显性断言）
     let grpc = config
         .grpc
         .as_ref()
-        .expect("config.toml 示例必须带 [grpc] 段");
+        .expect("config.example.toml 示例必须带 [grpc] 段");
     assert!(!grpc.enabled, "示例 [grpc] 默认禁用（显式 opt-in）");
     assert_eq!(grpc.host, "0.0.0.0");
     assert_eq!(grpc.port, 50051);
@@ -207,15 +216,84 @@ fn config_toml_example_parses() {
     assert_eq!(grpc.http2_keepalive_timeout_secs, Some(10));
     assert!(
         content.contains("http2_keepalive_interval_secs"),
-        "config.toml 示例缺 http2_keepalive_interval_secs 键"
+        "config.example.toml 示例缺 http2_keepalive_interval_secs 键"
     );
-    // 最小示例 config.example.toml 同样必须带 [grpc] 段
-    let example = std::fs::read_to_string("config.example.toml").unwrap();
-    let example_config: nexusflow::config::Config = toml::from_str(&example).unwrap();
-    let example_grpc = example_config
-        .grpc
-        .as_ref()
-        .expect("config.example.toml 必须带 [grpc] 段");
-    assert!(!example_grpc.enabled);
-    assert_eq!(example_grpc.port, 50051);
+    // ---- 全量参考面：Config 结构体的每个段与可选字段都必须在示例出现 ----
+    // 示例是随仓唯一参考，缺席即示例过期
+    // [docs] 段：默认关闭（/api-docs 与 Swagger UI 路由不存在）
+    assert!(
+        !config.docs.enabled,
+        "示例 [docs] 默认禁用（路由建站期消费）"
+    );
+    assert!(
+        content.contains("[docs]"),
+        "config.example.toml 缺 [docs] 段"
+    );
+    // [database].url：非空优先于 path（后端为编译期选择）
+    assert!(
+        content.contains("url = \"postgres://"),
+        "config.example.toml 缺 database.url 注释示例"
+    );
+    // [[model_catalog]] 目录段（能力/定价查询输入，示例必须带出键名）
+    assert!(
+        content.contains("model_catalog"),
+        "config.example.toml 缺 model_catalog 注释示例"
+    );
+    // vendor 侧可选面：多 key 池 / 抽象模型名 / 并发上限 / 配额三形态
+    assert!(
+        content.contains("api_key_envs"),
+        "config.example.toml 缺 api_key_envs 注释示例"
+    );
+    assert!(
+        content.contains("abstract_id"),
+        "config.example.toml 缺 models.abstract_id 注释示例"
+    );
+    assert!(
+        content.contains("max_concurrent_requests"),
+        "config.example.toml 缺 concurrency.max_concurrent_requests 注释示例"
+    );
+    assert!(
+        content.contains("window_hours"),
+        "config.example.toml 缺 rate_limit.window_hours 键"
+    );
+    assert!(
+        content.contains("sliding"),
+        "config.example.toml 缺 rate_limit.sliding 键"
+    );
+    assert!(
+        content.contains("type = \"interval\""),
+        "config.example.toml 缺 interval 配额形态示例"
+    );
+    assert!(
+        content.contains("type = \"time_window\""),
+        "config.example.toml 缺 time_window 配额形态示例"
+    );
+    // [routing].price_factor_enabled 默认开启（目录单价参与加权路由）
+    assert!(config.routing.price_factor_enabled);
+    assert!(
+        content.contains("price_factor_enabled"),
+        "config.example.toml 缺 price_factor_enabled 键"
+    );
+    // [cache] 剩余两面：TTL 抖动默认 0（精确 TTL）、空响应负缓存默认 60s
+    assert!((config.cache.ttl_jitter - 0.0).abs() < 1e-9);
+    assert_eq!(config.cache.null_cache_ttl_secs, 60);
+    assert!(
+        content.contains("ttl_jitter"),
+        "config.example.toml 缺 ttl_jitter 键"
+    );
+    assert!(
+        content.contains("null_cache_ttl_secs"),
+        "config.example.toml 缺 null_cache_ttl_secs 键"
+    );
+    // fallback 优先级显式带出（数值越小越优先）
+    assert!(
+        content.contains("priority"),
+        "config.example.toml 缺 vendors.priority 键"
+    );
+
+    // 示例本身必须是可加载的配置：validate_config（加载与 POST /admin/config
+    // 两路共用的校验面）必须放行——vendor/model/catalog id 去重、CB 窗口下限、
+    // admin 摘要形态在此验证，不只看 serde 能解析
+    nexusflow::config::validate_config(&config)
+        .expect("config.example.toml 必须通过 validate_config");
 }

@@ -19,6 +19,7 @@
 
 #![cfg(all(feature = "resilience", feature = "router"))]
 
+#[path = "../common/mod.rs"]
 mod common;
 
 /// 短窗口注入的成对常量：CB Open 窗口 300ms，睡眠 400ms。裕度不变量

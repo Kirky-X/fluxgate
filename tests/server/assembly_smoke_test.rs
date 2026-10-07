@@ -20,6 +20,7 @@
 
 #![cfg(feature = "web-server")]
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use axum::{

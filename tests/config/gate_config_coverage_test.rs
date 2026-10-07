@@ -21,6 +21,7 @@ use nexusflow::config::{Config, ConfigManager, RateLimitConfig, RoutingSection, 
 use nexusflow::error::GateError;
 use std::path::PathBuf;
 
+#[path = "../common/mod.rs"]
 mod common;
 
 /// 写临时 TOML 并返回路径（临时目录 + 进程号隔离，避免并行任务互踩）

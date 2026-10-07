@@ -3,6 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
+#[path = "../common/mod.rs"]
 mod common;
 
 /// 配置热更新地基集成测试（recId=13）

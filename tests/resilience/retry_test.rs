@@ -10,6 +10,7 @@
 //! 测试随 llm-gate 走（tests/retry_test.rs），本文件只留经 api/ApiState
 //! 全栈的 fallback 集成（依赖 api/database/web-server 门控）。
 
+#[path = "../common/mod.rs"]
 mod common;
 
 mod vendor_fallback_integration {

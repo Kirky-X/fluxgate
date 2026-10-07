@@ -17,6 +17,7 @@
 //! - 校验联动：context_window = 0 经 update_config_with 内 validate_config 同拒
 //! - 热更新联动：登记后 capabilities 查询立即反映（Manager 热读）
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use axum::{

@@ -10,6 +10,7 @@
 //! axum 假设不下沉）；本测试验证「无 X-Session-Id 时同前缀 messages 哈希
 //! → 同兜底会话键 → 亲和粘住同 vendor」的跨层语义，随 api 留 nexusflow。
 
+#[path = "../common/mod.rs"]
 mod common;
 
 mod web_server_hints {

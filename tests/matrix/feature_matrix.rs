@@ -31,8 +31,8 @@
 //!
 //! 【矩阵命令口径（重要）】非默认后端必须用 `-p nexusflow` 限定到本包：
 //! `cargo check --workspace --no-default-features --features "full,db-postgres"`
-//! 会失败——`examples/embedded-server` 以 `nexusflow = { path = "../.." }`
-//! 继承 default（含 db-sqlite），Cargo 特性联合把 sqlite 注入共享的
+//! 会失败——`nexusflow-examples` 成员（default 含 `embedded` feature）以
+//! `nexusflow = { path = ".." }` 拉入 `full` + `db-sqlite`，Cargo 特性联合把 sqlite 注入共享的
 //! dbnexus 依赖，与 db-postgres 同时置位即触发其互斥守卫。
 
 /// database feature：验证 Database 类型可访问

@@ -15,6 +15,7 @@
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use nexusflow::error::GateError;

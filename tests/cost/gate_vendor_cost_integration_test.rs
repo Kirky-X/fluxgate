@@ -22,6 +22,7 @@
 
 #![cfg(feature = "cost-tracking")]
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use nexusflow::config::{Config, ConfigManager, ModelCatalogEntry, ServerConfig};

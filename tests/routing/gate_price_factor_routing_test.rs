@@ -12,6 +12,7 @@
 
 #![cfg(feature = "router")]
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use nexusflow::config::{

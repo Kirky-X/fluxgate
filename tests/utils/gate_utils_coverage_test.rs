@@ -15,7 +15,7 @@
 //!   钳位 / in_flight / try_acquire）与 TokenBucket（满桶立即放行 /
 //!   桶空真实等待）。
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vendor-management"))]
 mod metrics_coverage {
     use nexusflow::utils::GlobalMetrics;
     use std::time::{Duration, Instant};

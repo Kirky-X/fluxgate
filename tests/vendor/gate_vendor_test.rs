@@ -4,6 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "vendor-management")]
 
+#[path = "../common/mod.rs"]
 mod common;
 
 mod status {

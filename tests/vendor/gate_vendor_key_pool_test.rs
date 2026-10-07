@@ -14,6 +14,7 @@
 
 #![cfg(feature = "vendor-management")]
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use nexusflow::config::{Config, ConfigManager, RetrySection, VendorConfig};

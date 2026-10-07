@@ -14,6 +14,7 @@
 //! build_app 内部执行 init_global_state（OnceCell 二次 set 即 panic，
 //! 见 api/global_state.rs:22），故全部断言收敛在单一 #[tokio::test] 内。
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use axum::{

@@ -6,14 +6,14 @@
 //! 路由半边特性组合矩阵测试（原 llm-gate 侧矩阵，随 crate 并回）。
 //!
 //! 验证不同 feature 组合下路由核心模块的可见性是否符合预期。
-//! 此文件本身在 `--all-features` 下编译运行所有断言；
-//! 在特定 feature 组合下只编译对应的 cfg 块。
+//! 此文件随 `cargo test --workspace`（default = full + db-sqlite）编译运行
+//! 全部断言；在特定 feature 组合下只编译对应的 cfg 块。
 //!
 //! ## 已验证的特性组合矩阵（路由半边）
 //!
 //! | Feature 组合                      | 编译 | 依赖链                          |
 //! |----------------------------------|------|--------------------------------|
-//! | `--all-features`                 | OK   | 全部                            |
+//! | `--all-features`                 | ✗ 预期失败 | db-* 三组互斥（dbnexus 编译期守卫） |
 //! | `--features full`（default）     | OK   | 全部                            |
 //! | `--features protocol`            | OK   | protocol（marker）              |
 //! | `--features vendor-management`   | OK   | vendor-management（无存储联动） |

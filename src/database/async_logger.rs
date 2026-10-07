@@ -72,6 +72,7 @@ fn truncate_to_limit(text: &str) -> &str {
 
 /// [`redact_text`] 的 serde_json::Value 递归形态：字符串值逐个脱敏，
 /// 数组/对象下钻——fields 的嵌套 JSON 与顶层标量同一 fail 姿态。
+#[cfg_attr(not(feature = "web-server"), allow(dead_code))] // 仅 server 装配消费
 fn redact_value(masker: &DataMasker, value: &mut Value) -> Result<(), InklogError> {
     match value {
         Value::String(s) => {
@@ -99,12 +100,14 @@ fn redact_value(masker: &DataMasker, value: &mut Value) -> Result<(), InklogErro
 /// 面内），两条出站通路 fail 姿态一致。gate 拒发按 Ok 处理（预期丢弃
 /// 而非 sink 故障，不触发 worker 健康机制），逐条 warn + [`Self::dropped`]
 /// 计数显性化，绝不携带记录内容。
+#[cfg_attr(not(feature = "web-server"), allow(dead_code))] // 仅 server bootstrap 构造
 pub(crate) struct GateSink {
     inner: Arc<dyn inklog::LogSink>,
     masker: Arc<DataMasker>,
     dropped: AtomicU64,
 }
 
+#[cfg_attr(not(feature = "web-server"), allow(dead_code))] // 同上，构造点在 server 装配
 impl GateSink {
     pub(crate) fn new(inner: Arc<dyn inklog::LogSink>, masker: Arc<DataMasker>) -> Self {
         Self {

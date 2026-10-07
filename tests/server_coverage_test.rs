@@ -17,6 +17,8 @@
 //! run 内部经 init_global_state 注册全局态（OnceCell 一次性写入），本文件
 //! 进程内仅此一个消费全局态的测试，全部断言收敛在单一 #[tokio::test] 内。
 
+#![recursion_limit = "256"]
+
 use std::io::{Read, Write};
 use std::time::Duration;
 

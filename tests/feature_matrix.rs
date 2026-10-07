@@ -19,13 +19,13 @@
 //! | `--features full`（default = full + db-sqlite） | OK | 全面向 sqlite 后端        |
 //! | `-p nexusflow --no-default-features --features "full,db-postgres"` | OK | server-side 后端 |
 //! | `-p nexusflow --no-default-features --features "full,db-mysql"`    | OK | server-side 后端 |
-//! | `--features database`            | OK   | database → protocol                        |
+//! | `--no-default-features --features "database,db-sqlite"` | OK | database → protocol + url + logging（inklog kit 需任一 db-* 组） |
 //! | `--features vendor-management`   | OK   | vendor-management 本模块直控               |
 //! | `--features router`              | OK   | router → vendor-management + oxcache       |
-//! | `--features web-server`          | OK   | web-server → router + sdforge + database   |
-//! | `--features infrastructure`      | OK   | infrastructure                              |
-//! | `--features logging`             | OK   | logging                                     |
-//! | `--features sdk`                 | OK   | sdk（reqwest + eventsource-stream）         |
+//! | `--features infrastructure`      | OK   | infrastructure → oxcache + trait-kit       |
+//! | `--no-default-features --features "web-server,db-sqlite"` | OK | web-server → router + sdforge + database + infrastructure + hex/sha2/subtle/once_cell |
+//! | `--no-default-features --features "logging,db-sqlite"` | OK | logging（inklog kit 需任一 db-* 组，单独开不编译） |
+//! | `--features sdk`                 | OK   | sdk（reqwest + eventsource-stream + url）   |
 //! | `--features "web-server logging grpc"` | OK | grpc → sdforge/grpc（需 protoc）      |
 //! | `--no-default-features`          | OK   | 门面 re-export（config/error/i18n/protocol/utils）|
 //!
@@ -97,6 +97,28 @@ fn test_web_server_dependency_chain() {
 fn test_router_dependency_chain() {
     use nexusflow::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
+}
+
+/// 依赖链验证：database 开启时 logging 必须也可用
+///（async_logger 无条件消费 inklog，database→logging 为编译前提）
+#[cfg(feature = "database")]
+#[test]
+fn test_database_logging_chain() {
+    let _ = std::marker::PhantomData::<nexusflow::database::Database>;
+    #[cfg(not(feature = "logging"))]
+    compile_error!("database 开启必须携带 logging（async_logger 消费 inklog）");
+}
+
+/// 依赖链验证：web-server 开启时 infrastructure 必须也可用
+///（server/shutdown 使用 trait-kit 协调器，web-server→infrastructure 为编译前提）
+#[cfg(feature = "web-server")]
+#[test]
+fn test_web_server_infrastructure_chain() {
+    // nexusflow::di 受 infrastructure+database+vendor-management+logging
+    // 四联动门控，web-server 组合下全部在场
+    let _ = nexusflow::di::verify_kit;
+    #[cfg(not(feature = "infrastructure"))]
+    compile_error!("web-server 开启必须携带 infrastructure（shutdown 用 trait-kit）");
 }
 
 /// sdk feature：验证 sdk 模块与客户端类型可访问

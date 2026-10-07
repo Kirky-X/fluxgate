@@ -35,8 +35,10 @@ db-mysql = ["dbnexus?/mysql", "dbnexus?/runtime-tokio-rustls", "dbnexus?/replica
 # database 显式入链：原 web-server→router→vendor-management→database 的
 # 传递依赖在解除 vendor-management→database 后改为显式声明（服务器装配
 # bootstrap 需要 Database，行为面与历史组合逐位一致）；dep:limiteron 供
-# api/router_builder 的入站限流直用
-web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "router", "sdforge-integration", "http", "database", "dep:limiteron"]
+# api/router_builder 的入站限流直用；infrastructure 供 server/shutdown 的
+# trait-kit 协调器；dep:hex/sha2/subtle/once_cell 为 api/middleware 面直用
+#（web-server 关闭时不激活本 crate 的这些直接依赖；兄弟库的传递依赖不受影响）
+web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "router", "sdforge-integration", "http", "database", "infrastructure", "dep:limiteron", "dep:hex", "dep:sha2", "dep:subtle", "dep:once_cell"]
 # sdforge `#[forge]` 宏按**目标 crate** 的 feature 求值 `cfg(feature = "http")`
 # （rustc check-cfg 文档明确此语义）：无同名 feature 时 RouteRegistration
 # 整体被 cfg 掉，#[forge] 站点路由（/health）静默丢失。此 feature 无实现体，
@@ -48,7 +50,10 @@ http = []
 resilience = []
 # cost-tracking：CostTracker 的分片锁并发 map
 cost-tracking = ["dep:dashmap"]
-database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "protocol"]
+# database 的 async_logger（DB sink）无条件消费 inklog 类型，logging 为
+# 编译前提；替代方案（对 async_logger 做 cfg 门控）需同步 server/shutdown、
+# api 测试与集成测试多处消费点，属独立重构，暂以显式联动收口
+database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "dep:url", "protocol", "logging"]
 # vendor 栈（vendor 模块：reqwest 出站 + limiteron 限流/熔断原语 + 队列通道，
 # rand 供加权采样）；
 # database 联动已解除（design.md D1 feature 图重切）——不携带存储
@@ -69,8 +74,9 @@ grpc = ["dep:sdforge", "sdforge/grpc", "sdforge/graceful"]
 logging = ["dep:inklog"]
 # sdk：HTTP 客户端 SDK（src/sdk，调用已部署网关的 Rust 客户端）。
 # reqwest 复用 vendor-management 的 optional 依赖；eventsource-stream 仅做
-# SSE 事件分帧（default=[std] 仅 futures-core/nom，无 reqwest 强制依赖）
-sdk = ["dep:reqwest", "dep:eventsource-stream"]
+# SSE 事件分帧（default=[std] 仅 futures-core/nom，无 reqwest 强制依赖）；
+# url 供 base URL 拼接
+sdk = ["dep:reqwest", "dep:eventsource-stream", "dep:url"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
@@ -91,8 +97,11 @@ sea-orm = { version = "2.0.0-rc.42", default-features = false, optional = true }
 # 日志 — path dep 确保 oxcache/dbnexus/trait-kit 全部本地对齐。
 # 落库后端（sqlite/postgres）随 db-* 三组经 inklog?/<backend> 透传，不在此写死。
 # fast-masking：掩码规则 literal 走 Aho-Corasick 单趟加速；secret-scan：出站
-# 裸 secret 值形态+熵扫描门（SecretPatternRegistry/SecretScanGate 导出）
-inklog = { path = "../inklog", default-features = false, features = ["http", "cli", "kit", "fast-masking", "secret-scan"], optional = true }
+# 裸 secret 值形态+熵扫描门（SecretPatternRegistry/SecretScanGate 导出）。
+# http/cli（axum-server/clap/schema 面）本仓零调用，不声明——无 sdforge 的
+# 轻量组合省约 40 个包（full 下 clap/schemars 由 sdforge 保留，仅省
+# axum-server/fs-err/glob）；使用方需要时自行开启
+inklog = { path = "../inklog", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
 # 配置热重载 — path dep 本地源码；config 模块的 dynamic/snapshot/loader
 # 三面 + json 强类型投影 + security-rules 弱密钥校验 + hot-reload-kit
 #（watch + progressive-reload），不启用 env（无 .env 自动加载）。
@@ -121,17 +130,14 @@ sdforge = { path = "../sdforge", default-features = false, features = ["http", "
 # 序列化与核心
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-anyhow = "1"
 thiserror = "2"
 async-trait = "0.1"
 futures = "0.3"
-futures-util = "0.3"
-tokio-util = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 rand = { version = "0.8", optional = true }
-once_cell = "1"
+once_cell = { version = "1", optional = true }
 uuid = { version = "1", features = ["v4", "serde"] }
-url = "2"
+url = { version = "2", optional = true }
 bytes = "1"
 reqwest = { version = "0.13", features = ["json", "stream", "socks"], optional = true }
 # SSE 事件分帧（sdk feature 的流式响应解析），0.2 为 crates.io 最新稳定
@@ -146,12 +152,14 @@ toml = "1"
 fluent-bundle = { version = "0.16", default-features = false }
 unic-langid = { version = "0.9", default-features = false }
 sys-locale = { version = "0.3", default-features = false }
-# API Key SHA256 摘要存储与常量时间比较（auth 层）；subtle 已随 inklog
-# 在依赖树中（2.6.1），声明同款 default-features = false 只用 core 面
-sha2 = "0.10"
-hex = "0.4"
-subtle = { version = "2.6", default-features = false }
-sys-info = "0.9"
+# API Key SHA256 摘要存储与常量时间比较（api/middleware 面三处消费）；
+# sha2 0.11 对齐兄弟库——sqlx 侧 0.10 有两条上游锚点：sqlx-core 的 migrate
+# feature（当前编译面）与 sqlx-macros-core 的非 optional 依赖（在解析图/
+# Cargo.lock 中，本仓当前组合未开启其 macros feature 故不编译），其升级后
+# 双版本自然收敛；subtle 沿用 core 面 default-features = false
+sha2 = { version = "0.11", optional = true }
+hex = { version = "0.4", optional = true }
+subtle = { version = "2.6", default-features = false, optional = true }
 
 
 [dev-dependencies]

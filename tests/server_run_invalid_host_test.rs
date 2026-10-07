@@ -12,6 +12,8 @@
 //! 独立成文件的原因：run 内部 init_global_state（OnceCell 一次性写入），
 //! 同进程只能消费一次全局态，每个 run 场景必须独占一个测试二进制。
 
+#![recursion_limit = "256"]
+
 use nexusflow::error::{GateError, NexusFlowError};
 
 #[tokio::test]

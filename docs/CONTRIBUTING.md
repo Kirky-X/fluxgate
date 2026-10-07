@@ -67,7 +67,7 @@ projects/
 | **1. Fork 仓库** | 在 [github.com/Kirky-X/NexusFlow](https://github.com/Kirky-X/NexusFlow) 点击 "Fork" |
 | **2. Clone 本体与兄弟库** | 将 NexusFlow 与 7 个兄弟库克隆到同一父目录 |
 | **3. 安装 Git 钩子** | `pip install pre-commit && pre-commit install --install-hooks`（见下节） |
-| **4. 构建验证** | `cargo build --all-features`（首次构建同时编译兄弟库，耗时较长） |
+| **4. 构建验证** | `cargo build`（default = full + db-sqlite；首次构建同时编译兄弟库，耗时较长） |
 
 ### 🪝 Git 钩子（pre-commit）
 
@@ -127,10 +127,10 @@ projects/
 cargo fmt --all -- --check
 
 # Clippy 静态检查（必须零告警）
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 # 全量测试（启用全部特性）
-cargo test --workspace --all-features
+cargo test --workspace
 ```
 
 生产构建启用 LTO 与单 codegen unit（`[profile.release]`：`lto = true`、`codegen-units = 1`、`opt-level = 3`）：
@@ -145,12 +145,12 @@ cargo build --release
 
 ## 🧪 测试约定
 
-本项目测试基线（`--all-features` 下统计）：
+本项目测试基线（`cargo test --workspace` 实测）：
 
 | 类型 | 数量 | 位置 | 写法 |
 |:-----|:-----|:-----|:-----|
-| 单元测试 | **196 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
-| 集成测试 | **454 个** | `tests/`（20 个文件） | HTTP 全链路 / 跨模块行为 |
+| 单元测试 | **367 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
+| 集成测试 | **764 个** | `tests/`（41 个文件） | HTTP 全链路 / 跨模块行为 |
 
 约定与工具：
 
@@ -165,21 +165,21 @@ cargo build --release
 运行测试：
 
 ```bash
-cargo test --workspace --all-features          # 全量
-cargo test --all-features --test router_test   # 单个集成测试文件
+cargo test --workspace                         # 全量（default 口径）
+cargo test --test gate_router_test             # 单个集成测试文件
 ```
 
 ---
 
 ## 🚩 Feature 纪律
 
-`Cargo.toml` 定义 **11 个 feature**，`default = ["full"]`（全启用）：
+`Cargo.toml` 定义 **11 个 feature**，`default = ["full", "db-sqlite"]`（全启用 + sqlite 后端）：
 
 | Feature | 门控内容 |
 |:--------|:---------|
 | `web-server` | axum / tower / tower-http HTTP 服务 |
 | `database` | dbnexus + sea-orm + 异步队列持久化 |
-| `vendor-management` | reqwest + limiteron 厂商管理 |
+| `vendor-management` | reqwest + limiteron + rand + async-channel 厂商管理 |
 | `router` | 路由调度（依赖 vendor-management + oxcache） |
 | `protocol` | 协议转换 |
 | `infrastructure` | oxcache + trait-kit |
@@ -187,12 +187,12 @@ cargo test --all-features --test router_test   # 单个集成测试文件
 | `logging` | inklog |
 | `resilience` | FallbackChain + 错误映射层（熔断/重试已迁 limiteron） |
 | `cost-tracking` | dashmap + CostTracker 成本追踪 |
-| `sdk` | Rust 客户端 SDK（reqwest + eventsource-stream） |
+| `sdk` | Rust 客户端 SDK（reqwest + eventsource-stream + url） |
 
 纪律要求：
 
 1. **新增能力必须 feature 门控**，并挂入 `full` 的依赖链；`tests/feature_matrix.rs` 会验证 feature 组合
-2. `--no-default-features` 与 `--all-features` 两种极端组合都必须可编译、测试可过
+2. `--no-default-features` 必须可编译；`--all-features` 因 db-* 后端三组互斥必然编译失败（预期行为，非缺陷）
 3. 特殊例子 `http`：这是一个**宏门控空 feature**（无实现体）。原因见 `Cargo.toml` 注释：sdforge 的 `#[forge]` 宏按**目标 crate** 的 feature 求值 `cfg(feature = "http")`——无同名 feature 时 `RouteRegistration` 整体被 cfg 掉，`#[forge]` 站点路由（/health）会静默丢失。它仅作为宏门控开关随 `web-server` 启用
 
 ---
@@ -260,7 +260,7 @@ flowchart LR
 | **1. Issue** | 先在 [Issues](https://github.com/Kirky-X/NexusFlow/issues) 描述问题或提案，重大改动先讨论达成一致（[Discussions](https://github.com/Kirky-X/NexusFlow/discussions) 适合开放性话题） |
 | **2. Fork** | Fork 仓库并连同 7 个兄弟库一起准备同级目录 |
 | **3. 开发** | 新分支开发，保持 commit 原子性；新能力记得 feature 门控与测试 |
-| **4. 本地验证** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets --all-features -- -D warnings` + `cargo test --workspace --all-features` 全绿 |
+| **4. 本地验证** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` 全绿（非默认后端另跑 `cargo check -p nexusflow --no-default-features --features "full,db-postgres"`） |
 | **5. PR** | 描述变更动机与影响面，关联 Issue；等待 CI 全绿与评审 |
 | **6. 发布** | 维护者推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`：自动创建 GitHub Release（rc/beta/alpha 后缀自动标记预发布），产出 gnu 动态链接与 musl 静态（Docker alpine 同源）两个二进制产物；删除 tag 时 `tag-deleted.yml` 自动清理对应 Release |
 

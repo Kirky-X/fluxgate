@@ -10,6 +10,8 @@
 //! p = (input_price + output_price) / 2（每 1M tokens），集合内已登记
 //! 最低价者乘性因子 1、高价按 min_p/p 衰减；未登记/0 价候选中性 1.0。
 
+#![cfg(feature = "router")]
+
 mod common;
 
 use nexusflow::config::{

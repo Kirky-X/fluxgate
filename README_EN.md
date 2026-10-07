@@ -315,7 +315,7 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): 367 unit tests (inline in `src/`) and 762 integration tests (41 files in `tests/`) — **1129 total, 0 ignored**. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1131 tests pass, 0 failures** — 367 unit tests (inline in `src/`) plus 764 integration tests (41 files in `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
@@ -324,10 +324,10 @@ As of the current version (measured with `cargo test --workspace`): 367 unit tes
 | api_test | 102 | tests/ | endpoint integration / caching / rerouting / affinity / admin |
 | router_test | 91 | tests/ | weighted selection / affinity / hint routing / edges |
 | database / sse | 38 / 37 | tests/ | persistence & pre-aggregation / stream framing & SDK |
-| retry | 36 | tests/ | retry classes & delay policy |
-| config / utils_coverage | 27 / 19 | tests/ | config loading / metrics & limiter edges |
+| retry | 25 | tests/ | retry classes & delay policy |
+| config / utils_coverage | 28 / 19 | tests/ | config loading / metrics & limiter edges |
 | fallback / admission | 17 / 16 | tests/ | fallback chain / admission |
-| bandit / config_coverage / circuit_breaker | 13 / 13 / 10 | tests/ | bandit routing / loader·manager branches / circuit |
+| bandit / config_coverage / circuit_breaker | 13 / 14 / 9 | tests/ | bandit routing / loader·manager branches / circuit |
 | server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (100) | tests/ & tests/ | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin |
 
 ---

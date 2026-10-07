@@ -582,13 +582,15 @@ flowchart LR
 
 ### Feature 门控
 
-`default = ["full"]`，`full` 预设含 11 个 feature：`web-server` / `database` / `vendor-management` / `router` / `protocol` / `infrastructure` / `sdforge-integration` / `logging` / `resilience` / `cost-tracking` / `sdk`；另有隐藏宏门控 `http` 与独立门控（不进 `full`）的 `grpc`。主要依赖方向：
+`default = ["full", "db-sqlite"]`，`full` 预设含 11 个 feature：`web-server` / `database` / `vendor-management` / `router` / `protocol` / `infrastructure` / `sdforge-integration` / `logging` / `resilience` / `cost-tracking` / `sdk`；另有隐藏宏门控 `http` 与独立门控（不进 `full`）的 `grpc`。主要依赖方向：
 
 ```text
-web-server → router → vendor-management → database → protocol
-web-server → sdforge-integration
-router → oxcache；infrastructure → oxcache + trait-kit
-sdk → reqwest + eventsource-stream（HTTP 客户端，独立于 web-server）
+web-server → router → vendor-management
+web-server → database（→ protocol + url + logging）＋ infrastructure（→ oxcache + trait-kit）＋ sdforge-integration
+web-server 面直用：limiteron（入站限流）+ hex / sha2 / subtle / once_cell
+router → oxcache（CacheBackend：会话亲和表 / 响应缓存）
+sdk → reqwest + eventsource-stream + url（HTTP 客户端，独立于 web-server）
+database → logging：async_logger（DB sink）无条件消费 inklog；inklog kit 需任一 db-* 后端组
 ```
 
 按需裁剪 feature 可缩小编译产物（如仅库形态使用时去掉 `web-server`）。

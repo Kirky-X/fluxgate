@@ -12,6 +12,8 @@
 //! 轮换契约：401/403 推进游标，**生效于下次请求**；单请求内不换 key
 //! 重试（401 属 Fatal 分类，无重试——mockito 上界锁定恰 1 次 HTTP）。
 
+#![cfg(feature = "vendor-management")]
+
 mod common;
 
 use nexusflow::config::{Config, ConfigManager, RetrySection, VendorConfig};

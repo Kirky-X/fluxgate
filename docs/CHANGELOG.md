@@ -12,10 +12,17 @@
 
 ### Changed
 
+- **依赖卫生**：清理冗余依赖并收紧特性面——移除死依赖 `sys-info`（全仓零引用，`cc`+`libc` 的 C 编译面与 `links="info"` 约束随之从编译图消失）与 `tokio-util`（全仓零引用）；根 `anyhow`/`futures-util` 直接声明移除（根 crate 零引用，examples 自带 / 仅测试使用且 dev-dependencies 保留）；`hex`/`sha2`/`subtle`/`once_cell` 转 optional 挂 `web-server`，`url` 转 optional 挂 `database`/`sdk`（对应 feature 关闭时不再激活本 crate 的直接依赖）。`sha2` 0.10 → 0.11 对齐兄弟库（`Digest` 导入形态不变）；`sqlx` 侧 0.10 有两条上游锚点（`sqlx-core` 的 migrate 特性为当前编译面；`sqlx-macros-core` 的非 optional 依赖在解析图/Cargo.lock 中，本仓当前组合未开启其 macros feature 故不编译），其升级后双版本自然收敛。移除 inklog 的 `http`/`cli` 特性声明（本仓零调用；无 sdforge 的轻量组合省约 40 个包，full 构建省 axum-server/fs-err/glob 3 个——clap/schemars 经 sdforge 保留）。
+
 - **结构**：`crates/llm-gate` 路由核心库并回主 crate（撤销 N1 workspace 拆分）——config/i18n/protocol/storage/utils/vendor/router 模块直接位于 `src/`，Fluent 目录 `locales/` 移至仓库根（`include_str!` 相对路径不变），llm-gate 集成测试并入 `tests/`（`gate_` 前缀，共享 helper 迁至 `tests/gate_common/`）；`resilience`/`protocol`/`vendor-management`/`router`/`cost-tracking` feature 由「转发 llm-gate 同名 feature」改为直控本 crate 模块与 optional 依赖（单开关语义不变）；`GateError` 定义移至 `nexusflow::error::gate`（顶层 `nexusflow::error::GateError` re-export 保留，`nexusflow::config` 等全部公开路径不变；`llm-gate` 从未发布 crates.io，无外部消费方）。
 
 - **BREAKING**：Rust SDK（`sdk` feature）类型与 admin 面重塑对齐网关真实形状——`ChatMessage.content` 支持多模态内容件（`ChatContent`），`ChatRequest` 增 tools/tool_choice/vendor_extensions/penalties；`ChatResponse` 移除恒空的 `vendor` 字段（网关响应不注入）、finish_reason 结构化为四变体枚举、usage 含 cache_read；`ChatStream` 解析 tool_calls 增量片段与 usage 尾帧；admin 失配修复——`models()` 改 `GET /admin/models`（原 `GET /v1/models` 网关未注册恒 404）、`health()` 改 `GET /api/v1/health`（原 `admin/health` 不存在）、`vendors()` 对齐运行面形状 `{id,status,queue_length,key_pool}`；新增 `upsert_model` / `delete_model`（目录 CRUD）。
 - **BREAKING**：`GET /admin/models` 响应形状由 `GlobalModelConfig` 数组（原 global_model 单例包装）变更为 `ModelCatalogEntry` 数组（九字段模型能力目录：context_window / 四档单价（currency，每 1M tokens）/ currency / max_output_tokens / supports_tools / supports_thinking）。全局模型策略改经 `POST /admin/models/global`（存量契约保留）或 `GET /admin/config` 读写。
+
+### Fixed
+
+- **feature 图隐式前提显式化**：`database` 补 `logging` 联动（async_logger 无条件消费 inklog）、`web-server` 补 `infrastructure` 联动（server/shutdown 用 trait-kit）——修复 `--no-default-features --features "database,db-sqlite"` / `"web-server,db-sqlite"` 组合编译失败（此前仅 `full`/default 组合可用；单独开 `database`/`web-server`/`logging` 仍按既有契约需随任一 db-* 后端组，inklog kit 守卫）。
+- **feature 组合自洽**：`gate_vendor_test`（resilience）、`gate_price_factor_routing_test`（router）、`gate_vendor_key_pool_test`（vendor-management）补 cfg 门控，三个 `server_*_test` 补 `#![recursion_limit = "256"]`（既有递归深度问题，仅非 sqlite 后端 `--all-targets` 暴露），至此 9 个 feature 组合 `--all-targets` 全绿；特性矩阵文档口径、`docs/CONTRIBUTING.md` 验证命令与测试基线（367/764）、README 双语测试规模表、PR 模板同步更正；新增两条依赖链断言（database→logging、web-server→infrastructure）与 CI 单特性组合检查（database / web-server / logging + db-sqlite 三行）。
 
 ### Added
 

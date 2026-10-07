@@ -131,6 +131,13 @@ jobs:
         run: cargo check -p nexusflow --no-default-features --features "full,db-postgres"
       - name: Check db-mysql features
         run: cargo check -p nexusflow --no-default-features --features "full,db-mysql"
+      # 单特性组合回归网：database/web-server 的隐式前提（logging/infrastructure）
+      # 若被拆掉，这两条立即编译失败（矩阵口径见 tests/feature_matrix.rs）
+      - name: Check single-feature combos
+        run: |
+          cargo check -p nexusflow --no-default-features --features "database,db-sqlite"
+          cargo check -p nexusflow --no-default-features --features "web-server,db-sqlite"
+          cargo check -p nexusflow --no-default-features --features "logging,db-sqlite"
 
   #-----------------------------------------------------------------------------
   # 测试（mockito/mockall 自包含，无外部服务依赖）

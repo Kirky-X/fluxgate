@@ -2255,6 +2255,7 @@ mod manager_paths {
     }
 
     /// get_circuit_state 对未初始化 vendor 返回 None（CB map 未注册该 id）。
+    #[cfg(feature = "resilience")]
     #[tokio::test]
     async fn get_circuit_state_unknown_vendor_returns_none() {
         let cm = Arc::new(ConfigManager::new(make_config(vec![])));

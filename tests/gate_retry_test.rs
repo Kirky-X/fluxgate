@@ -23,6 +23,7 @@
 
 mod tests {
     use nexusflow::utils::{extract_status_code, ErrorCategory};
+    #[cfg(feature = "vendor-management")]
     use std::time::Duration;
 
     // -------- ErrorCategory --------

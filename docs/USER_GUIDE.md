@@ -566,7 +566,7 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 
 | 项 | 内容 |
 |:---|:-----|
-| 启用方式 | `nexusflow = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` 随该 feature 引入） |
+| 启用方式 | `nexusflow = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` + `url` 随该 feature 引入） |
 | 模块 | `chat` / `embed` / `stream` / `client`（`NexusFlowClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error` |
 | 类型导出 | `ChatMessage`（多模态 `ChatContent::Parts` / tool_calls）/ `ChatRequest`（tools / tool_choice / vendor_extensions / penalties）/ `ChatResponse`（结构化 finish_reason + 含 cache_read 的 usage + tool_calls）/ `EmbedRequest` / `EmbedResponse` / `ChatStream`（tool_calls 增量片段 + usage 尾帧）/ 目录 CRUD（`ModelCatalogInfo` / `ModelCatalogUpsert`）等 |
 | 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |

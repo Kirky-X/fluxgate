@@ -2,6 +2,17 @@
 name = "nexusflow"
 version = "0.1.0"
 edition = "2021"
+# MSRV 单一事实来源：与 7 个兄弟库的 rust-version 声明对齐（dbnexus/limiteron/
+# sdforge 均为 1.97.1）。原先只写在 docker/Dockerfile 与 workflows 的注释里，
+# 导致 release.yml 漂到 1.92 仍无门禁拦截。声明后 cargo 在依赖解析期硬拒低于
+# 1.97.1 的工具链：ci.yml 按此下限跑 build/clippy，Dockerfile/release 用当前
+# stable（高于下限即可）
+rust-version = "1.97.1"
+# `examples/` 现为独立 workspace 成员 crate（nexusflow-examples），不再充当
+# 本包的示例约定目录。关闭本包对 examples/ 的示例自动发现，否则 examples/build.rs
+# 等顶层 .rs 会被误认作 nexusflow 的 example target（在 `--all-targets` 下编译，
+# 且找不到 build.rs 引用的 tonic_prost_build 而失败）。
+autoexamples = false
 description = "智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度 | Intelligent multi-provider LLM routing gateway"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
 repository = "https://github.com/Kirky-X/NexusFlow"

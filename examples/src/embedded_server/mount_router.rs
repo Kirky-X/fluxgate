@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 库形态嵌入：build_app 取网关 Router 与停机句柄，merge 宿主自有路由后
-//! 自行 bind/serve。一行起服形态见 standalone.rs。
+//! 自行 bind/serve。一行起服形态见 standalone。
 
 use std::sync::Arc;
 
@@ -14,10 +14,9 @@ use nexusflow::config::loader::ConfigLoader;
 use nexusflow::server::build_app;
 use serde_json::json;
 
-// 运行目录（CWD）须有 config.toml，可从仓库根 config.example.toml 复制为起点；
-// 监听地址取 [server] 段的 host/port。
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// 运行目录（CWD）须有 config.toml，可从仓库根 config.example.toml 复制为起点；
+/// 监听地址取 [server] 段的 host/port。
+pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config_manager = Arc::new(ConfigLoader::new(Some("config.toml".into())).load()?);
 
     // 进程级约束一：同进程 run / build_app 合计只能调用一次——装配经

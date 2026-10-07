@@ -1,13 +1,14 @@
 # NexusFlow gRPC 门面启用片段
 #
-# 并入网关侧 config.toml（二进制缺省读工作目录的 config.toml，也可将配置
-# 路径作为唯一命令行参数传入）。除本片段外还需编译期启用 grpc feature
-# （独立门控，不在 full 内，需要 protoc）：
+# 并入网关侧运行配置 config.toml（该文件不入库，干净检出先执行
+# `cp config.example.toml config.toml`；二进制缺省读工作目录的 config.toml，
+# 也可将配置路径作为唯一命令行参数传入）。除本片段外还需编译期启用 grpc
+# feature（独立门控，不在 full 内，需要 protoc）：
 #
 #   cargo build --features grpc
 #   cargo run --features grpc -- /path/to/config.toml
 #
-# [auth] 与 [grpc] 的字段语义与仓库 config.toml / config.example.toml 同源。
+# [auth] 与 [grpc] 的字段语义与随仓全量参考 config.example.toml 同源。
 
 [auth]
 enabled = true

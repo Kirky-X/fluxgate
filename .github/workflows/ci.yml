@@ -35,6 +35,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   RUST_VERSION: '1.97'
+  # ↑ MSRV 下限工具链：与 Cargo.toml 的 rust-version = "1.97.1" 对齐（'1.97'
+  #   解析到当前最新 patch 1.97.1）。按 MSRV 跑 build/clippy 同时两个目的：
+  #   守住兄弟库下限、让 clippy  lint 集合可复现（clippy 随工具链版本变化）。
+  #   docker/Dockerfile 与 release.yml 用当前 stable（1.99），高于下限即可
   # path 依赖的 7 个兄弟库，克隆到 $GITHUB_WORKSPACE/../ 下满足 ../<lib> 解析
   SIBLING_REPOS: 'confers dbnexus inklog limiteron oxcache sdforge trait-kit'
 
@@ -61,7 +65,7 @@ jobs:
           for repo in $SIBLING_REPOS; do
             git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
           done
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt
@@ -87,7 +91,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
@@ -97,6 +101,11 @@ jobs:
       # （full + db-sqlite），非 default 后端组合由 check/test 的特性矩阵覆盖
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # 示例集单 crate 的 grpc 模块不在 default（保留「普通构建不需 protoc」的
+      # 隔离），--all-targets 的 default 口径会跳过 grpc bin——显式补一条 grpc
+      # feature 的 clippy，覆盖代码生成与 grpc_client 模块 lint（此作业已装 protoc）
+      - name: Run clippy (examples grpc feature)
+        run: cargo clippy -p nexusflow-examples --no-default-features --features grpc --all-targets -- -D warnings
 
   #-----------------------------------------------------------------------------
   # 编译检查（默认特性 / 三后端特性矩阵）
@@ -117,12 +126,16 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check default features
         run: cargo check --workspace
+      # 示例 grpc 模块非 default（protoc 隔离），显式补一条编译校验
+      # （此作业已装 protoc）
+      - name: Check examples grpc feature
+        run: cargo check -p nexusflow-examples --no-default-features --features grpc
       # --all-features 会同时启用互斥的 db-* 三组（dbnexus 守卫必触发），
       # 改为按后端逐一检查；db-sqlite 已由 default 覆盖
       - name: Check db-postgres features
@@ -158,7 +171,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -188,7 +201,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: llvm-tools-preview
@@ -217,7 +230,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.97
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Install cargo-audit

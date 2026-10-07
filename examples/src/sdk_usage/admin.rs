@@ -1,23 +1,15 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! 运维端点：health / vendors / models。
 
 use nexusflow::sdk::{NexusFlowClientBuilder, NexusFlowSdkError};
 
-fn require_env(name: &str) -> String {
-    match std::env::var(name) {
-        Ok(v) if !v.trim().is_empty() => v,
-        Ok(_) => {
-            eprintln!("环境变量 {name} 为空，拒绝发出无效请求");
-            std::process::exit(1);
-        }
-        Err(err) => {
-            eprintln!("缺少环境变量 {name}（{err}），先执行 export {name}=<值>");
-            std::process::exit(1);
-        }
-    }
-}
+use super::require_env;
 
-#[tokio::main]
-async fn main() -> Result<(), NexusFlowSdkError> {
+pub async fn run() -> Result<(), NexusFlowSdkError> {
     let client = NexusFlowClientBuilder::new()
         .base_url(require_env("NEXUSFLOW_BASE_URL"))
         .api_key(require_env("NEXUSFLOW_API_KEY"))

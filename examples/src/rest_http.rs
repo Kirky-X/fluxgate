@@ -37,9 +37,9 @@ const HINT_VENDOR: &str = "mock-openai";
 const CHAT_MODEL: &str = "gpt-4";
 const ANTHROPIC_MODEL: &str = "claude-3-opus";
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
+/// bin 入口调用的顶层函数：把 `execute` 的 `Result` 映射为进程退出码。
+pub async fn run() -> ExitCode {
+    match execute().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("错误: {err:#}");
@@ -48,7 +48,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run() -> Result<()> {
+async fn execute() -> Result<()> {
     let base_url = env::var("NEXUSFLOW_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
     // API key 无默认值：网关 [auth].enabled 时强制校验，缺凭据必须显性失败
     let api_key = env::var("NEXUSFLOW_API_KEY")
@@ -97,7 +97,7 @@ async fn health_check(client: &Client, base_url: &str) -> Result<()> {
 }
 
 /// temperature 缺省或 0 的确定性请求才会进响应缓存（api/response_cache.rs），
-/// 借此让响应头的 `X-Cache: MISS/HIT` 可复现
+/// 借此让响应头的 `X-Cache: MISS→HIT` 可复现
 async fn chat_completions(client: &Client, base_url: &str, headers: &HeaderMap) -> Result<()> {
     let body = json!({
         "model": CHAT_MODEL,

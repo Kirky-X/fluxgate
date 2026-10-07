@@ -1,3 +1,8 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 NexusFlow Contributors
+// Licensed under the MIT License. See LICENSE file for details.
+
 //! 非流式 chat：完整 `ChatRequest` + `RequestConfig` 路由提示头，打印用量与实际 vendor。
 
 use std::time::Duration;
@@ -6,23 +11,10 @@ use nexusflow::sdk::{
     ChatMessage, ChatRequest, NexusFlowClientBuilder, NexusFlowSdkError, RequestConfig,
 };
 
-fn require_env(name: &str) -> String {
-    match std::env::var(name) {
-        Ok(v) if !v.trim().is_empty() => v,
-        Ok(_) => {
-            eprintln!("环境变量 {name} 为空，拒绝发出无效请求");
-            std::process::exit(1);
-        }
-        Err(err) => {
-            eprintln!("缺少环境变量 {name}（{err}），先执行 export {name}=<值>");
-            std::process::exit(1);
-        }
-    }
-}
+use super::require_env;
 
-#[tokio::main]
-async fn main() -> Result<(), NexusFlowSdkError> {
-    // timeout() 只约束非流式请求的总时长；流式行为见 stream_chat.rs 的 read_timeout
+pub async fn run() -> Result<(), NexusFlowSdkError> {
+    // timeout() 只约束非流式请求的总时长；流式行为见 stream_chat 的 read_timeout
     let client = NexusFlowClientBuilder::new()
         .base_url(require_env("NEXUSFLOW_BASE_URL"))
         .api_key(require_env("NEXUSFLOW_API_KEY"))

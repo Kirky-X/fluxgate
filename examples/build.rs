@@ -8,8 +8,16 @@
 // sdforge 重新同步本副本。
 //
 // 构建前置：protoc 须在 PATH（与 sdforge grpc feature 的构建前置一致）。
+// 门控：单 crate 下 build.rs 对所有示例都会运行，故用 CARGO_FEATURE_GRPC 判断
+// 是否真的做代码生成——未启用 grpc 时直接返回，绝不调用 protoc，保留
+// 「普通构建不需 protoc」的隔离（拆分前 grpc-client 独立 crate 天然满足）。
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+
+    // build.rs 拿不到 #[cfg(feature = "grpc")]，用 Cargo 注入的环境变量判定。
+    if std::env::var_os("CARGO_FEATURE_GRPC").is_none() {
+        return Ok(());
+    }
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
     let proto_files = &[std::path::Path::new(&manifest_dir).join("proto/sdforge.v1.proto")];

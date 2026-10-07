@@ -11,7 +11,8 @@
 import OpenAI from "openai";
 
 const baseUrl = process.env.NEXUSFLOW_BASE_URL ?? "http://127.0.0.1:8080";
-// 演示值须与网关 [vendors] 配置对齐（仓库自带 config.toml 的 mock 厂商）
+// 演示值须与网关 [vendors] 配置对齐（本地运行配置 config.toml 的 mock 厂商；
+// 该文件不入库，随仓全量参考见 config.example.toml）
 const MODEL = "gpt-4";
 const VENDOR = "mock-openai";
 

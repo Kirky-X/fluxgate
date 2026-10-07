@@ -13,6 +13,9 @@
 //! 与 HTTP `/health` 白名单的差异以代码为准：门面仅对 Call/CallStream 挂
 //! auth_verifier，GetInfo 免认证（NexusFlow src/server/grpc.rs 模块文档；
 //! sdforge src/grpc/grpc_impl.rs `get_info` 不经过 `authenticate`）。
+//!
+//! 本模块整体由 `grpc` feature 门控（见 lib.rs），代码生成经 build.rs 在启用
+//! `grpc` 时从 `proto/sdforge.v1.proto` 产出，故 OUT_DIR 引用只在该 feature 下存在。
 
 mod pb {
     include!(concat!(env!("OUT_DIR"), "/sdforge.v1.rs"));
@@ -34,8 +37,7 @@ const ENDPOINT: &str = "http://127.0.0.1:50051";
 /// 即 handler 返回值的 JSON 文本。
 const DEMO_METHOD: &str = "demo_method";
 
-#[tokio::main]
-async fn main() {
+pub async fn run() {
     let channel = match Channel::builder(ENDPOINT.parse().expect("内置端点必须是合法 URI"))
         .connect()
         .await

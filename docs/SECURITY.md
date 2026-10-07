@@ -181,7 +181,7 @@ flowchart LR
 
 ### 错误响应
 
-错误响应只暴露**固定的 `error.type` 代码**，不暴露内部枚举结构与堆栈（`src/error.rs`）：
+错误响应只暴露**固定的 `error.type` 代码**，不暴露内部枚举结构与堆栈（`src/error/mod.rs`）：
 
 | error.type | HTTP |
 |:-----------|:-----|

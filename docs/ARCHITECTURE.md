@@ -97,7 +97,7 @@ flowchart TB
 | `src/router/` | 路由决策核心：加权打分、LinUCB、会话亲和 |
 | `src/utils/` | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器 |
 | `src/vendor/` | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价 |
-| `src/error.rs` / `src/error.rs` | `NexusFlowError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale） |
+| `src/error/mod.rs` / `src/error/gate.rs` | `NexusFlowError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale） |
 | `src/lib.rs` | 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/storage/vendor/router 路由半边 + api/server/database 应用面） |
 | `src/main.rs` | 二进制薄入口：仅解析 CLI 配置路径参数；装配链在 `src/server/bootstrap.rs`，建站与路由合并、serve 在 `src/server/http.rs` |
 
@@ -548,7 +548,7 @@ flowchart LR
 | 查找回退 | 当前语言 → en → 键名 |
 | 覆盖范围 | 全部业务消息（错误 `user_message()` 与日志文案） |
 
-错误展示走双轨（`src/error.rs`）：`#[error]` Display 恒英文规范串（供日志与错误链），HTTP 响应体用 `user_message()` 返回随 locale 的 FTL 文案。
+错误展示走双轨（`src/error/mod.rs`）：`#[error]` Display 恒英文规范串（供日志与错误链），HTTP 响应体用 `user_message()` 返回随 locale 的 FTL 文案。
 
 ---
 

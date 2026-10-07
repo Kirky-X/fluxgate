@@ -67,7 +67,7 @@ HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API
 
 ## 通用错误响应
 
-所有非 2xx 响应均使用以下结构（见 `src/error.rs` 中的 `IntoResponse` 实现）：
+所有非 2xx 响应均使用以下结构（见 `src/error/mod.rs` 中的 `IntoResponse` 实现）：
 
 ```json
 {
@@ -89,7 +89,7 @@ HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API
 
 ## 错误码映射
 
-以下映射来源于 `src/error.rs` 中 `NexusFlowError::into_response` 的实际实现（代码为准）。
+以下映射来源于 `src/error/mod.rs` 中 `NexusFlowError::into_response` 的实际实现（代码为准）。
 
 | 错误类型 (`error.type`) | HTTP 状态码 | 触发场景 |
 |---|---|---|

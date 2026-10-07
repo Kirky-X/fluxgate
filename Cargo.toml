@@ -92,7 +92,7 @@ tower-http = { version = "0.7", features = ["cors", "trace", "request-id"], opti
 # 后端（sqlite/postgres/mysql）与 runtime 不在此声明——由 db-* 三组透传 feature
 # 按构建选择（Cargo feature 只加不减，写死会锁死单一后端）
 dbnexus = { path = "../dbnexus", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate"], optional = true }
-sea-orm = { version = "2.0.0-rc.42", default-features = false, optional = true }
+sea-orm = { version = "2.0.4", default-features = false, optional = true }
 
 # 日志 — path dep 确保 oxcache/dbnexus/trait-kit 全部本地对齐。
 # 落库后端（sqlite/postgres）随 db-* 三组经 inklog?/<backend> 透传，不在此写死。
@@ -201,9 +201,8 @@ sdforge = { path = "../sdforge" }
 oxcache = { path = "../oxcache" }
 
 [workspace]
+# 示例集合并为单一 crate（examples/）：内部按 feature 划分模块与 bin，
+# 取代原 rest-http / sdk-usage / embedded-server / grpc-client 四个成员 crate。
 members = [
-    "examples/rest-http",
-    "examples/sdk-usage",
-    "examples/embedded-server",
-    "examples/grpc-client",
+    "examples",
 ]

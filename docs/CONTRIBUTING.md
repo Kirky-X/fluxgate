@@ -102,7 +102,7 @@ projects/
 | `src/router/` | 路由调度 | `router.rs`（5 因子加权）、`affinity.rs`、`bandit.rs` |
 | `src/vendor/` | 厂商管理 | `manager.rs`、`rate_limiter.rs`、`pool.rs`、`queue.rs`、`key_pool.rs`、`resilience/`（FallbackChain + 错误映射） |
 | `src/utils/` | 成本追踪 / 全局指标 / 重试工具 | `cost_tracker.rs`、`metrics.rs`、`retry.rs` |
-| `src/error.rs` / `src/error.rs` | `NexusFlowError` / `GateError` 统一错误（含 HTTP 映射） | — |
+| `src/error/mod.rs` / `src/error/gate.rs` | `NexusFlowError` / `GateError` 统一错误（含 HTTP 映射） | — |
 | `src/lib.rs` / `src/main.rs` | lib 公共 API 与薄启动入口（装配链在 `src/server`） | — |
 
 两个辅助位置：

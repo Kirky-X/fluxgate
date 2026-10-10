@@ -47,3 +47,25 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
+
+  # 基础镜像版本更新（NexusFlow 单仓特有：7 仓基线里只有本仓带 docker/）。
+  # 只跟 docker/Dockerfile 的两条 FROM；docker-compose.yml 的 image 是本仓
+  # 自建产物，不属版本更新对象。
+  # 注：dependabot-core 的 docker 解析器不对 FROM 行做 ARG 展开，所以
+  # Dockerfile 里两个基础镜像必须写字面量 tag，否则该生态位完全看不到依赖
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps"
+      include: "scope"

@@ -60,6 +60,11 @@ python_mock_client/
 .env.local
 .env.*.local
 
+# 运行时配置（部署私有物：API Key 摘要、vendor 直连地址与配额）。
+# 随仓唯一的全量参考是 config.example.toml，复制它起步：
+#   cp config.example.toml config.toml
+config.toml
+
 # 本地工作区指令（不入仓库）
 AGENTS.md
 

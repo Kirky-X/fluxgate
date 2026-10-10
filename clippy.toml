@@ -1,1 +1,12 @@
-msrv = "1.75"
+# Clippy 配置
+#
+# MSRV：不在此重复声明——单一事实来源是根 `Cargo.toml` 的
+# `rust-version = "1.97.1"`（与 7 个兄弟库声明对齐，ci.yml 按该下限装工具链以
+# 固定 clippy lint 集合）。
+#
+# 原写法 `msrv = "1.75"` 会覆盖 Cargo.toml 并触发 clippy 告警
+# 「the MSRV in `clippy.toml` and `Cargo.toml` differ; using `1.75.0` from
+# `clippy.toml`」（CI 的 `-D warnings` 即失败）。危害不止噪音：MSRV 门控的
+# lint 会按 1.75 计算，1.76+ 才建议的惯用法（`Option::inspect`、`ilog2`、
+# `slice::mid`、`let_chains` 等）被静默抑制——等于一边声明 1.97.1 下限、一边
+# 让 linter 按七年前的基线放宽建议。移除本键后 clippy 直接读 Cargo.toml。

@@ -5,13 +5,17 @@
 
 services:
   app:
+    # 镜像带版本：:latest 无法回滚也无法追溯构建了哪份代码，tag 与
+    # Dockerfile 的 APP_VERSION 标签由同一个变量驱动，保持单一事实来源
+    image: nexusflow:${NEXUSFLOW_IMAGE_TAG:-0.1.0}
+    container_name: nexusflow-app
     build:
       # 构建上下文必须是仓库根：Dockerfile 以 bind mount 绑定 src / Cargo.toml，
       # .dockerignore 也按上下文根解析（保持根目录不动）
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: nexusflow-app
-    image: nexusflow:latest
+      args:
+        APP_VERSION: ${NEXUSFLOW_IMAGE_TAG:-0.1.0}
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -25,18 +29,19 @@ services:
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
       # 配置挂载（只读）：镜像内不含配置文件（.dockerignore 安全排除，
-      # main 以第一个 CLI 参数或缺省 config.toml 解析路径）
+      # main 以第一个 CLI 参数或缺省 config.toml 解析路径）。
+      # 宿主机侧 config.toml 同样不入库（部署私有物）——干净检出先执行
+      #   cp config.example.toml config.toml
+      # 再按需修改（示例文件是随仓全量参考）
       - ../config.toml:/app/config.toml:ro
-      # SQLite 数据持久化卷
-      - nexusflow_data:/app/data
-    # 健康检查（实际注册路径带 sdforge 版本前缀：/api/v1/health）
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    # 资源限制 (生产环境推荐)
+      # SQLite 数据持久化：compose 的短语法相对路径按 compose 文件所在目录
+      # 解析（docker/ → 仓库 data/），从任意 cwd 启动都一致。原写法用命名卷
+      # driver_opts + ${PWD}/data，${PWD} 取自调用 shell，在 docker/ 目录或 CI
+      # 下会指向错误路径
+      - ../data:/app/data
+    # 健康检查由镜像 HEALTHCHECK 提供（Dockerfile 为唯一定义），不在这里
+    # 重复声明：compose 覆盖会与镜像层参数漂移（原 5s/10s start-period 不一致）
+    # 资源限制 (生产环境推荐；limits 由 compose v2 强制，reservations 仅作调度提示)
     deploy:
       resources:
         limits:
@@ -50,22 +55,11 @@ services:
       - nexusflow_network
 
 #------------------------------------------------------------------------------
-# 数据卷 (SQLite 持久化)
-#------------------------------------------------------------------------------
-volumes:
-  nexusflow_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${PWD}/data
-
-#------------------------------------------------------------------------------
 # 网络配置
 #------------------------------------------------------------------------------
 networks:
   nexusflow_network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
+    # 不写死子网：固定 172.28.0.0/16 与宿主机已有 docker0/其他项目网络重叠时
+    # 直接报 "Pool overlap" 启动失败；交给 Docker 自动分配，本地需要固定段时
+    # 在 docker-compose.override.yml 里加 ipam 配置

@@ -2,6 +2,11 @@
 name = "nexusflow-examples"
 edition = "2021"
 publish = false
+# MSRV 与根 `nexusflow` 包同值（事实源见根 Cargo.toml 的 `rust-version` 注释）。
+# 必须显式声明：clippy.toml 不再重复 `msrv` 键，clippy 只读包自己的
+# `rust-version`——缺它则该 crate 的 MSRV 门控 lint 回落到「运行时工具链版本」，
+# lint 集合随 stable 漂移（与 ci.yml 按 1.97 下限固定 lint 集合的口径不符）。
+rust-version = "1.97.1"
 # bin 全部经显式 [[bin]] 声明（带 required-features），关闭自动发现避免同名 target 冲突
 autobins = false
 

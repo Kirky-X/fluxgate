@@ -10,13 +10,14 @@
 # 断言两串不相等——是夹具不是 "and" 的笔误。
 abd = "abd"
 
-# 厂商 ID 夹具（tests/vendor_test.rs）："v-ot" 验证不存在厂商的失败路径。
+# 厂商 ID 夹具（tests/vendor/gate_vendor_test.rs）："v-ot" 验证不存在厂商的失败路径。
 ot = "ot"
 
-# 厂商 ID 夹具（tests/admission_test.rs）："v-ded" 验证 shed 后的记账。
+# key_hash 夹具（tests/resilience/admission_test.rs）："ded" 为 Dedicated 档位的
+# admit 入账实参，验证 shed 后的记账。
 ded = "ded"
 
-# SSE 分帧夹具（tests/protocol_test.rs）："Hel" 为流式 content 首个分片
+# SSE 分帧夹具（tests/protocol/gate_protocol_test.rs）："Hel" 为流式 content 首个分片
 # （"Hello" 的截断），断言分片拼回完整文本。
 Hel = "Hel"
 hel = "hel"

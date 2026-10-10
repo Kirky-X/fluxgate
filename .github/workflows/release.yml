@@ -24,7 +24,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_VERSION: '1.92'
+  # 发布产物用当前受支持的 stable，与 docker/Dockerfile 的 rust base 对齐（1.99）。
+  # 原值 1.92 已低于兄弟库 MSRV（dbnexus/limiteron/sdforge 均声明 1.97.1），
+  # cargo 会在依赖解析期直接拒绝构建。MSRV 下限兼容性由 ci.yml 按
+  # Cargo.toml 的 rust-version 校验，不靠本作业保证
+  RUST_VERSION: '1.99'
   BIN_NAME: nexusflow
   SIBLING_REPOS: 'confers dbnexus inklog limiteron oxcache sdforge trait-kit'
 
@@ -67,7 +71,7 @@ jobs:
           for repo in $SIBLING_REPOS; do
             git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
           done
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # 1.92
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}

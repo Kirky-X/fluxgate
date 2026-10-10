@@ -2,7 +2,7 @@
 
 <img src="docs/assets/NexusFlow.png" alt="NexusFlow Logo" width="180">
 
-[![CI Status](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/NexusFlow)](https://github.com/Kirky-X/NexusFlow/releases) [![License](https://img.shields.io/github/license/Kirky-X/NexusFlow)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](https://www.rust-lang.org/)
+[![CI Status](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/NexusFlow)](https://github.com/Kirky-X/NexusFlow/releases) [![License](https://img.shields.io/github/license/Kirky-X/NexusFlow)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 
 **中文** | [English](README_EN.md)
 
@@ -90,14 +90,17 @@
 
 ### 📦 环境要求
 
-- Rust 1.92+（与 CI 锁定版本一致，edition 2021）
-- SQLite（运行时通过 rustls 编译，无系统依赖要求）
+- Rust 1.97.1+（MSRV，由 `Cargo.toml` 的 `rust-version` 声明；edition 2021）
+- SQLite：Docker/musl 产物**静态内嵌**（构建需 `sqlite-dev` 提供头与 `libsqlite3.a`），glibc 本地/发布构建动态链接系统库（需 `libsqlite3-dev`）；TLS 为纯 rustls，不依赖 OpenSSL
 - **7 个兄弟库源码需与本项目同级目录**（path 依赖）：`confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit`
 
 ### 🔨 编译运行
 
 ```bash
-# 默认读取工作目录 config.toml（可参考 config.example.toml）
+# 运行时配置不入库（承载 API Key 摘要与 vendor 直连参数），从全量参考复制起步
+cp config.example.toml config.toml
+
+# 默认读取工作目录 config.toml
 cargo run --release
 
 # 指定配置文件
@@ -121,6 +124,16 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"model": "claude-3-opus", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+
+# 模型列表（OpenAI list 格式，目录 ∪ vendor 去重现算、不缓存）
+curl http://127.0.0.1:8080/v1/models \
+  -H "Authorization: Bearer <your-api-key>"
+
+# Token 计数（近似估算，确定性）
+curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 > 提示：裸 `/health` 未注册路由（会 404），但已加入认证与限流白名单；完整端点清单见 [📘 API 参考](docs/API_REFERENCE.md)。
@@ -129,7 +142,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
 
 ## ⚙️ 配置概览
 
-运行时配置为单个 `config.toml`，共 15 个顶层段（`model_catalog` 与 `grpc` 见 [📖 用户指南](docs/USER_GUIDE.md)）：
+运行时配置为单个 `config.toml`（**不入库**，`cp config.example.toml config.toml` 起步；`config.example.toml` 是随仓唯一的全量参考，每个段与字段都带默认值），共 16 个顶层段（`model_catalog` 与 `grpc` 见 [📖 用户指南](docs/USER_GUIDE.md)）：
 
 | 段 | 作用 | 热更新 |
 |----|------|--------|
@@ -139,6 +152,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
 | `routing` / `retry` / `resilience` | 路由系数与选择算法、重试策略、韧性覆盖面 | ✅ |
 | `cache` / `rate_limit` / `admission` | 响应缓存、入站限流、拥塞准入 | cache/admission ✅ / rate_limit ❌ |
 | `pricing` | 输入/输出 token 单价（成本计算） | ✅ |
+| `grpc` / `docs` | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用） | ❌ 需重启 |
 
 ```toml
 [[vendors]]
@@ -295,7 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 测试策略
 
-单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在顶层 `tests/`（41 个文件：端点、准入、SSE、数据库、装配冒烟、路由、协议转换、厂商、熔断、重试、成本、feature 组合矩阵、i18n 键位守卫等），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
+单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard，共 42 个文件，由根 `Cargo.toml` 的 `[[test]]` 逐文件显式注册；一文件一二进制，进程独占语义不变），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -312,20 +326,20 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1131 个用例通过、0 失败**——单元测试 367 个（`src/` 内联）+ 集成测试 764 个（`tests/` 41 文件）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：**1132 个用例通过、0 失败**——单元测试 367 个（`src/` 内联）+ 集成测试 765 个（`tests/` 42 文件）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
-| protocol_test | 142 | tests/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
-| vendor_test | 110 | tests/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
-| api_test | 102 | tests/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
-| router_test | 91 | tests/ | 加权选择 / 亲和 / 提示路由 / 边界 |
-| database / sse | 38 / 37 | tests/ | 落库查询与预聚合 / 流分帧与 SDK |
-| retry | 25 | tests/ | 重试分类与延迟策略 |
-| config / utils_coverage | 28 / 19 | tests/ | 配置加载 / 指标与限流边界 |
-| fallback / admission | 17 / 16 | tests/ | 换路链 / 准入 |
-| bandit / config_coverage / circuit_breaker | 13 / 14 / 9 | tests/ | bandit 路由 / loader·manager 分支 / 熔断 |
-| server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池等 | 其余 137 | tests/ | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 |
+| protocol_test | 142 | tests/protocol/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
+| vendor_test | 110 | tests/vendor/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
+| api_test | 102 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
+| router_test | 91 | tests/routing/ | 加权选择 / 亲和 / 提示路由 / 边界 |
+| database / sse | 38 / 37 | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK |
+| retry | 25 | tests/resilience/ | 重试分类与延迟策略 |
+| config / utils_coverage | 28 / 19 | tests/config/ · tests/utils/ | 配置加载 / 指标与限流边界 |
+| fallback / admission | 17 / 16 | tests/resilience/ | 换路链 / 准入 |
+| bandit / config_coverage / circuit_breaker | 13 / 14 / 9 | tests/routing/ · tests/config/ · tests/resilience/ | bandit 路由 / loader·manager 分支 / 熔断 |
+| server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池等 | 其余 138 | tests/server/ 等 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
 
 ---
 
@@ -368,20 +382,22 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 ## 🐳 Docker 部署
 
 ```bash
-# 构建镜像（多阶段：rust:1.92-alpine 构建 → alpine:3.21 运行，非 root）
+# 构建镜像（多阶段：rust:1.99-alpine3.24 构建 → alpine:3.24 运行，非 root）
+# 两个基础镜像的 alpine 后缀保持同一分支（产物 musl 静态链接，运行阶段另有
+# ldd 门禁在构建期回验依赖全部可解）
 # 注意：-f 指定 Dockerfile，构建上下文仍为仓库根（bind mount 与 .dockerignore 按根解析）
-docker build -t nexusflow:latest -f docker/Dockerfile .
+docker build -t nexusflow:0.1.0 -f docker/Dockerfile .
 
 # 运行容器（配置只读挂载 + SQLite 数据持久化于 /app/data）
 docker run -d -p 8080:8080 \
   -v $(pwd)/config.toml:/app/config.toml:ro \
-  -v $(pwd)/data:/app/data nexusflow:latest
+  -v $(pwd)/data:/app/data nexusflow:0.1.0
 
-# 或使用 docker-compose 一键部署（含资源限制与健康检查；compose 文件位于 docker/ 下）
+# 或使用 docker-compose 一键部署（含资源限制；compose 文件位于 docker/ 下）
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-> 健康检查：Dockerfile 与 docker-compose 的 HEALTHCHECK 均探测实际注册路径 `/api/v1/health`；docker-compose 自带资源限制（cpus 2 / 内存 512M）与非 root 运行时（详见 [📖 用户指南 · Docker 部署](docs/USER_GUIDE.md)）。
+> 健康检查：由**镜像层 HEALTHCHECK** 单一提供（compose 不再重复声明），探测实际注册路径 `/api/v1/health`；docker-compose 自带资源限制（cpus 2 / 内存 512M）与非 root 运行时，镜像 tag 默认 `nexusflow:0.1.0`，可用 `NEXUSFLOW_IMAGE_TAG` 覆盖（详见 [📖 用户指南 · Docker 部署](docs/USER_GUIDE.md)）。
 
 ---
 
@@ -391,7 +407,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ### 🛠️ 开发环境
 
-工具链为 Rust 1.97（与 `Dockerfile` 钉版及兄弟库 MSRV 1.97.1 对齐）；提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。7 个兄弟库（confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit）需与本项目同级目录。
+工具链基线：MSRV 下限 **1.97.1**（写在 `Cargo.toml` 的 `rust-version`，与 7 个兄弟库声明对齐；ci.yml 按此下限跑 build/clippy 并保证 clippy lint 集合可复现），`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。7 个兄弟库（confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit）需与本项目同级目录。
 
 ### 💖 贡献方式
 

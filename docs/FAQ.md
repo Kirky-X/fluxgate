@@ -24,7 +24,7 @@
 curl http://127.0.0.1:8080/api/v1/health
 ```
 
-> Docker 的 `HEALTHCHECK` 与 `docker-compose` 探针现已对齐该路径（此前误配为裸 `/health` 已修正），详见 [用户指南 · Docker 部署](./USER_GUIDE.md#-docker-部署)。
+> Docker 健康检查现只有**镜像层 `HEALTHCHECK` 一处定义**（compose 不再重复声明），已对齐该路径（此前误配为裸 `/health` 与两处 `start-period` 不一致已修正），详见 [用户指南 · Docker 部署](./USER_GUIDE.md#-docker-部署)。
 
 **代码位置**：`src/api/health.rs:30-37`、`src/api/router_builder.rs:50-78`
 
@@ -99,7 +99,7 @@ curl "http://127.0.0.1:8080/admin/logs/search?vendor=timeout"
 
 先尝试 `Authorization: Bearer`，取不到再读 `x-api-key`。key 经 SHA256 摘要后与 `[auth].api_keys` 做常量时间比较；`[[auth.keys]]` 未声明的 key 档位缺省 `elastic`。整个 `[auth]` 段缺省时认证禁用（放行）。
 
-**代码位置**：`src/middleware/auth.rs:140-168`（`extract_api_key`）
+**代码位置**：`src/utils/tenant.rs`（`extract_api_key`，`src/middleware/auth.rs` re-export 同一实现）
 
 ### ❓ `POST /admin/vendors/:id/reset` 为什么是 no-op？
 

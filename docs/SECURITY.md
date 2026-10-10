@@ -60,6 +60,19 @@ flowchart LR
 - `ApiAuthState` 内部以 `HashSet<String>` 存摘要；编程接口 `add_api_key` 现场摘要后存储，明文即刻丢弃
 - 单元测试以已知明文/摘要对锁定算法与编码格式
 
+### 摘要形态与 key 熵要求（无盐 SHA-256）
+
+落库/落配置的摘要为**无盐 SHA-256**（`sha256(key)`，`[[auth.keys]].hash`、
+分账表 `token_usage.api_key_hash`、响应缓存/亲和键同源）。无盐意味着同一
+key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一点），代价是摘要
+可被离线字典攻击：**泄露面与 key 熵正相关**。因此：
+
+- API key 必须为**高熵随机串**（≥128 bit，如 `openssl rand -base64 24`），
+  禁止低熵/可枚举 key——低熵 key 的 SHA-256 可被预计算表在库泄露后离线爆破；
+- 高熵 key 的无盐摘要不可逆（预计算不可行），安全性与加盐形态等价；
+- 数据库泄露的应急处置同 key 泄露：立即轮换全部 key（`POST /admin/config`
+  热更新即时生效）。
+
 ### 常量时间比较
 
 校验时对请求 key 现场计算 SHA256 摘要，再与存储摘要逐字节 XOR 累积比较（`constant_time_eq`），消除时序侧信道。摘要长度恒为 64 hex，前置长度检查不泄露有效信息。key 档位查询（`tier_for_key`）复用同一常量时间比较。
@@ -91,6 +104,21 @@ flowchart LR
 ### 部署要求
 
 **`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单仅 `/health`、`/api/v1/health`、`/`；其余路径（含全部 `/admin/*`）均需认证。
+
+### Admin 端点暴露面与生产隔离要求（评审 M2）
+
+`/admin/*`（配置读写、vendor 治理、日志/成本查询、路由解释）与数据面共用**单层 key 鉴权**
+（同一 `[auth]` 摘要表，无独立管理角色体系——管理角色体系超出本变更范围，如需 RBAC 级
+隔离请另行立项）。这意味着：**任何持有数据面 key 的调用方都能读写管理面**。新端点
+（`/admin/cost`、`/admin/route/explain`、`/admin/models` CRUD 等）扩大了暴露面，生产部署必须
+以网络/反代层补偿：
+
+- 在反向代理（nginx/traefix 等）按路径隔离 `/admin/*`：仅管理网段/管理端口可达，或叠加
+  独立的管理面认证（mTLS / SSO / IP allowlist）；
+- 或将管理面 key 仅下发给运维/管理员，数据面调用方持不同 key——并接受「数据面 key 等于
+  管理面 key」的模型边界（本段即为该边界的显性声明，非缺陷瞒报）；
+- `/admin/cost` 的 key 过滤参数经请求头 `x-nexusflow-cost-key` 传明文（服务端哈希后比对），
+  **禁止**把 key 放 URL 查询串（会落入反代/访问日志，CWE-598）。
 
 ---
 
@@ -234,7 +262,7 @@ flowchart LR
 |:---|:-----|
 | 数据库 TLS | dbnexus 以 `runtime-tokio-rustls` 特性编译（rustls 栈） |
 | 网关自身 TLS | 不经 sdforge 终结 TLS——自建 axum 明文监听，**TLS 由外部反向代理承担**（部署责任） |
-| 容器运行时 | `alpine:3.21` 最小化镜像，多阶段构建 |
+| 容器运行时 | `alpine:3.24` 最小化镜像（主仓支持至 2028-06），多阶段构建；产物 musl 静态链接，应用不依赖 OpenSSL（TLS 栈为纯 rustls；libssl3/libcrypto3 由 alpine 基础镜像自带，已从 apk add 显式清单移除），运行阶段 `ldd` 回验依赖全部可解 |
 | 非 root | 专用用户 `appuser`（UID/GID 10001），无 home、无登录 shell |
 | 数据卷 | `/app/data`（SQLite 数据库），属主 appuser |
 | 健康检查 | Dockerfile `HEALTHCHECK` 探测 `/api/v1/health`（实际注册路径带 sdforge 版本前缀） |
@@ -254,7 +282,7 @@ flowchart LR
 
 镜像构建与 Trivy 扫描已移出 CI（依赖与本仓 Cargo.lock 同源的兄弟库提交，纯远端构建不可行），本机构建命令见 [USER_GUIDE · Docker 部署](./USER_GUIDE.md#-docker-部署)；恢复 CI 镜像门禁的前置条件与 `SIBLING_PINS` 机制见 `docker/Dockerfile` 头注。
 
-工具链锁定 `RUST_VERSION=1.92`（`dtolnay/rust-toolchain@stable`），构建产物可复现。
+工具链基线：MSRV 下限 `rust-version = "1.97.1"` 写在根 `Cargo.toml`（与 7 个兄弟库声明一致，cargo 在依赖解析期硬拒更低工具链），ci.yml 按该下限安装工具链（`dtolnay/rust-toolchain@7e38f4b4 # v1`）以固定 clippy lint 集合，`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。基础镜像与 Rust 依赖由 `.github/dependabot.yml` 的 `cargo` / `github-actions` / `docker` 三个生态位每周跟踪，因此构建产物可追溯到具体基线版本。
 
 ---
 

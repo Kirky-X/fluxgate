@@ -16,10 +16,13 @@
   - [POST /v1/chat/completions](#post-v1chatcompletions)
   - [POST /v1/embeddings](#post-v1embeddings)
   - [POST /v1/messages](#post-v1messages)
+  - [GET /v1/models](#get-v1models)
+  - [POST /v1/messages/count_tokens](#post-v1messagescount_tokens)
 - [管理端点](#管理端点)
   - [GET /admin/logs](#get-adminlogs)
   - [GET /admin/logs/search](#get-adminlogssearch)
   - [GET /admin/stats/tokens](#get-adminstatstokens)
+  - [GET /admin/cost](#get-admincost)
   - [GET /admin/metrics](#get-adminmetrics)
   - [GET /admin/vendors](#get-adminvendors)
   - [GET /admin/vendors/:id/status](#get-adminvendorsidstatus)
@@ -30,6 +33,7 @@
   - [PUT /admin/models/:id](#put-adminmodelsid)
   - [DELETE /admin/models/:id](#delete-adminmodelsid)
   - [POST /admin/models/:id](#post-adminmodelsid)
+  - [POST /admin/route/explain](#post-adminrouteexplain)
 - [健康检查](#健康检查)
   - [GET /api/v1/health](#get-apiv1health)
 - [附录：路由提示请求头](#附录路由提示请求头)
@@ -110,6 +114,16 @@ HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API
 > - 全局规则超速 → `429 Too Many Requests` + `Retry-After` 头（窗口剩余秒），文案同上；旧 `Governor` 路径的无头 429 与 `403` 封禁分支已删除（规则 ban 恒为 None）。
 > - 限流白名单路径（不进入限流检查）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs/*`、`/swagger-ui/*`。
 > - 每次响应（含 429）均回传 **`X-Request-Id`** 响应头：透传客户端所带 ID，未带时网关生成（`req-` 前缀）；同请求 tracing span 携带该 ID。
+> - **配额层**（按 key 的 token/成本固定窗口，`src/middleware/quota.rs`）：`[quota].enabled`（默认 `false`）
+>   开启且 `[[auth.keys]]` 的 `token_quota`/`cost_quota_millicents` 任一 > 0 时生效；仅作用于
+>   `/v1/chat/completions` 与 `/v1/messages`。入口预扣（预估输入 token×输入单价 + `max_tokens`×输出单价，
+>   单价以 `[[model_catalog]]` 四档为准，未登记模型回退 `[[pricing]]`），响应/流结束后按实际 usage 回补差额；
+>   超限返回 `429 Too Many Requests` + `Retry-After`（窗口剩余秒），文案随 locale（zh `"配额已耗尽，请稍后重试"`）。
+>   非流式、转换流与**透传流**均回补；透传流断流、`event: error` 终止或全程无 usage（OpenAI 不带
+>   `stream_options.include_usage`）时保持预扣不回补；入口被拒与上游失败的预扣一律不返还。
+> - **配额余量响应头**：规格 Out of Scope（X-RateLimit-\* 形态，本期不做），不提供该响应面；余量观测走
+>   `GET /admin/cost` 聚合查询侧。因 quota 位于 rate_limit/admission 外层，被内层闸门拒绝的 429 也已消耗本次预扣
+>  （拒收不返还口径不变，只是不再经响应头暴露）。
 > - **准入层**（拥塞感知优先级准入，`src/middleware/admission.rs`）：`[admission].enabled`（默认 `false`）开启后，网关并发占用率（Σ 在途 / Σ 并发上限）达到 `congestion_threshold`（默认 `0.9`）时，优先级低于当前在途最小档位的请求被直接卸载（shed），返回 `429 Too Many Requests` + `Retry-After: 1`，文案随 locale（zh `"准入被拒绝（拥塞）"`）。请求档位（dedicated/guaranteed/elastic/spot）由 `[auth].keys` 子表按 API key 声明，未声明的 key 缺省 `elastic`。健康检查路径永不卸载。
 
 ---
@@ -379,6 +393,82 @@ curl -X POST http://localhost:8080/v1/messages \
 
 ---
 
+### GET /v1/models
+
+OpenAI 模型列表兼容端点。模型集合 = `[[model_catalog]]` 目录 ∪ 各 vendor 配置模型去重（仅 enabled vendor 的 enabled 模型；同 id 只出现一次，按 id 排序）。响应始终现算，不进入响应缓存（无 `X-Cache` 头）。
+
+**认证**: 需要 Bearer Token
+
+**响应**:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "gpt-4", "object": "model", "owned_by": "openai"},
+    {"id": "my-catalog-model", "object": "model", "owned_by": "nexusflow"}
+  ]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `data[].id` | 模型 ID |
+| `data[].object` | 恒为 `"model"` |
+| `data[].owned_by` | 认领 vendor 的 ID；目录独有条目为 `"nexusflow"` |
+
+**curl 示例**:
+
+```bash
+curl http://localhost:8080/v1/models \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
+### POST /v1/messages/count_tokens
+
+Anthropic 兼容 token 计数端点。返回输入的近似 token 估计（字符数/4 + 每消息结构开销；确定性：相同输入两次结果一致；不引 tokenizer 依赖）。
+
+**认证**: 需要 Bearer Token
+
+**请求体** (`Json<Value>`):
+
+```json
+{
+  "model": "gpt-4",
+  "messages": [{"role": "user", "content": "Hello"}],
+  "system": "You are helpful.",
+  "tools": [{"type": "function", "function": {"name": "get_weather"}}}]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `model` | string | 是 | 模型 ID（仅存在性校验，不校验注册） |
+| `messages` | array | 是 | 非空消息列表（`content` 支持 string 或内容块数组） |
+| `system` | string \| array | 否 | 系统提示（计入估计） |
+| `tools` | array | 否 | 工具 schema（序列化字符数计入估计） |
+
+**响应**:
+
+```json
+{"input_tokens": 23}
+```
+
+**错误码**: `validation_error`(400，`model` 缺失/非 string、`messages` 缺失/非数组/空数组)
+
+**curl 示例**:
+
+```bash
+curl -X POST http://localhost:8080/v1/messages/count_tokens \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+---
+
 ## 管理端点
 
 所有 `/admin/*` 端点均要求 Bearer Token 认证，且受入站限流策略约束（`config.toml` 中 `[[rate_limit.rules]]` 的 `path` 前缀规则可覆盖 `/admin/*`；未配置时走 limiteron Governor 内置默认兜底）。
@@ -481,7 +571,7 @@ curl "http://localhost:8080/admin/logs/search?vendor=Hello&limit=50" \
 | `vendor` | string | 否 | - | 厂商过滤；未提供则返回全部 |
 | `start_time` / `end_time` / `model` / `limit` | - | 否 | - | 接受但不参与查询逻辑 |
 
-**响应**: `TokenUsage` 数组（按 `date DESC, hour DESC` 排序）
+**响应**: `TokenUsage` 数组（按 `date DESC, hour DESC` 排序；`prompt_tokens`=`input_tokens`、`completion_tokens`=`output_tokens`、`total_tokens`=四类之和、`cost_usd_sum`=四项成本之和，分账明细见 [GET /admin/cost](#get-admincost)）
 
 ```json
 [
@@ -489,18 +579,23 @@ curl "http://localhost:8080/admin/logs/search?vendor=Hello&limit=50" \
     "id": 1,
     "vendor": "mock-openai",
     "model": "gpt-4",
+    "api_key_hash": "d6593c4e…",
     "date": "2026-07-14",
     "hour": 10,
     "request_count": 42,
     "total_tokens": 12000,
     "prompt_tokens": 8000,
     "completion_tokens": 4000,
-    "cost_usd_sum": 0.0
+    "cost_usd_sum": 0.36,
+    "cache_read_tokens": 500,
+    "cache_creation_tokens": 0,
+    "input_cost": 0.24,
+    "output_cost": 0.12,
+    "cache_read_cost": 0.0,
+    "cache_creation_cost": 0.0
   }
 ]
 ```
-
-> `cost_usd_sum` 字段当前恒为 `0.0`（成本不持久化）：API 层写入预聚合器时成本实参恒传 `0.0`，按 `[pricing]` 单价计算出的 USD 成本仅累计进内存指标，未进入 `token_usage` 表。
 
 **错误码**: `database_error`(500)
 
@@ -509,6 +604,61 @@ curl "http://localhost:8080/admin/logs/search?vendor=Hello&limit=50" \
 ```bash
 curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
   -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
+### GET /admin/cost
+
+成本分账聚合查询（`token_usage` 预聚合表，四类 token 与分项成本按维度求和）。空窗口返回空数组而非错误。
+
+**认证**: 需要 Bearer Token
+
+**Query 参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `group_by` | `vendor` \| `model` | 是 | 分组维度（非法值 400） |
+| `from` / `to` | `YYYY-MM-DD` | 否 | 日期闭区间（格式错误 400） |
+
+**请求头**（可选过滤）:
+
+| 头 | 说明 |
+|---|---|
+| `x-nexusflow-cost-key` | 请求方 key 原文（服务端哈希后过滤该 key 的分账；空值/缺省 = 不过滤）。不用 query 参数传递，避免 key 进访问日志 |
+
+**响应**:
+
+```json
+{
+  "group_by": "vendor",
+  "rows": [
+    {
+      "vendor": "mock-openai",
+      "model": null,
+      "request_count": 42,
+      "input_tokens": 8000,
+      "output_tokens": 4000,
+      "cache_read_tokens": 500,
+      "cache_creation_tokens": 0,
+      "input_cost": 0.24,
+      "output_cost": 0.12,
+      "cache_read_cost": 0.0,
+      "cache_creation_cost": 0.0,
+      "total_cost": 0.36
+    }
+  ]
+}
+```
+
+**错误码**: `validation_error`(400，`group_by` 非法/缺失、日期格式错误) | `database_error`(500)
+
+**curl 示例**:
+
+```bash
+curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-10-09" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "x-nexusflow-cost-key: $FILTER_KEY"
 ```
 
 ---
@@ -697,7 +847,7 @@ curl http://localhost:8080/admin/vendors/mock-openai/status \
 
 ### POST /admin/vendors/:id/reset
 
-重置厂商限流状态。当前实现为 no-op（`limiteron::Governor` 自动管理令牌桶 refill），保留此端点以维持 API 兼容性。
+重置厂商 key 池黑名单（含游标）与冷却状态（密钥池三态恢复通道；配置热更按 key 集合变化裁剪为另一通道）。限流器状态仍由 `limiteron` 自动管理（令牌桶 refill），此处不触限流器。
 
 **认证**: 需要 Bearer Token
 
@@ -705,7 +855,7 @@ curl http://localhost:8080/admin/vendors/mock-openai/status \
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
-| `id` | string | 厂商 ID（当前实现未使用） |
+| `id` | string | 厂商 ID（未知 vendor 返回 `validation_error`） |
 
 **请求体**: 无
 
@@ -714,11 +864,11 @@ curl http://localhost:8080/admin/vendors/mock-openai/status \
 ```json
 {
   "success": true,
-  "message": "厂商限流状态由 limiteron Governor 自动管理"
+  "message": "厂商 mock-openai 的密钥池黑名单与冷却状态已清空"
 }
 ```
 
-**错误码**: 无业务错误
+**错误码**: `validation_error`(400，未知 vendor)
 
 **curl 示例**:
 
@@ -1100,6 +1250,63 @@ curl -X POST http://localhost:8080/admin/models/global \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"enabled": true, "strategy": "weighted"}'
+```
+
+---
+
+### POST /admin/route/explain
+
+路由可解释性：对指定模型逐候选给出路由评估（纯只读——不发上游请求，不改变亲和/熔断/队列任何状态）。候选池 = 全部 vendor × 请求模型（按 `model_id`/`abstract_id` 大小写不敏感匹配）。
+
+**认证**: 需要 Bearer Token
+
+**请求体** (`Json<Value>`):
+
+```json
+{
+  "model": "gpt-4",
+  "session_id": "user-session-1"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `model` | string | 是 | 模型名（未知模型返回 `validation_error`） |
+| `session_id` | string | 否 | 会话亲和键；缺省时跳过亲和判定 |
+
+**响应**: 逐候选 `{vendor, model, decision, reason_code, detail}`（入选者另附 `factors` 5 因子权重分解、`weight`/`base_weight`、`selection` 档位）：
+
+```json
+{
+  "model": "gpt-4",
+  "candidates": [
+    {
+      "vendor": "openai", "model": "gpt-4",
+      "decision": "eligible", "reason_code": "eligible",
+      "detail": "候选合格（selection=weighted）",
+      "factors": {"model": 0.4, "queue": 0.3, "window": 0.3, "latency": 0.0, "error": 0.0},
+      "weight": 1.0, "base_weight": 1.0, "selection": "weighted"
+    },
+    {
+      "vendor": "anthropic", "model": "gpt-4",
+      "decision": "excluded", "reason_code": "not_in_catalog",
+      "detail": "vendor 'anthropic' 不提供模型 'gpt-4'"
+    }
+  ]
+}
+```
+
+`reason_code` 稳定机器码（不做 i18n）：`disabled`（vendor/模型未启用）| `cooling_down`（熔断/冷却中）| `throttled`（限流窗口耗尽）| `not_in_catalog`（该 vendor 不提供此模型）| `weight_zero`（合成权重为 0）| `affinity_bound_elsewhere`（会话亲和绑定他处，hard 模式排他）| `queue_over_limit`（队列饱和）| `eligible`（候选合格）。优先级：`not_in_catalog` → `disabled` → `throttled` → `cooling_down` → `affinity_bound_elsewhere` → `queue_over_limit` → `weight_zero` → `eligible`。
+
+**错误码**: `validation_error`(400，`model` 缺失/非 string/未知模型)
+
+**curl 示例**:
+
+```bash
+curl -X POST http://localhost:8080/admin/route/explain \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "session_id": "user-session-1"}'
 ```
 
 ---

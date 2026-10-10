@@ -24,7 +24,7 @@
 
 | 依赖 | 版本要求 | 说明 |
 |:-----|:---------|:-----|
-| Rust | **1.92** | CI 锁定 `dtolnay/rust-toolchain@stable` + `env RUST_VERSION=1.92`，与 Dockerfile 构建参数一致 |
+| Rust | **1.97.1+**（MSRV） | 下限声明在根 `Cargo.toml` 的 `rust-version`（与 7 个兄弟库一致）。ci.yml 按 MSRV 安装工具链（`dtolnay/rust-toolchain@7e38f4b4 # v1` + `toolchain: 1.97`），既守住下限也让 clippy lint 集合可复现；`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。**clippy 的 MSRV 只取各包自己的 `rust-version`**：`clippy.toml` 不重复 `msrv` 键（曾写 1.75，与下限冲突——clippy 告警令 `-D warnings` 必红，且 MSRV 门控 lint 按旧基线静默抑制），成员 crate `examples` 也显式声明同值 `rust-version`，否则其 lint 基线会回落到运行时 stable 而漂移。改 MSRV 后验证 clippy 需先 `cargo clean -p nexusflow -p nexusflow-examples`：cargo 不把 `clippy.toml` 纳入 fingerprint，不清理则复用缓存诊断 |
 | Git | 任意近期版本 | 版本控制 |
 
 安装 Rust 工具链：
@@ -160,14 +160,16 @@ cargo build --release
 | 假时钟 | limiteron `MockClock` **需 `test-clock` feature**（已在 `[dev-dependencies]` 注明）——驱动熔断超时 / 限流窗口重置等时间相关测试 |
 | 异步测试 | `#[tokio::test]`；涉及连接池与多任务协调时使用 `flavor = "multi_thread"` |
 | 确定性 | 时间敏感断言优先注入时钟/时间戳（如 `admit(&self, tier, key_hash, now_ms)`），避免真实 `sleep` |
-| 配置示例 | `tests/config_toml_example_test.rs` 对 `config.example.toml` 做结构性断言——**改配置结构必须同步改该测试** |
+| 配置示例 | `tests/config/config_toml_example_test.rs` 对 `config.example.toml` 做结构性断言——**改配置结构必须同步改该测试** |
 
 运行测试：
 
 ```bash
 cargo test --workspace                         # 全量（default 口径）
-cargo test --test gate_router_test             # 单个集成测试文件
+cargo test --test gate_router_test             # 单个集成测试二进制（名字 = 文件 stem）
 ```
+
+集成测试按功能域目录化存放（`tests/<domain>/<name>.rs`），根 `Cargo.toml` 关闭自动发现（`autotests = false`）并逐文件显式登记 `[[test]]`：**新增测试文件必须同步登记**（name 取文件 stem、path 指向实际位置），否则 cargo 静默不编译不运行。
 
 ---
 
@@ -191,7 +193,7 @@ cargo test --test gate_router_test             # 单个集成测试文件
 
 纪律要求：
 
-1. **新增能力必须 feature 门控**，并挂入 `full` 的依赖链；`tests/feature_matrix.rs` 会验证 feature 组合
+1. **新增能力必须 feature 门控**，并挂入 `full` 的依赖链；`tests/matrix/feature_matrix.rs` 会验证 feature 组合
 2. `--no-default-features` 必须可编译；`--all-features` 因 db-* 后端三组互斥必然编译失败（预期行为，非缺陷）
 3. 特殊例子 `http`：这是一个**宏门控空 feature**（无实现体）。原因见 `Cargo.toml` 注释：sdforge 的 `#[forge]` 宏按**目标 crate** 的 feature 求值 `cfg(feature = "http")`——无同名 feature 时 `RouteRegistration` 整体被 cfg 掉，`#[forge]` 站点路由（/health）会静默丢失。它仅作为宏门控开关随 `web-server` 启用
 
@@ -234,7 +236,7 @@ refactor(database): 用 dbnexus 替换 sqlx 数据库层
 | 变更类型 | 需同步更新的文档 |
 |:---------|:-----------------|
 | API / 端点变更 | `docs/API_REFERENCE.md` |
-| 配置项变更 | `docs/USER_GUIDE.md`（并同步 `config.example.toml` 与 `tests/config_toml_example_test.rs`） |
+| 配置项变更 | `docs/USER_GUIDE.md`（并同步 `config.example.toml` 与 `tests/config/config_toml_example_test.rs`） |
 | 架构 / 模块变更 | `docs/ARCHITECTURE.md` |
 | 用户可感知的新能力 / 修复 | `docs/CHANGELOG.md` |
 
@@ -262,7 +264,7 @@ flowchart LR
 | **3. 开发** | 新分支开发，保持 commit 原子性；新能力记得 feature 门控与测试 |
 | **4. 本地验证** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` 全绿（非默认后端另跑 `cargo check -p nexusflow --no-default-features --features "full,db-postgres"`） |
 | **5. PR** | 描述变更动机与影响面，关联 Issue；等待 CI 全绿与评审 |
-| **6. 发布** | 维护者推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`：自动创建 GitHub Release（rc/beta/alpha 后缀自动标记预发布），产出 gnu 动态链接与 musl 静态（Docker alpine 同源）两个二进制产物；删除 tag 时 `tag-deleted.yml` 自动清理对应 Release |
+| **6. 发布** | 维护者推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`（工具链 1.99，与 Dockerfile base 对齐）：自动创建 GitHub Release（rc/beta/alpha 后缀自动标记预发布），产出 gnu 动态链接二进制（链接系统 `libsqlite3`）；musl 静态产物不再在 CI 借道 Docker 构建，需要时在本机执行 `docker build -f docker/Dockerfile .` 从镜像提取；删除 tag 时 `tag-deleted.yml` 自动清理对应 Release |
 
 安全相关修复请勿通过公开 PR 披露细节，走 [Security Advisories](https://github.com/Kirky-X/NexusFlow/security/advisories/new)（见 [安全文档](./SECURITY.md#-漏洞报告流程)）。
 

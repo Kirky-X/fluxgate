@@ -29,13 +29,16 @@
 
 | 项目 | 要求 | 说明 |
 |:-----|:-----|:-----|
-| Rust | 1.92 | CI 锁定版本（`.github/workflows/ci.yml` 的 `RUST_VERSION: '1.92'`，与 `Dockerfile` 的 `ARG RUST_VERSION=1.92` 一致） |
+| Rust | 1.97.1+（MSRV） | 下限由根 `Cargo.toml` 的 `rust-version` 声明（与 7 个兄弟库一致）；`.github/workflows/ci.yml` 按 MSRV（`RUST_VERSION: '1.97'`）跑 build/clippy，`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99） |
 | 兄弟库 | 7 个，须与本项目同级目录 | `confers` / `dbnexus` / `inklog` / `limiteron` / `oxcache` / `sdforge` / `trait-kit`（均为 path 依赖并经 `[patch.crates-io]` 重定向，见根 `Cargo.toml`） |
 | 上游密钥 | 按厂商注入环境变量 | 各 `[[vendors]]` 条目的 `api_key_env` 指定的环境变量（如 `OPENAI_API_KEY`） |
 
 ### 编译与启动
 
 ```bash
+# 运行时配置不入库（部署私有物），从随仓全量参考复制起步
+cp config.example.toml config.toml
+
 # 默认读取当前目录 config.toml
 cargo run --release
 
@@ -43,7 +46,7 @@ cargo run --release
 cargo run --release -- /path/to/config.toml
 ```
 
-配置路径参数解析见 `src/main.rs`（`std::env::args().nth(1)`，缺省 `config.toml`）。服务器默认监听 `0.0.0.0:8080`（`[server]` 段默认值，见 `src/config/mod.rs`）。
+配置路径参数解析见 `src/main.rs`（`std::env::args().nth(1)`，缺省 `config.toml`）。服务器默认监听 `0.0.0.0:8080`（`[server]` 段默认值，见 `src/config/mod.rs`）。**`config.example.toml` 是随仓唯一的全量参考**：`Config` 结构体的每个段、每个字段都在那里并标注默认值与热更新可用性，显式值与 serde default 逐位一致（复制即得默认行为）；新增配置项须同步该文件与 `tests/config/config_toml_example_test.rs`。
 
 ### 验证服务
 
@@ -57,6 +60,12 @@ curl http://127.0.0.1:8080/api/v1/health
 
 ```json
 {"status": "ok", "version": "0.1.0", "timestamp": "..."}
+```
+
+数据面端点可用性（需认证；模型列表始终现算、不缓存）：
+
+```bash
+curl http://127.0.0.1:8080/v1/models -H "Authorization: Bearer $API_KEY"
 ```
 
 ### 一次请求的完整路径
@@ -379,11 +388,89 @@ max_requests = 100
 
 成本公式：`(prompt/1000)×input + (completion/1000)×output`，按 `(vendor_id, model_id)` 精确匹配查找（`src/vendor/cost.rs`）。
 
+> **档源优先级**：`[[model_catalog]]` 登记模型的四档价（每 1M tokens）为计价正源——成本分账（`token_usage`）、
+> CostTracker 记账与**配额成本窗**均走 `estimate_cost_from_catalog`；`[[pricing]]` 仅用于路由 SLA 因子（`sla_v`）
+> 与未登记目录模型的配额回退档（无 cache 两档）。同一请求的「分账成本」与「配额扣减」由同一函数产出，
+> 仅余向上取整的 ≤1 millicent 尾差。
+
 ### 已知边界（如实声明）
 
 - **未配置 `[[pricing]]` 或 (vendor, model) 不匹配时成本按 `0.0` 计**，不会阻塞响应。
 - 定价热更立即生效（定价表支持运行时动态更新）。
-- 成本当前只进**内存 `CostTracker`** 累积：请求日志表 `request_logs.cost_usd` 恒为 `None`（`src/api/openai.rs` / `src/api/anthropic.rs` 构造日志条目时固定填 `None`），且**没有 `/admin/cost` 查询端点**——跨重启的成本持久化查询属已知未实现能力。
+- 成本当前只进**内存 `CostTracker`** 累积：请求日志表 `request_logs.cost_usd` 恒为 `None`（`src/api/openai.rs` / `src/api/anthropic.rs` 构造日志条目时固定填 `None`）。
+
+### 成本分账落库与查询
+
+每次成功响应经预聚合落 `token_usage` 表：聚合键 `(vendor, model, api_key_hash, date, hour)`（`api_key_hash` 为请求方 key 的 SHA-256 摘要，跨重启稳定；`[[model_catalog]]` 未登记模型成本记 0），四类 token（input/output/cache_read/cache_creation）与分项成本各自累加。
+
+数据库升级：`token_usage` 分账形态经 **V2 版本化迁移**落地（V1 冻结不动）——全新库自动应用
+V1+V2；存量 V1 库启动时原地升级（旧行保留：prompt/completion 映射 input/output、组合成本
+整额记入 `input_cost`、`api_key_hash` 回填空串），升级失败启动即 fail-fast。
+
+```bash
+# 按厂商分组查询（空窗口返回 []）
+curl "http://127.0.0.1:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-10-09" \
+  -H "Authorization: Bearer $API_KEY"
+
+# 按 key 过滤（明文 key 经请求头传递，服务端哈希后比对——
+# 不进 URL：查询串会落入反代/访问日志）
+curl "http://127.0.0.1:8080/admin/cost?group_by=vendor" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "x-nexusflow-cost-key: <调用方 key 原文>"
+```
+
+### [quota] 成本与 token 配额（预扣-回补）
+
+按调用方 API key 的固定窗口配额，与 `[rate_limit]`（请求数）、`[admission]`（拥塞 shed）**相互独立、叠加生效**：
+执行序 `auth → quota → rate_limit → admission`，任一触发即拒（`429 + Retry-After`），三方文案可区分触发闸门。
+
+| 字段 | 默认值 | 说明 |
+|:-----|:-------|:-----|
+| `enabled` | `false` | 默认零判限；热读 |
+| `window_secs` | `3600` | 固定窗口长度（`0` 非法，validate 拒绝）；热读 |
+| `est_chars_per_token` | `4` | 预扣输入 token 估算常数（与 `count_tokens` 同口径）；热读 |
+
+> 配额余量的响应头暴露（`X-RateLimit-*` 形态）为本特性规格的明文 Out of Scope，
+> 不提供配置位（余量可经 `POST /admin/cost` 侧查询对账）。
+>
+> ⚠️ `quota.enabled = true` 而 `[auth]` 关闭/缺段时：配额租户键取自客户端自报的
+> key 头（无认证校验），任意伪造头即可无限开新窗口——计费控制退化为尽力而为。
+> 该组合加载/热更时会产生启动警告（日志 `config-quota-without-auth`）。
+
+per-key 限额放 `[[auth.keys]]`：`token_quota`（input+output 合计，`0` = 不限）与
+`cost_quota_millicents`（1 millicent = 1e-5 USD，`0` = 不限）。
+
+**预扣-回补**：入口按 `预估输入 token×输入单价 + max_tokens×输出单价` 预扣（cache 两档不参与预估），
+响应/流结束后按实际 usage 回补差额（低于预估返还、超预估追扣）。结算覆盖面：
+
+| 形态 | 是否回补 |
+|:-----|:---------|
+| 非流式（透传与转换） | ✅ 响应后 |
+| 转换流式（入站协议 ≠ 出站协议） | ✅ 流结束后（取 `usage` 尾帧，含 cache 两档） |
+| **透传流式**（入站协议 = 出站协议） | ✅ 正常收束后（逐帧观测 `message_start`/`message_delta` 或 OpenAI `usage` 尾帧） |
+| 透传流断流 / `event: error` 终止 | ❌ 不回补（保持预扣） |
+| OpenAI 透传流不带 `stream_options.include_usage` | ❌ 无 usage 可解析 → 不回补 |
+| 入口被拒（配额超限 / 限流 / 准入 shed）与上游失败 | ❌ 预扣不返还 |
+
+> 未受限的形态（`enabled = false`、或该 key 双限额均为 `0`）**不挂帧观测包装**，透传响应字节与
+> 未引入本特性时逐字节一致。
+
+一件易误读事项：被内层 `rate_limit`/`admission` 拒绝的 `429` 也已消耗本次预扣
+（quota 在外层，拒收不返还）——不要读成“被限流就没花钱”。缓存命中的重复请求
+（`X-Cache: HIT`）无上游用量，按 **0 结算全额回补**入口预扣，不虚耗配额。
+
+```toml
+[quota]
+enabled = true
+window_secs = 3600
+est_chars_per_token = 4
+
+[[auth.keys]]
+hash = "<sha256(调用方 key)>"
+tier = "elastic"
+token_quota = 200_000            # 每小时 20 万 token
+cost_quota_millicents = 500_000  # 每小时 5 USD
+```
 
 ---
 
@@ -396,6 +483,7 @@ max_requests = 100
 | `GET /admin/config` | 读取当前生效配置 |
 | `POST /admin/config` | **全量覆盖**更新（body 为完整 Config JSON/TOML 结构，不是增量 patch） |
 | `POST /admin/models/global` | 原子 RMW 更新全局模型策略（路径 id 约定为 `global`） |
+| `POST /admin/route/explain` | 路由解释（只读）：`{model, session_id?}` → 逐候选 `{decision, reason_code}` + 入选者 5 因子权重分解与 selection 档位；不发上游请求、不改状态 |
 
 RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落盘，并发互斥不丢更新（`src/api/admin.rs`）。
 
@@ -444,17 +532,20 @@ flowchart TB
 
 Docker 相关文件位于 `docker/` 目录：`docker/Dockerfile`（构建定义）与 `docker/docker-compose.yml`（部署编排）；`.dockerignore` 留在仓库根——构建上下文是仓库根，忽略规则按上下文根解析。构建命令见 [README](../README.md#-docker-部署)。
 
-两阶段构建：`rust:1.92-alpine`（编译）→ `alpine:3.21`（运行），运行态仅含 libssl3 / sqlite / ca-certificates，以非 root 用户 `appuser`（UID/GID 10001）运行，`EXPOSE 8080`，数据目录 `/app/data`。
+两阶段构建：`rust:1.99-alpine3.24`（编译）→ `alpine:3.24`（运行），运行态 apk 清单为 sqlite / sqlite-libs / ca-certificates（仅供容器内用 sqlite3 CLI 查库与读根证书：产物 musl 静态链接，本身不需要任何额外库；TLS 栈为纯 rustls，不再显式声明 libssl3/libcrypto3—该两包由 alpine 基础镜像自带），以非 root 用户 `appuser`（UID/GID 10001）运行，`EXPOSE 8080`，数据目录 `/app/data`。实测镜像 78.9 MB。
+
+两个阶段的 alpine 后缀建议同一分支升级：产物为 musl 静态链接（实测 `ldd /bin/server` 只留 `ld-musl` 一条，sqlite 已静态内嵌），因此不存在 sqlite 符号跨版本风险；对齐两侧是为了 loader、apk 包与构建头文件不跳分支。运行阶段的 `ldd /bin/server` 门禁作回验：一旦基座或依赖图改为动态链接（如引入 glibc 基座或 OpenSSL 绑定）而运行阶段没装对应包，构建直接失败而不是到容器启动时才暴露。
 
 ```mermaid
 flowchart TB
-    subgraph S1["阶段 1：构建 rust:1.92-alpine"]
+    subgraph S1["阶段 1：构建 rust:1.99-alpine3.24"]
         A["绑定 src / Cargo.toml / Cargo.lock"] --> B["cargo build --locked --release<br/>（BuildKit 缓存挂载）"]
         B --> C["产物复制为 /bin/server"]
     end
-    subgraph S2["阶段 2：运行 alpine:3.21"]
-        D["安装 libssl3 / sqlite / ca-certificates"] --> E["非 root 用户 appuser"]
-        E --> F["EXPOSE 8080 · 数据卷 /app/data"]
+    subgraph S2["阶段 2：运行 alpine:3.24"]
+        D["安装 sqlite / sqlite-libs / ca-certificates"] --> E["非 root 用户 appuser"]
+        E --> G["ldd 门禁：验证动态依赖全部可解"]
+        G --> F["EXPOSE 8080 · 数据卷 /app/data"]
     end
     C --> D
 ```
@@ -463,16 +554,16 @@ flowchart TB
 
 | 项 | 值 |
 |:---|:---|
-| 服务名 / 镜像 | `app` / `nexusflow:latest` |
+| 服务名 / 镜像 | `app` / `nexusflow:${NEXUSFLOW_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签） |
 | 端口 | `8080:8080` |
-| 数据卷 | `nexusflow_data:/app/data`（SQLite 持久化） |
+| 数据挂载 | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 已不入库，干净检出先 `cp config.example.toml config.toml`） |
 | 资源限制 | `cpus: '2.00'` / `memory: 512M`（预留 `0.50` / `128M`） |
 | 重启策略 | `unless-stopped` |
 | 密钥注入 | 环境变量（如 `OPENAI_API_KEY=${OPENAI_API_KEY}`） |
 
 ### ✅ 健康检查路径
 
-`Dockerfile` 的 `HEALTHCHECK` 与 `docker-compose.yml` 的 `healthcheck` 均已对齐实际注册路径 **`/api/v1/health`**（裸 `/health` 未注册路由，仅存在于 auth 与限流白名单中）。自建部署如需自定义探针，保持探测该路径即可：
+健康检查**只有镜像层一处定义**（`Dockerfile` 的 `HEALTHCHECK`，`--start-period=10s`）：`docker run` 直接继承，compose 不再重复声明（原先两处 `start-period` 5s/10s 不一致且 compose 会静默覆盖镜像值）。已对齐实际注册路径 **`/api/v1/health`**（裸 `/health` 未注册路由，仅存在于 auth 与限流白名单中）。自建部署如需自定义探针（如改调度间隔或换 k8s 探针），保持探测该路径：
 
 ```yaml
 healthcheck:

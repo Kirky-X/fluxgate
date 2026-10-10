@@ -2,7 +2,7 @@
 
 <img src="docs/assets/NexusFlow.png" alt="NexusFlow Logo" width="180">
 
-[![CI Status](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/NexusFlow)](https://github.com/Kirky-X/NexusFlow/releases) [![License](https://img.shields.io/github/license/Kirky-X/NexusFlow)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](https://www.rust-lang.org/)
+[![CI Status](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/NexusFlow)](https://github.com/Kirky-X/NexusFlow/releases) [![License](https://img.shields.io/github/license/Kirky-X/NexusFlow)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 
 [中文](README.md) | **English**
 
@@ -90,14 +90,18 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 
 ### 📦 Requirements
 
-- Rust 1.92+ (matches the CI-pinned toolchain, edition 2021)
-- SQLite (compiled via rustls, no system dependency required)
+- Rust 1.97.1+ (the MSRV declared by `rust-version` in `Cargo.toml`; edition 2021)
+- SQLite: **statically embedded** in the Docker/musl artifact (build needs `sqlite-dev` for headers plus `libsqlite3.a`); glibc local/release builds link the system library dynamically (needs `libsqlite3-dev`). TLS is pure rustls — no OpenSSL
 - **7 sibling libraries must sit next to this project** (path dependencies): `confers`, `dbnexus`, `inklog`, `limiteron`, `oxcache`, `sdforge`, `trait-kit`
 
 ### 🔨 Build & run
 
 ```bash
-# Reads config.toml from the working directory by default (see config.example.toml)
+# Runtime config is not committed (it carries API key digests and vendor endpoints);
+# start from the full reference shipped in the repo
+cp config.example.toml config.toml
+
+# Reads config.toml from the working directory by default
 cargo run --release
 
 # Or specify a config file
@@ -121,6 +125,16 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"model": "claude-3-opus", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Model list (OpenAI list format, catalog ∪ vendors deduplicated live, never cached)
+curl http://127.0.0.1:8080/v1/models \
+  -H "Authorization: Bearer <your-api-key>"
+
+# Token counting (approximate estimation, deterministic)
+curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 > Note: the bare `/health` path is not a registered route (it 404s) but is included in the auth and rate-limit whitelists. See the [📘 API Reference](docs/API_REFERENCE.md) for the full endpoint list.
@@ -129,7 +143,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
 
 ## ⚙️ Configuration Overview
 
-Runtime configuration is a single `config.toml` with 15 top-level sections (`model_catalog` and `grpc` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
+Runtime configuration is a single `config.toml` (**not committed** — start with `cp config.example.toml config.toml`; `config.example.toml` is the only full reference shipped in the repo, carrying every section and field with its default value), with 16 top-level sections (`model_catalog` and `grpc` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
 
 | Section | Purpose | Hot reload |
 |---------|---------|------------|
@@ -139,6 +153,7 @@ Runtime configuration is a single `config.toml` with 15 top-level sections (`mod
 | `routing` / `retry` / `resilience` | Routing coefficients & selection algorithm, retry policy, resilience coverage | ✅ |
 | `cache` / `rate_limit` / `admission` | Response cache, inbound rate limiting, congestion admission | cache/admission ✅ / rate_limit ❌ |
 | `pricing` | Input/output token unit prices (cost calculation) | ✅ |
+| `grpc` / `docs` | gRPC facade, OpenAPI/Swagger UI surface (both opt-in) | ❌ restart required |
 
 ```toml
 [[vendors]]
@@ -297,7 +312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 Strategy
 
-Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by domain in the top-level `tests/` (41 files: endpoints, admission, SSE, database, assembly smoke, routing, protocol conversion, vendors, circuit breaking, retries, cost, feature-combination matrix, i18n key guard, etc.). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
+Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by functional domain under `tests/` subdirectories (api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard, 42 files in total), each explicitly registered per file via `[[test]]` in the root `Cargo.toml` (one binary per file, process-exclusive semantics preserved). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
 
 ### ▶️ Commands (CI-consistent)
 
@@ -315,20 +330,20 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): **1131 tests pass, 0 failures** — 367 unit tests (inline in `src/`) plus 764 integration tests (41 files in `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1132 tests pass, 0 failures** — 367 unit tests (inline in `src/`) plus 765 integration tests (42 files in `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
-| protocol_test | 142 | tests/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
-| vendor_test | 110 | tests/ | vendor management / rate limits / stream timeouts / health & metrics |
-| api_test | 102 | tests/ | endpoint integration / caching / rerouting / affinity / admin |
-| router_test | 91 | tests/ | weighted selection / affinity / hint routing / edges |
-| database / sse | 38 / 37 | tests/ | persistence & pre-aggregation / stream framing & SDK |
-| retry | 25 | tests/ | retry classes & delay policy |
-| config / utils_coverage | 28 / 19 | tests/ | config loading / metrics & limiter edges |
-| fallback / admission | 17 / 16 | tests/ | fallback chain / admission |
-| bandit / config_coverage / circuit_breaker | 13 / 14 / 9 | tests/ | bandit routing / loader·manager branches / circuit |
-| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (100) | tests/ & tests/ | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin |
+| protocol_test | 142 | tests/protocol/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
+| vendor_test | 110 | tests/vendor/ | vendor management / rate limits / stream timeouts / health & metrics |
+| api_test | 102 | tests/api/ | endpoint integration / caching / rerouting / affinity / admin |
+| router_test | 91 | tests/routing/ | weighted selection / affinity / hint routing / edges |
+| database / sse | 38 / 37 | tests/database/ · tests/protocol/ | persistence & pre-aggregation / stream framing & SDK |
+| retry | 25 | tests/resilience/ | retry classes & delay policy |
+| config / utils_coverage | 28 / 19 | tests/config/ · tests/utils/ | config loading / metrics & limiter edges |
+| fallback / admission | 17 / 16 | tests/resilience/ | fallback chain / admission |
+| bandit / config_coverage / circuit_breaker | 13 / 14 / 9 | tests/routing/ · tests/config/ · tests/resilience/ | bandit routing / loader·manager branches / circuit |
+| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (101) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin / dead-code guard |
 
 ---
 
@@ -371,22 +386,29 @@ Please do not report security vulnerabilities through public issues. Use the Git
 ## 🐳 Docker Deployment
 
 ```bash
-# Build (multi-stage: rust:1.92-alpine build → alpine:3.21 runtime, non-root)
+# Build (multi-stage: rust:1.99-alpine3.24 build → alpine:3.24 runtime, non-root)
+# Keep both base images on the same alpine branch: the artifact is statically
+# linked against musl, and the runtime stage re-verifies with ldd that every
+# dynamic dependency resolves before the image is published
 # Note: -f points at the Dockerfile while the build context stays at the repo
 # root (bind mounts and .dockerignore resolve against the context root)
-docker build -t nexusflow:latest -f docker/Dockerfile .
+docker build -t nexusflow:0.1.0 -f docker/Dockerfile .
 
 # Run (read-only config mount + SQLite data persists under /app/data)
 docker run -d -p 8080:8080 \
   -v $(pwd)/config.toml:/app/config.toml:ro \
-  -v $(pwd)/data:/app/data nexusflow:latest
+  -v $(pwd)/data:/app/data nexusflow:0.1.0
 
-# Or one-command deployment with resource limits and health checks
+# Or one-command deployment with resource limits
 # (the compose file lives under docker/)
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-> Health check: the HEALTHCHECK in both the Dockerfile and docker-compose probes the registered path `/api/v1/health`; docker-compose ships with resource limits (2 CPUs / 512M) and a non-root runtime (see [📖 User Guide · Docker](docs/USER_GUIDE.md)).
+> Health check: provided solely by the **image-level HEALTHCHECK** (compose no
+> longer duplicates it), probing the registered path `/api/v1/health`;
+> docker-compose ships with resource limits (2 CPUs / 512M) and a non-root
+> runtime. The image tag defaults to `nexusflow:0.1.0`, overridable via
+> `NEXUSFLOW_IMAGE_TAG` (see [📖 User Guide · Docker](docs/USER_GUIDE.md)).
 
 ---
 
@@ -396,7 +418,7 @@ See the [🤝 Contributing guide](docs/CONTRIBUTING.md) for the full workflow, c
 
 ### 🛠️ Development environment
 
-Toolchain is Rust 1.97 (aligned with the `Dockerfile` pin and the siblings' MSRV 1.97.1); run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`). The 7 sibling libraries (confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit) must sit next to this project.
+Toolchain baseline: MSRV floor **1.97.1** (declared in `Cargo.toml` via `rust-version`, matching the 7 sibling libraries; ci.yml builds and lints at that floor so the clippy lint set stays reproducible), while `docker/Dockerfile` and release.yml use the currently supported stable (1.99). Run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`). The 7 sibling libraries (confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit) must sit next to this project.
 
 ### 💖 Ways to contribute
 

@@ -47,7 +47,7 @@ pub enum GateError {
     #[error("Routing error: {message}")]
     Routing { message: String },
 
-    /// recId=19(c)：换路 fallback 耗尽且全部候选因限流被排除 —
+    /// 换路 fallback 耗尽且全部候选因限流被排除 —
     /// `[routing].retry_after_hint` 开启时由应用层收尾函数抛出，
     /// IntoResponse 映射 429 + Retry-After 头（reset 秒数取各 vendor
     /// 窗口重置剩余的 min）。默认开关关闭时永不产生本变体（原错误
@@ -116,7 +116,7 @@ impl GateError {
         }
     }
 
-    /// recId=19(c)：AllVendorsThrottled 携带的 Retry-After 头秒数；
+    /// AllVendorsThrottled 携带的 Retry-After 头秒数；
     /// 其余变体 None。
     pub fn retry_after_secs(&self) -> Option<u64> {
         match self {

@@ -104,7 +104,7 @@ pub fn extract_status_code(error: &str) -> u16 {
     500 // 默认返回服务器错误
 }
 
-/// 重试延迟策略参数（recId=7：来自 Config [retry] 段的热读快照）
+/// 重试延迟策略参数（来自 Config [retry] 段的热读快照）
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetryDelayPolicy {
     /// 首次重试前延迟
@@ -115,7 +115,7 @@ pub struct RetryDelayPolicy {
     pub max_delay: Duration,
     /// 退避抖动比例（0.0–1.0）
     pub jitter: f64,
-    /// 同步惊群展宽比例（recId=5）：`Retry-After` 与 5xx 固定间隔分支的
+    /// 同步惊群展宽比例：`Retry-After` 与 5xx 固定间隔分支的
     /// 延迟 = base + U(0, spread_jitter) × base（base 为 Retry-After 值
     /// 或 1s）。1.0 = 全范围展宽 [base, 2×base)；0.0 = 完全恢复旧行为
     /// （Retry-After 原样返回、5xx 固定 1s）——回滚阀。
@@ -147,7 +147,7 @@ impl RetryDelayPolicy {
     }
 }
 
-/// 纯延迟选择函数（recId=7③）：按分类取退避（G3 后 `Retry-After` 头
+/// 纯延迟选择函数：按分类取退避（G3 后 `Retry-After` 头
 /// 不再经本函数覆盖——上游指示值由 `vendor::manager` 的决策闭包映射为
 /// `RetryDecision::RetryAfter`，时长生产端是 [`spread_delay`]）。
 ///
@@ -158,12 +158,12 @@ impl RetryDelayPolicy {
 /// - `RetryableShort`（网络错误）→ 500ms × attempt
 /// - `Fatal` → 0（调用方不应重试）
 ///
-/// recId=5：5xx 分支带全范围抖动——修复前延迟为常量（恒 1s），所有并发
+/// 5xx 分支带全范围抖动——修复前延迟为常量（恒 1s），所有并发
 /// 在同一刻唤醒重试（同步惊群）。RNG 经 `&mut dyn rand::RngCore` 注入
 /// （对齐 `router::weighted_select_with` 的注入模式）：spread_jitter=0 时
 /// 不消耗 RNG，确定性可单测；生产传 `rand::thread_rng()`。
 ///
-/// 纯函数无 IO，可脱离 HTTP 栈单测（规避 tests/vendor_circuit_breaker_test.rs
+/// 纯函数无 IO，可脱离 HTTP 栈单测（规避 tests/resilience/gate_vendor_circuit_breaker_test.rs
 /// 书面记录的 paused-clock 与 mockito IO 冲突陷阱）。
 ///
 /// Feature 门控：指数分支依赖 `limiteron::retry`（vendor-management 引入），
@@ -191,7 +191,7 @@ pub fn retry_delay_for(
     }
 }
 
-/// recId=5：`base + U(0, spread_jitter) × base` 的全范围展宽。
+/// `base + U(0, spread_jitter) × base` 的全范围展宽。
 ///
 /// 本函数是对上游 `Retry-After` 头的时长生产端：manager 的重试决策闭包把
 /// 「429/503 读到的上游指示值」经本函数展宽后映射为
@@ -200,7 +200,7 @@ pub fn retry_delay_for(
 ///
 /// spread_jitter <= 0 恒等 base（回滚阀：旧行为确定性可单测）；半开区间
 /// 上界由 `gen_range(0.0..spread)` 保证（永不取 spread 本身）。
-/// 全范围抖动（recId=5）：`base + U(0, spread_jitter)×base`，消除
+/// 全范围抖动：`base + U(0, spread_jitter)×base`，消除
 /// Retry-After / 固定间隔分支的同步惊群。
 #[cfg(feature = "vendor-management")]
 pub fn spread_delay(
@@ -215,7 +215,7 @@ pub fn spread_delay(
     base.saturating_add(extra)
 }
 
-/// recId=9（W5）：重试放大系数 `amplification = 1/(1 − r·f)` —
+/// 重试放大系数 `amplification = 1/(1 − r·f)` —
 /// `λ_eff = λ/(1 − r·f)` 的放大因子形态（r=重试请求数/失败请求数，
 /// f=失败率）。`r·f ≥ 1`（分母 ≤ 0）→ None：队列发散（亚稳态），无
 /// 有限放大系数可言。纯函数，脱离 HTTP 栈单测。
@@ -227,7 +227,7 @@ pub fn amplification(r: f64, f: f64) -> Option<f64> {
     Some(1.0 / denom)
 }
 
-/// recId=9（W5）：临界失败率 `f_c = (C − λ)/(r·C)` — 失败率超过 f_c 时
+/// 临界失败率 `f_c = (C − λ)/(r·C)` — 失败率超过 f_c 时
 /// 重试放大把系统推入亚稳态（C=全网并发上限，λ=入站速率）。r ≤ 0
 ///（无重试放大）或 C ≤ 0 → None（无从收紧）；C < λ（容量饱和）→ 0.0
 ///（任何失败率都超临界）。纯函数。
@@ -238,10 +238,10 @@ pub fn critical_failure_fraction(r: f64, c: f64, lambda: f64) -> Option<f64> {
     Some(((c - lambda) / (r * c)).max(0.0))
 }
 
-/// recId=9（W5）：重试时间预算判定 — 「锚点已耗时 + 下次等待」是否超出
+/// 重试时间预算判定 — 「锚点已耗时 + 下次等待」是否超出
 /// 预算。锚点必须用 `tokio::time::Instant`（std Instant 不随 paused clock
 /// 推进，`#[tokio::test(start_paused = true)]` 的自动推进依赖 tokio 时钟）。
-/// 纯函数无 IO，规避 tests/vendor_circuit_breaker_test.rs 书面记录的
+/// 纯函数无 IO，规避 tests/resilience/gate_vendor_circuit_breaker_test.rs 书面记录的
 /// paused-clock 与 mockito IO 冲突陷阱（retry_delay_for 同款理由）。
 pub fn budget_exceeded(
     anchor: tokio::time::Instant,
@@ -251,7 +251,7 @@ pub fn budget_exceeded(
     anchor.elapsed() + next_delay > budget
 }
 
-/// recId=9（W5）：重试放大守门器判定（纯函数）— 返回 `(收紧到 1, 发散告警)`。
+/// 重试放大守门器判定（纯函数）— 返回 `(收紧到 1, 发散告警)`。
 ///
 /// - 收紧：`f > 0.8·f_c`（失败率闯入临界失败率的亚稳态带）。f_c 无解
 ///   （r≤0 无重试放大 / C≤0 无容量估计）→ 不收紧（fail-open，只可能
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(extract_status_code("no status code here"), 500); // default
     }
 
-    // ============ recId=9（W5）tests：重试放大守门器纯函数 ============
+    // ============ tests：重试放大守门器纯函数 ============
 
     /// amplification(0.3, 0.4) = 1/(1−0.12) ≈ 1.136（评审给定的数值对照）。
     #[test]

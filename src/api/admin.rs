@@ -77,8 +77,101 @@ pub async fn token_stats(
     Ok(Json(serde_json::json!(stats)))
 }
 
+/// 成本分账查询参数（WP9）：`group_by` 必填（vendor|model），`from`/`to`
+/// 为 `YYYY-MM-DD` 日期闭区间（可选）。
+///
+/// key 过滤经请求头 `x-nexusflow-cost-key` 传递（审查 M1，CWE-598）：
+/// 明文 key 进 URL 会落入反代/访问日志——查询串不做敏感参数承载。
+#[derive(serde::Deserialize)]
+pub struct CostQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub group_by: Option<String>,
+}
+
+/// key 过滤请求头（明文 key 原文；服务端哈希后过滤，明文不落盘）。
+const COST_KEY_HEADER: &str = "x-nexusflow-cost-key";
+
+/// 日期格式校验（`YYYY-MM-DD`：长度/分隔符/数字位 + 月日范围；语义
+/// 日历合法性（如 2 月 30 日）由 SQL 字典序比较承载，非法日期仅得空
+/// 结果——此处只拦格式与范围错误）。
+fn valid_cost_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    if !value[..4].chars().all(|c| c.is_ascii_digit())
+        || !value[5..7].chars().all(|c| c.is_ascii_digit())
+        || !value[8..10].chars().all(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    let month: u32 = value[5..7].parse().unwrap_or(0);
+    let day: u32 = value[8..10].parse().unwrap_or(0);
+    (1..=12).contains(&month) && (1..=31).contains(&day)
+}
+
+/// GET /admin/cost — 成本分账聚合查询（WP9）：从预聚合表按维度求和，
+/// 管理员鉴权（认证中间件）；空窗口返回空数组而非错误。可选 key 过滤经
+/// `x-nexusflow-cost-key` 请求头传明文（服务端哈希后比对，见
+/// [`COST_KEY_HEADER`]）。
+#[axum::debug_handler]
+pub async fn cost_usage(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<CostQuery>,
+) -> Result<Json<Value>, NexusFlowError> {
+    use crate::storage::CostGroupBy;
+    let group_by = match params.group_by.as_deref() {
+        Some("vendor") => CostGroupBy::Vendor,
+        Some("model") => CostGroupBy::Model,
+        _ => {
+            return Err(NexusFlowError::from(crate::error::GateError::Validation {
+                field: "group_by (must be vendor|model)".into(),
+            }));
+        }
+    };
+    for (name, value) in [("from", &params.from), ("to", &params.to)] {
+        if let Some(date) = value {
+            if !valid_cost_date(date) {
+                return Err(NexusFlowError::from(crate::error::GateError::Validation {
+                    field: format!("{name} (must be YYYY-MM-DD)"),
+                }));
+            }
+        }
+    }
+    // key 过滤：头传明文哈希后比对（与分账写入的摘要同源）。
+    let api_key_hash = headers
+        .get(COST_KEY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.trim().is_empty())
+        .map(|key| {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(key.trim().as_bytes()))
+        });
+    let usage_sink =
+        state
+            .pre_aggregator
+            .as_ref()
+            .ok_or_else(|| crate::error::GateError::Config {
+                message: "usage sink is not wired; cost usage unavailable".to_string(),
+            })?;
+    let rows = usage_sink
+        .query_cost_usage(
+            params.from.as_deref(),
+            params.to.as_deref(),
+            group_by,
+            api_key_hash.as_deref(),
+        )
+        .await?;
+    Ok(Json(serde_json::json!({
+        "group_by": params.group_by,
+        "rows": rows,
+    })))
+}
+
 /// 全局指标快照 — 返回请求计数、错误率、平均延迟、各厂商细分指标，以及
-/// recId=9① 的日志背压丢弃计数（dropped_logs：channel 满被丢的日志条数）
+/// 的日志背压丢弃计数（dropped_logs：channel 满被丢的日志条数）
 /// 与 secret gate 拒发丢弃计数（secret_scan_dropped：脱敏 fail-closed 丢
 /// 弃的日志条数）
 #[axum::debug_handler]
@@ -144,14 +237,19 @@ pub async fn vendor_status(
 
 #[axum::debug_handler]
 pub async fn reset_vendor(
-    State(_state): State<Arc<ApiState>>,
-    Path(_id): Path<String>,
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
-    // limiteron Governor 自动管理限流状态（令牌桶自动 refill），
-    // 此端点保留以维持 API 兼容性，实际为 no-op。
+    // WP6 恢复通道：清空该 vendor 的 key 池黑名单（含游标）与冷却状态。
+    // limiteron 限流状态仍自动管理（令牌桶 refill），此处不触限流器。
+    if !state.vendor_manager.reset_key_pool_state(&id) {
+        return Err(NexusFlowError::from(crate::error::GateError::Validation {
+            field: format!("vendor '{id}' (unknown vendor)"),
+        }));
+    }
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": t("admin-vendor-limit-auto-managed")
+        "message": t_args("admin-vendor-reset", &[("id", id)]),
     })))
 }
 

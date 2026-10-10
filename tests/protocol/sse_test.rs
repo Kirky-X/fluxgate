@@ -1,6 +1,6 @@
 #![cfg(feature = "web-server")]
 
-// SSE 编码器与增量分帧器单元测试（recId=3 阶段一）
+// SSE 编码器与增量分帧器单元测试（阶段一）
 
 use futures::StreamExt;
 use nexusflow::api::sse::{
@@ -41,7 +41,7 @@ fn encodes_error_event_terminates_with_double_newline() {
     assert!(out.ends_with("\n\n"));
 }
 
-// ==================== SseFrameParser（recId=3 阶段一） ====================
+// ==================== SseFrameParser（阶段一） ====================
 
 /// ① `data: {"a":1}` 劈两半喂入 → 恰出一完整帧。
 ///
@@ -130,6 +130,19 @@ fn crlf_delimiter_split_across_chunks() {
     assert_eq!(frames[0].data.as_deref(), Some("z"));
 }
 
+/// ④ 补充：混合定界变体——行尾 `\n` + 空行 `\r\n`（`\n\r\n`）同样构成帧边界。
+#[test]
+fn mixed_lf_line_with_crlf_blank_line_delimits_frame() {
+    let mut parser = SseFrameParser::new();
+    parser.feed(b"data: m1\n\r\ndata: m2\n\r\n");
+
+    let frames = collect_frames(&mut parser);
+    assert_eq!(frames.len(), 2, "混合定界 \\n\\r\\n 应各识别出一帧");
+    assert_eq!(frames[0].data.as_deref(), Some("m1"));
+    assert_eq!(frames[1].data.as_deref(), Some("m2"));
+    assert!(parser.is_empty(), "消费完后 buffer 应为空");
+}
+
 /// event 字段与 data 同时解析；注释行与 id/retry 字段跳过。
 #[test]
 fn event_field_parsed_and_comments_skipped() {
@@ -173,7 +186,7 @@ fn comment_only_frame_has_no_data() {
     assert_eq!(frames[0].data, None);
 }
 
-// ==================== 错误帧检测（recId=14② 依赖） ====================
+// ==================== 错误帧检测（依赖） ====================
 
 #[test]
 fn error_event_frame_detected() {
@@ -212,6 +225,18 @@ fn plain_text_error_event_detected() {
         data: Some("upstream blew up".into()),
     };
     assert!(frame.is_error());
+}
+
+/// 错误帧检测：data 为非法 JSON 且无 event 字段 → is_error 假
+/// （JSON 解析失败按非错误处理，不得误终止透传流）。
+#[test]
+fn illegal_json_data_without_event_is_not_error() {
+    let mut parser = SseFrameParser::new();
+    parser.feed(b"data: {oops not json\n\n");
+    let frames = collect_frames(&mut parser);
+    assert_eq!(frames.len(), 1);
+    assert!(frames[0].event.is_none());
+    assert!(!frames[0].is_error(), "解析失败的 data 不得误报为错误帧");
 }
 
 // ==================== reframe_passthrough_stream 集成 ====================
@@ -278,7 +303,7 @@ async fn reframe_passthrough_utf8_safe() {
     assert!(!out.contains('\u{FFFD}'));
 }
 
-/// recId=14②：上游 `event: error` 帧 → 该帧转发后流提前终止，
+/// 上游 `event: error` 帧 → 该帧转发后流提前终止，
 /// 后续帧不再透传。
 #[tokio::test]
 async fn reframe_passthrough_terminates_on_error_frame() {
@@ -294,7 +319,7 @@ async fn reframe_passthrough_terminates_on_error_frame() {
     assert!(!out.contains("[DONE]"), "错误终止不得补正常结束标记");
 }
 
-/// recId=14②：上游 IO 中断 → 带语义的 SSE error 事件，而非静默截断。
+/// 上游 IO 中断 → 带语义的 SSE error 事件，而非静默截断。
 #[tokio::test]
 async fn reframe_passthrough_converts_io_error_to_sse_error_event() {
     let out = drain_reframed(vec![
@@ -309,6 +334,40 @@ async fn reframe_passthrough_converts_io_error_to_sse_error_event() {
     assert!(
         !out.contains("connection reset"),
         "出站帧不得携带内部错误详情: {out}"
+    );
+    assert!(!out.contains("[DONE]"));
+}
+
+/// 网关侧流中错误帧（R-streaming-resilience-002）：data 为
+/// `{"error":{"type","message"}}` JSON 信封（与 REST 错误体同构）——
+/// type 为稳定错误码字面量，message 为 Fluent 文案；恰一帧且
+/// 终止后不补 [DONE]。
+#[tokio::test]
+async fn gateway_stream_error_frame_is_json_envelope() {
+    let out = drain_reframed(vec![
+        Ok(b"data: {\"ok\":true}\n\n"),
+        Err(std::io::Error::other("connection reset")),
+    ])
+    .await;
+
+    assert_eq!(
+        out.matches("event: error").count(),
+        1,
+        "恰一个错误帧: {out}"
+    );
+    let payload = out
+        .split_once("event: error\ndata: ")
+        .map(|(_, rest)| rest.split("\n\n").next().unwrap_or_default())
+        .unwrap_or_default();
+    let frame: serde_json::Value = serde_json::from_str(payload)
+        .unwrap_or_else(|e| panic!("错误帧 data 必须是 JSON 信封: {e}: {payload:?}"));
+    assert_eq!(frame["error"]["type"], "upstream_stream_interrupted");
+    let message = frame["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("message 必须是字符串: {payload:?}"));
+    assert!(
+        !message.is_empty() && message != "protocol-stream-error-frame",
+        "message 必须是已登记的 Fluent 文案而非回落键名: {message}"
     );
     assert!(!out.contains("[DONE]"));
 }

@@ -98,7 +98,7 @@ impl Default for CostCalculator {
 use crate::config::model_catalog::ModelCatalogEntry;
 use crate::protocol::TokenUsage;
 
-/// prompt_tokens 的 cache 档包含语义（IR 随上游协议分裂，T003 线格式）：
+/// prompt_tokens 的 cache 档包含语义（IR 随上游协议分裂，线格式）
 /// - **Inclusive**（OpenAI 口径）：`prompt_tokens` 含 cached 部分——非缓存
 ///   基数 = prompt − cache_read − cache_creation（饱和减法）；
 /// - **Exclusive**（Anthropic 口径）：`input_tokens` 不含 cache 档
@@ -114,6 +114,36 @@ pub enum PromptCacheSemantics {
     Inclusive,
     /// prompt 不含 cache 档（Anthropic 口径）：基数 = prompt
     Exclusive,
+}
+
+/// vendor 协议 → cache 包含语义的单源判定。调用方（分账 `catalog_costs`、
+/// 配额回补、CostTracker 记账）一律经本函数取语义，不得各写一套分支：三处
+/// 此前各自内联且未知协议方向相反（一处非 anthropic 即 Inclusive、一处非
+/// openai 即 Exclusive），收敛为「仅 openai 含 cache 档」——其余一律按
+/// Exclusive 处理，基数不缩减，计价方向保守（防少计）。
+pub fn prompt_cache_semantics(vendor_type: &str) -> PromptCacheSemantics {
+    if vendor_type == "openai" {
+        PromptCacheSemantics::Inclusive
+    } else {
+        PromptCacheSemantics::Exclusive
+    }
+}
+
+/// 目录四档单价（每 1M tokens，币种随条目）：`Some((input, output,
+/// cache_read, cache_creation))`；未登记模型 `None`（调用方自行回退，不得
+/// 按 0 价处理）。与 [`estimate_cost_from_catalog`] 同一命中规则（精确→
+/// 短名前缀），供入口预估只取 input/output 两档使用。
+pub fn catalog_unit_prices(
+    catalog: &[ModelCatalogEntry],
+    model_id: &str,
+) -> Option<(f64, f64, f64, f64)> {
+    let entry = lookup_pricing_entry(catalog, model_id)?;
+    Some((
+        entry.input_price,
+        entry.output_price,
+        entry.cache_read_price,
+        entry.cache_creation_price,
+    ))
 }
 
 /// 四档成本估算结果 — 币种随条目。
@@ -147,7 +177,7 @@ pub fn lookup_pricing_entry<'a>(
 }
 
 /// 四档成本估算——未登记模型返回 `None`（显式缺失，调用方不得
-/// 按 0 成本处理，防 0 价伪装免费；T006 语义延续）。
+/// 按 0 成本处理，防 0 价伪装免费； 语义延续）。
 ///
 /// 公式（per 1M tokens，币种随条目；semantics 决定非缓存基数的折算）：
 /// `cost = base×input_price/1M + cache_read×cache_read_price/1M
@@ -221,7 +251,7 @@ mod catalog_pricing_tests {
         }
     }
 
-    /// 未登记模型 None（显式缺失，防 0 价伪装免费——T006 语义延续）
+    /// 未登记模型 None（显式缺失，防 0 价伪装免费—— 语义延续）
     #[test]
     fn unregistered_model_returns_none() {
         let catalog = vec![claude_entry()];

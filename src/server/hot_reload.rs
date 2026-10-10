@@ -263,6 +263,8 @@ mod tests {
             resilience: Default::default(),
             docs: Default::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             rate_limit: Default::default(),
         }
@@ -290,6 +292,7 @@ mod tests {
             type_: "openai".to_string(),
             api_key_env: "K".to_string(),
             api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
             api_base: String::new(),
             enabled: true,
             priority: 1,

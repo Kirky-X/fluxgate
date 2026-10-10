@@ -58,7 +58,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 pub struct ApiAuthState {
     /// 有效的 API key 摘要（SHA256 hex）
     valid_keys: Arc<std::collections::HashSet<String>>,
-    /// recId=16：key 摘要 → 档位（[auth].keys 子表声明；未声明的 key
+    /// key 摘要 → 档位（[auth].keys 子表声明；未声明的 key
     /// 缺省 elastic）。准入层经 [`Self::tier_for_key`] 查询。
     tiers: Arc<std::collections::HashMap<String, AuthTier>>,
     /// 是否启用认证
@@ -90,7 +90,7 @@ impl ApiAuthState {
         for h in &section.api_keys {
             state.add_hash(h.clone());
         }
-        // recId=16：档位表（[[auth.keys]]；缺省空表 → 全部 elastic）
+        // 档位表（[[auth.keys]]；缺省空表 → 全部 elastic）
         let mut tiers = std::collections::HashMap::new();
         for entry in &section.keys {
             tiers.insert(entry.hash.clone(), entry.tier);
@@ -120,7 +120,7 @@ impl ApiAuthState {
             .any(|stored| constant_time_eq(stored, &candidate))
     }
 
-    /// recId=16：key 档位 — 现场摘要后与 [auth].keys 表做常量时间比较
+    /// key 档位 — 现场摘要后与 [auth].keys 表做常量时间比较
     ///（复用 [`constant_time_eq`]，与 [`Self::validate_key`] 同一摘要
     /// 语义）；未声明 → 缺省档 elastic。认证关闭时表为空 → 恒 elastic。
     pub fn tier_for_key(&self, key: &str) -> AuthTier {
@@ -133,29 +133,10 @@ impl ApiAuthState {
     }
 }
 
-/// 从请求头提取 API key
-///
-/// `pub(crate)`：响应缓存（recId=12）的键组装复用同一提取逻辑，
-/// 保证缓存键的租户维度与认证验证的 key 来源一致。
-pub(crate) fn extract_api_key(headers: &axum::http::HeaderMap) -> Option<String> {
-    // 尝试从 Authorization header 提取
-    if let Some(auth) = headers.get("authorization") {
-        if let Ok(value) = auth.to_str() {
-            if let Some(stripped) = value.strip_prefix("Bearer ") {
-                return Some(stripped.to_string());
-            }
-        }
-    }
-
-    // 尝试从 x-api-key header 提取
-    if let Some(key) = headers.get("x-api-key") {
-        if let Ok(value) = key.to_str() {
-            return Some(value.to_string());
-        }
-    }
-
-    None
-}
+/// 从请求头提取 API key — 实现已下沉 [`crate::utils::tenant::extract_api_key`]
+///（认证/响应缓存/亲和/配额同源单实现），此处 re-export 维持 middleware
+/// 内部的既有引用路径。
+pub(crate) use crate::utils::tenant::extract_api_key;
 
 /// API Key 认证中间件（from_fn_with_state 挂载形态）
 ///
@@ -190,7 +171,7 @@ pub async fn api_auth_middleware(
 
     // 排除健康检查端点。
     // /api/v1/health 是实际注册路径：sdforge #[forge(version = "v1")] 宏会把
-    // path 加 /api/v1 版本前缀（sdforge-macros lib.rs:1886）。
+    // path 加 /api/v1 版本前缀（sdforge-macros lib.rs）。
     // 入站限流侧有另一份独立的健康检查白名单（含 /healthz、/ready、
     // /readyz、/metrics），维护于 src/api/router_builder.rs 的
     // is_quota_exempt_path，两处各自独立、语义不共享。

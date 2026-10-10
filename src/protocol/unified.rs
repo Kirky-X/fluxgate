@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 /// 统一请求结构。
 ///
-/// IR 字段对齐 agentstem core `CompletionRequest`（`crates/core/src/traits/types.rs:29-45`）。
+/// IR 字段对齐 agentstem core `CompletionRequest`（`crates/core/src/traits/types.rs`）。
 /// 双形态字段（flat 采样槽与 [`SamplingParams`]）并存：flat 为既有 wire
 /// 兼容槽，`sampling` 为 core 对齐槽；两侧转换器出站时 flat 优先、
 /// `sampling` 只补 flat 未设置的槽（不覆写）。
@@ -48,17 +48,17 @@ pub struct UnifiedRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     /// core 对齐采样参数槽（temperature/top_k/top_p/penalties 全可选，
-    /// 对齐 core `SamplingParams` types.rs:14-25）。
+    /// 对齐 core `SamplingParams` types.rs）。
     ///
     /// Option 双重可选语义：本槽 `Some` 表示请求显式携带采样参数；内部各
     /// 字段 `None` 表示该维度沿用 provider 缺省。与 flat 槽并存时出站
     /// flat 优先，本槽仅补 flat 未设置的槽（不覆写）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling: Option<SamplingParams>,
-    /// 思考深度配置（对齐 core `ThinkingConfig` types.rs:199-207）。
+    /// 思考深度配置（对齐 core `ThinkingConfig` types.rs）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_config: Option<ThinkingConfig>,
-    /// 任务努力级别（对齐 core `EffortLevel` types.rs:661-691）。
+    /// 任务努力级别（对齐 core `EffortLevel` types.rs）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<EffortLevel>,
     /// 当前轮次索引（core runner 逐轮注入，从 0 计；无 wire 表示——
@@ -77,7 +77,7 @@ pub struct UnifiedRequest {
     pub vendor_extensions: HashMap<String, serde_json::Value>,
 }
 
-/// LLM 采样参数（对齐 core `SamplingParams`，`crates/core/src/traits/types.rs:14-25`）。
+/// LLM 采样参数（对齐 core `SamplingParams`，`crates/core/src/traits/types.rs`）。
 ///
 /// 全部可选：provider 侧有合理默认值，`None` 表示沿用默认。
 /// `top_k` 对齐 core 为 `u32`（任务文中「全 f32」以 core 证据为准）。
@@ -95,13 +95,13 @@ pub struct SamplingParams {
     pub presence_penalty: Option<f32>,
 }
 
-/// 思考深度配置（对齐 core `ThinkingConfig`，`crates/core/src/traits/types.rs:199-207`）。
+/// 思考深度配置（对齐 core `ThinkingConfig`，`crates/core/src/traits/types.rs`）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThinkingConfig {
     /// 模型自适应决定思考预算
     Adaptive,
-    /// 启用思考，指定 token 预算（u64 对齐 core 宽度 types.rs:203）
+    /// 启用思考，指定 token 预算（u64 对齐 core 宽度 types.rs）
     Enabled {
         #[serde(default)]
         budget_tokens: u64,
@@ -111,7 +111,7 @@ pub enum ThinkingConfig {
     Disabled,
 }
 
-/// 任务努力级别（对齐 core `EffortLevel`，`crates/core/src/traits/types.rs:661-691`）。
+/// 任务努力级别（对齐 core `EffortLevel`，`crates/core/src/traits/types.rs`）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
@@ -142,7 +142,7 @@ impl EffortLevel {
     }
 }
 
-/// LLM 补全完成原因（对齐 core `FinishReason`，`crates/core/src/traits/types.rs:187-192`）。
+/// LLM 补全完成原因（对齐 core `FinishReason`，`crates/core/src/traits/types.rs`）。
 ///
 /// 与 [`Choice::finish_reason`] 的原始透传槽构成双轨：结构化槽存已知词的
 /// 映射结果，未知词只进原始槽（不猜变体）。
@@ -436,7 +436,7 @@ pub struct Choice {
     pub logprobs: Option<serde_json::Value>,
 }
 
-/// Token 使用统计（对齐 core `Usage`，`crates/core/src/usage.rs:46-60`）。
+/// Token 使用统计（对齐 core `Usage`，`crates/core/src/usage.rs`）。
 ///
 /// cache 双字段为 prompt cache 记账：OpenAI 侧读
 /// `prompt_tokens_details.cached_tokens`（无 cache_creation 概念，恒 0），
@@ -467,7 +467,7 @@ pub struct TokenUsage {
 
 /// 流式响应块。
 ///
-/// 与 core `StreamChunk`（types.rs:454-461）的映射：
+/// 与 core `StreamChunk`（types.rs）的映射
 /// - `Content{finish_reason: Some(_)}` ↔ core `StreamChunk::Done`
 ///   （终止语义由 Content 的 finish_reason 承担，不设独立 Done 变体）；
 /// - [`StreamChunk::ToolCall`] ↔ core `StreamChunk::ToolCallDelta`
@@ -491,7 +491,7 @@ pub enum StreamChunk {
         #[serde(default)]
         finish_reason: Option<String>,
     },
-    /// 流式工具调用片段（对齐 core `ToolCallDelta` types.rs:443-450）。
+    /// 流式工具调用片段（对齐 core `ToolCallDelta` types.rs）。
     /// `id`/`name` 仅首片段携带（续片为空/None）；`arguments` 为增量分片。
     #[serde(rename = "tool_call")]
     ToolCall {

@@ -34,14 +34,19 @@ CREATE TABLE IF NOT EXISTS token_usage (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     vendor TEXT NOT NULL,
     model TEXT NOT NULL,
+    api_key_hash TEXT NOT NULL DEFAULT '',
     date TEXT NOT NULL,
     hour INTEGER NOT NULL,
     request_count BIGINT DEFAULT 0,
-    total_tokens BIGINT DEFAULT 0,
-    prompt_tokens BIGINT DEFAULT 0,
-    completion_tokens BIGINT DEFAULT 0,
-    cost_usd_sum DOUBLE PRECISION DEFAULT 0.0,
-    UNIQUE(vendor, model, date, hour)
+    input_tokens BIGINT DEFAULT 0,
+    output_tokens BIGINT DEFAULT 0,
+    cache_read_tokens BIGINT DEFAULT 0,
+    cache_creation_tokens BIGINT DEFAULT 0,
+    input_cost DOUBLE PRECISION DEFAULT 0.0,
+    output_cost DOUBLE PRECISION DEFAULT 0.0,
+    cache_read_cost DOUBLE PRECISION DEFAULT 0.0,
+    cache_creation_cost DOUBLE PRECISION DEFAULT 0.0,
+    UNIQUE(vendor, model, api_key_hash, date, hour)
 );
 
 -- 厂商状态表

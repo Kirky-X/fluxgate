@@ -6,7 +6,7 @@
 //! HTTP 服务器：SdForgeConfig 构建、sdforge 站点 + 业务路由合并、
 //! bind/serve、serve 结果映射与优雅停机 flush 管道收尾。
 //!
-//! 自 main.rs:164-302 平移，serve 与 flush 顺序逐位一致。
+//! 自 main.rs 平移，serve 与 flush 顺序逐位一致。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use crate::server::bootstrap;
 use crate::server::handle::ServerHandle;
 
 /// 装配至 Router 为止：bootstrap 全链装配 + sdforge 站点路由合并
-/// （原 main.rs:164-223）。供测试与嵌入式场景直接持有 Router。
+/// （原 main.rs）。供测试与嵌入式场景直接持有 Router。
 ///
 /// 返回的 [`ServerHandle`] 承载停机收尾（flush worker 停机位 +
 /// 日志/聚合补刷，幂等）：嵌入式进程退出前必须调用
@@ -48,13 +48,13 @@ pub async fn build_app(
 }
 
 /// 完整运行时：bootstrap 装配 + serve + 优雅停机 flush 收尾
-/// （原 main() 的 serve 主体与收尾，main.rs:225-302）。
+/// （原 main() 的 serve 主体与收尾，main.rs）。
 ///
 /// # Panics
 ///
 /// 同 [`build_app`]：同进程二次调用经 `init_global_state` panic。
 pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
-    // 进程级日志句柄：活到 run 返回（原 main.rs:22 的 main 作用域语义）
+    // 进程级日志句柄：活到 run 返回（原 main.rs 的 main 作用域语义）
     let _logger = bootstrap::init_logger().await?;
     let config_manager = bootstrap::load_config(config_path)?;
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
@@ -158,7 +158,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
         }
     }
 
-    // recId=9：优雅停机 flush（序列与 build_app 句柄共用同一实现）。
+    // 优雅停机 flush（序列与 build_app 句柄共用同一实现）。
     // gRPC 侧先收尾：HTTP serve 返回即 signal 已触发，gRPC 正在排空
     // in-flight；等它返回（或超时）后再 flush，保证请求路径日志不丢。
     #[cfg(feature = "grpc")]
@@ -191,7 +191,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     Ok(())
 }
 
-/// SdForgeConfig 构建（原 main.rs:165-216）。
+/// SdForgeConfig 构建（原 main.rs）。
 fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdForgeConfig {
     let config_ref = config_manager.read();
 
@@ -199,7 +199,7 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
     // max_body_size（旧版硬编码 10 MiB，沿用该值）。
     //
     // CORS：sdforge rc.5 校验强制 origin 带 http(s):// 前缀且拒绝空列表
-    // （sdforge/src/config/cors.rs:20-49），通配 "*" 不再合法。取 [cors]
+    // （sdforge/src/config/cors.rs），通配 "*" 不再合法。取 [cors]
     // 段的 origin 并过滤 "*"；过滤后为空则不挂 CORS 层（网关场景由调用方
     // 侧处理跨域）。
     let cors = config_ref.cors.as_ref().and_then(|c| {
@@ -237,7 +237,7 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
         // 认证由自建 api_auth_middleware 承担（[auth] 段 SHA256 摘要 +
         // 常量时间比较，见 middleware/auth.rs）。sdforge 层显式禁用：
         // 其 ApiKey 模式仅支持站点级明文 keys 且空表在 build 时直接报错
-        // （sdforge/src/http/http_impl.rs:389），无摘要存储能力。
+        // （sdforge/src/http/http_impl.rs），无摘要存储能力。
         authentication: sdforge::config::AuthConfig::None,
         timeout: Some(sdforge::config::TimeoutConfig::default()),
         security: sdforge::config::SecurityConfig::default(),
@@ -247,10 +247,10 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
 }
 
 /// 生产装配链：sdforge 站点（#[forge] 注册的 /api/v1/health 等）+ 业务路由合并
-/// （原 main.rs:218-223）。
+/// （原 main.rs）。
 /// 修复前 main 只 serve build_with_config 产物、未 merge create_router，
 /// /v1 与 /admin 全部 404。build_with_config 返回原生 axum::Router，
-/// 直接 merge（sdforge/src/http/http_impl.rs:274）。
+/// 直接 merge（sdforge/src/http/http_impl.rs）。
 async fn assemble_router(
     config_manager: &Arc<ConfigManager>,
     assembly: &bootstrap::Assembly,

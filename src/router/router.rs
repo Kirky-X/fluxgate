@@ -33,18 +33,18 @@ pub enum RoutingStrategy {
 pub struct Router {
     config: Arc<ConfigManager>,
     vendor_manager: Arc<VendorManager>,
-    /// recId=11：会话亲和表（oxcache）。None = 未接线，路由行为与历史一致
+    /// 会话亲和表（oxcache）。None = 未接线，路由行为与历史一致
     affinity: Option<Arc<AffinityTable>>,
-    /// recId=14：SLA 虚拟队列 Q — 键 = 租户（调用方 API key 哈希；无租户
+    /// SLA 虚拟队列 Q — 键 = 租户（调用方 API key 哈希；无租户
     /// 上下文时 "global"）。sla_v > 0 时每轮加权选择完成后对偶更新
     /// `Q ← max(0, Q + α − ŝ_selected)`（决策时更新，无需执行结果回传）；
     /// sla_v = 0（默认）不读不写、行为与现状逐位一致。重启归零（Lyapunov
     /// 收敛自动重建）。std RwLock：临界区无 await，与 metrics 同款。
     sla_queues: Arc<RwLock<HashMap<String, f64>>>,
-    /// recId=14：「候选集全无定价 → 成本项置中性 0」的进程内一次性 warn
+    /// 「候选集全无定价 → 成本项置中性 0」的进程内一次性 warn
     /// 标记（防每请求刷屏）。
     sla_no_pricing_warned: Arc<AtomicBool>,
-    /// recId=15：LinUCB 状态 — selection="linucb" 档的臂状态来源。None =
+    /// LinUCB 状态 — selection="linucb" 档的臂状态来源。None =
     /// 未接线（该档回退 weighted，安全语义对齐 affinity 的 None）。
     bandit: Option<Arc<BanditState>>,
 }
@@ -61,7 +61,7 @@ impl Router {
         }
     }
 
-    /// recId=15：接线 LinUCB 状态（builder，`with_affinity` 同款）。接线后
+    /// 接线 LinUCB 状态（builder，`with_affinity` 同款）。接线后
     /// `[routing].selection = "linucb"` 档在加权选择路径生效；未接线时该档
     /// 回退 weighted（行为与历史一致）。
     pub fn with_bandit(mut self, bandit: Arc<BanditState>) -> Self {
@@ -69,7 +69,7 @@ impl Router {
         self
     }
 
-    /// recId=11：接线会话亲和表（builder）。接线后 `route_with_session`
+    /// 接线会话亲和表（builder）。接线后 `route_with_session`
     /// 的合格集合内亲和命中者优先（boost 而非硬粘）。
     pub fn with_affinity(mut self, affinity: Arc<AffinityTable>) -> Self {
         self.affinity = Some(affinity);
@@ -89,7 +89,7 @@ impl Router {
         self.route_excluding(abstract_model, &[]).await
     }
 
-    /// recId=11：带会话键的路由 — 合格集合（enabled + Available）内亲和
+    /// 带会话键的路由 — 合格集合（enabled + Available）内亲和
     /// 命中者优先；未命中走 weighted_select。绑定回写不在此处：只记
     /// "上次成功服务的 vendor"，执行成功后由 API 层 `AffinityTable::bind`。
     pub async fn route_with_session(
@@ -101,7 +101,7 @@ impl Router {
             .await
     }
 
-    /// recId=11：带会话键 + 排除集的路由（失败迁移重路由的亲和形态）
+    /// 带会话键 + 排除集的路由（失败迁移重路由的亲和形态）
     pub async fn route_with_session_excluding(
         &self,
         abstract_model: &str,
@@ -120,13 +120,13 @@ impl Router {
         .await
     }
 
-    /// recId=19(a)：带请求级权重的路由变体（X-Weight，LiteLLM simple_shuffle
+    /// 带请求级权重的路由变体（X-Weight，LiteLLM simple_shuffle
     /// _router_weights 对照）— `request_weight` 经 `[routing].allow_request_weight`
     /// 门控（关闭时忽略，行为与现状逐位一致）后覆盖 model.weight 参与
     /// 权重计算。`Router::route` 等原签名与行为不变。
-    /// recId=10(2)：`tenant` 为调用方 API key 哈希（cache_api_key_hash
+    /// `tenant` 为调用方 API key 哈希（cache_api_key_hash
     /// 同源），仅 `[routing].affinity_tenant_scoped` 开启时参与亲和键。
-    #[allow(clippy::too_many_arguments)] // 路由上下文穿线（log_chat_request 同款先例）
+    #[allow(clippy::too_many_arguments)] // 路由上下文穿线
     pub async fn route_weighted(
         &self,
         abstract_model: &str,
@@ -134,10 +134,10 @@ impl Router {
         tenant: Option<&str>,
         excluded: &[String],
         request_weight: Option<f64>,
-        // recId=15：LinUCB 请求特征（`linucb_features`，5 维）。None 或
+        // LinUCB 请求特征（`linucb_features`，5 维）。None 或
         // selection 非 linucb 档时该维度不参与（行为与历史一致）。
         linucb_features: Option<&[f64]>,
-        // recId=17：x-deadline-ms 头（毫秒）。仅 [routing].lps_deadline_gate
+        // x-deadline-ms 头（毫秒）。仅 [routing].lps_deadline_gate
         // 开启时被消费（缺省用 default_deadline_ms）；默认关闭时本参数
         // 不参与任何路径（行为与历史一致）。
         lps_deadline_ms: Option<f64>,
@@ -155,9 +155,8 @@ impl Router {
         .await
     }
 
-    /// recId=19(a)：请求级权重门控 — `[routing].allow_request_weight` 开启
+    /// 请求级权重门控 — `[routing].allow_request_weight` 开启
     /// 时透传，关闭（默认）丢弃为 None。`pub` 供确定性单测
-    ///（tests/router_test.rs；compute_weight 同款先例）。
     pub fn gate_request_weight(&self, request_weight: Option<f64>) -> Option<f64> {
         if self.config.read().routing.allow_request_weight {
             request_weight
@@ -177,18 +176,18 @@ impl Router {
         linucb_features: Option<&[f64]>,
         lps_deadline_ms: Option<f64>,
     ) -> Result<RoutingDecision, GateError> {
-        // recId=14：SLA 虚拟队列键使用**原始**租户 —— affinity_tenant_scoped
-        // 是亲和键格式兼容开关（recId=10(2)），只约束亲和 lookup，不约束
+        // SLA 虚拟队列键使用**原始**租户 —— affinity_tenant_scoped
+        // 是亲和键格式兼容开关：只约束亲和 lookup，不约束
         // SLA 分桶（键 = 租户 hash，无租户上下文 "global"）。
         let sla_tenant = tenant;
-        // recId=10(2)：键租户隔离门控 — 关闭（默认）一律 legacy 键（行为
+        // 键租户隔离门控 — 关闭（默认）一律 legacy 键（行为
         // 与键格式逐位一致）
         let tenant = if self.config.read().routing.affinity_tenant_scoped {
             tenant
         } else {
             None
         };
-        // recId=15（评审修复 major）：臂键归一经 bandit::linucb_arm_key
+        // 臂键归一经 bandit::linucb_arm_key
         // （lowercase + auto→"__global__"），与奖励侧同源（DRY）
         let normalized = crate::router::bandit::linucb_arm_key(abstract_model);
         let is_auto = normalized == "__global__";
@@ -241,7 +240,7 @@ impl Router {
         })
     }
 
-    /// recId=7⑤：按 config vendors 的 priority 字段构建 abstract_model 的
+    /// 按 config vendors 的 priority 字段构建 abstract_model 的
     /// 换路 fallback 链（resilience feature）。
     ///
     /// targets = `resolve_model` 的 enabled 候选（abstract_id 精确匹配），
@@ -274,9 +273,269 @@ impl Router {
         }
     }
 
-    /// 使用路由提示进行路由（recId=19(a)：新增请求级权重入参——vendor 提示
+    /// 队列深度读取（load_signal 单选）：`calculate_weight` 与路由解释
+    /// 共用同一信号源（默认 "queue"）。同步（manager 侧均为同步读）。
+    fn queue_len_for(&self, vendor: &VendorConfig, load_signal: &str) -> usize {
+        match load_signal {
+            "in_flight" => self.vendor_manager.get_in_flight(&vendor.id),
+            "in_flight_relative" => {
+                let in_flight = self.vendor_manager.get_in_flight(&vendor.id) as f64;
+                let fleet_mean = self.vendor_manager.fleet_mean_in_flight();
+                relative_in_flight_to_len(in_flight, fleet_mean)
+            }
+            // "queue" 与未知值：队列深度（默认路径 + 回滚阀同路径）
+            _ => self.vendor_manager.get_queue_length(&vendor.id),
+        }
+    }
+
+    /// 容量份额（四级权重回退第 3 级输入）：`calculate_weights_overridden`
+    /// 与路由解释共用（任一改动需同步另一侧；一致性由解释一致性测试锁定）。
+    async fn capacity_shares(
+        &self,
+        candidates: &[(VendorConfig, ModelConfig)],
+    ) -> HashMap<String, f64> {
+        let mut capacity: HashMap<String, f64> = HashMap::new();
+        if candidates.iter().any(|(_, m)| m.weight <= 0.0) {
+            let mut limits: Vec<(String, u64)> = Vec::new();
+            for (vendor, _) in candidates {
+                if let Some(limit) = self
+                    .vendor_manager
+                    .get_window_info(&vendor.id)
+                    .await
+                    .and_then(|info| info.max_tokens)
+                {
+                    limits.push((vendor.id.clone(), limit));
+                }
+            }
+            let max_limit = limits.iter().map(|(_, l)| *l).max().unwrap_or(0);
+            if max_limit > 0 {
+                capacity = limits
+                    .into_iter()
+                    .map(|(id, limit)| (id, limit as f64 / max_limit as f64))
+                    .collect();
+            }
+        }
+        capacity
+    }
+
+    // ============ 路由可解释性（WP5） ============
+
+    /// 逐候选解释（`POST /admin/route/explain` 的数据源）：纯只读——不发
+    /// 上游请求，不改亲和/熔断/队列任何状态（亲和 lookup 为读，
+    /// miss 计量除外——见 `affinity_hit` 的记账说明，本处直接读表不经
+    /// `affinity_hit`，零计量副作用）。
+    ///
+    /// 候选池 = 全部 vendor × 请求模型（按 model_id/abstract_id 大小写
+    /// 不敏感匹配服务条目；无条目 → `not_in_catalog`）。reason 优先级
+    /// （首个命中即定）：not_in_catalog → disabled → throttled →
+    /// cooling_down → affinity_bound_elsewhere → queue_over_limit →
+    /// weight_zero → eligible。限流窗口耗尽先于状态判定（`get_status`
+    /// 本就 peek 窗口——耗尽者状态恒为 Throttled，先判窗口才能区分
+    /// 「配额耗尽」与「错误驱动冷却」）。`queue_over_limit`/`weight_zero`
+    /// 为诊断性排除（生产轮盘赌在全零权重时仍均匀回退可能选中，detail
+    /// 如实声明；默认配置下三者不触发，解释与路由完全一致）。
+    ///
+    /// `model` 无任何 vendor 服务（含禁用条目）时返回空（调用方转
+    /// Validation 错误）。`session_key=None` 时跳过亲和判定。
+    pub async fn explain_route(
+        &self,
+        model: &str,
+        session_key: Option<&str>,
+    ) -> Vec<CandidateAssessment> {
+        let config = self.config.read();
+        let vendors: Vec<VendorConfig> = config.vendors.clone();
+        let routing = config.routing.clone();
+        drop(config);
+
+        // 每 vendor 的服务条目（大小写不敏感；model_id 或 abstract_id 命中）。
+        let mut rows: Vec<(VendorConfig, Option<ModelConfig>)> = Vec::new();
+        let mut served_any = false;
+        for vendor in vendors {
+            let entry = vendor
+                .models
+                .iter()
+                .find(|m| {
+                    m.model_id.eq_ignore_ascii_case(model)
+                        || m.abstract_id
+                            .as_deref()
+                            .is_some_and(|a| a.eq_ignore_ascii_case(model))
+                })
+                .cloned();
+            served_any = served_any || entry.is_some();
+            rows.push((vendor, entry));
+        }
+        if !served_any {
+            return Vec::new();
+        }
+
+        // 亲和绑定（legacy 键；只读 lookup，命中/未命中均不写表不计量）。
+        // hard 模式才构成排他（soft 为 boost，不排除竞争者）。
+        let affinity_hard = !routing.affinity_mode.trim().eq_ignore_ascii_case("soft");
+        let bound_vendor: Option<String> = if affinity_hard {
+            match (self.affinity.as_ref(), session_key) {
+                (Some(table), Some(session)) => table.lookup(None, session).await,
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        // 先行筛选（与权重无关的 reason），收集合格对。
+        enum Screen {
+            Excluded(CandidateAssessment),
+            Candidate(Box<(VendorConfig, ModelConfig)>),
+        }
+        let mut screens: Vec<Screen> = Vec::new();
+        for (vendor, entry) in rows {
+            let Some(model_entry) = entry else {
+                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                    vendor.id.clone(),
+                    model.to_string(),
+                    REASON_NOT_IN_CATALOG,
+                    format!("vendor '{}' 不提供模型 '{model}'", vendor.id),
+                )));
+                continue;
+            };
+            if !vendor.enabled || !model_entry.enabled {
+                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                    vendor.id.clone(),
+                    model_entry.model_id.clone(),
+                    REASON_DISABLED,
+                    format!(
+                        "vendor enabled={} model enabled={}",
+                        vendor.enabled, model_entry.enabled
+                    ),
+                )));
+                continue;
+            }
+            let status = self.vendor_manager.get_status(&vendor.id).await;
+            let window = self.vendor_manager.get_window_info(&vendor.id).await;
+            // 限流窗口耗尽先于状态（get_status peek 窗口——耗尽者状态恒
+            // Throttled；先判窗口以区分「配额耗尽」与「错误驱动冷却」）。
+            if matches!(&window, Some(info) if !info.has_budget()) {
+                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                    vendor.id.clone(),
+                    model_entry.model_id.clone(),
+                    REASON_THROTTLED,
+                    "限流窗口耗尽（window 无预算）".to_string(),
+                )));
+                continue;
+            }
+            if status != VendorStatus::Available {
+                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                    vendor.id.clone(),
+                    model_entry.model_id.clone(),
+                    REASON_COOLING_DOWN,
+                    format!("vendor 状态 {status:?}（非 Available）"),
+                )));
+                continue;
+            }
+            // key 池粒度（审查 M9，R-routing-explainability-002）：全部 key
+            // 黑名单 = 无可用出站凭证，与实际路由分叉（轮盘赌跳过该候选、
+            // 凭证选择走 legacy 回退）——报 cooling_down 并注明 key 池耗尽，
+            // detail 携带指纹明细（截断哈希，非 key 原文）。
+            if let Some(fingerprints) = self.vendor_manager.key_pool_exhausted(&vendor.id) {
+                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                    vendor.id.clone(),
+                    model_entry.model_id.clone(),
+                    REASON_COOLING_DOWN,
+                    format!(
+                        "key 池耗尽（{n}/{n} 把 key 全部在黑名单：{prints}）",
+                        n = fingerprints.len(),
+                        prints = fingerprints.join(",")
+                    ),
+                )));
+                continue;
+            }
+            if let Some(bound) = bound_vendor.as_deref() {
+                if bound != vendor.id {
+                    screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                        vendor.id.clone(),
+                        model_entry.model_id.clone(),
+                        REASON_AFFINITY_BOUND_ELSEWHERE,
+                        format!("会话亲和绑定于 '{bound}'（hard 模式排他）"),
+                    )));
+                    continue;
+                }
+            }
+            let queue_len = self.queue_len_for(&vendor, &routing.load_signal);
+            if queue_len >= QUEUE_SATURATION_LEN {
+                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                    vendor.id.clone(),
+                    model_entry.model_id.clone(),
+                    REASON_QUEUE_OVER_LIMIT,
+                    format!("队列深度 {queue_len} ≥ 饱和点 {QUEUE_SATURATION_LEN}"),
+                )));
+                continue;
+            }
+            screens.push(Screen::Candidate(Box::new((vendor, model_entry))));
+        }
+
+        // 合格对的生产精确权重（与路由同一方法）+ 5 因子分解。
+        let eligible: Vec<(VendorConfig, ModelConfig)> = screens
+            .iter()
+            .filter_map(|s| match s {
+                Screen::Candidate(pair) => Some(pair.as_ref().clone()),
+                Screen::Excluded(_) => None,
+            })
+            .collect();
+        let finals = self
+            .calculate_weights_overridden(eligible.clone(), None, None)
+            .await;
+        let final_by_vendor: HashMap<&str, f64> = finals
+            .iter()
+            .map(|(w, (v, _))| (v.id.as_str(), *w))
+            .collect();
+        let capacity = self.capacity_shares(&eligible).await;
+
+        let selection = selection_tier(&routing);
+        let mut out = Vec::with_capacity(screens.len());
+        for screen in screens {
+            match screen {
+                Screen::Excluded(assessment) => out.push(assessment),
+                Screen::Candidate(pair) => {
+                    let (vendor, model_entry) = pair.as_ref().clone();
+                    let eff = resolve_effective_model_weight(
+                        model_entry.weight,
+                        capacity.get(&vendor.id).copied(),
+                    );
+                    let queue_len = self.queue_len_for(&vendor, &routing.load_signal);
+                    let window = self.vendor_manager.get_window_info(&vendor.id).await;
+                    let ewma = self.vendor_manager.metrics().vendor_ewma(&vendor.id);
+                    let factors =
+                        compute_weight_breakdown(eff, queue_len, window.as_ref(), &routing, ewma);
+                    let base = factors.total;
+                    let weight = final_by_vendor
+                        .get(vendor.id.as_str())
+                        .copied()
+                        .unwrap_or(base);
+                    if base <= 0.0 {
+                        out.push(CandidateAssessment::excluded(
+                            vendor.id.clone(),
+                            model_entry.model_id.clone(),
+                            REASON_WEIGHT_ZERO,
+                            "合成权重为 0（生产轮盘赌全零时仍均匀回退可能选中，仅诊断提示）"
+                                .to_string(),
+                        ));
+                    } else {
+                        out.push(CandidateAssessment::eligible(
+                            vendor.id.clone(),
+                            model_entry.model_id.clone(),
+                            factors,
+                            base,
+                            weight,
+                            selection,
+                        ));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 使用路由提示进行路由（新增请求级权重入参——vendor 提示
     /// 路径为单候选无权重面，权重仅在 model 提示 / 默认路由路径生效；
-    /// recId=10(2)：tenant 亲和键租户维度同源传入）
+    /// tenant 亲和键租户维度同源传入）
     #[allow(clippy::too_many_arguments)] // 路由上下文穿线（route_weighted 同款）
     pub async fn route_with_hints(
         &self,
@@ -285,12 +544,12 @@ impl Router {
         preferred_model: Option<&str>,
         request_weight: Option<f64>,
         tenant: Option<&str>,
-        // recId=15：LinUCB 请求特征（语义同 [`Self::route_weighted`]）
+        // LinUCB 请求特征（语义同 [`Self::route_weighted`]）
         linucb_features: Option<&[f64]>,
-        // recId=17：x-deadline-ms 头（语义同 [`Self::route_weighted`]）
+        // x-deadline-ms 头（语义同 [`Self::route_weighted`]）
         lps_deadline_ms: Option<f64>,
     ) -> Result<RoutingDecision, GateError> {
-        // recId=19(a) 评审修复：preferred_model 分支此前把 request_weight
+        // 评审修复：preferred_model 分支此前把 request_weight
         // 裸传 try_abstract_route，绕过 allow_request_weight 门控（X-Model
         // + X-Weight 在门控关闭时仍覆盖 model.weight）。入口统一过门——
         // 末尾 route_weighted 的二次门控幂等（None 穿透、开关语义不变）。
@@ -423,105 +682,61 @@ impl Router {
         })
     }
 
-    #[allow(clippy::too_many_arguments)] // 路由上下文穿线（log_chat_request 同款先例）
+    #[allow(clippy::too_many_arguments)] // 路由上下文穿线
     async fn try_abstract_route(
         &self,
         abstract_id: &str,
         excluded: &[String],
         session_key: Option<&str>,
         tenant: Option<&str>,
-        // recId=14：SLA 虚拟队列键用原始租户（上面的 `tenant` 已过亲和
+        // SLA 虚拟队列键用原始租户（上面的 `tenant` 已过亲和
         // 键门控，供 affinity lookup；SLA Q 分桶用本参数，不经门控）
         sla_tenant: Option<&str>,
         request_weight: Option<f64>,
-        // recId=15：LinUCB 请求特征（selection="linucb" 档选择输入）
+        // LinUCB 请求特征（selection="linucb" 档选择输入）
         linucb_features: Option<&[f64]>,
-        // recId=17：x-deadline-ms 头（lps_deadline_gate 开启时消费）
+        // x-deadline-ms 头（lps_deadline_gate 开启时消费）
         lps_deadline_ms: Option<f64>,
     ) -> Option<RoutingDecision> {
-        let candidates = self.config.resolve_model(abstract_id);
-
-        // recId=5：get_status async 化（Token 窗口 peek），filter 闭包改 for 循环
-        let mut available_candidates: Vec<(VendorConfig, ModelConfig)> = Vec::new();
-        // recId=19(b)：因 CB/Throttled 被剔除的候选（fail-open 回落集）
-        let mut status_dropped: Vec<(VendorConfig, ModelConfig)> = Vec::new();
-        for (vendor, model) in candidates {
-            // Only consider enabled vendors and models
-            if !vendor.enabled || !model.enabled {
-                continue;
-            }
-            // recId=7⑤：换路 fallback 的排除集
-            if excluded.iter().any(|e| e == &vendor.id) {
-                continue;
-            }
-            if self.vendor_manager.get_status(&vendor.id).await == VendorStatus::Available {
-                available_candidates.push((vendor, model));
-            } else {
-                status_dropped.push((vendor, model));
-            }
-        }
+        let (available_candidates, status_dropped) = self
+            .collect_abstract_candidates(abstract_id, excluded)
+            .await;
 
         if available_candidates.is_empty() {
-            // recId=19(b)：全冷却 fail-open 安全网 — 全部候选因 CB Open /
-            // Throttled 被剔除且 `[routing].fail_open_when_all_cooling`
-            // 开启时，回落「忽略状态但 enabled」的候选集加权选择。现实
-            // 约束：NexusFlow 无主动健康检查驱动的冷却，全部为真实失败
-            // 冷却——本开关覆盖的是 CB Open 超时未过窗口 / 限流窗口未
-            // 重置，语义弱于 LiteLLM 的 health-check 限定；把已冷却
-            // vendor 重新纳入流量是有意冒险，仅建议有兜底容量的部署开启。
-            // 默认关闭 = None（上层收敛为 Validation 错误，现状不变）。
-            if !status_dropped.is_empty() && self.config.read().routing.fail_open_when_all_cooling {
-                tracing::warn!(
-                    count = status_dropped.len(),
-                    "{}",
-                    t("router-fail-open-engaged")
-                );
-                return Some(
-                    self.weighted_select(
-                        status_dropped,
-                        RoutingStrategy::Abstract,
-                        request_weight,
-                        None,
-                        sla_tenant,
-                    )
-                    .await,
-                );
-            }
-            return None;
+            // 全冷却 fail-open 安全网 — 全部候选因 CB Open / Throttled 被
+            // 剔除且 `[routing].fail_open_when_all_cooling` 开启时，回落
+            //「忽略状态但 enabled」的候选集加权选择（默认关闭 = None，上层
+            // 收敛为 Validation 错误，现状不变；完整语义见 fail_open_decision）。
+            return self
+                .fail_open_decision(
+                    RoutingStrategy::Abstract,
+                    "router-fail-open-engaged",
+                    status_dropped,
+                    request_weight,
+                    sla_tenant,
+                )
+                .await;
         }
 
-        // recId=10(1)：亲和 —— hard（默认）命中即返回（现状）；soft 命中
-        // 软化为评分项（权重乘 (1+factor) 后与其余候选照常竞争）
-        if let Some(bound) = self
-            .affinity_hit(&available_candidates, session_key, tenant)
+        // 亲和 —— hard（默认）命中即返回（现状）；soft 命中软化为评分项
+        //（权重乘 (1+factor) 后与其余候选照常竞争）；未命中候选集原样归还，
+        // 续用下方 LPS/LinUCB/加权阶段（语义同 global 路径，见 affinity_decision）。
+        let mut available_candidates = match self
+            .affinity_decision(
+                RoutingStrategy::Abstract,
+                available_candidates,
+                session_key,
+                tenant,
+                request_weight,
+                sla_tenant,
+            )
             .await
         {
-            let routing = self.config.read().routing.clone();
-            if routing.affinity_mode.trim().eq_ignore_ascii_case("soft") {
-                let factor = routing.affinity_boost_factor.max(0.0);
-                return Some(
-                    self.weighted_select(
-                        available_candidates,
-                        RoutingStrategy::Abstract,
-                        request_weight,
-                        Some((&bound, factor)),
-                        sla_tenant,
-                    )
-                    .await,
-                );
-            }
-            // hard：命中即返回（bind 命中必在合格集合内——affinity_hit 保证）
-            if let Some((vendor, model)) = available_candidates.iter().find(|(v, _)| v.id == bound)
-            {
-                return Some(RoutingDecision {
-                    vendor: vendor.clone(),
-                    model: model.clone(),
-                    strategy: RoutingStrategy::Abstract,
-                });
-            }
-        }
+            Ok(decision) => return Some(decision),
+            Err(models) => models,
+        };
 
-        // recId=17：LPS 硬约束门控（默认关）——置于亲和块后：hard/soft
+        // LPS 硬约束门控（默认关）——置于亲和块后：hard/soft
         // 命中语义优先（现状不变）。可行集筛选 + 空集回退 Ŵ 最小者。
         match self.lps_deadline_filter(&available_candidates, lps_deadline_ms) {
             LpsDeadline::Feasible(candidates) => available_candidates = candidates,
@@ -535,7 +750,7 @@ impl Router {
             LpsDeadline::NoFilter => {}
         }
 
-        // recId=15：LinUCB 选择档 — selection="linucb"（热读）且接线且
+        // LinUCB 选择档 — selection="linucb"（热读）且接线且
         // 特征可得时 argmax UCB；否则 None 回退下方 weighted（安全语义对
         // 齐 affinity None）。置于亲和块后：hard 命中仍优先（现状语义）；
         // soft/加权路径不受影响。
@@ -560,18 +775,18 @@ impl Router {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // 路由上下文穿线（log_chat_request 同款先例）
+    #[allow(clippy::too_many_arguments)] // 路由上下文穿线
     async fn try_global_route(
         &self,
         excluded: &[String],
         session_key: Option<&str>,
         tenant: Option<&str>,
-        // recId=14：SLA 虚拟队列键用原始租户（语义同 try_abstract_route）
+        // SLA 虚拟队列键用原始租户（语义同 try_abstract_route）
         sla_tenant: Option<&str>,
         request_weight: Option<f64>,
-        // recId=15：LinUCB 请求特征（selection="linucb" 档选择输入）
+        // LinUCB 请求特征（selection="linucb" 档选择输入）
         linucb_features: Option<&[f64]>,
-        // recId=17：x-deadline-ms 头（语义同 try_abstract_route）
+        // x-deadline-ms 头（语义同 try_abstract_route）
         lps_deadline_ms: Option<f64>,
     ) -> Option<RoutingDecision> {
         let config = self.config.read();
@@ -581,23 +796,36 @@ impl Router {
             .await;
 
         if all_models.is_empty() {
-            // recId=19(b)：fail-open 安全网（语义同 try_abstract_route 注释）
+            // fail-open 安全网（语义同 try_abstract_route 注释）
             return self
-                .global_fail_open(status_dropped, request_weight, sla_tenant)
+                .fail_open_decision(
+                    RoutingStrategy::Global,
+                    "router-global-fail-open-engaged",
+                    status_dropped,
+                    request_weight,
+                    sla_tenant,
+                )
                 .await;
         }
 
-        // recId=10(1)：亲和 —— hard（默认）命中即返回；soft 评分 boost
+        // 亲和 —— hard（默认）命中即返回；soft 评分 boost
         //（语义同 try_abstract_route 注释）；未命中候选集原样归还续用
         let mut all_models = match self
-            .global_affinity_decision(all_models, session_key, tenant, request_weight, sla_tenant)
+            .affinity_decision(
+                RoutingStrategy::Global,
+                all_models,
+                session_key,
+                tenant,
+                request_weight,
+                sla_tenant,
+            )
             .await
         {
             Ok(decision) => return Some(decision),
             Err(models) => models,
         };
 
-        // recId=17：LPS 硬约束门控（语义同 try_abstract_route；默认关）
+        // LPS 硬约束门控（语义同 try_abstract_route；默认关）
         match self.lps_deadline_filter(&all_models, lps_deadline_ms) {
             LpsDeadline::Feasible(candidates) => all_models = candidates,
             LpsDeadline::EmptyPickMin => {
@@ -610,7 +838,7 @@ impl Router {
             LpsDeadline::NoFilter => {}
         }
 
-        // recId=15：LinUCB 选择档（语义同 try_abstract_route 注释）；global
+        // LinUCB 选择档（语义同 try_abstract_route 注释）；global
         // 路径无 abstract 模型键，臂键用 "__global__"（与 abstract 键空间
         // 隔离，全模型共享一臂组）。
         if let Some(decision) = self.linucb_route(
@@ -634,8 +862,40 @@ impl Router {
         )
     }
 
+    /// abstract 路径候选收集：`resolve_model` 展开 (vendor, model) 对后，
+    /// enabled 过滤 + 排除集过滤 + 实时健康过滤（CB/Throttled 入
+    /// status_dropped，供 fail-open 回落）。get_status async 化（Token
+    /// 窗口 peek），故用 for 循环而非 filter 闭包。
+    async fn collect_abstract_candidates(
+        &self,
+        abstract_id: &str,
+        excluded: &[String],
+    ) -> (
+        Vec<(VendorConfig, ModelConfig)>,
+        Vec<(VendorConfig, ModelConfig)>,
+    ) {
+        let mut available: Vec<(VendorConfig, ModelConfig)> = Vec::new();
+        let mut status_dropped: Vec<(VendorConfig, ModelConfig)> = Vec::new();
+        for (vendor, model) in self.config.resolve_model(abstract_id) {
+            // Only consider enabled vendors and models
+            if !vendor.enabled || !model.enabled {
+                continue;
+            }
+            // 换路 fallback 的排除集
+            if excluded.iter().any(|e| e == &vendor.id) {
+                continue;
+            }
+            if self.vendor_manager.get_status(&vendor.id).await == VendorStatus::Available {
+                available.push((vendor, model));
+            } else {
+                status_dropped.push((vendor, model));
+            }
+        }
+        (available, status_dropped)
+    }
+
     /// 全局路径候选收集：enabled 过滤 + 排除集过滤 + 实时健康过滤
-    ///（CB/Throttled 候选入 status_dropped，供 recId=19(b) fail-open 回落）。
+    ///（CB/Throttled 候选入 status_dropped，供 fail-open 回落）。
     async fn collect_global_candidates(
         &self,
         vendors: &[VendorConfig],
@@ -671,11 +931,14 @@ impl Router {
         (all_models, status_dropped)
     }
 
-    /// recId=19(b) fail-open 安全网：存在被 CB/Throttled 剔除的候选且
-    /// [routing].fail_open_when_all_cooling 开启 → 从回落集加权选择；
-    /// 否则 None（调用方继续后续路由阶段）。
-    async fn global_fail_open(
+    /// fail-open 安全网（abstract/global 两路共用）：存在被 CB/Throttled
+    /// 剔除的候选且 [routing].fail_open_when_all_cooling 开启 → 从回落集
+    /// 按 `strategy` 加权选择并记 `engaged_msg` 告警；否则 None（调用方
+    /// 继续后续路由阶段）。
+    async fn fail_open_decision(
         &self,
+        strategy: RoutingStrategy,
+        engaged_msg: &str,
         status_dropped: Vec<(VendorConfig, ModelConfig)>,
         request_weight: Option<f64>,
         sla_tenant: Option<&str>,
@@ -683,29 +946,20 @@ impl Router {
         if status_dropped.is_empty() || !self.config.read().routing.fail_open_when_all_cooling {
             return None;
         }
-        tracing::warn!(
-            count = status_dropped.len(),
-            "{}",
-            t("router-global-fail-open-engaged")
-        );
+        tracing::warn!(count = status_dropped.len(), "{}", t(engaged_msg));
         Some(
-            self.weighted_select(
-                status_dropped,
-                RoutingStrategy::Global,
-                request_weight,
-                None,
-                sla_tenant,
-            )
-            .await,
+            self.weighted_select(status_dropped, strategy, request_weight, None, sla_tenant)
+                .await,
         )
     }
 
-    /// recId=10(1)：亲和决策 —— soft 模式命中即带 boost 加权选择（候选集
-    /// 消费，零克隆）；hard 模式命中且绑定 vendor 在合格集合内直接选它；
-    /// 绑定 vendor 不在集合内则 Err 归还候选集（调用方继续 LPS/LinUCB/
-    /// 加权阶段）。
-    async fn global_affinity_decision(
+    /// 亲和决策（abstract/global 两路共用，按 `strategy` 选择）—— soft
+    /// 模式命中即带 boost 加权选择（候选集消费，零克隆）；hard 模式命中且
+    /// 绑定 vendor 在合格集合内直接选它；绑定 vendor 不在集合内则 Err 归还
+    /// 候选集（调用方继续 LPS/LinUCB/加权阶段）。
+    async fn affinity_decision(
         &self,
+        strategy: RoutingStrategy,
         all_models: Vec<(VendorConfig, ModelConfig)>,
         session_key: Option<&str>,
         tenant: Option<&str>,
@@ -723,7 +977,7 @@ impl Router {
             return Ok(self
                 .weighted_select(
                     all_models,
-                    RoutingStrategy::Global,
+                    strategy,
                     request_weight,
                     Some((&bound, factor)),
                     sla_tenant,
@@ -737,23 +991,23 @@ impl Router {
             Some((vendor, model)) => Ok(RoutingDecision {
                 vendor: vendor.clone(),
                 model: model.clone(),
-                strategy: RoutingStrategy::Global,
+                strategy,
             }),
             None => Err(all_models),
         }
     }
 
-    /// recId=11：会话亲和 boost — 命中 vendor 在合格集合内则直接选它，
+    /// 会话亲和 boost — 命中 vendor 在合格集合内则直接选它，
     /// 未命中走 weighted_select。boost 而非硬粘：合格集合外绝不强选
     /// （Astrolabe herding 证据——亲和与负载均衡冲突时，健康过滤优先）。
     ///
-    /// 命中率记账（GlobalMetrics，recId=11⑤）：
+    /// 命中率记账（GlobalMetrics）
     /// - 命中且在集合 → affinity_hits；
     /// - 命中但 vendor 已不可用/被排除 → 清除旧键 + affinity_misses；
     /// - 无绑定 → affinity_misses；
     /// - 未接线亲和表或无 session_key → 不计（不参与亲和的路由不进分母）。
     ///
-    /// recId=10(1)：命中语义从「直接返回决策」改为「返回命中 vendor_id」
+    /// 命中语义从「直接返回决策」改为「返回命中 vendor_id」
     /// —— hard 模式（默认）由调用方直接构造决策（现状不变），soft 模式
     /// 以权重乘子参与竞争。
     async fn affinity_hit(
@@ -785,7 +1039,7 @@ impl Router {
         }
     }
 
-    /// recId=15：LinUCB 选择档 — `[routing].selection = "linucb"`（热读）
+    /// LinUCB 选择档 — `[routing].selection = "linucb"`（热读）
     /// 且 BanditState 已接线且特征可得（长度 == LINUCB_DIM）时，候选集内
     /// argmax UCB（`BanditState::argmax`，平局 rng 决断）；任一条件不满足
     /// 返回 None 由调用方回退 weighted（未接线安全语义，affinity None 同款）。
@@ -831,10 +1085,10 @@ impl Router {
         })
     }
 
-    /// 生产选择入口 — recId=4⑥ 后为薄 wrapper：先 async 计算权重，再以
+    /// 生产选择入口 — 后为薄 wrapper：先 async 计算权重，再以
     /// `thread_rng` 注入同步的 [`Self::weighted_select_with`]，行为与旧实现
     /// 完全一致（rng 在全部 await 之后创建，ThreadRng 不跨 await，Send 安全）。
-    /// recId=10(1)：`affinity_boost` 为 soft 模式命中乘子 `Some((vendor_id,
+    /// `affinity_boost` 为 soft 模式命中乘子 `Some((vendor_id,
     /// factor))`——权重计算后对命中 vendor 乘 (1+factor)，其余候选照常竞争。
     async fn weighted_select(
         &self,
@@ -854,7 +1108,7 @@ impl Router {
             let mut rng = rand::thread_rng();
             self.weighted_select_with(weighted, strategy, &mut rng)
         };
-        // recId=14：选择完成后对偶更新 Q ← max(0, Q + α − ŝ_selected)——
+        // 选择完成后对偶更新 Q ← max(0, Q + α − ŝ_selected)——
         // 决策时更新（SLARouter Eq 4/5 的 Lyapunov 语义），无需执行结果
         // 回传。sla_v=0（默认）旁路：Q 不读不写、行为与现状逐位一致。
         // 注意：direct/亲和 hard 等「命中即返回」的单候选路径不经本方法，
@@ -865,7 +1119,7 @@ impl Router {
         decision
     }
 
-    /// recId=4⑥/10：async 权重收集 — calculate_weight 逐候选 await
+    /// async 权重收集 — calculate_weight 逐候选 await
     ///（get_window_info peek）。与同步选择核心分离的边界：`&mut dyn RngCore`
     /// 非 Send，无法跨 await 持有（编译器实测：axum handler future 报
     /// `dyn RngCore` 未实现 Send），故权重计算与 RNG 选择必须两段式。
@@ -878,7 +1132,7 @@ impl Router {
             .await
     }
 
-    /// recId=19(a)：四级权重回退链 —
+    /// 四级权重回退链 —
     /// 1. 请求级权重（X-Weight 头；`[routing].allow_request_weight` 门控
     ///    已在 [`Self::route_weighted`] 判定，本函数不重复判）；
     /// 2. 配置 `model.weight`（> 0 时）；
@@ -887,7 +1141,7 @@ impl Router {
     ///    缺省 1.0，该分支默认不触发）；
     /// 4. 均匀兜底 1.0（无请求权重且容量数据不可得）。
     ///
-    /// recId=14：`tenant` 供 SLA 虚拟队列取 Q（键 = 租户，无租户上下文
+    /// `tenant` 供 SLA 虚拟队列取 Q（键 = 租户，无租户上下文
     /// "global"）；`[routing].sla_v = 0`（默认）时该打分项整体旁路。
     pub async fn calculate_weights_overridden(
         &self,
@@ -895,28 +1149,11 @@ impl Router {
         request_weight: Option<f64>,
         tenant: Option<&str>,
     ) -> Vec<(f64, (VendorConfig, ModelConfig))> {
-        // 容量权重解析（第 3 级）：仅当无请求级覆盖且存在 model.weight<=0
-        // 的候选才逐个取窗口快照；limit 归一基准 = 集合内最大 limit
+        // 容量权重解析（第 3 级）：仅当无请求级覆盖时计算（与解释侧
+        // 共用 `capacity_shares`；请求覆盖存在时容量表恒空——原语义）。
         let mut capacity: HashMap<String, f64> = HashMap::new();
-        if request_weight.is_none() && candidates.iter().any(|(_, m)| m.weight <= 0.0) {
-            let mut limits: Vec<(String, u64)> = Vec::new();
-            for (vendor, _) in &candidates {
-                if let Some(limit) = self
-                    .vendor_manager
-                    .get_window_info(&vendor.id)
-                    .await
-                    .and_then(|info| info.max_tokens)
-                {
-                    limits.push((vendor.id.clone(), limit));
-                }
-            }
-            let max_limit = limits.iter().map(|(_, l)| *l).max().unwrap_or(0);
-            if max_limit > 0 {
-                capacity = limits
-                    .into_iter()
-                    .map(|(id, limit)| (id, limit as f64 / max_limit as f64))
-                    .collect();
-            }
+        if request_weight.is_none() {
+            capacity = self.capacity_shares(&candidates).await;
         }
 
         // 价格因子上下文（开关关闭时 None、零查询开销——逐位一致）
@@ -928,22 +1165,18 @@ impl Router {
         };
 
         let mut weighted = Vec::with_capacity(candidates.len());
-        // recId=14：SLA 虚拟队列打分上下文 — sla_v=0（默认）返回 None、
+        // SLA 虚拟队列打分上下文 — sla_v=0（默认）返回 None、
         // 零开销旁路（惩罚因子不参与权重）。候选集级预收集（缺价中位数、
         // 同一 Q 快照、ŝ 快照），保证集合内候选可比。
         let sla = self.sla_penalty_context(&candidates, tenant);
-        // recId=17：LPS 软约束上下文 — lps_delta=0（默认）None、零开销旁路
+        // LPS 软约束上下文 — lps_delta=0（默认）None、零开销旁路
         let lps = self.lps_penalty_context(&candidates);
         for (i, (vendor, model)) in candidates.into_iter().enumerate() {
             let effective_model_weight = request_weight.unwrap_or_else(|| {
-                if model.weight > 0.0 {
-                    model.weight
-                } else {
-                    capacity.get(&vendor.id).copied().unwrap_or(1.0)
-                }
+                resolve_effective_model_weight(model.weight, capacity.get(&vendor.id).copied())
             });
             let mut weight = self.calculate_weight(&vendor, effective_model_weight).await;
-            // recId=14：SLA 惩罚乘在权重链末端（calculate_weight 返回后；
+            // SLA 惩罚乘在权重链末端（calculate_weight 返回后；
             // 与失败率软降权、亲和 boost 独立乘法叠加）。因子需要候选集级
             // 上下文（缺价中位数、租户 Q 快照），故置于本层而非
             // calculate_weight 内部（后者仅有单 vendor 视野）。
@@ -951,7 +1184,7 @@ impl Router {
                 let (cost, satisfaction) = sla.entries[i];
                 weight *= sla_penalty_factor(sla.v, cost, sla.q, sla.alpha, satisfaction);
             }
-            // recId=17：LPS 乘法软约束（权重链最末端；与 #14 独立乘法叠加）
+            // LPS 乘法软约束（权重链最末端；与 #14 独立乘法叠加）
             if let Some(lps) = &lps {
                 weight *= lps.factors[i];
             }
@@ -975,7 +1208,7 @@ impl Router {
     /// 基础对是稳定公布口径）；集合内已登记候选取 `min_p`，乘性修正
     /// `weight ×= min_p / p ∈ (0,1]`——等价条件下低价候选权重不衰减、
     /// 高价按价格比例衰减。中性豁免：未登记 / 0 价 / 非有限单价候选因子
-    /// 1.0（不奖励无定价者——与 recId=14 SLA 缺价中位数互为独立实现，
+    /// 1.0（不奖励无定价者——与 SLA 缺价中位数互为独立实现，
     /// 数据源不同：本因子吃 [[model_catalog]]，SLA 吃 [[pricing]]）。
     /// 单候选 / 空目录 / 无已登记候选整体中性。
     ///
@@ -1010,11 +1243,11 @@ impl Router {
         prices.into_iter().map(|p| p.map(|p| min_p / p)).collect()
     }
 
-    /// recId=4⑥：RNG 注入版选择 — 原无 seed 注入点的 `thread_rng` 直写拆出
+    /// RNG 注入版选择 — 原无 seed 注入点的 `thread_rng` 直写拆出
     /// 确定性入口。测试经 `StdRng::seed_from_u64(固定值)` 复现选择分布
-    /// （recId=10 的 Po2C 采样亦经此注入）。生产行为不变。
+    /// （的 Po2C 采样亦经此注入）。生产行为不变。
     ///
-    /// 评审修正（recId=10④）：温度平滑 `w^(1/T)` 在本方法内**恰好应用一次**
+    /// 评审修正：温度平滑 `w^(1/T)` 在本方法内**恰好应用一次**
     ///（此前 compute_weight 与本方法各应用一次，等效 w^(1/T²)——T≠1 时
     /// 压平/放大语义错误）。入参权重应为未平滑的因子加权和
     ///（[`Self::calculate_weights`]/[`compute_weight`] 产出）。
@@ -1031,10 +1264,10 @@ impl Router {
         strategy: RoutingStrategy,
         rng: &mut dyn rand::RngCore,
     ) -> RoutingDecision {
-        // recId=10①④：系数与温度热读（同步段，无 await）
+        // 系数与温度热读（同步段，无 await）
         let routing = self.config.read().routing.clone();
 
-        // recId=8③：min+buffer 候选集（平滑前的可选阶段）。命中即返回，
+        // min+buffer 候选集（平滑前的可选阶段）。命中即返回，
         // 不消费下游轮盘赌/Po2C 路径；buffer=0（默认）完全跳过、rng 零消耗，
         // 下游与历史逐位一致。
         if routing.latency_buffer > 0.0 {
@@ -1050,7 +1283,7 @@ impl Router {
             .map(|(w, c)| (temperature_smooth(w, routing.temperature), c))
             .collect();
 
-        // recId=10⑤：Po2C 实验开关（默认 weighted 走经典轮盘赌）
+        // Po2C 实验开关（默认 weighted 走经典轮盘赌）
         if routing.selection == "power_of_two" && weighted.len() >= 2 {
             return self.power_of_two_pick(&weighted, strategy, routing.latency_ref_ms, rng);
         }
@@ -1097,7 +1330,7 @@ impl Router {
         }
     }
 
-    /// recId=10⑤：power-of-two-choices — 均匀随机采样 2 个候选、按 EWMA
+    /// power-of-two-choices — 均匀随机采样 2 个候选、按 EWMA
     /// 延迟择优（低者胜）。经典 herding 缓解：权重不再直接决定选择概率，
     /// 近期负载信号（EWMA 延迟）在 2 选 1 时生效。无 EWMA 数据的候选按
     /// 2×ref_ms 保守计（视为高延迟）；两者平局时回退平滑权重高者（保持
@@ -1147,7 +1380,7 @@ impl Router {
         }
     }
 
-    /// recId=8③：min+buffer 候选集 — 有 e2e 延迟数据的候选 ≥ 2 时，取
+    /// min+buffer 候选集 — 有 e2e 延迟数据的候选 ≥ 2 时，取
     /// `ewma_e2e ≤ 最低×(1+buffer)` 的候选集，集合内均匀随机（LiteLLM
     /// lowest_latency.py:482-494 语义：延迟相近的候选共享流量，防打爆
     /// 最快者）。无数据候选 / 不足 2 个 → None 回落下游轮盘赌。
@@ -1194,25 +1427,16 @@ impl Router {
     }
 
     async fn calculate_weight(&self, vendor: &VendorConfig, effective_model_weight: f64) -> f64 {
-        // recId=10①：系数热读 — 每次路由从 DynamicField 热快照现读，
+        // 系数热读 — 每次路由从 DynamicField 热快照现读，
         // POST /admin/config 更新 [routing] 后立即生效（无需重启）
         let routing = self.config.read().routing.clone();
-        // recId=6：负载维输入按 [routing].load_signal 单选（门控全部在调用侧，
+        // 负载维输入按 [routing].load_signal 单选（门控全部在调用侧，
         // compute_weight 纯函数签名不变）。默认 "queue" 与历史行为逐位一致。
-        let queue_len = match routing.load_signal.as_str() {
-            "in_flight" => self.vendor_manager.get_in_flight(&vendor.id),
-            "in_flight_relative" => {
-                let in_flight = self.vendor_manager.get_in_flight(&vendor.id) as f64;
-                let fleet_mean = self.vendor_manager.fleet_mean_in_flight();
-                relative_in_flight_to_len(in_flight, fleet_mean)
-            }
-            // "queue" 与未知值：队列深度（默认路径 + 回滚阀同路径）
-            _ => self.vendor_manager.get_queue_length(&vendor.id),
-        };
+        let queue_len = self.queue_len_for(vendor, &routing.load_signal);
         let window = self.vendor_manager.get_window_info(&vendor.id).await;
-        // recId=10③：EWMA 第 4 维输入（同步读，无 await）
+        // EWMA 第 4 维输入（同步读，无 await）
         let ewma = self.vendor_manager.metrics().vendor_ewma(&vendor.id);
-        // recId=19(a)：effective_model_weight 由四级回退链解析（calculate_weights_overridden）
+        // effective_model_weight 由四级回退链解析（calculate_weights_overridden）
         let weight = compute_weight(
             effective_model_weight,
             queue_len,
@@ -1220,11 +1444,11 @@ impl Router {
             &routing,
             ewma,
         );
-        // recId=7（W5）：失败率软降权 — 门控默认关，关闭时与现状逐位一致
+        // 失败率软降权 — 门控默认关，关闭时与现状逐位一致
         self.failure_rate_penalty(&vendor.id, weight).await
     }
 
-    /// recId=14：虚拟队列快照（只读）— 测试与运维观测的确定性断言入口
+    /// 虚拟队列快照（只读）— 测试与运维观测的确定性断言入口
     ///（键 = 租户或 "global"）。poison 锁按空表处理（与 metrics 快照同款
     /// 容错方向）。
     pub fn sla_queue_snapshot(&self) -> HashMap<String, f64> {
@@ -1234,7 +1458,7 @@ impl Router {
             .clone()
     }
 
-    /// recId=7（W5）：失败率软降权 — `[resilience].failure_rate_gate` 开启
+    /// 失败率软降权 — `[resilience].failure_rate_gate` 开启
     /// 且失败率滑窗样本达标（total ≥ failure_rate_min_samples）且失败率
     /// 超阈（fail_pct > failure_rate_threshold）时权重 ×failure_rate_penalty
     /// （LiteLLM 数值对照 0.1）。软降权是权重面乘子而非状态位：路由层的
@@ -1259,7 +1483,7 @@ impl Router {
         }
     }
 
-    /// recId=14：SLA 门控热读 — `[routing].sla_v > 0` 且有限时开启，返回
+    /// SLA 门控热读 — `[routing].sla_v > 0` 且有限时开启，返回
     /// (V, α)。负值/NaN/±inf 一律视为关闭（`> 0` 门控，NaN 比较恒 false）。
     /// α 非有限按 0 处理、越界钳 [0,1]（α=0 → Q 恒 0，退化为纯成本项，
     /// fail-safe 方向）。每轮权重计算现读：POST /admin/config 更新后
@@ -1278,7 +1502,7 @@ impl Router {
         Some((v, alpha))
     }
 
-    /// recId=14：满意度代理 ŝ = 1 − EWMA 错误率（零模型版：错误率代理
+    /// 满意度代理 ŝ = 1 − EWMA 错误率（零模型版：错误率代理
     /// 满意度，弱信号——调研报告已声明）。`vendor_ewma` 无 e2e 观测时
     /// 返回 1.0（冷启动乐观不惩罚；与 compute_weight 的 error_factor
     /// 无数据=1.0 同语义）。钳 [0,1] 防观测越界传导。
@@ -1289,10 +1513,10 @@ impl Router {
         }
     }
 
-    /// recId=17：候选集 Ŵ 前瞻 — α = 60s 流量窗总数/60（到达率，
+    /// 候选集 Ŵ 前瞻 — α = 60s 流量窗总数/60（到达率，
     /// `vendor_window_total`，与 #7/#16 共用计数器）；μ = 1000/ewma_e2e_ms；
     /// k = 并发上限（缺省 100，与 manager 队列容量同源）。**口径声明**：
-    /// ewma_e2e_ms 的口径含排队（recId=8），作为服务时长近似会低估 μ、
+    /// ewma_e2e_ms 的口径含排队：作为服务时长近似会低估 μ、
     /// 高估 Ŵ——粗分类定位可接受；无 e2e 数据 → Ŵ=0 中性（冷启动不惩罚，
     /// 与 error_factor 无数据=1.0 同语义）。
     fn lps_waits(&self, candidates: &[(VendorConfig, ModelConfig)]) -> Vec<f64> {
@@ -1321,7 +1545,7 @@ impl Router {
             .collect()
     }
 
-    /// recId=17：LPS 软约束上下文 — lps_delta=0（默认）返回 None 零开销。
+    /// LPS 软约束上下文 — lps_delta=0（默认）返回 None 零开销。
     /// 因子 = 1/(1 + δ·Ŵ/Ŵ_ref)，Ŵ_ref = 候选集内 Ŵ 中位数（相对归一，
     /// 零新增配置）；Ŵ_ref=0（全候选无数据）→ 因子恒 1；全候选发散时
     /// 中位数=CAP → 因子均匀不扭曲选择。**与报告的偏差**：报告机制为
@@ -1358,13 +1582,13 @@ impl Router {
         Some(LpsPenalty { factors })
     }
 
-    /// recId=17：LPS 硬约束门控热读 — `[routing].lps_deadline_gate`（默认
+    /// LPS 硬约束门控热读 — `[routing].lps_deadline_gate`（默认
     /// false = 不消费 deadline、不筛选）。
     fn lps_deadline_gate_enabled(&self) -> bool {
         self.config.read().routing.lps_deadline_gate
     }
 
-    /// recId=17：deadline 门控下的可行集筛选 — `Ŵ·1000 ≤ deadline_ms`
+    /// deadline 门控下的可行集筛选 — `Ŵ·1000 ≤ deadline_ms`
     ///（deadline = 请求头值，缺省 default_deadline_ms 热读；非法值视为
     /// 不设限）。
     fn lps_deadline_filter(
@@ -1398,7 +1622,7 @@ impl Router {
         )
     }
 
-    /// recId=17：空可行集回退 — 改选 Ŵ 最小者（JITServe 软信号语义：
+    /// 空可行集回退 — 改选 Ŵ 最小者（JITServe 软信号语义
     /// 预测当软信号，无候选达标时也不拒绝服务）。
     fn lps_min_wait_decision(
         &self,
@@ -1422,7 +1646,7 @@ impl Router {
         })
     }
 
-    /// recId=14：SLA 打分上下文预收集 — sla_v=0（默认）返回 None。
+    /// SLA 打分上下文预收集 — sla_v=0（默认）返回 None。
     /// Ĉ_m 现查热配置 [[pricing]]（(input+output)/2 每 1k 单价）；缺价者
     /// 记候选集内已知单价中位数（保守不奖励——记 0 会让无定价 vendor
     /// 获得最小惩罚、乘法式下权重最高，与成本感知目的相反）；候选集全无
@@ -1474,7 +1698,7 @@ impl Router {
         })
     }
 
-    /// recId=14：选择完成后对偶更新 Q ← max(0, Q + α − ŝ_selected)。
+    /// 选择完成后对偶更新 Q ← max(0, Q + α − ŝ_selected)。
     /// 读-改-写同一把写锁内完成（短临界区，无 await；poison 按 manager.rs
     /// 先例 into_inner 容错）。键 = 租户（API key 哈希）或 "global"。
     fn sla_record_dual_update(&self, vendor_id: &str, tenant: Option<&str>, alpha: f64) {
@@ -1492,12 +1716,12 @@ impl Router {
     }
 }
 
-/// recId=17：LPS 软约束的候选集级快照 — 因子与候选顺序对齐。
+/// LPS 软约束的候选集级快照 — 因子与候选顺序对齐。
 struct LpsPenalty {
     factors: Vec<f64>,
 }
 
-/// recId=17：deadline 门控的筛选结果。
+/// deadline 门控的筛选结果。
 enum LpsDeadline {
     /// 不筛（gate 关 / deadline 非法 / 全候选可行）
     NoFilter,
@@ -1507,7 +1731,7 @@ enum LpsDeadline {
     EmptyPickMin,
 }
 
-/// recId=14：SLA 打分的候选集级快照 — 一次权重计算内所有候选共享同一
+/// SLA 打分的候选集级快照 — 一次权重计算内所有候选共享同一
 /// Q 值、同一缺价中位数兜底与各自的 (Ĉ, ŝ)，保证集合内可比。
 struct SlaPenalty {
     v: f64,
@@ -1518,7 +1742,7 @@ struct SlaPenalty {
     q: f64,
 }
 
-/// recId=14：[[pricing]] 现查单候选的 Ĉ = (input+output)/2 每 1k 单价
+/// [[pricing]] 现查单候选的 Ĉ = (input+output)/2 每 1k 单价
 ///（热配置现读，与 CostCalculator::calculate 同键语义；负价钳 0，防
 /// 惩罚因子 > 1 反向奖励）。缺价返回 None（调用方以候选集中位数兜底）。
 fn sla_unit_price(pricing: &[PricingConfig], vendor_id: &str, model_id: &str) -> Option<f64> {
@@ -1528,29 +1752,29 @@ fn sla_unit_price(pricing: &[PricingConfig], vendor_id: &str, model_id: &str) ->
         .map(|p| ((p.input_per_1k_tokens + p.output_per_1k_tokens) / 2.0).max(0.0))
 }
 
-/// recId=14：虚拟队列键 — 租户（调用方 API key 哈希，cache_api_key_hash
+/// 虚拟队列键 — 租户（调用方 API key 哈希，cache_api_key_hash
 /// 同源），无租户上下文时 "global"。
 fn sla_queue_key(tenant: Option<&str>) -> &str {
     tenant.unwrap_or("global")
 }
 
-/// recId=6：在途相对化到 queue_factor 输入域的纯函数 —
+/// 在途相对化到 queue_factor 输入域的纯函数 —
 /// production-stack relative_load = (load − mean) / max(1, mean)（分母钳 1：
 /// 近空闲舰队 mean→0 时不得放大噪声），线性映射到 queue_factor 的 0..100
 /// 输入刻度：相对负载 ≤ 0（不高于舰队均值）→ 0（全空闲分）；
 /// ≥ +1（两倍舰队均值）→ 100（queue_factor 触底 0）。
-/// `pub` 供确定性单测（tests/router_test.rs 纯函数断言）。
+/// `pub` 供确定性单测（tests/routing/gate_router_test.rs 纯函数断言）。
 pub fn relative_in_flight_to_len(in_flight: f64, fleet_mean: f64) -> usize {
     let denom = fleet_mean.max(1.0);
     let relative = (in_flight - fleet_mean) / denom;
     (relative.clamp(0.0, 1.0) * 100.0).round() as usize
 }
 
-/// recId=10(1)：亲和 boost 权重乘子（soft 模式）— 命中 vendor 权重
+/// 亲和 boost 权重乘子（soft 模式）— 命中 vendor 权重
 /// ×(1 + factor)，其余候选权重不动（照常竞争）。factor <= 0 为无操作
 ///（分布与无亲和逐位一致——结构性回滚语义）。production-stack
 /// score = 亲和收益 − β·相对负载的形态以乘子近似（β=0 语义修正见报告）。
-/// 独立纯函数 `pub` 供确定性单测（compute_weight 同款先例）。
+/// 独立纯函数 `pub` 供确定性单测。
 pub fn apply_affinity_boost(
     weighted: &mut [(f64, (VendorConfig, ModelConfig))],
     vendor_id: &str,
@@ -1566,17 +1790,17 @@ pub fn apply_affinity_boost(
     }
 }
 
-/// recId=14：SLA 惩罚因子（SLARouter 零模型版）—
+/// SLA 惩罚因子（SLARouter 零模型版）—
 /// `1 / (1 + V·Ĉ_m + max(0, Q·(α − ŝ_m)))`。V>0、Ĉ≥0、Q≥0 时分母 ≥ 1，
 /// 因子 ∈ (0,1]（纯减权，不产生负/无穷权重）。ŝ ≥ α（满意度达标）时
 /// Q 项被 max(0,·) 钳 0，因子退化为纯成本项。独立纯函数 `pub` 供
-/// 确定性单测（compute_weight 同款先例）。
+/// 确定性单测。
 pub fn sla_penalty_factor(v: f64, cost: f64, q: f64, alpha: f64, satisfaction: f64) -> f64 {
     let queue_term = (q * (alpha - satisfaction)).max(0.0);
     1.0 / (1.0 + v * cost + queue_term)
 }
 
-/// recId=14：虚拟队列对偶更新 `Q ← max(0, Q + α − ŝ_selected)`（决策时
+/// 虚拟队列对偶更新 `Q ← max(0, Q + α − ŝ_selected)`（决策时
 /// 更新，SLARouter Eq 4/5 的 Lyapunov 语义）：α > ŝ（服务欠账）→ Q 累积；
 /// α < ŝ（满意度达标）→ Q 递减、清账后钳 0（不越 0）。独立纯函数
 /// `pub` 供确定性单测。
@@ -1584,17 +1808,17 @@ pub fn sla_dual_update(q: f64, alpha: f64, satisfaction: f64) -> f64 {
     (q + alpha - satisfaction).max(0.0)
 }
 
-/// recId=17：LPS Ŵ 截断上限 — ρ→1 时式 10 发散（(α/μ)^k 有界但 μ−α→0⁺），
+/// LPS Ŵ 截断上限 — ρ→1 时式 10 发散（(α/μ)^k 有界但 μ−α→0⁺），
 /// 候选集内相对归一（Ŵ_ref 取中位数）下 CAP 只影响发散者自身；全候选
 /// 发散时中位数=CAP → 因子均匀、不扭曲选择。
 pub const LPS_WAIT_CAP: f64 = 1e6;
 
-/// recId=17：并发上限缺省 — `VendorConfig.concurrency.max_concurrent_requests`
+/// 并发上限缺省 — `VendorConfig.concurrency.max_concurrent_requests`
 /// 缺省时与 VendorManager 实例化的队列容量同源（manager.rs `queue_size`
 /// = 100）。
 const LPS_DEFAULT_CONCURRENCY: f64 = 100.0;
 
-/// recId=17：LPS 平均情形等待估计（论文式 10）—
+/// LPS 平均情形等待估计（论文式 10）—
 /// `Ŵ = (α/μ)^k / (μ−α)`，ρ = α/(μk) ≥ 1（超载）时返回 [`LPS_WAIT_CAP`]。
 /// k=1 退化为 M/M/1 队列等待 Wq = ρ/(μ−α)。非法输入按 fail-safe 处理：
 /// α 负/非有限取 0（空闲零等待）；μ ≤ 0/非有限（无有效服务率）与
@@ -1623,7 +1847,7 @@ pub fn lps_wait(arrival_per_sec: f64, service_per_sec: f64, concurrency: f64) ->
     (alpha / mu).powf(k) / (mu - alpha)
 }
 
-/// recId=14：候选集已知单价中位数 — 缺价候选的 Ĉ 兜底（保守不奖励：记 0
+/// 候选集已知单价中位数 — 缺价候选的 Ĉ 兜底（保守不奖励：记 0
 /// 会让无定价 vendor 获得最小惩罚、乘法式下权重最高，与成本感知目的相
 /// 反）。偶数个取中间两值均值；空集 None（调用方据此把成本项整体置中性 0）。
 pub fn sla_median_cost(mut prices: Vec<f64>) -> Option<f64> {
@@ -1639,7 +1863,7 @@ pub fn sla_median_cost(mut prices: Vec<f64>) -> Option<f64> {
     })
 }
 
-/// 路由权重（recId=10 升级版）：
+/// 路由权重（升级版）
 /// `weight = w_model×model.weight + w_queue×queue_factor + w_window×window_factor
 ///         + w_latency×latency_factor + w_error×error_factor`。
 ///
@@ -1647,14 +1871,14 @@ pub fn sla_median_cost(mut prices: Vec<f64>) -> Option<f64> {
 /// - queue_factor: 队列空闲度（[0,1]，0 队列=1.0，100+ 队列=0.0）
 /// - window_factor: 时间窗口+Token 预算因子（[0,1]；无窗口=0.5；耗尽=0；即将结束=减半）
 /// - latency_factor: ref/(ref+ewma_ms)（有界 (0,1)；无 EWMA 数据=中性 0.5；
-///   recId=10③ 呼应 RouteBalance「在模型选择时就给延迟定价」）
+///   呼应 RouteBalance「在模型选择时就给延迟定价」）
 /// - error_factor: 1 - ewma_error_rate（[0,1]；无数据=1.0 不惩罚冷启动）
 ///
 /// 默认系数（0.4/0.3/0.3 + w_latency=w_error=0）与历史 3D 权重逐位一致。
-/// `routing` 每次路由从热配置现读（recId=10① 热更新）；`pub` 供确定性
-/// 测试与运维调试（tests/router_test.rs 纯函数断言）。
+/// `routing` 每次路由从热配置现读（热更新）；`pub` 供确定性
+/// 测试与运维调试（tests/routing/gate_router_test.rs 纯函数断言）。
 ///
-/// 评审修正（recId=10④）：本函数是**因子加权**纯函数，不含温度平滑——
+/// 评审修正：本函数是**因子加权**纯函数，不含温度平滑——
 /// 平滑由选择层 [`Router::weighted_select_with`] 恰好应用一次（此前
 /// compute_weight 与 weighted_select_with 各平滑一次，等效 w^(1/T²)）。
 pub fn compute_weight(
@@ -1664,6 +1888,19 @@ pub fn compute_weight(
     routing: &crate::config::RoutingSection,
     ewma: Option<(f64, f64)>,
 ) -> f64 {
+    compute_weight_breakdown(model_weight, queue_len, window, routing, ewma).total
+}
+
+/// 5 因子权重分解（WP5 路由可解释性）：`compute_weight` 加法项的逐项
+/// 贡献 + 合成（total）。`compute_weight` 委托本函数（同一实现，行为
+/// 逐位一致；既有纯函数测试继续锁定数值）。
+pub fn compute_weight_breakdown(
+    model_weight: f64,
+    queue_len: usize,
+    window: Option<&WindowInfo>,
+    routing: &crate::config::RoutingSection,
+    ewma: Option<(f64, f64)>,
+) -> WeightBreakdown {
     let model_component = model_weight * routing.w_model;
     let queue_factor = queue_factor_from_len(queue_len);
     let window_factor = window_factor_from_info(window);
@@ -1675,19 +1912,134 @@ pub fn compute_weight(
         ),
         None => (0.5, 1.0),
     };
-    let weight = model_component
-        + queue_factor * routing.w_queue
-        + window_factor * routing.w_window
-        + latency_factor * routing.w_latency
-        + error_factor * routing.w_error;
-    if weight.is_finite() && weight > 0.0 {
-        weight
-    } else {
-        0.0
+    let breakdown = WeightBreakdown {
+        model: model_component,
+        queue: queue_factor * routing.w_queue,
+        window: window_factor * routing.w_window,
+        latency: latency_factor * routing.w_latency,
+        error: error_factor * routing.w_error,
+        total: 0.0,
+    };
+    let weight =
+        breakdown.model + breakdown.queue + breakdown.window + breakdown.latency + breakdown.error;
+    WeightBreakdown {
+        total: if weight.is_finite() && weight > 0.0 {
+            weight
+        } else {
+            0.0
+        },
+        ..breakdown
     }
 }
 
-/// recId=10③：latency_factor = ref / (ref + ewma_ms) — 有界 (0,1)，
+/// 5 因子权重分解（`compute_weight` 加法项逐项贡献 + 合成 total）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeightBreakdown {
+    pub model: f64,
+    pub queue: f64,
+    pub window: f64,
+    pub latency: f64,
+    pub error: f64,
+    pub total: f64,
+}
+
+/// 路由解释 reason_code 稳定机器码（客户端可匹配，不做 i18n）。
+pub const REASON_DISABLED: &str = "disabled";
+pub const REASON_COOLING_DOWN: &str = "cooling_down";
+pub const REASON_THROTTLED: &str = "throttled";
+pub const REASON_NOT_IN_CATALOG: &str = "not_in_catalog";
+pub const REASON_WEIGHT_ZERO: &str = "weight_zero";
+pub const REASON_AFFINITY_BOUND_ELSEWHERE: &str = "affinity_bound_elsewhere";
+pub const REASON_QUEUE_OVER_LIMIT: &str = "queue_over_limit";
+pub const REASON_ELIGIBLE: &str = "eligible";
+
+/// 队列饱和点（`queue_factor_from_len` 归零点）：达到即 backpressure
+/// 诊断性排除（`queue_over_limit`）。与因子函数同源（任一改动需同步）。
+pub const QUEUE_SATURATION_LEN: usize = 100;
+
+/// 候选行评估结果（`Router::explain_route` 行数据；handler 侧转 JSON）。
+#[derive(Debug, Clone)]
+pub struct CandidateAssessment {
+    pub vendor_id: String,
+    pub model_id: String,
+    pub eligible: bool,
+    pub reason_code: &'static str,
+    pub detail: String,
+    /// 入选者 5 因子分解（排除项 None）。
+    pub factors: Option<WeightBreakdown>,
+    /// 分解合成（`factors` 加和；排除项 None）。
+    pub base_weight: Option<f64>,
+    /// 生产精确权重（与路由同一方法；默认配置下 == base_weight）。
+    pub weight: Option<f64>,
+    /// 当前 selection 档位（入选者有值）。
+    pub selection: Option<&'static str>,
+}
+
+impl CandidateAssessment {
+    fn excluded(
+        vendor_id: String,
+        model_id: String,
+        reason_code: &'static str,
+        detail: String,
+    ) -> Self {
+        Self {
+            vendor_id,
+            model_id,
+            eligible: false,
+            reason_code,
+            detail,
+            factors: None,
+            base_weight: None,
+            weight: None,
+            selection: None,
+        }
+    }
+
+    fn eligible(
+        vendor_id: String,
+        model_id: String,
+        factors: WeightBreakdown,
+        base_weight: f64,
+        weight: f64,
+        selection: &'static str,
+    ) -> Self {
+        Self {
+            vendor_id,
+            model_id,
+            eligible: true,
+            reason_code: REASON_ELIGIBLE,
+            detail: format!("候选合格（selection={selection}）"),
+            factors: Some(factors),
+            base_weight: Some(base_weight),
+            weight: Some(weight),
+            selection: Some(selection),
+        }
+    }
+}
+
+/// 当前 selection 档位（与选择层分支语义逐位一致：linucb 大小写不敏感，
+/// power_of_two 精确匹配，其余走加权）。
+fn selection_tier(routing: &crate::config::RoutingSection) -> &'static str {
+    if routing.selection.trim().eq_ignore_ascii_case("linucb") {
+        "linucb"
+    } else if routing.selection == "power_of_two" {
+        "power_of_two"
+    } else {
+        "weighted"
+    }
+}
+
+/// 有效模型权重解析（四级回退第 2/3 级；第 1 级请求覆盖由调用方先行
+/// `unwrap_or_else`）：`calculate_weights_overridden` 与路由解释共用。
+fn resolve_effective_model_weight(model_weight: f64, capacity_share: Option<f64>) -> f64 {
+    if model_weight > 0.0 {
+        model_weight
+    } else {
+        capacity_share.unwrap_or(1.0)
+    }
+}
+
+/// latency_factor = ref / (ref + ewma_ms) — 有界，
 /// ewma == ref 时 0.5，ewma 越小得分越高。ref 配置非法（<=0）时中性 0.5。
 fn latency_factor_from_ewma(ewma_ms: f64, ref_ms: f64) -> f64 {
     if !ref_ms.is_finite() || ref_ms <= 0.0 {
@@ -1697,7 +2049,7 @@ fn latency_factor_from_ewma(ewma_ms: f64, ref_ms: f64) -> f64 {
     ref_ms / denom
 }
 
-/// recId=10④：温度平滑 w^(1/T) — herding 缓解（权重高的厂商被过度选中后
+/// 温度平滑 w^(1/T) — herding 缓解（权重高的厂商被过度选中后
 /// 延迟上升，温度压平差距给长尾厂商探索流量）。T=1 恒等；T>1 压平；T<1
 /// 放大。T 非法（<=0/非有限）按恒等处理；w<=0 保持 0。
 fn temperature_smooth(weight: f64, temperature: f64) -> f64 {
@@ -1872,7 +2224,7 @@ mod tests {
         assert_eq!(w, 0.0);
     }
 
-    // ======== recId=6：in_flight_relative 相对化纯函数 ========
+    // ======== in_flight_relative 相对化纯函数 ========
 
     /// production-stack relative_load = (x−mean)/max(1,mean) 映射到 0..100：
     /// 高于均值 → 正分；两倍均值饱和 100；不高于均值（含负）→ 0；
@@ -1896,7 +2248,7 @@ mod tests {
         assert_eq!(relative_in_flight_to_len(1.0, 0.0), 100);
     }
 
-    // ======== recId=14：SLA 虚拟队列打分纯函数 ========
+    // ======== SLA 虚拟队列打分纯函数 ========
 
     /// 惩罚因子公式：1/(1 + V·Ĉ + max(0, Q·(α−ŝ)))；分母 ≥ 1 → 因子 ≤ 1。
     #[test]
@@ -1946,7 +2298,7 @@ mod tests {
         assert_eq!(sla_dual_update(0.05, 0.95, 1.0), 0.0);
     }
 
-    // ======== recId=17：LPS 前瞻纯函数 ========
+    // ======== LPS 前瞻纯函数 ========
 
     /// 已知值：α=2, μ=4, k=2 → ρ=0.25<1，Ŵ=(0.5)²/(4−2)=0.125。
     #[test]

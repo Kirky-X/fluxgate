@@ -15,6 +15,11 @@ config-catalog-too-many = model catalog has { $count } entries; the cap is { $ca
 config-catalog-model-id-empty = model catalog entry has an empty model_id (whitespace only)
 config-catalog-price-invalid = model catalog entry { $model } has invalid { $field } = { $value }; prices must be finite and >= 0
 config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) is below the 100ms floor: a too-short window flips the circuit straight from Open to Half-Open, degrading failure recovery into a probe storm
+config-quota-window-too-small = quota.window_secs ({ $value }s) must be at least 1: a zero window flips on every access and the quota never fills
+middleware-quota-exceeded = Quota exceeded, please retry later
+middleware-quota-body-too-large = Request body exceeds the quota adjudication limit (4 MiB)
+# quota.enabled 开而 [auth] 关/缺段的组合告警：tenant 键取自客户端自报头（L9）
+config-quota-without-auth = [quota].enabled is on but [auth] is disabled or absent: quota tenant keys come from client-supplied headers without verification, so billing control can be bypassed with forged headers (isolate /admin and data planes, or enable auth)
 # $details 为固定序条目明细：位置 + 规则结论（本仓库形态契约或 confers
 # JwtSecretValidator 规则内核），只含长度数字，不含条目原文
 config-weak-admin-secret = Admin-plane secret rejected at startup (entries must be lowercase SHA256 hex digests): { $details }
@@ -34,7 +39,7 @@ protocol-unknown-error = Unknown error
 protocol-anthropic-error = Anthropic error: { $type } - { $message }
 protocol-openai-error = OpenAI error: { $type } - { $message }
 protocol-passthrough-stream-interrupted = upstream passthrough stream interrupted
-protocol-stream-interrupted = upstream stream interrupted
+protocol-stream-error-frame = Upstream stream interrupted; the stream was terminated after partial output.
 
 # ---- router/router.rs ----
 router-model-not-found = Model { $model } not found

@@ -26,6 +26,7 @@ use limiteron::error::CircuitState;
 use limiteron::retry::{RetryDecision, RetryPolicy};
 use reqwest;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -75,11 +76,11 @@ impl WindowInfo {
     }
 }
 
-/// 厂商运行时有状态件。设计变更（recId=13）：不再持有 `config: VendorConfig`
+/// 厂商运行时有状态件。设计变更：不再持有 `config: VendorConfig`
 /// 启动快照 — 执行路径每次请求经 `ConfigManager::get_vendor` 热读新鲜配置，
 /// config.toml 热更新（api_base/api_key_env/enabled 等）立即生效；
 /// queue/limiter/circuit_breaker 等有状态件保留启动时构造。
-/// recId=18：token 加权票据策略 — VendorConfig.concurrency 的
+/// token 加权票据策略 — VendorConfig.concurrency 的
 /// token_ticket_* 三元（vendor 实例构造期定死，restart-required）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TicketPolicy {
@@ -88,7 +89,7 @@ pub struct TicketPolicy {
     pub default: u64,
 }
 
-/// recId=18：token 加权票据成本估算（Unified 形态，worker/转换流路径）——
+/// token 加权票据成本估算（Unified 形态，worker/转换流路径）——
 /// cost = clamp(messages 序列化字节/4 + max_tokens, min, max)。**估算
 /// 口径声明**：序列化字节/4 对英文文本近似 token 数，对中文/多模态
 /// 偏差大（约 1.5-3×）——保守方向可调低 token_ticket_max；max_tokens
@@ -101,7 +102,7 @@ pub fn estimate_cost_unified(req: &UnifiedRequest, policy: &TicketPolicy) -> usi
     ((bytes / 4) as u64 + max_tokens).clamp(policy.min, policy.max) as usize
 }
 
-/// recId=18：token 加权票据成本估算（JSON 形态，透传路径）——
+/// token 加权票据成本估算（JSON 形态，透传路径）——
 /// 序列化字节/4 + max_tokens 字段（缺省兜底同上）。口径声明同上。
 pub fn estimate_cost_json(body: &Value, policy: &TicketPolicy) -> usize {
     let bytes = serde_json::to_string(body).map(|s| s.len()).unwrap_or(0);
@@ -118,7 +119,7 @@ struct VendorInstance {
     queue: Arc<VendorQueue>,
     rate_limiter: TokenBucket,
     concurrency_limiter: ConcurrencyLimiter,
-    /// recId=18：token 加权票据策略 — None = 未开启（单票据，现状）
+    /// token 加权票据策略 — None = 未开启（单票据，现状）
     ticket: Option<TicketPolicy>,
     advanced_limiter: AdvancedRateLimiter,
     /// key 池（解析快照 + 轮换游标）。池空回退 legacy 单 key 行为。
@@ -129,7 +130,7 @@ struct VendorInstance {
     /// 无损透传，无前缀串编解码）。
     #[cfg(feature = "resilience")]
     circuit_breaker: Arc<CircuitBreaker<GateError>>,
-    /// per-key 指纹熔断器注册表 — 熔断状态键维度对齐 provider_chain.rs:199-214 的 breaker_state_key：**vendor_id + model + endpoint + key 指纹**（vendor_id 由实例域隐含，map 挂在实例上；键三元 = (model, endpoint, 指纹)）——同 key 同 model 跨请求共享计数，不同 key / 不同 model 互相隔离。legacy 回退不经此表。
+    /// per-key 指纹熔断器注册表 — 熔断状态键维度对齐 provider_chain.rs 的 breaker_state_key：**vendor_id + model + endpoint + key 指纹**（vendor_id 由实例域隐含，map 挂在实例上；键三元 = (model, endpoint, 指纹)）——同 key 同 model 跨请求共享计数，不同 key / 不同 model 互相隔离。legacy 回退不经此表。
     ///
     /// 审查 F1 上界声明：活跃指纹 ≤ 8×名单变更次数（`MAX_KEY_POOL` ×
     /// 热更新重解析次数，旧指纹条目随池收缩自然失活）；(model, endpoint)
@@ -147,27 +148,27 @@ struct VendorInstance {
     cost_tracker: Arc<CostTracker>,
 }
 
-/// recId=1：生产熔断器配置的单一构造点（tests/circuit_breaker_test.rs 与
+/// 生产熔断器配置的单一构造点（tests/resilience/gate_circuit_breaker_test.rs 与
 /// manager 测试同源引用，生产接线与测试证明合一）。
 ///
 /// 泛型收口：错误类型即 [`GateError`]（业务错误经
 /// `CircuitCallError::Inner` 无损透传）。limiteron 的
 /// `CircuitBreakerConfig::new` 仅在 `LimiteronError` 特化上提供
-/// （types.rs:193），自定义 `E` 经 `with_error_classifier` 构造——阈值
+/// （types.rs），自定义 `E` 经 `with_error_classifier` 构造——阈值
 /// 经 pub 字段逐位对齐旧 `new(5, 3, open_timeout)`。
 ///
 /// 缺陷背景：`CircuitBreakerConfig::new` 之后慢调用参数取 limiteron 默认
-/// duration=500ms / rate=0.5（../limiteron src/constants.rs:106/111），
+/// duration=500ms / rate=0.5（../limiteron src/constants.rs），
 /// 而 LLM 成功调用常态超 500ms——混合流量下慢调用率轻易过阈，熔断与
 /// 真实失败无关。修复取双参数，语义如实声明（均为 ≥ 比较）：
 /// - `slow_call_duration_threshold(60s)`：只是抬高慢调用判定线
-///   （limiteron src/circuit/types.rs:581 `elapsed >= duration_threshold`），
+///   （limiteron src/circuit/types.rs `elapsed >= duration_threshold`），
 ///   >60s 的成功调用仍计慢；
-/// - `slow_call_rate_threshold(1.0)`：types.rs:603 `rate >= rate_threshold`，
+/// - `slow_call_rate_threshold(1.0)`：types.rs `rate >= rate_threshold`，
 ///   慢调用路径仅在「窗口内 100% 调用皆慢」时可能触发；混合快慢流量下
 ///   该路径失活，熔断由真实失败（failure_threshold）驱动。
 ///
-/// 与 recId=4（超时预算）的自洽性：W2 落地后非流式/TTFT 默认 60s 超时
+/// 与 （超时预算）的自洽性：W2 落地后非流式/TTFT 默认 60s 超时
 /// 使成功调用恒 <60s（不计慢），>60s 调用即超时失败走 failure_threshold
 /// 路径；但本修复先于 W2，且运维可调大 timeout_ms，rate=1.0 是必要防线。
 /// 残余触发场景「窗口内 100% 调用皆 >60s 且全成功」在 W2 默认值下与
@@ -223,7 +224,7 @@ impl VendorInstance {
             state: VendorState::new(),
             queue: Arc::new(VendorQueue::new(queue_size)),
             rate_limiter: TokenBucket::new(queue_size, rps),
-            // recId=5：并发上限可配置（缺省沿用队列容量）；流式 permit
+            // 并发上限可配置（缺省沿用队列容量）；流式 permit
             // 生命周期修复后 permit 真实持有至流结束，该上限对流式生效
             concurrency_limiter: ConcurrencyLimiter::new(
                 config
@@ -242,11 +243,11 @@ impl VendorInstance {
             },
             #[cfg(feature = "resilience")]
             circuit_breaker: Arc::new(CircuitBreaker::new(
-                // recId=2：limiteron 三态机（默认 half_open_max_calls=3，
+                // limiteron 三态机（默认 half_open_max_calls=3，
                 // 探针计数在每次状态转换统一清零——limiteron
                 // src/circuit/types.rs finalize_transition），无手写版
                 // "熔断一次即永久拒绝"的死锁。
-                // recId=1：构造统一收敛至 gate_circuit_config()
+                // 构造统一收敛至 gate_circuit_config()
                 //（慢调用阈值修复见该函数 doc）；Open 窗口经
                 // [resilience].circuit_open_timeout_ms 可配，缺省 30s
                 // 与历史硬编码逐位一致。
@@ -273,14 +274,46 @@ impl VendorInstance {
         self.key_pool.set_inline(snapshot);
     }
 
-    /// 401/403 认证类失败推进轮换游标（生效于下次尝试）。
-    fn advance_key_cursor(&self, status: u16) {
-        self.key_pool.advance(&self.vendor_id, status);
+    /// key 错误处置（WP6 三态）：委托 [`KeyPool::note_request_error`]
+    /// （分类门控内聚于池；精简组合退化为 legacy 语义）。
+    fn handle_key_error(
+        &self,
+        credential: &RequestCredential,
+        status: reqwest::StatusCode,
+        body: &str,
+    ) {
+        self.key_pool.note_request_error(
+            &self.vendor_id,
+            credential.fingerprint(),
+            status.as_u16(),
+            body,
+        );
+    }
+
+    /// 管理面重置（WP6）：清空 key 池黑名单（含游标）与冷却状态。
+    fn reset_resilience_state(&self) {
+        self.key_pool.reset_key_state();
+        self.state.mark_available();
+    }
+
+    /// 探针恢复（WP7 minimal_call 成功）：解黑名单 + 清冷却 + 重置该指纹
+    /// 名下全部模型通道熔断器（resilience 关闭时仅清冷却——无黑名单与
+    /// per-key 熔断）。
+    async fn probe_recover_key(&self, fingerprint: &str) {
+        #[cfg(feature = "resilience")]
+        self.key_pool.remove_blacklisted(fingerprint);
+        #[cfg(not(feature = "resilience"))]
+        let _ = fingerprint;
+        self.state.mark_available();
+        #[cfg(feature = "resilience")]
+        for cb in self.peek_circuit_breakers_for_fingerprint(Some(fingerprint)) {
+            cb.reset().await;
+        }
     }
 
     /// 本次凭证应使用的熔断器 — 池命中按（model, endpoint, key 指纹）
     /// 取（get_or_create，同 key 同 model 跨请求共享计数、不同 key /
-    /// 不同 model 独立，审查 M2 维度补全），legacy 回退用 vendor 级。
+    /// 不同 model 独立，维度补全），legacy 回退用 vendor 级。
     #[cfg(feature = "resilience")]
     fn circuit_breaker_for(
         &self,
@@ -361,6 +394,18 @@ impl VendorInstance {
 }
 
 #[derive(Clone)]
+/// 健康探针目标快照（WP7）：一次周期内只读采集。`keys` 为 key 明文
+/// （探针 HTTP 构造专用，在 crate 内即用即弃，绝不记日志）；`current`
+/// 为当前轮换游标所指（free 探测的出站凭证）。
+pub(crate) struct ProbeTarget {
+    pub vendor_id: String,
+    pub config: VendorConfig,
+    pub status: VendorStatus,
+    pub keys: Vec<(String, String)>,
+    pub blacklist: Vec<String>,
+    pub current: Option<(String, String)>,
+}
+
 pub struct VendorManager {
     config: Arc<ConfigManager>,
     instances: Arc<RwLock<std::collections::HashMap<String, Arc<VendorInstance>>>>,
@@ -377,11 +422,11 @@ pub struct VendorManager {
     cost_tracker: Arc<CostTracker>,
 }
 
-/// recId=4（W2）：TCP 连接建立超时 — Client 级共享常量。此前出站 Client
+/// TCP 连接建立超时 — Client 级共享常量。此前出站 Client
 /// 零超时（`reqwest::Client::new()`），对端不响应时连接阶段可无限挂起。
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// recId=4（W2）：`execute_request` 外层的排队等待预算 — 覆盖「入队 →
+/// `execute_request` 外层的排队等待预算 — 覆盖「入队 →
 /// worker 取走 → RPS/并发限流放行」的本地排队段。执行段超时由
 /// `VendorConfig.timeout_ms`（per-attempt，从 send 起算）承担，两者解耦：
 /// 总预算 = 排队预算 + 执行预算（timeout_ms=0 时不加执行段）。
@@ -393,7 +438,7 @@ impl VendorManager {
             config,
             instances: Arc::new(RwLock::new(std::collections::HashMap::new())),
             inline_key_pools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            // recId=4（W2）：连接阶段 10s 超时（此前 Client 零超时）
+            // 连接阶段 10s 超时（此前 Client 零超时）
             client: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
                 .build()
@@ -444,7 +489,7 @@ impl VendorManager {
         }
     }
 
-    /// recId=8：`[routing].ewma_tau_ms` 热同步到 metrics — 每次延迟道落账前
+    /// `[routing].ewma_tau_ms` 热同步到 metrics — 每次延迟道落账前
     /// 刷新，POST /admin/config 更新后下一次采样即用新 τ（GlobalMetrics
     /// 不持 ConfigManager，由本辅助桥接热配置）。
     fn sync_ewma_tau(&self) {
@@ -462,7 +507,7 @@ impl VendorManager {
     /// 读取 vendor 的 CircuitBreaker 当前状态（用于运维观测/测试断言）。
     /// 未启用 resilience feature 或 vendor 未初始化时返回 `None`。
     ///
-    /// recId=2：迁移为 `limiteron::circuit::CircuitBreaker::get_state`。
+    /// 迁移为 `limiteron::circuit::CircuitBreaker::get_state`。
     /// 路由过滤不调用本方法（async 不扩散到 router）——熔断状态由
     /// worker 完成分支同步回写 VendorState（见 process_vendor_queue），
     /// router 的 `== Available` 过滤借同步状态自动生效。
@@ -534,7 +579,7 @@ impl VendorManager {
 
     /// per-model 能力查询 — capabilities() 语义面（路由决策/响应面/
     /// 网关客户端适配器可取）。已登记模型返回目录真实值（context_window
-    /// 非 0——agentstem agent_session.rs:3290-3291 auto-compact 静默不装配
+    /// 非 0——agentstem agent_session.rs auto-compact 静默不装配
     /// 守卫）；未登记回落 per-flavor（vendor type）保守默认
     /// （`model_catalog::flavor_default_capabilities`，来源见其 doc）。
     /// 热读 ConfigManager（POST /admin/config 登记后立即生效）。
@@ -567,8 +612,8 @@ impl VendorManager {
         if let Some(instance) = self.instances.read().unwrap().get(vendor_id) {
             return Some(instance.key_pool_info());
         }
-        // 实例未创建：内联 side-table 观测（env 模式无预创建快照 → None；
-        // use crate::vendor::key_pool::fingerprint_of 直接复用同源指纹
+        // 实例未创建：走内联 side-table 观测（env 模式无预创建快照 → None），
+        // 指纹复用 key_pool 同源逻辑（见下方 `fingerprint_of` 全限定调用）。
         self.inline_key_pools
             .lock()
             .unwrap()
@@ -585,7 +630,22 @@ impl VendorManager {
             })
     }
 
-    /// recId=2：vendor 的 CircuitBreaker 句柄（instances 未初始化时 None）。
+    /// explain 判定面（审查 M9，R-routing-explainability-002「cooling_down
+    /// 含 key 指纹粒度」）：该 vendor 的 key 池非空且全部指纹已入黑名单
+    ///（池耗尽——选凭证必落 legacy 回退前的全黑形态）。实例未初始化或
+    /// 池空（legacy 形态）返回 false。返回黑名单指纹明细供 explain detail
+    /// 呈现（指纹为截断哈希，非 key 原文，出日志安全）。
+    pub fn key_pool_exhausted(&self, vendor_id: &str) -> Option<Vec<String>> {
+        let guard = self.instances.read().ok()?;
+        let instance = guard.get(vendor_id)?;
+        if instance.key_pool.all_blacklisted() {
+            Some(instance.key_pool.blacklisted_fingerprints())
+        } else {
+            None
+        }
+    }
+
+    /// vendor 的 CircuitBreaker 句柄（instances 未初始化时 None）。
     /// 仅供 cover_all_paths 覆盖路径取用；路由过滤不读 CB（见 get_status doc）。
     /// 按本次请求凭证 + model + endpoint 取——池命中用
     /// per-key 指纹熔断器（键含 model/endpoint 维度）。
@@ -609,7 +669,7 @@ impl VendorManager {
             self.get_or_create_instance(vendor);
         }
 
-        // recId=5：原「后台 reset worker」（每 60s 轮询 should_reset/reset）已删除
+        // 原「后台 reset worker」（每 60s 轮询 should_reset/reset）已删除
         // —— Token/Interval 窗口迁移 limiteron FixedWindowLimiter 后由
         // check_and_reset_window 惰性重置（窗口翻转在下一次 allow/peek 时自动完成），
         // 轮询重置机制整体退役。
@@ -655,7 +715,7 @@ impl VendorManager {
         let openai = self.openai_converter.clone();
         let anthropic = self.anthropic_converter.clone();
         let config_manager = self.config.clone();
-        // recId=4③：metrics 下沉到 worker — 转换路径（execute_request 经队列）
+        // metrics 下沉到 worker — 转换路径（execute_request 经队列）
         // 此前零指标，全仓唯一生产记账点在透传非流式
         let metrics = self.metrics.clone();
 
@@ -683,7 +743,7 @@ impl VendorManager {
         metrics: Arc<GlobalMetrics>,
     ) {
         loop {
-            // recId=5⑤ 顺序对调：先从队列取请求、再等 RPS 令牌。
+            // 顺序对调：先从队列取请求、再等 RPS 令牌。
             // 旧顺序（先 acquire 后 recv）在空闲期空烧 RPS 令牌，突发期
             // 请求还要平白忍受最长 100ms 的轮询间隔。
             let pending = match instance.queue.recv().await {
@@ -706,7 +766,7 @@ impl VendorManager {
             }
 
             // 3. Acquire concurrency permit
-            // recId=18：token_weighted 开启时按预估 token 量计费
+            // token_weighted 开启时按预估 token 量计费
             let permit_result = match instance.ticket {
                 Some(policy) => {
                     let cost = estimate_cost_unified(&pending.request, &policy);
@@ -715,7 +775,7 @@ impl VendorManager {
                 None => instance.concurrency_limiter.acquire().await,
             };
 
-            // 4. 热读新鲜配置（recId=13：config.toml 热更新立即生效；
+            // 4. 热读新鲜配置（config.toml 热更新立即生效；
             //    vendor 已被移除时以 VendorUnavailable 拒绝该请求）
             let config = config_manager
                 .get_vendor(&instance.vendor_id)
@@ -767,13 +827,13 @@ impl VendorManager {
         // Hold permit
         let _permit = permit;
 
-        // recId=7④：[retry] 段热读 —— 每请求现读，POST /admin/config
+        // [retry] 段热读 —— 每请求现读，POST /admin/config
         // 更新后下一次重试循环即用新参数
         let retry_cfg = config_manager.read().retry.clone();
 
         // 请求级凭证选择（池命中 → 当前 key；池空 → legacy
         // 单 key 行为）+ 按（model, endpoint, key 指纹）选熔断器
-        //（审查 M2 维度补全）。key 在请求启动时固定——本请求所有
+        //（维度补全）。key 在请求启动时固定——本请求所有
         // 重试尝试复用同一 key（轮换生效于下次请求，见
         // execute_http_with_retry_policy 的 401/403 分支）。
         let credential = instance.select_request_key(&config);
@@ -823,7 +883,7 @@ impl VendorManager {
             &result,
         );
 
-        // 成功路径：原子扣减 token 使用统计（recId=5）+ 累加成本。
+        // 成功路径：原子扣减 token 使用统计+ 累加成本。
         if let Ok(ref response) = result {
             Self::charge_success_usage(&instance, &config_manager, &config, response).await;
         }
@@ -837,11 +897,11 @@ impl VendorManager {
     /// 永久排除该 vendor，而恢复通路（探针/窗口重置）都要求有请求先
     /// 到达 —— 恶性循环。熔断/限流判定已全部实时化于 get_status。
     ///
-    /// recId=4③：metrics 同点记账 —— 延迟口径 = enqueued_at 起算
+    /// metrics 同点记账 —— 延迟口径 = enqueued_at 起算
     /// （排队 + 限流 + HTTP 全程），成功/失败各记一次 record_request，
     /// 失败另记 record_error。此前转换路径零指标。
     ///
-    /// recId=8（口径分道）：本点 duration 是「排队+执行全程」口径，
+    /// 本点 duration 是「排队+执行全程」口径，
     /// 落 e2e 道；排队段（入队 → worker 取走）单列 queue 道。
     /// 成败都记（与 record_request 同拍，不影响成败计数）。
     fn record_outcome(
@@ -868,19 +928,19 @@ impl VendorManager {
                 instance.state.mark_available();
                 instance.state.reset_error();
                 metrics.record_request(&instance.vendor_id, true, duration);
-                // recId=7（W5）：失败率滑窗双记（纯观测，常开）
+                // 失败率滑窗双记（纯观测，常开）
                 metrics.record_vendor_outcome_at(&instance.vendor_id, true, Instant::now());
             }
             Err(e) => {
                 instance.state.inc_error();
                 metrics.record_request(&instance.vendor_id, false, duration);
                 metrics.record_error(&instance.vendor_id, &e.to_string());
-                // recId=7（W5）：失败率滑窗双记 —— 失败（含 429）计入
+                // 失败率滑窗双记 —— 失败（含 429）计入
                 // failures。429 感知：该计数独立于 CB 分类器
                 //（error_map.rs 对 RateLimited 不计 CB 失败），
                 // 不影响 CB 自身的 failure_count。
                 metrics.record_vendor_outcome_at(&instance.vendor_id, false, Instant::now());
-                // recId=9（W5）：重试维度失败计数（守门器 r 的分母）—
+                // 重试维度失败计数（守门器 r 的分母）—
                 // 仅转换路径（有 per-vendor 重试循环）的记账点累加，
                 // 与 retried_attempts 同路径口径；透传/流式无重试
                 // 循环，不计入。
@@ -889,7 +949,7 @@ impl VendorManager {
         }
     }
 
-    /// 成功路径：原子扣减 token 使用统计（recId=5：CAS 全有全无，
+    /// 成功路径：原子扣减 token 使用统计（CAS 全有全无，
     /// 剩余不足时拒绝记账不超卖）+ 累加成本。
     /// 仅 Token 变体记账（评审 major）：Interval/TimeWindow/None 无
     /// 配额语义，跳过以免误导性 underflow 告警。
@@ -914,24 +974,22 @@ impl VendorManager {
         }
 
         // cost-tracking：按 (vendor, model) 计算 USD 并累加。
-        // pricing 读取点改为热配置（recId=13）：每次计算时从
+        // pricing 读取点改为热配置：每次计算时从
         // ConfigManager 现读 pricing 构建查找表，热更新的单价
         // 立即生效；表规模为条目级（<100），每请求一次构建开销可忽略。
         // 解析失败时 calculate 返回 0.0（CostTracker 静默 no-op）
-        // cost-tracking：T007 计价改吃 model_catalog 四档（含
+        // cost-tracking：计价改吃 model_catalog 四档（含
         // cache 档，币种随条目；cache 语义按 vendor 协议——
         // anthropic input 不含 cache 档 / openai 含）。未登记
-        // 模型 None 不计价（防 0 价伪装免费，T006 语义延续）。
+        // 模型 None 不计价（防 0 价伪装免费，语义延续）。
         // [[pricing]] 保留 SLA 因子消费（sla_v），旧
-        // CostCalculator 至 T011 桥接切换后退役（D7.11）。
+        // CostCalculator 至 桥接切换后退役。
         #[cfg(feature = "cost-tracking")]
         {
-            use crate::vendor::cost::{estimate_cost_from_catalog, PromptCacheSemantics};
-            let semantics = if config.type_ == "anthropic" {
-                PromptCacheSemantics::Exclusive
-            } else {
-                PromptCacheSemantics::Inclusive
-            };
+            use crate::vendor::cost::{estimate_cost_from_catalog, prompt_cache_semantics};
+            // cache 语义与分账/配额同一判定（此前本处为「非 anthropic 即
+            // Inclusive」，与分账侧对未知协议方向相反，已收敛）。
+            let semantics = prompt_cache_semantics(&config.type_);
             let estimate = estimate_cost_from_catalog(
                 &config_manager.read().model_catalog,
                 &response.model,
@@ -941,7 +999,7 @@ impl VendorManager {
             match estimate {
                 Some(est) => {
                     // CostTracker 单 USD 道：CNY 条目暂不落
-                    //（双币分道属 T011 桥接）——warn 显性（审查
+                    //（双币分道属 桥接）——warn 显性（审查
                     // F1：计费可见性过渡，防成本报表静默少计）
                     if matches!(est.currency, crate::config::PricingCurrency::Usd) {
                         instance.cost_tracker.record(
@@ -959,7 +1017,7 @@ impl VendorManager {
                     }
                 }
                 None => {
-                    // 审查 LOW-1：未登记 model_catalog 不计价——
+                    // 审查：未登记 model_catalog 不计价——
                     // 成本报表静默少计需可观测
                     tracing::debug!(
                         vendor = %instance.vendor_id,
@@ -973,7 +1031,7 @@ impl VendorManager {
     }
 
     /// （`--all-features` 下含 cfg(resilience) 门控的 circuit_breaker 共
-    /// 11 参——T005 追加 instance/credential、T007 追加 cache_policy
+    /// 11 参—— 追加 instance/credential、 追加 cache_policy
     ///（key 轮换/按 key 熔断/缓存断点注入所需），超 clippy 默认阈值 7
     ///——转换器双向入参为协议转换所需，不打包重构。）
     #[allow(clippy::too_many_arguments)]
@@ -1025,7 +1083,7 @@ impl VendorManager {
         .await
     }
 
-    /// 解析上游 `Retry-After` 响应头（recId=7③）。
+    /// 解析上游 `Retry-After` 响应头。
     /// 仅支持秒数形式（RFC 7231 的 delta-seconds）；HTTP-date 形式降级 None
     /// （自管薄循环不值得为此引入日历解析）。
     fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
@@ -1034,8 +1092,12 @@ impl VendorManager {
     }
 
     /// 构建 vendor API URL（统一 4 处重复的 URL 拼接逻辑）。
-    /// recId=15：path 可变版（chat/completions / messages / embeddings）。
-    fn build_vendor_url_at(config: &VendorConfig, path: &str) -> Result<String, GateError> {
+    /// path 可变版（chat/completions / messages / embeddings）。
+    /// `pub(crate)`：健康探针复用同一拼接规则（`models` 端点）。
+    pub(crate) fn build_vendor_url_at(
+        config: &VendorConfig,
+        path: &str,
+    ) -> Result<String, GateError> {
         let api_base = if config.api_base.is_empty() {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
@@ -1059,8 +1121,9 @@ impl VendorManager {
         Ok(url)
     }
 
-    /// 构建 vendor API URL（chat/messages 默认端点 — 既有调用点语义不变）
-    fn build_vendor_url(config: &VendorConfig) -> Result<String, GateError> {
+    /// 构建 vendor API URL（chat/messages 默认端点 — 既有调用点语义不变）。
+    /// `pub(crate)`：健康探针复用同一拼接规则（默认端点）。
+    pub(crate) fn build_vendor_url(config: &VendorConfig) -> Result<String, GateError> {
         let path = if config.type_ == "anthropic" {
             "messages"
         } else {
@@ -1087,6 +1150,10 @@ impl VendorManager {
     }
 
     /// 以指定 key 构建带认证 header 的 RequestBuilder（池命中路径）。
+    ///
+    /// WP2：末尾统一注入 `config.extra_headers`（静态附加头）。与网关已
+    /// 设置的头（鉴权与协议头，见 `RESERVED_OUTBOUND_HEADERS`）冲突时跳过
+    /// 该项并记 warn，不覆盖（安全红线）。空表时零行为变化。
     fn build_authed_request_with_key(
         client: &reqwest::Client,
         config: &VendorConfig,
@@ -1110,13 +1177,56 @@ impl VendorManager {
             }
         }
 
-        Ok(builder)
+        Ok(Self::apply_extra_headers(builder, &config.extra_headers))
     }
 
-    /// 认证类失败判定（provider_chain 切换触发集合的 401/403）——
-    /// 唯一推进 key 轮换游标的状态码集合。
-    fn is_auth_failure_status(status: reqwest::StatusCode) -> bool {
-        matches!(status.as_u16(), 401 | 403)
+    /// 网关已设置的出站头（小写形态）：`extra_headers` 与之同名（大小写
+    /// 不敏感）时跳过注入并记 warn，不覆盖网关值。
+    #[cfg_attr(not(feature = "vendor-management"), allow(dead_code))]
+    const RESERVED_OUTBOUND_HEADERS: &'static [&'static str] = &[
+        "authorization",
+        "x-api-key",
+        "content-length",
+        "host",
+        "content-type",
+        "anthropic-version",
+    ];
+
+    /// `extra_headers` 统一注入（WP2）：静态值、不做模板替换。非法头名/
+    /// 头值 warn 后跳过（不使请求失败）；键按字典序注入以保证确定性。
+    #[cfg_attr(not(feature = "vendor-management"), allow(dead_code))]
+    fn apply_extra_headers(
+        mut builder: reqwest::RequestBuilder,
+        extra: &HashMap<String, String>,
+    ) -> reqwest::RequestBuilder {
+        if extra.is_empty() {
+            return builder;
+        }
+        let mut keys: Vec<&String> = extra.keys().collect();
+        keys.sort();
+        for k in keys {
+            let v = &extra[k];
+            if Self::RESERVED_OUTBOUND_HEADERS.contains(&k.to_ascii_lowercase().as_str()) {
+                tracing::warn!(header = %k, "extra_headers 与网关头冲突，已跳过");
+                continue;
+            }
+            let name: reqwest::header::HeaderName = match k.parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    tracing::warn!(header = %k, "extra_headers 头名非法，已跳过");
+                    continue;
+                }
+            };
+            let value: reqwest::header::HeaderValue = match v.parse() {
+                Ok(val) => val,
+                Err(_) => {
+                    tracing::warn!(header = %k, "extra_headers 头值非法，已跳过");
+                    continue;
+                }
+            };
+            builder = builder.header(name, value);
+        }
+        builder
     }
 
     /// per-key 熔断键的 endpoint 段——配置面 api_base
@@ -1160,7 +1270,7 @@ impl VendorManager {
             .unwrap_or(stripped)
     }
 
-    /// recId=4（W2）：非流式 per-attempt 总超时 — 从 `send` 发起起算至响应
+    /// 非流式 per-attempt 总超时 — 从 `send` 发起起算至响应
     /// 体读完（reqwest 请求级超时语义），每次重试重建 builder 时各自附加，
     /// 不含本地排队等待（排队预算见 [`QUEUE_WAIT_BUDGET`]）。
     ///
@@ -1177,7 +1287,7 @@ impl VendorManager {
         }
     }
 
-    /// recId=4（W2）：出站错误分类 — reqwest 超时错误映射 `Timeout`
+    /// 出站错误分类 — reqwest 超时错误映射 `Timeout`
     /// （客户端可识别 504 语义），其余网络错误保持 `VendorUnavailable`。
     fn outbound_send_error(vendor_id: &str, e: &reqwest::Error) -> GateError {
         if e.is_timeout() {
@@ -1194,7 +1304,7 @@ impl VendorManager {
     /// 执行带重试的 HTTP 请求。
     ///
     /// 启用 `resilience` feature 时由
-    /// `limiteron::circuit::CircuitBreaker<GateError>` 包装（recId=2，G3
+    /// `limiteron::circuit::CircuitBreaker<GateError>` 包装（G3
     /// 泛型收口后错误类型即 [`GateError`]）：
     /// - Closed/HalfOpen 状态下放行至内部重试逻辑；
     /// - Open（含 half-open 准入超限）状态下直接拒绝，经
@@ -1258,17 +1368,17 @@ impl VendorManager {
     /// 在 `resilience` feature 启用时由 `execute_http_with_retry` 经 CB 包装后调用。
     ///
     /// 机制/信号分离（G3）：重试循环机制（attempt 计数、硬上限、睡眠）
-    /// 归库（`RetryPolicy::execute_with`，limiteron src/retry.rs:310，硬
+    /// 归库（`RetryPolicy::execute_with`，limiteron src/retry.rs，硬
     /// 上限与重试预算先于决策检查——决策只能收紧、不能扩大上限）；业务
     /// 决策全部在 `decide` 闭包——状态码集合分类（可重试集合热读 Config
     /// `[retry]` 段，POST /admin/config 更新后立即生效）、per-category
-    /// 上限、时间预算（recId=9，超限 `Stop` 返回最后错误）、逐次延迟值。
+    /// 上限、时间预算（超限 `Stop` 返回最后错误）、逐次延迟值。
     ///
     /// 决策映射（所有可重试分支均回 `RetryDecision::RetryAfter`——库按
     /// 回传值精确睡眠，不封顶 `max_delay`、不叠加库内二次抖动采样，
-    /// recId=9 预算投影与实际等待同值，恢复旧循环「一算、一查、一睡」
+    /// 预算投影与实际等待同值，恢复旧循环「一算、一查、一睡」
     /// 的精确判定）：
-    /// - 上游 `Retry-After` 头（429/503，recId=7③）→ 值经 [`spread_delay`]
+    /// - 上游 `Retry-After` 头→ 值经 [`spread_delay`]
     ///   全范围展宽后原样回传（指示契约，合理性由本闭包对秒数形式的
     ///   解析兜底）；
     /// - 429 无头 → [`retry_delay_for`] 指数档位（参数同 `[retry]` 段
@@ -1299,7 +1409,7 @@ impl VendorManager {
         let url = Self::build_vendor_url(config)?;
         let policy = RetryDelayPolicy::from_config(retry_cfg);
 
-        // recId=9（W5）：重试总时间预算（默认 0 = 不限时，行为与现状一致）。
+        // 重试总时间预算（默认 0 = 不限时，行为与现状一致）。
         // 锚点统一 tokio::time::Instant —— std Instant 不随 paused clock
         // 推进，paused-clock 测试与生产同走 tokio 时钟域。
         let budget = if retry_cfg.retry_budget_secs > 0 {
@@ -1324,7 +1434,8 @@ impl VendorManager {
                     let builder =
                         Self::build_authed_attempt_builder(client, config, &url, credential)?;
                     let response =
-                        Self::send_attempt(builder, &request_body, config, instance).await?;
+                        Self::send_attempt(builder, &request_body, config, instance, credential)
+                            .await?;
                     let response_json = Self::read_attempt_json(response, config).await?;
                     converter
                         .parse_response(response_json)
@@ -1354,8 +1465,8 @@ impl VendorManager {
             })
     }
 
-    /// 单次尝试的带认证请求构建（recId=4：per-attempt 总超时，从 send
-    /// 起算）。T005：池命中用固定 key；legacy 回退在 build 时读 env
+    /// 单次尝试的带认证请求构建（per-attempt 总超时，从 send
+    /// 起算）。：池命中用固定 key；legacy 回退在 build 时读 env
     ///（缺失报 Config 错误——与历史逐位一致）。
     fn build_authed_attempt_builder(
         client: &reqwest::Client,
@@ -1379,13 +1490,14 @@ impl VendorManager {
     }
 
     /// 单次尝试的发送与非 2xx 处理：Retry-After 头须在消费 body 前读取；
-    /// 401/403 认证类失败推进 key 轮换游标——生效于下次请求；
-    /// 本请求的剩余尝试（若有）仍用同一 key。
+    /// key 错误按三态处置（WP6）：永久错误黑名单 + 游标推进（生效于下次
+    /// 请求），瞬时错误无 key 动作；本请求的剩余尝试（若有）仍用同一 key。
     async fn send_attempt(
         builder: reqwest::RequestBuilder,
         request_body: &Value,
         config: &VendorConfig,
         instance: &VendorInstance,
+        credential: &RequestCredential,
     ) -> Result<reqwest::Response, AttemptFailure> {
         let response = match builder.json(request_body).send().await {
             Ok(resp) => resp,
@@ -1410,9 +1522,8 @@ impl VendorManager {
                 "{}",
                 crate::i18n::t("vendor-upstream-non-success")
             );
-            if Self::is_auth_failure_status(status) {
-                instance.advance_key_cursor(status.as_u16());
-            }
+            // WP6 三态：永久错误黑名单 + 推进，瞬时错误无 key 动作。
+            instance.handle_key_error(credential, status, &text);
             return Err(AttemptFailure::Http {
                 status: status.as_u16(),
                 retry_after,
@@ -1430,7 +1541,7 @@ impl VendorManager {
         Ok(response)
     }
 
-    /// 解析响应（recId=4：per-attempt 超时在 body 读取阶段触发时映射
+    /// 解析响应（per-attempt 超时在 body 读取阶段触发时映射
     /// Timeout，与真正的解析失败区分）。
     async fn read_attempt_json(
         response: reqwest::Response,
@@ -1497,7 +1608,7 @@ impl VendorManager {
             return RetryDecision::Stop;
         }
 
-        // recId=9（W5）：重试维度计数（守门器 r 的分子）——仅对
+        // 重试维度计数（守门器 r 的分子）——仅对
         // 实际将要发生的重试记一笔（Stop 前置拦截不计数）
         metrics.record_retry_attempt();
 
@@ -1526,7 +1637,7 @@ impl VendorManager {
             }
         };
 
-        // recId=9（W5）：预算超限放弃——闭包内 Stop，库原样返回
+        // 预算超限放弃——闭包内 Stop，库原样返回
         // 最后错误（网络 / 5xx·429 语义由出口映射保留）
         if let Some(b) = budget {
             if crate::utils::retry::budget_exceeded(budget_anchor, b, delay) {
@@ -1540,7 +1651,7 @@ impl VendorManager {
         RetryDecision::RetryAfter(delay)
     }
 
-    /// 读取 vendor 的实时路由状态（recId=5② async 化；评审 blocker 后全面
+    /// 读取 vendor 的实时路由状态（async 化；评审 blocker 后全面
     /// 实时化）。
     ///
     /// 判定优先级（全部实时，不读持久化的熔断/限流回写）：
@@ -1604,7 +1715,7 @@ impl VendorManager {
                 }
                 // 超时已过或存在非 Open 通道：放行（真实的 Open→HalfOpen
                 // 转换由该请求在 CB execute 内完成，limiteron
-                // src/circuit/types.rs:396-433）
+                // src/circuit/types.rs）
             }
         }
 
@@ -1618,11 +1729,11 @@ impl VendorManager {
     /// CB Open 是否已过超时窗口、可放行探测（评审 blocker 修复）。
     ///
     /// limiteron 的状态转换只发生在 execute() 内部，此处做只读判定：
-    /// 用 `get_stats()` 的墙钟失败时间（limiteron src/error/mod.rs:176，
+    /// 用 `get_stats()` 的墙钟失败时间（limiteron src/error/mod.rs，
     /// `chrono::DateTime<Utc>`，与 lib clock 域无关）对齐库内转换条件
     /// `duration_since(last_failure) >= timeout`（limiteron
-    /// src/circuit/types.rs:397）。Open 而无失败时间戳（异常态）时对齐
-    /// 库内保守拒绝语义（types.rs:420-428）。
+    /// src/circuit/types.rs）。Open 而无失败时间戳（异常态）时对齐
+    /// 库内保守拒绝语义（types.rs）。
     #[cfg(feature = "resilience")]
     async fn circuit_probe_ready(circuit_breaker: &Arc<CircuitBreaker<GateError>>) -> bool {
         let stats = circuit_breaker.get_stats().await;
@@ -1638,7 +1749,7 @@ impl VendorManager {
         }
     }
 
-    /// recId=4①：直读 vendor 实例的 VendorQueue（async-channel bounded，
+    /// 直读 vendor 实例的 VendorQueue（async-channel bounded，
     /// `len()` 即 receiver 深度）。此前读无人写入的 QueueManager，恒 0，
     /// queue_factor 成为死因子、3D 权重退化 2D。
     pub fn get_queue_length(&self, vendor_id: &str) -> usize {
@@ -1646,7 +1757,7 @@ impl VendorManager {
         guard.get(vendor_id).map(|i| i.queue.len()).unwrap_or(0)
     }
 
-    /// recId=6：vendor 当前在途请求数（并发信号量已发放未释放的 permit 数，
+    /// vendor 当前在途请求数（并发信号量已发放未释放的 permit 数，
     /// 流式 permit 随流存活故对长流真实生效）。镜像 [`Self::get_queue_length`]
     /// 的锁模式；实例未初始化时返回 0。
     pub fn get_in_flight(&self, vendor_id: &str) -> usize {
@@ -1657,7 +1768,7 @@ impl VendorManager {
             .unwrap_or(0)
     }
 
-    /// recId=16：舰队并发占用信号 — (Σ in_flight, Σ 并发上限)，准入的
+    /// 舰队并发占用信号 — (Σ in_flight, Σ 并发上限)，准入的
     /// 拥塞判定输入（Σ in_flight 复用 [`ConcurrencyLimiter::in_flight`]，
     /// 流式 permit 随流存活故对长流真实）。含全部已初始化实例；容量
     /// 合计 0 的退化（无实例）返回 (0, 0)，调用方按无拥塞处理。
@@ -1672,7 +1783,33 @@ impl VendorManager {
         (total_in_flight, total_capacity)
     }
 
-    /// recId=16：直接获取 vendor 并发 permit — 准入集成的测试钩子（占满
+    /// 出站共享 Client（审查 M5）：探测路径复用与正常请求同一 Client
+    ///（连接池/CONNECT_TIMEOUT 基线一致；`reqwest::Client` 克隆廉价——
+    /// 内部 Arc）。原实现探针每周期 `reqwest::Client::new()`，绕开共享
+    /// 连接池且无超时基线。
+    pub(crate) fn outbound_client(&self) -> reqwest::Client {
+        self.client.clone()
+    }
+
+    /// 探测出站闸门（审查 M5，spec 约束）：探测请求与正常请求共用同一
+    /// vendor 实例的 RPS 令牌（`rate_limiter.acquire`，与 worker
+    /// `process_vendor_queue` 同点）与并发信号量（permit 持有至探测请求
+    /// 结束）。实例不存在返回 `None`——调用方跳过该目标，禁止在治理
+    /// 路径之外发上游请求。
+    pub(crate) async fn acquire_probe_capacity(
+        &self,
+        vendor_id: &str,
+    ) -> Option<ConcurrencyPermit> {
+        // 先克隆实例句柄并释放读锁，await 不持锁（clippy await_holding_lock）。
+        let inst = {
+            let guard = self.instances.read().unwrap();
+            guard.get(vendor_id).cloned()?
+        };
+        inst.rate_limiter.acquire().await;
+        Some(inst.concurrency_limiter.acquire().await)
+    }
+
+    /// 直接获取 vendor 并发 permit — 准入集成的测试钩子（占满
     /// 并发驱动拥塞信号）与运维排障入口；生产执行路径走 worker 的
     /// acquire。实例不存在返回 None。
     pub async fn acquire_permit(&self, vendor_id: &str) -> Option<ConcurrencyPermit> {
@@ -1684,7 +1821,7 @@ impl VendorManager {
         Some(inst.concurrency_limiter.acquire().await)
     }
 
-    /// recId=6：全部已初始化实例的在途均值 — `load_signal =
+    /// 全部已初始化实例的在途均值 — `load_signal =
     /// "in_flight_relative"` 的归一化基准。fleet = instances 表（initialize
     /// 时为 enabled vendor 构建，与 get_queue_length 同一观测域）。
     /// 空表返回 0.0（消费侧 relative 公式分母 max(1, mean) 钳制兜底）。
@@ -1722,15 +1859,15 @@ impl VendorManager {
         let pending = PendingRequest {
             request,
             response_tx,
-            // recId=4③：延迟口径含排队时间（worker 完成分支以此记账）
+            // 延迟口径含排队时间（worker 完成分支以此记账）
             enqueued_at: Instant::now(),
-            // recId=8：出队时刻由 VendorQueue::recv 单点盖戳，入队方恒 None
+            // 出队时刻由 VendorQueue::recv 单点盖戳，入队方恒 None
             dequeued_at: None,
         };
 
         instance.queue.send(pending).await?;
 
-        // recId=4（W2）：排队预算与执行预算解耦 —— 此前 60s 一刀切地覆盖
+        // 排队预算与执行预算解耦 —— 此前 60s 一刀切地覆盖
         // 「排队 + 执行」全程，排队饥饿与长执行互相挤占预算。现改为
         // QUEUE_WAIT_BUDGET（排队段）+ timeout_ms（执行段，per-attempt 从
         // send 起算）；timeout_ms=0（不限时）时不加执行段，仅剩排队预算。
@@ -1752,7 +1889,7 @@ impl VendorManager {
             })??
     }
 
-    /// recId=14①③：流式启动状态码校验 + 错误记账。
+    /// 流式启动状态码校验 + 错误记账。
     ///
     /// 流式路径此前不查上游状态码：非 2xx 时错误 JSON 正文会被当作 SSE 流
     /// 原样透传给客户端（伪 200 流），客户端与重试逻辑无法分辨成败。
@@ -1767,6 +1904,7 @@ impl VendorManager {
         vendor_id: &str,
         start: Instant,
         response: reqwest::Response,
+        credential: &RequestCredential,
     ) -> Result<reqwest::Response, GateError> {
         if response.status().is_success() {
             return Ok(response);
@@ -1783,20 +1921,17 @@ impl VendorManager {
             "{}",
             crate::i18n::t("vendor-stream-upstream-non-success")
         );
-        // 401/403 认证类失败推进 key 轮换游标——生效于下次请求
-        //（流式派发单次尝试，无请求内重试，与转换非流式语义一致）
-        if Self::is_auth_failure_status(status) {
-            let instance = {
-                let guard = self.instances.read().unwrap();
-                guard.get(vendor_id).cloned()
-            };
-            if let Some(instance) = instance {
-                instance.advance_key_cursor(status.as_u16());
-            }
+        // WP6 三态：永久错误黑名单 + 推进（流式派发单次尝试，生效于下次
+        // 请求，与转换非流式语义一致）；瞬时错误无 key 动作。
+        if let Some(instance) = {
+            let guard = self.instances.read().unwrap();
+            guard.get(vendor_id).cloned()
+        } {
+            instance.handle_key_error(credential, status, &text);
         }
         let duration = start.elapsed();
         self.metrics.record_request(vendor_id, false, duration);
-        // recId=7（W5）：失败率滑窗双记 —— 上游 429 → RateLimited 亦计入
+        // 失败率滑窗双记 —— 上游 429 → RateLimited 亦计入
         // failures（429 感知：独立于 CB 分类器，不影响 CB failure_count）
         self.metrics
             .record_vendor_outcome_at(vendor_id, false, Instant::now());
@@ -1819,8 +1954,8 @@ impl VendorManager {
         Err(error)
     }
 
-    /// recId=2（二期）：流式单次派发 = send（含 TTFT 超时，recId=4）→
-    /// 响应头状态校验（recId=14①）。两条流式路径（[`Self::execute_stream_request`]
+    /// 流式单次派发 = send（含 TTFT 超时）→
+    /// 响应头状态校验。两条流式路径（[`Self::execute_stream_request`]
     /// / [`Self::execute_passthrough_stream_request`]）的公共派发段。
     ///
     /// cover_all_paths 开启时由 per-vendor CircuitBreaker 包裹：Open 直接
@@ -1834,7 +1969,7 @@ impl VendorManager {
     /// `builder` 在 CB 之外构建（构建失败的 Config 错误不计 CB 失败，与
     /// 既有放置位置一致）；`include_content_type` 差异（转换流 true /
     /// 透传流 false）由调用方构建 builder 时保留。
-    /// （审查 M2 追加 model 入参后 8 参超 clippy 阈值 7——CB 键维度所需，
+    /// （追加 model 入参后 8 参超 clippy 阈值 7——CB 键维度所需，
     /// 不打包重构。）
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_stream_once(
@@ -1852,7 +1987,7 @@ impl VendorManager {
         let _ = (model, credential);
         let send = || async {
             let response = if config.stream_ttft_ms > 0 {
-                // recId=4（W2）：流式 TTFT 超时 — 包住 `send` 发起至上游
+                // 流式 TTFT 超时 — 包住 `send` 发起至上游
                 // 响应头返回的段落；流建立前超时以 Err(Timeout) 返回。
                 // reqwest 0.13 RequestBuilder 无 Clone（try_clone：body 为
                 // 流时 None）—— 此处 body 尚未附加，必为 Some
@@ -1889,8 +2024,9 @@ impl VendorManager {
                     }
                 })?
             };
-            // recId=14①：非 2xx 上游不再以 200 正文伪装成 SSE 流
-            self.check_stream_status(vendor_id, start, response).await
+            // 非 2xx 上游不再以 200 正文伪装成 SSE 流
+            self.check_stream_status(vendor_id, start, response, credential)
+                .await
         };
 
         #[cfg(feature = "resilience")]
@@ -1910,21 +2046,21 @@ impl VendorManager {
         send().await
     }
 
-    /// 执行流式请求（recId=3 阶段二）。
+    /// 执行流式请求（阶段二）。
     ///
     /// 返回上游 SSE 事件流经增量分帧与反向解析后的 IR
     /// [`StreamChunk`] 流 —— 不再原样返回 `bytes_stream()`（旧实现跨协议
     /// 流式必然失效且无跨块帧缓冲）：
-    /// - send 后先校验上游状态码（recId=14①，见 [`Self::check_stream_status`]）；
+    /// - send 后先校验上游状态码（见 [`Self::check_stream_status`]）；
     /// - 字节流经 `SseFrameParser` 分帧（跨块缓冲 + 增量 UTF-8）；
     /// - 每帧按 vendor 协议经 `ProtocolConverter::parse_stream_frame`
     ///   解析为 IR chunk（无法映射的帧跳过，`[DONE]` 提前收流）；
     /// - 上游 `event: error` / 错误 JSON 帧 → 流中产出
-    ///   `Err(VendorUnavailable)`（recId=14②），api 层转为带语义的
+    ///   `Err(VendorUnavailable)`：api 层转为带语义的
     ///   SSE error 事件提前终止；
     /// - 出站编码由 api 层经存量 `stream_chunk_to_external` 完成。
     ///
-    /// recId=5④：permit move 进返回的 Stream（unfold 持有），流结束才释放
+    /// permit move 进返回的 Stream（unfold 持有），流结束才释放
     /// —— 并发上限对流式请求真实生效。
     pub async fn execute_stream_request(
         &self,
@@ -1950,7 +2086,7 @@ impl VendorManager {
 
         // Enforce limits manually for stream requests
         instance.rate_limiter.acquire().await;
-        // recId=18：token_weighted 开启时按预估 token 量计费
+        // token_weighted 开启时按预估 token 量计费
         let permit = match instance.ticket {
             Some(policy) => {
                 let cost = estimate_cost_unified(&request, &policy);
@@ -1959,7 +2095,7 @@ impl VendorManager {
             None => instance.concurrency_limiter.acquire().await,
         };
 
-        // 热读新鲜配置（recId=13）：api_base/api_key_env 热更新立即生效
+        // 热读新鲜配置：api_base/api_key_env 热更新立即生效
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url(&config)?;
 
@@ -1967,7 +2103,7 @@ impl VendorManager {
         // 池空回退 legacy 读 env）
         let credential = instance.select_request_key(&config);
 
-        // recId=3：converter 以 Arc 进流 —— 流式反向解析
+        // converter 以 Arc 进流 —— 流式反向解析
         // （parse_stream_frame）按 vendor 协议分派，生命周期与流一致
         let converter: Arc<dyn ProtocolConverter> = match config.type_.as_str() {
             "openai" => self.openai_converter.clone(),
@@ -1979,7 +2115,7 @@ impl VendorManager {
             }
         };
 
-        // 审查 M2：per-key 熔断键带 model 段（归一到配置模型身份；
+        // per-key 熔断键带 model 段（归一到配置模型身份；
         // request 被 move 前捕获，无 resilience 组合下仅作参数透传）
         let request_model = Self::cb_model(vendor_id, &config, &request.model).to_string();
 
@@ -2005,7 +2141,7 @@ impl VendorManager {
         };
 
         let start = Instant::now();
-        // recId=2（二期）：cover_all_paths 开启时 send + 状态校验段由
+        // cover_all_paths 开启时 send + 状态校验段由
         // CircuitBreaker 包裹（时长只计到响应头，与首字节边界一致）；
         // 关闭时直连，行为与历史逐位一致
         let response = self
@@ -2020,30 +2156,77 @@ impl VendorManager {
             )
             .await?;
 
-        // recId=4④：流式口径为「派发处计」——send 成功（2xx、流已建立）即记
-        // 成功，错误分支已在 check_stream_status 内记账。流中错误在 api 层以
-        // SSE error 事件终止，属长流生命周期，不回溯改写派发计数（Drop 计有
-        // panic 不安全风险，弃用；口径见 recId=4 方案说明）。
+        // 流式口径为「派发处计」——send 成功（2xx、流已建立）即记
+        // 成功，错误分支已在 check_stream_status 内记账。流中错误在
+        // api 层以 SSE error 帧终止、vendor 经 guard_mid_stream_failure
+        // 进入冷却；派发计数不回溯改写（长流生命周期口径）。
         self.metrics
             .record_request(vendor_id, true, start.elapsed());
-        // recId=7（W5）：失败率滑窗双记（send 成功记 total，纯观测，常开）
+        // 失败率滑窗双记（send 成功记 total，纯观测，常开）
         self.metrics
             .record_vendor_outcome_at(vendor_id, true, Instant::now());
-        // recId=8（口径分道）：本点 duration 是 send→响应头口径，落 TTFT 道
+        // 本点 duration 是 send→响应头口径，落 TTFT 道
         //（严格首 token 口径网关侧不可得，响应头近似——config.toml 有如实标注）
         self.sync_ewma_tau();
         self.metrics
             .record_ttft(vendor_id, start.elapsed(), Instant::now());
 
-        // 字节流与分帧反解析装配（recId=5④ / recId=4（W2）/ recId=3 阶段二
+        // 字节流与分帧反解析装配（阶段二
         // 的完整语义见 [`Self::idle_timeout_byte_stream`] /
         // [`Self::framed_ir_stream`]——与透传流式共用同一实现）
         let idle = Duration::from_millis(config.stream_idle_ms);
         let byte_stream = Self::idle_timeout_byte_stream(response, permit, idle, vendor_id);
-        Ok(Self::framed_ir_stream(byte_stream, vendor_id, converter))
+        let framed = Self::framed_ir_stream(byte_stream, vendor_id, converter);
+        let cooldown = Self::stream_cooldown(&instance);
+        Ok(Self::guard_mid_stream_failure(instance, cooldown, framed))
     }
 
-    /// recId=5④ + recId=4（W2）：上游响应体字节流装配 — permit move 进
+    /// 流中冷却时长 — 与 CB Open 冷却窗同源
+    ///（[resilience].circuit_open_timeout_ms，实例构造期快照）。
+    #[cfg(feature = "resilience")]
+    fn stream_cooldown(instance: &Arc<VendorInstance>) -> Duration {
+        instance.circuit_open_timeout
+    }
+
+    #[cfg(not(feature = "resilience"))]
+    fn stream_cooldown(_instance: &Arc<VendorInstance>) -> Duration {
+        Duration::from_secs(30)
+    }
+
+    /// 流中失败冷却（首字节后上游断流/错误帧）：流本身以 SSE error
+    /// 帧终止（api 层），vendor 置 Throttled 冷却（get_status 读侧
+    /// TTL 到点惰性恢复，无死锁）。仅上游故障信号（Timeout /
+    /// VendorUnavailable）触发——网关自身协议/编码错误不冷却 vendor，
+    /// 语义对齐 GateErrorClassifier 的失败分类。
+    fn guard_mid_stream_failure<T, S>(
+        instance: Arc<VendorInstance>,
+        cooldown: Duration,
+        stream: S,
+    ) -> impl futures::Stream<Item = Result<T, GateError>>
+    where
+        S: futures::Stream<Item = Result<T, GateError>>,
+    {
+        futures::StreamExt::map(stream, move |item| {
+            if let Err(e) = &item {
+                if matches!(
+                    e,
+                    GateError::Timeout { .. } | GateError::VendorUnavailable { .. }
+                ) {
+                    instance.state.mark_throttled(cooldown);
+                    tracing::warn!(
+                        vendor = %instance.vendor_id,
+                        error = %e,
+                        cooldown_ms = cooldown.as_millis() as u64,
+                        "{}",
+                        crate::i18n::t("vendor-stream-cooldown")
+                    );
+                }
+            }
+            item
+        })
+    }
+
+    /// 上游响应体字节流装配 — permit move 进
     /// unfold，流结束才释放（并发上限对流式请求真实生效）；chunk 间 idle
     /// 超时（0=不限时）按 `stream_idle_ms` 包 timeout(bytes.next())，超时
     /// 产出 Err(Timeout) 并由下游分帧层终止流（permit 随终止释放）；item
@@ -2087,9 +2270,9 @@ impl VendorManager {
         })
     }
 
-    /// recId=3 阶段二：上游 SSE 字节流 → 分帧 + 反向解析的 IR StreamChunk
+    /// 阶段二：上游 SSE 字节流 → 分帧 + 反向解析的 IR StreamChunk
     /// 流。[DONE] 提前收流（OpenAI 终止标记）；上游中流错误语义化 Err
-    /// 提前终止（recId=14②）；EOF 冲刷残余帧（见 [`Self::flush_eof_chunk`]）。
+    /// 提前终止；EOF 冲刷残余帧（见 [`Self::flush_eof_chunk`]）。
     /// Unfold 的 async 闭包非 Unpin —— Box::pin 后再返回，外层调用方
     ///（StreamExt::next）要求流自身 Unpin。
     fn framed_ir_stream(
@@ -2114,7 +2297,7 @@ impl VendorManager {
                     // 倾倒 buffer 中已凑齐的帧（一次 unfold 一个 item）
                     if let Some(frame) = parser.next_frame() {
                         if frame.is_error() {
-                            // recId=14②：上游中流错误 → 语义化 Err 提前终止
+                            // 上游中流错误 → 语义化 Err 提前终止
                             let detail = frame.data.unwrap_or_else(|| {
                                 frame
                                     .event
@@ -2151,7 +2334,7 @@ impl VendorManager {
                                 "{}",
                                 crate::i18n::t("vendor-upstream-stream-interrupted")
                             );
-                            // recId=4（W2）：上游错误已统一为 GateError ——
+                            // 上游错误已统一为 GateError ——
                             // idle 超时（Timeout）原样透传（api 层转 SSE error
                             // 事件终止）；其余 IO 错误保持既有包装语义
                             let err = match e {
@@ -2204,7 +2387,7 @@ impl VendorManager {
     /// 当入站协议与出站协议相同时使用，避免序列化/反序列化开销。
     /// 默认端点按 vendor 协议分派（anthropic → `messages`、OpenAI →
     /// `chat/completions`）—— 与历史 `build_vendor_url` 行为一致
-    ///（recId=15① 回归：常量默认会把 anthropic 透传打到错误路径）。
+    ///（回归：常量默认会把 anthropic 透传打到错误路径）。
     pub async fn execute_passthrough_request(
         &self,
         vendor_id: &str,
@@ -2228,7 +2411,7 @@ impl VendorManager {
         }
     }
 
-    /// recId=15①：治理路径的端点可指定版 — embeddings 等 OpenAI 兼容端点
+    /// 治理路径的端点可指定版 — embeddings 等 OpenAI 兼容端点
     /// 经此获得与 chat 相同的共享连接池、RPS/并发限流、advanced limiter、
     /// token 记账与 metrics.record_request（旧 embeddings 实现每请求
     /// `reqwest::Client::new()` 绕过全部治理）。
@@ -2243,20 +2426,20 @@ impl VendorManager {
             .execute_passthrough_request_covered(vendor_id, request_body, path)
             .await;
         let duration = start.elapsed();
-        // recId=8（口径分道）：透传非流式为全程口径（含本地排队），落 e2e 道；
+        // 透传非流式为全程口径（含本地排队），落 e2e 道；
         // 成败都记（与下方 record_request 同拍）
         self.sync_ewma_tau();
         self.metrics.record_e2e(vendor_id, duration, Instant::now());
         match &result {
             Ok(_) => {
                 self.metrics.record_request(vendor_id, true, duration);
-                // recId=7（W5）：失败率滑窗双记（纯观测，常开）
+                // 失败率滑窗双记（纯观测，常开）
                 self.metrics
                     .record_vendor_outcome_at(vendor_id, true, Instant::now());
             }
             Err(e) => {
                 self.metrics.record_request(vendor_id, false, duration);
-                // recId=7（W5）：失败率滑窗双记 —— inner 的 advanced limiter
+                // 失败率滑窗双记 —— inner 的 advanced limiter
                 // 早退（RateLimited）与上游非 2xx 均计入 failures（429 感知）
                 self.metrics
                     .record_vendor_outcome_at(vendor_id, false, Instant::now());
@@ -2266,7 +2449,7 @@ impl VendorManager {
         result
     }
 
-    /// recId=2（一期）：cover_all_paths 开启时，透传非流式由 per-vendor
+    /// （一期）：cover_all_paths 开启时，透传非流式由 per-vendor
     /// CircuitBreaker 包裹 —— 与 [`Self::execute_http_with_retry`] 同款
     /// `execute` + [`from_circuit_call`] 包装（CB 拒绝还原为
     /// `VendorUnavailable{vendor: "{id} (circuit open)"}`，业务错误经
@@ -2354,7 +2537,7 @@ impl VendorManager {
             });
         }
 
-        // recId=18：token_weighted 开启时按预估 token 量计费
+        // token_weighted 开启时按预估 token 量计费
         let permit = match instance.ticket {
             Some(policy) => {
                 let cost = estimate_cost_json(&request_body, &policy);
@@ -2364,7 +2547,7 @@ impl VendorManager {
         };
         let _permit = permit; // Hold permit during request
 
-        // 热读新鲜配置（recId=13）
+        // 热读新鲜配置
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url_at(&config, path)?;
 
@@ -2375,84 +2558,113 @@ impl VendorManager {
             }
             None => Self::build_authed_request(&self.client, &config, &url, true)?,
         };
-        // recId=4（W2）：per-attempt 总超时（从 send 起算；0=不限时）
+        // per-attempt 总超时（从 send 起算；0=不限时）
         let builder = Self::apply_attempt_timeout(builder, &config);
 
         let response = match builder.json(&request_body).send().await {
             Ok(resp) => resp,
-            // recId=4（W2）：超时映射 Timeout（客户端可识别 504 语义）
+            // 超时映射 Timeout（客户端可识别 504 语义）
             Err(e) => return Err(Self::outbound_send_error(vendor_id, &e)),
         };
 
         if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            let (error_type, error_code) = upstream_error_category(&text);
-            tracing::warn!(
-                vendor = %vendor_id,
-                status = %status,
-                body_bytes = text.len(),
-                error_type = ?error_type,
-                error_code = ?error_code,
-                "{}",
-                crate::i18n::t("vendor-upstream-non-success")
-            );
-            // 401/403 认证类失败推进 key 轮换游标——生效于下次请求
-            if Self::is_auth_failure_status(status) {
-                instance.advance_key_cursor(status.as_u16());
-            }
-            return Err(GateError::VendorUnavailable {
-                vendor: crate::i18n::t_args(
-                    "vendor-upstream-status",
-                    &[
-                        ("vendor", vendor_id.to_string()),
-                        ("status", status.to_string()),
-                    ],
-                ),
-            });
+            return Err(Self::handle_passthrough_non_success(
+                vendor_id, &instance, response, credential,
+            )
+            .await);
         }
 
-        // recId=4（W2）：per-attempt 超时在 body 读取阶段触发时映射 Timeout，
+        // per-attempt 超时在 body 读取阶段触发时映射 Timeout，
         // 与真正的解析失败区分
-        let response_json: Value = match response.json().await {
-            Ok(json) => json,
-            Err(e) if e.is_timeout() => {
-                return Err(GateError::Timeout {
-                    vendor: vendor_id.to_string(),
-                });
-            }
-            Err(e) => {
-                return Err(GateError::VendorUnavailable {
-                    vendor: crate::i18n::t_args("vendor-parse-error", &[("error", e.to_string())]),
-                });
-            }
-        };
+        let response_json: Value = Self::read_response_json(vendor_id, response).await?;
 
-        // 更新 Token 使用统计（recId=5：CAS 全有全无，不足则拒绝记账）。
-        // 仅 Token 变体记账（评审 major）：非 Token 变体无配额语义，
-        // consume_tokens 恒 false 不应触发 underflow 告警。
-        if let Some(usage) = response_json.get("usage") {
-            if let Some(total) = usage.get("total_tokens").and_then(|v| v.as_u64()) {
-                if instance.advanced_limiter.accounts_tokens() {
-                    let charged = instance.advanced_limiter.consume_tokens(total).await;
-                    if !charged {
-                        tracing::warn!(
-                            vendor = %vendor_id,
-                            total,
-                            "{}",
-                            crate::i18n::t("vendor-token-quota-underflow")
-                        );
-                    }
-                }
-            }
-        }
+        // 更新 Token 使用统计（CAS 全有全无，不足则拒绝记账；语义见 helper）
+        Self::account_response_tokens(&instance, vendor_id, &response_json).await;
 
         Ok(response_json)
     }
 
+    /// 读取透传响应体 JSON：per-attempt 超时在 body 阶段触发映射
+    /// Timeout（与真正的解析失败区分），其余解析失败映射 VendorUnavailable。
+    async fn read_response_json(
+        vendor_id: &str,
+        response: reqwest::Response,
+    ) -> Result<Value, GateError> {
+        match response.json().await {
+            Ok(json) => Ok(json),
+            Err(e) if e.is_timeout() => Err(GateError::Timeout {
+                vendor: vendor_id.to_string(),
+            }),
+            Err(e) => Err(GateError::VendorUnavailable {
+                vendor: crate::i18n::t_args("vendor-parse-error", &[("error", e.to_string())]),
+            }),
+        }
+    }
+
+    /// 透传响应 usage 记账：仅 Token 变体且配额充足时 consume_tokens，
+    /// 不足记 underflow 告警（CAS 全有全无；非 Token 变体无配额语义，
+    /// consume_tokens 恒 false 不应触发告警）。
+    async fn account_response_tokens(
+        instance: &VendorInstance,
+        vendor_id: &str,
+        response_json: &Value,
+    ) {
+        let Some(usage) = response_json.get("usage") else {
+            return;
+        };
+        let Some(total) = usage.get("total_tokens").and_then(|v| v.as_u64()) else {
+            return;
+        };
+        if !instance.advanced_limiter.accounts_tokens() {
+            return;
+        }
+        let charged = instance.advanced_limiter.consume_tokens(total).await;
+        if !charged {
+            tracing::warn!(
+                vendor = %vendor_id,
+                total,
+                "{}",
+                crate::i18n::t("vendor-token-quota-underflow")
+            );
+        }
+    }
+
+    /// 透传非 2xx 收尾：读 body 记录类别化告警、401/403 推进 key 轮换
+    /// 游标（生效于下次请求），抛 VendorUnavailable（保留上游状态语义）。
+    async fn handle_passthrough_non_success(
+        vendor_id: &str,
+        instance: &VendorInstance,
+        response: reqwest::Response,
+        credential: &RequestCredential,
+    ) -> GateError {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        let (error_type, error_code) = upstream_error_category(&text);
+        tracing::warn!(
+            vendor = %vendor_id,
+            status = %status,
+            body_bytes = text.len(),
+            error_type = ?error_type,
+            error_code = ?error_code,
+            "{}",
+            crate::i18n::t("vendor-upstream-non-success")
+        );
+        // WP6 三态：永久错误黑名单 + 推进（生效于下次请求）；瞬时无动作。
+        instance.handle_key_error(credential, status, &text);
+        GateError::VendorUnavailable {
+            vendor: crate::i18n::t_args(
+                "vendor-upstream-status",
+                &[
+                    ("vendor", vendor_id.to_string()),
+                    ("status", status.to_string()),
+                ],
+            ),
+        }
+    }
+
     /// 执行零拷贝透传流式请求
     ///
-    /// recId=4（W2）：流错误类型由 `reqwest::Error` 统一为
+    /// 流错误类型由 `reqwest::Error` 统一为
     /// [`GateError`]（idle 超时以 `Timeout` 产出）；下游
     /// `reframe_passthrough_stream` 泛型于 `E: Display`，无需改动。
     pub async fn execute_passthrough_stream_request(
@@ -2480,7 +2692,7 @@ impl VendorManager {
             });
         }
 
-        // recId=18：token_weighted 开启时按预估 token 量计费
+        // token_weighted 开启时按预估 token 量计费
         let permit = match instance.ticket {
             Some(policy) => {
                 let cost = estimate_cost_json(&request_body, &policy);
@@ -2489,7 +2701,7 @@ impl VendorManager {
             None => instance.concurrency_limiter.acquire().await,
         };
 
-        // 热读新鲜配置（recId=13）
+        // 热读新鲜配置
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url(&config)?;
 
@@ -2503,7 +2715,7 @@ impl VendorManager {
             }
             None => Self::build_authed_request(&self.client, &config, &url, false)?,
         };
-        // 审查 M2：per-key 熔断键带 model 段（透传 model 取自请求体，
+        // per-key 熔断键带 model 段（透传 model 取自请求体，
         // 归一到配置模型身份；无 resilience 组合下仅作参数透传）
         let raw_model = request_body
             .get("model")
@@ -2512,7 +2724,7 @@ impl VendorManager {
         let request_model = Self::cb_model(vendor_id, &config, raw_model).to_string();
 
         let start = Instant::now();
-        // recId=2（二期）：TTFT 超时与状态校验段收拢于 dispatch_stream_once
+        // TTFT 超时与状态校验段收拢于 dispatch_stream_once
         //（cover_all_paths 开启时由 CB 包裹，关闭时直连，行为逐位一致）
         let response = self
             .dispatch_stream_once(
@@ -2526,28 +2738,29 @@ impl VendorManager {
             )
             .await?;
 
-        // recId=4④：流式「派发处计」——send 成功即记成功，与转换流式同口径
+        // 流式「派发处计」——send 成功即记成功，与转换流式同口径
         //（错误分支已在 check_stream_status 内记账）
         self.metrics
             .record_request(vendor_id, true, start.elapsed());
-        // recId=7（W5）：失败率滑窗双记（send 成功记 total，纯观测，常开）
+        // 失败率滑窗双记（send 成功记 total，纯观测，常开）
         self.metrics
             .record_vendor_outcome_at(vendor_id, true, Instant::now());
-        // recId=8（口径分道）：send→响应头口径落 TTFT 道（响应头近似，同上）
+        // send→响应头口径落 TTFT 道（响应头近似，同上）
         self.sync_ewma_tau();
         self.metrics
             .record_ttft(vendor_id, start.elapsed(), Instant::now());
 
-        // recId=5④：与 execute_stream_request 同款 permit 生命周期 ——
+        // 与 execute_stream_request 同款 permit 生命周期 ——
         // permit move 进返回的 Stream，流结束才释放，并发上限对流式生效。
-        // recId=4（W2）：chunk 间 idle 超时（0=不限时）与转换流式同口径
-        //（装配实现见 [`Self::idle_timeout_byte_stream`]，两路共用）。
+        // chunk 间 idle 超时（0=不限时）与转换流式同口径
+        //（装配实现见 [`Self::idle_timeout_byte_stream`]，两路共用）；
+        // 流中失败冷却同两路共用（guard_mid_stream_failure）。
         let idle = Duration::from_millis(config.stream_idle_ms);
         let stream = Self::idle_timeout_byte_stream(response, permit, idle, vendor_id);
-
-        // Unfold 的 async 闭包非 Unpin —— Box::pin 后再返回，
-        // 外层调用方（StreamExt::next）要求流自身 Unpin
-        Ok(Box::pin(stream))
+        let cooldown = Self::stream_cooldown(&instance);
+        Ok(Box::pin(Self::guard_mid_stream_failure(
+            instance, cooldown, stream,
+        )))
     }
 
     pub fn update_status(&self, vendor_id: &str, status: VendorStatus) {
@@ -2578,6 +2791,76 @@ impl VendorManager {
         }
     }
 
+    /// 管理面重置（WP6 恢复通道）：清空该 vendor 的 key 池黑名单（含游标）
+    /// 与冷却状态（`POST /admin/vendors/{id}/reset` 语义）。未知 vendor
+    /// 返回 false（调用方转 404 风格显性错误）。
+    pub fn reset_key_pool_state(&self, vendor_id: &str) -> bool {
+        let guard = self.instances.read().unwrap();
+        match guard.get(vendor_id) {
+            Some(instance) => {
+                instance.reset_resilience_state();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 健康探针目标采集（WP7）：一次周期内只读快照（探测 HTTP 在锁外执行）。
+    /// `suspects_only` 为 true 时仅返回非 Available 或有黑名单 key 的 vendor。
+    pub(crate) async fn probe_targets(&self, suspects_only: bool) -> Vec<ProbeTarget> {
+        let instances: Vec<(String, Arc<VendorInstance>)> = {
+            let guard = self.instances.read().unwrap();
+            guard
+                .iter()
+                .map(|(id, instance)| (id.clone(), instance.clone()))
+                .collect()
+        };
+        let mut targets = Vec::new();
+        for (vendor_id, instance) in instances {
+            let status = self.get_status(&vendor_id).await;
+            let blacklist = instance.key_pool.blacklisted_fingerprints();
+            if suspects_only && status == VendorStatus::Available && blacklist.is_empty() {
+                continue;
+            }
+            let config = self.config.read();
+            let Some(vendor_config) = config.vendors.iter().find(|v| v.id == vendor_id).cloned()
+            else {
+                continue;
+            };
+            drop(config);
+            let keys: Vec<(String, String)> = instance
+                .key_pool
+                .keys_snapshot()
+                .into_iter()
+                .map(|key| {
+                    let fingerprint = crate::vendor::key_pool::fingerprint_of(&key);
+                    (key, fingerprint)
+                })
+                .collect();
+            targets.push(ProbeTarget {
+                vendor_id,
+                config: vendor_config,
+                status,
+                keys,
+                blacklist,
+                current: instance.key_pool.current_key(),
+            });
+        }
+        targets
+    }
+
+    /// 健康探针 key 恢复（WP7 minimal_call 成功）：解黑名单 + 清冷却 +
+    /// 重置该 key 名下模型级熔断计数。未知 vendor 时 no-op。
+    pub(crate) async fn probe_recover_key(&self, vendor_id: &str, fingerprint: &str) {
+        let instance = {
+            let guard = self.instances.read().unwrap();
+            guard.get(vendor_id).cloned()
+        };
+        if let Some(instance) = instance {
+            instance.probe_recover_key(fingerprint).await;
+        }
+    }
+
     pub fn inc_error(&self, vendor_id: &str) -> u8 {
         let guard = self.instances.read().unwrap();
         guard
@@ -2591,7 +2874,7 @@ impl VendorManager {
         let mut status = Vec::new();
 
         for (id, instance) in guard.iter() {
-            // recId=4①：直读实例队列深度（同 get_queue_length）
+            // 直读实例队列深度（同 get_queue_length）
             status.push((
                 id.clone(),
                 instance.state.get_status(),
@@ -2602,7 +2885,7 @@ impl VendorManager {
         status
     }
 
-    /// 获取厂商的窗口信息，用于路由权重计算（recId=5②：async 化）。
+    /// 获取厂商的窗口信息，用于路由权重计算（async 化）。
     ///
     /// Token/Interval 窗口经 `window_snapshot()`（FixedWindowLimiter peek）
     /// 取精确 remaining / reset_secs，替代旧实现的手读原子计数；
@@ -2626,7 +2909,7 @@ impl VendorManager {
             }
             super::AdvancedRateLimiter::TimeWindow { start, end } => {
                 let now = chrono::Local::now().time();
-                // recId=13：跨午夜判定统一委托 time_window_active（旧同日
+                // 跨午夜判定统一委托 time_window_active（旧同日
                 // 判定 now < *start || now >= *end 使 22:00–06:00 类配置
                 // 整段失效，window_factor 恒按窗口外参与路由权重）。
                 // 注：跨午夜窗口内的 window_end 精确「次日 end」时刻为
@@ -2921,7 +3204,7 @@ mod tests {
         let _ = format!("{:?}", info);
     }
 
-    // ======== T006：per-model 能力目录查询 ========
+    // ======== per-model 能力目录查询 ========
 
     /// 带 model_catalog 的 Config 基座（单 vendor，type 可调）
     fn catalog_test_config(vendor_type: &str, catalog: Vec<ModelCatalogEntry>) -> Config {
@@ -2949,13 +3232,15 @@ mod tests {
             routing: crate::config::RoutingSection::default(),
             cache: crate::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
         }
     }
 
-    /// 登记模型返回目录真实值（context_window 非 0——agent_session.rs:3290
+    /// 登记模型返回目录真实值（context_window 非 0——agent_session.rs
     /// auto-compact 守卫），未登记回落 per-flavor（vendor type）默认。
     #[test]
     fn model_capabilities_registered_real_value_and_flavor_fallback() {
@@ -3059,7 +3344,7 @@ mod tests {
         );
     }
 
-    // ======== T005：按 key 指纹隔离的熔断计数（单测） ========
+    // ======== 按 key 指纹隔离的熔断计数（单测） ========
 
     fn pool_vendor_config(env_a: &str, env_b: &str) -> VendorConfig {
         VendorConfig {
@@ -3068,6 +3353,7 @@ mod tests {
             type_: "openai".into(),
             api_key_env: String::new(),
             api_key_envs: vec![env_a.to_string(), env_b.to_string()],
+            extra_headers: Default::default(),
             api_base: String::new(),
             enabled: true,
             priority: 1,
@@ -3166,7 +3452,7 @@ mod tests {
         let _ = fp_a;
     }
 
-    /// 审查 M2：per-key 熔断键含 model 维度（vendor_id+model+endpoint+指纹，
+    /// per-key 熔断键含 model 维度（vendor_id+model+endpoint+指纹，
     /// 对齐 provider_chain breaker_state_key）——同 vendor 同 key 不同 model
     /// 的失败计数互不污染。
     #[cfg(feature = "resilience")]
@@ -3265,11 +3551,11 @@ mod tests {
         assert!(instance.key_pool_info().size == 0);
     }
 
-    // ======== recId=1：熔断器 slow-call-rate 误触发修复（生产构造证明） ========
+    // ======== 熔断器 slow-call-rate 误触发修复（生产构造证明） ========
 
     /// 生产构造证明：经 [`gate_circuit_config`]（生产同款参数）建 CB，
     /// 3 次 800ms 成功调用必须保持 Closed。修复前（limiteron 默认
-    /// duration=500ms / rate=0.5，../limiteron src/constants.rs:106/111）
+    /// duration=500ms / rate=0.5，../limiteron src/constants.rs）
     /// 单次 800ms 成功调用即 1/1 慢、rate 1.0 ≥ 0.5 → Open（Red 实测：
     /// 第 2 次 execute 已被 Open 拒绝），即 LLM 延迟形态误触发熔断。
     ///
@@ -3298,8 +3584,72 @@ mod tests {
         );
     }
 
+    // ======== WP2 出站自定义头（单测） ========
+
+    fn extra_headers_config(pairs: &[(&str, &str)]) -> VendorConfig {
+        let mut c = pool_vendor_config("NEXUSFLOW_MGR_POOL_A", "NEXUSFLOW_MGR_POOL_B");
+        c.extra_headers = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        c
+    }
+
+    fn built_headers(config: &VendorConfig) -> reqwest::header::HeaderMap {
+        let client = reqwest::Client::new();
+        VendorManager::build_authed_request_with_key(
+            &client,
+            config,
+            "http://127.0.0.1:9/v1/chat/completions",
+            true,
+            "test-key",
+        )
+        .expect("构建必须成功")
+        .build()
+        .expect("Request 可构建")
+        .headers()
+        .clone()
+    }
+
+    /// 自定义头注入：配置的额外头出现在出站请求上，网关鉴权头不受影响。
+    #[test]
+    fn extra_headers_are_injected_into_outbound_request() {
+        let config =
+            extra_headers_config(&[("x-tenant-id", "acme"), ("x-trace-namespace", "prod")]);
+        let headers = built_headers(&config);
+        assert_eq!(headers["x-tenant-id"], "acme");
+        assert_eq!(headers["x-trace-namespace"], "prod");
+        assert_eq!(headers["authorization"], "Bearer test-key");
+    }
+
+    /// 冲突跳过：与网关头同名（大小写不敏感）的配置项被跳过并保留网关值。
+    #[test]
+    fn extra_headers_conflicting_with_gateway_headers_are_skipped() {
+        let config = extra_headers_config(&[
+            ("Authorization", "Bearer evil"),
+            ("X-API-KEY", "evil"),
+            ("content-length", "999"),
+            ("x-tenant-id", "acme"),
+        ]);
+        let headers = built_headers(&config);
+        assert_eq!(
+            headers["authorization"], "Bearer test-key",
+            "网关鉴权头不得被覆盖"
+        );
+        assert_eq!(headers["x-tenant-id"], "acme", "非冲突头正常注入");
+    }
+
+    /// 空表零行为变化：无 extra_headers 时出站头与历史逐位一致。
+    #[test]
+    fn empty_extra_headers_leave_outbound_headers_unchanged() {
+        let config = extra_headers_config(&[]);
+        let headers = built_headers(&config);
+        assert_eq!(headers["authorization"], "Bearer test-key");
+        assert!(headers.get("x-tenant-id").is_none());
+    }
+
     /// helper 参数值断言（模式对齐 limiteron
-    /// src/circuit/types.rs:1401 test_builder_with_slow_call_config）：
+    /// src/circuit/types.rs test_builder_with_slow_call_config）
     /// 默认 30s 窗口与 [resilience].circuit_open_timeout_ms 缺省一致，
     /// 短窗口经参数注入后仅 timeout 变化、其余参数不动。
     #[cfg(feature = "resilience")]

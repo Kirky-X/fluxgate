@@ -21,6 +21,7 @@ database-logger-shutdown = Logger already shut down
 database-logger-channel-closed = Async logger channel closed
 database-logger-flush-failed = Failed to write request logs (batch of { $count }): { $error }
 database-logger-secret-scan-dropped = Log dropped by outbound secret scan (total { $total }): { $error }
+database-logger-join-failed = Failed to await async logger writer exit: { $error }
 database-preagg-flush-failed = Failed to flush token aggregation: { $error }
 database-preagg-final-flush-failed = Final token aggregation flush failed: { $error }
 # utils-*: metrics.rs 运维告警。

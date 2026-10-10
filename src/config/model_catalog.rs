@@ -6,13 +6,13 @@
 //! per-model 能力/定价目录（N6）——`[[model_catalog]]` 段的类型与
 //! 查询纯函数。
 //!
-//! 字段对齐 agentstem `crates/providers/src/model_catalog.rs:18-39` 的
+//! 字段对齐 agentstem `crates/providers/src/model_catalog.rs` 的
 //! `ModelEntry`（实现不复用旧代码；agentstem 侧静态内置表 + 前缀匹配的
 //! 查询形态不迁——本目录由配置面/admin CRUD 显式登记）。
 //!
 //! **定价单位口径（计价消费的契约）** 四个价格字段均为
 //! 「currency 计价，**每 1M tokens**」——对齐 agentstem
-//! `model_catalog.rs:178-197 estimate_usage_cost` 的
+//! `model_catalog.rs estimate_usage_cost` 的
 //! `per_million(tokens, price) = (tokens / 1_000_000) * price` 公式。
 //! 缓存档：无独立计价的档位填 0（OpenAI 平台不单独计费 cache write；
 //! Anthropic cache read ≈ 0.1×输入价、cache write(5m) ≈ 1.25×输入价）。
@@ -54,7 +54,7 @@ pub struct ModelCatalogEntry {
     pub model_id: String,
     /// 上下文窗口（tokens）。**登记条目必须 > 0**（validate_config 强制）：
     /// 0 会让 agentstem TUI auto-compact 静默不装配
-    /// （crates/tui/src/agent_session.rs:3290-3291 语义）。
+    /// （crates/tui/src/agent_session.rs 语义）。
     pub context_window: u64,
     /// 输入单价（currency 计价，**每 1M tokens**）
     #[serde(default)]
@@ -147,7 +147,7 @@ pub fn cache_policy_for(catalog: &[ModelCatalogEntry], model_id: &str) -> CacheB
 
 /// 能力查询结果 — capabilities() 语义面（无定价；定价消费在 vendor/cost 计价）。
 /// 字段名对齐 agentstem 消费方（`max_context_tokens` 为
-/// agent_session.rs:3290-3291 auto-compact 判读的字段）。
+/// agent_session.rs auto-compact 判读的字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelCapabilities {
     /// 上下文窗口（tokens）——已登记为目录真实值，未登记为 per-flavor 默认；
@@ -354,7 +354,7 @@ currency = "eur"
     fn pricing_contract_per_1m_tokens_semantics() {
         let entry = claude_entry();
         let per_million = |tokens: u64, price: f64| (tokens as f64 / 1_000_000.0) * price;
-        // 与 agentstem model_catalog.rs:331-349 cost_estimate_prices_all_four_tiers
+        // 与 agentstem model_catalog.rs cost_estimate_prices_all_four_tiers
         // 同一组用量（1M/1M/2M/0.5M）与同值条目——数字必须逐位一致
         let input = per_million(1_000_000, entry.input_price);
         let output = per_million(1_000_000, entry.output_price);

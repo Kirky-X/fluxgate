@@ -6,7 +6,7 @@
 //! 装配链：logger → config → db → vendor → 日志管道 → DI kit →
 //! router/bandit/affinity/response_cache → ApiState → init_global_state。
 //!
-//! 自 main.rs:22-162 平移，装配顺序与原二进制逐位一致。
+//! 自 main.rs 平移，装配顺序与原二进制逐位一致。
 
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -31,9 +31,12 @@ pub(crate) struct Assembly {
     /// 热重载守护（`None` = 纯内存配置或监听失败；持有即监听生效，
     /// drop 即停止）。
     pub(crate) hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
+    /// 健康探针后台任务句柄（常驻；mode 每周期热读，off = no-op。持有即
+    /// 探测生效，随停机收尾 abort）。
+    pub(crate) probe_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// 初始化日志系统（原 main.rs:22-29）。
+/// 初始化日志系统（原 main.rs）。
 ///
 /// 返回的 LoggerManager 句柄由调用方（run）持有到进程结束——
 /// 原二进制中 `let _logger` 活在 main 作用域，提前丢弃会使 inklog
@@ -94,7 +97,7 @@ pub(crate) fn log_bridge_touched() -> bool {
     LOG_BRIDGE_TOUCHED.load(Ordering::Relaxed)
 }
 
-/// 加载配置（原 main.rs:31-37）。
+/// 加载配置（原 main.rs）。
 pub(crate) fn load_config(
     config_path: Option<String>,
 ) -> Result<Arc<ConfigManager>, NexusFlowError> {
@@ -109,7 +112,7 @@ pub(crate) fn load_config(
 }
 
 /// 装配 db → vendor → 日志管道 → DI kit → 路由栈 → ApiState
-/// （原 main.rs:39-162，顺序逐位一致，含 init_global_state）。
+/// （原 main.rs，顺序逐位一致，含 init_global_state）。
 pub(crate) async fn assemble(
     config_manager: Arc<ConfigManager>,
 ) -> Result<Assembly, NexusFlowError> {
@@ -146,7 +149,7 @@ pub(crate) async fn assemble(
     vendor_manager.initialize().await?;
     tracing::info!("{}", t("main-vendor-manager-initialized"));
 
-    // recId=9②：日志管道构造 — AsyncLogger（异步批量落 request_logs）与
+    // 日志管道构造 — AsyncLogger（异步批量落 request_logs）与
     // TokenPreAggregator（usage 小时预聚合）自 Database 的 repository 构造，
     // 经 ApiState 注入 handler（push 即返回，flush 由后台 worker 承担）。
     let logger_handle = Arc::new(AsyncLoggerHandle::new(crate::database::AsyncLogger::new(
@@ -158,7 +161,7 @@ pub(crate) async fn assemble(
         database.repository.clone(),
         std::time::Duration::from_secs(60),
     ));
-    // recId=9⑤：flush worker 挂后台，停机位在 serve 结束后置位
+    // flush worker 挂后台，停机位在 serve 结束后置位
     let pa_shutdown = Arc::new(AtomicBool::new(false));
     {
         let pa = pre_aggregator.clone();
@@ -195,22 +198,22 @@ pub(crate) async fn assemble(
 
     let router = RouterStruct::new(config_manager.clone(), vendor_manager.clone());
 
-    // recId=15：LinUCB 状态（Router 选择档与 handler 奖励回传共享）。
+    // LinUCB 状态（Router 选择档与 handler 奖励回传共享）。
     // 臂矩阵正则初值 = max(α²,1)·I 在构造期由 [routing].ucb_alpha 定死；
     // selection 默认 "weighted" 时状态不被咨询、不更新（默认路径不变）。
     let bandit_state = Arc::new(crate::router::bandit::BanditState::new(
         config_manager.read().routing.ucb_alpha,
     ));
 
-    // recId=11：会话亲和表（oxcache memory 后端，TTL 1h 活跃续期）。
+    // 会话亲和表（oxcache memory 后端，TTL 1h 活跃续期）。
     // 存储完全走 oxcache CacheBackend（set 带 TTL / get / expire 续期）。
     let affinity_table = Arc::new(crate::router::affinity::AffinityTable::with_memory_backend(
         crate::router::affinity::DEFAULT_AFFINITY_TTL,
     ));
 
-    // recId=12：精确响应缓存（oxcache memory 后端）。enabled/TTL 由
+    // 精确响应缓存（oxcache memory 后端）。enabled/TTL 由
     // [cache] 段热读控制——默认关闭，运维在 config.toml 显式打开。
-    // recId=12：TTL 负载联动的指标来源（L_p=vendor_ewma、Q=traffic_shares）
+    // TTL 负载联动的指标来源（L_p=vendor_ewma、Q=traffic_shares）
     let response_cache = Arc::new(crate::api::response_cache::ResponseCache::new(
         Arc::new(oxcache::backend::default_memory_backend()),
         config_manager.clone(),
@@ -247,10 +250,22 @@ pub(crate) async fn assemble(
         affinity: Some(affinity_table.clone()),
         response_cache: Some(response_cache),
         bandit: Some(bandit_state),
+        // WP8 配额账本：中间件入口预扣与回补钩共享同一实例（常驻构造，
+        // enabled=false 时零判限）。
+        quota: Some(Arc::new(crate::middleware::quota::QuotaState::new())),
     });
 
     crate::api::init_global_state(api_state.clone());
     tracing::info!("{}", t("main-global-state-initialized"));
+
+    // WP7 主动健康检查探针（审查 M8）：任务常驻，mode/interval/strategy
+    // 每周期热读（mode=off 默认 → 周期 no-op，开销可忽略）——原「启动期
+    // 一次性 spawn」使 off→suspect_only 热改不启动探测，与 [health] 的
+    // ✅ 热生效标注不符。句柄随 Assembly 移交停机收尾 abort。
+    let probe_handle = Some(tokio::spawn(crate::vendor::probe::run_probe_loop(
+        vendor_manager.clone(),
+        config_manager.clone(),
+    )));
 
     // 就绪探针注册（sdforge 全局表，装配期一次性；检查读既有句柄，
     // 不发起上游请求）。
@@ -264,6 +279,7 @@ pub(crate) async fn assemble(
         pre_aggregator,
         pa_shutdown,
         hot_reloader,
+        probe_handle,
     })
 }
 

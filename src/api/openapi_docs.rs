@@ -68,6 +68,34 @@ submit_route!(
     "Unified embeddings API across vendors.",
     &["openai"]
 );
+submit_route!(
+    "/v1/models",
+    "GET",
+    "OpenAI models list",
+    "Union of model catalog and enabled vendor models, deduplicated. Never cached.",
+    &["openai"]
+);
+submit_route!(
+    "/v1/messages/count_tokens",
+    "POST",
+    "Anthropic token count",
+    "Approximate input token estimation (chars/4 + per-message overhead, deterministic).",
+    &["anthropic"]
+);
+submit_route!(
+    "/admin/route/explain",
+    "POST",
+    "Route explanation",
+    "Read-only per-candidate routing assessment (reason codes + weight breakdown).",
+    &["admin"]
+);
+submit_route!(
+    "/admin/cost",
+    "GET",
+    "Cost ledger query",
+    "Aggregated token and cost ledger grouped by vendor or model, with optional time window and API key filter.",
+    &["admin"]
+);
 // 管理面
 submit_route!(
     "/admin/logs",

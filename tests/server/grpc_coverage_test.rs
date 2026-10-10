@@ -46,6 +46,7 @@ fn test_config(grpc_port: u16) -> Config {
             type_: "openai".into(),
             api_key_env: "OPENAI_API_KEY".into(),
             api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
             api_base: String::new(),
             enabled: true,
             priority: 1,
@@ -81,6 +82,8 @@ fn test_config(grpc_port: u16) -> Config {
         routing: nexusflow::config::RoutingSection::default(),
         cache: nexusflow::config::CacheSection::default(),
         admission: Default::default(),
+        health: Default::default(),
+        quota: Default::default(),
         grpc: Some(GrpcConfig {
             enabled: true,
             host: "127.0.0.1".into(),

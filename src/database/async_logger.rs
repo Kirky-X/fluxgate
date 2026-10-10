@@ -7,7 +7,7 @@
 //!
 //! 使用专用 channel 实现异步批量日志写入，提高性能。
 //!
-//! recId=9 改造后的背压语义：`log()` 经 `try_send` 入队——channel 满即丢
+//! 改造后的背压语义：`log()` 经 `try_send` 入队——channel 满即丢
 //! 弃并计数（`dropped_logs`），**绝不阻塞响应路径**；消费侧单事务批量
 //! flush（见 `Repository::log_requests_batch`），停机时补最终 flush。
 
@@ -179,13 +179,16 @@ enum LogCommand {
 #[derive(Clone)]
 pub struct AsyncLogger {
     sender: Sender<LogCommand>,
-    /// recId=9①：channel 满被丢弃的日志条数 — 背压语义可观测，
+    /// channel 满被丢弃的日志条数 — 背压语义可观测，
     /// 暴露进 /admin/metrics
     dropped_logs: Arc<AtomicU64>,
     /// secret gate fail-closed 拒发的日志条数 — 脱敏丢弃可观测，
     /// 暴露进 /admin/metrics（与背压丢弃分列，原因不同）
     secret_scan_dropped: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
+    /// writer_loop 任务句柄：shutdown() 取出并等待退出，
+    /// 保证返回时补最终 flush 已落库
+    writer: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl AsyncLogger {
@@ -202,7 +205,7 @@ impl AsyncLogger {
         // 响应路径——log() 的 try_send 前台零扫描开销）
         let masker = Arc::new(outbound_masker());
         let loop_dropped = Arc::clone(&secret_scan_dropped);
-        tokio::spawn(async move {
+        let writer = tokio::spawn(async move {
             Self::writer_loop(receiver, repository, flush_interval, masker, loop_dropped).await;
         });
 
@@ -211,12 +214,13 @@ impl AsyncLogger {
             dropped_logs: Arc::new(AtomicU64::new(0)),
             secret_scan_dropped,
             closed: Arc::new(AtomicBool::new(false)),
+            writer: Arc::new(tokio::sync::Mutex::new(Some(writer))),
         }
     }
 
     /// 写入日志（非阻塞 push：channel 满即丢弃并计数，绝不等待）。
     ///
-    /// recId=9①：原 `send().await` 在 channel 满时会阻塞调用方（响应路径）；
+    /// 原 `send().await` 在 channel 满时会阻塞调用方（响应路径）；
     /// 改 `try_send` 后背压语义明确 —— 满即丢并计入 `dropped_logs`。
     /// 返回 Err 仅表示 logger 已 shutdown（channel 关闭）。
     pub fn log(&self, log: RequestLog) -> Result<(), NexusFlowError> {
@@ -237,7 +241,7 @@ impl AsyncLogger {
         }
     }
 
-    /// recId=9①：丢弃计数 — 暴露进 /admin/metrics 的背压观测信号
+    /// 丢弃计数 — 暴露进 /admin/metrics 的背压观测信号
     pub fn dropped_logs(&self) -> u64 {
         self.dropped_logs.load(Ordering::Relaxed)
     }
@@ -249,7 +253,8 @@ impl AsyncLogger {
     }
 
     /// 优雅关闭：置 closed 标志（后续 log() 拒绝）→ 发 Shutdown 命令 →
-    /// writer_loop flush 剩余缓冲后退出。
+    /// 等待 writer_loop flush 剩余缓冲并退出——返回即最终 flush 已落库，
+    /// 停机拆除顺序不依赖调用方自行估算宽限时长。
     pub async fn shutdown(&self) -> Result<(), NexusFlowError> {
         self.closed.store(true, Ordering::Relaxed);
         self.sender
@@ -257,7 +262,14 @@ impl AsyncLogger {
             .await
             .map_err(|_| NexusFlowError::Database {
                 message: t("database-logger-channel-closed"),
-            })
+            })?;
+        let handle = self.writer.lock().await.take();
+        if let Some(handle) = handle {
+            handle.await.map_err(|e| NexusFlowError::Database {
+                message: t_args("database-logger-join-failed", &[("error", e.to_string())]),
+            })?;
+        }
+        Ok(())
     }
 
     /// 后台写入循环
@@ -270,6 +282,11 @@ impl AsyncLogger {
     ) {
         let mut buffer: Vec<RequestLog> = Vec::with_capacity(FLUSH_BUFFER_CAPACITY);
         let mut interval = tokio::time::interval(flush_interval);
+        // interval 首个 tick 立即完成。不在循环外先消费它，select 里的
+        // tick 分支就会持续处于就绪态（tick 取消安全：被丢弃不算消费），
+        // 每轮与 recv 竞逐随机胜出——缓冲远未满即被提前 flush 成碎片
+        // 批次，破坏单事务批量落库语义
+        interval.tick().await;
 
         loop {
             tokio::select! {
@@ -328,7 +345,7 @@ impl AsyncLogger {
                             break;
                         }
                         Err(_) => {
-                            // recId=9①：channel 断开（所有 sender 被 drop）时
+                            // channel 断开（所有 sender 被 drop）时
                             // 也必须补最终 flush —— 此前直接 break 丢缓冲
                             Self::flush_buffer(&repository, &mut buffer).await;
                             break;
@@ -354,7 +371,7 @@ impl AsyncLogger {
         Ok(log)
     }
 
-    /// 刷新缓冲区到数据库（recId=9①：单事务批量 — 见
+    /// 刷新缓冲区到数据库（单事务批量 — 见
     /// `Repository::log_requests_batch`，N 条 INSERT 一次 commit）
     async fn flush_buffer(repository: &Arc<Repository>, buffer: &mut Vec<RequestLog>) {
         if buffer.is_empty() {
@@ -379,7 +396,7 @@ impl AsyncLogger {
 
 /// 异步日志写入器句柄
 ///
-/// recId=9①：去掉了每条日志一把的 `tokio::Mutex<Option<AsyncLogger>>` ——
+/// 去掉了每条日志一把的 `tokio::Mutex<Option<AsyncLogger>>` ——
 /// 句柄即 Clone 的 sender + `AtomicBool` 关闭标志，log() 无锁直通
 /// （原实现 N 条日志串行化在一把互斥锁上，与"push 即返回"目标相悖）。
 #[derive(Clone)]
@@ -398,7 +415,7 @@ impl AsyncLoggerHandle {
         self.inner.log(log)
     }
 
-    /// recId=9①：丢弃计数透传
+    /// 丢弃计数透传
     pub fn dropped_logs(&self) -> u64 {
         self.inner.dropped_logs()
     }
@@ -521,7 +538,7 @@ mod tests {
         assert_eq!(log.total_tokens, Some(15));
     }
 
-    /// recId=9 tests ①：push 100 条 → shutdown → query_logs 恰 100 条
+    /// tests ①：push 100 条 → shutdown → query_logs 恰 100 条
     /// （单事务批量 flush 不丢条、不留半批）。
     #[tokio::test]
     async fn test_async_logger_batch_of_100_survives_shutdown_flush() {
@@ -583,7 +600,7 @@ mod tests {
         logger.shutdown().await.expect("Shutdown failed");
     }
 
-    /// recId=9 tests ②：容量 1 且消费侧被停机前缓冲卡住时连 push 3 条，
+    /// tests ②：容量 1 且消费侧被停机前缓冲卡住时连 push 3 条，
     /// 全部 100ms 内返回（不阻塞）且 dropped_logs==2（背压：满即丢并计数）。
     ///
     /// 构造"不消费"：容量 1 的 channel + shutdown 命令排在消费循环里……
@@ -624,7 +641,7 @@ mod tests {
         logger.shutdown().await.expect("Shutdown failed");
     }
 
-    /// recId=9 tests ③：channel 断开（Clone 出的 sender 全部 drop）→
+    /// tests ③：channel 断开（Clone 出的 sender 全部 drop）→
     /// writer_loop 的 Err 分支退出前补最终 flush，缓冲不丢。
     #[tokio::test]
     async fn test_async_logger_flushes_on_channel_disconnect() {

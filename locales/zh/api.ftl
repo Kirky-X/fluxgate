@@ -1,7 +1,7 @@
 # zh/api: api 桶（src/api）用户可见消息。zh 值 = 原中文保留或忠实翻译。
 
 # ---- admin.rs ----
-admin-vendor-limit-auto-managed = 厂商限流状态由 limiteron Governor 自动管理
+admin-vendor-reset = 厂商 { $id } 的密钥池黑名单与冷却状态已清空
 admin-config-updated-immediate = 配置已更新；vendors/pricing/auth 立即生效
 admin-config-updated-restart-required = 配置已更新；vendors/pricing/auth 立即生效；{ $sections } 重启后生效
 admin-vendor-not-found = 厂商 { $id } 不存在

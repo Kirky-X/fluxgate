@@ -44,6 +44,8 @@ fn make_config() -> Config {
         routing: nexusflow::config::RoutingSection::default(),
         cache: nexusflow::config::CacheSection::default(),
         admission: Default::default(),
+        health: Default::default(),
+        quota: Default::default(),
         grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
         docs: Default::default(),
@@ -95,6 +97,7 @@ async fn build_app() -> (Router, Arc<ApiState>, DbPool) {
         affinity: None,
         response_cache: Some(response_cache),
         bandit: None,
+        quota: None,
     });
     let app = create_router(state.clone()).await;
     // /readyz 由 sdforge 站点在生产合并侧自挂；直连 create_router 时经

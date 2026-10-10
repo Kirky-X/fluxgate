@@ -3,22 +3,22 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! Integration tests for `nexusflow::utils::retry` module + recId=7 重试升级。
+//! Integration tests for `nexusflow::utils::retry` module + 重试升级。
 //!
 //! 测试覆盖：
 //! - `ErrorCategory`、`extract_status_code`（无 feature 门控）
-//! - recId=7①：`limiteron::retry::delay_for_attempt` 首试 1s（回归旧实现的
+//! - `limiteron::retry::delay_for_attempt` 首试 1s（回归旧实现的
 //!   2s 起步偏移）
-//! - recId=7②：`retry_delay_for` 纯函数（分类退避）与 `spread_delay`
+//! - `retry_delay_for` 纯函数（分类退避）与 `spread_delay`
 //!   （Retry-After 值的展宽——G3 后经 RetryDecision::RetryAfter 消费），
-//!   不使用 tokio::time::pause（在库先例 vendor_circuit_breaker_test.rs:9-14
+//!   不使用 tokio::time::pause（在库先例 vendor_circuit_breaker_test.rs
 //!   已记录 paused clock auto-advance 与真实 mockito IO 冲突，禁用该组合）
 //!
 //! （G3 审查修复：第二份手写实现 `with_retry`/`RetryStrategy`/
 //! `BackoffStrategy`/`is_retryable_error` 已删除——生产调用方为零；
 //! vendor HTTP 主循环的行为锁定在 vendor_test.rs 的 mockito 集成测试。）
 //!
-//! （recId=7⑤ 换 vendor fallback E2E 留 nexusflow tests/retry_test.rs——
+//! （换 vendor fallback E2E 留 nexusflow tests/retry_test.rs——
 //! 经 api/ApiState 全栈驱动，属应用面。）
 
 mod tests {
@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(extract_status_code("no status code here"), 500);
     }
 
-    // -------- recId=7①：delay_for_attempt 首试偏移回归 --------
+    // -------- delay_for_attempt 首试偏移回归 --------
 
     /// 旧实现「先 retry_count += 1 再 2^retry_count」导致首试 2s，
     /// 与注释 '1s, 2s, 4s' 矛盾。limiteron delay_for_attempt 的 attempt
@@ -138,7 +138,7 @@ mod tests {
         );
     }
 
-    // -------- recId=7② + G3：retry_delay_for 纯函数（分类退避）与
+    // -------- + G3：retry_delay_for 纯函数（分类退避）与
     // spread_delay（Retry-After → RetryDecision::RetryAfter 的时长生产端）--------
 
     #[cfg(feature = "vendor-management")]
@@ -159,7 +159,7 @@ mod tests {
                 factor: 2.0,
                 max_delay: Duration::from_secs(16),
                 jitter: 0.0,        // 确定性：便于纯函数断言
-                spread_jitter: 0.0, // recId=5 回滚阀：存量断言锁定旧确定性语义
+                spread_jitter: 0.0, // 回滚阀：存量断言锁定旧确定性语义
             }
         }
 
@@ -245,7 +245,7 @@ mod tests {
             assert!((policy.spread_jitter - 1.0).abs() < 1e-9);
         }
 
-        // ======== recId=5：同步惊群展宽 ========
+        // ======== 同步惊群展宽 ========
 
         /// spread_jitter=1.0（默认）下 Retry-After 值必须以 ra 为 base
         /// 全范围展宽 ∈ [ra, 2×ra)（半开：gen_range(0.0..spread) 永不取上

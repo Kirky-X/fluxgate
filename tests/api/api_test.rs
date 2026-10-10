@@ -109,6 +109,7 @@ mod endpoints {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -432,6 +433,7 @@ mod integration {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -911,6 +913,7 @@ mod admin {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
             openai_converter,
             anthropic_converter,
             database,
@@ -1020,6 +1023,7 @@ mod admin {
             type_: "openai".to_string(),
             api_key_env: "TEST_KEY".to_string(),
             api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
             api_base: "".to_string(),
             enabled: true,
             priority: 1,
@@ -1206,7 +1210,7 @@ mod admin {
     }
 }
 
-/// recId=14：流式路径错误传播 —— 上游非 2xx 不再以 200 正文伪装成 SSE 流。
+/// 流式路径错误传播 —— 上游非 2xx 不再以 200 正文伪装成 SSE 流。
 ///
 /// - send 后先校验状态码：401 → VendorUnavailable（error.rs 固定映射 503
 ///   JSON），429 → RateLimited（固定映射 429）；
@@ -1291,6 +1295,7 @@ mod streaming_error_propagation {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -1594,7 +1599,7 @@ mod streaming_error_propagation {
     }
 }
 
-// ============ recId=9：日志管道接线（异步批量 + token 语义 + 失败落库） ============
+// ============ 日志管道接线（异步批量 + token 语义 + 失败落库） ============
 
 #[cfg(test)]
 mod logging_pipeline {
@@ -1695,6 +1700,7 @@ mod logging_pipeline {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
         });
         (state, logger, pa, repository)
     }
@@ -1883,6 +1889,7 @@ mod logging_pipeline {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
         });
 
         let response = Router::new()
@@ -1971,7 +1978,7 @@ mod logging_pipeline {
     }
 }
 
-// ============ recId=15：embeddings 回归供应商治理 ============
+// ============ embeddings 回归供应商治理 ============
 
 #[cfg(test)]
 mod embeddings_governance {
@@ -2066,6 +2073,7 @@ mod embeddings_governance {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
         })
     }
 
@@ -2192,7 +2200,7 @@ mod embeddings_governance {
         mock.assert_async().await;
     }
 
-    /// ③ 上游 401 → 客户端 503（与 recId=14 错误传播一致：
+    /// ③ 上游 401 → 客户端 503（与 错误传播一致
     /// VendorUnavailable 固定映射，错误体结构同款）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn embeddings_upstream_401_yields_503() {
@@ -2233,7 +2241,7 @@ mod embeddings_governance {
     }
 }
 
-// ============ recId=12：精确响应缓存（oxcache，租户隔离键 + 确定性门控） ============
+// ============ 精确响应缓存（oxcache，租户隔离键 + 确定性门控） ============
 
 #[cfg(test)]
 mod response_cache_tests {
@@ -2329,6 +2337,7 @@ mod response_cache_tests {
                 Arc::new(nexusflow::utils::metrics::GlobalMetrics::new()),
             ))),
             bandit: None,
+            quota: None,
         })
     }
 
@@ -2604,11 +2613,11 @@ mod response_cache_tests {
     }
 }
 
-// ============ recId=15（评审修复 major）：handler→奖励臂键全链 ============
+// ============ handler→奖励臂键全链 ============
 
 #[cfg(test)]
 mod linucb_reward_chain {
-    //! recId=15（评审修复 major）：handler→奖励臂键全链回归——
+    //! handler→奖励臂键全链回归——
     //! 修复前奖励写原始 request.model（("GPT-4"/"auto", vendor) 与被咨询
     //! 臂 ("gpt-4"/"__global__", vendor) 永不相交），且 grep 全 tests/
     //! 无 record_linucb_reward 调用、handler→奖励链路零覆盖。
@@ -2686,6 +2695,7 @@ mod linucb_reward_chain {
             affinity: None,
             response_cache: None,
             bandit: Some(bandit.clone()),
+            quota: None,
         });
         (state, bandit)
     }
@@ -2928,6 +2938,7 @@ mod api_handler_coverage {
             affinity,
             response_cache,
             bandit,
+            quota: None,
         })
     }
 
@@ -3581,7 +3592,7 @@ mod api_handler_coverage {
         mock.assert_async().await;
     }
 
-    /// 转换非流式失败：上游 401 → 换路无候选 → 503 JSON（recId=14 口径）。
+    /// 转换非流式失败：上游 401 → 换路无候选 → 503 JSON（口径）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn anthropic_conversion_nonstream_upstream_401_yields_503() {
         let mut server = mockito::Server::new_async().await;
@@ -5240,5 +5251,1490 @@ mod api_handler_coverage {
             "更新必须即时可读"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// WP3 数据面端点（R-api-surface-001/002/003）：GET /v1/models 与
+/// POST /v1/messages/count_tokens。走 `create_router` 全中间件栈
+/// （认证/限流与线上同形），覆盖成功/未鉴权/参数错误三路径 + 去重 +
+/// 不缓存。
+mod data_plane_endpoints {
+    use crate::common;
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use nexusflow::api::{create_router, response_cache::ResponseCache};
+    use nexusflow::config::{
+        AuthSection, CacheSection, Config, ConfigManager, ModelCatalogEntry, ModelConfig,
+        VendorConfig,
+    };
+    use nexusflow::database::Database;
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
+    use nexusflow::router::Router as NexusRouter;
+    use nexusflow::vendor::VendorManager;
+    use nexusflow::ApiState;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    /// sha256("test-good-key")（与 rate_limit 认证测试同值）。
+    const GOOD_KEY_DIGEST: &str =
+        "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303";
+
+    fn vendor_with_models(id: &str, enabled: bool, models: &[&str]) -> VendorConfig {
+        common::ensure_test_api_key();
+        let mut v = common::base_vendor(id, String::new());
+        v.enabled = enabled;
+        v.models = models
+            .iter()
+            .map(|m| ModelConfig {
+                model_id: m.to_string(),
+                abstract_id: None,
+                weight: 1.0,
+                enabled: true,
+            })
+            .collect();
+        v
+    }
+
+    fn catalog_entry(id: &str) -> ModelCatalogEntry {
+        ModelCatalogEntry {
+            model_id: id.into(),
+            context_window: 128_000,
+            ..Default::default()
+        }
+    }
+
+    async fn make_state(config: Config, with_cache: bool) -> Arc<ApiState> {
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        vendor_manager.initialize().await.expect("vendor init");
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        repository.initialize().await.expect("schema init");
+        let database = Arc::new(Database { pool, repository });
+        let router = Arc::new(NexusRouter::new(
+            config_manager.clone(),
+            vendor_manager.clone(),
+        ));
+        let response_cache = with_cache.then(|| {
+            Arc::new(ResponseCache::new(
+                Arc::new(oxcache::backend::default_memory_backend()),
+                config_manager.clone(),
+                Arc::new(nexusflow::utils::metrics::GlobalMetrics::new()),
+            ))
+        });
+
+        Arc::new(ApiState {
+            config: config_manager,
+            vendor_manager,
+            router,
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database,
+            logger: None,
+            pre_aggregator: None,
+            affinity: None,
+            response_cache,
+            bandit: None,
+            quota: None,
+        })
+    }
+
+    fn base_config(vendors: Vec<VendorConfig>) -> Config {
+        let mut config = common::test_config(vendors);
+        config.model_catalog = vec![catalog_entry("mmm-shared"), catalog_entry("aaa-catalog")];
+        config
+    }
+
+    fn authed_config(vendors: Vec<VendorConfig>) -> Config {
+        let mut config = base_config(vendors);
+        config.auth = Some(AuthSection {
+            enabled: true,
+            api_keys: vec![GOOD_KEY_DIGEST.to_string()],
+            header: Default::default(),
+            keys: Vec::new(),
+        });
+        config
+    }
+
+    async fn get(state: Arc<ApiState>, uri: &str, key: Option<&str>) -> axum::response::Response {
+        let app = create_router(state).await;
+        let mut builder = Request::builder().method("GET").uri(uri);
+        if let Some(k) = key {
+            builder = builder.header("Authorization", format!("Bearer {k}"));
+        }
+        app.oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn post_json(
+        state: Arc<ApiState>,
+        uri: &str,
+        key: Option<&str>,
+        body: Value,
+    ) -> axum::response::Response {
+        let app = create_router(state).await;
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(k) = key {
+            builder = builder.header("Authorization", format!("Bearer {k}"));
+        }
+        app.oneshot(
+            builder
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn read_json(response: axum::response::Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        (status, value)
+    }
+
+    /// R-api-surface-001：模型集合 = 目录 ∪ vendor 配置去重；同模型多
+    /// vendor 只出现一次；禁用 vendor 的模型不出现。
+    #[tokio::test]
+    async fn models_lists_catalog_union_vendor_models_deduped() {
+        let state = make_state(
+            base_config(vec![
+                vendor_with_models("vendor-a", true, &["mmm-shared", "zzz-vendor"]),
+                vendor_with_models("vendor-b", true, &["mmm-shared"]),
+                vendor_with_models("vendor-c", false, &["hidden-model"]),
+            ]),
+            false,
+        )
+        .await;
+
+        let (status, body) = read_json(get(state, "/v1/models", None).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["object"], "list");
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .expect("data 数组")
+            .iter()
+            .map(|item| {
+                assert_eq!(item["object"], "model");
+                assert!(item["owned_by"].is_string(), "条目带 owned_by: {item}");
+                item["id"].as_str().expect("id 字符串")
+            })
+            .collect();
+        assert_eq!(ids, vec!["aaa-catalog", "mmm-shared", "zzz-vendor"]);
+        assert_eq!(body["data"][1]["owned_by"], "vendor-a");
+        assert_eq!(body["data"][0]["owned_by"], "nexusflow");
+    }
+
+    /// R-api-surface-001：未鉴权返回 401（与其它 /v1 端点一致）。
+    #[tokio::test]
+    async fn models_requires_auth() {
+        let state = make_state(
+            authed_config(vec![vendor_with_models("vendor-a", true, &["mmm-shared"])]),
+            false,
+        )
+        .await;
+
+        let (status, _) = read_json(get(state.clone(), "/v1/models", None).await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, body) = read_json(get(state, "/v1/models", Some("test-good-key")).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["object"], "list");
+    }
+
+    /// R-api-surface-003：模型列表始终现算——缓存开启且接线时二次请求
+    /// 仍无 X-Cache 头（不命中响应缓存）。
+    #[tokio::test]
+    async fn models_responses_are_never_cached() {
+        let mut config = base_config(vec![vendor_with_models("vendor-a", true, &["mmm-shared"])]);
+        config.cache = CacheSection {
+            enabled: true,
+            ttl_secs: 300,
+            ..Default::default()
+        };
+        let state = make_state(config, true).await;
+
+        for i in 0..2 {
+            let response = get(state.clone(), "/v1/models", None).await;
+            assert_eq!(response.status(), StatusCode::OK, "第 {i} 次请求");
+            assert!(
+                response.headers().get("x-cache").is_none(),
+                "模型列表不得带 X-Cache 头（第 {i} 次）"
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["object"], "list");
+        }
+    }
+
+    /// R-api-surface-002：合法请求返回正整数 input_tokens；相同输入两次
+    /// 结果一致（确定性）；更长输入更大。
+    #[tokio::test]
+    async fn count_tokens_estimates_deterministically() {
+        let state = make_state(
+            base_config(vec![vendor_with_models("vendor-a", true, &["mmm-shared"])]),
+            false,
+        )
+        .await;
+
+        let body = json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello world, please help me."},
+                {"role": "assistant", "content": "Sure, what do you need?"},
+            ],
+            "system": "Be helpful.",
+            "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+        });
+        let (status, first) = read_json(
+            post_json(
+                state.clone(),
+                "/v1/messages/count_tokens",
+                None,
+                body.clone(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let first_tokens = first["input_tokens"].as_u64().expect("input_tokens u64");
+        assert!(first_tokens > 0, "估计为正整数");
+
+        let (status, second) =
+            read_json(post_json(state.clone(), "/v1/messages/count_tokens", None, body).await)
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            second["input_tokens"].as_u64(),
+            Some(first_tokens),
+            "相同输入两次结果一致"
+        );
+
+        let long = json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello world, please write a long essay about the history of computing for me, covering everything from abacus to quantum computers in great detail with many chapters."},
+            ],
+            "system": "Be helpful and verbose.",
+            "tools": [{"type": "function", "function": {"name": "get_weather"}}, {"type": "function", "function": {"name": "search_docs"}}],
+        });
+        let (status, long_body) =
+            read_json(post_json(state, "/v1/messages/count_tokens", None, long).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            long_body["input_tokens"].as_u64().unwrap() > first_tokens,
+            "更长输入估计更大"
+        );
+    }
+
+    /// R-api-surface-002：未鉴权返回与其它 /v1 端点一致的 401。
+    #[tokio::test]
+    async fn count_tokens_requires_auth() {
+        let state = make_state(
+            authed_config(vec![vendor_with_models("vendor-a", true, &["mmm-shared"])]),
+            false,
+        )
+        .await;
+
+        let body = json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
+        let (status, _) = read_json(
+            post_json(
+                state.clone(),
+                "/v1/messages/count_tokens",
+                None,
+                body.clone(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, ok) = read_json(
+            post_json(
+                state,
+                "/v1/messages/count_tokens",
+                Some("test-good-key"),
+                body,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ok["input_tokens"].as_u64().unwrap() > 0);
+    }
+
+    /// R-api-surface-002：缺 messages / 非法 body 返回 Validation 错误结构。
+    #[tokio::test]
+    async fn count_tokens_rejects_bad_params() {
+        let state = make_state(
+            base_config(vec![vendor_with_models("vendor-a", true, &["mmm-shared"])]),
+            false,
+        )
+        .await;
+
+        for (name, body) in [
+            ("空对象", json!({})),
+            ("缺 messages", json!({"model": "gpt-4"})),
+            (
+                "缺 model",
+                json!({"messages": [{"role": "user", "content": "hi"}]}),
+            ),
+            ("空 messages", json!({"model": "gpt-4", "messages": []})),
+            ("非对象", json!(42)),
+        ] {
+            let (status, err) =
+                read_json(post_json(state.clone(), "/v1/messages/count_tokens", None, body).await)
+                    .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{name} 必须 400");
+            assert_eq!(err["error"]["type"], "validation_error", "{name} 错误码");
+            assert!(
+                !err["error"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .is_empty(),
+                "{name} 文案非空（i18n）"
+            );
+        }
+    }
+}
+
+/// WP4 回退观测头（R-streaming-resilience-004）：开关开启时成功响应附
+/// 四头（单跳 attempts=1；首跳失败换路 attempts≥2 且链完整；流式与非
+/// 流式两类）；开关关闭时四头均不存在。
+mod fallback_observation_headers {
+    use crate::common;
+    use axum::{body::Body, http::Request, http::StatusCode, routing::post, Router};
+    use nexusflow::api::{chat_completions, ApiState};
+    use nexusflow::config::{
+        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
+        ServerConfig, VendorConfig,
+    };
+    use nexusflow::database::Database;
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
+    use nexusflow::router::Router as NexusRouter;
+    use nexusflow::vendor::VendorManager;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
+        crate::common::ensure_test_api_key();
+        VendorConfig {
+            timeout_ms: 60_000,
+            stream_ttft_ms: 60_000,
+            stream_idle_ms: 30_000,
+            id: id.into(),
+            name: format!("Test {id}"),
+            type_: "openai".into(),
+            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+            api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
+            api_base: api_base.into(),
+            enabled: true,
+            priority: 1,
+            models: vec![ModelConfig {
+                model_id: "gpt-4".into(),
+                abstract_id: Some("gpt-4".into()),
+                weight: 1.0,
+                enabled: true,
+            }],
+            rate_limit: nexusflow::config::RateLimitConfig::Token {
+                max_tokens: 1_000_000,
+                window_hours: None,
+                sliding: false,
+            },
+            concurrency: nexusflow::config::ConcurrencyConfig {
+                requests_per_second: 1000,
+                max_concurrent_requests: None,
+                token_weighted: false,
+                token_ticket_min: 1,
+                token_ticket_max: 16384,
+                token_ticket_default: 4096,
+            },
+        }
+    }
+
+    fn make_config(vendors: Vec<VendorConfig>, expose: bool) -> Config {
+        let mut config = common::test_config(vendors);
+        config.server = ServerConfig {
+            host: "0.0.0.0".into(),
+            port: 8080,
+        };
+        config.database = DatabaseConfig {
+            path: ":memory:".into(),
+            pool_size: 1,
+            url: String::new(),
+        };
+        config.global_model = Some(GlobalModelConfig {
+            enabled: true,
+            strategy: "weighted".into(),
+        });
+        config.resilience = ResilienceSection {
+            cover_all_paths: true,
+            expose_fallback_headers: expose,
+            ..Default::default()
+        };
+        config
+    }
+
+    async fn make_state(config: Config) -> Arc<ApiState> {
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        vendor_manager.initialize().await.expect("vendor init");
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        repository.initialize().await.expect("schema init");
+        let database = Arc::new(Database { pool, repository });
+        let router = Arc::new(NexusRouter::new(
+            config_manager.clone(),
+            vendor_manager.clone(),
+        ));
+
+        Arc::new(ApiState {
+            config: config_manager,
+            vendor_manager,
+            router,
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database,
+            logger: None,
+            pre_aggregator: None,
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+        })
+    }
+
+    fn app(state: Arc<ApiState>) -> Router {
+        Router::new()
+            .route("/v1/chat/completions", post(chat_completions))
+            .with_state(state)
+    }
+
+    async fn post_chat(
+        state: Arc<ApiState>,
+        vendor_hint: Option<&str>,
+        body: Value,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json");
+        if let Some(v) = vendor_hint {
+            builder = builder.header("x-vendor", v);
+        }
+        app(state)
+            .oneshot(
+                builder
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    fn chat_body(stream: bool) -> Value {
+        json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 10,
+            "stream": stream
+        })
+    }
+
+    fn header<'a>(response: &'a axum::response::Response, name: &str) -> Option<&'a str> {
+        response.headers().get(name)?.to_str().ok()
+    }
+
+    fn assert_no_obs_headers(response: &axum::response::Response) {
+        for name in [
+            "x-nexusflow-vendor",
+            "x-nexusflow-model",
+            "x-nexusflow-attempts",
+            "x-nexusflow-fallbacks",
+        ] {
+            assert!(
+                header(response, name).is_none(),
+                "开关关闭时 {name} 不得存在"
+            );
+        }
+    }
+
+    /// 单跳直连（非流式）：attempts=1，fallbacks 仅含命中者。
+    #[tokio::test]
+    async fn single_hop_nonstream_carries_single_attempt_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"solo","object":"chat.completion","choices":[]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = make_state(make_config(vec![make_vendor("solo-a", server.url())], true)).await;
+        let response = post_chat(state, None, chat_body(false)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("solo-a"));
+        assert_eq!(header(&response, "x-nexusflow-model"), Some("gpt-4"));
+        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-nexusflow-fallbacks"), Some("solo-a"));
+
+        mock.assert_async().await;
+    }
+
+    /// 单跳直连（流式）：响应头阶段即带四头。
+    #[tokio::test]
+    async fn single_hop_stream_carries_headers_at_response_head() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: {\"id\":\"solo-sse\"}\n\ndata: [DONE]\n\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = make_state(make_config(vec![make_vendor("solo-a", server.url())], true)).await;
+        let response = post_chat(state, None, chat_body(true)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("solo-a"));
+        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-nexusflow-fallbacks"), Some("solo-a"));
+
+        mock.assert_async().await;
+    }
+
+    /// 首跳失败换路（非流式）：attempts≥2，fallbacks 按尝试顺序完整。
+    #[tokio::test]
+    async fn first_hop_failure_nonstream_carries_full_chain_headers() {
+        let mut server_a = mockito::Server::new_async().await;
+        let mock_a = server_a
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_body("boom")
+            .expect(1)
+            .create_async()
+            .await;
+        let mut server_b = mockito::Server::new_async().await;
+        let mock_b = server_b
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"from-b","object":"chat.completion","choices":[]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = make_state(make_config(
+            vec![
+                make_vendor("fb-a", server_a.url()),
+                make_vendor("fb-b", server_b.url()),
+            ],
+            true,
+        ))
+        .await;
+        let response = post_chat(state, Some("fb-a"), chat_body(false)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("fb-b"));
+        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("2"));
+        assert_eq!(
+            header(&response, "x-nexusflow-fallbacks"),
+            Some("fb-a,fb-b")
+        );
+
+        mock_a.assert_async().await;
+        mock_b.assert_async().await;
+    }
+
+    /// 首跳失败换路（流式）：首字节前失败换路，响应头带完整链。
+    #[tokio::test]
+    async fn first_hop_failure_stream_carries_full_chain_headers() {
+        let mut server_a = mockito::Server::new_async().await;
+        let mock_a = server_a
+            .mock("POST", "/v1/chat/completions")
+            .with_status(503)
+            .with_body("overloaded")
+            .expect(1)
+            .create_async()
+            .await;
+        let mut server_b = mockito::Server::new_async().await;
+        let mock_b = server_b
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: {\"id\":\"b-sse\"}\n\ndata: [DONE]\n\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = make_state(make_config(
+            vec![
+                make_vendor("fb-a", server_a.url()),
+                make_vendor("fb-b", server_b.url()),
+            ],
+            true,
+        ))
+        .await;
+        let response = post_chat(state, Some("fb-a"), chat_body(true)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("fb-b"));
+        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("2"));
+        assert_eq!(
+            header(&response, "x-nexusflow-fallbacks"),
+            Some("fb-a,fb-b")
+        );
+
+        mock_a.assert_async().await;
+        mock_b.assert_async().await;
+    }
+
+    /// 开关关闭（默认）：流式与非流式均无四头。
+    #[tokio::test]
+    async fn switch_off_omits_all_four_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let mock_json = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"off","object":"chat.completion","choices":[]}"#)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let state = make_state(make_config(vec![make_vendor("off-a", server.url())], false)).await;
+        let response = post_chat(state.clone(), None, chat_body(false)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_no_obs_headers(&response);
+
+        // 流式同断言（同一 mock 需支持 SSE 体——此处借“响应头断言在 body
+        // 前”之便：非流式 JSON 体走流式请求仍 200 建流（上游体原样转
+        // 发），头断言不受体形态影响）
+        let response = post_chat(state, None, chat_body(true)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_no_obs_headers(&response);
+
+        mock_json.assert_async().await;
+    }
+}
+
+/// WP5 路由可解释性（R-routing-explainability-001/002/003）：只读端点，
+/// reason_code 枚举覆盖，入选者权重分解与档位，解释与路由共用同一实现。
+mod route_explain {
+    use crate::common;
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use nexusflow::api::create_router;
+    use nexusflow::config::{
+        AuthSection, ConfigManager, ModelConfig, RoutingSection, VendorConfig,
+    };
+    use nexusflow::database::Database;
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
+    use nexusflow::router::{AffinityTable, Router as NexusRouter};
+    use nexusflow::vendor::VendorManager;
+    use nexusflow::ApiState;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    const GOOD_KEY_DIGEST: &str =
+        "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303";
+
+    fn vendor_with_models(id: &str, enabled: bool, models: &[&str]) -> VendorConfig {
+        common::ensure_test_api_key();
+        let mut v = common::base_vendor(id, String::new());
+        v.enabled = enabled;
+        v.models = models
+            .iter()
+            .map(|m| ModelConfig {
+                model_id: m.to_string(),
+                abstract_id: None,
+                weight: 1.0,
+                enabled: true,
+            })
+            .collect();
+        v
+    }
+
+    struct Wire {
+        affinity: Option<Arc<AffinityTable>>,
+        auth: bool,
+        routing: Option<RoutingSection>,
+    }
+
+    async fn make_state(config_vendors: Vec<VendorConfig>, wire: Wire) -> Arc<ApiState> {
+        let mut config = common::test_config(config_vendors);
+        if wire.auth {
+            config.auth = Some(AuthSection {
+                enabled: true,
+                api_keys: vec![GOOD_KEY_DIGEST.to_string()],
+                header: Default::default(),
+                keys: Vec::new(),
+            });
+        }
+        if let Some(routing) = wire.routing {
+            config.routing = routing;
+        }
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        vendor_manager.initialize().await.expect("vendor init");
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        repository.initialize().await.expect("schema init");
+        let database = Arc::new(Database { pool, repository });
+        let affinity = wire.affinity.clone();
+        let mut router = NexusRouter::new(config_manager.clone(), vendor_manager.clone());
+        if let Some(table) = affinity.clone() {
+            router = router.with_affinity(table);
+        }
+
+        Arc::new(ApiState {
+            config: config_manager,
+            vendor_manager,
+            router: Arc::new(router),
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database,
+            logger: None,
+            pre_aggregator: None,
+            affinity,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+        })
+    }
+
+    fn plain() -> Wire {
+        Wire {
+            affinity: None,
+            auth: false,
+            routing: None,
+        }
+    }
+
+    async fn post_explain(
+        state: Arc<ApiState>,
+        key: Option<&str>,
+        body: Value,
+    ) -> axum::response::Response {
+        let app = create_router(state).await;
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/admin/route/explain")
+            .header("content-type", "application/json");
+        if let Some(k) = key {
+            builder = builder.header("Authorization", format!("Bearer {k}"));
+        }
+        app.oneshot(
+            builder
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn read_json(response: axum::response::Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn row<'a>(body: &'a Value, vendor: &str) -> &'a Value {
+        body["candidates"]
+            .as_array()
+            .expect("candidates 数组")
+            .iter()
+            .find(|c| c["vendor"] == vendor)
+            .unwrap_or_else(|| panic!("缺候选行 {vendor}: {body}"))
+    }
+
+    /// 入选者：decision eligible + 5 因子分解自洽（加和 == base）+
+    /// 默认配置下 weight == base == 路由同一方法权重 + selection 档位。
+    #[tokio::test]
+    async fn explain_eligible_carries_breakdown_and_selection() {
+        let vendors = vec![vendor_with_models("ex-a", true, &["gpt-4"])];
+        let state = make_state(vendors.clone(), plain()).await;
+
+        let (status, body) =
+            read_json(post_explain(state.clone(), None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = row(&body, "ex-a");
+        assert_eq!(item["decision"], "eligible");
+        assert_eq!(item["reason_code"], "eligible");
+        assert_eq!(item["selection"], "weighted");
+        let f = &item["factors"];
+        let sum = f["model"].as_f64().unwrap()
+            + f["queue"].as_f64().unwrap()
+            + f["window"].as_f64().unwrap()
+            + f["latency"].as_f64().unwrap()
+            + f["error"].as_f64().unwrap();
+        assert!(
+            (sum - item["base_weight"].as_f64().unwrap()).abs() < 1e-9,
+            "分解加和必须等于合成基准: {item}"
+        );
+        assert!(
+            (item["weight"].as_f64().unwrap() - item["base_weight"].as_f64().unwrap()).abs() < 1e-9,
+            "默认配置下生产权重 == 合成基准: {item}"
+        );
+
+        // 共用同一实现：路由对同一候选集算出的权重必须一致
+        let pair = {
+            let config = state.config.read();
+            let v = config
+                .vendors
+                .iter()
+                .find(|v| v.id == "ex-a")
+                .unwrap()
+                .clone();
+            let m = v
+                .models
+                .iter()
+                .find(|m| m.model_id == "gpt-4")
+                .unwrap()
+                .clone();
+            vec![(v, m)]
+        };
+        let finals = state.router.calculate_weights(pair).await;
+        assert!(
+            (finals[0].0 - item["weight"].as_f64().unwrap()).abs() < 1e-9,
+            "解释权重必须与路由同一方法一致"
+        );
+    }
+
+    /// 未鉴权 401（与既有 admin 一致）；未知模型 400 validation_error。
+    #[tokio::test]
+    async fn explain_auth_and_unknown_model() {
+        let state = make_state(
+            vec![vendor_with_models("ex-a", true, &["gpt-4"])],
+            Wire {
+                affinity: None,
+                auth: true,
+                routing: None,
+            },
+        )
+        .await;
+
+        let (status, _) =
+            read_json(post_explain(state.clone(), None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, body) = read_json(
+            post_explain(
+                state.clone(),
+                Some("test-good-key"),
+                json!({"model": "nope-unknown"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["type"], "validation_error");
+
+        let (status, _) =
+            read_json(post_explain(state, Some("test-good-key"), json!({"model": "gpt-4"})).await)
+                .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// disabled：vendor 禁用 → excluded/disabled。
+    #[tokio::test]
+    async fn explain_disabled_vendor() {
+        let state = make_state(
+            vec![vendor_with_models("dis-a", false, &["gpt-4"])],
+            plain(),
+        )
+        .await;
+        let (status, body) =
+            read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = row(&body, "dis-a");
+        assert_eq!(item["decision"], "excluded");
+        assert_eq!(item["reason_code"], "disabled");
+    }
+
+    /// cooling_down：Throttled 状态 → excluded/cooling_down。
+    #[tokio::test]
+    async fn explain_cooling_down_vendor() {
+        let state = make_state(vec![vendor_with_models("cd-a", true, &["gpt-4"])], plain()).await;
+        state
+            .vendor_manager
+            .mark_throttled("cd-a", Duration::from_secs(60));
+        let (status, body) =
+            read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = row(&body, "cd-a");
+        assert_eq!(item["decision"], "excluded");
+        assert_eq!(item["reason_code"], "cooling_down");
+    }
+
+    /// cooling_down（key 池粒度，M9/R-routing-explainability-002）：唯一 key
+    /// 因 401 永久黑名单 → 池耗尽，explain 报 cooling_down 且 detail 注明
+    /// key 池耗尽与指纹（vendor 状态本身仍 Available——修复前误报 eligible）。
+    #[tokio::test]
+    async fn explain_key_pool_exhausted_reports_cooling_down() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"bad key"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let mut vendor = common::base_vendor("kp-a", server.url());
+        vendor.models = vec![ModelConfig {
+            model_id: "gpt-4".into(),
+            abstract_id: None,
+            weight: 1.0,
+            enabled: true,
+        }];
+        let state = make_state(vec![vendor], plain()).await;
+        // 一次真实派发驱动 401 → 永久错误 → 唯一 key 进黑名单。
+        let app = create_router(state.clone()).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "model": "gpt-4",
+                            "messages": [{"role": "user", "content": "hi"}]
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        mock.assert_async().await;
+
+        let (status, body) =
+            read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = row(&body, "kp-a");
+        assert_eq!(item["decision"], "excluded");
+        assert_eq!(
+            item["reason_code"], "cooling_down",
+            "池耗尽必须 cooling_down（修复前 eligible）: {item}"
+        );
+        let detail = item["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("key 池耗尽"),
+            "detail 必须注明 key 池耗尽: {detail}"
+        );
+    }
+
+    /// throttled：限流窗口耗尽（Token max 0）→ excluded/throttled。
+    #[tokio::test]
+    async fn explain_throttled_window() {
+        common::ensure_test_api_key();
+        let mut v = common::base_vendor("th-a", String::new());
+        v.models = vec![ModelConfig {
+            model_id: "gpt-4".into(),
+            abstract_id: Some("gpt-4".into()),
+            weight: 1.0,
+            enabled: true,
+        }];
+        v.rate_limit = nexusflow::config::RateLimitConfig::Token {
+            max_tokens: 0,
+            window_hours: None,
+            sliding: false,
+        };
+        let state = make_state(vec![v], plain()).await;
+        let (status, body) =
+            read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = row(&body, "th-a");
+        assert_eq!(item["decision"], "excluded");
+        assert_eq!(item["reason_code"], "throttled");
+    }
+
+    /// not_in_catalog：不提供该模型的 vendor 行优势排除。
+    #[tokio::test]
+    async fn explain_not_in_catalog() {
+        let state = make_state(
+            vec![
+                vendor_with_models("has-a", true, &["gpt-4"]),
+                vendor_with_models("other-b", true, &["claude-x"]),
+            ],
+            plain(),
+        )
+        .await;
+        let (status, body) =
+            read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(row(&body, "has-a")["decision"], "eligible");
+        let item = row(&body, "other-b");
+        assert_eq!(item["decision"], "excluded");
+        assert_eq!(item["reason_code"], "not_in_catalog");
+    }
+
+    /// affinity_bound_elsewhere：会话绑定他处 → excluded；绑定者 eligible。
+    #[tokio::test]
+    async fn explain_affinity_bound_elsewhere() {
+        let table = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let state = make_state(
+            vec![
+                vendor_with_models("af-a", true, &["gpt-4"]),
+                vendor_with_models("af-b", true, &["gpt-4"]),
+            ],
+            Wire {
+                affinity: Some(table.clone()),
+                auth: false,
+                routing: None,
+            },
+        )
+        .await;
+        table.bind(None, "sess-1", "af-b").await;
+
+        let (status, body) = read_json(
+            post_explain(
+                state.clone(),
+                None,
+                json!({"model": "gpt-4", "session_id": "sess-1"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let item_a = row(&body, "af-a");
+        assert_eq!(item_a["decision"], "excluded");
+        assert_eq!(item_a["reason_code"], "affinity_bound_elsewhere");
+        assert_eq!(row(&body, "af-b")["decision"], "eligible");
+
+        // 无 session 时两家均 eligible（亲和不参与）
+        let (status, body) =
+            read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(row(&body, "af-a")["decision"], "eligible");
+        assert_eq!(row(&body, "af-b")["decision"], "eligible");
+    }
+
+    /// weight_zero：全零系数 → 合成为 0 → excluded/weight_zero。
+    #[tokio::test]
+    async fn explain_weight_zero() {
+        let state = make_state(
+            vec![vendor_with_models("wz-a", true, &["gpt-4"])],
+            Wire {
+                affinity: None,
+                auth: false,
+                routing: Some(RoutingSection {
+                    w_model: 0.0,
+                    w_queue: 0.0,
+                    w_window: 0.0,
+                    w_latency: 0.0,
+                    w_error: 0.0,
+                    ..Default::default()
+                }),
+            },
+        )
+        .await;
+        let (status, body) =
+            read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = row(&body, "wz-a");
+        assert_eq!(item["decision"], "excluded");
+        assert_eq!(item["reason_code"], "weight_zero");
+    }
+
+    /// selection 档位随配置切换（R-routing-explainability-002）：linucb /
+    /// power_of_two / 默认 weighted 均如实上报；linucb 大小写与空白不敏感
+    /// （与选择层同口径），未知值回滚 weighted。因子分解不随档位变形。
+    #[tokio::test]
+    async fn explain_selection_tier_follows_config() {
+        for (configured, expected) in [
+            ("linucb", "linucb"),
+            ("  LinUCB ", "linucb"),
+            ("power_of_two", "power_of_two"),
+            ("bogus_tier", "weighted"),
+            ("weighted", "weighted"),
+        ] {
+            let state = make_state(
+                vec![vendor_with_models("sel-a", true, &["gpt-4"])],
+                Wire {
+                    affinity: None,
+                    auth: false,
+                    routing: Some(RoutingSection {
+                        selection: configured.to_string(),
+                        ..Default::default()
+                    }),
+                },
+            )
+            .await;
+            let (status, body) =
+                read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+            assert_eq!(status, StatusCode::OK, "档位 {configured} 解释必须成功");
+            let item = row(&body, "sel-a");
+            assert_eq!(item["decision"], "eligible", "档位 {configured}: {item}");
+            assert_eq!(
+                item["selection"], expected,
+                "配置 {configured:?} 应报档位 {expected}: {item}"
+            );
+            assert!(
+                item["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains(&format!("selection={expected}")),
+                "detail 需同步档位: {item}"
+            );
+            // 档位只改选择层，不改 5 因子分解的自洽性
+            let f = &item["factors"];
+            let sum = f["model"].as_f64().unwrap()
+                + f["queue"].as_f64().unwrap()
+                + f["window"].as_f64().unwrap()
+                + f["latency"].as_f64().unwrap()
+                + f["error"].as_f64().unwrap();
+            assert!(
+                (sum - item["base_weight"].as_f64().unwrap()).abs() < 1e-9,
+                "档位 {configured} 下分解加和仍需等于合成基准: {item}"
+            );
+        }
+    }
+
+    /// 只读性：调用前后 vendor 状态与亲和绑定不变（死 api_base 亦证明
+    /// 无上游请求——任何出站尝试都会让解释失败）。
+    #[tokio::test]
+    async fn explain_is_read_only() {
+        let table = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let state = make_state(
+            vec![
+                vendor_with_models("ro-a", true, &["gpt-4"]),
+                vendor_with_models("ro-b", true, &["gpt-4"]),
+            ],
+            Wire {
+                affinity: Some(table.clone()),
+                auth: false,
+                routing: None,
+            },
+        )
+        .await;
+        table.bind(None, "sess-9", "ro-b").await;
+
+        let before_a = state.vendor_manager.get_status("ro-a").await;
+        let (status, _) = read_json(
+            post_explain(
+                state.clone(),
+                None,
+                json!({"model": "gpt-4", "session_id": "sess-9"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(state.vendor_manager.get_status("ro-a").await, before_a);
+        assert_eq!(
+            state.vendor_manager.get_status("ro-b").await,
+            before_a,
+            "解释不得改变 vendor 状态"
+        );
+        assert_eq!(
+            table.lookup(None, "sess-9").await.as_deref(),
+            Some("ro-b"),
+            "解释不得改写亲和绑定"
+        );
+    }
+}
+
+/// T011（收敛）：WP4 Anthropic 路径回退头（/v1/messages 入站）。
+mod fallback_observation_headers_anthropic {
+    use crate::common;
+    use axum::{body::Body, http::Request, http::StatusCode, routing::post, Router};
+    use nexusflow::api::{messages, ApiState};
+    use nexusflow::config::{
+        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
+        ServerConfig, VendorConfig,
+    };
+    use nexusflow::database::Database;
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
+    use nexusflow::router::{AffinityTable, Router as NexusRouter};
+    use nexusflow::vendor::VendorManager;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
+        crate::common::ensure_test_api_key();
+        let mut v = common::base_vendor(id, api_base);
+        v.type_ = "anthropic".into();
+        v.models = vec![ModelConfig {
+            model_id: "claude-x".into(),
+            abstract_id: Some("claude-x".into()),
+            weight: 1.0,
+            enabled: true,
+        }];
+        v
+    }
+
+    fn make_config(vendors: Vec<VendorConfig>, expose: bool) -> Config {
+        let mut config = common::test_config(vendors);
+        config.server = ServerConfig {
+            host: "0.0.0.0".into(),
+            port: 8080,
+        };
+        config.database = DatabaseConfig {
+            path: ":memory:".into(),
+            pool_size: 1,
+            url: String::new(),
+        };
+        config.global_model = Some(GlobalModelConfig {
+            enabled: true,
+            strategy: "weighted".into(),
+        });
+        config.resilience = ResilienceSection {
+            cover_all_paths: true,
+            expose_fallback_headers: expose,
+            ..Default::default()
+        };
+        config
+    }
+
+    /// 亲和表无条件接线：Anthropic 入站无 X-Vendor 路由语义（见
+    /// `resolve_route`），首跳只能由 hard 亲和绑定钉住（等权候选间的
+    /// weighted_select 是随机的，不钉则换路用例不确定）。
+    async fn make_state(config: Config) -> Arc<ApiState> {
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        vendor_manager.initialize().await.expect("vendor init");
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        repository.initialize().await.expect("schema init");
+        let database = Arc::new(Database { pool, repository });
+        let affinity = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let router = NexusRouter::new(config_manager.clone(), vendor_manager.clone())
+            .with_affinity(affinity.clone());
+
+        Arc::new(ApiState {
+            config: config_manager,
+            vendor_manager,
+            router: Arc::new(router),
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database,
+            logger: None,
+            pre_aggregator: None,
+            affinity: Some(affinity),
+            response_cache: None,
+            bandit: None,
+            quota: None,
+        })
+    }
+
+    fn app(state: Arc<ApiState>) -> Router {
+        Router::new()
+            .route("/v1/messages", post(messages))
+            .with_state(state)
+    }
+
+    /// `session` 为 X-Session-Id 值（None 时走 messages 前缀兜底键）。
+    async fn post_messages(
+        state: Arc<ApiState>,
+        session: Option<&str>,
+        body: Value,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/v1/messages")
+            .header("content-type", "application/json");
+        if let Some(s) = session {
+            builder = builder.header("x-session-id", s);
+        }
+        app(state)
+            .oneshot(
+                builder
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    fn messages_body(stream: bool) -> Value {
+        json!({
+            "model": "claude-x",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": stream,
+        })
+    }
+
+    fn header<'a>(response: &'a axum::response::Response, name: &str) -> Option<&'a str> {
+        response.headers().get(name)?.to_str().ok()
+    }
+
+    const ANTHROPIC_JSON: &str = r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}"#;
+
+    /// Anthropic 非流式单跳：attempts=1，链仅命中者。
+    #[tokio::test]
+    async fn anthropic_nonstream_single_hop_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ANTHROPIC_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = make_state(make_config(vec![make_vendor("ax-a", server.url())], true)).await;
+        let response = post_messages(state, None, messages_body(false)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("ax-a"));
+        assert_eq!(header(&response, "x-nexusflow-model"), Some("claude-x"));
+        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-nexusflow-fallbacks"), Some("ax-a"));
+
+        mock.assert_async().await;
+    }
+
+    /// Anthropic 流式换路：首跳 503 → attempts=2，链完整。
+    ///
+    /// 首跳由亲和绑定钉在 ax-a（Anthropic 入站不消费 X-Vendor）；失败后
+    /// 换路走 `route_excluding`，ax-a 被排除 → ax-b 接管。
+    #[tokio::test]
+    async fn anthropic_stream_failover_headers() {
+        let mut server_a = mockito::Server::new_async().await;
+        let mock_a = server_a
+            .mock("POST", "/v1/messages")
+            .with_status(503)
+            .with_body("overloaded")
+            .expect(1)
+            .create_async()
+            .await;
+        let mut server_b = mockito::Server::new_async().await;
+        let mock_b = server_b
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body("event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: message_stop\ndata: {}\n\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = make_state(make_config(
+            vec![
+                make_vendor("ax-a", server_a.url()),
+                make_vendor("ax-b", server_b.url()),
+            ],
+            true,
+        ))
+        .await;
+        state
+            .affinity
+            .as_ref()
+            .expect("亲和表已接线")
+            .bind(None, "obs-sess", "ax-a")
+            .await;
+        let response = post_messages(state, Some("obs-sess"), messages_body(true)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("ax-b"));
+        assert_eq!(header(&response, "x-nexusflow-model"), Some("claude-x"));
+        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("2"));
+        assert_eq!(
+            header(&response, "x-nexusflow-fallbacks"),
+            Some("ax-a,ax-b")
+        );
+
+        mock_a.assert_async().await;
+        mock_b.assert_async().await;
+    }
+
+    /// 开关关闭：Anthropic 路径无四头。
+    #[tokio::test]
+    async fn anthropic_switch_off_omits_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ANTHROPIC_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let state = make_state(make_config(vec![make_vendor("ax-a", server.url())], false)).await;
+        let response = post_messages(state, None, messages_body(false)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        for name in [
+            "x-nexusflow-vendor",
+            "x-nexusflow-model",
+            "x-nexusflow-attempts",
+            "x-nexusflow-fallbacks",
+        ] {
+            assert!(header(&response, name).is_none(), "关闭时 {name} 不得存在");
+        }
+
+        mock.assert_async().await;
     }
 }

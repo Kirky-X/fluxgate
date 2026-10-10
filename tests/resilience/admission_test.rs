@@ -1,6 +1,6 @@
 #![cfg(feature = "web-server")]
 
-// recId=16：拥塞感知优先级准入 — 纯函数单元 + AdmissionState 行为 +
+// 拥塞感知优先级准入 — 纯函数单元 + AdmissionState 行为 +
 // 中间件集成（构建于 #3 的 InboundLimitState / create_router 测试模式）。
 
 #[path = "../common/mod.rs"]
@@ -310,6 +310,8 @@ fn tier_for_request_resolves_auth_keys_table() {
             keys: vec![AuthKeyEntry {
                 hash,
                 tier: AuthTier::Dedicated,
+                token_quota: 0,
+                cost_quota_millicents: 0,
             }],
         }),
         ..config_with(AdmissionSection::default())
@@ -396,10 +398,14 @@ mod full_chain {
                     AuthKeyEntry {
                         hash: ded,
                         tier: AuthTier::Dedicated,
+                        token_quota: 0,
+                        cost_quota_millicents: 0,
                     },
                     AuthKeyEntry {
                         hash: spot,
                         tier: AuthTier::Spot,
+                        token_quota: 0,
+                        cost_quota_millicents: 0,
                     },
                 ],
             }),
@@ -454,6 +460,7 @@ mod full_chain {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
         });
         (create_router(state).await, vendor_manager)
     }

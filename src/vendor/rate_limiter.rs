@@ -17,7 +17,7 @@ use limiteron::limiters::{
 use std::sync::Arc;
 use std::time::Duration;
 
-/// recId=13：TimeWindow 时段门控的统一判定（含跨午夜窗口）。
+/// TimeWindow 时段门控的统一判定（含跨午夜窗口）。
 ///
 /// 缺陷背景：旧实现两处（本文件 `check()` 与 `manager::get_window_info`）
 /// 均为同日判定——前者 `now >= start && now < end`，后者 `now < start ||
@@ -63,7 +63,7 @@ impl TokenBucket {
 pub struct ConcurrencyLimiter {
     inner: LimiteronConcurrency,
     semaphore: Arc<tokio::sync::Semaphore>,
-    /// recId=6：构造时保存的并发上限 — `in_flight()` 的被减数。
+    /// 构造时保存的并发上限 — `in_flight()` 的被减数。
     /// 信号量本身不暴露容量（available_permits 会随占用变化），
     /// 上限必须在构造点留存。
     max_concurrency: usize,
@@ -79,17 +79,17 @@ impl ConcurrencyLimiter {
         }
     }
 
-    /// recId=6：当前在途请求数 = 上限 − 可用许可（已发放未释放的 permit 数）。
+    /// 当前在途请求数 = 上限 − 可用许可（已发放未释放的 permit 数）。
     ///
     /// 零新增状态：信号量本就是权威计数器，acquire/drop 自动增减，流式
-    /// permit 随流存活（recId=5④）故对长流真实生效。saturating_sub 防
+    /// permit 随流存活故对长流真实生效。saturating_sub 防
     /// 防御性钳位（正常路径 available_permits ≤ max）。
     pub fn in_flight(&self) -> usize {
         self.max_concurrency
             .saturating_sub(self.semaphore.available_permits())
     }
 
-    /// recId=16：并发上限（构造入参）— 准入的拥塞信号分母（Σ 上限）。
+    /// 并发上限（构造入参）— 准入的拥塞信号分母（Σ 上限）。
     pub fn max_concurrency(&self) -> usize {
         self.max_concurrency
     }
@@ -105,9 +105,9 @@ impl ConcurrencyLimiter {
         ConcurrencyPermit { _permit: permit }
     }
 
-    /// recId=18：token 加权获取 —— 原子获取 cost 张许可（信号量多许可
+    /// token 加权获取 —— 原子获取 cost 张许可（信号量多许可
     /// 语义，与 limiteron ConcurrencyLimiter::acquire(cost) 的
-    /// acquire_many 对照 concurrency.rs:193-215）。cost 鉗 [1, 容量]：
+    /// acquire_many 对照 concurrency.rs）。cost 鉗 [1, 容量]
     /// 低于 1 按单票据；超过容量按容量截断（否则 acquire_many 永久等待
     /// 死锁——估算 max 可配置大于并配上限）。#6 的 in_flight（容量−可用）
     /// 自动变为 token 加权口径（同一计数点、不同加权维度）。
@@ -133,10 +133,10 @@ pub struct ConcurrencyPermit {
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
-/// recId=11：窗口内部实现 — `RateLimitConfig` 的 `sliding` 开关在构造期
+/// 窗口内部实现 — `RateLimitConfig` 的 `sliding` 开关在构造期
 /// 选定（枚举分派而非 `dyn Limiter`，避免对象安全不确定性）。两实现的
 /// `allow(cost)`/`peek(cost)`/`RateLimitSnapshot` 同构（limiteron
-/// sharded_sliding_window.rs:290-306 与 fixed_window.rs 对照）。
+/// sharded_sliding_window.rs 与 fixed_window.rs 对照）。
 /// `pub` 仅为满足 pub enum 变体字段的可见性约束（构造收敛于
 /// `AdvancedRateLimiter::with_clock`/`build_window`，外部不应直接构造）。
 pub enum WindowInner {
@@ -150,16 +150,16 @@ pub enum WindowInner {
 
 /// 高级限流器 — 业务逻辑层。
 ///
-/// recId=5：`Token` / `Interval` 变体迁移 `limiteron::limiters::FixedWindowLimiter`——
+/// `Token` / `Interval` 变体迁移 `limiteron::limiters::FixedWindowLimiter`——
 /// 其 `allow(cost)` 内置 `check_and_reset_window()` + CAS 原子消费
-/// （limiteron src/limiters/fixed_window.rs:135-157），一举修掉两个缺陷：
+/// （limiteron src/limiters/fixed_window.rs），一举修掉两个缺陷
 /// 1. 旧 `should_reset` 只匹配 Interval 变体、`_ => false`，Token 窗口永不重置
 ///    → vendor 被路由永久排除；
 /// 2. 旧 check() 与 consume_tokens 分离非原子，可超卖。
 ///
 /// 窗口到期由 `check_and_reset_window` 惰性重置，无需后台 reset worker。
 ///
-/// recId=11：`sliding: true` 时内部换 `ShardedSlidingWindowLimiter`
+/// `sliding: true` 时内部换 `ShardedSlidingWindowLimiter`
 /// （`with_clock` 支持时钟注入，MockClock 测试路径保持；`allow(cost)`
 /// 支持 token 计量消费。明确不用 `SlidingWindowLimiter`——已
 /// `#[deprecated]` 且 allow 硬编码 `Instant::now` 破坏时钟注入）。
@@ -230,7 +230,7 @@ impl AdvancedRateLimiter {
         }
     }
 
-    /// recId=11：按 sliding 开关选定窗口实现（构造期定死，热更改
+    /// 按 sliding 开关选定窗口实现（构造期定死，热更改
     /// sliding 需经 vendor 配置更新 + 实例重建路径）。
     fn build_window(
         window: Duration,
@@ -248,12 +248,12 @@ impl AdvancedRateLimiter {
         }
     }
 
-    /// 非消费预检（recId=5②）：peek 读窗口 remaining，不递增。
+    /// 非消费预检：peek 读窗口 remaining，不递增。
     /// 原 check() 与 consume_tokens 分离的 check-then-act 超卖窗口随之消除。
     pub async fn check(&self) -> bool {
         match self {
             Self::TimeWindow { start, end } => {
-                // recId=13：跨午夜判定统一委托 time_window_active
+                // 跨午夜判定统一委托 time_window_active
                 let now = Local::now().time();
                 time_window_active(now, *start, *end)
             }
@@ -289,7 +289,7 @@ impl AdvancedRateLimiter {
         }
     }
 
-    /// 窗口快照（recId=5②：给 get_window_info 提供精确 remaining/reset_secs）。
+    /// 窗口快照（给 get_window_info 提供精确 remaining/reset_secs）。
     /// Token/Interval 返回 `Some((limit, used, reset_secs))`；其余变体 None。
     pub async fn window_snapshot(&self) -> Option<(u64, u64, u64)> {
         match self {
@@ -299,7 +299,7 @@ impl AdvancedRateLimiter {
                     WindowInner::Sliding(w, window_secs) => (w.peek(1).await.ok()?, *window_secs),
                 };
                 let mut reset_secs = snap.reset_secs;
-                // recId=11 评审修复（major）：sharded 滑窗空窗（当前窗零消费）
+                // 评审修复：sharded 滑窗空窗（当前窗零消费）
                 // 的 reset_secs=0 是「即时恢复」语义，但路由权重面
                 // get_window_info 把它映射为 window_end=now →
                 // WindowInfo::is_ending_soon(<300s) 对完全空闲的 sliding
@@ -325,10 +325,10 @@ impl AdvancedRateLimiter {
 mod tests {
     use super::*;
 
-    // ======== recId=6：ConcurrencyLimiter::in_flight（路由负载信号） ========
+    // ======== ConcurrencyLimiter::in_flight（路由负载信号） ========
 
     /// acquire n 个 permit → in_flight == n；Drop 后归零；max 与构造入参一致
-    ///（max 为 recId=6 新增字段的直接断言）。信号量容量 == max：第 max+1 个
+    ///（max 为 新增字段的直接断言）。信号量容量 == max：第 max+1 个
     /// acquire 会阻塞，此处以「max 个全部可同时持有」证明容量正确。
     #[tokio::test]
     async fn in_flight_tracks_acquired_permits_and_max() {
@@ -359,7 +359,7 @@ mod tests {
     }
 
     /// max=1 的退化上限：acquire 后 in_flight==1，Drop 归零
-    ///（VendorInstance 缺省上限 = 队列容量，显式 1 是 tests/router_test.rs
+    ///（VendorInstance 缺省上限 = 队列容量，显式 1 是 tests/routing/gate_router_test.rs
     /// 集成测试的配置形态）。
     #[tokio::test]
     async fn in_flight_with_single_permit_limit() {

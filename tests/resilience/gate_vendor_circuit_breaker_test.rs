@@ -5,9 +5,9 @@
 
 //! 集成测试 — CircuitBreaker（limiteron::circuit）接入 VendorManager。
 //!
-//! recId=2 后 `force_circuit_open` 已删除（limiteron 公开面无 force API），
+//! `force_circuit_open` 已删除（limiteron 公开面无 force API），
 //! 测试改为 mockito 预置失败响应自然驱动熔断（failure_threshold=5）：
-//! - 预置 5×500 + 测试配置 [retry] max_retries=0（recId=7）——500 无内部
+//! - 预置 5×500 + 测试配置 [retry] max_retries=0——500 无内部
 //!   重试，每个请求恰好 1 次 HTTP，5 个请求即把失败计数推到阈值；
 //! - 熔断/限流的路由判定已全面实时化于 get_status（评审 blocker 修复：
 //!   持久回写会造成「路由排除→无探针→永不恢复」死锁），worker 回写仅剩
@@ -46,7 +46,7 @@ fn make_vendor(id: &str, api_base: String) -> VendorConfig {
     v
 }
 
-/// recId=7：max_retries=0 —— 500 直接冒泡（无内部重试），
+/// max_retries=0 —— 500 直接冒泡（无内部重试），
 /// 每个请求恰好 1 次 HTTP，5 个请求即把 CB 失败计数推到阈值 5。
 /// server 字段无覆盖：本文件全部走 mockito 动态端口与进程内装配，
 /// 不 bind 任何服务，基座的 127.0.0.1:0 即可。
@@ -346,8 +346,8 @@ async fn circuit_recovers_after_timeout_via_probes_and_route_resumes() {
     //
     // 判定链为墙钟域：circuit_probe_ready 用 chrono::Utc::now() 与
     // last_failure_utc 差值比较（limiteron get_stats 仅暴露 UTC 域
-    // src/error/mod.rs:176；Instant 域 last_failure_time 为私有字段
-    // src/circuit/types.rs:165，无法在 manager 侧复刻库内单调钟判定）。
+    // src/error/mod.rs；Instant 域 last_failure_time 为私有字段
+    // src/circuit/types.rs，无法在 manager 侧复刻库内单调钟判定）。
     // WSL2 实时钟相对 tokio 单调钟存在秒级回跳（实测：sleep(31s) 正常
     // 执行后 elapsed 仅 29.62s < 30s），瞬时断言会偶发误报。此处轮询
     // 等待窗口内放行——断言语义不变（恢复通路必须存在），仅容忍墙钟
@@ -394,7 +394,7 @@ async fn circuit_recovers_after_timeout_via_probes_and_route_resumes() {
     mock_ok.assert_async().await;
 }
 
-/// recId=2（二期）：cover_all_paths 开启时两条裸路径由 per-vendor CB 包裹：
+/// cover_all_paths 开启时两条裸路径由 per-vendor CB 包裹
 /// 转换流式的 dispatch_stream_once 与透传非流式的
 /// execute_passthrough_request_covered 均走 CircuitBreaker::execute，
 /// 成功结果经 from_circuit_call 无损还原。

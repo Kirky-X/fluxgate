@@ -52,14 +52,14 @@ pub async fn messages(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // recId=11：会话亲和键（X-Session-Id 优先，messages 前缀哈希兜底）。
+    // 会话亲和键（X-Session-Id 优先，messages 前缀哈希兜底）。
     // Anthropic 入站保持既有无 hints 路由语义，仅接入会话亲和；
-    // recId=19(a)：X-Weight 请求级权重一并传入（[routing].
+    // X-Weight 请求级权重一并传入（[routing].
     // allow_request_weight 门控在 Router 侧热读判定，关闭时忽略）。
     let hints = RoutingHints::from_headers(&headers);
     let session_key = hints.effective_session_key(&body);
-    // recId=10(2)：亲和键租户维度（与响应缓存 cache_api_key_hash 同源）
-    let api_key_hash = crate::api::response_cache::cache_api_key_hash(&headers);
+    // 亲和键租户维度（与响应缓存同源）
+    let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
 
     // 路由决策
     let decision = resolve_route(
@@ -111,7 +111,7 @@ pub async fn messages(
     .await
 }
 
-/// 透传流式路径（recId=2 二期/3 阶段一/11/10(3)）：派发 → 首绑定亲和 →
+/// 透传流式路径（二期/3 阶段一/11/10(3)）：派发 → 首绑定亲和 →
 /// 分帧转发 → 流式日志 → SSE 响应。
 #[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
 async fn chat_passthrough_stream(
@@ -121,25 +121,38 @@ async fn chat_passthrough_stream(
     body: &Value,
     decision: RoutingDecision,
 ) -> Result<axum::response::Response, NexusFlowError> {
-    // recId=2（二期）：cover_all_paths 开启时「首字节前换路」——
+    // cover_all_paths 开启时「首字节前换路」——
     // Err（均发生在响应头前，manager check_stream_status 早退）排除
     // 重派；Ok（流已建立）即交出 body，流中错误仍以 SSE error 事件
     // 终止不再换路。关闭时单发直连（decision 零克隆，历史语义）。
+    // WP4：尝试链经 fallback_trail 出站（开关关闭时为空表，零行为变化）。
+    #[cfg(feature = "resilience")]
+    let mut fallback_trail = crate::vendor::resilience::AttemptTrail::new(
+        state.config.read().resilience.expose_fallback_headers,
+    );
     #[cfg(feature = "resilience")]
     let outcome = if state.config.read().resilience.cover_all_paths {
         // decision.clone() 进循环（原样）：失败收尾仍引用初始决策
-        crate::api::execute_dispatch_with_fallback(state, model, decision.clone(), true, |d| {
-            let vendor_manager = state.vendor_manager.clone();
-            let body = body.clone();
-            async move {
-                vendor_manager
-                    .execute_passthrough_stream_request(&d.vendor.id, body)
-                    .await
-            }
-        })
+        crate::api::execute_dispatch_with_fallback(
+            state,
+            model,
+            decision.clone(),
+            true,
+            |d| {
+                let vendor_manager = state.vendor_manager.clone();
+                let body = body.clone();
+                async move {
+                    vendor_manager
+                        .execute_passthrough_stream_request(&d.vendor.id, body)
+                        .await
+                }
+            },
+            &mut fallback_trail,
+        )
         .await
         .map_err(|e| Box::new((e, decision)))
     } else {
+        fallback_trail.record(&decision.vendor.id);
         dispatch_direct(
             state
                 .vendor_manager
@@ -158,8 +171,8 @@ async fn chat_passthrough_stream(
     );
     let (stream_response, decision) = finish_dispatch(state, ctx, body, outcome).await?;
 
-    // recId=11：派发成功即回写亲和绑定
-    // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
+    // 派发成功即回写亲和绑定
+    // 首绑定收敛（tenant_scoped 开启时 bind_if_absent）
     crate::api::bind_session_affinity(
         state,
         &ctx.api_key_hash,
@@ -168,17 +181,33 @@ async fn chat_passthrough_stream(
     )
     .await;
 
-    // recId=3 阶段一：透传流过分帧器逐帧原样转发 —— 此前原始字节
-    // 直转（连重帧都没有），上游网络中断会伪装成正常流结束
-    let body_stream =
-        axum::body::Body::from_stream(crate::api::sse::reframe_passthrough_stream(stream_response));
+    // 阶段一：透传流过分帧器逐帧原样转发 —— 此前原始字节
+    // 直转（连重帧都没有），上游网络中断会伪装成正常流结束。
+    // WP8（T003）：受配额约束的 key 才挂帧观测并在正常 EOF 回补，
+    // 其余形态零包装（透传字节逐字节不变）。三级早退判定在 quota 模块单点。
+    let body_stream = crate::middleware::quota::passthrough_stream_body(
+        &state.config,
+        state.quota.as_ref(),
+        &ctx.api_key_hash,
+        body,
+        &decision.vendor.type_,
+        stream_response,
+    );
 
     log_stream_dispatch(state, ctx, &decision, body).await;
 
-    Ok((STREAM_HEADERS, body_stream).into_response())
+    // WP4：流式在响应头阶段写入（派发已完成，链已知）；开关关闭为空表。
+    #[cfg(feature = "resilience")]
+    let obs_headers = crate::api::fallback_observation_headers(&decision, &fallback_trail);
+    #[cfg(not(feature = "resilience"))]
+    let obs_headers = axum::http::HeaderMap::new();
+    Ok(crate::api::with_fallback_headers(
+        (STREAM_HEADERS, body_stream).into_response(),
+        &obs_headers,
+    ))
 }
 
-/// 透传非流式路径（recId=2 一期/12/11/10(3)）：缓存探测 → 派发 → 迁移
+/// 透传非流式路径（一期/12/11/10(3)）：缓存探测 → 派发 → 迁移
 /// 重绑定 → Miss 回写 → 成功日志 → X-Cache 响应。
 #[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
 async fn chat_passthrough_json(
@@ -189,31 +218,44 @@ async fn chat_passthrough_json(
     body: &Value,
     decision: RoutingDecision,
 ) -> Result<axum::response::Response, NexusFlowError> {
-    // recId=12：非流式透传的精确响应缓存（命中直接返回 HIT）
+    // 非流式透传的精确响应缓存（命中直接返回 HIT）
     let cache_outcome = cache_probe(state, headers, &decision, body).await;
     if let Some(hit) = cache_hit_response(state, ctx, &decision, body, &cache_outcome).await {
         return Ok(hit);
     }
 
     // 普通请求 - 零拷贝透传
-    // recId=2（一期）：cover_all_paths 开启时包换路 fallback 循环
+    // （一期）：cover_all_paths 开启时包换路 fallback 循环
     //（resilience feature）——主 vendor 耗尽/429/5xx 时排除后重路由，
     // actual_vendor 记最终成功者；关闭时单发直连（decision 零克隆，历史语义）
+    // WP4：尝试链经 fallback_trail 出站（开关关闭时为空表，零行为变化）。
+    #[cfg(feature = "resilience")]
+    let mut fallback_trail = crate::vendor::resilience::AttemptTrail::new(
+        state.config.read().resilience.expose_fallback_headers,
+    );
     #[cfg(feature = "resilience")]
     let outcome = if state.config.read().resilience.cover_all_paths {
         // decision.clone() 进循环（原样）：失败收尾仍引用初始决策
-        crate::api::execute_dispatch_with_fallback(state, model, decision.clone(), true, |d| {
-            let vendor_manager = state.vendor_manager.clone();
-            let body = body.clone();
-            async move {
-                vendor_manager
-                    .execute_passthrough_request(&d.vendor.id, body)
-                    .await
-            }
-        })
+        crate::api::execute_dispatch_with_fallback(
+            state,
+            model,
+            decision.clone(),
+            true,
+            |d| {
+                let vendor_manager = state.vendor_manager.clone();
+                let body = body.clone();
+                async move {
+                    vendor_manager
+                        .execute_passthrough_request(&d.vendor.id, body)
+                        .await
+                }
+            },
+            &mut fallback_trail,
+        )
         .await
         .map_err(|e| Box::new((e, decision)))
     } else {
+        fallback_trail.record(&decision.vendor.id);
         dispatch_direct(
             state
                 .vendor_manager
@@ -232,9 +274,9 @@ async fn chat_passthrough_json(
     );
     let (response, decision) = finish_dispatch(state, ctx, body, outcome).await?;
 
-    // recId=11：执行成功回写亲和绑定（换路成功时 decision 已是最终
-    // 成功者——失败迁移绑定语义）；recId=12：未命中则回写响应缓存
-    // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
+    // 执行成功回写亲和绑定（换路成功时 decision 已是最终
+    // 成功者——失败迁移绑定语义）；未命中则回写响应缓存
+    // 迁移重绑定无条件 set（不得收敛到已失败者）
     crate::api::rebind_session_affinity(
         state,
         &ctx.api_key_hash,
@@ -246,11 +288,30 @@ async fn chat_passthrough_json(
 
     log_success_dispatch(state, ctx, &decision, body, &response).await;
 
-    // recId=12：缓存参与（Miss 回写完成）→ 响应带 X-Cache: MISS
-    Ok(json_response_with_cache_flag(response, &cache_outcome))
+    // WP8：非流式响应后回补（有 usage 才结算；无 usage 保持预扣）。
+    // vendor 协议透传：cache 包含语义与分账侧同一判定。
+    crate::middleware::quota::settle_nonstream(
+        &state.config,
+        state.quota.as_ref(),
+        &ctx.api_key_hash,
+        body,
+        &response,
+        &decision.vendor.type_,
+    );
+
+    // 缓存参与（Miss 回写完成）→ 响应带 X-Cache: MISS；
+    // WP4 回退观测头叠加（开关关闭为空表，零行为变化）。
+    #[cfg(feature = "resilience")]
+    let obs_headers = crate::api::fallback_observation_headers(&decision, &fallback_trail);
+    #[cfg(not(feature = "resilience"))]
+    let obs_headers = axum::http::HeaderMap::new();
+    Ok(crate::api::with_fallback_headers(
+        json_response_with_cache_flag(response, &cache_outcome),
+        &obs_headers,
+    ))
 }
 
-/// 转换流式路径（recId=2 二期/3 阶段二/14②/11/10(3)）：派发 → 首绑定
+/// 转换流式路径（二期/3 阶段二/14②/11/10(3)）：派发 → 首绑定
 /// 亲和 → IR→Anthropic 出站事件流（encoder 状态机）→ 流式日志 → SSE 响应。
 #[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
 async fn chat_convert_stream(
@@ -261,26 +322,39 @@ async fn chat_convert_stream(
     decision: RoutingDecision,
     unified_request: crate::protocol::UnifiedRequest,
 ) -> Result<axum::response::Response, NexusFlowError> {
-    // recId=3 阶段二：manager 返回分帧 + 反向解析后的 IR chunk 流
-    // recId=2（二期）：cover_all_paths 开启时「首字节前换路」（转换路径
+    // 阶段二：manager 返回分帧 + 反向解析后的 IR chunk 流
+    // cover_all_paths 开启时「首字节前换路」（转换路径
     // UnifiedRequest 任意 vendor type 均合法，不按协议过滤）；关闭时
     // 单发直连（unified_request move，历史零克隆语义）
+    // WP4：尝试链经 fallback_trail 出站（开关关闭时为空表，零行为变化）。
+    #[cfg(feature = "resilience")]
+    let mut fallback_trail = crate::vendor::resilience::AttemptTrail::new(
+        state.config.read().resilience.expose_fallback_headers,
+    );
     #[cfg(feature = "resilience")]
     let outcome = if state.config.read().resilience.cover_all_paths {
         // decision.clone() 进循环（原样）：失败收尾仍引用初始决策；
         // 换路循环逐 attempt 克隆请求体（原 fallback 语义）
-        crate::api::execute_dispatch_with_fallback(state, model, decision.clone(), false, |d| {
-            let vendor_manager = state.vendor_manager.clone();
-            let unified_request = unified_request.clone();
-            async move {
-                vendor_manager
-                    .execute_stream_request(&d.vendor.id, unified_request)
-                    .await
-            }
-        })
+        crate::api::execute_dispatch_with_fallback(
+            state,
+            model,
+            decision.clone(),
+            false,
+            |d| {
+                let vendor_manager = state.vendor_manager.clone();
+                let unified_request = unified_request.clone();
+                async move {
+                    vendor_manager
+                        .execute_stream_request(&d.vendor.id, unified_request)
+                        .await
+                }
+            },
+            &mut fallback_trail,
+        )
         .await
         .map_err(|e| Box::new((e, decision)))
     } else {
+        fallback_trail.record(&decision.vendor.id);
         dispatch_direct(
             state
                 .vendor_manager
@@ -299,8 +373,20 @@ async fn chat_convert_stream(
     );
     let (chunk_stream, decision) = finish_dispatch(state, ctx, body, outcome).await?;
 
-    // recId=11：派发成功即回写亲和绑定
-    // recId=10(3)：首绑定收敛（tenant_scoped 开启时 bind_if_absent）
+    // WP8：转换流结束回补（捕获末个 Usage chunk 含 cache 两档；无 Usage 帧
+    // 保持预扣）。三级早退（未接线/关闭/无限额租户）返回 None → 零包装
+    // 直通，不克隆请求体与档源（H2：默认配置零开销）。
+    let settle_ctx = crate::middleware::quota::SettlementCtx::for_request(
+        &state.config,
+        state.quota.as_ref(),
+        &ctx.api_key_hash,
+        body,
+        &decision.vendor.type_,
+    );
+    let chunk_stream = crate::middleware::quota::settle_stream(chunk_stream, settle_ctx);
+
+    // 派发成功即回写亲和绑定
+    // 首绑定收敛（tenant_scoped 开启时 bind_if_absent）
     crate::api::bind_session_affinity(
         state,
         &ctx.api_key_hash,
@@ -314,16 +400,24 @@ async fn chat_convert_stream(
     // 生命周期（存量 stream_chunk_to_external 的单事件输出不成合法流）。
     // 每事件经 SSE 编码器加 `data:` 前缀（评审 blocker：裸 JSON 行
     // 不构成 SSE 事件，标准客户端收到零事件）。
-    // recId=14②：错误发带语义的 SSE error 事件后提前终止（不补
+    // 错误发带语义的 SSE error 事件后提前终止（不补
     // message_stop，客户端可分辨成败）
     let body_stream = anthropic_sse_stream(chunk_stream);
 
     log_stream_dispatch(state, ctx, &decision, body).await;
 
-    Ok((STREAM_HEADERS, body_stream).into_response())
+    // WP4：流式在响应头阶段写入（派发已完成，链已知）；开关关闭为空表。
+    #[cfg(feature = "resilience")]
+    let obs_headers = crate::api::fallback_observation_headers(&decision, &fallback_trail);
+    #[cfg(not(feature = "resilience"))]
+    let obs_headers = axum::http::HeaderMap::new();
+    Ok(crate::api::with_fallback_headers(
+        (STREAM_HEADERS, body_stream).into_response(),
+        &obs_headers,
+    ))
 }
 
-/// 转换非流式路径（recId=7⑤/12/11/10(3)）：缓存探测 → 派发（resilience
+/// 转换非流式路径：缓存探测 → 派发（resilience
 /// 恒走换路循环）→ 统一响应回转 → 迁移重绑定 → Miss 回写 → 成功日志 →
 /// X-Cache 响应。
 async fn chat_convert_json(
@@ -336,15 +430,15 @@ async fn chat_convert_json(
     unified_request: crate::protocol::UnifiedRequest,
 ) -> Result<axum::response::Response, NexusFlowError> {
     // 通过 VendorManager 执行请求
-    // recId=12：非流式转换路径的精确响应缓存（命中直接返回 HIT）
+    // 非流式转换路径的精确响应缓存（命中直接返回 HIT）
     let cache_outcome = cache_probe(state, headers, &decision, body).await;
     if let Some(hit) = cache_hit_response(state, ctx, &decision, body, &cache_outcome).await {
         return Ok(hit);
     }
 
-    // recId=7⑤：单发调用包换路 fallback 循环（resilience feature）——
+    // 单发调用包换路 fallback 循环（resilience feature）——
     // 主 vendor 耗尽/429/5xx 时排除后重路由，actual_vendor 记最终成功者
-    let (unified_response, decision) =
+    let (unified_response, decision, obs_headers) =
         dispatch_unified_request(state, ctx, model, body, decision, unified_request).await?;
 
     // 将统一响应转换回 Anthropic 格式
@@ -352,9 +446,9 @@ async fn chat_convert_json(
         .anthropic_converter
         .response_to_external(unified_response)?;
 
-    // recId=11：执行成功回写亲和绑定（resilience 换路成功时 decision 已是
-    // 最终成功者——失败迁移绑定语义）；recId=12：缓存 Miss 回写
-    // recId=10(3)：迁移重绑定无条件 set（不得收敛到已失败者）
+    // 执行成功回写亲和绑定（resilience 换路成功时 decision 已是
+    // 最终成功者——失败迁移绑定语义）；缓存 Miss 回写
+    // 迁移重绑定无条件 set（不得收敛到已失败者）
     crate::api::rebind_session_affinity(
         state,
         &ctx.api_key_hash,
@@ -366,11 +460,25 @@ async fn chat_convert_json(
 
     log_success_dispatch(state, ctx, &decision, body, &response).await;
 
-    // recId=12：缓存参与 → 响应带 X-Cache 头（此处必为 MISS，HIT 已提前返回）
-    Ok(json_response_with_cache_flag(response, &cache_outcome))
+    // WP8：非流式响应后回补（转换路径 usage 恒有，必结算）。
+    crate::middleware::quota::settle_nonstream(
+        &state.config,
+        state.quota.as_ref(),
+        &ctx.api_key_hash,
+        body,
+        &response,
+        &decision.vendor.type_,
+    );
+
+    // 缓存参与 → 响应带 X-Cache 头（此处必为 MISS，HIT 已提前返回）；
+    // WP4 回退观测头叠加（派发层已按开关计算，关闭为空表）。
+    Ok(crate::api::with_fallback_headers(
+        json_response_with_cache_flag(response, &cache_outcome),
+        &obs_headers,
+    ))
 }
 
-/// recId=15/17/19：路由解析 — Anthropic 入站保持既有无 hints 直连路由
+/// 路由解析 — Anthropic 入站保持既有无 hints 直连路由
 /// 语义（不接 route_with_hints，仅接入会话亲和与请求级权重）；LinUCB
 /// 请求特征仅 selection="linucb"（热读）且 bandit 接线时计算，默认
 /// weighted 档 None、零开销；x-deadline-ms 头消费与否由
@@ -397,7 +505,7 @@ async fn resolve_route(
     } else {
         None
     };
-    // recId=17：x-deadline-ms 头（语义同 openai chat；门控在 Router 侧）
+    // x-deadline-ms 头（语义同 openai chat；门控在 Router 侧）
     let lps_deadline_ms = headers
         .get("x-deadline-ms")
         .and_then(|v| v.to_str().ok())
@@ -418,9 +526,9 @@ async fn resolve_route(
     Ok(decision)
 }
 
-/// recId=9④ + recId=11：派发失败收尾单点 — 原实现 8 处（4 路径 ×
+/// 派发失败收尾单点 — 原实现 8 处（4 路径 ×
 /// resilience 开关）重复的「亲和解除 + 失败落库」收敛于此；换路耗尽与
-/// 单发失败同语义（recId=11：最终失败解除亲和绑定，避免旧键指向已失败
+/// 单发失败同语义（最终失败解除亲和绑定，避免旧键指向已失败
 /// vendor）。错误经调用方包装后透传。
 async fn on_dispatch_failure(
     state: &Arc<ApiState>,
@@ -457,7 +565,7 @@ fn dispatch_direct<T>(
     }
 }
 
-/// recId=9④ + recId=11：派发结果收尾单点 —— Ok 原样透传；Err 走
+/// 派发结果收尾单点 —— Ok 原样透传；Err 走
 /// [`on_dispatch_failure`]（亲和解除 + 失败落库）后透传错误。
 async fn finish_dispatch<T>(
     state: &Arc<ApiState>,
@@ -474,10 +582,13 @@ async fn finish_dispatch<T>(
     }
 }
 
-/// recId=7⑤：非流式转换路径派发 — resilience 开启时恒走换路 fallback
+/// 非流式转换路径派发 — resilience 开启时恒走换路 fallback
 /// 循环（execute_request_with_fallback：Throttled 原因追踪 + Retry-After
 /// 提示语义，与透传/流式的 cover_all_paths 门控路径不同源，不得合并）；
 /// 关闭时单发直连。失败收尾经 [`on_dispatch_failure`] 单点执行。
+///
+/// 返回三元组（统一响应，最终决策，WP4 观测头表——开关关闭/特性关闭时
+/// 为空表，调用方无条件叠加）。
 #[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
 async fn dispatch_unified_request(
     state: &Arc<ApiState>,
@@ -486,18 +597,32 @@ async fn dispatch_unified_request(
     body: &Value,
     decision: RoutingDecision,
     request: crate::protocol::UnifiedRequest,
-) -> Result<(crate::protocol::UnifiedResponse, RoutingDecision), NexusFlowError> {
+) -> Result<
+    (
+        crate::protocol::UnifiedResponse,
+        RoutingDecision,
+        axum::http::HeaderMap,
+    ),
+    NexusFlowError,
+> {
     #[cfg(feature = "resilience")]
     {
+        let mut fallback_trail = crate::vendor::resilience::AttemptTrail::new(
+            state.config.read().resilience.expose_fallback_headers,
+        );
         return match crate::api::execute_request_with_fallback(
             state,
             model,
             decision.clone(),
             request,
+            &mut fallback_trail,
         )
         .await
         {
-            Ok(r) => Ok(r),
+            Ok((response, decision)) => {
+                let obs = crate::api::fallback_observation_headers(&decision, &fallback_trail);
+                Ok((response, decision, obs))
+            }
             Err(e) => {
                 Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
             }
@@ -509,14 +634,14 @@ async fn dispatch_unified_request(
         .execute_request(&decision.vendor.id, request)
         .await
     {
-        Ok(r) => Ok((r, decision)),
+        Ok(r) => Ok((r, decision, axum::http::HeaderMap::new())),
         Err(e) => {
             Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
         }
     }
 }
 
-/// recId=12：缓存探测 — [cache] 未接线 → None（不参与）；命中/未命中/
+/// 缓存探测 — [cache] 未接线 → None（不参与）；命中/未命中/
 /// 关闭/不可缓存语义由 [`crate::api::response_cache::ResponseCache::check`]
 /// 判定。
 async fn cache_probe(
@@ -535,7 +660,7 @@ async fn cache_probe(
     }
 }
 
-/// recId=12：HIT 早退 — 命中即记 200 日志并返回 `X-Cache: HIT` 响应；
+/// HIT 早退 — 命中即记 200 日志并返回 `X-Cache: HIT` 响应；
 /// 未命中/不参与返回 None（调用方继续派发）。
 async fn cache_hit_response(
     state: &Arc<ApiState>,
@@ -548,6 +673,14 @@ async fn cache_hit_response(
         CacheOutcome::Hit(cached) => cached,
         _ => return None,
     };
+    // WP8（M6）：命中请求无上游往返，实际用量按 0 结算回补入口预扣——
+    // 否则同一请求的缓存重复命中会持续虚耗配额。
+    crate::middleware::quota::settle_nonstream_cached(
+        &state.config,
+        state.quota.as_ref(),
+        &ctx.api_key_hash,
+        body,
+    );
     log_success_dispatch(state, ctx, decision, body, cached).await;
     Some(
         (
@@ -558,7 +691,7 @@ async fn cache_hit_response(
     )
 }
 
-/// recId=12：Miss 回写 — 以最终 vendor/model 组装键（cover_all_paths 换路
+/// Miss 回写 — 以最终 vendor/model 组装键（cover_all_paths 换路
 /// 后已是最终 vendor；非 resilience 即初始且唯一候选），键维度与响应体
 /// 一致（评审修复 major#2）。
 async fn persist_cache_miss(
@@ -581,7 +714,7 @@ async fn persist_cache_miss(
     }
 }
 
-/// recId=12：缓存参与 → 响应带 `X-Cache: MISS` 头（HIT 已早退，此处必为
+/// 缓存参与 → 响应带 `X-Cache: MISS` 头（HIT 已早退，此处必为
 /// MISS 或不参与）；不参与则裸 JSON 头。
 fn json_response_with_cache_flag(
     response: Value,
@@ -601,7 +734,7 @@ fn json_response_with_cache_flag(
     }
 }
 
-/// recId=3 阶段二 / recId=14②：IR chunk 流 → Anthropic 出站 SSE 事件流。
+/// 阶段二 / IR chunk 流 → Anthropic 出站 SSE 事件流。
 /// AnthropicStreamEncoder 状态机补齐 message_start/content_block_start/
 /// …_delta/…_stop/message_stop 生命周期，每事件加 `data:` 前缀（评审
 /// blocker：裸 JSON 行不构成 SSE 事件）。错误发带语义的 SSE error 事件后
@@ -640,7 +773,7 @@ fn anthropic_sse_stream(
     axum::body::Body::from_stream(sse_stream)
 }
 
-/// 流式派发成功日志（recId=4⑤：metrics 已在 manager 层记账，handler 不
+/// 流式派发成功日志（metrics 已在 manager 层记账，handler 不
 /// 重复计；日志按派发成功记 200，响应体为流占位标记）。
 async fn log_stream_dispatch(
     state: &Arc<ApiState>,
@@ -685,9 +818,19 @@ async fn log_success_dispatch(
         None,
     )
     .await;
+    // WP9：分账落库（hash 透传 + cache 两类 + 四档单价）。
+    crate::api::record_keyed_usage(
+        state,
+        &decision.vendor.id,
+        &decision.vendor.type_,
+        &decision.model.model_id,
+        &ctx.api_key_hash,
+        response,
+    )
+    .await;
 }
 
-/// recId=9③④⑥：异步日志 push — 构造 RequestLog 后 `logger.log()` push
+/// 异步日志 push — 构造 RequestLog 后 `logger.log()` push
 /// 即返回（try_send 背压，绝不阻塞响应路径）；token 从**响应 usage** 取
 /// （修复旧实现填请求 max_tokens 的语义错误）；status_code 从实际结果取；
 /// 大 payload（>64KB）截断。logger 未接线（None）时跳过落库。
@@ -703,7 +846,7 @@ async fn log_request(
     status_code: i32,
     error_message: Option<String>,
 ) {
-    // recId=15：LinUCB 奖励回传 — 与落库记账同点（本函数收敛成功/失败
+    // LinUCB 奖励回传 — 与落库记账同点（本函数收敛成功/失败
     // 两路，`response: None` = 失败）。门控（接线 + selection 热读）在
     // ApiState 内，默认 weighted 档零开销、无状态更新。
     // 评审修复 major：臂键与选择侧同源归一（anthropic 无 hints 路由，
@@ -730,10 +873,10 @@ async fn log_request(
         .and_then(|r| serde_json::to_string(r).ok())
         .map(crate::api::truncate_payload);
 
-    // recId=9④（评审修正）：tokens 从响应 usage 取——**双格式**。本端点的
+    // （评审修正）：tokens 从响应 usage 取——**双格式**。本端点的
     // 响应既可能是 Anthropic 格式（透传路径的原始上游 JSON；转换路径经
     // anthropic_converter::response_to_external 产出 {"input_tokens",
-    // "output_tokens"}，见 anthropic_converter.rs:215-218），此前只读
+    // "output_tokens"}，见 anthropic_converter.rs），此前只读
     // OpenAI 键名导致三个 token 字段恒 NULL、预聚合器永不记账。
     // prompt 缺失回退 input_tokens、completion 缺失回退 output_tokens；
     // Anthropic 无 total_tokens 键，缺省时以 prompt+completion 合成。
@@ -758,31 +901,9 @@ async fn log_request(
             _ => None,
         });
 
-    // recId=9⑤：usage 进预聚合器（记录即返回，flush 由后台 worker 承担）
-    if let (Some(pa), Some(p), Some(c), Some(t)) = (
-        state.pre_aggregator.as_ref(),
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-    ) {
-        if let Err(e) = pa
-            .record_raw(
-                &decision.vendor.id,
-                &decision.model.model_id,
-                p.clamp(0, i32::MAX) as u32,
-                c.clamp(0, i32::MAX) as u32,
-                t.clamp(0, i32::MAX) as u32,
-                0.0,
-            )
-            .await
-        {
-            // 记账失败不失败请求（recId=9⑤ 语义保持；错误显性化）
-            tracing::warn!(
-                "{}",
-                t_args("api-usage-record-rejected", &[("error", e.to_string())])
-            );
-        }
-    }
+    // usage 进预聚合器已迁移至 WP9 分账路径（`log_success_dispatch` 经
+    // `record_keyed_usage` 记账：hash 透传 + cache 两类 + 四档单价）。
+    // 此处保留 usage 提取（RequestLog 落库仍需 prompt/completion/total）。
 
     let log = RequestLog {
         id: None,
@@ -808,7 +929,7 @@ async fn log_request(
         cost_usd: None,
     };
 
-    // recId=9②：logger 未接线 = 降级为不落日志（不回退同步直写）
+    // logger 未接线 = 降级为不落日志（不回退同步直写）
     if let Some(logger) = state.logger.as_ref() {
         if let Err(e) = logger.log(log).await {
             tracing::warn!(
@@ -819,7 +940,7 @@ async fn log_request(
     }
 }
 
-/// recId=9④：失败路径落库 — 在 `?` 早退前补记（status_code/error_message
+/// 失败路径落库 — 在 `?` 早退前补记（status_code/error_message
 /// 真实值），消除"失败请求不留痕"的盲区。
 #[allow(clippy::too_many_arguments)]
 async fn log_failure(

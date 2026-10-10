@@ -7,6 +7,7 @@ pub mod cost;
 pub mod key_pool;
 pub mod manager;
 pub mod pool;
+pub mod probe;
 pub mod queue;
 pub mod rate_limiter;
 #[cfg(feature = "resilience")]

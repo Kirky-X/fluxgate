@@ -5,12 +5,12 @@
 
 //! 韧性栈模块 — FallbackChain + 错误映射层。
 //!
-//! 熔断器已整体迁移 `limiteron::circuit`（recId=2）：手写三态机存在
+//! 熔断器已整体迁移 `limiteron::circuit`：手写三态机存在
 //! HalfOpen 死锁（half_open_calls 探测后不重置，熔断一次即永久拒绝），
 //! 库版在每次状态转换统一清零计数（limiteron src/circuit/types.rs
 //! finalize_transition）且提供假时钟注入，故删除等价手写。
 //! resilience 模块现仅存：
-//! - [`FallbackChain`]（供 API 层换路 fallback，recId=7）
+//! - [`FallbackChain`]（供 API 层换路 fallback）
 //! - [`error_map`]：GateError 直驱 `CircuitBreaker<GateError>` 的分类
 //!   与 Open 还原（G3 泛型收口后错误无损透传，无前缀串编解码）
 //!
@@ -20,5 +20,8 @@
 pub mod error_map;
 pub mod fallback;
 
-pub use error_map::{from_circuit_call, is_circuit_open_error, GateErrorClassifier};
-pub use fallback::{FallbackChain, FallbackTarget, FallbackTrigger};
+pub use error_map::{
+    classify_key_error, from_circuit_call, is_circuit_open_error, GateErrorClassifier,
+    KeyErrorClass,
+};
+pub use fallback::{AttemptTrail, FallbackChain, FallbackTarget, FallbackTrigger};

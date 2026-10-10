@@ -9,12 +9,15 @@
 
 pub mod admin;
 pub mod anthropic;
+pub mod count_tokens;
 pub mod global_state;
 pub mod health;
+pub mod models;
 pub mod openai;
 pub mod openapi_docs;
 pub mod readiness;
 pub mod response_cache;
+pub mod route_explain;
 pub mod router_builder;
 pub mod routing_hints;
 pub mod sse;
@@ -30,16 +33,15 @@ pub use global_state::{get_global_state, init_global_state};
 pub use openai::{chat_completions, embeddings};
 
 use crate::error::{GateError, NexusFlowError};
-use crate::i18n::t_args;
-// 仅 resilience 特性分支的重试预算代码（execute_request_with_fallback 等）使用
 #[cfg(feature = "resilience")]
 use crate::i18n::t;
+use crate::i18n::t_args; // 仅 resilience 特性分支的重试预算代码（execute_request_with_fallback 等）使用
 #[cfg(feature = "resilience")]
 use std::time::Duration;
 
-/// recId=11：执行成功后回写会话亲和绑定（bifrost 语义——只记"上次成功
+/// 执行成功后回写会话亲和绑定（bifrost 语义——只记"上次成功
 /// 服务的 vendor"）。亲和表未接线或请求无会话键时为 no-op。
-/// recId=10(2)(3)：`api_key_hash` 为租户维度（cache_api_key_hash 同源，
+/// (3)：`api_key_hash` 为租户维度（cache_api_key_hash 同源，
 /// 从已验证 key 派生）——`[routing].affinity_tenant_scoped` 开启时键带
 /// 租户维度且首绑定收敛（bind_if_absent，已绑定不覆盖）；关闭时 legacy
 /// 键无条件 set（现状逐位一致）。流式派发成功等「首绑定」场景走本方法。
@@ -60,7 +62,7 @@ pub(crate) async fn bind_session_affinity(
     }
 }
 
-/// recId=10(3)：失败迁移重绑定 — 换路成功后无条件 set（覆盖旧绑定指向
+/// 失败迁移重绑定 — 换路成功后无条件 set（覆盖旧绑定指向
 /// 新成功 vendor，不得收敛到已失败者）；租户维度判定同
 /// [`bind_session_affinity`]。
 pub(crate) async fn rebind_session_affinity(
@@ -80,9 +82,9 @@ pub(crate) async fn rebind_session_affinity(
     }
 }
 
-/// recId=11：最终失败（含换路 fallback 耗尽）后解除会话亲和绑定，
+/// 最终失败（含换路 fallback 耗尽）后解除会话亲和绑定，
 /// 避免旧键指向已失败的 vendor。亲和表未接线或请求无会话键时为 no-op。
-/// recId=10(2)：租户维度判定同 [`bind_session_affinity`]。
+/// 租户维度判定同 [`bind_session_affinity`]。
 pub(crate) async fn clear_session_affinity(
     state: &std::sync::Arc<ApiState>,
     api_key_hash: &str,
@@ -99,7 +101,7 @@ pub(crate) async fn clear_session_affinity(
     }
 }
 
-/// recId=9⑥：大 payload 截断 — 序列化后 >64KB 的 messages/response 存
+/// 大 payload 截断 — 序列化后 >64KB 的 messages/response 存
 /// 前缀 + 截断标记（按 UTF-8 字符边界截断，避免劈开多字节字符）。
 pub(crate) fn truncate_payload(s: String) -> String {
     const MAX: usize = 64 * 1024;
@@ -117,7 +119,7 @@ pub(crate) fn truncate_payload(s: String) -> String {
     )
 }
 
-/// recId=9④：从错误中提取上游真实状态码 — VendorUnavailable 的 vendor
+/// 从错误中提取上游真实状态码 — VendorUnavailable 的 vendor
 /// 字段携带上游状态（manager 层构造格式 "id (500 Internal Server Error)"），
 /// RateLimited 即上游/网关 429。提取不到返回 None。
 pub(crate) fn upstream_status_code(err: &NexusFlowError) -> Option<i32> {
@@ -132,7 +134,7 @@ pub(crate) fn upstream_status_code(err: &NexusFlowError) -> Option<i32> {
     }
 }
 
-/// recId=9④：失败路径落库的 status_code — 优先上游真实状态码（回归
+/// 失败路径落库的 status_code — 优先上游真实状态码（回归
 /// "上游 500 落库 500"），否则取核心错误固定客户端映射（GateError::
 /// status_code，与 IntoResponse 同源）；
 /// Database 等应用面错误 500（落库值与客户端实际收到的状态一致）。
@@ -143,7 +145,7 @@ pub(crate) fn status_code_for_error(err: &NexusFlowError) -> i32 {
     })
 }
 
-/// recId=9（W5）：守门器入口评估 — `[retry].amplification_gate` 开启时在
+/// 守门器入口评估 — `[retry].amplification_gate` 开启时在
 /// fallback 入口评估放大信号：f > 0.8·f_c → 本请求 max_total_attempts
 /// 临时收紧到 1 + tracing::warn（误触发退化为单尝试，fail-safe 方向正确）；
 /// r·f > 0.95 → 发散告警（只 warn）。关闭（默认）时原样返回 base，
@@ -188,7 +190,7 @@ fn gate_adjusted_max_attempts(
     base
 }
 
-/// recId=19(c)：换路排除原因 — Failed（5xx/timeout 等真实失败）/
+/// 换路排除原因 — Failed（5xx/timeout 等真实失败）/
 /// Throttled（RateLimited 错误或 get_status 实时判定限流），供
 /// Retry-After 提示的「全部原因为 Throttled」判定。
 #[cfg(feature = "resilience")]
@@ -198,7 +200,7 @@ pub(crate) enum ExclusionReason {
     Throttled,
 }
 
-/// recId=19(c)：排除原因判定 — RateLimited 错误或 vendor 实时状态为
+/// 排除原因判定 — RateLimited 错误或 vendor 实时状态为
 /// Throttled → Throttled；其余 → Failed。
 #[cfg(feature = "resilience")]
 async fn exclusion_reason(
@@ -216,7 +218,7 @@ async fn exclusion_reason(
     }
 }
 
-/// recId=19(c)：耗尽收尾 — `[routing].retry_after_hint` 开启且全部排除
+/// 耗尽收尾 — `[routing].retry_after_hint` 开启且全部排除
 /// 原因为 Throttled 时，取各 vendor 窗口重置剩余秒数的 min 抛
 /// AllVendorsThrottled（429 + Retry-After 头）；否则原错误冒泡（默认
 /// 503 语义不变）。窗口重置不可得的 vendor 不参与 min；全部不可得 →
@@ -239,7 +241,7 @@ async fn finalize_fallback_error(
     finalize_all_throttled(all_throttled, &resets, hint_enabled, original)
 }
 
-/// recId=19(c)：vendor 限流窗口重置剩余秒数 — get_window_info 的
+/// vendor 限流窗口重置剩余秒数 — get_window_info 的
 /// window_end 与当前时刻差（向上取整：边界处宁可让客户端多等一瞬）。
 /// 无窗口信息 / 无 window_end（不限时窗口）→ None（不参与 hint）。
 #[cfg(feature = "resilience")]
@@ -256,7 +258,7 @@ async fn throttle_reset_secs(
     )
 }
 
-/// recId=19(c)：耗尽收尾纯判定（脱离 state 单测）— `all_throttled` 为
+/// 耗尽收尾纯判定（脱离 state 单测）— `all_throttled` 为
 /// 「全部排除原因为 Throttled」；resets 为各 vendor 重置剩余秒数
 ///（None = 不可得）。hint 开启、全 Throttled 且至少一个重置可得 →
 /// AllVendorsThrottled{min}；否则原错误冒泡。
@@ -278,7 +280,208 @@ pub(crate) fn finalize_all_throttled(
     }
 }
 
-/// recId=7⑤：单发调用的换 vendor fallback 循环（resilience feature）。
+/// 两条换 vendor fallback 循环共享的初始化前言。
+/// 抽此结构仅为消重（行为逐位不变）：链构建、`[retry]` 段一次热读、守门器
+/// 收紧后的尝试上限与累计等待预算锚点的读取顺序 / 告警时机完全保持原样。
+#[cfg(feature = "resilience")]
+struct FallbackBudget {
+    chain: Option<crate::vendor::resilience::FallbackChain>,
+    max_attempts: u32,
+    budget: Option<Duration>,
+    budget_anchor: tokio::time::Instant,
+}
+
+#[cfg(feature = "resilience")]
+fn build_fallback_budget(
+    state: &std::sync::Arc<crate::api::state::ApiState>,
+    model: &str,
+) -> FallbackBudget {
+    let chain = state.router.build_fallback_chain(model);
+    // [retry] 段一次热读 —— 尝试上限（含守门器收紧）与
+    // 时间预算同源同拍；budget 锚点统一 tokio Instant（paused-clock 可测）
+    let retry_cfg = state.config.read().retry.clone();
+    let max_attempts = gate_adjusted_max_attempts(state, &retry_cfg);
+    let budget =
+        (retry_cfg.retry_budget_secs > 0).then(|| Duration::from_secs(retry_cfg.retry_budget_secs));
+    let budget_anchor = tokio::time::Instant::now();
+    FallbackBudget {
+        chain,
+        max_attempts,
+        budget,
+        budget_anchor,
+    }
+}
+
+/// `execute_dispatch_with_fallback` 的 `same_protocol_only` 重路由
+/// 候选选择——透传载荷不可跨协议，与 `expected_type` 不同的候选计入排除集
+/// 跳过（不发起 HTTP），直至同型候选命中或排除达上限。命中返回 `Some(next)`；
+/// 无可用候选或达上限返回 `None`（调用方以原错误冒泡，保留 5xx/429 语义）。
+#[cfg(feature = "resilience")]
+async fn next_compatible_route(
+    state: &std::sync::Arc<crate::api::state::ApiState>,
+    model: &str,
+    expected_type: &str,
+    same_protocol_only: bool,
+    max_attempts: u32,
+    excluded: &mut Vec<String>,
+) -> Option<crate::router::RoutingDecision> {
+    loop {
+        let res = state
+            .router
+            .route_excluding(model, excluded.as_slice())
+            .await;
+        match res {
+            Ok(n) if same_protocol_only && n.vendor.type_ != expected_type => {
+                // 协议不匹配的候选直接计入排除集（不发起 HTTP）
+                excluded.push(n.vendor.id.clone());
+                if excluded.len() as u32 >= max_attempts {
+                    return None;
+                }
+            }
+            Ok(n) => return Some(n),
+            // 无可用候选
+            Err(_) => return None,
+        }
+    }
+}
+
+/// 回退可观测响应头（WP4）：trail 构造期注入的开关为开启时返回 4 头
+///（流式由调用方在响应头阶段写入），关闭时返回空表（与现状逐字节一致）。
+/// `trail` 为本次实际尝试链（含最终命中者）。
+#[cfg(feature = "resilience")]
+pub(crate) fn fallback_observation_headers(
+    decision: &crate::router::RoutingDecision,
+    trail: &crate::vendor::resilience::AttemptTrail,
+) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    // 开关在 trail 构造期读定（本请求口径一致；record 同门控零分配——L4）。
+    if !trail.exposed() {
+        return headers;
+    }
+    // 头值均为受控字符（vendor/model id 为配置 slugs，链为其逗号连接），
+    // 解析失败时跳过该项（不使成功响应失败）。
+    let pairs = [
+        ("x-nexusflow-vendor", decision.vendor.id.clone()),
+        ("x-nexusflow-model", decision.model.model_id.clone()),
+        ("x-nexusflow-attempts", trail.attempts().to_string()),
+        ("x-nexusflow-fallbacks", trail.fallbacks_value()),
+    ];
+    for (name, value) in pairs {
+        if let (Ok(n), Ok(v)) = (
+            axum::http::HeaderName::from_bytes(name.as_bytes()),
+            axum::http::HeaderValue::from_str(&value),
+        ) {
+            headers.insert(n, v);
+        }
+    }
+    headers
+}
+
+/// 成功响应附回退观测头（WP4 出站装配）：空表时原样返回。以值取
+/// Response（调用方无需 `mut` 绑定，特性关闭组合无 `unused_mut` 告警）。
+pub(crate) fn with_fallback_headers(
+    response: axum::response::Response,
+    obs: &axum::http::HeaderMap,
+) -> axum::response::Response {
+    if obs.is_empty() {
+        return response;
+    }
+    let mut response = response;
+    for (name, value) in obs {
+        response.headers_mut().insert(name.clone(), value.clone());
+    }
+    response
+}
+
+/// 四档成本（WP9）：`model_catalog` 单价；未登记模型全零。
+/// 档源随 `Arc<Config>` 快照引用（零深拷贝——审查 M3）。
+/// usage 提数单源 [`crate::protocol::parse_usage_detailed`]（已下沉 protocol）。
+pub(crate) fn catalog_costs(
+    state: &crate::api::state::ApiState,
+    vendor_type: &str,
+    model: &str,
+    prompt: u32,
+    completion: u32,
+    cache_read: u32,
+    cache_creation: u32,
+) -> (f64, f64, f64, f64) {
+    use crate::vendor::cost::{estimate_cost_from_catalog, prompt_cache_semantics};
+    let snapshot = state.config.read();
+    let usage = crate::protocol::TokenUsage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        cache_read_tokens: cache_read as u64,
+        cache_creation_tokens: cache_creation as u64,
+        ..Default::default()
+    };
+    // cache 包含语义单源于 `prompt_cache_semantics`（与配额回补、CostTracker
+    // 同一判定）——分账侧不得自成一套。
+    let semantics = prompt_cache_semantics(vendor_type);
+    match estimate_cost_from_catalog(&snapshot.model_catalog, model, &usage, semantics) {
+        Some(estimate) => (
+            estimate.input_cost,
+            estimate.output_cost,
+            estimate.cache_read_cost,
+            estimate.cache_creation_cost,
+        ),
+        None => (0.0, 0.0, 0.0, 0.0),
+    }
+}
+
+/// 分账记账（WP9）：usage 缺失跳过（保持预扣）；记账失败记 warn，
+/// 不失败请求。`api_key_hash` 由调用方透传请求方 key 摘要（不复用
+/// key_pool 进程随机盐指纹——后者跨重启不稳定）。
+pub(crate) async fn record_keyed_usage(
+    state: &crate::api::state::ApiState,
+    vendor_id: &str,
+    vendor_type: &str,
+    model_id: &str,
+    api_key_hash: &str,
+    response: &serde_json::Value,
+) {
+    let pre_aggregator = match state.pre_aggregator.as_ref() {
+        Some(pa) => pa,
+        None => return,
+    };
+    let (prompt, completion, cache_read, cache_creation) =
+        match crate::protocol::parse_usage_detailed(response) {
+            Some(usage) => usage,
+            None => return,
+        };
+    let (input_cost, output_cost, cache_read_cost, cache_creation_cost) = catalog_costs(
+        state,
+        vendor_type,
+        model_id,
+        prompt,
+        completion,
+        cache_read,
+        cache_creation,
+    );
+    if let Err(e) = pre_aggregator
+        .record_keyed(&crate::storage::KeyedUsage {
+            vendor: vendor_id.to_string(),
+            model: model_id.to_string(),
+            api_key_hash: api_key_hash.to_string(),
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_read_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
+            input_cost,
+            output_cost,
+            cache_read_cost,
+            cache_creation_cost,
+        })
+        .await
+    {
+        // 记账失败不失败请求（语义保持；错误显性化）
+        tracing::warn!(
+            "{}",
+            crate::i18n::t_args("api-usage-record-rejected", &[("error", e.to_string())])
+        );
+    }
+}
+
+/// 单发调用的换 vendor fallback 循环（resilience feature）。
 ///
 /// - 失败 vendor 进入排除集，重调 `Router::route_excluding`，
 ///   weighted_select 对剩余候选天然重归一化；
@@ -287,11 +490,11 @@ pub(crate) fn finalize_all_throttled(
 ///   构建，trigger=All：耗尽/429/5xx/timeout 都换路）；
 /// - 总尝试预算 `retry.max_total_attempts`（默认 8）防
 ///   vendor 数 × 重试数爆炸；
-/// - recId=9（W5）：跨 vendor 累计等待时间预算 `[retry].retry_budget_secs`
+/// - 跨 vendor 累计等待时间预算 `[retry].retry_budget_secs`
 ///   （默认 0 = 不限时）——锚点含各 vendor 内部重试等待，重派前超限即放弃；
 /// - 无可用候选 / 预算耗尽 / 错误不触发 → 原错误冒泡
-///   （VendorUnavailable 经 error.rs 固定映射 503，与 recId=14① 同口径）；
-/// - recId=19(c)：排除集带原因（Failed/Throttled），trigger/budget 耗尽
+///   （VendorUnavailable 经 error.rs 固定映射 503，与 同口径）；
+/// - 排除集带原因（Failed/Throttled），trigger/budget 耗尽
 ///   与 route_excluding 无候选两处耗尽分支统一经收尾函数
 ///   [`finalize_fallback_error`]——`[routing].retry_after_hint` 开启且
 ///   全部为 Throttled → AllVendorsThrottled（429 + Retry-After）。
@@ -306,6 +509,7 @@ pub(crate) async fn execute_request_with_fallback(
     model: &str,
     initial: crate::router::RoutingDecision,
     request: crate::protocol::UnifiedRequest,
+    trail: &mut crate::vendor::resilience::AttemptTrail,
 ) -> Result<
     (
         crate::protocol::UnifiedResponse,
@@ -313,20 +517,17 @@ pub(crate) async fn execute_request_with_fallback(
     ),
     GateError,
 > {
-    use crate::vendor::resilience::FallbackChain;
-
     let mut decision = initial;
-    // recId=19(c)：排除集升级为 (vendor_id, 原因) —— Throttled 信息供
+    trail.record(&decision.vendor.id);
+    // 排除集升级为 (vendor_id, 原因) —— Throttled 信息供
     // Retry-After 提示判定
     let mut excluded: Vec<(String, ExclusionReason)> = Vec::new();
-    let chain: Option<FallbackChain> = state.router.build_fallback_chain(model);
-    // recId=9（W5）：[retry] 段一次热读 —— 尝试上限（含守门器收紧）与
-    // 时间预算同源同拍；budget 锚点统一 tokio Instant（paused-clock 可测）
-    let retry_cfg = state.config.read().retry.clone();
-    let max_attempts = gate_adjusted_max_attempts(state, &retry_cfg);
-    let budget =
-        (retry_cfg.retry_budget_secs > 0).then(|| Duration::from_secs(retry_cfg.retry_budget_secs));
-    let budget_anchor = tokio::time::Instant::now();
+    let FallbackBudget {
+        chain,
+        max_attempts,
+        budget,
+        budget_anchor,
+    } = build_fallback_budget(state, model);
 
     loop {
         match state
@@ -343,11 +544,11 @@ pub(crate) async fn execute_request_with_fallback(
                 let reason = exclusion_reason(state, &decision.vendor.id, &e).await;
                 excluded.push((decision.vendor.id.clone(), reason));
                 if !triggered || excluded.len() as u32 >= max_attempts {
-                    // recId=19(c)：trigger/预算耗尽收尾（全 Throttled 且
+                    // trigger/预算耗尽收尾（全 Throttled 且
                     // hint 开启 → AllVendorsThrottled；否则原错误）
                     return Err(finalize_fallback_error(state, e, &excluded).await);
                 }
-                // recId=9（W5）：跨 vendor 累计等待超预算 → 放弃换路
+                // 跨 vendor 累计等待超预算 → 放弃换路
                 if let Some(b) = budget {
                     if crate::utils::retry::budget_exceeded(budget_anchor, b, Duration::ZERO) {
                         return Err(finalize_fallback_error(state, e, &excluded).await);
@@ -362,8 +563,11 @@ pub(crate) async fn execute_request_with_fallback(
                 );
                 let excluded_ids: Vec<String> = excluded.iter().map(|(id, _)| id.clone()).collect();
                 match state.router.route_excluding(model, &excluded_ids).await {
-                    Ok(next) => decision = next,
-                    // 无可用候选：收尾后冒泡（recId=19(c) 第二耗尽分支）
+                    Ok(next) => {
+                        trail.record(&next.vendor.id);
+                        decision = next;
+                    }
+                    // 无可用候选：收尾后冒泡（第二耗尽分支）
                     Err(_) => return Err(finalize_fallback_error(state, e, &excluded).await),
                 }
             }
@@ -371,7 +575,7 @@ pub(crate) async fn execute_request_with_fallback(
     }
 }
 
-/// recId=2：透传非流式 / 两条流式路径的换 vendor fallback 循环
+/// 透传非流式 / 两条流式路径的换 vendor fallback 循环
 ///（resilience feature，仅 cover_all_paths 开启时由调用方选用）。
 ///
 /// 镜像 [`execute_request_with_fallback`] 的结构：失败 vendor 进排除集 →
@@ -389,7 +593,7 @@ pub(crate) async fn execute_request_with_fallback(
 ///（UnifiedRequest 转换路径传 false，任意 vendor type 均合法）。
 ///
 /// 返回最终成功的 RoutingDecision —— request_logs.actual_vendor 记最终
-/// 成功者（与 recId=9④ 记账口径一致）。
+/// 成功者（与 记账口径一致）。
 #[cfg(feature = "resilience")]
 pub(crate) async fn execute_dispatch_with_fallback<T, F, Fut>(
     state: &std::sync::Arc<crate::api::state::ApiState>,
@@ -397,6 +601,7 @@ pub(crate) async fn execute_dispatch_with_fallback<T, F, Fut>(
     initial: crate::router::RoutingDecision,
     same_protocol_only: bool,
     dispatch: F,
+    trail: &mut crate::vendor::resilience::AttemptTrail,
 ) -> Result<(T, crate::router::RoutingDecision), GateError>
 where
     // 派发闭包持有决策的**所有权**并返回不借用环境的 future（owned
@@ -406,19 +611,16 @@ where
     F: Fn(crate::router::RoutingDecision) -> Fut,
     Fut: std::future::Future<Output = Result<T, GateError>>,
 {
-    use crate::vendor::resilience::FallbackChain;
-
     let expected_type = initial.vendor.type_.clone();
     let mut decision = initial;
+    trail.record(&decision.vendor.id);
     let mut excluded: Vec<String> = Vec::new();
-    let chain: Option<FallbackChain> = state.router.build_fallback_chain(model);
-    // recId=9（W5）：[retry] 段一次热读 —— 尝试上限（含守门器收紧）与
-    // 时间预算同源同拍；budget 锚点统一 tokio Instant（paused-clock 可测）
-    let retry_cfg = state.config.read().retry.clone();
-    let max_attempts = gate_adjusted_max_attempts(state, &retry_cfg);
-    let budget =
-        (retry_cfg.retry_budget_secs > 0).then(|| Duration::from_secs(retry_cfg.retry_budget_secs));
-    let budget_anchor = tokio::time::Instant::now();
+    let FallbackBudget {
+        chain,
+        max_attempts,
+        budget,
+        budget_anchor,
+    } = build_fallback_budget(state, model);
 
     loop {
         match dispatch(decision.clone()).await {
@@ -432,7 +634,7 @@ where
                 if !triggered || excluded.len() as u32 >= max_attempts {
                     return Err(e);
                 }
-                // recId=9（W5）：跨 vendor 累计等待超预算 → 放弃换路，
+                // 跨 vendor 累计等待超预算 → 放弃换路，
                 // 返回最后错误（保留其 5xx/429 语义）
                 if let Some(b) = budget {
                     if crate::utils::retry::budget_exceeded(budget_anchor, b, Duration::ZERO) {
@@ -446,27 +648,28 @@ where
                     "{}",
                     t("api-vendor-failed-rerouting-pre-stream")
                 );
-                let next = loop {
-                    match state.router.route_excluding(model, &excluded).await {
-                        Ok(n) if same_protocol_only && n.vendor.type_ != expected_type => {
-                            // 协议不匹配的候选直接计入排除集（不发起 HTTP）
-                            excluded.push(n.vendor.id.clone());
-                            if excluded.len() as u32 >= max_attempts {
-                                return Err(e);
-                            }
-                        }
-                        Ok(n) => break n,
-                        // 无可用候选：以原错误冒泡（保留 5xx/429 语义）
-                        Err(_) => return Err(e),
-                    }
+                let next = match next_compatible_route(
+                    state,
+                    model,
+                    &expected_type,
+                    same_protocol_only,
+                    max_attempts,
+                    &mut excluded,
+                )
+                .await
+                {
+                    Some(n) => n,
+                    // 无可用候选 / 排除达上限：以原错误冒泡（保留 5xx/429 语义）
+                    None => return Err(e),
                 };
+                trail.record(&next.vendor.id);
                 decision = next;
             }
         }
     }
 }
 
-// ============ recId=9（W5）tests：fallback 预算与守门器 ============
+// ============ tests：fallback 预算与守门器 ============
 //
 // 两个 fallback 循环是 pub(crate)——集成面（tests/）只能走 HTTP 全链路，
 // 无法对注入计数/时钟做确定性断言；本模块以桩派发闭包（总是失败，可选
@@ -505,6 +708,7 @@ mod fallback_guard_tests {
             type_: "openai".into(),
             api_key_env: "NEXUSFLOW_TEST_KEY".into(),
             api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
             api_base: String::new(),
             enabled: true,
             priority,
@@ -555,6 +759,8 @@ mod fallback_guard_tests {
             routing: RoutingSection::default(),
             cache: crate::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
@@ -609,6 +815,7 @@ mod fallback_guard_tests {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
         })
     }
 
@@ -677,6 +884,7 @@ mod fallback_guard_tests {
             initial,
             false,
             failing_dispatcher(calls.clone(), Duration::ZERO),
+            &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
         assert!(result.is_err(), "桩恒失败，最终必须冒泡错误");
@@ -713,6 +921,7 @@ mod fallback_guard_tests {
             initial,
             false,
             failing_dispatcher(calls.clone(), Duration::ZERO),
+            &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
         assert!(result.is_err());
@@ -751,6 +960,7 @@ mod fallback_guard_tests {
             initial,
             false,
             failing_dispatcher(calls.clone(), Duration::from_secs(2)),
+            &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
         assert!(result.is_err());
@@ -761,7 +971,7 @@ mod fallback_guard_tests {
         );
     }
 }
-// ============ recId=19(c) tests：Retry-After 提示与耗尽收尾 ============
+// ============ tests：Retry-After 提示与耗尽收尾 ============
 //
 // 全 Throttled 场景经配置注入（Token max_tokens=0 → worker 限流早退
 // RateLimited，无真实 HTTP）；初始决策用 direct 形式手工构造
@@ -806,6 +1016,7 @@ mod cooldown_retry_after {
             type_: "openai".to_string(),
             api_key_env: "NEXUSFLOW_TEST_KEY".to_string(),
             api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
             api_base: api_base.to_string(),
             enabled: true,
             priority,
@@ -860,6 +1071,8 @@ mod cooldown_retry_after {
             routing,
             cache: crate::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
@@ -914,6 +1127,7 @@ mod cooldown_retry_after {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
         })
     }
 
@@ -1016,6 +1230,7 @@ mod cooldown_retry_after {
             "shared-model",
             direct_decision(&v_a),
             chat_request(),
+            &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
         let err = NexusFlowError::from(result.expect_err("两 vendor 限流必须失败"));
@@ -1060,6 +1275,7 @@ mod cooldown_retry_after {
             "shared-model",
             direct_decision(&v_a),
             chat_request(),
+            &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
         let err = result.expect_err("全部候选限流必须失败");
@@ -1095,6 +1311,7 @@ mod cooldown_retry_after {
             "shared-model",
             direct_decision(&v_a),
             chat_request(),
+            &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
         let err = result.expect_err("混合原因最终必须失败");
@@ -1125,6 +1342,7 @@ mod cooldown_retry_after {
             "shared-model",
             direct_decision(&v_a),
             chat_request(),
+            &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
         let err = result.expect_err("全部候选限流必须失败");

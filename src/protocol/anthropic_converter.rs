@@ -97,7 +97,7 @@ impl ProtocolConverter for AnthropicConverter {
             .map(parse_anthropic_message)
             .collect::<Result<Vec<_>, _>>()?;
 
-        // recId=8④：顶层 system 参数 → 首条 System 消息（此前
+        // 顶层 system 参数 → 首条 System 消息（此前
         // `get("system")` 全仓零命中，system 指令整体丢失）。
         // Anthropic 的 system 支持 string 或 content blocks 数组两种形状。
         // 同一文本双写 system_prompt（规范槽，单一事实源）；
@@ -133,44 +133,8 @@ impl ProtocolConverter for AnthropicConverter {
         // 工具 schema 体积/深度上限（A3 审查 F4 纵深）：超限请求级 400
         validate_tool_schemas(&tools)?;
 
-        // Anthropic 的 tool_choice 映射到统一格式
-        // 原生形状 any/tool/auto/none 直读（any 即「必须用工具」，
-        // 映射 IR required）；OpenAI function 对象形状保留容错；标量兜底 auto。
-        let tool_choice = body.get("tool_choice").map(|tc| match tc {
-            Value::String(s) => ToolChoice::Strategy(s.clone()),
-            Value::Object(obj) => {
-                if let Some(func) = obj.get("function").and_then(|f| f.as_object()) {
-                    ToolChoice::Specific {
-                        choice_type: "function".to_string(),
-                        function: ToolChoiceFunction {
-                            name: func
-                                .get("name")
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        },
-                    }
-                } else {
-                    match obj.get("type").and_then(|t| t.as_str()) {
-                        Some("any") => ToolChoice::Strategy("required".to_string()),
-                        Some("tool") => ToolChoice::Specific {
-                            choice_type: "function".to_string(),
-                            function: ToolChoiceFunction {
-                                name: obj
-                                    .get("name")
-                                    .and_then(|n| n.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                            },
-                        },
-                        // auto/none 等原词进 Strategy，出站还原同名形状
-                        Some(other) => ToolChoice::Strategy(other.to_string()),
-                        None => ToolChoice::Strategy("auto".to_string()),
-                    }
-                }
-            }
-            _ => ToolChoice::Strategy("auto".to_string()),
-        });
+        // Anthropic 的 tool_choice 映射到统一格式（形状详解见 parse_anthropic_tool_choice）
+        let tool_choice = body.get("tool_choice").map(parse_anthropic_tool_choice);
 
         // temperature/top_p/top_k → sampling（core 对齐槽）；
         // temperature 同时保留 flat 槽双写（既有行为兼容）
@@ -195,21 +159,8 @@ impl ProtocolConverter for AnthropicConverter {
 
         // thinking → thinking_config（enabled 无预算 → Adaptive，
         // 「启用但不定预算」在 IR 的最近表达）；budget_tokens u64 对齐 core
-        let thinking_config =
-            body.get("thinking")
-                .and_then(|v| v.as_object())
-                .and_then(|t| match t.get("type").and_then(|v| v.as_str()) {
-                    Some("enabled") => {
-                        Some(match t.get("budget_tokens").and_then(|v| v.as_u64()) {
-                            Some(budget) => ThinkingConfig::Enabled {
-                                budget_tokens: budget,
-                            },
-                            None => ThinkingConfig::Adaptive,
-                        })
-                    }
-                    Some("disabled") => Some(ThinkingConfig::Disabled),
-                    _ => None,
-                });
+        //（形状详解见 parse_anthropic_thinking）
+        let thinking_config = parse_anthropic_thinking(&body);
 
         // effort 不进 IR（Anthropic 无原生概念）——入站落入
         // vendor_extensions，出站经扩展表显式透传（opt-in）
@@ -253,7 +204,7 @@ impl ProtocolConverter for AnthropicConverter {
     }
 
     fn request_to_external(&self, request: UnifiedRequest) -> Result<Value, GateError> {
-        // recId=8④：Role::System 消息提升为 Anthropic 顶层 system 参数
+        // Role::System 消息提升为 Anthropic 顶层 system 参数
         //（Anthropic messages 数组不接受 system 角色，直接放入会被上游拒收）。
         // system_prompt 为规范槽，出站优先合并——system_prompt 在前，
         // 与 Role::System 消息文本去重合并（相同文本只保留一份）。
@@ -444,7 +395,7 @@ impl ProtocolConverter for AnthropicConverter {
                     .any(|item| item.get("type").and_then(|t| t.as_str()) == Some("tool_use"));
 
                 if has_tool_use {
-                    // Parse tool calls（recId=8①：与 parse_anthropic_message
+                    // Parse tool calls（与 parse_anthropic_message
                     // 的 tool_use 聚合共用同一 helper）
                     let mut tool_calls = Vec::new();
                     let mut text_parts = Vec::new();
@@ -503,7 +454,7 @@ impl ProtocolConverter for AnthropicConverter {
             _ => None,
         };
 
-        // recId=8⑤：stop_reason → finish_reason 静态映射（IR 统一存
+        // stop_reason → finish_reason 静态映射（IR 统一存
         // OpenAI 词汇；未知值原样保留）。：已知词双写结构化槽。
         let stop_reason = response
             .get("stop_reason")
@@ -701,7 +652,7 @@ impl ProtocolConverter for AnthropicConverter {
     }
 }
 
-/// 解析 Anthropic 上游 SSE 帧的 `data` 负载 → IR StreamChunk（recId=3）。
+/// 解析 Anthropic 上游 SSE 帧的 `data` 负载 → IR StreamChunk。
 ///
 /// Anthropic 流式事件的 `data` JSON 自带 `type` 字段：
 /// - `content_block_delta`（text_delta）→ [`StreamChunk::Content`]；
@@ -830,7 +781,7 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
     }
 }
 
-/// Anthropic 出站流式状态机（recId=3 阶段二③； 工具流统一）。
+/// Anthropic 出站流式状态机（阶段二③； 工具流统一）。
 ///
 /// IR StreamChunk 流不携带 Anthropic 流式协议的生命周期事件 —— 直接逐块
 /// [`ProtocolConverter::stream_chunk_to_external`] 输出的
@@ -1005,10 +956,12 @@ impl AnthropicStreamEncoder {
                     );
                 }
                 // finish_reason 到达即闭合当前 content block
-                // （message_delta 由 Usage 帧或 finish 兜底发出）
+                // （message_delta 由 Usage 帧或 finish 兜底发出）。
+                // 闭合即递增序号——后开块序号唯一（Anthropic 块序号语义）。
                 if self.stop_reason.is_some() && self.block_open {
                     events.push(self.content_block_stop_event());
                     self.block_open = false;
+                    self.block_index += 1;
                 }
                 events
             }
@@ -1032,6 +985,7 @@ impl AnthropicStreamEncoder {
                 if self.block_open {
                     events.push(self.content_block_stop_event());
                     self.block_open = false;
+                    self.block_index += 1;
                 }
                 events.push(
                     json!({
@@ -1096,6 +1050,7 @@ impl AnthropicStreamEncoder {
         if self.block_open {
             events.push(self.content_block_stop_event());
             self.block_open = false;
+            self.block_index += 1;
         }
         events.push(json!({ "type": "message_stop" }).to_string());
         events
@@ -1180,7 +1135,7 @@ fn parse_anthropic_message(json: &Value) -> Result<Message, GateError> {
     let content = match json.get("content") {
         Some(Value::String(s)) => MessageContent::Text(s.clone()),
         Some(Value::Array(arr)) => {
-            // recId=8①：tool_use / tool_result 块聚合（此前经
+            // tool_use / tool_result 块聚合（此前经
             // parse_anthropic_block 静默丢弃，多轮工具对话历史断裂）。
             // 不改 ContentBlock 枚举以控制爆炸半径 —— 聚合发生在本层。
             let has_tool_use = arr
@@ -1248,7 +1203,7 @@ fn parse_anthropic_message(json: &Value) -> Result<Message, GateError> {
     Ok(Message { role, content })
 }
 
-/// 解析 Anthropic tool_use 块 → ToolCall（recId=8① 提取，
+/// 解析 Anthropic tool_use 块 → ToolCall（提取，
 /// parse_response 与 parse_anthropic_message 共用）。
 fn parse_tool_use_block(block: &Value) -> Option<ToolCall> {
     let id = block.get("id")?.as_str()?.to_string();
@@ -1267,41 +1222,51 @@ fn parse_tool_use_block(block: &Value) -> Option<ToolCall> {
     })
 }
 
-/// 聚合 content 数组中的 tool_result 块 → ToolResult（recId=8①）。
+/// 聚合 content 数组中的 tool_result 块 → ToolResult。
 ///
 /// Anthropic 的并行工具调用会在同一 user 消息放多个 tool_result 块：
 /// 首块的 tool_use_id 为准，各块 content（string 或 blocks 数组）以换行
 /// 拼接；UnifiedRequest 的 Message 只承载单个 ToolResult，多结果合并是
 /// 首版折衷。
+///
+/// 同消息的 `text` 块一并按原文顺序并入（此前静默丢弃，多轮工具对话中
+/// 用户文本丢失）。出站渲染为单个 tool_result 块（内容完整，块数归一）。
 fn aggregate_anthropic_tool_result(arr: &[Value]) -> ToolResult {
     let mut tool_call_id = String::new();
     let mut contents: Vec<String> = Vec::new();
     let mut is_error = false;
 
-    for block in arr
-        .iter()
-        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
-    {
-        if tool_call_id.is_empty() {
-            tool_call_id = block
-                .get("tool_use_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-        }
-        match block.get("content") {
-            Some(Value::String(s)) => contents.push(s.clone()),
-            Some(Value::Array(blocks)) => {
-                for b in blocks {
-                    if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
-                        contents.push(t.to_string());
+    for block in arr.iter() {
+        match block.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                    contents.push(t.to_string());
+                }
+            }
+            Some("tool_result") => {
+                if tool_call_id.is_empty() {
+                    tool_call_id = block
+                        .get("tool_use_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                }
+                match block.get("content") {
+                    Some(Value::String(s)) => contents.push(s.clone()),
+                    Some(Value::Array(blocks)) => {
+                        for b in blocks {
+                            if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                                contents.push(t.to_string());
+                            }
+                        }
                     }
+                    _ => {}
+                }
+                if block.get("is_error").and_then(|v| v.as_bool()) == Some(true) {
+                    is_error = true;
                 }
             }
             _ => {}
-        }
-        if block.get("is_error").and_then(|v| v.as_bool()) == Some(true) {
-            is_error = true;
         }
     }
 
@@ -1342,7 +1307,7 @@ fn system_message_parts(messages: &[Message]) -> Vec<String> {
         .collect()
 }
 
-/// Anthropic stop_reason → OpenAI finish_reason 静态映射（recId=8⑤）。
+/// Anthropic stop_reason → OpenAI finish_reason 静态映射。
 /// IR 的 finish_reason 统一存 OpenAI 词汇；未知值原样保留。
 fn anthropic_stop_reason_to_finish_reason(s: &str) -> String {
     match s {
@@ -1353,7 +1318,7 @@ fn anthropic_stop_reason_to_finish_reason(s: &str) -> String {
     }
 }
 
-/// OpenAI finish_reason → Anthropic stop_reason 静态映射（recId=8⑤ 反向）。
+/// OpenAI finish_reason → Anthropic stop_reason 静态映射（反向）。
 /// end_turn 与 stop_sequence 都归一为 stop，反向取 end_turn（信息损失为
 /// 静态映射表固有；未知值原样保留）。
 fn finish_reason_to_anthropic_stop_reason(s: &str) -> String {
@@ -1446,7 +1411,7 @@ fn message_to_anthropic(msg: &Message) -> Value {
         MessageContent::ToolResult(result) => json!([{
             "type": "tool_result",
             // Anthropic 规范字段为 tool_use_id（评审 major：此前误写
-            // tool_call_id，缺必填字段会被上游 400 拒收；recId=8① 使本
+            // tool_call_id，缺必填字段会被上游 400 拒收；使本
             // 分支首次可达）
             "tool_use_id": result.tool_call_id,
             "content": result.content,
@@ -1479,6 +1444,65 @@ fn message_to_anthropic(msg: &Message) -> Value {
         "role": role_str,
         "content": content,
     })
+}
+
+/// Anthropic `tool_choice` → IR ToolChoice：原生形状 any/tool/auto/none 直读
+///（any 即「必须用工具」，映射 IR required）；OpenAI function 对象形状保留
+/// 容错；标量兜底 auto。
+fn parse_anthropic_tool_choice(tc: &Value) -> ToolChoice {
+    match tc {
+        Value::String(s) => ToolChoice::Strategy(s.clone()),
+        Value::Object(obj) => {
+            if let Some(func) = obj.get("function").and_then(|f| f.as_object()) {
+                ToolChoice::Specific {
+                    choice_type: "function".to_string(),
+                    function: ToolChoiceFunction {
+                        name: func
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    },
+                }
+            } else {
+                match obj.get("type").and_then(|t| t.as_str()) {
+                    Some("any") => ToolChoice::Strategy("required".to_string()),
+                    Some("tool") => ToolChoice::Specific {
+                        choice_type: "function".to_string(),
+                        function: ToolChoiceFunction {
+                            name: obj
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        },
+                    },
+                    // auto/none 等原词进 Strategy，出站还原同名形状
+                    Some(other) => ToolChoice::Strategy(other.to_string()),
+                    None => ToolChoice::Strategy("auto".to_string()),
+                }
+            }
+        }
+        _ => ToolChoice::Strategy("auto".to_string()),
+    }
+}
+
+/// Anthropic `thinking` → IR ThinkingConfig：enabled 无预算 → Adaptive
+///（「启用但不定预算」在 IR 的最近表达）；budget_tokens u64 对齐 core；
+/// disabled → Disabled；其余/缺失 → None。
+fn parse_anthropic_thinking(body: &Value) -> Option<ThinkingConfig> {
+    body.get("thinking")
+        .and_then(|v| v.as_object())
+        .and_then(|t| match t.get("type").and_then(|v| v.as_str()) {
+            Some("enabled") => Some(match t.get("budget_tokens").and_then(|v| v.as_u64()) {
+                Some(budget) => ThinkingConfig::Enabled {
+                    budget_tokens: budget,
+                },
+                None => ThinkingConfig::Adaptive,
+            }),
+            Some("disabled") => Some(ThinkingConfig::Disabled),
+            _ => None,
+        })
 }
 
 /// 解析 Anthropic 格式的工具定义

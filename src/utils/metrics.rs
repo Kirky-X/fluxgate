@@ -14,21 +14,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-/// recId=10②：EWMA 平滑系数 α=0.2 — 新样本权重 20%，兼顾灵敏度与抗抖动
+/// EWMA 平滑系数 α=0.2 — 新样本权重 20%，兼顾灵敏度与抗抖动
 /// （100→200→400ms 的序列 ewma 逐次 100→120→176，新值权重大于历史均值）。
-/// recId=8 后仅用于错误率道（延迟道已迁移 Peak-EWMA，见 [`peak_ewma_alpha`]）。
+/// 后仅用于错误率道（延迟道已迁移 Peak-EWMA，见 [`peak_ewma_alpha`]）。
 const EWMA_ALPHA: f64 = 0.2;
 
-/// recId=8：Peak-EWMA 默认时间常数 τ（ms）— 与 `[routing].ewma_tau_ms` 缺省
+/// Peak-EWMA 默认时间常数 τ（ms）— 与 `[routing].ewma_tau_ms` 缺省
 /// 同值（Kong latency.lua DECAY_TIME=10s 同值）。
 pub const DEFAULT_EWMA_TAU_MS: u64 = 10_000;
 
-/// recId=16：流量份额滑窗参数 — 60s 窗、10 桶环形（每桶 6s）。
+/// 流量份额滑窗参数 — 60s 窗、10 桶环形（每桶 6s）。
 /// 窗口推进由写入驱动（惰性），无需后台线程。
 pub const TRAFFIC_WINDOW: Duration = Duration::from_secs(60);
 pub const TRAFFIC_BUCKETS: usize = 10;
 
-/// recId=16：滑动窗口份额计数器 — 60s 窗、10 桶环形（每桶 6s）。
+/// 滑动窗口份额计数器 — 60s 窗、10 桶环形（每桶 6s）。
 ///
 /// 以**绝对时刻**换算桶序：`abs = (now − base) / bucket_secs`（`base` 为
 /// 首样本的真实 Instant）。`Instant` 差保留亚秒残差且每次都用全量差值
@@ -99,14 +99,14 @@ impl SlidingCounter {
         self.buckets[(abs % n) as usize] += 1;
     }
 
-    /// recId=7（W5）：`pub(crate)` 访问器 — 失败率滑窗（本模块
+    /// `pub(crate)` 访问器 — 失败率滑窗（本模块
     /// `VendorFailureWindowPair`）与流量份额（`traffic_shares`）共用。
     pub(crate) fn window_total(&self) -> u64 {
         self.buckets.iter().sum()
     }
 }
 
-/// recId=7（W5）：每 vendor 一对失败率滑窗 — total 记全部请求结局（纯观测，
+/// 每 vendor 一对失败率滑窗 — total 记全部请求结局（纯观测，
 /// 常开），failures 仅失败（含 429，见 manager 记账点注释）记入。
 /// 复用 [`SlidingCounter`]（60s 窗 / 10 桶，与流量份额同参），写入由
 /// [`GlobalMetrics::record_vendor_outcome_at`] 驱动（惰性推进，无后台线程）。
@@ -115,7 +115,7 @@ struct VendorFailureWindowPair {
     failures: SlidingCounter,
 }
 
-/// recId=8：Peak-EWMA 动态平滑系数 — α_dyn = 1 − exp(−Δt/τ)（Kong
+/// Peak-EWMA 动态平滑系数 — α_dyn = 1 − exp(−Δt/τ)（Kong
 /// latency.lua:34-41 同式）。久未采样（Δt ≫ τ）→ α→1 快速反映恢复；
 /// 高频采样（Δt ≪ τ）→ α≈Δt/τ 平滑抗噪。τ=0 视为极限「完全采新样本」。
 fn peak_ewma_alpha(dt_ms: f64, tau_ms: u64) -> f64 {
@@ -125,7 +125,7 @@ fn peak_ewma_alpha(dt_ms: f64, tau_ms: u64) -> f64 {
     1.0 - (-dt_ms / tau_ms as f64).exp()
 }
 
-/// recId=8：单道 Peak-EWMA 更新 — 首样本直接种子，后续按 α_dyn 混合。
+/// 单道 Peak-EWMA 更新 — 首样本直接种子，后续按 α_dyn 混合。
 /// `last_at` **每道独立**：worker 完成分支 queue/e2e 两道同刻落账，若共享
 /// 时间锚，第二道 Δt=0 → α=0 会整笔漏记。
 fn update_lane_ewma(
@@ -153,24 +153,24 @@ pub struct GlobalMetrics {
     failed_requests: AtomicU64,
     total_duration_ns: AtomicU64,
     per_vendor: RwLock<HashMap<String, VendorMetrics>>,
-    /// recId=11：会话亲和命中计数（亲和 boost 选中）
+    /// 会话亲和命中计数（亲和 boost 选中）
     affinity_hits: AtomicU64,
-    /// recId=11：会话亲和未命中计数（无绑定，或绑定 vendor 已不在合格集合）
+    /// 会话亲和未命中计数（无绑定，或绑定 vendor 已不在合格集合）
     affinity_misses: AtomicU64,
-    /// recId=16：每 vendor 一只滑窗份额计数器（60s / 10 桶）
+    /// 每 vendor 一只滑窗份额计数器（60s / 10 桶）
     traffic: RwLock<HashMap<String, SlidingCounter>>,
-    /// recId=7（W5）：每 vendor 失败率滑窗（total/failures，60s / 10 桶）。
+    /// 每 vendor 失败率滑窗（total/failures，60s / 10 桶）。
     /// 窗口计数常开（纯观测）；软降权消费由 `[resilience].failure_rate_gate`
     /// 门控（默认关）。
     vendor_windows: RwLock<HashMap<String, VendorFailureWindowPair>>,
-    /// recId=8：Peak-EWMA 时间常数 τ（ms）。生产由 VendorManager 落账前从
+    /// Peak-EWMA 时间常数 τ（ms）。生产由 VendorManager 落账前从
     /// `[routing].ewma_tau_ms` 热同步（[`Self::set_ewma_tau_ms`]）；缺省
     /// [`DEFAULT_EWMA_TAU_MS`]。
     ewma_tau_ms: AtomicU64,
-    /// recId=9（W5）：重试放大的重试维度计数 — 重试 attempt 总数（manager
+    /// 重试放大的重试维度计数 — 重试 attempt 总数（manager
     /// 重试循环 attempt+=1 时记）。此前全仓重试维度计数为 0（grep 实证）。
     retried_attempts: AtomicU64,
-    /// recId=9（W5）：失败请求计数（失败率 f 与放大比 r 的分母来源之一）。
+    /// 失败请求计数（失败率 f 与放大比 r 的分母来源之一）。
     /// 与 `failed_requests`（record_request 驱动、含透传/流式）独立：本计数
     /// 只在 manager 记账点的失败分支累加，语义 =「进入过重试候选路径的
     /// 失败」。
@@ -195,7 +195,7 @@ impl GlobalMetrics {
         }
     }
 
-    /// recId=8：热同步 Peak-EWMA 时间常数 τ（ms）。VendorManager 在每次
+    /// 热同步 Peak-EWMA 时间常数 τ（ms）。VendorManager 在每次
     /// 延迟道落账前调用，POST /admin/config 更新 `[routing].ewma_tau_ms`
     /// 后下一次采样即用新 τ。
     pub fn set_ewma_tau_ms(&self, tau_ms: u64) {
@@ -229,12 +229,12 @@ impl GlobalMetrics {
                 .saturating_add(duration.as_nanos() as u64);
             entry.last_request_at = Some(now_unix_ts());
 
-            // recId=10②：EWMA 更新 — ewma = α×x + (1-α)×ewma，替换全生命期
+            // EWMA 更新 — ewma = α×x + (1-α)×ewma，替换全生命期
             // 均值（total_duration_ns/requests）的钝化问题：后者对近期劣化
             // 无感，EWMA 对延迟/错误率的近期变化指数收敛。字段在 per_vendor
             // 写锁内更新，无需原子（快照读走同一把锁）。
             //
-            // recId=8（口径分道）：延迟 EWMA 迁出本函数 — 本方法入参 duration
+            // 延迟 EWMA 迁出本函数 — 本方法入参 duration
             // 的口径因调用路径而异（worker=排队+执行全程 / 流式=send→响应头 /
             // 透传=全程），混流汇入同一 ewma_latency_ms 正是本次修复的缺陷。
             // 本方法此后只喂错误率道；延迟信号由 record_e2e / record_ttft /
@@ -250,7 +250,7 @@ impl GlobalMetrics {
         }
     }
 
-    /// recId=8：记录流式 TTFT（Time-To-First-Token）样本。
+    /// 记录流式 TTFT（Time-To-First-Token）样本。
     ///
     /// 口径 = send 发起 → 上游响应头返回（严格首 token 口径网关侧不可得，
     /// 以响应头近似——config.toml [routing] 注释如实标注）。`now` 注入便于
@@ -273,8 +273,8 @@ impl GlobalMetrics {
         }
     }
 
-    /// recId=8：记录非流式端到端延迟样本（口径 = enqueued_at → 完成含排队）。
-    /// 同时更新 `ewma_latency_ms` 兼容输出（recId=8 后其语义收窄为 e2e
+    /// 记录非流式端到端延迟样本（口径 = enqueued_at → 完成含排队）。
+    /// 同时更新 `ewma_latency_ms` 兼容输出（后其语义收窄为 e2e
     /// 别名——此前混流四路口径，/admin/metrics 外部消费方仍读该字段）。
     pub fn record_e2e(&self, vendor: &str, duration: std::time::Duration, now: Instant) {
         let tau_ms = self.ewma_tau_ms.load(Ordering::Relaxed);
@@ -297,7 +297,7 @@ impl GlobalMetrics {
         }
     }
 
-    /// recId=8：记录排队段延迟样本（口径 = enqueued_at → worker 取走
+    /// 记录排队段延迟样本（口径 = enqueued_at → worker 取走
     /// dequeued_at，含 RPS/并发票据等待前的队列滞留）。纯观测道。
     pub fn record_queue(&self, vendor: &str, duration: std::time::Duration, now: Instant) {
         let tau_ms = self.ewma_tau_ms.load(Ordering::Relaxed);
@@ -327,7 +327,7 @@ impl GlobalMetrics {
         }
     }
 
-    /// recId=16：以指定时刻触碰 vendor 的流量滑窗当前桶。
+    /// 以指定时刻触碰 vendor 的流量滑窗当前桶。
     ///
     /// 生产由 [`Self::record_request`] 以真实时钟调用；`pub` 是为了测试
     /// 注入假时钟做确定性滑窗推进断言（tests 见本文件 `#[cfg(test)]`）。
@@ -340,7 +340,7 @@ impl GlobalMetrics {
         }
     }
 
-    /// recId=7（W5）：以指定时刻记录 vendor 一次请求结局到失败率滑窗。
+    /// 以指定时刻记录 vendor 一次请求结局到失败率滑窗。
     /// success 记入 total；失败（含 429/RateLimited，由记账点判定）同时
     /// 记入 failures。`now` 注入与 `record_traffic_at` 同先例——测试驱动
     /// 确定性滑窗推进。存取失败静默降级（观测不得影响执行路径）。
@@ -359,7 +359,7 @@ impl GlobalMetrics {
         }
     }
 
-    /// recId=7（W5）：vendor 的失败率滑窗快照 `(窗内总数, 窗内失败数)`。
+    /// vendor 的失败率滑窗快照 `(窗内总数, 窗内失败数)`。
     /// 无样本 vendor 返回 (0, 0)。读侧先把全部 counter 推进到全体
     /// `max(last_seen)`（[`Self::traffic_shares`] 同先例）——vendor 停止
     /// 写入后其旧失败随全局时间衰减出窗，不滞留失败率。
@@ -384,28 +384,28 @@ impl GlobalMetrics {
         (pair.total.window_total(), pair.failures.window_total())
     }
 
-    /// recId=9（W5）：重试 attempt 计数（manager 重试循环 attempt+=1 时记）
+    /// 重试 attempt 计数（manager 重试循环 attempt+=1 时记）
     pub fn record_retry_attempt(&self) {
         self.retried_attempts.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// recId=9（W5）：失败请求计数（放大比 r 的分母）
+    /// 失败请求计数（放大比 r 的分母）
     pub fn record_failed_request_before_retry(&self) {
         self.failed_requests_before_retry
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// recId=9（W5）：重试 attempt 计数读数
+    /// 重试 attempt 计数读数
     pub fn retried_attempts(&self) -> u64 {
         self.retried_attempts.load(Ordering::Relaxed)
     }
 
-    /// recId=9（W5）：失败请求计数读数
+    /// 失败请求计数读数
     pub fn failed_requests_before_retry(&self) -> u64 {
         self.failed_requests_before_retry.load(Ordering::Relaxed)
     }
 
-    /// recId=9（W5）：流量滑窗内总请求数 — 守门器的 λ 估计分母（窗 60s，
+    /// 流量滑窗内总请求数 — 守门器的 λ 估计分母（窗 60s，
     /// λ = 本值 / 60）。读侧推进语义与 [`Self::traffic_shares`] 一致
     ///（全体 `max(last_seen)` 为逻辑当前时刻）。
     pub fn traffic_window_total(&self) -> u64 {
@@ -426,7 +426,7 @@ impl GlobalMetrics {
             .sum()
     }
 
-    /// recId=9（W5）：重试放大守门器的观测视图 `(r, f, λ)`。
+    /// 重试放大守门器的观测视图 `(r, f, λ)`。
     ///
     /// - r = retried_attempts / failed_requests_before_retry（重试请求数 /
     ///   失败请求数；无失败 → None：无放大信号可言）
@@ -442,16 +442,16 @@ impl GlobalMetrics {
         Some((r, self.error_rate(), lambda))
     }
 
-    /// recId=11：亲和命中计数（router 亲和 boost 选中时调用）
+    /// 亲和命中计数（router 亲和 boost 选中时调用）
     pub fn record_affinity_hit(&self) {
         self.affinity_hits.fetch_add(1, Ordering::Relaxed);
     }
-    /// recId=11：亲和未命中计数（无绑定 / 绑定 vendor 已不在合格集合）
+    /// 亲和未命中计数（无绑定 / 绑定 vendor 已不在合格集合）
     pub fn record_affinity_miss(&self) {
         self.affinity_misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// recId=11：亲和命中率 = hits / (hits + misses)；无样本返回 0.0
+    /// 亲和命中率 = hits / (hits + misses)；无样本返回 0.0
     pub fn affinity_hit_rate(&self) -> f64 {
         let hits = self.affinity_hits.load(Ordering::Relaxed);
         let misses = self.affinity_misses.load(Ordering::Relaxed);
@@ -462,7 +462,7 @@ impl GlobalMetrics {
         hits as f64 / total as f64
     }
 
-    /// recId=16：滑窗内各 vendor 的流量份额 `[(vendor_id, share)]`。
+    /// 滑窗内各 vendor 的流量份额 `[(vendor_id, share)]`。
     ///
     /// 只含窗内有流量的 vendor（window_total > 0）；总流量为 0 时返回空
     /// vec。份额总和恒为 1.0。读侧先把全部 counter 推进到全体
@@ -496,7 +496,7 @@ impl GlobalMetrics {
             .collect()
     }
 
-    /// recId=16：top-1 流量占比 — 最大 vendor 份额；空窗返回 0.0
+    /// top-1 流量占比 — 最大 vendor 份额；空窗返回 0.0
     pub fn top1_share(&self) -> f64 {
         self.traffic_shares()
             .iter()
@@ -504,7 +504,7 @@ impl GlobalMetrics {
             .fold(0.0_f64, f64::max)
     }
 
-    /// recId=16：流量份额 Shannon 熵，除以 ln V 归一到 [0,1]。
+    /// 流量份额 Shannon 熵，除以 ln V 归一到 [0,1]。
     ///
     /// H = −Σ p·ln p / ln V。V=1（单 vendor 独占）与空窗均定义为 0——
     /// 前者是完全集中的极限（防 ln 1 = 0 除零），后者无流量无分布。
@@ -518,7 +518,7 @@ impl GlobalMetrics {
         h / (v as f64).ln()
     }
 
-    /// recId=16：路由崩溃告警钩子 — top-1 占比 > 0.9 且窗内活跃 vendor > 2。
+    /// 路由崩溃告警钩子 — top-1 占比 > 0.9 且窗内活跃 vendor > 2。
     ///
     /// 对应「When Routing Collapses」失败模式：调权后流量收敛单模型而无
     /// 告警。活跃 vendor ≤ 2 的高占比是正常的二选一路由，不告警；空窗
@@ -542,12 +542,12 @@ impl GlobalMetrics {
         failed as f64 / total as f64
     }
 
-    /// recId=10③：vendor 的 EWMA 延迟（ms）与错误率快照 — 路由权重第 4 维
+    /// vendor 的 EWMA 延迟（ms）与错误率快照 — 路由权重第 4 维
     /// 的输入。该 vendor **无 e2e 延迟数据**（从未被记录，或只有
     /// record_request/record_ttft 历史、无 record_e2e 样本）时返回 None
     /// （Router 对无数据厂商走中性因子，不惩罚冷启动）。
     ///
-    /// recId=8（口径分道）：`ewma_latency_ms` 语义收窄为 **e2e 别名**——
+    /// `ewma_latency_ms` 语义收窄为 **e2e 别名**——
     /// 此前四路喂入点（worker 全程/两条流式 TTFT 近似/透传全程）口径各异
     /// 汇入同一 EWMA，本方法返回的延迟从此只由 record_e2e 喂入。
     ///
@@ -564,8 +564,8 @@ impl GlobalMetrics {
         (entry.e2e_samples > 0).then_some((entry.ewma_latency_ms, entry.ewma_error_rate))
     }
 
-    /// recId=17：vendor 的 60s 流量窗总数 — LPS 前瞻的到达率输入
-    ///（α = total / 60，与 recId=7 软降权 / recId=16 流量份额共用同一
+    /// vendor 的 60s 流量窗总数 — LPS 前瞻的到达率输入
+    ///（α = total / 60，与 软降权 / 流量份额共用同一
     /// 计数器，经访问器而非复制）。读取时惰性推进到表内最新锚
     ///（traffic_shares 同款口径），poison 按空表容错；vendor 无记录
     /// 返回 0。
@@ -587,7 +587,7 @@ impl GlobalMetrics {
         }
     }
 
-    /// recId=8③：vendor 的 e2e 道 EWMA（ms）— 仅该道有样本时返回 Some。
+    /// vendor 的 e2e 道 EWMA（ms）— 仅该道有样本时返回 Some。
     /// min+buffer 候选集（weighted_select_with）的「有延迟数据」判定口径：
     /// 只被 record_request 记过账（如纯流式失败）的 vendor 不算延迟数据。
     pub fn vendor_ewma_e2e(&self, vendor: &str) -> Option<f64> {
@@ -598,7 +598,7 @@ impl GlobalMetrics {
 
     /// 生成可序列化快照
     ///
-    /// recId=16：快照时若 [`Self::should_alert`] 为 true（top-1 占比 > 0.9
+    /// 快照时若 [`Self::should_alert`] 为 true（top-1 占比 > 0.9
     /// 且活跃 vendor > 2），记 tracing::warn ——「路由崩溃」告警钩子，
     /// 对应论文 When Routing Collapses 的调权后流量收敛单模型无告警问题。
     pub fn snapshot(&self) -> MetricsSnapshot {
@@ -656,18 +656,18 @@ impl GlobalMetrics {
         self.total_duration_ns.store(0, Ordering::Relaxed);
         self.affinity_hits.store(0, Ordering::Relaxed);
         self.affinity_misses.store(0, Ordering::Relaxed);
-        // recId=9（W5）：重试维度计数同步清零
+        // 重试维度计数同步清零
         self.retried_attempts.store(0, Ordering::Relaxed);
         self.failed_requests_before_retry
             .store(0, Ordering::Relaxed);
         if let Ok(mut guard) = self.per_vendor.write() {
             guard.clear();
         }
-        // recId=16：滑窗份额计数同步清空
+        // 滑窗份额计数同步清空
         if let Ok(mut guard) = self.traffic.write() {
             guard.clear();
         }
-        // recId=7（W5）：失败率滑窗同步清空
+        // 失败率滑窗同步清空
         if let Ok(mut guard) = self.vendor_windows.write() {
             guard.clear();
         }
@@ -690,27 +690,27 @@ pub struct VendorMetrics {
     pub total_duration_ns: u64,
     pub last_request_at: Option<i64>,
     pub last_error: Option<String>,
-    /// recId=10②：EWMA 延迟（ms）— 近期延迟的指数滑动平均。
-    /// **recId=8 语义变化（changelog 声明）**：从此只由 record_e2e 喂入
+    /// EWMA 延迟（ms）— 近期延迟的指数滑动平均。
+    /// **语义变化（changelog 声明）** 从此只由 record_e2e 喂入
     /// （e2e 别名，Peak-EWMA 平滑），不再混流 TTFT/排队口径的样本。
     pub ewma_latency_ms: f64,
-    /// recId=10②：EWMA 错误率（[0,1]，α=0.2，成功=0/失败=1 的滑动平均）
+    /// EWMA 错误率（[0,1]，α=0.2，成功=0/失败=1 的滑动平均）
     pub ewma_error_rate: f64,
     /// EWMA 样本数（0 = 尚无观测，ewma 字段无意义）— record_request 驱动
-    ///（recId=8 后对齐错误率道的样本数）
+    ///（后对齐错误率道的样本数）
     pub ewma_samples: u64,
-    /// recId=8：流式 TTFT EWMA（ms）— 口径 = send → 上游响应头（严格首
+    /// 流式 TTFT EWMA（ms）— 口径 = send → 上游响应头（严格首
     /// token 网关侧不可得，响应头近似）
     pub ewma_ttft_ms: f64,
-    /// recId=8：非流式端到端 EWMA（ms）— 口径 = enqueued_at → 完成（含排队）
+    /// 非流式端到端 EWMA（ms）— 口径 = enqueued_at → 完成（含排队）
     pub ewma_e2e_ms: f64,
-    /// recId=8：排队段 EWMA（ms）— 口径 = enqueued_at → worker 取走
+    /// 排队段 EWMA（ms）— 口径 = enqueued_at → worker 取走
     pub ewma_queue_ms: f64,
-    /// recId=8：三道各自的样本数（0 = 该道尚无观测）
+    /// 三道各自的样本数（0 = 该道尚无观测）
     pub ttft_samples: u64,
     pub e2e_samples: u64,
     pub queue_samples: u64,
-    /// recId=8：Peak-EWMA 每道时间锚（Δt = now − last_*_at → α_dyn）。
+    /// Peak-EWMA 每道时间锚（Δt = now − last_*_at → α_dyn）。
     /// 私有观测态，不进 /admin/metrics 序列化。
     #[serde(skip)]
     last_ttft_at: Option<Instant>,
@@ -761,7 +761,7 @@ impl VendorMetrics {
 
 /// 指标快照 — 可序列化返回给客户端
 ///
-/// recId=11/16 新增字段：`affinity_hits`/`affinity_misses`/`affinity_hit_rate`
+/// 新增字段：`affinity_hits`/`affinity_misses`/`affinity_hit_rate`
 ///（会话亲和命中率）与 `top1_share`/`share_entropy`（流量分布熵监控），
 /// /admin/metrics 序列化自动带出。
 #[derive(Debug, Serialize)]
@@ -772,15 +772,15 @@ pub struct MetricsSnapshot {
     pub error_rate: f64,
     pub avg_duration_ms: f64,
     pub vendors: Vec<VendorMetrics>,
-    /// recId=11：会话亲和命中次数
+    /// 会话亲和命中次数
     pub affinity_hits: u64,
-    /// recId=11：会话亲和未命中次数
+    /// 会话亲和未命中次数
     pub affinity_misses: u64,
-    /// recId=11：亲和命中率（[0,1]，无样本 0.0）
+    /// 亲和命中率（[0,1]，无样本 0.0）
     pub affinity_hit_rate: f64,
-    /// recId=16：滑窗 top-1 vendor 流量占比（[0,1]，空窗 0.0）
+    /// 滑窗 top-1 vendor 流量占比（[0,1]，空窗 0.0）
     pub top1_share: f64,
-    /// recId=16：流量份额 Shannon 熵（归一 [0,1]；V≤1 为 0）
+    /// 流量份额 Shannon 熵（归一 [0,1]；V≤1 为 0）
     pub share_entropy: f64,
 }
 
@@ -925,12 +925,12 @@ mod tests {
         assert_eq!(v.avg_duration_ms(), 0.0);
     }
 
-    // ============ recId=10② tests：EWMA 延迟/错误率 ============
+    // ============ tests：EWMA 延迟/错误率 ============
 
     /// 连续 100→200→400ms：ewma 逐次上升（100→120→176），且新值权重大于
     /// 全生命期均值（176 < 全均值 233.3）。
     ///
-    /// recId=8 迁移：驱动方式从 record_request 改为 record_e2e（口径分道后
+    /// 迁移：驱动方式从 record_request 改为 record_e2e（口径分道后
     /// 延迟 EWMA 只由 e2e 道喂入）；固定 α=0.2 的等价采样间隔由 Peak-EWMA
     /// 反解：α_dyn = 1−exp(−Δt/τ) = 0.2 → Δt = −τ·ln(0.8) ≈ 2231.4ms
     ///（now 注入，数值断言到 1e-6）。
@@ -986,7 +986,7 @@ mod tests {
     }
 
     /// 无观测的 vendor 返回 None（路由对冷启动厂商走中性因子，不惩罚）。
-    /// recId=17：窗口访问器 — 手灌 n 个样本返回 n（60s 滑窗内）；
+    /// 窗口访问器 — 手灌 n 个样本返回 n（60s 滑窗内）；
     /// 未记录 vendor 返回 0。
     #[test]
     fn vendor_window_total_matches_samples() {
@@ -1037,7 +1037,7 @@ mod tests {
         assert!((latency - 200.0).abs() < 1e-9);
     }
 
-    // ============ recId=8 tests：口径分道 + Peak-EWMA ============
+    // ============ tests：口径分道 + Peak-EWMA ============
 
     /// 三口径互不混流：同一 vendor 分别记 ttft/e2e/queue → 三字段独立，
     /// 各道样本数独立；后续 ttft 采样不动 e2e/queue。
@@ -1216,7 +1216,7 @@ mod tests {
         assert!((v.ewma_latency_ms - v.ewma_e2e_ms).abs() < 1e-12);
     }
 
-    // ============ recId=16 tests：top-1 占比与流量份额熵 ============
+    // ============ tests：top-1 占比与流量份额熵 ============
 
     /// ① 3 vendor 均分 → entropy≈1.0、top1≈0.333（归一熵的均匀分布基准）。
     #[test]
@@ -1412,7 +1412,7 @@ mod tests {
         assert_eq!(m.top1_share(), 1.0);
     }
 
-    /// recId=11：affinity hit/miss 计数与 hit_rate；reset 同步清零。
+    /// affinity hit/miss 计数与 hit_rate；reset 同步清零。
     #[test]
     fn test_affinity_hit_rate_and_reset() {
         let m = GlobalMetrics::new();
@@ -1428,11 +1428,11 @@ mod tests {
         let snap = m.snapshot();
         assert_eq!(snap.affinity_hits, 0);
         assert_eq!(snap.affinity_misses, 0);
-        // recId=16：reset 同步清滑窗
+        // reset 同步清滑窗
         assert!(m.traffic_shares().is_empty());
     }
 
-    // ============ recId=7（W5）tests：失败率滑窗 ============
+    // ============ tests：失败率滑窗 ============
 
     /// 窗口失败率基础口径：注入 now 连记 3 成功 3 失败 → (6, 3)。
     #[test]
@@ -1482,7 +1482,7 @@ mod tests {
         assert_eq!(m.vendor_failure_window("b"), (2, 0));
     }
 
-    /// recId=7（W5）429 感知对照断言：RateLimited 计入失败率滑窗
+    /// 429 感知对照断言：RateLimited 计入失败率滑窗
     ///（failure window 视角是失败），而 CB 分类器对其无感
     ///（error_map.rs GateErrorClassifier 的既有语义——独立计数、
     /// 不影响 CB 自身的 failure_count）。
@@ -1513,7 +1513,7 @@ mod tests {
         );
     }
 
-    // ============ recId=9（W5）tests：重试维度计数与守门器视图 ============
+    // ============ tests：重试维度计数与守门器视图 ============
 
     /// 模拟 3 次重试：retried_attempts==3；失败进重试候选路径计数独立
     /// 累计；reset 同步清零。

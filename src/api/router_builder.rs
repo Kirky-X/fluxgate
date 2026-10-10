@@ -22,21 +22,22 @@ use std::sync::{
 use std::time::Duration;
 use tower_http::trace::TraceLayer;
 
-use super::response_cache::cache_api_key_hash;
 use super::state::ApiState;
-use super::{admin, anthropic, health, openai};
+use super::{admin, anthropic, count_tokens, health, models, openai, route_explain};
 use crate::config::{RateLimitRule, RateLimitSection};
 use crate::i18n::t;
 use crate::middleware::admission::{tier_for_request, AdmissionState};
 use crate::middleware::auth_middleware;
+use crate::middleware::quota::{quota_middleware, QuotaGate};
+use crate::utils::tenant::api_key_digest;
 
-/// recId=3 + G5：入站限流中间件状态 — per-endpoint 限流表与准入状态。
+/// G5：入站限流中间件状态 — per-endpoint 限流表与准入状态。
 /// 全局规则不再经常量 Governor 判定，改由 tower 层
 ///（[`GlobalRateLimitLayer`]，`create_router` 装配）承担。
 pub struct InboundLimitState {
-    /// per-endpoint 限流表（path 前缀规则；recId=16 在此挂载准入维度）
+    /// per-endpoint 限流表（path 前缀规则；在此挂载准入维度）
     endpoint_table: EndpointLimitTable,
-    /// recId=16：拥塞感知优先级准入状态 — 判定在限流之后、handler 之前
+    /// 拥塞感知优先级准入状态 — 判定在限流之后、handler 之前
     ///（[admission].enabled 热读；默认 false 时判定旁路、行为与现状
     /// 逐位一致）。健康检查白名单（函数头部）先于本判定，永不卸载。
     admission: Arc<AdmissionState>,
@@ -65,7 +66,7 @@ fn is_quota_exempt_path(path: &str) -> bool {
 pub(crate) struct TenantDigest(pub String);
 
 /// 租户摘要键提取器 — 键 = 已验证 API key 的 SHA256 摘要
-///（`cache_api_key_hash`，无 key 归入固定 anonymous 桶；关闭 auth 时
+///（`api_key_digest`，无 key 归入固定 anonymous 桶；关闭 auth 时
 /// 伪造 key 的摘要各异，高基数由 QuotaLimiter 1 万 key 上限约束）。
 /// 健康白名单路径返回 `None`（tower 层直通不限流）。
 /// `per_tenant=false` 的规则用固定空串键（规则级共享桶，旧 Governor
@@ -88,7 +89,7 @@ impl<B> RequestKey<B> for TenantKeyExtractor {
         if let Some(digest) = request.extensions().get::<TenantDigest>() {
             return Some(Cow::Borrowed(digest.0.as_str()));
         }
-        Some(Cow::Owned(cache_api_key_hash(request.headers())))
+        Some(Cow::Owned(api_key_digest(request.headers())))
     }
 }
 
@@ -293,14 +294,14 @@ fn global_rate_limit_layer(
     }
 }
 
-/// recId=3：per-endpoint 限流表 — Matcher 六变体无 path 维度
+/// per-endpoint 限流表 — Matcher 六变体无 path 维度
 ///（limiteron src/config/types/rule.rs），端点自筛在中间件内按 path 前缀
 /// 完成；每 `(rule, tenant)` 一只 limiter 惰性创建（limiteron 原语直接
 /// 实例化，复用 vendor/rate_limiter.rs 的 wrapper 模式）。
 /// 租户数受 auth.api_keys 枚举约束（有界），匿名租户单条；[auth] 缺失或
-/// enabled=false 时中间件放行任意伪造 key（auth.rs:150-152），租户键退化为
+/// enabled=false 时中间件放行任意伪造 key（auth.rs），租户键退化为
 /// sha256(任意串)——由 [`MAX_ENDPOINT_LIMITERS`] 容量守卫兜底（评审 major：
-/// 条目只增不删会构成内存放大 DoS 向量，与同源 cache_api_key_hash 的响应
+/// 条目只增不删会构成内存放大 DoS 向量，与同源 api_key_digest 的响应
 /// 缓存不同，本表无 TTL 驱逐，必须硬上限）。
 struct EndpointLimitTable {
     /// path 前缀规则（构造期从 [rate_limit] 段筛选，restart-required）
@@ -413,11 +414,11 @@ async fn endpoint_limit_middleware(
         return next.run(request).await;
     }
 
-    // recId=3：租户 id = 已验证 API key 的 SHA256 摘要（本中间件在 auth
+    // 租户 id = 已验证 API key 的 SHA256 摘要（本中间件在 auth
     // 之后运行——axum layer 顺序 auth 外层；沿用 response_cache 先例：
     // 无 key 请求归入固定 anonymous 租户）。存入 extensions 供下游
     // tower 层与准入中间件复用（每请求只算一次）。
-    let tenant = cache_api_key_hash(request.headers());
+    let tenant = api_key_digest(request.headers());
     request
         .extensions_mut()
         .insert(TenantDigest(tenant.clone()));
@@ -461,18 +462,18 @@ async fn admission_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    // recId=16：准入状态与热配置句柄（[admission].enabled 热读判定在
+    // 准入状态与热配置句柄（[admission].enabled 热读判定在
     // admit 内部；此处只借出引用）
     let admission = state.admission.clone();
     let admission_config = admission.config_handle();
 
-    // recId=3：租户 id 与端点中间件同源（extensions 复用，无则回退计算）。
+    // 租户 id 与端点中间件同源（extensions 复用，无则回退计算）。
     let tenant: std::borrow::Cow<'_, str> = match request.extensions().get::<TenantDigest>() {
         Some(digest) => std::borrow::Cow::Borrowed(digest.0.as_str()),
-        None => std::borrow::Cow::Owned(cache_api_key_hash(request.headers())),
+        None => std::borrow::Cow::Owned(api_key_digest(request.headers())),
     };
 
-    // recId=16：拥塞感知优先级准入（热读 [admission].enabled，
+    // 拥塞感知优先级准入（热读 [admission].enabled，
     // 默认 false = 判定旁路、行为与现状逐位一致）。请求档位经
     // [auth].keys 表（认证已在本中间件外层通过）。
     let tier = tier_for_request(admission_config.as_ref(), request.headers());
@@ -534,13 +535,17 @@ async fn admission_middleware(
 /// 未知路径归 `unmatched`（基数有界）。
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
-    const TEMPLATES: [&str; 14] = [
+    const TEMPLATES: [&str; 18] = [
         "/v1/chat/completions",
         "/v1/embeddings",
         "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1/models",
+        "/admin/route/explain",
         "/admin/logs",
         "/admin/logs/search",
         "/admin/stats/tokens",
+        "/admin/cost",
         "/admin/metrics",
         "/admin/vendors",
         "/admin/vendors/{id}/status",
@@ -575,7 +580,7 @@ fn metrics_route_label(path: &str) -> &'static str {
     "unmatched"
 }
 
-/// recId=16：当前 UNIX 毫秒（burst EWMA 的时间锚；Record 注入语义见
+/// 当前 UNIX 毫秒（burst EWMA 的时间锚；Record 注入语义见
 /// admission.rs）
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -584,7 +589,7 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// recId=3 + G5：由 [rate_limit] 段构建入站限流判定件。
+/// G5：由 [rate_limit] 段构建入站限流判定件。
 ///
 /// - path 前缀规则 → 中间件端点表（per-tenant 分桶在表内实现）；
 /// - path 缺省的全局规则 → 一规则一 tower 层（[`GlobalRateLimitLayer`]，
@@ -652,16 +657,16 @@ fn build_inbound_limits(
 ///（restart-required，热下发列二期）：端点表 + 准入进 from_fn state，
 /// 全局规则进 tower 层（G5，一规则一层）。
 /// 注意：健康检查由 sdforge `#[forge(version="v1")]` 注册为 /api/v1/health
-///（api/health.rs:10，宏加版本前缀），此处不重复注册，避免 merge 时
+///（api/health.rs，宏加版本前缀），此处不重复注册，避免 merge 时
 /// axum duplicate-route panic。
 pub async fn create_router(state: Arc<ApiState>) -> Router {
     // forge 端点描述翻译注册进 sdforge（建站期一次性；见 health.rs）
     health::register_forge_i18n();
-    // recId=3：[rate_limit] 段消费点（此前该段被 serde 静默丢弃，中间件
+    // [rate_limit] 段消费点（此前该段被 serde 静默丢弃，中间件
     // 恒跑 Governor 库内置默认兜底规则）
     let rate_limit = state.config.read().rate_limit.clone();
     let (global_layers, endpoint_table) = build_inbound_limits(&rate_limit);
-    // recId=16：准入状态常驻构造（轻量；[admission].enabled 默认 false
+    // 准入状态常驻构造（轻量；[admission].enabled 默认 false
     // 时判定旁路——热开开关立即生效，无需重启）
     let admission = Arc::new(AdmissionState::new(
         state.config.clone(),
@@ -676,9 +681,19 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route("/v1/chat/completions", post(openai::chat_completions))
         .route("/v1/embeddings", post(openai::embeddings))
         .route("/v1/messages", post(anthropic::messages))
+        // WP3 数据面端点（实现在独立 handler 文件，mod.rs 仅模块声明）：
+        // GET /v1/models（OpenAI list 格式，去重现算、不缓存），
+        // POST /v1/messages/count_tokens（近似估算）。
+        .route("/v1/models", get(models::list_models))
+        .route(
+            "/v1/messages/count_tokens",
+            post(count_tokens::count_tokens),
+        )
         .route("/admin/logs", get(admin::logs))
         .route("/admin/logs/search", get(admin::search_logs))
         .route("/admin/stats/tokens", get(admin::token_stats))
+        // WP9 成本分账查询（预聚合表聚合；空窗口返回空数组）。
+        .route("/admin/cost", get(admin::cost_usage))
         .route("/admin/metrics", get(admin::metrics))
         .route("/admin/vendors", get(admin::vendors))
         .route("/admin/vendors/{id}/status", get(admin::vendor_status))
@@ -695,7 +710,9 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
             post(admin::update_model)
                 .put(admin::upsert_model)
                 .delete(admin::delete_model),
-        );
+        )
+        // WP5 路由可解释性（只读 admin 端点：不发上游请求，不改状态）
+        .route("/admin/route/explain", post(route_explain::route_explain));
     // Prometheus 指标出口（/metrics）与就绪探针（/readyz）由
     // sdforge 站点（build_with_config）在合并侧自挂（同一 handler +
     // 同一全局注册表）；create_router 侧再挂会导致 merge 时重复路由
@@ -724,6 +741,16 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .fold(router, |r, layer| r.layer(layer));
     router
         .layer(from_fn_with_state(limit_state, endpoint_limit_middleware))
+        // WP8 配额入口裁决（认证之后、端点限流之前；与二者独立叠加，
+        // 任一触发即拒；关闭/未接线时零行为）。注入面 QuotaGate（最小接口，
+        // middleware 不依赖全量 ApiState——L5）。
+        .layer(from_fn_with_state(
+            QuotaGate {
+                config: state.config.clone(),
+                quota: state.quota.clone(),
+            },
+            quota_middleware,
+        ))
         .layer(from_fn_with_state(state.config.clone(), auth_middleware))
         .layer(TraceLayer::new_for_http())
         // 请求追踪最外层——X-Request-Id 解析/生成 + task_local 挂载 +
@@ -766,6 +793,8 @@ mod tests {
             resilience: Default::default(),
             docs: Default::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
         }
     }
@@ -783,10 +812,10 @@ mod tests {
     /// 健康检查白名单（评审 major 修复锁定，G5 保持）。
     ///
     /// 断言空洞背景：axum 0.8 的 `layer` 只作用于已有路由
-    ///（axum-0.8.9 src/docs/routing/layer.md:6 "the middleware is only
+    ///（axum-0.8.9 src/docs/routing/layer.md "the middleware is only
     /// applied to existing routes"），评审探针实证 create_router 之后
     /// 再 `.route()` 的路径不经过中间件——此前
-    /// tests/rate_limit_test.rs 的集成形态无论白名单代码存在与否都会过。
+    /// tests/resilience/rate_limit_test.rs 的集成形态无论白名单代码存在与否都会过。
     /// 本用例 route 先于 layer 构建：`/health` 白名单豁免断言 +
     /// `/limited` 对照组（第 2 次 429）共同证明中间件真实挂载且生效；
     /// 白名单由端点中间件与 tower 键提取器双重执行，此处锁定两者。

@@ -475,7 +475,7 @@ mod converter {
         }
     }
 
-    // ==================== 流式转换与 SSE 增量分帧（recId=3） ====================
+    // ==================== 流式转换与 SSE 增量分帧====================
 
     use nexusflow::protocol::sse_frame::SseFrameParser;
 
@@ -602,7 +602,7 @@ mod converter {
         assert_eq!(message_delta["usage"]["output_tokens"], 7);
     }
 
-    /// ⑦ tool_call delta 帧不静默丢弃（recId=8 联动回归）。
+    /// ⑦ tool_call delta 帧不静默丢弃（联动回归）。
     #[tokio::test]
     async fn test_tool_call_delta_frame_not_silently_dropped() {
         let converter = OpenAIConverter::new();
@@ -725,7 +725,7 @@ mod converter {
         }
     }
 
-    // ==================== 协议断点修复（recId=8） ====================
+    // ==================== 协议断点修复====================
 
     use nexusflow::protocol::Role;
 
@@ -1006,7 +1006,7 @@ mod converter {
 
     /// 评审 major 回归：出站 Anthropic 方向的工具历史 —— tool_result 块
     /// 必须用 Anthropic 规范字段 tool_use_id（此前误写 tool_call_id，缺
-    /// 必填字段会被上游 400 拒收；recId=8① 使本分支首次可达）。
+    /// 必填字段会被上游 400 拒收；使本分支首次可达）。
     #[tokio::test]
     async fn test_anthropic_outbound_tool_result_uses_tool_use_id_field() {
         let openai = OpenAIConverter::new();
@@ -2434,6 +2434,8 @@ mod converter {
     async fn test_openai_to_unified_tool_choice_fallbacks() {
         let converter = OpenAIConverter::new();
 
+        // WP10：{"type":"any"} 不得降级 auto（跨协议客户端常带 Anthropic
+        // 形态）→ required（OpenAI wire 词）。
         let unified = converter
             .to_unified(json!({
                 "model": "gpt-4",
@@ -2443,7 +2445,7 @@ mod converter {
             .expect("object without function");
         assert!(matches!(
             unified.tool_choice,
-            Some(ToolChoice::Strategy(s)) if s == "auto"
+            Some(ToolChoice::Strategy(s)) if s == "required"
         ));
 
         let unified = converter
@@ -4114,10 +4116,280 @@ mod converter {
             vec!["message_start".to_string(), "message_stop".to_string()]
         );
     }
+
+    // ==================== 协议边界场景补测 ====================
+
+    /// 入站：model 混合大小写 → to_lowercase 归一（路由按小写匹配模型目录）。
+    #[tokio::test]
+    async fn test_openai_to_unified_model_mixed_case_normalized_lowercase() {
+        let converter = OpenAIConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "GPT-4o-Mini",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .expect("to_unified");
+        assert_eq!(unified.model, "gpt-4o-mini");
+    }
+
+    /// 出站：工具未携带 parameters（Null）→ function 省略 parameters 键
+    /// （parameters 为 OpenAI 可选字段，写出 null 会被严格上游拒收）。
+    #[tokio::test]
+    async fn test_openai_request_to_external_tool_without_parameters_omits_key() {
+        let converter = OpenAIConverter::new();
+        let mut request = minimal_unified_request("gpt-4", "hi");
+        request.tools = vec![Tool {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "no_args".into(),
+                description: "No schema".into(),
+                parameters: serde_json::Value::Null,
+            },
+        }];
+
+        let external = converter.request_to_external(request).expect("to external");
+        let function = &external["tools"][0]["function"];
+        assert_eq!(function["name"], "no_args");
+        assert!(
+            function.get("parameters").is_none(),
+            "Null parameters 必须省略键而非写出 null: {function}"
+        );
+    }
+
+    /// 响应解析：上游 error 对象 → GateError::Protocol，type/message 进入错误文案。
+    #[tokio::test]
+    async fn test_openai_parse_response_error_object_maps_to_protocol_error() {
+        let converter = OpenAIConverter::new();
+        let err = converter
+            .parse_response(json!({
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "max_tokens is too large"
+                }
+            }))
+            .unwrap_err();
+        match err {
+            GateError::Protocol { source, inner } => {
+                assert!(source.contains("invalid_request_error"), "{source}");
+                assert!(source.contains("max_tokens is too large"), "{source}");
+                assert!(inner.is_none());
+            }
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    /// 响应出站：finish 结构化槽有值且 finish_reason 为空 → 回填 OpenAI
+    /// wire 词汇；原始槽已有值（含未知词）时不被覆写。
+    #[tokio::test]
+    async fn test_openai_response_to_external_finish_slot_backfills_reason() {
+        let converter = OpenAIConverter::new();
+        let out = converter
+            .response_to_external(UnifiedResponse {
+                id: "c1".into(),
+                object: "chat.completion".into(),
+                created: 1,
+                model: "gpt-4".into(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Some(Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Text("ok".into()),
+                    }),
+                    finish_reason: None,
+                    finish: Some(FinishReason::Length),
+                    logprobs: None,
+                }],
+                usage: TokenUsage::default(),
+            })
+            .expect("to external");
+        assert_eq!(
+            out["choices"][0]["finish_reason"], "length",
+            "finish 槽应回填 OpenAI wire 词汇"
+        );
+
+        let out = converter
+            .response_to_external(UnifiedResponse {
+                id: "c2".into(),
+                object: "chat.completion".into(),
+                created: 1,
+                model: "gpt-4".into(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: None,
+                    finish_reason: Some("exotic_reason".into()),
+                    finish: Some(FinishReason::Stop),
+                    logprobs: None,
+                }],
+                usage: TokenUsage::default(),
+            })
+            .expect("to external");
+        assert_eq!(
+            out["choices"][0]["finish_reason"], "exotic_reason",
+            "原始槽优先，不被结构化槽覆写"
+        );
+    }
+
+    /// 流式入站：data 为不可解析文本 → None 不 panic（manager 层分帧器
+    /// is_error 已先行拦截错误，此处静默跳过）。
+    #[tokio::test]
+    async fn test_openai_parse_stream_frame_illegal_json_returns_none() {
+        let converter = OpenAIConverter::new();
+        assert!(converter
+            .parse_stream_frame("this is not json at all")
+            .is_none());
+        assert!(converter
+            .parse_stream_frame("{\"choices\": [truncated")
+            .is_none());
+    }
+
+    /// 入站校验：缺 model → Validation{field:"model"}。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_missing_model_rejected() {
+        let converter = AnthropicConverter::new();
+        let err = converter
+            .to_unified(json!({
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .unwrap_err();
+        match err {
+            GateError::Validation { field } => assert_eq!(field, "model"),
+            other => panic!("expected Validation{{model}}, got {other:?}"),
+        }
+    }
+
+    /// 入站校验：缺 messages → Validation{field:"messages"}。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_missing_messages_rejected() {
+        let converter = AnthropicConverter::new();
+        let err = converter
+            .to_unified(json!({
+                "model": "claude-3-5-sonnet-20241022"
+            }))
+            .unwrap_err();
+        match err {
+            GateError::Validation { field } => assert_eq!(field, "messages"),
+            other => panic!("expected Validation{{messages}}, got {other:?}"),
+        }
+    }
+
+    /// 入站：thinking enabled 无 budget_tokens → Adaptive
+    /// （「启用但不定预算」在 IR 的最近表达）。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_thinking_enabled_without_budget_is_adaptive() {
+        let converter = AnthropicConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "messages": [{"role": "user", "content": "hi"}],
+                "thinking": {"type": "enabled"}
+            }))
+            .expect("to_unified");
+        assert_eq!(unified.thinking_config, Some(ThinkingConfig::Adaptive));
+    }
+
+    /// 入站：max_tokens_to_sample 旧别名槽回退读取；与 max_tokens 并存时
+    /// max_tokens 优先。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_max_tokens_to_sample_alias_fallback() {
+        let converter = AnthropicConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude-2.1",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens_to_sample": 256
+            }))
+            .expect("to_unified");
+        assert_eq!(unified.max_tokens, Some(256), "旧别名槽应回退读取");
+
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude-2.1",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+                "max_tokens_to_sample": 256
+            }))
+            .expect("to_unified");
+        assert_eq!(unified.max_tokens, Some(100), "max_tokens 优先于别名槽");
+    }
+
+    /// 入站：system 为空字符串 → 不产生 System 消息也不回填 system_prompt。
+    #[tokio::test]
+    async fn test_anthropic_to_unified_empty_system_string_produces_no_system() {
+        let converter = AnthropicConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "system": "",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .expect("to_unified");
+        assert!(
+            unified.system_prompt.is_none(),
+            "空 system 不得回填 system_prompt"
+        );
+        assert_eq!(unified.messages.len(), 1, "空 system 不得产生 System 消息");
+        assert_eq!(unified.messages[0].role, Role::User);
+    }
+
+    /// 响应出站：choices 空数组 → Validation{field:"choices"} 拒绝（非 panic）。
+    #[tokio::test]
+    async fn test_anthropic_response_to_external_empty_choices_rejected() {
+        let converter = AnthropicConverter::new();
+        let response = UnifiedResponse {
+            id: "m".into(),
+            object: "message".into(),
+            created: 0,
+            model: "claude".into(),
+            choices: vec![],
+            usage: TokenUsage::default(),
+        };
+        let err = converter.response_to_external(response).unwrap_err();
+        match err {
+            GateError::Validation { field } => assert_eq!(field, "choices"),
+            other => panic!("expected Validation{{choices}}, got {other:?}"),
+        }
+    }
+
+    /// 响应出站：finish 与 finish_reason 均 None → stop_reason 缺省 end_turn
+    /// （Anthropic 语义下未携带终止原因按自然结束处理）。
+    #[tokio::test]
+    async fn test_anthropic_response_to_external_stop_reason_defaults_end_turn() {
+        let converter = AnthropicConverter::new();
+        let out = converter
+            .response_to_external(UnifiedResponse {
+                id: "m".into(),
+                object: "message".into(),
+                created: 0,
+                model: "claude".into(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Some(Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Text("ok".into()),
+                    }),
+                    finish_reason: None,
+                    finish: None,
+                    logprobs: None,
+                }],
+                usage: TokenUsage::default(),
+            })
+            .expect("to external");
+        assert_eq!(out["stop_reason"], "end_turn");
+    }
+
+    /// 流式入站：data 为不可解析文本 → serde 失败返回 None 不 panic。
+    #[tokio::test]
+    async fn test_anthropic_parse_stream_frame_illegal_json_returns_none() {
+        let converter = AnthropicConverter::new();
+        assert!(converter.parse_stream_frame("event-list broken").is_none());
+        assert!(converter
+            .parse_stream_frame("{\"type\": [truncated")
+            .is_none());
+    }
 }
 
 mod embedding {
-    // recId=15③：embedding_response_from_openai 死代码已删除（零生产调用，
+    // embedding_response_from_openai 死代码已删除（零生产调用，
     // embeddings 端点走治理透传），其两个用例随之退役；
     // embedding_request_to_openai 仍被 api/openai.rs 使用，用例保留。
     use nexusflow::protocol::embedding_request_to_openai;
@@ -4180,6 +4452,30 @@ mod embedding {
 
         let result = embedding_request_to_openai(body);
         assert!(result.is_err());
+    }
+
+    /// input 为非法类型（数字/对象）→ 静默归空数组不报错（语义校验归上游）。
+    #[test]
+    fn test_embedding_request_to_openai_non_string_non_array_input_becomes_empty() {
+        for bad in [json!(42), json!({"text": "hi"})] {
+            let openai = embedding_request_to_openai(json!({
+                "model": "text-embedding-ada-002",
+                "input": bad
+            }))
+            .expect("非法 input 类型应静默归空数组而非报错");
+            assert_eq!(openai["input"], json!([]));
+        }
+    }
+
+    /// input 缺失 → 空 input 数组（请求形状仍合法）。
+    #[test]
+    fn test_embedding_request_to_openai_missing_input_becomes_empty() {
+        let openai = embedding_request_to_openai(json!({
+            "model": "text-embedding-ada-002"
+        }))
+        .expect("缺 input 不报错");
+        assert_eq!(openai["input"], json!([]));
+        assert_eq!(openai["model"], "text-embedding-ada-002");
     }
 }
 

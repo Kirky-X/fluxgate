@@ -5,26 +5,38 @@
 
 //! 核心表版本化迁移。
 //!
-//! 运行源唯一性：sqlite/postgres/mysql 的启动建表只走本模块的 FROZEN V1
+//! 运行源唯一性：sqlite/postgres/mysql 的启动建表只走本模块的版本化迁移
 //!（经 dbnexus `MigrationExecutor`），不再逐语句执行 `schema.*.sql`。
 //! `src/database/schema.sql`（及 mysql/postgres 方言投影）现为可读文档——
-//! 其定稿内容已冻结为下方的 V1 UP 常量；后续表/列变更走新迁移版本，
-//! **禁止**改动 FROZEN V1（已部署库的历史行指向它）。
+//! 描述**最新版**（V1+V2 全部应用后）的表形态；后续表/列变更走新迁移
+//! 版本，**禁止**改动已发布的迁移常量（已部署库的历史行指向它们）。
+//!
+//! - **V1（FROZEN）**：request_logs/token_usage/vendor_status/model_stats
+//!   初版。token_usage 为组合聚合（total/prompt/completion tokens +
+//!   cost_usd_sum，UNIQUE(vendor, model, date, hour)）。
+//! - **V2（R-quota-cost-003 分账）**：token_usage 原地升级为分账形态——
+//!   新增 api_key_hash 与四类 token/四项分项成本列，UNIQUE 键扩为
+//!   (vendor, model, api_key_hash, date, hour)，移除四个组合列；旧行
+//!   映射 prompt→input、completion→output、cost_usd_sum→input_cost（组合
+//!   成本不可拆分，整额记入 input 档保总额，拆分归属自 V2 起才存在）、
+//!   api_key_hash 回填空串（历史流量不归属到 key）。另补 /admin/cost 查询
+//!   索引（date 范围 + api_key_hash 过滤两条访问路径）。
 //!
 //! 存量库基线策略 = 幂等重放：V1 UP 全为 `IF NOT EXISTS`，表已存在、历史为
-//! 空的旧库重放为 no-op，随后记 v1 历史行（不重复建表）；缺列由
-//! `repository::init_schema` 的 v0.1 列回填补齐。MySQL 索引不在 V1 UP 内
-//! （MySQL 8 无 `CREATE INDEX IF NOT EXISTS`，重放会失败）——仍由
-//! `ensure_indexes_mysql` 按 information_schema 探针幂等创建。
+//! 空的旧库重放为 no-op，随后按序补记历史行；V2 只在 V1 形态上执行一次。
+//! MySQL 索引不在迁移 UP 内（MySQL 8 无 `CREATE INDEX IF NOT EXISTS`，重放
+//! 会失败）——普通索引由 `ensure_indexes_mysql` 按 information_schema 探针
+//! 幂等创建；V2 的 UNIQUE 键换绑属表结构变更，仍在 V2 UP 内一次性执行。
 //!
-//! 失败语义：迁移错误直接上浮（`Database::new` 转 fail-fast），无静默降级。
+//! 失败语义：迁移错误直接上浮（`Database::new` 转 fail-fast），无静默降级；
+//! V2 中途失败的库停在失败态（执行器事务保证不留半行历史），修复后重启重放。
 
 use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
 use sea_orm::DatabaseBackend;
 use std::path::PathBuf;
 
-/// 核心表迁移版本（V1：request_logs/token_usage/vendor_status/model_stats）。
-pub(crate) const CORE_SCHEMA_VERSION: u32 = 1;
+/// 核心表迁移最新版本（V2：token_usage 分账形态，见模块文档）。
+pub(crate) const CORE_SCHEMA_VERSION: u32 = 2;
 
 /// V1 UP（sqlite，FROZEN——源自 schema.sql 定稿，含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
@@ -203,6 +215,98 @@ CREATE TABLE IF NOT EXISTS model_stats (
 ) ENGINE = InnoDB;
 "#;
 
+/// V2 UP（sqlite，R-quota-cost-003）：sqlite 的 UNIQUE 是表 DDL 的一部分，
+/// 键换绑 + 删列只能重建表（rename → create → 搬数 → drop）。
+/// 旧行映射见模块文档（api_key_hash=''、cost_usd_sum 整额入 input_cost）。
+const UP_V2_SQLITE: &str = r#"
+ALTER TABLE token_usage RENAME TO token_usage_v1;
+CREATE TABLE IF NOT EXISTS token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor TEXT NOT NULL,
+    model TEXT NOT NULL,
+    api_key_hash TEXT NOT NULL DEFAULT '',
+    date TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    request_count INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_creation_tokens INTEGER DEFAULT 0,
+    input_cost REAL DEFAULT 0.0,
+    output_cost REAL DEFAULT 0.0,
+    cache_read_cost REAL DEFAULT 0.0,
+    cache_creation_cost REAL DEFAULT 0.0,
+    UNIQUE(vendor, model, api_key_hash, date, hour)
+);
+INSERT INTO token_usage (vendor, model, api_key_hash, date, hour, request_count, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, input_cost, output_cost, cache_read_cost, cache_creation_cost)
+SELECT vendor, model, '', date, hour, request_count, prompt_tokens, completion_tokens, 0, 0, cost_usd_sum, 0.0, 0.0, 0.0 FROM token_usage_v1;
+DROP TABLE token_usage_v1;
+CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(date);
+CREATE INDEX IF NOT EXISTS idx_token_usage_key_date ON token_usage(api_key_hash, date);
+"#;
+
+/// V2 UP（postgres）：UNIQUE 约束按 postgres 自动命名惯例
+/// `{table}_{cols}_key` 换绑；新列带 DEFAULT 使旧行即时取得缺省值，
+/// 再 UPDATE 显式回填映射（api_key_hash='' 为规格明文要求）。
+const UP_V2_POSTGRES: &str = r#"
+ALTER TABLE token_usage ADD COLUMN api_key_hash TEXT NOT NULL DEFAULT '', ADD COLUMN input_tokens BIGINT DEFAULT 0, ADD COLUMN output_tokens BIGINT DEFAULT 0, ADD COLUMN cache_read_tokens BIGINT DEFAULT 0, ADD COLUMN cache_creation_tokens BIGINT DEFAULT 0, ADD COLUMN input_cost DOUBLE PRECISION DEFAULT 0.0, ADD COLUMN output_cost DOUBLE PRECISION DEFAULT 0.0, ADD COLUMN cache_read_cost DOUBLE PRECISION DEFAULT 0.0, ADD COLUMN cache_creation_cost DOUBLE PRECISION DEFAULT 0.0;
+UPDATE token_usage SET api_key_hash = '', input_tokens = prompt_tokens, output_tokens = completion_tokens, input_cost = cost_usd_sum;
+ALTER TABLE token_usage DROP COLUMN total_tokens, DROP COLUMN prompt_tokens, DROP COLUMN completion_tokens, DROP COLUMN cost_usd_sum;
+ALTER TABLE token_usage DROP CONSTRAINT token_usage_vendor_model_date_hour_key;
+ALTER TABLE token_usage ADD CONSTRAINT token_usage_vendor_model_api_key_hash_date_hour_key UNIQUE (vendor, model, api_key_hash, date, hour);
+CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(date);
+CREATE INDEX IF NOT EXISTS idx_token_usage_key_date ON token_usage(api_key_hash, date);
+"#;
+
+/// V2 UP（mysql）：mysql 的内联 UNIQUE 自动以首列命名（V1 键名 = vendor），
+/// 换绑 = DROP INDEX vendor + ADD UNIQUE KEY；普通索引走
+/// `ensure_indexes_mysql`（模块文档）。
+const UP_V2_MYSQL: &str = r#"
+ALTER TABLE token_usage ADD COLUMN api_key_hash VARCHAR(255) NOT NULL DEFAULT '', ADD COLUMN input_tokens BIGINT DEFAULT 0, ADD COLUMN output_tokens BIGINT DEFAULT 0, ADD COLUMN cache_read_tokens BIGINT DEFAULT 0, ADD COLUMN cache_creation_tokens BIGINT DEFAULT 0, ADD COLUMN input_cost DOUBLE DEFAULT 0.0, ADD COLUMN output_cost DOUBLE DEFAULT 0.0, ADD COLUMN cache_read_cost DOUBLE DEFAULT 0.0, ADD COLUMN cache_creation_cost DOUBLE DEFAULT 0.0;
+UPDATE token_usage SET api_key_hash = '', input_tokens = prompt_tokens, output_tokens = completion_tokens, input_cost = cost_usd_sum;
+ALTER TABLE token_usage DROP COLUMN total_tokens, DROP COLUMN prompt_tokens, DROP COLUMN completion_tokens, DROP COLUMN cost_usd_sum, DROP INDEX vendor, ADD UNIQUE KEY uk_token_usage_v2 (vendor, model, api_key_hash, date, hour);
+"#;
+
+/// V2 DOWN（三后端）：V2 的逆映射（input→prompt、output→completion、
+/// 四项成本合计回 cost_usd_sum、token 合计回 total_tokens）。sqlite 重建，
+/// pg/mysql 换绑约束后增删列。
+const DOWN_V2_SQLITE: &str = r#"
+ALTER TABLE token_usage RENAME TO token_usage_v2;
+CREATE TABLE IF NOT EXISTS token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor TEXT NOT NULL,
+    model TEXT NOT NULL,
+    date TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    request_count INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    cost_usd_sum REAL DEFAULT 0.0,
+    UNIQUE(vendor, model, date, hour)
+);
+INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens, cost_usd_sum)
+SELECT vendor, model, date, hour, request_count, input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens, input_tokens, output_tokens, input_cost + output_cost + cache_read_cost + cache_creation_cost FROM token_usage_v2;
+DROP TABLE token_usage_v2;
+"#;
+
+const DOWN_V2_POSTGRES: &str = r#"
+ALTER TABLE token_usage DROP CONSTRAINT token_usage_vendor_model_api_key_hash_date_hour_key;
+ALTER TABLE token_usage ADD CONSTRAINT token_usage_vendor_model_date_hour_key UNIQUE (vendor, model, date, hour);
+ALTER TABLE token_usage ADD COLUMN total_tokens BIGINT DEFAULT 0, ADD COLUMN prompt_tokens BIGINT DEFAULT 0, ADD COLUMN completion_tokens BIGINT DEFAULT 0, ADD COLUMN cost_usd_sum DOUBLE PRECISION DEFAULT 0.0;
+UPDATE token_usage SET prompt_tokens = input_tokens, completion_tokens = output_tokens, total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens, cost_usd_sum = input_cost + output_cost + cache_read_cost + cache_creation_cost;
+ALTER TABLE token_usage DROP COLUMN api_key_hash, DROP COLUMN input_tokens, DROP COLUMN output_tokens, DROP COLUMN cache_read_tokens, DROP COLUMN cache_creation_tokens, DROP COLUMN input_cost, DROP COLUMN output_cost, DROP COLUMN cache_read_cost, DROP COLUMN cache_creation_cost;
+DROP INDEX IF EXISTS idx_token_usage_date;
+DROP INDEX IF EXISTS idx_token_usage_key_date;
+"#;
+
+const DOWN_V2_MYSQL: &str = r#"
+ALTER TABLE token_usage DROP INDEX uk_token_usage_v2, ADD UNIQUE KEY vendor (vendor, model, date, hour);
+ALTER TABLE token_usage ADD COLUMN total_tokens BIGINT DEFAULT 0, ADD COLUMN prompt_tokens BIGINT DEFAULT 0, ADD COLUMN completion_tokens BIGINT DEFAULT 0, ADD COLUMN cost_usd_sum DOUBLE DEFAULT 0.0;
+UPDATE token_usage SET prompt_tokens = input_tokens, completion_tokens = output_tokens, total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens, cost_usd_sum = input_cost + output_cost + cache_read_cost + cache_creation_cost;
+ALTER TABLE token_usage DROP COLUMN api_key_hash, DROP COLUMN input_tokens, DROP COLUMN output_tokens, DROP COLUMN cache_read_tokens, DROP COLUMN cache_creation_tokens, DROP COLUMN input_cost, DROP COLUMN output_cost, DROP COLUMN cache_read_cost, DROP COLUMN cache_creation_cost;
+"#;
+
 /// V1 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
 const DOWN_COMMON: &str = r#"
 DROP TABLE IF EXISTS model_stats;
@@ -211,42 +315,70 @@ DROP TABLE IF EXISTS token_usage;
 DROP TABLE IF EXISTS request_logs;
 "#;
 
-/// 按连接后端构造 V1 迁移文件（内存嵌入，无目录依赖——`-- UP`/`-- DOWN`
-/// 标记行供 `MigrationExecutor` 切分；UP 体内无以 UP/DOWN 开头的行）。
-/// 按连接后端构造 V1 迁移文件（内存嵌入，无目录依赖——`-- UP`/`-- DOWN`
+/// 按连接后端与版本构造迁移文件（内存嵌入，无目录依赖——`-- UP`/`-- DOWN`
 /// 标记行供 `MigrationExecutor` 切分；UP 体内无以 UP/DOWN 开头的行）。
 /// 未知后端返回 Err（调用方回落旧 DDL；静默按 sqlite 会在 exotic 后端上
-/// 建错表）。
-pub(crate) fn core_migration_file(backend: DatabaseBackend) -> Result<MigrationFile, DbError> {
-    let (label, up) = match backend {
-        DatabaseBackend::Postgres => ("postgres", UP_POSTGRES),
-        DatabaseBackend::MySql => ("mysql", UP_MYSQL),
-        DatabaseBackend::Sqlite => ("sqlite", UP_SQLITE),
+/// 建错表）。未知版本返回 Err（调用方写错版本号属代码 bug，显性暴露）。
+pub(crate) fn core_migration_file(
+    backend: DatabaseBackend,
+    version: u32,
+) -> Result<MigrationFile, DbError> {
+    let label = match backend {
+        DatabaseBackend::Postgres => "postgres",
+        DatabaseBackend::MySql => "mysql",
+        DatabaseBackend::Sqlite => "sqlite",
         _ => {
             return Err(DbError::Config(
-                "core v1 migration covers sqlite/postgres/mysql; \
+                "core migrations cover sqlite/postgres/mysql; \
                  other backends use the legacy DDL path"
                     .to_string(),
             ));
         }
     };
+    let up: &str = match (version, backend) {
+        (1, DatabaseBackend::Sqlite) => UP_SQLITE,
+        (1, DatabaseBackend::Postgres) => UP_POSTGRES,
+        (1, DatabaseBackend::MySql) => UP_MYSQL,
+        (2, DatabaseBackend::Sqlite) => UP_V2_SQLITE,
+        (2, DatabaseBackend::Postgres) => UP_V2_POSTGRES,
+        (2, DatabaseBackend::MySql) => UP_V2_MYSQL,
+        _ => {
+            return Err(DbError::Config(format!(
+                "no core migration v{version} for {label}"
+            )));
+        }
+    };
+    let down: &str = match version {
+        1 => DOWN_COMMON,
+        2 => match backend {
+            DatabaseBackend::Sqlite => DOWN_V2_SQLITE,
+            DatabaseBackend::Postgres => DOWN_V2_POSTGRES,
+            DatabaseBackend::MySql => DOWN_V2_MYSQL,
+            _ => DOWN_COMMON,
+        },
+        _ => {
+            return Err(DbError::Config(format!(
+                "no core migration DOWN for v{version}"
+            )));
+        }
+    };
     let content = format!(
-        "-- UP nexusflow core v1 ({label})\n{up}\n-- DOWN nexusflow core v1 ({label})\n{DOWN_COMMON}\n"
+        "-- UP nexusflow core v{version} ({label})\n{up}\n-- DOWN nexusflow core v{version} ({label})\n{down}\n"
     );
     Ok(MigrationFile::new(
-        CORE_SCHEMA_VERSION,
-        format!("nexusflow core tables v1 ({label})"),
-        PathBuf::from(format!("embedded:core_v1_{label}.sql")),
+        version,
+        format!("nexusflow core tables v{version} ({label})"),
+        PathBuf::from(format!("embedded:core_v{version}_{label}.sql")),
         content,
     ))
 }
 
-/// 应用核心 V1 迁移（幂等：v1 已在历史中即返回 0，不重放）。
+/// 应用核心迁移 V1..=V2（幂等：已在历史中的版本跳过不重放）。
 ///
-/// 返回本次应用的迁移数（0 或 1）。调用方（`init_schema`）把 Err 直接上浮
+/// 返回本次应用的迁移数（0..=2）。调用方（`init_schema`）把 Err 直接上浮
 /// 为启动 fail-fast。`DatabaseBackend` 非穷尽扩展出的未来后端返回
 /// `DbError::Config`（调用方回落旧 DDL，见 `init_schema`）。
-pub(crate) async fn apply_core_v1(pool: &DbPool) -> Result<u32, DbError> {
+pub(crate) async fn apply_core_migrations(pool: &DbPool) -> Result<u32, DbError> {
     // 先释放 session 再跑 executor：测试池 max_connections=1，持有 session
     // 的同时让 executor 另取连接会死等（clone 的只是池句柄）。
     let (backend, conn) = {
@@ -261,7 +393,7 @@ pub(crate) async fn apply_core_v1(pool: &DbPool) -> Result<u32, DbError> {
         DatabaseBackend::Sqlite => DatabaseType::Sqlite,
         _ => {
             return Err(DbError::Config(
-                "core v1 migration covers sqlite/postgres/mysql; \
+                "core migrations cover sqlite/postgres/mysql; \
                  other backends use the legacy DDL path"
                     .to_string(),
             ));
@@ -269,21 +401,25 @@ pub(crate) async fn apply_core_v1(pool: &DbPool) -> Result<u32, DbError> {
     };
     let mut executor = MigrationExecutor::new(conn, db_type);
     executor.load_history().await?;
-    if executor.get_all_versions().contains(&CORE_SCHEMA_VERSION) {
-        return Ok(0);
+    let mut applied = 0;
+    for version in 1..=CORE_SCHEMA_VERSION {
+        if executor.get_all_versions().contains(&version) {
+            continue;
+        }
+        executor
+            .apply_migration_file_public(&core_migration_file(backend, version)?)
+            .await?;
+        applied += 1;
     }
-    executor
-        .apply_migration_file_public(&core_migration_file(backend)?)
-        .await?;
-    Ok(1)
+    Ok(applied)
 }
 
-/// 回滚核心 V1（测试面：执行 DOWN 并删除 v1 历史行）。
+/// 回滚全部核心迁移（测试面：自最新版本逆序执行 DOWN 并删除历史行）。
 /// 唯一调用点是 [`live_tests`] 的 DOWN 断言，cfg 门控与该模块逐位一致：
 /// 非测试构建、以及非 db-sqlite 后端的测试构建均不参与编译。
 #[cfg(all(test, feature = "db-sqlite"))]
-pub(crate) async fn rollback_core_v1(pool: &DbPool) -> Result<(), DbError> {
-    // 同 apply_core_v1：先释放 session（size=1 池防死等）。
+pub(crate) async fn rollback_core_all(pool: &DbPool) -> Result<(), DbError> {
+    // 同 apply_core_migrations：先释放 session（size=1 池防死等）。
     let (backend, conn) = {
         let session = pool.get_session("admin").await?;
         let backend = session.connection()?.get_database_backend();
@@ -296,14 +432,21 @@ pub(crate) async fn rollback_core_v1(pool: &DbPool) -> Result<(), DbError> {
         DatabaseBackend::Sqlite => DatabaseType::Sqlite,
         _ => {
             return Err(DbError::Config(
-                "core v1 rollback covers sqlite/postgres/mysql".to_string(),
+                "core migration rollback covers sqlite/postgres/mysql".to_string(),
             ));
         }
     };
-    let executor = MigrationExecutor::new(conn, db_type);
-    executor
-        .rollback_version(CORE_SCHEMA_VERSION, &core_migration_file(backend)?)
-        .await
+    let mut executor = MigrationExecutor::new(conn, db_type);
+    executor.load_history().await?;
+    for version in (1..=CORE_SCHEMA_VERSION).rev() {
+        if !executor.get_all_versions().contains(&version) {
+            continue;
+        }
+        executor
+            .rollback_version(version, &core_migration_file(backend, version)?)
+            .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -327,8 +470,8 @@ mod content_tests {
             (DatabaseBackend::Postgres, true),
             (DatabaseBackend::MySql, false),
         ] {
-            let file = core_migration_file(backend).expect("三后端必有 V1");
-            assert_eq!(file.version(), CORE_SCHEMA_VERSION);
+            let file = core_migration_file(backend, 1).expect("三后端必有 V1");
+            assert_eq!(file.version(), 1);
             // DOWN 段无 CREATE 语句，全文断言等价于 UP 断言
             let up = file.content();
             for table in TABLES {
@@ -347,22 +490,110 @@ mod content_tests {
         }
     }
 
-    /// DOWN 可提取且含四表 DROP（回滚路径不缺失）。
+    /// FROZEN 钉住：V1 token_usage 必须保持组合聚合形态（无 api_key_hash、
+    /// 组合列在）——分账形态只允许住在 V2，改 V1 即历史行指向漂移。
     #[test]
-    fn v1_down_drops_all_tables() {
+    fn v1_token_usage_is_frozen_combined_shape() {
         for backend in [
             DatabaseBackend::Sqlite,
             DatabaseBackend::Postgres,
             DatabaseBackend::MySql,
         ] {
-            let file = core_migration_file(backend).expect("三后端必有 V1");
-            let down =
-                MigrationExecutor::extract_down_sql(file.content()).expect("V1 必须有 DOWN 段");
-            for table in TABLES {
-                assert!(
-                    down.contains(&format!("DROP TABLE IF EXISTS {table}")),
-                    "{backend:?} DOWN 缺 {table}"
+            let file = core_migration_file(backend, 1).expect("三后端必有 V1");
+            let up = file.content();
+            assert!(
+                up.contains("cost_usd_sum"),
+                "{backend:?} V1 组合成本列必须保留"
+            );
+            assert!(
+                !up.contains("api_key_hash"),
+                "{backend:?} V1 冻结形态不得出现 api_key_hash"
+            );
+            assert!(
+                !up.contains("idx_token_usage"),
+                "{backend:?} V1 不得携带 V2 的查询索引"
+            );
+        }
+    }
+
+    /// V2 UP（三后端同语义）：分账列、UNIQUE 键换绑；成本查询索引仅
+    /// sqlite/postgres 内联（mysql 走 ensure_indexes_mysql 运行时探针）。
+    #[test]
+    fn v2_up_upgrades_token_usage_to_ledger_shape() {
+        for (backend, with_indexes) in [
+            (DatabaseBackend::Sqlite, true),
+            (DatabaseBackend::Postgres, true),
+            (DatabaseBackend::MySql, false),
+        ] {
+            let file = core_migration_file(backend, 2).expect("三后端必有 V2");
+            assert_eq!(file.version(), CORE_SCHEMA_VERSION);
+            let up = file.content();
+            for col in [
+                "api_key_hash",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_creation_tokens",
+                "input_cost",
+                "output_cost",
+                "cache_read_cost",
+                "cache_creation_cost",
+            ] {
+                assert!(up.contains(col), "{backend:?} V2 UP 缺分账列 {col}");
+            }
+            assert!(
+                up.contains("api_key_hash, date, hour)") && up.contains("UNIQUE"),
+                "{backend:?} V2 UNIQUE 键必须含 api_key_hash"
+            );
+            // 旧行映射（旧数据不丢）：sqlite 走重建搬数（INSERT..SELECT），
+            // postgres/mysql 走 ALTER+UPDATE 回填。
+            let mapped = if backend == DatabaseBackend::Sqlite {
+                up.contains("SELECT vendor, model, '', date, hour, request_count, prompt_tokens, completion_tokens")
+            } else {
+                up.contains("input_tokens = prompt_tokens")
+            };
+            assert!(mapped, "{backend:?} V2 旧行映射缺失（旧数据不丢）");
+            for index in ["idx_token_usage_date", "idx_token_usage_key_date"] {
+                let present = up.contains(&format!("CREATE INDEX IF NOT EXISTS {index}"));
+                assert_eq!(
+                    present, with_indexes,
+                    "{backend:?} V2 查询索引 {index} 形态不符"
                 );
+            }
+        }
+    }
+
+    /// V1/V2 DOWN 可提取且含表 DROP（回滚路径不缺失）；V2 DOWN 携带逆映射。
+    #[test]
+    fn down_segments_are_extractable() {
+        for backend in [
+            DatabaseBackend::Sqlite,
+            DatabaseBackend::Postgres,
+            DatabaseBackend::MySql,
+        ] {
+            for version in [1u32, 2] {
+                let file = core_migration_file(backend, version).expect("三后端必有迁移");
+                let down =
+                    MigrationExecutor::extract_down_sql(file.content()).expect("必须有 DOWN 段");
+                if version == 1 {
+                    for table in TABLES {
+                        assert!(
+                            down.contains(&format!("DROP TABLE IF EXISTS {table}")),
+                            "{backend:?} V1 DOWN 缺 {table}"
+                        );
+                    }
+                } else {
+                    assert!(
+                        down.contains("cost_usd_sum"),
+                        "{backend:?} V2 DOWN 必须逆映射回组合列"
+                    );
+                    let reverted = if backend == DatabaseBackend::Sqlite {
+                        down.contains("INSERT INTO token_usage")
+                    } else {
+                        down.contains("DROP COLUMN api_key_hash")
+                    };
+                    assert!(reverted, "{backend:?} V2 DOWN 必须移除分账形态");
+                }
             }
         }
     }
@@ -387,7 +618,7 @@ mod content_tests {
         }
 
         let doc_sql = include_str!("schema.sql");
-        let v1 = core_migration_file(DatabaseBackend::Sqlite).expect("sqlite V1");
+        let v1 = core_migration_file(DatabaseBackend::Sqlite, 1).expect("sqlite V1");
         // UP 段（DOWN 标记之前）参与比对
         let up = v1.content().split("-- DOWN").next().unwrap_or_default();
         assert_eq!(
@@ -398,7 +629,7 @@ mod content_tests {
     }
 }
 
-/// sqlite 生效面 live 测试（G4 验收：批量/全新库/存量基线/DOWN/只读 fail-fast）。
+/// sqlite 生效面 live 测试（G4 验收：批量/全新库/存量基线/V1 升级 V2/DOWN/只读 fail-fast）。
 #[cfg(all(test, feature = "db-sqlite"))]
 mod live_tests {
     use super::*;
@@ -450,10 +681,12 @@ mod live_tests {
         executor.get_all_versions()
     }
 
-    /// V0.1 旧库表形态（无 cost 列）：手工建表模拟存量库，迁移历史为空。
+    /// 存量库基线表形态（表在、历史空；request_logs 缺 cost 列以覆盖
+    /// v0.1 列回填路径；token_usage 取 V1 冻结组合形态——真实存量 V1 库
+    /// 的升级路径以本形态为起点，见 `v1_db_upgrades_to_v2_in_place`）。
     const LEGACY_TABLES_NO_COST: [&str; 4] = [
         "CREATE TABLE request_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT UNIQUE NOT NULL, timestamp INTEGER NOT NULL, endpoint TEXT NOT NULL, input_format TEXT NOT NULL, abstract_model TEXT, messages TEXT NOT NULL, actual_vendor TEXT NOT NULL, actual_model TEXT NOT NULL, routing_strategy TEXT NOT NULL, status_code INTEGER, response TEXT, error_message TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, duration_ms INTEGER)",
-        "CREATE TABLE token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor TEXT NOT NULL, model TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, request_count INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0, UNIQUE(vendor, model, date, hour))",
+        "CREATE TABLE token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor TEXT NOT NULL, model TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, request_count INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0, cost_usd_sum REAL DEFAULT 0.0, UNIQUE(vendor, model, date, hour))",
         "CREATE TABLE vendor_status (vendor TEXT PRIMARY KEY, status TEXT NOT NULL, last_updated INTEGER NOT NULL, window_used_tokens INTEGER DEFAULT 0, window_reset_at INTEGER, error_count INTEGER DEFAULT 0)",
         "CREATE TABLE model_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, vendor TEXT NOT NULL, date TEXT NOT NULL, request_count INTEGER DEFAULT 0, success_count INTEGER DEFAULT 0, error_count INTEGER DEFAULT 0, avg_duration_ms REAL, UNIQUE(model, vendor, date))",
     ];
@@ -489,7 +722,11 @@ mod live_tests {
         }
     }
 
-    /// 全新库：迁移建四表+索引、记 v1、幂等重跑 0；20 行批量（含注入形态
+    fn all_core_versions() -> Vec<u32> {
+        (1..=CORE_SCHEMA_VERSION).collect()
+    }
+
+    /// 全新库：迁移建四表+索引、记 v1+v2、幂等重跑 0；20 行批量（含注入形态
     /// 载荷）逐行可读、字段完整——参数化绑定无手写转义。
     #[tokio::test]
     async fn fresh_db_migrates_and_batch_roundtrips() {
@@ -507,7 +744,7 @@ mod live_tests {
             assert!(tables.contains(t), "缺表 {t}");
         }
         assert!(tables.contains("dbnexus_migrations"), "缺迁移历史表");
-        assert_eq!(applied_versions(&pool).await, vec![CORE_SCHEMA_VERSION]);
+        assert_eq!(applied_versions(&pool).await, all_core_versions());
 
         let repo = Repository::new(pool.clone());
         let hostile = [
@@ -543,14 +780,14 @@ mod live_tests {
     }
 
     /// 存量库（手工建表、历史为空，缺 cost 列模拟 V0.1 旧库）：启动不报错、
-    /// 不重复建表、缺列回填、记 v1、可正常写入。
+    /// 不重复建表、缺列回填、补记 v1+v2 历史、可正常写入。
     #[tokio::test]
     async fn existing_db_without_history_is_baselined() {
         let pool = memory_pool().await;
         create_tables_raw(&pool).await;
 
         init_schema(&pool).await.expect("存量基线不报错");
-        assert_eq!(applied_versions(&pool).await, vec![CORE_SCHEMA_VERSION]);
+        assert_eq!(applied_versions(&pool).await, all_core_versions());
 
         // 缺列已回填
         let session = pool.get_session("admin").await.expect("session");
@@ -584,13 +821,175 @@ mod live_tests {
         assert_eq!(back.len(), 1);
     }
 
-    /// DOWN 可执行：回滚后四表消失、v1 历史行删除。
+    /// R-quota-cost-003 验收：V1 旧库启动自动原地升级到 V2，旧数据不丢
+    /// （行保留、token/成本映射可读），且新写入走分账新形态（UNIQUE 键含
+    /// api_key_hash，聚合入账正确）。
+    #[tokio::test]
+    async fn v1_db_upgrades_to_v2_in_place() {
+        let pool = memory_pool().await;
+        create_tables_raw(&pool).await;
+        // 存量 V1 行：组合聚合（prompt=10、completion=2、组合成本 0.5）。
+        {
+            let session = pool.get_session("admin").await.expect("session");
+            session
+                .execute_with_params(
+                    "INSERT INTO token_usage (vendor, model, date, hour, request_count, total_tokens, prompt_tokens, completion_tokens, cost_usd_sum) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    &[
+                        "mock-openai".into(),
+                        "grok-4".into(),
+                        "2026-10-01".into(),
+                        5.into(),
+                        3.into(),
+                        12.into(),
+                        10.into(),
+                        2.into(),
+                        0.5.into(),
+                    ],
+                )
+                .await
+                .expect("legacy row");
+        }
+
+        init_schema(&pool).await.expect("V1 库升级不报错");
+        assert_eq!(
+            applied_versions(&pool).await,
+            all_core_versions(),
+            "仅追加 V2"
+        );
+
+        // 旧行保留且映射可读：api_key_hash=''（不归属 key）、prompt→input、
+        // completion→output、cost_usd_sum→input_cost（组合成本整额入 input 档）。
+        let repo = Repository::new(pool.clone());
+        let stats = repo.get_token_stats(None).await.expect("stats");
+        assert_eq!(stats.len(), 1, "升级不丢行");
+        let row = &stats[0];
+        assert_eq!(row.vendor, "mock-openai");
+        assert_eq!(row.model, "grok-4");
+        assert_eq!(row.api_key_hash, "", "历史流量不归属到 key");
+        assert_eq!(row.prompt_tokens, 10, "prompt→input 映射");
+        assert_eq!(row.completion_tokens, 2, "completion→output 映射");
+        assert!((row.cost_usd_sum - 0.5).abs() < 1e-9, "成本总额保留");
+        assert_eq!(row.request_count, 3);
+
+        // 新写入走分账新形态：同 (vendor, model, hash, date, hour) 二次
+        // 记账各自累加（新 UNIQUE 键生效，不与旧行冲突）。
+        let pa = crate::database::TokenPreAggregator::new(
+            std::sync::Arc::new(repo.clone()),
+            std::time::Duration::from_secs(3600),
+        );
+        let keyed = crate::storage::KeyedUsage {
+            vendor: "mock-openai".to_string(),
+            model: "grok-4".to_string(),
+            api_key_hash: "abc123".to_string(),
+            prompt_tokens: 7,
+            completion_tokens: 1,
+            cache_read_tokens: 4,
+            cache_creation_tokens: 2,
+            input_cost: 0.01,
+            output_cost: 0.02,
+            cache_read_cost: 0.001,
+            cache_creation_cost: 0.002,
+        };
+        pa.record_keyed(&keyed).await;
+        pa.record_keyed(&keyed).await;
+        pa.flush().await.expect("flush");
+
+        let stats = repo.get_token_stats(None).await.expect("stats");
+        assert_eq!(stats.len(), 2, "新写入落新形态行（与旧行按 hash 分账）");
+        let ledger = stats
+            .iter()
+            .find(|r| r.api_key_hash == "abc123")
+            .expect("新形态行");
+        assert_eq!(ledger.prompt_tokens, 14, "两次记账累加");
+        assert_eq!(ledger.cache_read_tokens, 8, "cache_read 入账");
+        assert!((ledger.input_cost - 0.02).abs() < 1e-9, "分项成本累加");
+    }
+
+    /// 分账表形态（WP9）：token_usage 含 api_key_hash、四类 token 与分项
+    /// 成本列，UNIQUE 键含 api_key_hash；组合列不残留；/admin/cost 查询
+    /// 索引就位（P5）。
+    #[tokio::test]
+    async fn token_usage_ledger_shape() {
+        let pool = memory_pool().await;
+        init_schema(&pool).await.expect("init");
+
+        let session = pool.get_session("admin").await.expect("session");
+        let stmt = Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "PRAGMA table_info(token_usage)".to_string(),
+        );
+        let cols: HashSet<String> = session
+            .connection()
+            .expect("conn")
+            .query_all_raw(stmt)
+            .await
+            .expect("pragma")
+            .iter()
+            .filter_map(|row| row.try_get::<String>("", "name").ok())
+            .collect();
+        for col in [
+            "api_key_hash",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "input_cost",
+            "output_cost",
+            "cache_read_cost",
+            "cache_creation_cost",
+        ] {
+            assert!(cols.contains(col), "分账列缺失 {col}");
+        }
+        assert!(
+            !cols.contains("cost_usd_sum"),
+            "组合成本列不得残留（分项替代）"
+        );
+
+        let ddl_stmt = Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT sql FROM sqlite_master WHERE name='token_usage'".to_string(),
+        );
+        let ddl: String = session
+            .connection()
+            .expect("conn")
+            .query_all_raw(ddl_stmt)
+            .await
+            .expect("ddl")
+            .iter()
+            .filter_map(|row| row.try_get::<String>("", "sql").ok())
+            .next()
+            .unwrap_or_default();
+        assert!(
+            ddl.contains("UNIQUE(vendor, model, api_key_hash, date, hour)"),
+            "UNIQUE 键必须含 api_key_hash: {ddl}"
+        );
+
+        let idx_stmt = Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='token_usage'"
+                .to_string(),
+        );
+        let indexes: HashSet<String> = session
+            .connection()
+            .expect("conn")
+            .query_all_raw(idx_stmt)
+            .await
+            .expect("indexes")
+            .iter()
+            .filter_map(|row| row.try_get::<String>("", "name").ok())
+            .collect();
+        for index in ["idx_token_usage_date", "idx_token_usage_key_date"] {
+            assert!(indexes.contains(index), "成本查询索引缺失 {index}");
+        }
+    }
+
+    /// DOWN 可执行：v2→v1 逆序回滚后四表消失、历史行清空。
     #[tokio::test]
     async fn down_migration_rolls_back() {
         let pool = memory_pool().await;
-        assert_eq!(apply_core_v1(&pool).await.expect("apply"), 1);
-        assert_eq!(apply_core_v1(&pool).await.expect("re-apply"), 0);
-        rollback_core_v1(&pool).await.expect("rollback");
+        assert_eq!(apply_core_migrations(&pool).await.expect("apply"), 2);
+        assert_eq!(apply_core_migrations(&pool).await.expect("re-apply"), 0);
+        rollback_core_all(&pool).await.expect("rollback");
 
         let tables = table_names(&pool).await;
         for t in [

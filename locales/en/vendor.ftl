@@ -16,6 +16,7 @@ vendor-upstream-error = upstream error
 vendor-upstream-non-success = upstream vendor returned non-success status
 vendor-stream-upstream-non-success = streaming upstream returned non-success status
 vendor-upstream-stream-interrupted = upstream stream interrupted
+vendor-stream-cooldown = vendor { $vendor } mid-stream failure; cooling down for { $cooldown_ms }ms before rejoining routing
 vendor-token-quota-underflow = token quota underflow: usage not accounted (would exceed window cap)
 vendor-pool-semaphore-closed = connection pool semaphore closed: { $error }
 # ---- key_pool.rs（vendor 内 key 池）----

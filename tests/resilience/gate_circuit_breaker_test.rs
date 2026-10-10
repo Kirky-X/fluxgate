@@ -3,13 +3,13 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 熔断器测试（recId=2）— 直接驱动 `limiteron::circuit::CircuitBreaker<GateError>`。
+//! 熔断器测试— 直接驱动 `limiteron::circuit::CircuitBreaker<GateError>`。
 //!
 //! 手写三态机已删除（HalfOpen 死锁：默认 success_threshold=3 +
 //! half_open_max_calls=1，half_open_calls 从不在探针间清零，首个探针
 //! 成功后 success_count=1<3 恒拒，熔断一次即永久拒绝）。本文件用
 //! limiteron 库版 + 注入假 Clock（`with_clock`，limiteron
-//! src/circuit/types.rs:281）验证：
+//! src/circuit/types.rs）验证
 //! 1. 5 次可重试失败 → Open（failure_threshold=5）
 //! 2. 死锁回归：超时后探针连续成功 3 次 → Closed（手写版此场景永久卡 HalfOpen）
 //! 3. 探针失败 → 立即回 Open
@@ -17,6 +17,8 @@
 //! 5. 业务错误无损穿透：GateError 即熔断器错误类型，execute 出口变体与
 //!    详情不变（前缀串双向编解码删除后，原 from_limiteron 的有损降级路径不复存在）
 //! 6. from_circuit_call：CB Open 拒绝 → `VendorUnavailable{(circuit open)}` 形态
+//! 7. 错误双轨（error_surface）：Display 恒英文规范串不经 FTL（随 locale
+//!    不变），user_message 走 FTL 随 locale 翻转
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
@@ -124,15 +126,51 @@ async fn rate_limited_errors_do_not_trip_the_circuit() {
     );
 }
 
-// ============ recId=1：slow-call-rate 语义隔离证明 ============
+/// 阈值下侧边界：失败数恰为 failure_threshold−1（4 次）→ 保持 Closed
+/// 不提前熔断。每次失败必须经 `CircuitCallError::Inner` 透传（操作真实
+/// 执行，而非 Open 拒绝）；第 5 次（恰为阈值）才翻 Open。
+/// 与 ① 的「5 次 → Open」合成阈值两侧的完备边界。
+#[tokio::test]
+async fn threshold_minus_one_failures_stay_closed_and_keep_executing() {
+    let (cb, _clock) = make_cb();
+
+    for i in 0..4 {
+        let result: Result<(), CircuitCallError<GateError>> = cb.execute(failing_op()).await;
+        match result {
+            Err(CircuitCallError::Inner(GateError::VendorUnavailable { vendor })) => {
+                assert_eq!(vendor, "vendor_a", "失败 {i} 必须真实执行并透传原错误");
+            }
+            other => panic!(
+                "failure {i}: threshold−1 下不得拒绝执行（应 Inner 透传），got {:?}",
+                other.map(|_| ())
+            ),
+        }
+    }
+
+    assert_eq!(
+        cb.get_state().await,
+        CircuitState::Closed,
+        "4 次（threshold−1）不得提前熔断"
+    );
+
+    // 第 5 次（恰为阈值）→ 本次仍执行，随后翻 Open
+    let result: Result<(), CircuitCallError<GateError>> = cb.execute(failing_op()).await;
+    assert!(
+        matches!(result, Err(CircuitCallError::Inner(_))),
+        "阈值次调用本身仍执行（拒绝从下一次开始）"
+    );
+    assert_eq!(cb.get_state().await, CircuitState::Open);
+}
+
+// ============ slow-call-rate 语义隔离证明 ============
 
 /// limiteron 慢调用参数语义证明（rate_threshold=1.0 下「非全慢」不熔断）：
 /// duration_threshold=100ms 时 1 快（0ms）+ 2 慢（800ms）→ 慢调用率依次
 /// 0/1、1/2、2/3，全程严格 < 1.0 → Closed；同序列在旧默认 rate=0.5
-/// （../limiteron src/constants.rs:111）下 1/2 = 0.5 即 Open。
+/// （../limiteron src/constants.rs）下 1/2 = 0.5 即 Open。
 ///
 /// 顺序说明（以源码为准，与 plan 假设的差异）：limiteron
-/// check_slow_call_rate（src/circuit/types.rs:596-607）是逐调用判定、无
+/// check_slow_call_rate（src/circuit/types.rs）是逐调用判定、无
 /// 最小样本数——total=1 时 rate 恒 1.0，故「慢调用先到」的序列第 1 次
 /// 即 Open，混合态无法达成；本测试因此让快调用先到，使慢调用率在
 /// 整个序列保持严格 < 1.0，这正是 rate=1.0 的判定边界。

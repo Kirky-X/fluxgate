@@ -559,7 +559,7 @@ mod tests {
     }
 }
 
-// ============ recId=9：单事务批量写入（Repository::log_requests_batch） ============
+// ============ 单事务批量写入（Repository::log_requests_batch） ============
 
 #[cfg(test)]
 mod batch_tx {
@@ -605,7 +605,7 @@ mod batch_tx {
         }
     }
 
-    /// recId=9 tests ①：批量 100 条单事务写入 → query_logs 恰 100 条
+    /// tests ①：批量 100 条单事务写入 → query_logs 恰 100 条
     ///（N 次 INSERT 一次 commit：不丢条、不留半批）。
     #[tokio::test]
     async fn test_log_requests_batch_atomic_100() {
@@ -759,7 +759,7 @@ mod preagg {
     }
 
     /// 停机补 flush：shutdown 预置 true → 首个 tick 立即触发，缓冲数据
-    /// 落库后 worker 退出（recId=9⑤ 语义）。
+    /// 落库后 worker 退出。
     #[tokio::test]
     async fn flush_worker_final_flush_on_immediate_shutdown() {
         let repo = initialized_repository().await;
@@ -1303,5 +1303,178 @@ mod database_gap {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ============ WP9 成本分账落库（V2 分账聚合 + /admin/cost 查询面） ============
+
+#[cfg(test)]
+mod cost_ledger {
+    use dbnexus::{DbConfig, DbPool};
+    use nexusflow::database::{CostGroupBy, KeyedUsage, Repository, TokenPreAggregator};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    async fn create_test_pool() -> DbPool {
+        let config = DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        };
+        DbPool::with_config(config).await.unwrap()
+    }
+
+    async fn initialized_repository() -> Arc<Repository> {
+        let pool = create_test_pool().await;
+        let repository = Arc::new(Repository::new(pool));
+        repository.initialize().await.expect("init schema");
+        repository
+    }
+
+    /// 分账行构造（token 与成本成固定比例，断言聚焦聚合语义）。
+    fn keyed(vendor: &str, model: &str, hash: &str, prompt: u32, completion: u32) -> KeyedUsage {
+        KeyedUsage {
+            vendor: vendor.into(),
+            model: model.into(),
+            api_key_hash: hash.into(),
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            input_cost: prompt as f64 * 0.01,
+            output_cost: completion as f64 * 0.02,
+            cache_read_cost: 0.0,
+            cache_creation_cost: 0.0,
+        }
+    }
+
+    /// 全字段分账行构造（cache 类单独覆盖）。
+    fn keyed_full(mut usage: KeyedUsage, cache_read: u32, cache_creation: u32) -> KeyedUsage {
+        usage.cache_read_tokens = cache_read;
+        usage.cache_creation_tokens = cache_creation;
+        usage
+    }
+
+    async fn seed() -> Arc<Repository> {
+        let repo = initialized_repository().await;
+        let agg = TokenPreAggregator::new(repo.clone(), Duration::from_secs(60));
+        // vendor-a/m1/hash-h1: 10+5(+2 cache_read)
+        agg.record_keyed(&keyed_full(keyed("vendor-a", "m1", "h1", 10, 5), 2, 0))
+            .await;
+        agg.record_keyed(&keyed("vendor-a", "m1", "h1", 4, 1)).await;
+        // vendor-a/m2/hash-h1：聚合键不同（model 不同）
+        agg.record_keyed(&keyed("vendor-a", "m2", "h1", 7, 3)).await;
+        // vendor-b/m1/hash-h2：hash 不同即分行
+        agg.record_keyed(&keyed("vendor-b", "m1", "h2", 100, 50))
+            .await;
+        agg.flush().await.expect("flush ok");
+        repo
+    }
+
+    /// 分账聚合：同 (vendor, model, hash) 同小时合并；四类 token 与分项
+    /// 成本各自累加；维度分组求和正确。
+    #[tokio::test]
+    async fn cost_ledger_aggregates_by_key_and_dimension() {
+        let repo = seed().await;
+
+        let by_vendor = repo
+            .query_cost_usage(None, None, CostGroupBy::Vendor, None)
+            .await
+            .expect("query ok");
+        assert_eq!(by_vendor.len(), 2, "两 vendor → 两行");
+        let a = by_vendor
+            .iter()
+            .find(|r| r.vendor.as_deref() == Some("vendor-a"))
+            .unwrap();
+        assert_eq!(a.model, None);
+        assert_eq!(a.request_count, 3);
+        assert_eq!(a.input_tokens, 10 + 4 + 7);
+        assert_eq!(a.output_tokens, 5 + 1 + 3);
+        assert_eq!(a.cache_read_tokens, 2);
+        assert_eq!(a.cache_creation_tokens, 0);
+        assert!((a.input_cost - 0.21).abs() < 1e-9);
+        assert!((a.output_cost - 0.18).abs() < 1e-9);
+        assert!((a.total_cost - 0.39).abs() < 1e-9);
+
+        let by_model = repo
+            .query_cost_usage(None, None, CostGroupBy::Model, None)
+            .await
+            .expect("query ok");
+        assert_eq!(by_model.len(), 2, "m1/m2 → 两行");
+        let m1 = by_model
+            .iter()
+            .find(|r| r.model.as_deref() == Some("m1"))
+            .unwrap();
+        assert_eq!(m1.vendor, None);
+        assert_eq!(m1.request_count, 3);
+        assert_eq!(m1.input_tokens, 10 + 4 + 100);
+    }
+
+    /// hash 过滤与日期窗口：h1 仅见自有行；全集外窗口返回空数组。
+    #[tokio::test]
+    async fn cost_ledger_filters_by_hash_and_window() {
+        let repo = seed().await;
+
+        let h1 = repo
+            .query_cost_usage(None, None, CostGroupBy::Vendor, Some("h1"))
+            .await
+            .expect("query ok");
+        assert_eq!(h1.len(), 1, "h1 只关联 vendor-a");
+        assert_eq!(h1[0].vendor.as_deref(), Some("vendor-a"));
+
+        let wide = repo
+            .query_cost_usage(
+                Some("2000-01-01"),
+                Some("2999-12-31"),
+                CostGroupBy::Vendor,
+                None,
+            )
+            .await
+            .expect("query ok");
+        assert_eq!(wide.len(), 2, "全集窗口全见");
+
+        let empty = repo
+            .query_cost_usage(
+                Some("2000-01-01"),
+                Some("2000-01-02"),
+                CostGroupBy::Vendor,
+                None,
+            )
+            .await
+            .expect("query ok");
+        assert!(empty.is_empty(), "空窗口返回空数组而非错误");
+
+        let no_hash = repo
+            .query_cost_usage(None, None, CostGroupBy::Model, Some("ghost"))
+            .await
+            .expect("query ok");
+        assert!(no_hash.is_empty(), "无匹配 hash 返回空数组");
+    }
+
+    /// 兼容面：V2 行经 get_token_stats 可读，旧字段为四类映射
+    /// （prompt=input、completion=output、total=四类和、cost=四项和）。
+    #[tokio::test]
+    async fn token_stats_maps_v2_rows_to_legacy_fields() {
+        let repo = seed().await;
+        let mut stats = repo.get_token_stats(None).await.expect("query ok");
+        stats.sort_by(|a, b| {
+            (&a.vendor, &a.model, &a.api_key_hash).cmp(&(&b.vendor, &b.model, &b.api_key_hash))
+        });
+        assert_eq!(stats.len(), 3, "三聚合键 → 三行");
+        let row = stats
+            .iter()
+            .find(|r| r.vendor == "vendor-a" && r.model == "m1")
+            .unwrap();
+        assert_eq!(row.api_key_hash, "h1");
+        assert_eq!(row.prompt_tokens, 14);
+        assert_eq!(row.completion_tokens, 6);
+        assert_eq!(row.total_tokens, 14 + 6 + 2);
+        assert!((row.cost_usd_sum - 0.26).abs() < 1e-9);
+        assert_eq!(row.cache_read_tokens, 2);
     }
 }

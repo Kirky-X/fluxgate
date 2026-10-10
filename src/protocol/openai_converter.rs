@@ -115,15 +115,16 @@ impl ProtocolConverter for OpenAIConverter {
                 .get("stream")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            stop: body
-                .get("stop")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|s| s.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            stop: match body.get("stop") {
+                // OpenAI wire 允许 string 或 array（此前仅 array，string
+                // 形态静默丢弃）。
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                    .collect(),
+                Some(Value::String(s)) => vec![s.clone()],
+                _ => Vec::new(),
+            },
             top_p: body.get("top_p").and_then(|v| v.as_f64()).map(|f| f as f32),
             frequency_penalty: body
                 .get("frequency_penalty")
@@ -346,7 +347,7 @@ impl ProtocolConverter for OpenAIConverter {
                             .and_then(|v| v.as_str())
                             .map(|s| MessageContent::Text(s.to_string()))
                             .unwrap_or(MessageContent::Text(String::new()));
-                        // recId=8③：message.tool_calls 解析（此前只读
+                        // message.tool_calls 解析（此前只读
                         // content 字符串，工具调用响应在 IR 中静默降级为纯文本）
                         let content = match parse_tool_calls_field(&Value::Object(m.clone())) {
                             Some(tool_calls) => match content {
@@ -540,7 +541,118 @@ impl ProtocolConverter for OpenAIConverter {
     }
 }
 
-/// 解析 OpenAI 上游 SSE 帧的 `data` 负载 → IR StreamChunk（recId=3）。
+/// OpenAI 出站流编码器（WP10）：流级一致性归一化。
+///
+/// [`OpenAIConverter::stream_chunk_to_external`] 为无状态单块映射（首块
+/// role 缺失、各块 id/created 发散：id 逐块编号、created 逐块取当前秒、
+/// usage 帧 id/created 与内容帧不一致）。本编码器持有流作用域状态：
+/// - 首块固定流 id（`chatcmpl-{uuid8}`）与 created（首块时刻），后续块
+///   （含 usage 帧）复用——OpenAI chunk 间一致性；
+/// - 首个内容 delta 补 `"role": "assistant"`（OpenAI 首帧规范）；
+/// - finish_reason 原样透传（各源流恰一次的语义由上游保证）。
+///
+/// 用法：handler 侧每流一个实例，对 `stream_chunk_to_external` 的每个
+/// 产出调用 [`Self::normalize`]（心跳等非 chunk 帧原样透传）。
+#[derive(Debug)]
+pub struct OpenAIStreamEncoder {
+    stream_id: Option<String>,
+    created: Option<u64>,
+    role_sent: bool,
+}
+
+impl Default for OpenAIStreamEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OpenAIStreamEncoder {
+    pub fn new() -> Self {
+        Self {
+            stream_id: None,
+            created: None,
+            role_sent: false,
+        }
+    }
+
+    /// 归一化单个已映射 chunk：id/created 收敛到流固定值；首个内容
+    /// delta 补 role。非 chunk 帧（心跳等无 id 帧）原样返回。
+    pub fn normalize(&mut self, mut value: Value) -> Value {
+        if value.get("id").and_then(|v| v.as_str()).is_none() || value.get("created").is_none() {
+            return value;
+        }
+        if self.stream_id.is_none() {
+            self.stream_id = Some(format!(
+                "chatcmpl-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            ));
+            self.created = Some(chrono::Utc::now().timestamp() as u64);
+        }
+        value["id"] = Value::String(self.stream_id.clone().unwrap_or_default());
+        value["created"] = Value::Number(self.created.unwrap_or_default().into());
+        if !self.role_sent {
+            if let Some(delta) = value
+                .get_mut("choices")
+                .and_then(|c| c.as_array_mut())
+                .and_then(|a| a.first_mut())
+                .and_then(|c| c.get_mut("delta"))
+            {
+                let has_content =
+                    delta.get("content").is_some() || delta.get("tool_calls").is_some();
+                if has_content && delta.get("role").is_none() {
+                    delta["role"] = Value::String("assistant".to_string());
+                    self.role_sent = true;
+                }
+            }
+        }
+        value
+    }
+}
+
+/// usage 尾帧（`stream_options.include_usage`）解析：`choices` 为空且带
+/// `usage` 对象 → [`StreamChunk::Usage`]；无 usage 或 usage 与 choices
+/// 同帧 → `None`，交调用方继续走 delta 路径（行为逐位不变）。
+fn parse_usage_tail_frame(json: &Value) -> Option<StreamChunk> {
+    let usage = json.get("usage").filter(|u| u.is_object())?;
+    let choices_empty = json
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true);
+    if !choices_empty {
+        return None;
+    }
+    let prompt = usage
+        .get("prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let completion = usage
+        .get("completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let total = usage
+        .get("total_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|u| u as u32)
+        .unwrap_or(prompt + completion);
+    // cached_tokens 同帧读取（cache_creation 无 OpenAI 概念）
+    let cache_read_tokens = usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .map(|u| u as u32)
+        .unwrap_or(0);
+    Some(StreamChunk::Usage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: total,
+        cache_read_tokens,
+        cache_creation_tokens: 0,
+        finish_reason: None,
+    })
+}
+
+/// 解析 OpenAI 上游 SSE 帧的 `data` 负载 → IR StreamChunk。
 ///
 /// 输入是分帧器剥出的 `data:` 负载（`chat.completion.chunk` JSON 或
 /// `[DONE]`）：
@@ -565,43 +677,9 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
         return None;
     }
 
-    // usage 尾帧：choices 为空且带 usage 对象
-    if let Some(usage) = json.get("usage").filter(|u| u.is_object()) {
-        let choices_empty = json
-            .get("choices")
-            .and_then(|v| v.as_array())
-            .map(|a| a.is_empty())
-            .unwrap_or(true);
-        if choices_empty {
-            let prompt = usage
-                .get("prompt_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
-            let completion = usage
-                .get("completion_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
-            let total = usage
-                .get("total_tokens")
-                .and_then(|v| v.as_u64())
-                .map(|u| u as u32)
-                .unwrap_or(prompt + completion);
-            // cached_tokens 同帧读取（cache_creation 无 OpenAI 概念）
-            let cache_read_tokens = usage
-                .get("prompt_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(|v| v.as_u64())
-                .map(|u| u as u32)
-                .unwrap_or(0);
-            return Some(StreamChunk::Usage {
-                prompt_tokens: prompt,
-                completion_tokens: completion,
-                total_tokens: total,
-                cache_read_tokens,
-                cache_creation_tokens: 0,
-                finish_reason: None,
-            });
-        }
+    // usage 尾帧：choices 为空且带 usage 对象（其余形态返回 None 继续解析）
+    if let Some(chunk) = parse_usage_tail_frame(&json) {
+        return Some(chunk);
     }
 
     let choice = json.get("choices")?.as_array()?.first()?.as_object()?;
@@ -817,7 +895,7 @@ fn parse_openai_message(json: &Value) -> Result<Message, GateError> {
         Some(Value::Array(arr)) => parse_array_content(arr),
         None | Some(Value::Null) => {
             // content 字段缺失或为 null，检查是否有 tool_calls
-            // （recId=8②：提取逻辑提为共用 helper）
+            // （提取逻辑提为共用 helper）
             if let Some(tool_calls) = parse_tool_calls_field(json) {
                 MessageContent::ToolCalls(tool_calls)
             } else {
@@ -855,7 +933,7 @@ fn parse_message_role(json: &Value) -> Result<Role, GateError> {
 }
 
 /// String content：工具角色消息 → ToolResult；带顶层 tool_calls →
-/// TextWithToolCalls（recId=8②：此前 String 分支提前返回，tool_calls 丢失）；
+/// TextWithToolCalls（此前 String 分支提前返回，tool_calls 丢失）；
 /// 否则纯文本。
 fn parse_string_content(json: &Value, role: &Role, s: &str) -> MessageContent {
     // 检查是否有 tool_call_id（工具角色消息）
@@ -1001,7 +1079,7 @@ fn message_to_openai(msg: Message) -> Value {
             (Value::Array(arr), None, None)
         }
         MessageContent::ToolCalls(tool_calls) => {
-            // recId=8：OpenAI 出站规范 —— 工具调用在顶层 tool_calls 字段，
+            // OpenAI 出站规范 —— 工具调用在顶层 tool_calls 字段，
             // content 为 null（此前塞进 content 数组，OpenAI 上游拒收）
             (Value::Null, None, Some(tool_calls))
         }
@@ -1011,7 +1089,7 @@ fn message_to_openai(msg: Message) -> Value {
             None,
         ),
         MessageContent::TextWithToolCalls { text, tool_calls } => {
-            // recId=8：文本与工具调用并列 —— content 为文本 + 顶层 tool_calls
+            // 文本与工具调用并列 —— content 为文本 + 顶层 tool_calls
             (Value::String(text), None, Some(tool_calls))
         }
     };
@@ -1026,7 +1104,7 @@ fn message_to_openai(msg: Message) -> Value {
         obj["tool_call_id"] = json!(id);
     }
 
-    // recId=8：assistant 工具调用输出为顶层 tool_calls
+    // assistant 工具调用输出为顶层 tool_calls
     if let Some(calls) = top_level_tool_calls {
         let calls_arr: Vec<Value> = calls
             .iter()
@@ -1073,7 +1151,7 @@ fn parse_logit_bias(value: Option<&Value>) -> HashMap<String, f32> {
     }
 }
 
-/// 提取消息顶层 `tool_calls` 数组（recId=8②：String content 分支与
+/// 提取消息顶层 `tool_calls` 数组（String content 分支与
 /// content 缺失分支共用；空数组视为无工具调用）。
 fn parse_tool_calls_field(json: &Value) -> Option<Vec<ToolCall>> {
     let arr = json.get("tool_calls")?.as_array()?;
@@ -1180,7 +1258,24 @@ fn parse_tool_choice(json: &Value) -> ToolChoice {
                     },
                 }
             } else {
-                ToolChoice::Strategy("auto".to_string())
+                // Anthropic 形态兼容（跨协议客户端常带）：any → required，
+                // tool(+name) → 具名；none 保留；其余回落 auto（历史语义）。
+                // 此前 any/tool 一律降级 auto，静默改变工具调度语义。
+                match obj.get("type").and_then(|t| t.as_str()) {
+                    Some("any") => ToolChoice::Strategy("required".to_string()),
+                    Some("tool") => ToolChoice::Specific {
+                        choice_type: "function".to_string(),
+                        function: ToolChoiceFunction {
+                            name: obj
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        },
+                    },
+                    Some("none") => ToolChoice::Strategy("none".to_string()),
+                    _ => ToolChoice::Strategy("auto".to_string()),
+                }
             }
         }
         _ => ToolChoice::Strategy("auto".to_string()),

@@ -3,9 +3,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! recId=16：拥塞感知优先级准入 — 把 429 的决定权从先到先得交给优先级。
+//! 拥塞感知优先级准入 — 把 429 的决定权从先到先得交给优先级。
 //!
-//! 拥塞信号 = 网关侧并发占用率 = Σ in_flight / Σ 并发上限（复用 recId=6
+//! 拥塞信号 = 网关侧并发占用率 = Σ in_flight / Σ 并发上限（复用
 //! 的 `ConcurrencyLimiter::in_flight`，流式 permit 随流存活故对长流真实）
 //! ≥ `[admission].congestion_threshold` 时，新请求的档位优先级与「当前
 //! 在途最小档」比较：低于者直接 429 + Retry-After（不排队）。同档/高档
@@ -39,7 +39,7 @@ const FIXED_POINT: f64 = 65536.0;
 const BURST_EWMA_ALPHA: f64 = 0.5;
 /// debt EWMA 平滑系数（被拒样本 1 / 放行样本 0）
 const DEBT_EWMA_ALPHA: f64 = 0.25;
-/// per-key 表条目硬上限（auth 关闭时伪造 key 的内存放大守卫，recId=3
+/// per-key 表条目硬上限（auth 关闭时伪造 key 的内存放大守卫，
 /// 端点表同款策略）；超限后新 key 退化共享单桶
 const MAX_KEY_STATS: usize = 1024;
 /// 溢出共享桶的键
@@ -57,7 +57,7 @@ fn tier_index(tier: AuthTier) -> usize {
     }
 }
 
-/// recId=16：档位基准权重 — dedicated/guaranteed/elastic/spot =
+/// 档位基准权重 — dedicated/guaranteed/elastic/spot =
 /// 1000/100/1/0.1（数量级隔离：同拥塞下 spot 永远让位于 dedicated）。
 pub fn tier_weight(tier: AuthTier) -> f64 {
     match tier {
@@ -68,24 +68,24 @@ pub fn tier_weight(tier: AuthTier) -> f64 {
     }
 }
 
-/// recId=16：优先级纯函数（论文式 1）— `w_tier·(1+α_slo·ℓ*)⁻¹·
+/// 优先级纯函数（论文式 1）— `w_tier·(1+α_slo·ℓ*)⁻¹·
 /// (1+α_burst·b)⁻¹·(1+α_debt·d)⁻¹`。ℓ* 恒 0（SLO 缺口维度无数据源，
 /// 该项恒 1；α_slo 配置预留）。burst/debt 负值按 0（防御）。
-/// `pub` 供确定性单测（compute_weight 同款先例）。
+/// `pub` 供确定性单测。
 pub fn admission_priority(
     section: &AdmissionSection,
     tier_weight: f64,
     burst: f64,
     debt: f64,
 ) -> f64 {
-    let l_star = 0.0; // SLO 缺口维度无数据源（recId=16 范围外），该项恒 1
+    let l_star = 0.0; // SLO 缺口维度无数据源（范围外），该项恒 1
     tier_weight
         / (1.0 + section.alpha_slo * l_star)
         / (1.0 + section.alpha_burst * burst.max(0.0))
         / (1.0 + section.alpha_debt * debt.max(0.0))
 }
 
-/// recId=16：请求的档位判定 — 请求 key（明文）经热配置 [auth] 段的
+/// 请求的档位判定 — 请求 key（明文）经热配置 [auth] 段的
 /// `keys` 子表查档（`ApiAuthState::tier_for_key`，与认证同一摘要比较）；
 /// 无 key / [auth] 缺失或关闭 → 缺省档 elastic。
 pub fn tier_for_request(config: &ConfigManager, headers: &axum::http::HeaderMap) -> AuthTier {
@@ -109,8 +109,8 @@ struct KeyStats {
     last_seen_ms: AtomicU64,
 }
 
-/// recId=16：准入状态 — 挂载于 [`super::router_builder::InboundLimitState`]
-///（recId=3 的中间件 State 之上，评审 issue#14 依赖声明）。全局共享
+/// 准入状态 — 挂载于 [`super::router_builder::InboundLimitState`]
+///（的中间件 State 之上，评审 issue#14 依赖声明）。全局共享
 ///（Arc）：per-tier 在途计数 + per-key burst/debt EWMA。
 pub struct AdmissionState {
     config: Arc<ConfigManager>,
@@ -122,7 +122,7 @@ pub struct AdmissionState {
     key_stats: RwLock<HashMap<String, Arc<KeyStats>>>,
 }
 
-/// recId=16：准入放行票据 — 持有期间该档在途计数 +1，Drop（含 panic
+/// 准入放行票据 — 持有期间该档在途计数 +1，Drop（含 panic
 /// 展开）−1。中间件作用域生命周期：包住 handler 执行至响应返回；流式
 /// body 传输期不计（粗分类定位，见模块注释）。Debug 手写（guard 的
 /// 存在性可日志，状态无内部可打印语义）。
@@ -155,7 +155,7 @@ impl AdmissionState {
         }
     }
 
-    /// recId=16：准入判定 — 返回 Ok(guard)（放行，调用方须持至响应返回）
+    /// 准入判定 — 返回 Ok(guard)（放行，调用方须持至响应返回）
     /// 或 Err(retry_after_secs)（拥塞且优先级低于在途最小档 → 429）。
     /// `now_ms` 注入（record_traffic_at 先例，测试驱动 EWMA）。
     /// `[admission].enabled` 热读：false（默认）直接放行（guard 仍计入
@@ -226,7 +226,7 @@ impl AdmissionState {
     }
 
     /// per-key 状态取用（惰性创建 + 容量守卫：超限退化共享单桶，
-    /// recId=3 端点表同款策略；读快路径 + 写慢路径双检）
+    /// 端点表同款策略；读快路径 + 写慢路径双检）
     fn stats_for(&self, key_hash: &str) -> Arc<KeyStats> {
         if let Some(s) = self
             .key_stats
@@ -302,7 +302,7 @@ impl AdmissionState {
         self.tier_in_flight[tier_index(tier)].load(Ordering::Relaxed)
     }
 
-    /// recId=16：热配置句柄 — 中间件取请求档位用（tier_for_request 读
+    /// 热配置句柄 — 中间件取请求档位用（tier_for_request 读
     /// [auth] 段）；[admission].enabled 的热读判定在 admit 内部完成。
     pub fn config_handle(&self) -> Arc<ConfigManager> {
         self.config.clone()

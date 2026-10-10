@@ -3,10 +3,10 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! vendor 内 key 池（T005/N5）— env 名池解析、轮换游标与按 key 指纹的
+//! vendor 内 key 池（N5）— env 名池解析、轮换游标与按 key 指纹的
 //! 熔断状态隔离。
 //!
-//! 语义对齐 agentstem `provider_chain.rs:197-236`（实现不复用旧代码）：
+//! 语义对齐 agentstem `provider_chain.rs`（实现不复用旧代码）
 //! - **池展开**：显式 env 名列表（`VendorConfig::api_key_envs`）优先于池
 //!   env（`api_key_env` 向后兼容单名，可逗号分隔多个名），两来源合并去重
 //!   定序（显式列表在前），池上限截断；
@@ -121,7 +121,7 @@ pub(crate) fn resolve_key_pool(
 
 /// key 指纹 — 16 位十六进制（进程内随机密钥哈希）。
 ///
-/// 语义对齐 provider_chain.rs:197-214 的维度，密钥策略加固（安全 L1）：
+/// 语义对齐 provider_chain.rs 的维度，密钥策略加固
 /// `RandomState` 进程启动时随机播种——**进程内稳定**（同 key 恒同指纹，
 /// 跨请求共享熔断计数的前提；admin 面同一进程内可对照），**跨进程随机**
 /// （指纹不可被离线复算——消除「拿 admin 指纹对候选 key 离线穷举验证」
@@ -289,15 +289,19 @@ impl PoolSnapshot {
     }
 }
 
-/// vendor 实例持有的 key 池状态：解析快照 + 轮换游标。
+/// vendor 实例持有的 key 池状态：解析快照 + 轮换游标 + 黑名单。
 pub(crate) struct KeyPool {
     snapshot: Mutex<ResolvedSnapshot>,
     /// 内联注入池（Some 时 select 全程跳过 env resolve，见 [`PoolSnapshot`]）。
     inline: Mutex<Option<PoolSnapshot>>,
     /// 轮换游标：401/403 认证类失败 `fetch_add(1)`；出站取
-    /// `keys[cursor % len]`。并发下多次 401 连续推进是保守方向（跳过
+    /// keys[cursor % len]`。并发下多次 401 连续推进是保守方向（跳过
     /// 失败 key），游标语义只要求「下次尝试换下一把」。
     cursor: AtomicUsize,
+    /// 黑名单（WP6）：永久错误 key 的指纹集。不参与轮换、不随时间恢复；
+    /// 仅两条恢复通道可清：配置热更按 key 集合变化裁剪（[`Self::prune_blacklist`]）、
+    /// 管理面重置（[`Self::reset_key_state`]）。
+    blacklist: Mutex<HashSet<String>>,
 }
 
 impl KeyPool {
@@ -308,6 +312,7 @@ impl KeyPool {
             snapshot: Mutex::new(ResolvedSnapshot::default()),
             inline: Mutex::new(None),
             cursor: AtomicUsize::new(0),
+            blacklist: Mutex::new(HashSet::new()),
         };
         pool.select(config, vendor_id);
         pool
@@ -321,13 +326,16 @@ impl KeyPool {
             snapshot: Mutex::new(ResolvedSnapshot::default()),
             inline: Mutex::new(None),
             cursor: AtomicUsize::new(0),
+            blacklist: Mutex::new(HashSet::new()),
         }
     }
 
     /// 注入内联池（编程式；见 [`PoolSnapshot`]）。注入后 `select` 全程
     /// 跳过 env resolve；重复注入以最后一次为准（调用方管理生命周期）。
+    /// 注入即按新 key 集合裁剪黑名单（WP6 恢复通道语义）。
     pub(crate) fn set_inline(&self, snapshot: PoolSnapshot) {
-        *self.inline.lock().unwrap() = Some(snapshot);
+        *self.inline.lock().unwrap() = Some(snapshot.clone());
+        self.prune_blacklist(&snapshot.keys);
     }
 
     /// 请求级凭证选择——执行路径统一入口。
@@ -351,83 +359,170 @@ impl KeyPool {
     ) -> RequestCredential {
         // 内联池快路径：跳过 env 名单解析与变更检测（见 [`PoolSnapshot`]）
         if let Some(inline) = self.inline.lock().unwrap().clone() {
-            if inline.keys.is_empty() {
-                return RequestCredential::LegacyEnv;
-            }
-            let index = self.cursor.load(Ordering::Relaxed) % inline.keys.len();
-            let key = inline.keys[index].clone();
-            return RequestCredential::Pool {
-                key,
-                fingerprint: fingerprint_of(&inline.keys[index]),
-            };
+            // WP6：黑名单跳过（游标语义不变）；全黑 ≡ 池耗尽 → legacy 回退。
+            return self.select_from_keys(inline.keys.clone());
         }
 
         let names = merged_key_env_names(config);
-        let mut guard = self.snapshot.lock().unwrap();
-        if guard.names != names {
-            let resolved = resolve_key_pool(&names, |name| lookup(name));
-            Self::log_resolution(vendor_id, &names, &resolved);
-            *guard = ResolvedSnapshot {
-                names,
-                keys: resolved.keys,
-                missing: resolved.missing.len(),
-                truncated: resolved.truncated,
-            };
-        } else {
-            // 名单未变：env 值现读，仅结果变化时落快照（热更新立即生效）。
-            // 收缩与全缺同样显性（禁止静默），明细只报
-            // 数量不回显 env 名（脱敏约定见模块 doc）。
-            let resolved = resolve_key_pool(&names, |name| lookup(name));
-            if resolved.keys != guard.keys {
-                if resolved.keys.len() < guard.keys.len() {
-                    tracing::warn!(
-                        vendor = %vendor_id,
-                        before = guard.keys.len(),
-                        after = resolved.keys.len(),
-                        missing = resolved.missing.len(),
-                        "{}",
-                        crate::i18n::t_args(
-                            "vendor-key-pool-shrunk",
-                            &[
-                                ("vendor", vendor_id.to_string()),
-                                ("before", guard.keys.len().to_string()),
-                                ("after", resolved.keys.len().to_string()),
-                                ("missing", resolved.missing.len().to_string()),
-                            ],
-                        )
-                    );
+        // 快照刷新：名单变化全量重解析；名单不变则 env 值现读、变化才落快照。
+        // 黑名单裁剪仅在 key 集合变化分支执行（审查 L10：集合未变时逐 key
+        // 计指纹重建 live 集合是每请求空转——结果恒为全保留，谓词等价跳过）。
+        let keys = {
+            let mut guard = self.snapshot.lock().unwrap();
+            if guard.names != names {
+                let resolved = resolve_key_pool(&names, |name| lookup(name));
+                Self::log_resolution(vendor_id, &names, &resolved);
+                *guard = ResolvedSnapshot {
+                    names,
+                    keys: resolved.keys,
+                    missing: resolved.missing.len(),
+                    truncated: resolved.truncated,
+                };
+                self.prune_blacklist(&guard.keys);
+                guard.keys.clone()
+            } else {
+                // 名单未变：env 值现读，仅结果变化时落快照（热更新立即生效）。
+                // 收缩与全缺同样显性（禁止静默），明细只报
+                // 数量不回显 env 名（脱敏约定见模块 doc）。
+                let resolved = resolve_key_pool(&names, |name| lookup(name));
+                if resolved.keys != guard.keys {
+                    if resolved.keys.len() < guard.keys.len() {
+                        tracing::warn!(
+                            vendor = %vendor_id,
+                            before = guard.keys.len(),
+                            after = resolved.keys.len(),
+                            missing = resolved.missing.len(),
+                            "{}",
+                            crate::i18n::t_args(
+                                "vendor-key-pool-shrunk",
+                                &[
+                                    ("vendor", vendor_id.to_string()),
+                                    ("before", guard.keys.len().to_string()),
+                                    ("after", resolved.keys.len().to_string()),
+                                    ("missing", resolved.missing.len().to_string()),
+                                ],
+                            )
+                        );
+                    }
+                    if resolved.keys.is_empty() {
+                        tracing::warn!(
+                            vendor = %vendor_id,
+                            "{}",
+                            crate::i18n::t_args(
+                                "vendor-key-pool-fallback-legacy",
+                                &[("vendor", vendor_id.to_string())],
+                            )
+                        );
+                    }
+                    guard.keys = resolved.keys;
+                    guard.missing = resolved.missing.len();
+                    self.prune_blacklist(&guard.keys);
                 }
-                if resolved.keys.is_empty() {
-                    tracing::warn!(
-                        vendor = %vendor_id,
-                        "{}",
-                        crate::i18n::t_args(
-                            "vendor-key-pool-fallback-legacy",
-                            &[("vendor", vendor_id.to_string())],
-                        )
-                    );
-                }
-                guard.keys = resolved.keys;
-                guard.missing = resolved.missing.len();
+                guard.keys.clone()
             }
-        }
-        let keys = guard.keys.clone();
-        drop(guard);
+        };
+        self.select_from_keys(keys)
+    }
 
+    /// 黑名单裁剪（WP6 恢复通道）：仅保留仍在当前 key 集合中的指纹，
+    /// key 集合变化（热更/注入）即重置对应状态。仅在 [`Self::select_with`]
+    /// 的集合变化分支与 [`Self::set_inline`] 注入点执行——集合未变时裁剪
+    /// 为恒等空操作，无需逐请求重放（审查 L10）。
+    fn prune_blacklist(&self, keys: &[String]) {
+        let live: HashSet<String> = keys.iter().map(|k| fingerprint_of(k)).collect();
+        self.blacklist
+            .lock()
+            .unwrap()
+            .retain(|fp| live.contains(fp));
+    }
+
+    /// 由 key 集合选出站凭证：游标位起按序扫描首个非黑名单 key（保序、
+    /// 游标语义与现状逐位一致——黑名单仅跳过，不重排轮换）；空/全黑 →
+    /// legacy 回退（与池耗尽现状一致）。
+    fn select_from_keys(&self, keys: Vec<String>) -> RequestCredential {
         if keys.is_empty() {
             return RequestCredential::LegacyEnv;
         }
+        let blacklist = self.blacklist.lock().unwrap();
+        let start = self.cursor.load(Ordering::Relaxed) % keys.len();
+        for offset in 0..keys.len() {
+            let key = &keys[(start + offset) % keys.len()];
+            if !blacklist.contains(&fingerprint_of(key)) {
+                return RequestCredential::Pool {
+                    key: key.clone(),
+                    fingerprint: fingerprint_of(key),
+                };
+            }
+        }
+        RequestCredential::LegacyEnv
+    }
+
+    /// 永久错误 key 进黑名单（WP6）：不参与轮换、不随时间恢复。
+    #[cfg(any(feature = "resilience", test))]
+    pub(crate) fn mark_blacklisted(&self, fingerprint: &str) {
+        self.blacklist
+            .lock()
+            .unwrap()
+            .insert(fingerprint.to_string());
+    }
+
+    /// 池内全部 key 是否均已入黑名单（审查 M9，R-routing-explainability-002
+    /// 的 explain 判定面）。池空（legacy 单 key 回退形态）返回 false——
+    /// 回退凭证不受黑名单约束，路由仍可出站。
+    pub(crate) fn all_blacklisted(&self) -> bool {
+        let keys = self.keys_snapshot();
+        if keys.is_empty() {
+            return false;
+        }
+        let blacklist = self.blacklist.lock().unwrap();
+        !blacklist.is_empty() && keys.iter().all(|k| blacklist.contains(&fingerprint_of(k)))
+    }
+
+    /// 黑名单指纹快照（探针候选面；顺序不定）。
+    pub(crate) fn blacklisted_fingerprints(&self) -> Vec<String> {
+        self.blacklist.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// 解黑名单单个指纹（探针恢复通道；不存在为 no-op）。
+    #[cfg(feature = "resilience")]
+    pub(crate) fn remove_blacklisted(&self, fingerprint: &str) {
+        self.blacklist.lock().unwrap().remove(fingerprint);
+    }
+
+    /// key 明文快照（探针 HTTP 构造专用；在 crate 内即用即弃，绝不记日志）。
+    pub(crate) fn keys_snapshot(&self) -> Vec<String> {
+        if let Some(inline) = self.inline.lock().unwrap().clone() {
+            return inline.keys.clone();
+        }
+        self.snapshot.lock().unwrap().keys.clone()
+    }
+
+    /// 当前轮换游标所指 key（free 探测的出站凭证；None = 池空/legacy）。
+    pub(crate) fn current_key(&self) -> Option<(String, String)> {
+        let keys = self.keys_snapshot();
+        if keys.is_empty() {
+            return None;
+        }
         let index = self.cursor.load(Ordering::Relaxed) % keys.len();
         let key = &keys[index];
-        RequestCredential::Pool {
-            key: key.clone(),
-            fingerprint: fingerprint_of(key),
-        }
+        Some((key.clone(), fingerprint_of(key)))
+    }
+
+    /// 管理面/恢复通道重置（WP6）：清空黑名单并回绕游标。
+    pub(crate) fn reset_key_state(&self) {
+        self.blacklist.lock().unwrap().clear();
+        self.cursor.store(0, Ordering::Relaxed);
+    }
+
+    /// 黑名单内 key 数（单测断言用）。
+    #[cfg(test)]
+    pub(crate) fn blacklisted_len(&self) -> usize {
+        self.blacklist.lock().unwrap().len()
     }
 
     /// 解析显性化（仅名单变更时调用一次，禁止每请求刷屏）：
     /// 逐缺失条目 warn、截断 warn、全缺回退 warn。
-    /// 安全 L4 脱敏：缺失条目不回显配置原文（防误填的 key 原文进日志），
+    /// 脱敏：缺失条目不回显配置原文（防误填的 key 原文进日志），
     /// 只报序号 + 值长度 + 核对提示。
     fn log_resolution(vendor_id: &str, names: &[String], resolved: &ResolvedPool) {
         for (index, env) in resolved.missing.iter().enumerate() {
@@ -521,6 +616,42 @@ impl KeyPool {
         true
     }
 
+    /// 请求错误记账（WP6 三态）：永久错误（401/402/403 或账务类正文）
+    /// → 黑名单 + 游标推进；瞬时错误（429/超时/5xx/网络）→ 无 key 动作
+    /// （冷却/退避走既有路径）。resilience 关闭时退化为 legacy 语义
+    /// （仅 401/403 推进、无黑名单——分类层随 resilience 门控，精简组合
+    /// 行为与历史逐位一致）。
+    pub(crate) fn note_request_error(
+        &self,
+        vendor_id: &str,
+        fingerprint: Option<&str>,
+        status: u16,
+        message: &str,
+    ) {
+        #[cfg(feature = "resilience")]
+        {
+            use crate::vendor::resilience::error_map::{classify_key_error, KeyErrorClass};
+            if classify_key_error(status, message) == KeyErrorClass::Permanent {
+                if let Some(fp) = fingerprint {
+                    self.mark_blacklisted(fp);
+                    tracing::warn!(
+                        vendor = %vendor_id,
+                        fingerprint = %fp,
+                        "key 已进黑名单（永久错误，不自动恢复）"
+                    );
+                }
+                self.advance(vendor_id, status);
+            }
+        }
+        #[cfg(not(feature = "resilience"))]
+        {
+            let _ = (fingerprint, message);
+            if matches!(status, 401 | 403) {
+                self.advance(vendor_id, status);
+            }
+        }
+    }
+
     /// 激活池长度（内联池优先，env 快照兜底）——游标取模与轮换判定的
     /// 单一事实源。
     fn active_pool_len(&self) -> usize {
@@ -563,19 +694,20 @@ impl KeyPool {
 
 #[cfg(test)]
 mod tests {
-    //! key 池单元测试（T005 验收：轮换顺序与耗尽行为 / 指纹稳定性）。
+    //! key 池单元测试（验收：轮换顺序与耗尽行为 / 指纹稳定性）。
     //! env 经 lookup 注入，无真实环境变量竞态；同一用例内 lookup 恒定，
     //! 对齐生产语义「env 值每次请求现读」。
 
     use super::*;
 
-    fn vendor_config(api_key_env: &str, api_key_envs: &[&str]) -> VendorConfig {
+    pub(super) fn vendor_config(api_key_env: &str, api_key_envs: &[&str]) -> VendorConfig {
         VendorConfig {
             id: "v-test".into(),
             name: "Test".into(),
             type_: "openai".into(),
             api_key_env: api_key_env.into(),
             api_key_envs: api_key_envs.iter().map(|s| s.to_string()).collect(),
+            extra_headers: Default::default(),
             api_base: String::new(),
             enabled: true,
             priority: 1,
@@ -592,7 +724,7 @@ mod tests {
         }
     }
 
-    fn lookup_map(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+    pub(super) fn lookup_map(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: std::collections::HashMap<String, String> = pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -659,7 +791,7 @@ mod tests {
 
     // ======== 指纹稳定性与区分度 ========
 
-    /// 安全 L1：指纹哈希用进程内随机密钥——**进程内**稳定（同 key 恒同
+    /// 指纹哈希用进程内随机密钥——**进程内**稳定（同 key 恒同
     /// 指纹，共享计数前提）、不同 key 互异（隔离前提）；跨进程随机性
     /// （不可离线复算）由 RandomState 播种保证，无法在单进程内断言。
     #[test]
@@ -812,7 +944,7 @@ mod tests {
         );
     }
 
-    /// 审查 M3：请求期 env 收缩——部分消失收缩池（游标取模钳制），
+    /// 请求期 env 收缩——部分消失收缩池（游标取模钳制），
     /// 全部消失回退 legacy 且游标推进 no-op（显性 warn 在日志层，
     /// 此处断言状态机语义）。
     #[test]
@@ -900,6 +1032,7 @@ mod inline_tests {
             type_: "openai".into(),
             api_key_env: api_key_env.into(),
             api_key_envs: vec![],
+            extra_headers: Default::default(),
             api_base: String::new(),
             enabled: true,
             priority: 1,
@@ -967,6 +1100,115 @@ mod inline_tests {
         assert!(
             matches!(credential, RequestCredential::LegacyEnv),
             "空内联池等价 env 池耗尽 → legacy 回退"
+        );
+    }
+}
+
+#[cfg(test)]
+mod blacklist_tests {
+    //! WP6 黑名单三态单测：跳过 / 全黑回退 / 热更裁剪 / 重置恢复。
+
+    use super::tests::{lookup_map, vendor_config};
+    use super::*;
+
+    fn pool_config() -> VendorConfig {
+        vendor_config("LEGACY_UNUSED", &["ENV_A", "ENV_B"])
+    }
+
+    fn lookup() -> impl Fn(&str) -> Option<String> {
+        lookup_map(&[
+            ("ENV_A", "k-a"),
+            ("ENV_B", "k-b"),
+            ("LEGACY_UNUSED", "k-legacy"),
+        ])
+    }
+
+    fn selected_key(pool: &KeyPool, config: &VendorConfig) -> Option<String> {
+        match pool.select_with(config, "v-test", &lookup()) {
+            RequestCredential::Pool { key, .. } => Some(key),
+            RequestCredential::LegacyEnv => None,
+        }
+    }
+
+    /// 黑名单 key 不再被选中，池内其余 key 继续服务。
+    #[test]
+    fn blacklisted_key_is_skipped_others_continue() {
+        let pool = KeyPool::default_for_test();
+        let config = pool_config();
+        assert_eq!(selected_key(&pool, &config).as_deref(), Some("k-a"));
+        pool.mark_blacklisted(&fingerprint_of("k-a"));
+        assert_eq!(pool.blacklisted_len(), 1);
+        // 游标仍指 0，但 k-a 被跳过 → k-b；多次选择恒为 k-b（不随时间恢复）。
+        for _ in 0..3 {
+            assert_eq!(selected_key(&pool, &config).as_deref(), Some("k-b"));
+        }
+        assert_eq!(pool.blacklisted_len(), 1, "黑名单不随选择衰减");
+    }
+
+    /// 全部 key 黑名单 ≡ 池耗尽 → legacy 回退（显性错误由上层承载）。
+    #[test]
+    fn all_blacklisted_falls_back_to_legacy() {
+        let pool = KeyPool::default_for_test();
+        let config = pool_config();
+        pool.mark_blacklisted(&fingerprint_of("k-a"));
+        pool.mark_blacklisted(&fingerprint_of("k-b"));
+        // legacy 名也在池内（合并名单含 LEGACY_UNUSED → k-legacy），同样拉黑
+        pool.mark_blacklisted(&fingerprint_of("k-legacy"));
+        assert!(
+            selected_key(&pool, &config).is_none(),
+            "全黑必须回退 legacy（与池耗尽现状一致）"
+        );
+    }
+
+    /// 热更裁剪：key 集合变化后，旧 key 的黑名单条目被清除。
+    #[test]
+    fn hot_reload_prunes_blacklist_for_removed_keys() {
+        let pool = KeyPool::default_for_test();
+        let config = pool_config();
+        assert_eq!(selected_key(&pool, &config).as_deref(), Some("k-a"));
+        pool.mark_blacklisted(&fingerprint_of("k-a"));
+        assert_eq!(selected_key(&pool, &config).as_deref(), Some("k-b"));
+
+        // 热更：ENV_A 移除 → 名单变化 → k-a 条目被裁剪（状态重置）。
+        let shrunk = vendor_config("LEGACY_UNUSED", &["ENV_B"]);
+        assert_eq!(selected_key(&pool, &shrunk).as_deref(), Some("k-b"));
+        assert_eq!(pool.blacklisted_len(), 0, "移除 key 的黑名单必须被裁剪");
+    }
+
+    /// 值变化同样裁剪：同名 env 换值视为 key 集合变化。
+    #[test]
+    fn value_change_prunes_stale_blacklist() {
+        let pool = KeyPool::default_for_test();
+        let config = pool_config();
+        assert_eq!(selected_key(&pool, &config).as_deref(), Some("k-a"));
+        pool.mark_blacklisted(&fingerprint_of("k-a"));
+
+        // ENV_A 换值 k-a → k-a2：旧指纹不在新集合 → 裁剪。
+        let rotated = lookup_map(&[
+            ("ENV_A", "k-a2"),
+            ("ENV_B", "k-b"),
+            ("LEGACY_UNUSED", "k-legacy"),
+        ]);
+        match pool.select_with(&config, "v-test", &rotated) {
+            RequestCredential::Pool { key, .. } => assert_eq!(key, "k-a2"),
+            other => panic!("换值后必须选中新 key: {other:?}"),
+        }
+        assert_eq!(pool.blacklisted_len(), 0);
+    }
+
+    /// reset 清空黑名单并回绕游标（管理面恢复通道）。
+    #[test]
+    fn reset_clears_blacklist_and_rewinds_cursor() {
+        let pool = KeyPool::default_for_test();
+        let config = pool_config();
+        pool.mark_blacklisted(&fingerprint_of("k-a"));
+        pool.mark_blacklisted(&fingerprint_of("k-b"));
+        pool.reset_key_state();
+        assert_eq!(pool.blacklisted_len(), 0);
+        assert_eq!(
+            selected_key(&pool, &config).as_deref(),
+            Some("k-a"),
+            "重置后游标回绕、首 key 重新可选"
         );
     }
 }

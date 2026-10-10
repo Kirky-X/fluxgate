@@ -6,7 +6,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-/// 配置热更新地基集成测试（recId=13）
+/// 配置热更新地基集成测试
 #[cfg(test)]
 mod hot_reload {
     use crate::common;
@@ -114,7 +114,7 @@ mod hot_reload {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// ③ recId=2：[resilience] 段经热更全量写回后保留且取值不丢 ——
+    /// ③ [resilience] 段经热更全量写回后保留且取值不丢 ——
     /// Section 字段落地的直接验证（persist_and_swap 以 toml::to_string_pretty
     /// 全量写回，未进 Config 的段会在首次 POST /admin/config 时从磁盘消失）。
     #[test]
@@ -258,6 +258,7 @@ mod tests {
                     type_: "openai".to_string(),
                     api_key_env: "OPENAI_API_KEY".to_string(),
                     api_key_envs: Vec::new(),
+                    extra_headers: Default::default(),
                     api_base: "".to_string(),
                     enabled: true,
                     priority: 1,
@@ -297,6 +298,7 @@ mod tests {
                     type_: "anthropic".to_string(),
                     api_key_env: "ANTHROPIC_API_KEY".to_string(),
                     api_key_envs: Vec::new(),
+                    extra_headers: Default::default(),
                     api_base: "".to_string(),
                     enabled: true,
                     priority: 1,
@@ -332,6 +334,8 @@ mod tests {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
@@ -606,7 +610,7 @@ concurrency = { requests_per_second = 10 }
     }
 
     /// 登记条目 context_window 必须 > 0：0 会让 agentstem TUI auto-compact
-    /// 静默不装配（agent_session.rs:3290-3291 语义），登记面强制真实值。
+    /// 静默不装配（agent_session.rs 语义），登记面强制真实值。
     #[test]
     fn catalog_rejects_zero_context_window() {
         let mut config = create_test_config();

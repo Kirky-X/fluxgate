@@ -205,7 +205,7 @@ fn test_timeout_trigger_matches_only_timeout() {
     assert!(!chain.should_trigger(&vu_500), "Timeout 不应匹配 5xx");
 }
 
-/// recId=7⑤：Router::build_fallback_chain —— 链由 config vendors 的
+/// Router::build_fallback_chain —— 链由 config vendors 的
 /// priority 字段构建；无候选（direct 形式不在 abstract 表）返回 None。
 #[cfg(all(feature = "resilience", feature = "router"))]
 mod build_fallback_chain {
@@ -228,6 +228,7 @@ mod build_fallback_chain {
             type_: "openai".into(),
             api_key_env: "NEXUSFLOW_TEST_KEY".into(),
             api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
             api_base: String::new(),
             enabled,
             priority,
@@ -278,6 +279,8 @@ mod build_fallback_chain {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
@@ -329,7 +332,7 @@ mod build_fallback_chain {
     }
 }
 
-/// recId=2：cover_all_paths（熔断/重试/换路覆盖透传与流式路径）集成测试。
+/// cover_all_paths（熔断/重试/换路覆盖透传与流式路径）集成测试。
 ///
 /// 基建为本文件新建（此前无 HTTP 桩用例）：mockito 双 server 场景，
 /// 模式抄 tests/vendor_test.rs 与 tests/api_test.rs::streaming_error_propagation。
@@ -378,6 +381,7 @@ mod cover_all_paths {
             type_: "openai".into(),
             api_key_env: "NEXUSFLOW_TEST_KEY".into(),
             api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
             api_base,
             enabled: true,
             priority,
@@ -428,6 +432,8 @@ mod cover_all_paths {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: ResilienceSection {
                 cover_all_paths,
@@ -491,6 +497,7 @@ mod cover_all_paths {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
         });
         (state, logger, repository)
     }
@@ -540,7 +547,7 @@ mod cover_all_paths {
     }
 
     /// ① passthrough_nonstream_fails_over：A 500 → B 成功。
-    /// actual_vendor=B（recId=9④ 记账口径：换路后记最终成功者）。
+    /// actual_vendor=B（记账口径：换路后记最终成功者）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn passthrough_nonstream_fails_over() {
         let mut server_a = mockito::Server::new_async().await;

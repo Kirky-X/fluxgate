@@ -33,6 +33,9 @@ pub struct ServerHandle {
     /// 监听是否装配经 [`Debug`] 暴露（`hot_reload_watcher` 字段），
     /// 嵌入式调用方据此查询热重载面状态。
     hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
+    /// 健康探针后台任务句柄（装配期按 `[health].mode` 启动；`shutdown()`
+    /// 首阶段 abort，随优雅停机退出）。
+    probe_handle: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "grpc")]
     grpc_server: std::sync::OnceLock<Option<crate::server::grpc::GrpcServer>>,
 }
@@ -55,6 +58,7 @@ impl ServerHandle {
             done: AtomicBool::new(false),
             inklog_hook: std::sync::OnceLock::new(),
             hot_reloader: assembly.hot_reloader,
+            probe_handle: assembly.probe_handle,
             #[cfg(feature = "grpc")]
             grpc_server: std::sync::OnceLock::new(),
         }
@@ -91,7 +95,11 @@ impl ServerHandle {
         if self.done.swap(true, Ordering::Relaxed) {
             return;
         }
-        // recId=9：优雅停机 flush — serve 返回即 in-flight 请求已全部完成，
+        // 健康探针后台任务先停（abort 即停，不等待周期睡眠）。
+        if let Some(handle) = &self.probe_handle {
+            handle.abort();
+        }
+        // 优雅停机 flush — serve 返回即 in-flight 请求已全部完成，
         // 此刻补最终 flush 保证缓冲中的日志与聚合数据不丢
         tracing::info!("{}", t("main-flushing-log-pipeline"));
         let coordinator = crate::server::shutdown::build_teardown_coordinator(

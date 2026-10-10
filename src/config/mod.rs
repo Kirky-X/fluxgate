@@ -4,6 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub mod loader;
 pub mod manager;
@@ -61,18 +62,27 @@ pub struct VendorConfig {
     pub type_: String,
     pub api_key_env: String,
     /// 多 key 池的显式 env 名列表（N5）。语义对齐 agentstem
-    /// provider_chain.rs:226-236：显式列表优先于池 env——与 `api_key_env`
+    /// provider_chain.rs：显式列表优先于池 env——与 `api_key_env`
     /// （向后兼容单 env 名，旧配置逐位可用）合并去重定序，本列表在前。
     /// 池解析逐名读环境变量得实际 key 串，缺名的 env 跳过并显性告警；
     /// 池上限截断见 `vendor::key_pool::MAX_KEY_POOL`。
     /// 本字段只存环境变量名，绝不存 key 原文（admin 面掩码约定）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub api_key_envs: Vec<String>,
+    /// 出站自定义头（WP2）：`[[vendors]].extra_headers`（TOML 表
+    /// string→string，静态值、不做模板替换）。请求构造处统一注入；
+    /// 与网关已设置的头（鉴权与协议头）冲突时跳过该项并记 warn。
+    /// ✅ 热生效：出站构造每请求从 fresh_config 现读（实现为准；早期
+    /// 「restart-required」标注不实）。代价权衡（审查 L7 反驳采纳）：每请求
+    /// 逐项解析 HeaderName/HeaderValue（头数量少、字符串短，为换取热生效
+    /// 接受该分配；若未来成为热点，可换版本化快照缓存）。
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_headers: HashMap<String, String>,
     #[serde(default = "default_api_base")]
     pub api_base: String,
     #[serde(default = "default_vendor_enabled")]
     pub enabled: bool,
-    /// fallback 优先级（recId=7）：数值越小优先级越高（1 = primary）。
+    /// fallback 优先级：数值越小优先级越高（1 = primary）。
     /// 换路 fallback 由该字段构建 FallbackChain。
     #[serde(default = "default_vendor_priority")]
     pub priority: u8,
@@ -81,7 +91,7 @@ pub struct VendorConfig {
     pub rate_limit: RateLimitConfig,
     pub concurrency: ConcurrencyConfig,
     /// 出站 HTTP per-attempt 总超时（毫秒）— 从 `send` 发起起算至响应体
-    /// 读完（reqwest 请求级超时语义），不含本地排队等待。recId=4（W2）：
+    /// 读完（reqwest 请求级超时语义），不含本地排队等待。
     /// 此前出站 Client 零超时，可无限等待。
     /// **0 = 不限时**（逃生阀：u64 零值若被当作 `Duration::from_millis(0)`
     /// 语义是「立即超时」，故实现必须显式跳过 timeout 包裹）。
@@ -89,12 +99,12 @@ pub struct VendorConfig {
     pub timeout_ms: u64,
     /// 流式 TTFT（Time-To-First-Token）超时（毫秒）— 包住 `send` 发起至
     /// 上游响应头返回的段落；首包（头）返回后愿意继续等（Cloudflare
-    /// 口径）。recId=4（W2）：此前流式 send 无超时。
+    /// 口径）。此前流式 send 无超时。
     /// **0 = 不限时**（逃生阀，同上）。
     #[serde(default = "default_stream_ttft_ms")]
     pub stream_ttft_ms: u64,
     /// 流式 chunk 间 idle 超时（毫秒）— 相邻上游字节块的最大间隔，超时
-    /// 以 `Timeout` 终止流。recId=4（W2）：此前流式无 idle 超时，上游
+    /// 以 `Timeout` 终止流。此前流式无 idle 超时，上游
     /// 挂起可无限占用并发 permit。
     /// **0 = 不限时**（逃生阀：防慢生成流被误杀的部署可关闭）。
     #[serde(default = "default_stream_idle_ms")]
@@ -152,7 +162,7 @@ pub enum RateLimitConfig {
     #[serde(rename = "interval")]
     Interval {
         hours: u64,
-        /// recId=11：滑动窗口开关。**默认 false = FixedWindowLimiter
+        /// 滑动窗口开关。**默认 false = FixedWindowLimiter
         ///（现状，行为逐位一致）**；true = limiteron
         /// ShardedSlidingWindowLimiter（消除固定窗口翻越点的瞬时 2×
         /// 配额双花；reset_secs 以窗口全长近似上界，window_end 精度略降
@@ -164,13 +174,13 @@ pub enum RateLimitConfig {
     #[serde(rename = "token")]
     Token {
         max_tokens: u64,
-        /// Token 配额窗口时长（小时）。recId=5：窗口由
+        /// Token 配额窗口时长（小时）。窗口由
         /// limiteron::limiters::FixedWindowLimiter 惰性重置（旧实现
         /// should_reset 只匹配 Interval 变体，Token 窗口永不重置）。
         /// 缺省 24h，兼容旧配置。
         #[serde(default = "default_token_window_hours")]
         window_hours: Option<u64>,
-        /// recId=11：滑动窗口开关（语义同 Interval.sliding）。
+        /// 滑动窗口开关（语义同 Interval.sliding）。
         #[serde(default)]
         sliding: bool,
     },
@@ -184,12 +194,12 @@ fn default_token_window_hours() -> Option<u64> {
 pub struct ConcurrencyConfig {
     #[serde(default = "default_rps")]
     pub requests_per_second: u32,
-    /// 最大并发在途请求数（含流式）。recId=5：流式 permit 生命周期修复后
+    /// 最大并发在途请求数（含流式）。流式 permit 生命周期修复后
     /// permit 真实持有至流结束，该上限对流式生效。缺省 None = 使用队列
     /// 容量（100）。
     #[serde(default)]
     pub max_concurrent_requests: Option<usize>,
-    /// recId=18：token 加权并发票据开关。**默认 false = 单票据**
+    /// token 加权并发票据开关。**默认 false = 单票据**
     ///（行为与现状逐位一致）。开启时并发票据按预估 token 量计费
     ///（cost = clamp(messages 序列化字节/4 + max_tokens, min, max)，
     /// agentic 长会话不再与短请求等价占票）；#6 的 in_flight 信号
@@ -199,14 +209,14 @@ pub struct ConcurrencyConfig {
     /// 是机制内生风险，token_ticket_max 封顶为逃逸阀。
     #[serde(default)]
     pub token_weighted: bool,
-    /// recId=18：单请求票据下限（默认 1）。
+    /// 单请求票据下限（默认 1）。
     #[serde(default = "default_token_ticket_min")]
     pub token_ticket_min: u64,
-    /// recId=18：单请求票据上限（逃逸阀，默认 16384 示例值——超长会话
+    /// 单请求票据上限（逃逸阀，默认 16384 示例值——超长会话
     /// 也至多占用该票据量，防预算被单个请求耗尽）。
     #[serde(default = "default_token_ticket_max")]
     pub token_ticket_max: u64,
-    /// recId=18：max_tokens 缺省兜底（容量规划前提——请求未声明
+    /// max_tokens 缺省兜底（容量规划前提——请求未声明
     /// max_tokens 时按该值计费）。默认 4096。
     #[serde(default = "default_token_ticket_default")]
     pub token_ticket_default: u64,
@@ -244,7 +254,7 @@ fn default_strategy() -> String {
     "weighted".into()
 }
 
-/// recId=16：API key 档位 — 拥塞准入的优先级基准
+/// API key 档位 — 拥塞准入的优先级基准
 ///（dedicated/guaranteed/elastic/spot）。serde 严格枚举：未知档位字符串
 /// 使配置加载失败（显式配置错误早暴露；与 load_signal 的运行时单选档
 /// 不同，本值无运行时回退路径语义）。
@@ -262,7 +272,7 @@ pub enum AuthTier {
     Spot,
 }
 
-/// recId=16：[[auth.keys]] 单条 — key 摘要 → 档位。hash 与 api_keys 同
+/// [[auth.keys]] 单条 — key 摘要 → 档位 + 配额。hash 与 api_keys 同
 /// 形态（SHA256 hex，明文不落盘）。未在 keys 声明的 key（含 api_keys
 /// 列表全部）缺省 [`AuthTier::Elastic`]（行为不变）。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -270,6 +280,12 @@ pub struct AuthKeyEntry {
     pub hash: String,
     #[serde(default)]
     pub tier: AuthTier,
+    /// token 窗口限额（input+output 合计；0 = 不限）。
+    #[serde(default)]
+    pub token_quota: u64,
+    /// 成本窗口限额（millicents 微美分整数，1 单位 = 1e-5 USD；0 = 不限）。
+    #[serde(default)]
+    pub cost_quota_millicents: u64,
 }
 
 /// [auth] 段 — API Key 认证配置。
@@ -278,7 +294,7 @@ pub struct AuthKeyEntry {
 /// `echo -n "your-api-key" | sha256sum`，认证时对请求 key 现场算摘要做
 /// 常量时间比较，明文密钥不落盘、不进内存。
 ///
-/// recId=16：可选 `keys` 子表声明 key 档位（拥塞准入的优先级基准）；
+/// 可选 `keys` 子表声明 key 档位（拥塞准入的优先级基准）；
 /// 缺省（空 vec）→ 全部 key 视为 elastic 且准入不启用，行为与现状
 /// 逐位一致。热读：认证与准入每请求从热配置现读。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -289,7 +305,7 @@ pub struct AuthSection {
     pub api_keys: Vec<String>,
     #[serde(default)]
     pub header: AuthHeaderSection,
-    /// recId=16：key 档位表（可选；缺省全 elastic、准入不启用）
+    /// key 档位表（可选；缺省全 elastic、准入不启用）
     #[serde(default)]
     pub keys: Vec<AuthKeyEntry>,
 }
@@ -359,10 +375,10 @@ impl Default for CorsSection {
     }
 }
 
-/// [retry] 段 — 出站重试策略（recId=7）。
+/// [retry] 段 — 出站重试策略。
 ///
 /// 热读路径：worker 每请求从 `ConfigManager::read().retry` 现读，
-/// POST /admin/config 全量更新后立即生效（recId=13 热更新地基）。
+/// POST /admin/config 全量更新后立即生效（热更新地基）。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RetrySection {
     /// 单 vendor 内最大重试次数（不含首次调用）
@@ -383,7 +399,7 @@ pub struct RetrySection {
     /// 退避抖动比例（0.0–1.0）
     #[serde(default = "default_retry_jitter")]
     pub jitter: f64,
-    /// 同步惊群展宽比例（recId=5）：Retry-After 与 5xx 固定间隔分支的
+    /// 同步惊群展宽比例：Retry-After 与 5xx 固定间隔分支的
     /// 延迟 = base + U(0, spread_jitter) × base（base 为 Retry-After 值
     /// 或 1s）。1.0 = 全范围展宽 [base, 2×base)，消除多实例同刻重试；
     /// 0.0 = 完全恢复旧行为（Retry-After 原样返回、5xx 固定 1s）——回滚阀。
@@ -393,14 +409,14 @@ pub struct RetrySection {
     /// vendor 数 × 重试数爆炸）
     #[serde(default = "default_retry_total_attempts")]
     pub max_total_attempts: u32,
-    /// recId=9（W5）：单请求重试总时间预算（秒）。**默认 0 = 不限时**
+    /// 单请求重试总时间预算（秒）。**默认 0 = 不限时**
     ///（现状）；>0 时重试循环与跨 vendor fallback 循环在每次等待前检查
     /// 「锚点耗时 + 下次延迟」是否超预算，超限返回最后错误（Portkey
     /// 递减式预算对照——防重试等待把单请求拖到分钟级）。锚点统一
     /// tokio::time::Instant（std Instant 不随 paused clock 推进）。
     #[serde(default)]
     pub retry_budget_secs: u64,
-    /// recId=9（W5）：重试放大守门器（λ_eff/f_c 亚稳态防护）。**默认
+    /// 重试放大守门器（λ_eff/f_c 亚稳态防护）。**默认
     /// false = 只靠 metrics 计数、行为与现状逐位一致**。开启时在换路
     /// fallback 入口评估：f > 0.8·f_c（失败率逼近临界失败率）→ 本请求
     /// max_total_attempts 临时收紧到 1 + tracing::warn（误触发退化为单
@@ -441,13 +457,13 @@ fn default_retry_total_attempts() -> u32 {
     8
 }
 
-/// [routing] 段 — 路由权重系数与选择算法（recId=10）。
+/// [routing] 段 — 路由权重系数与选择算法。
 ///
 /// 热读路径：`Router` 每次路由从热配置现读（confers::dynamic::DynamicField
 /// update 后 `read()` 立即可见），POST /admin/config 更新本段后**立即生效，
 /// 无需重启**。
 ///
-/// 权重公式（recId=10③）：
+/// 权重公式
 /// `weight = w_model×model.weight + w_queue×queue_factor + w_window×window_factor
 ///        + w_latency×latency_factor + w_error×error_factor`，最终权重再经
 /// 温度平滑 `w^(1/T)`（herding 缓解）。
@@ -465,12 +481,12 @@ pub struct RoutingSection {
     /// 第 3 维：window_factor（Token 预算/窗口，[0,1]）系数
     #[serde(default = "default_w_window")]
     pub w_window: f64,
-    /// 第 4 维（recId=10③）：EWMA 延迟因子系数。默认 0 = 关闭；开启后
+    /// 第 4 维：EWMA 延迟因子系数。默认 0 = 关闭；开启后
     /// latency_factor = latency_ref_ms / (latency_ref_ms + vendor_ewma_ms)，
     /// 有界 (0,1)，快厂商得分高。
     #[serde(default)]
     pub w_latency: f64,
-    /// 第 4 维（recId=10③）：EWMA 错误率因子系数。默认 0 = 关闭；开启后
+    /// 第 4 维：EWMA 错误率因子系数。默认 0 = 关闭；开启后
     /// error_factor = 1 - ewma_error_rate，有界 [0,1]。
     #[serde(default)]
     pub w_error: f64,
@@ -478,13 +494,13 @@ pub struct RoutingSection {
     /// 默认 1000ms，可按全局 P50 延迟热调整。
     #[serde(default = "default_latency_ref_ms")]
     pub latency_ref_ms: f64,
-    /// 温度平滑指数（recId=10④，herding 缓解）：最终权重 w^(1/T)。
+    /// 温度平滑指数（herding 缓解）：最终权重 w^(1/T)。
     /// T=1（默认）不平滑；T>1 压平差距（趋向均匀探索）；T<1 放大差距。
     /// 必须 > 0，非法值按不平滑处理。
     #[serde(default = "default_temperature")]
     pub temperature: f64,
     /// 选择算法："weighted"（默认轮盘赌）| "power_of_two"（Po2C 实验：
-    /// 均匀采样 2 候选、按 EWMA 延迟择优）| "linucb"（recId=15：LinUCB
+    /// 均匀采样 2 候选、按 EWMA 延迟择优）| "linucb"（LinUCB
     /// bandit 档——候选集内按 UCB=⟨x,θ̂⟩+α√(xᵀA⁻¹x) argmax，per
     /// (abstract_model, vendor_id) 臂，成败 0/1 代理奖励；需 Router 接线
     /// BanditState 且请求特征可得，未接线/特征缺失时回退 weighted）。默认
@@ -493,9 +509,9 @@ pub struct RoutingSection {
     /// "weighted"（默认与回滚同路径）。
     #[serde(default = "default_selection")]
     pub selection: String,
-    /// recId=6：负载维（queue_factor）输入档位，单选开关：
+    /// 负载维（queue_factor）输入档位，单选开关
     /// - `"queue"`（默认）— worker 队列深度（历史行为，线上路径不变）；
-    /// - `"in_flight"` — 在途请求数（并发 permit 占用，含长流，recId=6 主信号）；
+    /// - `"in_flight"` — 在途请求数（并发 permit 占用，含长流，主信号）；
     /// - `"in_flight_relative"` — 在途相对化 (x−fleet_mean)/max(1,fleet_mean)
     ///   （production-stack 公式），线性映射到 queue_factor 的 0..100 输入域。
     ///
@@ -504,29 +520,29 @@ pub struct RoutingSection {
     /// 退出该维。未知值一律按 `"queue"`（默认与回滚同路径）。
     #[serde(default = "default_load_signal")]
     pub load_signal: String,
-    /// recId=8：Peak-EWMA 时间常数 τ（ms）— α_dyn = 1−exp(−Δt/τ)（Kong
+    /// Peak-EWMA 时间常数 τ（ms）— α_dyn = 1−exp(−Δt/τ)（Kong
     /// latency.lua DECAY_TIME=10s 同值）。久未采样 α→1 快速反映恢复，高频
     /// 采样平滑抗噪。经 VendorManager 落账前热同步到 metrics。0 = 极限
     /// 「完全采新样本」（无平滑），运维慎用。
     #[serde(default = "default_ewma_tau_ms")]
     pub ewma_tau_ms: u64,
-    /// recId=8：min+buffer 候选集缓冲（LiteLLM lowest_latency_buffer 语义）—
+    /// min+buffer 候选集缓冲（LiteLLM lowest_latency_buffer 语义）—
     /// 大于 0 时选择先取 ewma_e2e ≤ 最低×(1+buffer) 的候选集、集合内均匀随机
     ///（防打爆最快者）。**默认 0.0 = 关闭**（轮盘赌/Po2C 与历史逐位一致；
     /// config_toml_example_test 结构性断言）。
     ///
-    /// 顺序依赖：延迟道已按 e2e 口径分道（recId=8），w_latency 调非零应
+    /// 顺序依赖：延迟道已按 e2e 口径分道：w_latency 调非零应
     /// 在分道落地之后评估（config.toml 注释同步注明）。
     #[serde(default)]
     pub latency_buffer: f64,
-    /// recId=19(a)：请求级权重开关（X-Weight 头，LiteLLM simple_shuffle
+    /// 请求级权重开关（X-Weight 头，LiteLLM simple_shuffle
     /// _router_weights 对照）。**默认 false = 头被忽略**（路由行为与现状
     /// 逐位一致）。开启且请求携带合法 X-Weight（有限正数）时覆盖
     /// model.weight 参与权重计算；门控在 Router 侧热读判定（本开关
     /// POST /admin/config 更新后下一请求生效）。
     #[serde(default)]
     pub allow_request_weight: bool,
-    /// recId=19(b)：全冷却 fail-open 安全网。**默认 false = 全候选被剔除
+    /// 全冷却 fail-open 安全网。**默认 false = 全候选被剔除
     /// 时保持 Validation 错误（现状）**。开启时全部候选因 CB Open /
     /// Throttled 被路由层剔除的情况下，回落「忽略状态但 enabled」的候选
     /// 集加权选择。现实约束：NexusFlow 无主动健康检查驱动的冷却，全部
@@ -535,20 +551,20 @@ pub struct RoutingSection {
     /// 的部署开启（把已冷却 vendor 重新纳入流量是有意冒险）。
     #[serde(default)]
     pub fail_open_when_all_cooling: bool,
-    /// recId=19(c)：Retry-After 提示。**默认 false = 耗尽时原错误冒泡
+    /// Retry-After 提示。**默认 false = 耗尽时原错误冒泡
     /// （503 语义不变）**。开启且换路 fallback 耗尽时全部排除原因为
     /// Throttled → 返回 AllVendorsThrottled（429 + Retry-After 头，
     /// reset 秒数取各 vendor 窗口重置剩余的 min）。首次路由即全
     /// Throttled 的入口场景（handler 首路由 ? 早退）本轮不覆盖。
     #[serde(default)]
     pub retry_after_hint: bool,
-    /// recId=10(1)：会话亲和模式 — `"hard"`（默认，现状：命中即返回，
+    /// 会话亲和模式 — `"hard"`（默认，现状：命中即返回，
     /// 绑定 vendor 在合格集合内时必选）；`"soft"`：命中软化为评分项——
     /// 命中 vendor 权重 ×(1 + affinity_boost_factor) 后与其余候选照常
     /// 竞争。未知值一律按 `"hard"`（默认与回滚同路径）。
     #[serde(default = "default_affinity_mode")]
     pub affinity_mode: String,
-    /// recId=10(1)：soft 模式下命中 vendor 的权重乘子基准 — 权重乘
+    /// soft 模式下命中 vendor 的权重乘子基准 — 权重乘
     /// (1 + affinity_boost_factor)。默认 1.0（×2 boost）；仅在
     /// affinity_mode = "soft" 时生效，负值按 0 处理（防负权重）。
     /// production-stack score = 亲和收益 − β·相对负载的形态以乘子近似
@@ -556,7 +572,7 @@ pub struct RoutingSection {
     /// 即用新值。
     #[serde(default = "default_affinity_boost_factor")]
     pub affinity_boost_factor: f64,
-    /// recId=10(2)：亲和键租户隔离。**默认 false = legacy 键
+    /// 亲和键租户隔离。**默认 false = legacy 键
     /// `affinity:{session_key}`（现状，行为与键格式逐位一致）**。开启时
     /// 键改为 `affinity:{api_key_hash}:{session_key}`（hash 与响应缓存
     /// cache_api_key_hash 同源）——实为租户劫持修复（两租户同 session id
@@ -565,7 +581,7 @@ pub struct RoutingSection {
     /// 与路由侧 lookup 同源判定。
     #[serde(default)]
     pub affinity_tenant_scoped: bool,
-    /// recId=14：SLA/满意度虚拟队列打分项强度 V（SLARouter 零模型版）。
+    /// SLA/满意度虚拟队列打分项强度 V（SLARouter 零模型版）。
     /// **默认 0.0 = 关闭**：惩罚因子不参与权重、虚拟队列 Q 不更新（路由
     /// 行为与现状逐位一致）。>0 时每候选权重末尾乘惩罚因子
     /// `1 / (1 + V·Ĉ_m + max(0, Q·(α − ŝ_m)))`，其中 ŝ_m = 1 − EWMA 错误率
@@ -590,14 +606,14 @@ pub struct RoutingSection {
     /// 下一请求即用新值。
     #[serde(default = "default_price_factor_enabled")]
     pub price_factor_enabled: bool,
-    /// recId=14：目标服务水平 α（[0,1]）。虚拟队列对偶更新
+    /// 目标服务水平 α（[0,1]）。虚拟队列对偶更新
     /// `Q ← max(0, Q + α − ŝ_selected)`（决策时更新，SLARouter Eq 4/5 的
     /// Lyapunov 语义）：α < ŝ（满意度达标）→ Q 衰减归 0；α > ŝ（服务
     /// 欠账）→ Q 累积推高惩罚。默认 0.95；非有限/越界值钳到 [0,1]
     ///（NaN 按 0 处理 = Q 恒 0，退化为纯成本项——fail-safe 方向）。
     #[serde(default = "default_sla_alpha")]
     pub sla_alpha: f64,
-    /// recId=17：LPS 排队论延迟前瞻的软约束强度 δ。**默认 0.0 = 关闭**：
+    /// LPS 排队论延迟前瞻的软约束强度 δ。**默认 0.0 = 关闭**
     /// Ŵ 不参与权重（行为与现状逐位一致）。>0 时权重末尾乘
     /// `1/(1 + δ·Ŵ/Ŵ_ref)`（乘法软约束——对报告线性 −δ·Ŵ 的有意偏差：
     /// 线性负项会触发 compute_weight 非正归零保护造成权重归零剔除，
@@ -606,19 +622,19 @@ pub struct RoutingSection {
     /// 负值/非有限视为关闭。
     #[serde(default)]
     pub lps_delta: f64,
-    /// recId=17：LPS 硬约束门控。**默认 false = 不消费 deadline、不做
+    /// LPS 硬约束门控。**默认 false = 不消费 deadline、不做
     /// 可行集筛选**（行为与现状逐位一致）。开启后请求按 `Ŵ≤deadline`
     /// 筛可行集（deadline = x-deadline-ms 头，缺省用
     /// [`Self::default_deadline_ms`]），可行集为空时改选 Ŵ 最小者
     ///（JITServe 软信号语义）。亲和 hard 命中优先于本筛选（现状语义）。
     #[serde(default)]
     pub lps_deadline_gate: bool,
-    /// recId=17：默认截止（毫秒）——lps_deadline_gate 开启且请求未携带
+    /// 默认截止（毫秒）——lps_deadline_gate 开启且请求未携带
     /// x-deadline-ms 头时使用。默认 10000（示例值，按业务 P99/滑动观察
     /// /admin/metrics 的 ewma_e2e_ms 调整）。
     #[serde(default = "default_deadline_ms")]
     pub default_deadline_ms: f64,
-    /// recId=15：LinUCB 探索参数 α — `ucb(x,α) = ⟨x,θ̂⟩ + α√(xᵀA⁻¹x)` 的
+    /// LinUCB 探索参数 α — `ucb(x,α) = ⟨x,θ̂⟩ + α√(xᵀA⁻¹x)` 的
     /// 探索半径。**仅 `[routing].selection = "linucb"` 时被咨询**（默认
     /// selection="weighted"，本参数不参与任何路径——关闭由 selection 档位
     /// 承担）；0/负值 = 关闭探索（纯贪心 θ̂ argmax），非有限按 0。臂矩阵
@@ -715,7 +731,7 @@ impl Default for RoutingSection {
 }
 
 impl RoutingSection {
-    /// 命名预设（recId=10①）：三套开箱即用的系数组合。
+    /// 命名预设：三套开箱即用的系数组合。
     /// - `quality`：偏模型质量（w_model 主导）
     /// - `latency`：偏近期延迟（开启 EWMA 延迟维）
     /// - `cost`：偏窗口预算（window_factor 主导，Token 余额 ≈ 成本预算代理）
@@ -765,7 +781,7 @@ impl Default for RetrySection {
     }
 }
 
-/// [cache] 段 — 精确响应缓存（recId=12）。
+/// [cache] 段 — 精确响应缓存。
 ///
 /// 存储：oxcache `CacheBackend`（memory 后端），绝不手写 map。键形
 /// `resp:{api_key_sha256}:{vendor_id}:{model_id}:{sha256(canonical_body)}`
@@ -777,7 +793,7 @@ impl Default for RetrySection {
 ///
 /// `enabled` 默认 **false**：TTL 内响应陈旧是产品语义，上线由运维显式
 /// 打开（config.toml 注释同步注明）。
-/// recId=12：[[cache.categories]] 单条 — 按模型前缀的 TTL 类别乘数
+/// [[cache.categories]] 单条 — 按模型前缀的 TTL 类别乘数
 ///（(endpoint, model) 划分的零开销近似：缓存键已含 model 维度，前缀
 /// 匹配即可）。无命中的 model 乘数 1.0。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -794,7 +810,7 @@ pub struct CacheSection {
     /// 响应缓存 TTL（秒），默认 300
     #[serde(default = "default_cache_ttl_secs")]
     pub ttl_secs: u64,
-    /// recId=12：TTL 负载联动开关。**默认 false = 纯静态 TTL**（与现状
+    /// TTL 负载联动开关。**默认 false = 纯静态 TTL**（与现状
     /// 逐位一致；类别乘数表独立生效）。开启时实际 TTL =
     /// `ttl_secs × 类别乘数 × (1 + λ·(β_max−1))`，其中
     /// λ = min(1, (L_p/L_target)·w_L + (Q/Q_target)·w_Q)。**口径降级
@@ -820,7 +836,7 @@ pub struct CacheSection {
     /// 流量份额目标（0..1）。Q 达到该值时份额项满权重。默认 0.5。
     #[serde(default = "default_cache_q_target")]
     pub q_target: f64,
-    /// recId=12：类别乘数表（缺省空 = 全部 1.0；与负载联动开关独立生效）
+    /// 类别乘数表（缺省空 = 全部 1.0；与负载联动开关独立生效）
     #[serde(default)]
     pub categories: Vec<CacheCategory>,
     /// TTL 抖动系数（默认 0 = 关闭，保持现状精确 TTL）。>0 时写入
@@ -880,7 +896,7 @@ impl Default for CacheSection {
     }
 }
 
-/// [resilience] 段 — 韧性覆盖面（recId=2 / recId=7）。
+/// [resilience] 段 — 韧性覆盖面。
 ///
 /// 硬约束：必须定义为 Config 结构体的 Section 字段 —— persist_and_swap 以
 /// `toml::to_string_pretty` 全量写回 config.toml（manager.rs 实证），未进
@@ -892,9 +908,9 @@ impl Default for CacheSection {
 ///（结构上锁定默认路径行为不变），阈值参数给可用的非零缺省。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ResilienceSection {
-    /// 熔断/重试/换路覆盖到透传与流式路径（recId=2）。**默认 false**：
+    /// 熔断/重试/换路覆盖到透传与流式路径。**默认 false**
     /// 关闭时透传非流式（无 CB）、透传流式、转换流式三条裸路径与历史
-    /// 行为逐位一致（只有转换非流式有换路 fallback，recId=7⑤ 先例）。
+    /// 行为逐位一致（只有转换非流式有换路 fallback，先例）。
     /// 开启后：
     /// - 透传非流式由 per-vendor CircuitBreaker 包裹，失败进入换路循环；
     /// - 两条流式路径 send+响应头校验段由 CB 包裹，首字节（响应头）前
@@ -903,21 +919,21 @@ pub struct ResilienceSection {
     ///   见 config.toml [resilience] 注释。
     #[serde(default)]
     pub cover_all_paths: bool,
-    /// recId=7（W5）：失败率软降权开关。**默认 false**——关闭时路由权重
+    /// 失败率软降权开关。**默认 false**——关闭时路由权重
     /// 与现状逐位一致（窗口计数在 metrics 常开，纯观测）。开启时窗口
     /// 样本达标且失败率超阈的 vendor 权重 ×`failure_rate_penalty`
     ///（LiteLLM 数值对照 0.1）：软降权只打折不剔除——路由层 ==Available
     /// 过滤不动，仅作用于仍 Available 的劣化 vendor。
     #[serde(default)]
     pub failure_rate_gate: bool,
-    /// recId=7（W5）：触发软降权的最小窗口样本数（total，60s 滑窗）。
+    /// 触发软降权的最小窗口样本数（total，60s 滑窗）。
     /// 样本不足不惩罚（防小样本误杀）。
     #[serde(default = "default_failure_rate_min_samples")]
     pub failure_rate_min_samples: u64,
-    /// recId=7（W5）：触发软降权的失败率阈值（(0,1]，fail_pct > 阈值才降权）。
+    /// 触发软降权的失败率阈值（(0,1]，fail_pct > 阈值才降权）。
     #[serde(default = "default_failure_rate_threshold")]
     pub failure_rate_threshold: f64,
-    /// recId=7（W5）：软降权乘子（权重 ×penalty）。0.1 = LiteLLM 数值对照。
+    /// 软降权乘子（权重 ×penalty）。0.1 = LiteLLM 数值对照。
     #[serde(default = "default_failure_rate_penalty")]
     pub failure_rate_penalty: f64,
     /// CB Open→HalfOpen 的超时窗口（毫秒）。**默认 30000**：与既有硬编码
@@ -925,6 +941,14 @@ pub struct ResilienceSection {
     /// 探针风暴；测试经此注入短窗口以替代真实秒级睡眠。
     #[serde(default = "default_circuit_open_timeout_ms")]
     pub circuit_open_timeout_ms: u64,
+    /// 回退链可观测响应头（WP4）。**默认 false**——关闭时成功响应与现状
+    /// 逐字节一致（零额外分配）；开启时成功响应附
+    /// `x-nexusflow-vendor`（最终命中）、`x-nexusflow-model`、
+    /// `x-nexusflow-attempts`（总尝试次数）、`x-nexusflow-fallbacks`
+    /// （逗号分隔尝试链，含最终命中者；流式在响应头阶段写入）。
+    /// 热更段（执行路径每请求现读）。
+    #[serde(default)]
+    pub expose_fallback_headers: bool,
 }
 
 fn default_failure_rate_min_samples() -> u64 {
@@ -952,11 +976,12 @@ impl Default for ResilienceSection {
             failure_rate_threshold: default_failure_rate_threshold(),
             failure_rate_penalty: default_failure_rate_penalty(),
             circuit_open_timeout_ms: default_circuit_open_timeout_ms(),
+            expose_fallback_headers: false,
         }
     }
 }
 
-/// [admission] 段 — 拥塞感知优先级准入（recId=16）。
+/// [admission] 段 — 拥塞感知优先级准入。
 ///
 /// 网关侧并发占用率（Σ in_flight / Σ 上限，复用 #6 的
 /// ConcurrencyLimiter::in_flight）达到 [`Self::congestion_threshold`]
@@ -1019,13 +1044,13 @@ impl Default for AdmissionSection {
     }
 }
 
-/// [rate_limit] 段 — 入站限流规则（recId=3）。
+/// [rate_limit] 段 — 入站限流规则。
 ///
 /// 缺陷背景：该段此前被 serde 静默丢弃（Config 无此字段），
 /// rate_limit_middleware 一直跑 limiteron Governor 的库内置默认兜底规则，
 /// 配置文件中的限流参数从未生效。
 ///
-/// 消费方式（recId=3 方案 a/b）：
+/// 消费方式（方案 a/b）
 /// - `path = None` 的全局规则 → 转为 limiteron `Rule`（`Matcher::User` +
 ///   SlidingWindow）于 Router 构造期注入 Governor；limiteron 决策链为规则级
 ///   单例桶（`DecisionChain::check` 无 context 参数），该层不分租户；
@@ -1136,25 +1161,33 @@ pub struct Config {
     /// [retry] 段 — 出站重试策略。缺段时用 Default（429/5xx 重试 3 次 + jitter）
     #[serde(default)]
     pub retry: RetrySection,
-    /// [routing] 段 — 路由权重系数与选择算法（recId=10）。缺段时用 Default
+    /// [routing] 段 — 路由权重系数与选择算法。缺段时用 Default
     /// （0.4/0.3/0.3 + 新维度全关），与历史 3D 权重行为一致
     #[serde(default)]
     pub routing: RoutingSection,
-    /// [cache] 段 — 精确响应缓存（recId=12）。缺段时 enabled=false（关闭）
+    /// [cache] 段 — 精确响应缓存。缺段时 enabled=false（关闭）
     #[serde(default)]
     pub cache: CacheSection,
-    /// [rate_limit] 段 — 入站限流（recId=3）。缺段/空 rules = limiteron
+    /// [rate_limit] 段 — 入站限流。缺段/空 rules = limiteron
     /// Governor 内置默认兜底（与历史行为逐位一致）。restart-required。
     #[serde(default)]
     pub rate_limit: RateLimitSection,
-    /// [resilience] 段 — 韧性覆盖面（recId=2）。缺段时 cover_all_paths=false
+    /// [resilience] 段 — 韧性覆盖面。缺段时 cover_all_paths=false
     ///（三条裸路径行为与历史逐位一致）。Section 字段落地防热更抹段。
     #[serde(default)]
     pub resilience: ResilienceSection,
-    /// [admission] 段 — 拥塞感知优先级准入（recId=16）。缺段时 enabled=false
+    /// [admission] 段 — 拥塞感知优先级准入。缺段时 enabled=false
     ///（完全旁路，行为与历史逐位一致）。
     #[serde(default)]
     pub admission: AdmissionSection,
+    /// [health] 段 — 主动健康检查探针（WP7）。缺段时 mode=off（零后台
+    /// 任务、行为与历史逐位一致）。Section 字段落地防热更抹段。
+    #[serde(default)]
+    pub health: HealthSection,
+    /// [quota] 段 — 成本与 token 维度配额（WP8）。缺段时 enabled=false
+    ///（零判限、行为与历史逐位一致）。Section 字段落地防热更抹段。
+    #[serde(default)]
+    pub quota: QuotaSection,
     /// [grpc] 段 — gRPC 服务器（`feature = "grpc"`）。None = 配置中无该段，
     /// gRPC 服务器禁用（不监听 gRPC 端口，行为与历史逐位一致）
     #[serde(default)]
@@ -1172,6 +1205,96 @@ pub struct DocsSection {
     /// OpenAPI JSON + Swagger UI 是否挂载（默认 false）。
     #[serde(default)]
     pub enabled: bool,
+}
+
+/// [health] 段 — 主动健康检查探针（WP7）。
+///
+/// - `mode`: `off`（默认，零后台任务） | `suspect_only`（仅探测冷却/
+///   黑名单/不可用态对象） | `all`（全量周期探测）。未知值按 `off`
+///   处理并 warn（fail-safe，防误配探针风暴）。
+/// - `interval_secs`: 探测周期（默认 300）。
+/// - `timeout_ms`: 单次探测超时（默认 5000；0 = 不限时不推荐）。
+/// - `probe_strategy`: `free`（默认，零成本 GET 上游模型列表端点；
+///   成功仅清除 vendor 级冷却） | `minimal_call`（max_tokens=1 计费请求
+///   验证 key；成功额外清除该 key 黑名单/冷却与其名下模型级熔断计数）。
+///   未知值按 `free` 处理并 warn。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct HealthSection {
+    #[serde(default = "default_health_mode")]
+    pub mode: String,
+    #[serde(default = "default_health_interval_secs")]
+    pub interval_secs: u64,
+    #[serde(default = "default_health_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_probe_strategy")]
+    pub probe_strategy: String,
+}
+
+fn default_health_mode() -> String {
+    "off".into()
+}
+
+fn default_health_interval_secs() -> u64 {
+    300
+}
+
+fn default_health_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_probe_strategy() -> String {
+    "free".into()
+}
+
+impl Default for HealthSection {
+    fn default() -> Self {
+        Self {
+            mode: default_health_mode(),
+            interval_secs: default_health_interval_secs(),
+            timeout_ms: default_health_timeout_ms(),
+            probe_strategy: default_probe_strategy(),
+        }
+    }
+}
+
+/// [quota] 段 — 成本与 token 维度配额（WP8 预扣-回补）。
+///
+/// - `enabled`: 默认 false（零判限）；与 [rate_limit]/[admission] 独立叠加；
+/// - `window_secs`: 固定窗口（默认 3600；0 非法，`validate_config` 拒绝）；
+/// - `est_chars_per_token`: 预扣输入估算常数（默认 4，与 count_tokens 同口径）。
+///
+/// 配额余量的响应头暴露（X-RateLimit-* 形态）是 quota-cost spec 的明文
+/// Out of Scope（审查 M7 按规格纪律移除，不留配置位）。
+///
+/// per-key 限额放 `[[auth.keys]]`（`token_quota`/`cost_quota_millicents`，
+/// 0 = 不限）。窗口账本为进程内存（与 limiteron 内存原语同语义：单实例、
+/// 重启清零）。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct QuotaSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_quota_window_secs")]
+    pub window_secs: u64,
+    #[serde(default = "default_est_chars_per_token")]
+    pub est_chars_per_token: u64,
+}
+
+fn default_quota_window_secs() -> u64 {
+    3600
+}
+
+fn default_est_chars_per_token() -> u64 {
+    4
+}
+
+impl Default for QuotaSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            window_secs: default_quota_window_secs(),
+            est_chars_per_token: default_est_chars_per_token(),
+        }
+    }
 }
 
 /// 单条定价配置 — vendor + model 维度的输入/输出 token 单价（每 1k tokens，USD）

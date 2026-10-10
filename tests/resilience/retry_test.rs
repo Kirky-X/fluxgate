@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "web-server", feature = "resilience"))]
 
-//! recId=7⑤：换 vendor fallback E2E（HTTP 全链路，留在 nexusflow 应用面）。
+//! 换 vendor fallback E2E（HTTP 全链路，留在 nexusflow 应用面）。
 //!
 //! 自 retry_test 拆出（N1 workspace 化）：纯 utils/retry 单元与策略构造
 //! 测试随 llm-gate 走（tests/retry_test.rs），本文件只留经 api/ApiState
@@ -43,6 +43,7 @@ mod vendor_fallback_integration {
             type_: "anthropic".into(),
             api_key_env: "NEXUSFLOW_TEST_KEY".into(),
             api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
             api_base,
             enabled: true,
             priority,
@@ -89,7 +90,7 @@ mod vendor_fallback_integration {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            // recId=7：max_retries=2 + jitter=0（确定性 1s 间隔）——
+            // max_retries=2 + jitter=0（确定性 1s 间隔）——
             // 主 vendor 500×3（1 初试 + 2 重试）后耗尽换路
             retry: RetrySection {
                 max_retries: 2,
@@ -99,6 +100,8 @@ mod vendor_fallback_integration {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
@@ -141,6 +144,7 @@ mod vendor_fallback_integration {
             affinity: None,
             response_cache: None,
             bandit: None,
+            quota: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -172,7 +176,7 @@ mod vendor_fallback_integration {
         "usage": {"input_tokens": 1, "output_tokens": 1}
     }"#;
 
-    /// recId=7⑤③：主 vendor 连续 500×3（1 初试 + 2 重试，max_retries=2）
+    /// 主 vendor 连续 500×3（1 初试 + 2 重试，max_retries=2）
     /// 耗尽 → 换路：第二 vendor 收到请求且客户端拿到成功响应。
     ///
     /// 用 X-Vendor 路由提示直达主 vendor（weighted_select 在等权候选间
@@ -227,7 +231,7 @@ mod vendor_fallback_integration {
         mock_b.assert_async().await;
     }
 
-    /// recId=7⑤④：仅一个合格 vendor 失败 → 客户端收 503 冒泡
+    /// 仅一个合格 vendor 失败 → 客户端收 503 冒泡
     /// （VendorUnavailable 经 error.rs 固定映射 SERVICE_UNAVAILABLE），
     /// 而非死循环。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

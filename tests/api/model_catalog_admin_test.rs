@@ -90,6 +90,7 @@ async fn create_state() -> Arc<ApiState> {
         affinity: None,
         response_cache: None,
         bandit: None,
+        quota: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
@@ -408,4 +409,328 @@ async fn http_layer_put_delete_get_bound_on_router() {
         400,
         "缺失条目显性 400（Config 错误承载）"
     );
+}
+
+/// WP6 恢复通道 —— `POST /admin/vendors/{id}/reset` 清空该 vendor 的
+/// key 池黑名单（含游标）与冷却状态；未知 vendor 显性 400。
+#[tokio::test]
+async fn reset_vendor_clears_blacklist_and_cooldown() {
+    common::ensure_test_api_key();
+    let mut v = common::base_vendor("reset-v", String::new());
+    v.models = vec![];
+    let mut config = common::test_config(vec![v]);
+    config.global_model = Some(GlobalModelConfig {
+        enabled: true,
+        strategy: "weighted".into(),
+    });
+    let config_manager = Arc::new(ConfigManager::new(config));
+    let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+    vendor_manager.initialize().await.expect("init");
+
+    let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+        url: "sqlite::memory:".to_string(),
+        pool_config: dbnexus::PoolConfig {
+            max_connections: 1,
+            min_connections: 1,
+            ..Default::default()
+        },
+        admin_role: "admin".to_string(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let state = Arc::new(ApiState {
+        config: config_manager.clone(),
+        vendor_manager: vendor_manager.clone(),
+        router: Arc::new(Router::new(config_manager, vendor_manager.clone())),
+        logger: None,
+        pre_aggregator: None,
+        affinity: None,
+        response_cache: None,
+        bandit: None,
+        quota: None,
+        openai_converter: Arc::new(OpenAIConverter::new()),
+        anthropic_converter: Arc::new(AnthropicConverter::new()),
+        database: Arc::new(Database {
+            pool: pool.clone(),
+            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+        }),
+    });
+
+    // 先置冷却态，reset 后必须回到 Available。
+    vendor_manager.mark_throttled("reset-v", std::time::Duration::from_secs(60));
+    let app = create_router(state).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/vendors/reset-v/reset")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["success"], true);
+    assert!(
+        body["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "reset 文案非空（i18n）: {body}"
+    );
+    assert_eq!(
+        vendor_manager.get_status("reset-v").await,
+        nexusflow::vendor::VendorStatus::Available,
+        "reset 必须清除冷却状态"
+    );
+
+    // 未知 vendor → 400 validation_error（显性，禁止静默成功）。
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/vendors/ghost/reset")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["type"], "validation_error");
+}
+
+/// WP9 `GET /admin/cost`：维度分组、hash/日期过滤、空窗空数组、
+/// 参数错误 400、未鉴权 401。
+mod cost_endpoint {
+    use crate::common;
+    use axum::{body::Body, http::Request, http::StatusCode};
+    use nexusflow::api::create_router;
+    use nexusflow::config::{AuthSection, Config, ConfigManager, GlobalModelConfig};
+    use nexusflow::database::{Database, KeyedUsage, TokenPreAggregator};
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
+    use nexusflow::router::Router;
+    use nexusflow::vendor::VendorManager;
+    use nexusflow::ApiState;
+    use serde_json::Value;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    const GOOD_KEY_DIGEST: &str =
+        "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303";
+
+    fn keyed(vendor: &str, model: &str, hash: &str, prompt: u32, completion: u32) -> KeyedUsage {
+        KeyedUsage {
+            vendor: vendor.into(),
+            model: model.into(),
+            api_key_hash: hash.into(),
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            input_cost: prompt as f64 * 0.01,
+            output_cost: completion as f64 * 0.02,
+            cache_read_cost: 0.0,
+            cache_creation_cost: 0.0,
+        }
+    }
+
+    async fn make_state(auth: bool) -> Arc<ApiState> {
+        let mut config: Config = common::test_config(vec![]);
+        config.global_model = Some(GlobalModelConfig {
+            enabled: true,
+            strategy: "weighted".into(),
+        });
+        if auth {
+            config.auth = Some(AuthSection {
+                enabled: true,
+                api_keys: vec![GOOD_KEY_DIGEST.to_string()],
+                header: Default::default(),
+                keys: Vec::new(),
+            });
+        }
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        repository.initialize().await.expect("schema init");
+        let pre_aggregator = Arc::new(TokenPreAggregator::new(
+            repository.clone(),
+            Duration::from_secs(60),
+        ));
+        // 两 vendor × 两 hash 的分账行（经聚合器写入，与生产同路径；
+        // 前两行归属 GOOD_KEY 摘要，过滤端到端可验证）。
+        pre_aggregator
+            .record_keyed(&keyed("v-a", "m1", GOOD_KEY_DIGEST, 10, 5))
+            .await;
+        pre_aggregator
+            .record_keyed(&keyed("v-a", "m1", GOOD_KEY_DIGEST, 4, 1))
+            .await;
+        pre_aggregator
+            .record_keyed(&keyed("v-b", "m2", "h2", 100, 50))
+            .await;
+        pre_aggregator.flush().await.expect("flush");
+
+        Arc::new(ApiState {
+            config: config_manager.clone(),
+            vendor_manager: vendor_manager.clone(),
+            router: Arc::new(Router::new(config_manager, vendor_manager)),
+            logger: None,
+            pre_aggregator: Some(pre_aggregator),
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database: Arc::new(Database {
+                pool: pool.clone(),
+                repository,
+            }),
+        })
+    }
+
+    async fn get(state: Arc<ApiState>, uri: &str, key: Option<&str>) -> (StatusCode, Value) {
+        get_with_headers(state, uri, key, &[]).await
+    }
+
+    /// key 过滤参数（M1）经 `x-nexusflow-cost-key` 请求头传明文——
+    /// 明文 key 不进 URL 查询串（CWE-598：反代/访问日志）。
+    async fn get_with_headers(
+        state: Arc<ApiState>,
+        uri: &str,
+        key: Option<&str>,
+        extra: &[(&str, &str)],
+    ) -> (StatusCode, Value) {
+        let app = create_router(state).await;
+        let mut builder = Request::builder().method("GET").uri(uri);
+        if let Some(k) = key {
+            builder = builder.header("Authorization", format!("Bearer {k}"));
+        }
+        for (name, value) in extra {
+            builder = builder.header(*name, *value);
+        }
+        let response = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// 分组 + hash 过滤 + 日期窗口 + 空窗。
+    #[tokio::test]
+    async fn cost_groups_filters_and_empty_window() {
+        let state = make_state(false).await;
+
+        let (status, body) = get(state.clone(), "/admin/cost?group_by=vendor", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["group_by"], "vendor");
+        let rows = body["rows"].as_array().expect("rows 数组");
+        assert_eq!(rows.len(), 2);
+        let a = rows.iter().find(|r| r["vendor"] == "v-a").unwrap();
+        assert_eq!(a["request_count"], 2);
+        assert_eq!(a["input_tokens"], 14);
+        assert_eq!(a["model"], Value::Null);
+
+        let (status, body) = get(state.clone(), "/admin/cost?group_by=model", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["rows"].as_array().unwrap().len(), 2);
+
+        // key 过滤（M1）：明文经 x-nexusflow-cost-key 头传递、服务端哈希
+        // 比对——test-good-key 只见 v-a；查询串不再承载 key（无 api_key 参数）。
+        let (status, body) = get_with_headers(
+            state.clone(),
+            "/admin/cost?group_by=vendor",
+            None,
+            &[("x-nexusflow-cost-key", "test-good-key")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = body["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["vendor"], "v-a");
+        assert_eq!(rows[0]["request_count"], 2);
+
+        // 头缺省 = 不过滤（全集）；空值头与缺省同义（不产生空结果集歧义）。
+        let (status, body) = get(state.clone(), "/admin/cost?group_by=vendor", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["rows"].as_array().unwrap().len(), 2);
+        let (status, body) = get_with_headers(
+            state.clone(),
+            "/admin/cost?group_by=vendor",
+            None,
+            &[("x-nexusflow-cost-key", "  ")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["rows"].as_array().unwrap().len(), 2);
+
+        // 全集窗口全见，史前窗口为空数组（非错误）。
+        let (status, body) = get(
+            state.clone(),
+            "/admin/cost?group_by=vendor&from=2000-01-01&to=2999-12-31",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["rows"].as_array().unwrap().len(), 2);
+        let (status, body) = get(
+            state,
+            "/admin/cost?group_by=vendor&from=2000-01-01&to=2000-01-02",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["rows"].as_array().unwrap().is_empty());
+    }
+
+    /// 参数错误 400（group_by 非法/缺失、日期格式错误）。
+    #[tokio::test]
+    async fn cost_rejects_bad_params() {
+        let state = make_state(false).await;
+        for uri in [
+            "/admin/cost",
+            "/admin/cost?group_by=tenant",
+            "/admin/cost?group_by=vendor&from=2026-13-99",
+            "/admin/cost?group_by=vendor&from=not-a-date",
+        ] {
+            let (status, body) = get(state.clone(), uri, None).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} 必须 400");
+            assert_eq!(body["error"]["type"], "validation_error");
+        }
+    }
+
+    /// 未鉴权 401（与既有 admin 一致）。
+    #[tokio::test]
+    async fn cost_requires_auth() {
+        let state = make_state(true).await;
+        let (status, _) = get(state.clone(), "/admin/cost?group_by=vendor", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, body) = get(state, "/admin/cost?group_by=vendor", Some("test-good-key")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["rows"].as_array().unwrap().len(), 2);
+    }
 }

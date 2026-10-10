@@ -98,7 +98,77 @@ impl FallbackChain {
     }
 }
 
+/// 回退尝试链（WP4 可观测性）：按尝试顺序记录 vendor id（含最终命中者）。
+/// 由 API 层换路循环填充（初始候选先记， 每次重派前记新候选），成功响应经
+/// `x-nexusflow-attempts`（总数）/`x-nexusflow-fallbacks`（逗号分隔链）出站。
+/// **分配门控（审查 L4）**：构造期注入 `[resilience].expose_fallback_headers`
+/// 开关——关闭时 `record` 短路，热路径零分配（修复「注释宣称零额外分配但
+/// record 仍 to_string」的不实）。
+#[derive(Debug, Clone, Default)]
+pub struct AttemptTrail {
+    trail: Vec<String>,
+    exposed: bool,
+}
+
+impl AttemptTrail {
+    /// `exposed` = 响应头开关（构造期读定，本请求口径一致；热更对下一请求
+    /// 生效）。`Default`（exposed=false）即零分配哨兵形态。
+    pub fn new(exposed: bool) -> Self {
+        Self {
+            trail: Vec::new(),
+            exposed,
+        }
+    }
+
+    /// 记录一次尝试（初始候选与每次重派目标各记一次，按时间序）。
+    /// 开关关闭时 no-op（不分配）。
+    pub fn record(&mut self, vendor_id: &str) {
+        if !self.exposed {
+            return;
+        }
+        self.trail.push(vendor_id.to_string());
+    }
+
+    /// 总尝试次数（单跳直连 = 1）。
+    pub fn attempts(&self) -> usize {
+        self.trail.len()
+    }
+
+    /// 尝试链（逗号分隔，含最终命中者；空链返回空串）。
+    pub fn fallbacks_value(&self) -> String {
+        self.trail.join(",")
+    }
+
+    /// 响应头开关（构造期读定）。
+    pub fn exposed(&self) -> bool {
+        self.exposed
+    }
+}
+
 /// 检查 vendor 字符串是否包含 "circuit open" 标记
 fn is_circuit_open(vendor: &str) -> bool {
     vendor.contains("circuit open")
+}
+
+#[cfg(test)]
+mod trail_tests {
+    use super::*;
+
+    /// 开关关闭：record 零分配（链空、attempts=0）；开启：照常记录。
+    #[test]
+    fn record_gates_allocation_on_expose_switch() {
+        let mut disabled = AttemptTrail::new(false);
+        disabled.record("v-a");
+        disabled.record("v-b");
+        assert_eq!(disabled.attempts(), 0, "开关关闭不得记录");
+        assert_eq!(disabled.fallbacks_value(), "");
+
+        let mut enabled = AttemptTrail::new(true);
+        enabled.record("v-a");
+        enabled.record("v-b");
+        assert_eq!(enabled.attempts(), 2);
+        assert_eq!(enabled.fallbacks_value(), "v-a,v-b");
+        assert!(enabled.exposed());
+        assert!(!disabled.exposed());
+    }
 }

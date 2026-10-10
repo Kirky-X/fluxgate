@@ -6,8 +6,8 @@
 //! GateError 直驱熔断器的分类与还原层。
 //!
 //! 泛型收口：`limiteron::circuit::CircuitBreaker<E>` 的 `execute`
-//! （limiteron src/circuit/types.rs:463）与 `FailureClassifier<E>`
-//! （types.rs:44）均为泛型——本 crate 执行路径的错误 [`GateError`]
+//! （limiteron src/circuit/types.rs）与 `FailureClassifier<E>`
+//! （types.rs）均为泛型——本 crate 执行路径的错误 [`GateError`]
 //! 直接作为 `E`，业务错误经 `CircuitCallError::Inner` 原样透传，
 //! **无损、无编解码**（此前的 `llm-gate:` 前缀串双向编解码及其有损
 //! 降级路径已随之删除；CB Open 拒绝由 `CircuitCallError::Open` 独立承载）。
@@ -43,7 +43,45 @@ pub fn is_circuit_open_error(err: &GateError) -> bool {
         if vendor.contains("circuit open"))
 }
 
-/// 按 GateError variant 语义分类的失败分类器。
+/// key 错误分类（WP6 密钥池三态）：永久错误 → 黑名单（不参与轮换、
+/// 不随时间自动恢复）；瞬时错误 → 维持现状（冷却 TTL 自动恢复、429 退避）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyErrorClass {
+    /// 永久错误：401/402/403，或错误消息明确命中账务类形态
+    Permanent,
+    /// 瞬时错误：429/超时/5xx/网络及其他
+    Transient,
+}
+
+/// 账务类错误消息形态（小写子串匹配）：命中即永久——配额/订阅/过期是
+/// 账户级失败，同账户换 key 亦无用。刻意不含裸 `quota`（429 限流文案常
+/// 带 quota，须保持瞬时；匹配见单测 `rate_limit_quota_text_stays_transient`）。
+const BILLING_MESSAGE_MARKERS: &[&str] = &[
+    "insufficient_quota",
+    "insufficient quota",
+    "expired",
+    "billing",
+    "delinquent",
+];
+
+/// 按 HTTP 状态码 + 上游错误文本判定 key 错误分类（WP6）。
+/// 账务形态优先（显式形状胜出）：5xx 正文明确命中账务形态同样永久；
+/// 普通 5xx 文本不误伤（保持瞬时）。
+pub fn classify_key_error(status: u16, message: &str) -> KeyErrorClass {
+    let lower = message.to_lowercase();
+    if BILLING_MESSAGE_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return KeyErrorClass::Permanent;
+    }
+    match status {
+        401..=403 => KeyErrorClass::Permanent,
+        _ => KeyErrorClass::Transient,
+    }
+}
+
+/// 按 GateError variant 语义分类的失败分类器.
 ///
 /// 语义对齐 limiteron `DefaultFailureClassifier` 的「保护机制错误不计失败」
 /// （旧实现的库内 LimitError/CircuitBreakerError 分支随泛型收口失效——
@@ -66,5 +104,71 @@ impl FailureClassifier<GateError> for GateErrorClassifier {
             | GateError::Routing { .. }
             | GateError::AllVendorsThrottled { .. } => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_statuses_are_permanent() {
+        for status in [401u16, 402, 403] {
+            assert_eq!(
+                classify_key_error(status, "Unauthorized"),
+                KeyErrorClass::Permanent,
+                "status {status} 必须永久"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_statuses_stay_transient() {
+        for (status, message) in [
+            (429u16, "rate limited, retry later"),
+            (500u16, "internal server error"),
+            (502u16, "bad gateway"),
+            (503u16, "upstream overloaded"),
+            (400u16, "bad request"),
+        ] {
+            assert_eq!(
+                classify_key_error(status, message),
+                KeyErrorClass::Transient,
+                "status {status} 无账务形态必须瞬时"
+            );
+        }
+    }
+
+    #[test]
+    fn billing_message_markers_are_permanent_on_any_status() {
+        for (status, message) in [
+            (
+                500u16,
+                r#"{"error":{"code":"insufficient_quota","message":"quota hit"}}"#,
+            ),
+            (400u16, "Insufficient quota for this account"),
+            (403u16, "api key expired, rotate it"),
+            (500u16, "billing account delinquent, service suspended"),
+        ] {
+            assert_eq!(
+                classify_key_error(status, message),
+                KeyErrorClass::Permanent,
+                "账务形态必须永久（含 5xx 正文）: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_quota_text_stays_transient() {
+        // 429 文案常带 quota——裸 quota 不得触发永久（不误伤限流）。
+        assert_eq!(
+            classify_key_error(429, "quota exceeded for key, retry after 60s"),
+            KeyErrorClass::Transient,
+        );
+        assert_eq!(
+            classify_key_error(500, "upstream blew up: connection reset by peer"),
+            KeyErrorClass::Transient,
+            "普通 5xx 文本不误伤",
+        );
     }
 }

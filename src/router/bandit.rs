@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! recId=15：LinUCB 打分项（零模型上下文 bandit，selection 第三档）。
+//! LinUCB 打分项（零模型上下文 bandit，selection 第三档）。
 //!
 //! 每臂 = `(abstract_model, vendor_id)` 一个线性模型：闭式最小二乘
 //! `θ̂_k = A_k⁻¹ b_k`，选择按 `ucb(x, α) = ⟨x, θ̂_k⟩ + α√(xᵀ A_k⁻¹ x)`
@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-/// 人工特征维度（recId=15 起步集）：[1（截距）, ln(1+消息数),
+/// 人工特征维度（起步集）：[1（截距）, ln(1+消息数),
 /// ln(1+body 字符数), 是否含 tools, 是否流式]。
 pub const LINUCB_DIM: usize = 5;
 
@@ -56,7 +56,7 @@ impl Arm {
     }
 }
 
-/// recId=15（评审修复 major）：LinUCB 臂键归一 — 选择侧
+/// LinUCB 臂键归一 — 选择侧
 ///（router.rs route_inner 的 `abstract_model.to_lowercase()` + auto →
 /// try_global_route 的 "__global__"）与奖励侧（handler 经
 /// ApiState::record_linucb_reward）共用本函数，保证两端 consulted /
@@ -72,7 +72,7 @@ pub fn linucb_arm_key(raw_model: &str) -> String {
     }
 }
 
-/// recId=15：人工 5 维特征 — 对数压缩的规模量（ln(1+n) 有界增长）+
+/// 人工 5 维特征 — 对数压缩的规模量（ln(1+n) 有界增长）+
 /// 两个 0/1 标志。`pub` 供确定性单测与 handler 特征提取。
 pub fn linucb_features(
     num_messages: usize,
@@ -89,7 +89,7 @@ pub fn linucb_features(
     ]
 }
 
-/// recId=15：从请求体提取特征（chat 端点共用；messages 数与 body 序列化
+/// 从请求体提取特征（chat 端点共用；messages 数与 body 序列化
 /// 字符数、tools 非空、stream 标志）。
 pub fn linucb_features_from_body(body: &serde_json::Value) -> [f64; LINUCB_DIM] {
     let num_messages = body
@@ -109,7 +109,7 @@ pub fn linucb_features_from_body(body: &serde_json::Value) -> [f64; LINUCB_DIM] 
     linucb_features(num_messages, body_chars, has_tools, stream)
 }
 
-/// recId=15：部分主元高斯-约当求逆（d×d 行主序）。奇异（主元幅度低于
+/// 部分主元高斯-约当求逆（d×d 行主序）。奇异（主元幅度低于
 /// 阈值）或含非有限元素时返回 None（调用方退化对角近似）。
 /// `pub` 供 d=2 手算参照的确定性单测。
 pub fn linucb_invert(a: &[f64], d: usize) -> Option<Vec<f64>> {
@@ -205,7 +205,7 @@ fn extract_inverse(m: &[f64], d: usize) -> Option<Vec<f64>> {
     Some(inv)
 }
 
-/// recId=15：对角退化近似 — `inv(A) ≈ diag(1/max(|a_ii|, ε))`。求逆失败
+/// 对角退化近似 — `inv(A) ≈ diag(1/max(|a_ii|, ε))`。求逆失败
 /// （奇异/非有限）时的 fail-safe：保留量级信号、方向信息丢失。
 pub fn linucb_diag_inverse(a: &[f64], d: usize) -> Vec<f64> {
     let mut inv = vec![0.0; d * d];
@@ -215,7 +215,7 @@ pub fn linucb_diag_inverse(a: &[f64], d: usize) -> Vec<f64> {
     inv
 }
 
-/// recId=15：UCB 打分 — `⟨x, A⁻¹b⟩ + α√(xᵀA⁻¹x)`（A⁻¹ 由调用方传入，
+/// UCB 打分 — `⟨x, A⁻¹b⟩ + α√(xᵀA⁻¹x)`（A⁻¹ 由调用方传入，
 /// 已含奇异退化决策）。x 长度必须 == d（调用方门控）；α 非有限按 0
 ///（纯贪心 ⟨x,θ̂⟩）。二次型对数值噪声取 max(0,·) 防负数开方。
 /// `pub` 供 d=2 手算参照的确定性单测。
@@ -245,7 +245,7 @@ pub fn linucb_ucb_from_arm(a_inv: &[f64], b: &[f64], x: &[f64], alpha: f64, d: u
     mean + alpha * quad.max(0.0).sqrt()
 }
 
-/// recId=15：闭式更新（只动被选臂）— `A += xxᵀ`、`b += r·x`。
+/// 闭式更新（只动被选臂）— `A += xxᵀ`、`b += r·x`。
 /// x 长度必须 == d（调用方门控）。`pub` 供确定性单测。
 pub fn linucb_arm_update(a: &mut [f64], b: &mut [f64], x: &[f64], r: f64, d: usize) {
     for i in 0..d {
@@ -256,7 +256,7 @@ pub fn linucb_arm_update(a: &mut [f64], b: &mut [f64], x: &[f64], r: f64, d: usi
     }
 }
 
-/// recId=15：LinUCB 状态 — 臂表键 = `(abstract_model, vendor_id)`。
+/// LinUCB 状态 — 臂表键 = `(abstract_model, vendor_id)`。
 /// 臂按需惰性创建（先验 = 正则初值），per-臂 Mutex（更新与读互斥），
 /// 臂表 RwLock（读侧容忍稍旧值）。全局共享（Arc）。
 pub struct BanditState {

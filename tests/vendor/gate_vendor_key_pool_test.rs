@@ -6,7 +6,7 @@
 //! 集成测试 — vendor 内 key 池（N5）：多 key 轮换顺序、耗尽回退、
 //! 401/403 认证类失败触发的轮换、配置热更新换池，以及 parity 矩阵第 6 项。
 //!
-//! 语义源：agentstem `provider_chain.rs:197-236`（池展开 / 按 key 指纹
+//! 语义源：agentstem `provider_chain.rs`（池展开 / 按 key 指纹
 //! 隔离熔断计数 / 认证失败切下一 key），实现为 vendor 模块独立重写。
 //!
 //! 轮换契约：401/403 推进游标，**生效于下次请求**；单请求内不换 key
@@ -52,7 +52,7 @@ fn make_vendor(
     v
 }
 
-/// recId=7 同款：max_retries=0 —— 每请求恰 1 次 HTTP，轮换断言不受
+/// 同款：max_retries=0 —— 每请求恰 1 次 HTTP，轮换断言不受
 /// 内部重试噪声干扰
 fn make_config(vendors: Vec<VendorConfig>) -> Config {
     Config {
@@ -207,7 +207,7 @@ async fn forbidden_403_also_triggers_rotation() {
 }
 
 /// parity 矩阵第 6 项（design.md D6）：多 key 轮换 —— env 池展开、轮转
-/// 顺序、按 key 指纹隔离的熔断计数（语义源 provider_chain.rs:199-236）。
+/// 顺序、按 key 指纹隔离的熔断计数（语义源 provider_chain.rs）。
 ///
 /// 等价断言分两相：
 /// - **同 key 跨请求共享计数**：5 次 400（非认证类失败，不触发轮换）全部
@@ -425,4 +425,107 @@ async fn hot_update_swaps_key_pool_for_next_request() {
 
     mock_first.assert_async().await;
     mock_second.assert_async().await;
+}
+
+/// WP6 三态集成 —— 永久错误黑名单：KEY_FIRST 首请求 401 后该 key 不再
+/// 被选中（后续 3 请求恒走 KEY_SECOND，不随时间恢复）；池内其余 key
+/// 继续服务；管理面 reset 后 KEY_FIRST 恢复可选。
+///
+/// 轮换/黑名单均生效于下次请求（单请求内不换 key）：KEY_SECOND 的首个
+/// mock 若在请求 1 内被命中即翻红（沿用本文件既有上界锁定惯例）。
+#[tokio::test]
+async fn permanent_error_blacklists_key_until_reset() {
+    const ENV_A: &str = "NEXUSFLOW_KP_BL_A";
+    const ENV_B: &str = "NEXUSFLOW_KP_BL_B";
+    const KEY_A: &str = "kp-bl-key-a";
+    const KEY_B: &str = "kp-bl-key-b";
+    std::env::set_var(ENV_A, KEY_A);
+    std::env::set_var(ENV_B, KEY_B);
+
+    let mut server = mockito::Server::new_async().await;
+    // KEY_A：首请求 401（expect 1 锁定单次）。
+    let mock_a_401 = bearer_mock(&mut server, KEY_A, 401, "{\"error\":\"bad key\"}")
+        .await
+        .expect(1);
+    let mock_b_ok = bearer_mock(&mut server, KEY_B, 200, OPENAI_SUCCESS_BODY)
+        .await
+        .expect(3);
+
+    let v = make_vendor("kp-blacklist", server.url(), ENV_A, &[ENV_A, ENV_B]);
+    let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+    let manager = VendorManager::new(cm);
+    manager.initialize().await.expect("init");
+
+    // 请求 1：KEY_A 401 → 错误 + 黑名单 + 游标推进。
+    let first = manager
+        .execute_request("kp-blacklist", make_unified_request())
+        .await;
+    assert!(first.is_err(), "401 必须失败: {:?}", first.ok());
+    mock_a_401.assert_async().await;
+
+    // 请求 2/3/4：恒走 KEY_SECOND（黑名单不随时间恢复）。
+    for i in 0..3 {
+        let ok = manager
+            .execute_request("kp-blacklist", make_unified_request())
+            .await;
+        assert!(
+            ok.is_ok(),
+            "请求 {} 必须由其余 key 服务: {:?}",
+            i + 2,
+            ok.err()
+        );
+    }
+
+    // 管理面 reset：黑名单清空 + 游标回绕 → KEY_FIRST 恢复可选。
+    assert!(manager.reset_key_pool_state("kp-blacklist"));
+    assert!(
+        !manager.reset_key_pool_state("ghost-vendor"),
+        "未知 vendor 显性 false"
+    );
+    // 恢复 mock 在 reset 后创建（避免与 401 mock 同匹配器歧义）。
+    let mock_a_recovered = bearer_mock(&mut server, KEY_A, 200, OPENAI_SUCCESS_BODY)
+        .await
+        .expect(1);
+    let ok = manager
+        .execute_request("kp-blacklist", make_unified_request())
+        .await;
+    assert!(ok.is_ok(), "reset 后 KEY_A 恢复: {:?}", ok.err());
+
+    mock_b_ok.assert_async().await;
+    mock_a_recovered.assert_async().await;
+}
+
+/// WP6 回归 —— 429 瞬时：同 key 复用（无轮换、无黑名单），行为与现状一致。
+#[tokio::test]
+async fn rate_limited_reuses_same_key_without_blacklist() {
+    const ENV_A: &str = "NEXUSFLOW_KP_RL_A";
+    const ENV_B: &str = "NEXUSFLOW_KP_RL_B";
+    const KEY_A: &str = "kp-rl-key-a";
+    const KEY_B: &str = "kp-rl-key-b";
+    std::env::set_var(ENV_A, KEY_A);
+    std::env::set_var(ENV_B, KEY_B);
+
+    let mut server = mockito::Server::new_async().await;
+    // 429 两次恒走 KEY_A（expect 2）；KEY_B 零触达（expect 0 锁定无轮换）。
+    let mock_a_429 = bearer_mock(&mut server, KEY_A, 429, "rate limited")
+        .await
+        .expect(2);
+    let mock_b_untouched = bearer_mock(&mut server, KEY_B, 429, "rate limited")
+        .await
+        .expect(0);
+
+    let v = make_vendor("kp-ratelimit", server.url(), ENV_A, &[ENV_A, ENV_B]);
+    let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+    let manager = VendorManager::new(cm);
+    manager.initialize().await.expect("init");
+
+    for i in 0..2 {
+        let err = manager
+            .execute_request("kp-ratelimit", make_unified_request())
+            .await;
+        assert!(err.is_err(), "429 请求 {i} 必须失败");
+    }
+
+    mock_a_429.assert_async().await;
+    mock_b_untouched.assert_async().await;
 }

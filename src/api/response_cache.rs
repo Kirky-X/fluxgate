@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! recId=12：精确响应缓存 — 存储落地 oxcache（缓存库已就位必须用它，
+//! 精确响应缓存 — 存储落地 oxcache（缓存库已就位必须用它，
 //! 绝不手写 HashMap 缓存）。
 //!
 //! - 键 `resp:{api_key_sha256}:{vendor_id}:{model_id}:{sha256(canonical_body)}`：
@@ -45,7 +45,7 @@ struct InFlightEntry {
     since: Instant,
 }
 
-/// 响应缓存键前缀 — 与亲和表（recId=11）的 `affinity:` 命名空间隔离
+/// 响应缓存键前缀 — 与亲和表的 `affinity:` 命名空间隔离
 pub const RESPONSE_KEY_PREFIX: &str = "resp:";
 
 /// 递归 canonical 化 JSON：对象键按字典序排序后序列化（数组保序——
@@ -92,15 +92,9 @@ pub fn response_cache_key(
     )
 }
 
-/// 调用方 API key 的 SHA256 摘要（缓存键租户隔离维度）。
-/// 从 Authorization: Bearer / x-api-key 提取（与 auth 中间件同源）；
-/// 认证关闭/无 key 的请求统一归入 `anonymous` 租户。
-pub fn cache_api_key_hash(headers: &HeaderMap) -> String {
-    match crate::middleware::auth::extract_api_key(headers) {
-        Some(key) => sha256_hex(key.as_bytes()),
-        None => sha256_hex(b"anonymous"),
-    }
-}
+/// 调用方 API key 的 SHA256 摘要（缓存键租户隔离维度）——实现已下沉
+/// [`crate::utils::tenant::api_key_digest`]（认证/亲和/配额同源单实现）。
+pub use crate::utils::tenant::api_key_digest as cache_api_key_hash;
 
 /// 确定性请求判定（缓存门控）：仅
 /// `stream==false && tools 为空 && temperature==0 或缺省` 的请求查/写。
@@ -146,7 +140,7 @@ pub fn skip_cache_requested(headers: &HeaderMap) -> bool {
 pub struct ResponseCache {
     backend: Arc<dyn CacheBackend + Send + Sync>,
     config: Arc<ConfigManager>,
-    /// recId=12：全局指标 — TTL 负载联动的 L_p（vendor_ewma 的
+    /// 全局指标 — TTL 负载联动的 L_p（vendor_ewma 的
     /// ewma_e2e_ms）与 Q（traffic_shares 份额）来源；比 VendorManager
     /// 更轻的依赖面。
     metrics: Arc<GlobalMetrics>,
@@ -215,7 +209,7 @@ impl ResponseCache {
         self.backend.health_check().await.map_err(|e| e.to_string())
     }
 
-    /// recId=12：TTL 三段式 —
+    /// TTL 三段式 —
     /// 1. `base = ttl_secs × 类别乘数`（[[cache.categories]] 按 model_id
     ///    前缀匹配，(endpoint, model) 划分的零开销近似；无命中 1.0）；
     /// 2. 负载联动（`ttl_load_linked` 默认 false = 纯静态、与现状逐位
@@ -439,7 +433,7 @@ impl ResponseCache {
 
     /// 成功响应回写缓存——以**最终成功服务**的 vendor_id/model_id 组装键
     ///（resilience 换路成功后即 fallback 的最终候选，保证键维度与响应体
-    /// 一致；TTL 由 [cache].ttl_secs 热读 + 类别乘数 + 负载联动（recId=12，
+    /// 一致；TTL 由 [cache].ttl_secs 热读 + 类别乘数 + 负载联动（
     /// vendor 维度 L_p/Q）；存取失败静默降级——缓存故障不得影响请求成功率）。
     ///
     /// 写入 TTL 叠加 `ttl_jitter` 对称抖动（同批键过期不齐峰，关闭时
@@ -578,6 +572,8 @@ mod tests {
                 ..Default::default()
             },
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
@@ -650,6 +646,8 @@ mod tests {
                 ..Default::default()
             },
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
@@ -689,7 +687,7 @@ mod tests {
 
 #[cfg(test)]
 mod ttl_load_linking_tests {
-    //! recId=12：TTL 负载联动 + 类别差异化（ttl() 三段式）。
+    //! TTL 负载联动 + 类别差异化（ttl() 三段式）。
 
     use super::*;
     use crate::config::Config;
@@ -718,6 +716,8 @@ mod ttl_load_linking_tests {
             routing: Default::default(),
             cache,
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
@@ -833,6 +833,8 @@ mod single_flight_and_sentinel_tests {
             routing: Default::default(),
             cache,
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),

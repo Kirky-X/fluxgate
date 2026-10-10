@@ -26,7 +26,9 @@ pub use repository::Repository;
 // crate::storage（N2 存储缝），database 侧经 trait 对象注入 ApiState；
 // 此处 re-export 维持 database::X 既有路径可用。TokenUsage 行结构已按
 // 改名 TokenUsageRow，与 IR 的 protocol::TokenUsage 消歧。
-pub use crate::storage::{LogFilter, RequestLog, TokenUsageRow};
+pub use crate::storage::{
+    CostGroupBy, CostUsageRow, KeyedUsage, LogFilter, RequestLog, TokenUsageRow,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VendorStatusRecord {

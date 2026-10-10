@@ -11,9 +11,9 @@ fn config_toml_example_parses() {
     let config: nexusflow::config::Config = toml::from_str(&content).unwrap();
     assert_eq!(config.retry.max_retries, 3);
     assert_eq!(config.retry.max_total_attempts, 8);
-    // recId=5：同步惊群展宽默认全开（1.0）；回滚阀 = 0（见 config.example.toml 注释）
+    // 同步惊群展宽默认全开；回滚阀 = 0（见 config.example.toml 注释）
     assert!((config.retry.spread_jitter - 1.0).abs() < 1e-9);
-    // recId=9（W5）：重试时间预算默认 0 = 不限时、放大守门器默认 false
+    // 重试时间预算默认 0 = 不限时、放大守门器默认 false
     //（双开关默认 → 单 vendor 重试与跨 vendor fallback 行为与现状逐位一致）
     assert_eq!(config.retry.retry_budget_secs, 0);
     assert!(!config.retry.amplification_gate);
@@ -27,21 +27,21 @@ fn config_toml_example_parses() {
         content.contains("amplification_gate"),
         "config.example.toml 示例缺 amplification_gate 键"
     );
-    // recId=10：[routing] 段示例与默认行为一致（3D 权重、新维度全关）
+    // [routing] 段示例与默认行为一致（3D 权重、新维度全关）
     assert_eq!(config.routing.w_model, 0.4);
     assert_eq!(config.routing.w_queue, 0.3);
     assert_eq!(config.routing.w_window, 0.3);
     assert_eq!(config.routing.w_latency, 0.0);
     assert_eq!(config.routing.w_error, 0.0);
     assert_eq!(config.routing.selection, "weighted");
-    // recId=6：负载信号档位默认 "queue"（Po2C 同款结构性锁定——默认路径
+    // 负载信号档位默认 "queue"（Po2C 同款结构性锁定——默认路径
     // 行为与历史逐位一致）
     assert_eq!(config.routing.load_signal, "queue");
-    // recId=8：Peak-EWMA τ 默认 10s（Kong 同值）；min+buffer 候选集默认
+    // Peak-EWMA τ 默认 10s（Kong 同值）；min+buffer 候选集默认
     // 0.0 关闭（结构性锁定：轮盘赌/Po2C 与历史逐位一致）
     assert_eq!(config.routing.ewma_tau_ms, 10_000);
     assert_eq!(config.routing.latency_buffer, 0.0);
-    // recId=19：冷却/候选集判定改进包三开关默认关（请求级权重头忽略、
+    // 冷却/候选集判定改进包三开关默认关（请求级权重头忽略、
     // 全冷却保持 Validation 错误、耗尽原错误冒泡——均与现状逐位一致）
     assert!(!config.routing.allow_request_weight);
     assert!(!config.routing.fail_open_when_all_cooling);
@@ -59,7 +59,7 @@ fn config_toml_example_parses() {
         content.contains("retry_after_hint"),
         "config.example.toml 示例缺 retry_after_hint 键"
     );
-    // recId=10：亲和软化三参数默认（hard 模式 = 现状逐位一致、boost 基准
+    // 亲和软化三参数默认（hard 模式 = 现状逐位一致、boost 基准
     // 1.0 仅 soft 模式生效、租户隔离关 = legacy 键格式）
     assert_eq!(config.routing.affinity_mode, "hard");
     assert!((config.routing.affinity_boost_factor - 1.0).abs() < 1e-9);
@@ -76,7 +76,7 @@ fn config_toml_example_parses() {
         content.contains("affinity_tenant_scoped"),
         "config.example.toml 示例缺 affinity_tenant_scoped 键"
     );
-    // recId=14：SLA 虚拟队列打分项默认关（sla_v=0.0 → 惩罚因子不参与权重、
+    // SLA 虚拟队列打分项默认关（sla_v=0.0 → 惩罚因子不参与权重、
     // Q 不更新，路由行为与现状逐位一致；Po2C/latency_buffer 同款结构性
     // 锁定），sla_alpha 默认 0.95（目标服务水平）
     assert_eq!(config.routing.sla_v, 0.0);
@@ -89,7 +89,7 @@ fn config_toml_example_parses() {
         content.contains("sla_alpha"),
         "config.example.toml 示例缺 sla_alpha 键"
     );
-    // recId=15：selection 默认 "weighted"（上方已有断言——LinUCB 第三档
+    // selection 默认 "weighted"（上方已有断言——LinUCB 第三档
     // 不被咨询、无状态更新，Po2C 开关同款结构性锁定）；ucb_alpha 默认 1.0
     //（仅 linucb 档被咨询）
     assert!((config.routing.ucb_alpha - 1.0).abs() < 1e-9);
@@ -97,7 +97,7 @@ fn config_toml_example_parses() {
         content.contains("ucb_alpha"),
         "config.example.toml 示例缺 ucb_alpha 键"
     );
-    // recId=16：[admission] 段默认关（enabled=false → 判定旁路、EWMA 不
+    // [admission] 段默认关（enabled=false → 判定旁路、EWMA 不
     // 记账，行为与现状逐位一致；Po2C 开关同款结构性断言）；auth.keys
     // 缺省（空）→ 全部 key 缺省 elastic，档位准入不启用
     assert!(!config.admission.enabled);
@@ -121,7 +121,7 @@ fn config_toml_example_parses() {
         content.contains("auth.keys"),
         "config.example.toml 示例缺 auth.keys 注释示例"
     );
-    // recId=17：LPS 前瞻默认关（lps_delta=0.0 → Ŵ 不参与权重、
+    // LPS 前瞻默认关（lps_delta=0.0 → Ŵ 不参与权重、
     // lps_deadline_gate=false → 不消费 deadline，行为与现状逐位一致）
     assert_eq!(config.routing.lps_delta, 0.0);
     assert!(!config.routing.lps_deadline_gate);
@@ -134,22 +134,63 @@ fn config_toml_example_parses() {
         content.contains("lps_deadline_gate"),
         "config.example.toml 示例缺 lps_deadline_gate 键"
     );
-    // recId=2：[resilience] 段示例与默认行为一致 —— cover_all_paths 默认
+    // [resilience] 段示例与默认行为一致 —— cover_all_paths 默认
     // false（三条裸路径行为与历史逐位一致；Po2C selection 开关同款结构性断言）
     assert!(!config.resilience.cover_all_paths);
-    // recId=7（W5）：失败率软降权默认关（gate=false → 路由权重与现状逐位
+    // WP4 回退观测头默认关（成功响应与现状逐字节一致）；示例必须带出键名
+    assert!(!config.resilience.expose_fallback_headers);
+    assert!(
+        content.contains("expose_fallback_headers"),
+        "config.example.toml 示例缺 expose_fallback_headers 键"
+    );
+    // WP7 健康探针默认 off（零后台任务）；示例必须带出段与四键
+    assert_eq!(config.health.mode, "off");
+    assert_eq!(config.health.interval_secs, 300);
+    assert_eq!(config.health.timeout_ms, 5000);
+    assert_eq!(config.health.probe_strategy, "free");
+    assert!(
+        content.contains("[health]"),
+        "config.example.toml 示例缺 [health] 段"
+    );
+    assert!(
+        content.contains("probe_strategy"),
+        "config.example.toml 示例缺 probe_strategy 键"
+    );
+    // WP8 配额默认关（零判限）；示例必须带出段与三键 + keys 配额注释。
+    // 余量响应头（expose_remaining_headers）为规格 Out of Scope，已移除——
+    // 示例与结构体同步 absence（键回归即红）。
+    assert!(!config.quota.enabled);
+    assert_eq!(config.quota.window_secs, 3600);
+    assert_eq!(config.quota.est_chars_per_token, 4);
+    assert!(
+        content.contains("[quota]"),
+        "config.example.toml 示例缺 [quota] 段"
+    );
+    assert!(
+        !content.contains("expose_remaining_headers"),
+        "余量头特性已按规格移除，示例不得再出现该键"
+    );
+    assert!(
+        content.contains("token_quota"),
+        "config.example.toml 示例缺 token_quota 注释示例"
+    );
+    assert!(
+        content.contains("cost_quota_millicents"),
+        "config.example.toml 示例缺 cost_quota_millicents 注释示例"
+    );
+    // 失败率软降权默认关（gate=false → 路由权重与现状逐位
     // 一致；窗口计数纯观测），阈值参数与 LiteLLM 数值对照
     assert!(!config.resilience.failure_rate_gate);
     assert_eq!(config.resilience.failure_rate_min_samples, 5);
     assert!((config.resilience.failure_rate_threshold - 0.5).abs() < 1e-9);
     assert!((config.resilience.failure_rate_penalty - 0.1).abs() < 1e-9);
     assert_eq!(config.vendors[0].priority, 1);
-    // recId=4：出站三层超时默认值（行为修复本体；0=对应层不限时的逃生阀
+    // 出站三层超时默认值（行为修复本体；0=对应层不限时的逃生阀
     // 约定见 config.example.toml [[vendors]] 注释）
     assert_eq!(config.vendors[0].timeout_ms, 60_000);
     assert_eq!(config.vendors[0].stream_ttft_ms, 60_000);
     assert_eq!(config.vendors[0].stream_idle_ms, 30_000);
-    // recId=3：入站限流示例 rules 为空（结构性断言：空 = limiteron Governor
+    // 入站限流示例 rules 为空（结构性断言：空 = limiteron Governor
     // 内置默认兜底 + 无端点表，行为与历史版本逐位一致）
     assert!(config.rate_limit.rules.is_empty());
     match &config.vendors[0].rate_limit {
@@ -160,7 +201,7 @@ fn config_toml_example_parses() {
         } => {
             assert_eq!(*max_tokens, 10000000);
             assert_eq!(*window_hours, Some(24));
-            // recId=11：随仓 vendor 配置保持固定窗口（sliding 缺省 false =
+            // 随仓 vendor 配置保持固定窗口（sliding 缺省 false =
             // 行为与现状逐位一致；滑动窗口为显式 opt-in，消除翻越点双花）
             assert!(!sliding, "随仓示例必须保持 fixed 窗口（sliding=false）");
         }
@@ -172,7 +213,7 @@ fn config_toml_example_parses() {
             assert!(!sliding, "随仓 Interval 配置必须保持 fixed 窗口");
         }
     }
-    // recId=12：TTL 负载联动默认关（纯静态 TTL 与现状逐位一致；Po2C/
+    // TTL 负载联动默认关（纯静态 TTL 与现状逐位一致；Po2C/
     // admission 同款结构性断言），权重默认 0、类别表缺省空（全 1.0）
     assert!(!config.cache.ttl_load_linked);
     assert_eq!(config.cache.w_l, 0.0);
@@ -192,7 +233,7 @@ fn config_toml_example_parses() {
         content.contains("cache.categories"),
         "config.example.toml 示例缺 cache.categories 注释示例"
     );
-    // recId=18：token 加权票据默认关（单票据现状，行为逐位一致）
+    // token 加权票据默认关（单票据现状，行为逐位一致）
     assert!(!config.vendors[0].concurrency.token_weighted);
     assert_eq!(config.vendors[0].concurrency.token_ticket_min, 1);
     assert_eq!(config.vendors[0].concurrency.token_ticket_max, 16384);
@@ -243,6 +284,16 @@ fn config_toml_example_parses() {
     assert!(
         content.contains("api_key_envs"),
         "config.example.toml 缺 api_key_envs 注释示例"
+    );
+    // WP2 出站自定义头：默认空表（零行为变化），示例必须带出键名
+    //（✅ 热生效——出站构造每请求现读；早期 restart-required 标注不实）
+    assert!(
+        config.vendors[0].extra_headers.is_empty(),
+        "随仓示例 extra_headers 必须缺省空表"
+    );
+    assert!(
+        content.contains("extra_headers"),
+        "config.example.toml 缺 extra_headers 注释示例"
     );
     assert!(
         content.contains("abstract_id"),

@@ -3,13 +3,13 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! recId=11：会话/前缀亲和表 — oxcache 承载存储。
+//! 会话/前缀亲和表 — oxcache 承载存储。
 //!
 //! 语义（bifrost 式"上次成功服务的 vendor"）：
 //! - 存储走 oxcache `CacheBackend`（`CacheWriter::set` 带 TTL、
 //!   `CacheReader::get` 读取、`CacheWriter::expire` 续期），不手写 map；
 //! - 键 `affinity:{session_key}` 与响应缓存的 `resp:` 命名空间隔离；
-//!   recId=10(2)：`affinity_tenant_scoped` 开启时带租户维度
+//!   `affinity_tenant_scoped` 开启时带租户维度
 //!   `affinity:{api_key_hash}:{session_key}`（租户劫持修复）；
 //! - 值为 vendor_id 的 UTF-8 字节；
 //! - TTL 活跃续期：lookup 命中即 `expire` 重置 TTL —— 活跃会话粘住，
@@ -25,7 +25,7 @@ use oxcache::backend::CacheBackend;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 亲和键前缀 — 与响应缓存（recId=12）的 `resp:` 命名空间隔离
+/// 亲和键前缀 — 与响应缓存的 `resp:` 命名空间隔离
 pub const AFFINITY_KEY_PREFIX: &str = "affinity:";
 
 /// 默认亲和 TTL 1h — 每次命中（活跃请求）续期，闲置会话 1h 后过期
@@ -49,7 +49,7 @@ impl AffinityTable {
         Self::new(Arc::new(oxcache::backend::default_memory_backend()), ttl)
     }
 
-    /// recId=10(2)：亲和键构造 — `affinity:{session_key}`（legacy，默认）；
+    /// 亲和键构造 — `affinity:{session_key}`（legacy，默认）；
     /// `affinity_tenant_scoped` 开启时调用方传 `Some(api_key_hash)` →
     /// `affinity:{api_key_hash}:{session_key}`（租户隔离：两租户同
     /// session id 不得互相劫持）。None/空租户一律 legacy 键。
@@ -86,7 +86,7 @@ impl AffinityTable {
             .await;
     }
 
-    /// recId=10(3)：首绑定收敛（get+set 模拟 SetNX）— 已绑定时不覆盖并
+    /// 首绑定收敛（get+set 模拟 SetNX）— 已绑定时不覆盖并
     /// 返回 false，未绑定写入返回 true。供 API 层派发成功后的首绑定；
     /// 并行首请求下竞态窗口仍可能双写（后写胜出），报告已声明可接受。
     /// 命中已有绑定时照常续期 TTL（与 lookup 的活跃续期同拍）。
@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(raw, None, "亲和键必须带 affinity: 前缀");
     }
 
-    // ============ recId=10(2) tests：键租户隔离（Red 先行） ============
+    // ============ tests：键租户隔离（Red 先行） ============
 
     /// 两租户同 session id 不得互相劫持：tenant-A 绑定后，同 session key
     /// 的 tenant-B lookup 必须 None（现状无租户维度会命中 vendor-a——
@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(table.lookup(Some("tenant-a-hash"), "sess-1").await, None);
     }
 
-    // ============ recId=10(3) tests：bind_if_absent 首绑定收敛 ============
+    // ============ tests：bind_if_absent 首绑定收敛 ============
 
     /// 未绑定写入返回 true；已绑定不覆盖返回 false（get+set 模拟 SetNX，
     /// 并行首请求竞态窗口可接受——报告已声明）。

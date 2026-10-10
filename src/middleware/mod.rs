@@ -5,4 +5,5 @@
 
 pub mod admission;
 pub mod auth;
+pub mod quota;
 pub use auth::{auth_middleware, ApiAuthState};

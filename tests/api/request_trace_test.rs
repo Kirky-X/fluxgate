@@ -89,6 +89,8 @@ fn make_config() -> Config {
         routing: nexusflow::config::RoutingSection::default(),
         cache: nexusflow::config::CacheSection::default(),
         admission: Default::default(),
+        health: Default::default(),
+        quota: Default::default(),
         grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
         docs: Default::default(),
@@ -131,6 +133,7 @@ async fn build_app() -> Router {
         affinity: None,
         response_cache: None,
         bandit: None,
+        quota: None,
     });
     create_router(state).await
 }

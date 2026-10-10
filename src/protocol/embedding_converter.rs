@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-// recId=15③：原 `use super::*`（供已删除的 embedding_response_from_openai
+// 原 `use super::*`（供已删除的 embedding_response_from_openai
 // 引用 IR 类型）随死代码一并移除
 use crate::error::GateError;
 use serde_json::{json, Value};
@@ -54,7 +54,7 @@ pub fn embedding_request_to_openai(body: Value) -> Result<Value, GateError> {
     Ok(result)
 }
 
-// recId=15③：原 embedding_response_from_openai 死代码已删除 —
+// 原 embedding_response_from_openai 死代码已删除 —
 // 全库零生产调用（grep 仅 mod.rs re-export 与自身测试），且 embeddings
 // 端点走治理透传路径后不再有统一化转换需求。UnifiedEmbeddingResponse 等
 // 类型保留于 unified.rs（协议 IR 完整性）。

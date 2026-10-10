@@ -38,14 +38,19 @@ CREATE TABLE IF NOT EXISTS token_usage (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     vendor VARCHAR(255) NOT NULL,
     model VARCHAR(255) NOT NULL,
+    api_key_hash VARCHAR(255) NOT NULL DEFAULT '',
     date VARCHAR(255) NOT NULL,
     hour INTEGER NOT NULL,
     request_count BIGINT DEFAULT 0,
-    total_tokens BIGINT DEFAULT 0,
-    prompt_tokens BIGINT DEFAULT 0,
-    completion_tokens BIGINT DEFAULT 0,
-    cost_usd_sum DOUBLE DEFAULT 0.0,
-    UNIQUE(vendor, model, date, hour)
+    input_tokens BIGINT DEFAULT 0,
+    output_tokens BIGINT DEFAULT 0,
+    cache_read_tokens BIGINT DEFAULT 0,
+    cache_creation_tokens BIGINT DEFAULT 0,
+    input_cost DOUBLE DEFAULT 0.0,
+    output_cost DOUBLE DEFAULT 0.0,
+    cache_read_cost DOUBLE DEFAULT 0.0,
+    cache_creation_cost DOUBLE DEFAULT 0.0,
+    UNIQUE(vendor, model, api_key_hash, date, hour)
 ) ENGINE = InnoDB;
 
 -- 厂商状态表

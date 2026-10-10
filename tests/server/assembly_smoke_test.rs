@@ -117,6 +117,7 @@ async fn build_state() -> Arc<ApiState> {
         affinity: None,
         response_cache: None,
         bandit: None,
+        quota: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database,
@@ -152,7 +153,7 @@ async fn test_health_reachable_after_merge() {
     assert_valid_sha256_hex();
     let app = build_app().await;
     // 实际注册路径带版本前缀：#[forge(version = "v1")] 宏把 path 变为
-    // /api/v1/health（sdforge-macros lib.rs:1886），裸 /health 不存在
+    // /api/v1/health（sdforge-macros lib.rs），裸 /health 不存在
     let (status, _) = send(
         app,
         Request::builder()

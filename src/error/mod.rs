@@ -34,7 +34,7 @@ pub enum NexusFlowError {
 #[cfg(feature = "web-server")]
 impl IntoResponse for NexusFlowError {
     fn into_response(self) -> axum::response::Response {
-        // recId=19(c)：AllVendorsThrottled 额外携带 Retry-After 响应头
+        // AllVendorsThrottled 额外携带 Retry-After 响应头
         let retry_after_secs = match &self {
             NexusFlowError::Gate(e) => e.retry_after_secs(),
             NexusFlowError::Database { .. } => None,
@@ -202,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_all_vendors_throttled_to_response_with_retry_after() {
-        // recId=19(c)：AllVendorsThrottled → 429 + Retry-After 头（秒数
+        // AllVendorsThrottled → 429 + Retry-After 头（秒数
         // 原样带出）+ 固定错误代码
         let response = NexusFlowError::from(GateError::AllVendorsThrottled {
             retry_after_secs: 30,

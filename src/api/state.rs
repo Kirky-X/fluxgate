@@ -23,23 +23,26 @@ pub struct ApiState {
     /// 请求日志存储后端（N2 存储缝）：admin 读（logs/search/token_stats）
     /// 与直写兜底经 trait 注入，bootstrap 恒接线 Database 实现
     pub database: Arc<dyn RequestLogSink>,
-    /// recId=9②：异步日志管道前沿 — handler 对其 `log()` push 即返回
+    /// 异步日志管道前沿 — handler 对其 `log()` push 即返回
     /// （try_send 背压，满即丢并计数）；None = 未接线（部分测试场景降级
     /// 为不落日志）。
     pub logger: Option<Arc<dyn RequestLogSink>>,
-    /// recId=9⑤：Token 使用预聚合前沿 — handler 拿到 usage 后 record_raw，
+    /// Token 使用预聚合前沿 — handler 拿到 usage 后 record_raw，
     /// 定时批量落 token_usage 表；None = 未接线。
     pub pre_aggregator: Option<Arc<dyn UsageSink>>,
-    /// recId=11：会话亲和表（oxcache）— 路由 `route_with_session` 的
+    /// 会话亲和表（oxcache）— 路由 `route_with_session` 的
     /// boost 来源；None = 未接线（亲和关闭，路由行为与历史一致）。
     pub affinity: Option<Arc<AffinityTable>>,
-    /// recId=12：精确响应缓存（oxcache）— enabled 由 [cache] 段热读控制
+    /// 精确响应缓存（oxcache）— enabled 由 [cache] 段热读控制
     ///（默认关闭）；None = 未接线。
     pub response_cache: Option<Arc<ResponseCache>>,
-    /// recId=15：LinUCB 状态 — selection="linucb" 档的臂状态；Router 与
+    /// LinUCB 状态 — selection="linucb" 档的臂状态；Router 与
     /// handler（奖励回传）共享同一实例。None = 未接线（该档回退 weighted、
     /// 奖励不记账，默认行为与历史一致）。
     pub bandit: Option<Arc<BanditState>>,
+    /// 成本与 token 配额账本（WP8 预扣-回补）— 中间件入口预扣与回补钩
+    /// 共享同一实例。None = 未接线（入口不预扣，行为与历史一致）。
+    pub quota: Option<Arc<crate::middleware::quota::QuotaState>>,
 }
 
 impl std::fmt::Debug for ApiState {
@@ -61,12 +64,12 @@ impl std::fmt::Debug for ApiState {
 }
 
 impl ApiState {
-    /// recId=15：LinUCB 奖励回传 — 落库记账点（成功/失败收敛处）调用。
+    /// LinUCB 奖励回传 — 落库记账点（成功/失败收敛处）调用。
     /// **门控**：仅 `[routing].selection = "linucb"`（热读）且 bandit 接线
     /// 时 update（r = 成功 1 / 失败 0）；默认 weighted 档无状态更新
     ///（defaultOff 语义）。
     ///
-    /// recId=15（评审修复 major）：`arm_key` 由调用方经
+    /// `arm_key` 由调用方经
     /// `bandit::linucb_arm_key` 归一（与选择侧 route_inner 同源——
     /// lowercase + auto→"__global__"），修复前奖励写原始
     /// `request.get("model")`：auto 路径写 ("auto", vendor) 与被咨询臂

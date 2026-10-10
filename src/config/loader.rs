@@ -46,7 +46,7 @@ impl ConfigLoader {
 /// 从路径解析并校验配置（加载路径与 G10 热重载共用；热重载不触发落盘）。
 pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
     // confers::loader::load_file：路径防护（symlink 穿越/大小限制/格式探测，
-    // confers/src/impl_/loader.rs:578）。LoaderConfig 默认拒绝绝对路径
+    // confers/src/impl_/loader.rs）。LoaderConfig 默认拒绝绝对路径
     // （防不可信输入穿越）；此处路径来自操作者显式 CLI 参数或热重载监听
     // 的自有配置文件（可信输入），放行绝对路径，symlink 检查与 max_size
     // 防护保留默认开启。
@@ -57,7 +57,7 @@ pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
         })?;
     // 强类型投影走 confers AnnotatedValue::to_typed（取代手写递归剥壳）：
     // 元数据丢弃、Bytes→base64、非有限 F64→null 语义与 to_json 一致
-    // （confers/src/types.rs:930-942）。TOML 解析链不产生 Bytes 变体
+    // （confers/src/types.rs）。TOML 解析链不产生 Bytes 变体
     // （confers/src/impl_/convert.rs 的 toml_value_to_config_value 无
     // Bytes 分支），base64 语义对 TOML 加载路径不可观察。错误有意脱敏：
     // 只报字段路径不回显出错值（配置值可能是密钥原文）。
@@ -76,7 +76,7 @@ pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
 /// 管理面弱密钥校验委托 confers security-rules 的 JwtSecretValidator 规则
 /// 内核（[`validate_admin_secrets`]）；vendor/model id 去重是跨 Vec 条目的
 /// 唯一性约束，confers::validator 的 ValidationRule 仅支持字段级规则
-///（MinLength/Range/Email 等，见 confers/src/impl_/validator.rs:42-62），
+///（MinLength/Range/Email 等，见 confers/src/impl_/validator.rs），
 /// 无法表达，故保留手写。
 pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_admin_secrets(config)?;
@@ -84,6 +84,8 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     warn_missing_api_key_envs(config);
     validate_model_catalog(config)?;
     validate_resilience_circuit(config)?;
+    validate_quota_window(config)?;
+    warn_quota_without_auth(config);
     Ok(())
 }
 
@@ -249,6 +251,37 @@ fn validate_resilience_circuit(config: &Config) -> Result<(), GateError> {
     Ok(())
 }
 
+/// [quota] 窗口须 ≥1s：0 窗口每次访问即翻转（配额永不满），属配置 bug。
+/// 加载与热更新两路同拒（`validate_resilience_circuit` 同款）。
+fn validate_quota_window(config: &Config) -> Result<(), GateError> {
+    if config.quota.window_secs == 0 {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-quota-window-too-small",
+                &[("value", config.quota.window_secs.to_string())],
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// [quota] × [auth] 组合告警（审查 L9）：配额开启而认证关闭/缺段时，配额
+/// 租户键取自客户端自报的 key 头（`api_key_digest` 不经认证校验）——任意
+/// 伪造头即可无限开新窗口，计费控制退化为尽力而为。认证关闭是既有合法
+/// 形态（无认证网关），故不构成拒绝级错误：显性 warn + 文档声明（
+/// docs/SECURITY.md、docs/USER_GUIDE [quota] 段），不静默。加载与热更新
+/// 两路同告警（`validate_config` 共用路径）。
+fn warn_quota_without_auth(config: &Config) {
+    if quota_without_auth(config) {
+        tracing::warn!("{}", t_args("config-quota-without-auth", &[]));
+    }
+}
+
+/// 告警谓词（纯函数）：quota 开 && auth 关/缺段。
+fn quota_without_auth(config: &Config) -> bool {
+    config.quota.enabled && !config.auth.as_ref().is_some_and(|auth| auth.enabled)
+}
+
 /// [auth] 段条目的 ConfigProvider 薄适配 — 把管理面密钥逐条挂到合成键
 /// （`auth.api_keys[{index}]` / `auth.keys[{index}].hash`）上，供
 /// JwtSecretValidator 按标量键读取（其规则内核只消费单个 string 键，见
@@ -383,5 +416,77 @@ fn validate_admin_secrets(config: &Config) -> Result<(), GateError> {
                 &[("details", rejections.join("; "))],
             ),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with(quota_enabled: bool, auth: Option<crate::config::AuthSection>) -> Config {
+        Config {
+            rate_limit: Default::default(),
+            server: crate::config::ServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            database: crate::config::DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+                url: String::new(),
+            },
+            vendors: vec![],
+            global_model: None,
+            pricing: vec![],
+            model_catalog: vec![],
+            auth,
+            cors: None,
+            retry: Default::default(),
+            routing: Default::default(),
+            cache: Default::default(),
+            admission: Default::default(),
+            health: Default::default(),
+            quota: crate::config::QuotaSection {
+                enabled: quota_enabled,
+                ..Default::default()
+            },
+            grpc: None,
+            resilience: Default::default(),
+            docs: Default::default(),
+        }
+    }
+
+    /// quota 开 + auth 关/缺段 → 告警；quota 关或 auth 开 → 不告警。
+    #[test]
+    fn quota_without_auth_predicate() {
+        use crate::config::{AuthSection, AuthTier};
+        let auth_on = AuthSection {
+            enabled: true,
+            api_keys: vec![],
+            header: Default::default(),
+            keys: vec![crate::config::AuthKeyEntry {
+                hash: "a".repeat(64),
+                tier: AuthTier::Elastic,
+                token_quota: 0,
+                cost_quota_millicents: 0,
+            }],
+        };
+        let auth_off = AuthSection {
+            enabled: false,
+            ..auth_on.clone()
+        };
+        assert!(quota_without_auth(&config_with(true, None)), "缺段 → 告警");
+        assert!(
+            quota_without_auth(&config_with(true, Some(auth_off))),
+            "enabled=false → 告警"
+        );
+        assert!(
+            !quota_without_auth(&config_with(true, Some(auth_on))),
+            "认证开启 → 不告警"
+        );
+        assert!(
+            !quota_without_auth(&config_with(false, None)),
+            "quota 关 → 不告警"
+        );
     }
 }

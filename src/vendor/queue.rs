@@ -10,10 +10,10 @@ use async_channel::{bounded, Receiver, Sender};
 pub struct PendingRequest {
     pub request: UnifiedRequest,
     pub response_tx: tokio::sync::oneshot::Sender<Result<UnifiedResponse, GateError>>,
-    /// recId=4③：入队时刻 — worker 完成分支以此计算排队+执行的全程延迟，
+    /// 入队时刻 — worker 完成分支以此计算排队+执行的全程延迟，
     /// 使 metrics.record_request 的口径覆盖队列等待（与 queue_factor 同源）。
     pub enqueued_at: std::time::Instant,
-    /// recId=8：worker 取走时刻 — [`VendorQueue::recv`] 单点盖戳，入队方
+    /// worker 取走时刻 — [`VendorQueue::recv`] 单点盖戳，入队方
     /// 恒为 None。queue 延迟道（ewma_queue_ms）= dequeued_at − enqueued_at。
     pub dequeued_at: Option<std::time::Instant>,
 }
@@ -41,7 +41,7 @@ impl VendorQueue {
 
     pub async fn recv(&self) -> Option<PendingRequest> {
         let mut pending = self.receiver.recv().await.ok()?;
-        // recId=8：出队时刻在唯一出队口盖戳——结构上保证「recv 返回的
+        // 出队时刻在唯一出队口盖戳——结构上保证「recv 返回的
         // 请求必有 dequeued_at 且 ≥ enqueued_at」，worker 侧无需记忆。
         pending.dequeued_at = Some(std::time::Instant::now());
         Some(pending)
@@ -56,7 +56,7 @@ impl VendorQueue {
     }
 }
 
-// recId=4②：原 QueueManager 已删除 — 全库无写入方（grep 仅 manager.rs 读侧
+// 原 QueueManager 已删除 — 全库无写入方（grep 仅 manager.rs 读侧
 // 四处引用），queue_factor 恒 1.0、3D 权重退化 2D 的根因即此死件。队列长度
 // 一律直读 `VendorQueue::len()`（manager 的 VendorInstance.queue）。
 
@@ -78,7 +78,7 @@ mod tests {
         }
     }
 
-    /// recId=8：recv 后 dequeued_at 必被写入且 ≥ enqueued_at（出队口单点
+    /// recv 后 dequeued_at 必被写入且 ≥ enqueued_at（出队口单点
     /// 盖戳的结构性断言）。
     #[tokio::test]
     async fn recv_stamps_dequeued_at_not_before_enqueued_at() {

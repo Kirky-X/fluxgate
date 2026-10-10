@@ -10,12 +10,16 @@ pub mod embedding_converter;
 pub mod openai_converter;
 pub mod sse_frame;
 pub mod unified;
+pub(crate) mod usage;
+
+pub(crate) use usage::parse_usage_detailed;
 
 pub use anthropic_converter::{AnthropicConverter, AnthropicStreamEncoder};
 pub use embedding_converter::embedding_request_to_openai;
-pub use openai_converter::OpenAIConverter;
+pub use openai_converter::{OpenAIConverter, OpenAIStreamEncoder};
 pub use sse_frame::{
-    encode_sse_done, encode_sse_error, encode_sse_event, SseFrame, SseFrameParser,
+    encode_sse_done, encode_sse_error, encode_sse_event, reframe_passthrough_stream_with_usage,
+    ReframeObservation, SseFrame, SseFrameParser,
 };
 pub(crate) use unified::{
     absorb_vendor_extensions, merge_vendor_extensions, validate_tool_schemas,
@@ -48,7 +52,7 @@ pub trait ProtocolConverter: Send + Sync {
     fn parse_response(&self, response: serde_json::Value) -> Result<UnifiedResponse, GateError>;
     fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<serde_json::Value, GateError>;
 
-    /// 上游 SSE 帧 `data` 负载 → IR StreamChunk（recId=3 阶段二反向解析）。
+    /// 上游 SSE 帧 `data` 负载 → IR StreamChunk（阶段二反向解析）。
     ///
     /// 与 [`ProtocolConverter::stream_chunk_to_external`] 互为逆操作：
     /// 前者把上游协议的流式事件解析进 IR，后者把 IR 编码为目标协议。

@@ -7,30 +7,32 @@
 //!
 //! 提供符合 [SSE 规范](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)
 //! 的编码函数，用于流式响应的 chunk 包装；以及上游 SSE 字节流的增量分帧器
-//! （recId=3 阶段一）。
+//! （阶段一）。
 //!
 //! 分帧器为手写：已核实 sdforge::streaming 仅提供出站编码
 //! （stream_to_sse / create_stream_channel，sdforge
-//! src/streaming/streaming_impl.rs:54-98），无上游 SSE 字节流解析能力。
+//! src/streaming/streaming_impl.rs），无上游 SSE 字节流解析能力。
 //!
 //! 实源头位于 [`crate::protocol::sse_frame`]（`vendor-management` 等
 //! feature 不含 `web-server`，vendor 层分帧需要该能力）；本模块
 //! re-export 保持既有引用路径。
 
 pub use crate::protocol::sse_frame::{
-    encode_sse_done, encode_sse_error, encode_sse_event, reframe_passthrough_stream, SseFrame,
-    SseFrameParser,
+    encode_gateway_stream_error, encode_sse_done, encode_sse_error, encode_sse_event,
+    reframe_passthrough_stream, reframe_passthrough_stream_with_usage, ReframeObservation,
+    SseFrame, SseFrameParser,
 };
 
 /// 流式路径内部错误 → 客户端 `event: error` 帧的统一出口。
 ///
-/// 内部错误详情（reqwest 等的 Display 可携带上游 vendor URL）只进
-/// `tracing` 日志；出站固定为无参安全 i18n 文本，与 REST 错误响应的
-/// 固定码纪律对齐——防止网关后端拓扑经错误原文外泄。
+/// data 为 `{"error":{"type","message"}}` JSON 信封（与 REST 错误体
+/// 同构）。内部错误详情（reqwest 等的 Display 可携带上游 vendor URL）
+/// 只进 `tracing` 日志；出站 message 固定为无参安全 i18n 文本，与 REST
+/// 错误响应的固定码纪律对齐——防止网关后端拓扑经错误原文外泄。
 pub fn stream_error_frame(e: &impl std::fmt::Display) -> String {
-    let safe_text = crate::i18n::t("vendor-upstream-stream-interrupted");
+    let safe_text = crate::i18n::t("protocol-stream-error-frame");
     tracing::warn!(error = %e, "{safe_text}");
-    encode_sse_error(&safe_text)
+    encode_gateway_stream_error(&safe_text)
 }
 
 #[cfg(test)]
@@ -38,7 +40,7 @@ mod tests {
     use super::stream_error_frame;
 
     #[test]
-    fn stream_error_frame_hides_internal_detail() {
+    fn stream_error_frame_is_json_envelope_without_internal_detail() {
         // reqwest Display 形态：携带上游 URL 的内部错误
         let internal =
             "error sending request for url (http://internal-vendor:8001/v1/chat/completions)";
@@ -48,6 +50,19 @@ mod tests {
             "帧格式不变: {frame:?}"
         );
         assert!(frame.ends_with("\n\n"), "双换行终止: {frame:?}");
+        let payload = &frame["event: error\ndata: ".len()..frame.len() - 2];
+        let value: serde_json::Value =
+            serde_json::from_str(payload).expect("data 必须是 {\"error\":{...}} JSON 信封");
+        assert_eq!(
+            value["error"]["type"], "upstream_stream_interrupted",
+            "错误码为稳定字面量: {payload}"
+        );
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .is_some_and(|m| !m.is_empty()),
+            "message 为 i18n 文案: {payload}"
+        );
         assert!(
             !frame.contains("internal-vendor"),
             "不得泄露内部拓扑: {frame:?}"

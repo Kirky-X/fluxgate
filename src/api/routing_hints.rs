@@ -8,15 +8,15 @@
 //! 从 HTTP 请求头提取路由信息：
 //! - X-Vendor: 指定具体厂商
 //! - X-Model: 使用抽象模型
-//! - X-Session-Id: 会话亲和键（recId=11；缺失时兜底 messages 前缀哈希）
+//! - X-Session-Id: 会话亲和键（；缺失时兜底 messages 前缀哈希）
 
 use axum::http::HeaderMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// recId=11：messages[0] 兜底哈希的输入截断（前 2KB）
+/// messages[0] 兜底哈希的输入截断（前 2KB）
 const FALLBACK_HASH_INPUT_BYTES: usize = 2048;
-/// recId=11：兜底会话键的 hex 截断长度（64 bit，碰撞面与键长度平衡）
+/// 兜底会话键的 hex 截断长度（64 bit，碰撞面与键长度平衡）
 const FALLBACK_HASH_HEX_LEN: usize = 16;
 
 /// 路由提示结构
@@ -26,9 +26,9 @@ pub struct RoutingHints {
     pub preferred_vendor: Option<String>,
     /// 优先使用的模型 ID
     pub preferred_model: Option<String>,
-    /// recId=11：会话亲和键（X-Session-Id header）
+    /// 会话亲和键（X-Session-Id header）
     pub session_key: Option<String>,
-    /// recId=19(a)：请求级权重（X-Weight header，LiteLLM simple_shuffle
+    /// 请求级权重（X-Weight header，LiteLLM simple_shuffle
     /// _router_weights 对照）。仅接受有限正数——非数值 / 非有限 / 非正
     /// 一律忽略为 None（非法值忽略语义）。是否生效由
     /// `[routing].allow_request_weight` 门控（Router 侧热读判定）。
@@ -67,7 +67,7 @@ impl RoutingHints {
         self.preferred_vendor.is_some() || self.preferred_model.is_some()
     }
 
-    /// recId=11：会话亲和键 — `X-Session-Id` 优先；缺失时兜底
+    /// 会话亲和键 — `X-Session-Id` 优先；缺失时兜底
     /// `sha256(messages[0] 序列化前 2KB)` 截断 hex。两者皆不可得
     ///（无 header 且 body 无 messages）返回 None，该请求不参与亲和。
     pub fn effective_session_key(&self, body: &Value) -> Option<String> {
@@ -78,7 +78,7 @@ impl RoutingHints {
     }
 }
 
-/// recId=11：messages 前缀兜底会话键 — 同前缀的对话粘同一 vendor。
+/// messages 前缀兜底会话键 — 同前缀的对话粘同一 vendor。
 /// 输入为 `serde_json::to_string(messages[0])` 的前 2KB（字符边界安全
 /// 截断），SHA256 hex 截前 16 字符。
 pub fn fallback_session_key(body: &Value) -> Option<String> {
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(ka, kb, "前 2KB 相同的长消息必须同键（截断语义）");
     }
 
-    // ============ recId=19(a) tests：X-Weight 请求级权重解析 ============
+    // ============ tests：X-Weight 请求级权重解析 ============
 
     /// X-Weight 头解析：合法有限正数入结构；非法值（非数值 / 负数 /
     /// 非有限 / 缺失）一律忽略为 None。

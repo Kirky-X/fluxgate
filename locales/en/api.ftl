@@ -1,7 +1,7 @@
 # en/api: api 桶（src/api）用户可见消息。en 值 = 迁移前原英文原文（忠实保留）。
 
 # ---- admin.rs ----
-admin-vendor-limit-auto-managed = Vendor rate-limit state is managed automatically by the limiteron Governor
+admin-vendor-reset = Vendor { $id } key pool blacklist and cooldown cleared
 admin-config-updated-immediate = Config updated; vendors/pricing/auth take effect immediately
 admin-config-updated-restart-required = Config updated; vendors/pricing/auth take effect immediately; { $sections } take effect after restart
 admin-vendor-not-found = Vendor { $id } not found

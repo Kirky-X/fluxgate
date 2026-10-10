@@ -48,13 +48,17 @@ pub struct LogFilter {
     pub limit: u32,
 }
 
-/// Token 用量按 (vendor, model, date, hour) 预聚合行。原 database::TokenUsage
-/// 显式改名消歧——与 IR 的 protocol::TokenUsage 同名易混。
+/// Token 用量按 (vendor, model, api_key_hash, date, hour) 预聚合行（V2）。
+/// V1 字段保留（`prompt_tokens`=`input_tokens`、`completion_tokens`=
+/// `output_tokens`、`total_tokens`=四类之和、`cost_usd_sum`=四项成本之和，
+/// `/admin/stats/tokens` 形状兼容），新增分账维度与四类明细。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsageRow {
     pub id: Option<i64>,
     pub vendor: String,
     pub model: String,
+    /// 请求方 API key 的 SHA-256 摘要（V1 历史行回填空串，不归属到 key）。
+    pub api_key_hash: String,
     pub date: String,
     pub hour: i32,
     pub request_count: i64,
@@ -62,6 +66,48 @@ pub struct TokenUsageRow {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub cost_usd_sum: f64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub input_cost: f64,
+    pub output_cost: f64,
+    pub cache_read_cost: f64,
+    pub cache_creation_cost: f64,
+}
+
+/// 成本分账聚合行（`GET /admin/cost`，按 vendor 或 model 分组）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CostUsageRow {
+    /// group_by=vendor 时有值。
+    pub vendor: Option<String>,
+    /// group_by=model 时有值。
+    pub model: Option<String>,
+    pub request_count: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub input_cost: f64,
+    pub output_cost: f64,
+    pub cache_read_cost: f64,
+    pub cache_creation_cost: f64,
+    pub total_cost: f64,
+}
+
+/// 分账写入项（WP9）：调用方（API 层）透传请求方 key 摘要与四类用量及
+/// 分项成本（`model_catalog` 四档单价），聚合与 flush 由实现承担。
+#[derive(Debug, Clone)]
+pub struct KeyedUsage {
+    pub vendor: String,
+    pub model: String,
+    pub api_key_hash: String,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_creation_tokens: u32,
+    pub input_cost: f64,
+    pub output_cost: f64,
+    pub cache_read_cost: f64,
+    pub cache_creation_cost: f64,
 }
 
 /// 请求日志存储缝：数据面写入（管道前沿 push 或存储后端直写）+ admin 查询。
@@ -104,17 +150,9 @@ pub trait RequestLogSink: Send + Sync {
 /// Token 用量存储缝：数据面预聚合写入 + admin 统计查询。
 #[async_trait::async_trait]
 pub trait UsageSink: Send + Sync {
-    /// 记录原始 usage（记录即返回，聚合与 flush 由实现承担；成本单位 USD）。
+    /// 记录分账用量（记录即返回，聚合与 flush 由实现承担）。
     /// 错误上抛由调用方记 warn 后吞掉（记账失败不失败请求）。
-    async fn record_raw(
-        &self,
-        vendor: &str,
-        model: &str,
-        prompt_tokens: u32,
-        completion_tokens: u32,
-        total_tokens: u32,
-        cost_usd: f64,
-    ) -> Result<(), GateError>;
+    async fn record_keyed(&self, usage: &KeyedUsage) -> Result<(), GateError>;
 
     /// 把缓冲中的聚合行显式落库（幂等；测试与运维的确定性落盘点）。
     /// 直写实现默认无操作。
@@ -129,6 +167,24 @@ pub trait UsageSink: Send + Sync {
     ) -> Result<Vec<TokenUsageRow>, GateError> {
         Err(unsupported_usage_query())
     }
+
+    /// admin 读：成本分账聚合（WP9）。管道前沿默认不支持。
+    async fn query_cost_usage(
+        &self,
+        _from: Option<&str>,
+        _to: Option<&str>,
+        _group_by: CostGroupBy,
+        _api_key_hash: Option<&str>,
+    ) -> Result<Vec<CostUsageRow>, GateError> {
+        Err(unsupported_usage_query())
+    }
+}
+
+/// 成本分账分组维度（`GET /admin/cost?group_by=` 白名单）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostGroupBy {
+    Vendor,
+    Model,
 }
 
 fn unsupported_query() -> GateError {
@@ -178,31 +234,19 @@ mod tests {
     /// 累加，含错误注入）
     #[derive(Default)]
     struct MockUsageSink {
-        tokens: Mutex<Vec<(String, String, u64)>>,
+        tokens: Mutex<Vec<KeyedUsage>>,
         fail: AtomicBool,
     }
 
     #[async_trait::async_trait]
     impl UsageSink for MockUsageSink {
-        async fn record_raw(
-            &self,
-            vendor: &str,
-            model: &str,
-            _prompt_tokens: u32,
-            _completion_tokens: u32,
-            total_tokens: u32,
-            _cost_usd: f64,
-        ) -> Result<(), GateError> {
+        async fn record_keyed(&self, usage: &KeyedUsage) -> Result<(), GateError> {
             if self.fail.load(Ordering::Relaxed) {
                 return Err(GateError::Config {
                     message: "mock record rejected".to_string(),
                 });
             }
-            self.tokens.lock().unwrap().push((
-                vendor.to_string(),
-                model.to_string(),
-                total_tokens as u64,
-            ));
+            self.tokens.lock().unwrap().push(usage.clone());
             Ok(())
         }
     }
@@ -258,24 +302,40 @@ mod tests {
         assert!(result.is_err(), "默认查询实现必须显式拒绝");
     }
 
-    /// 聚合写入路径：record_raw 逐条进缓冲；错误注入后上抛且不产生记录
+    /// 聚合写入路径：record_keyed 逐条进缓冲；错误注入后上抛且不产生记录
     #[tokio::test]
     async fn usage_sink_record_aggregates_and_error_propagates() {
+        fn keyed(prompt: u32, completion: u32) -> KeyedUsage {
+            KeyedUsage {
+                vendor: "v".into(),
+                model: "m".into(),
+                api_key_hash: String::new(),
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_read_cost: 0.0,
+                cache_creation_cost: 0.0,
+            }
+        }
         let sink = MockUsageSink::default();
-        sink.record_raw("v", "m", 1, 2, 3, 0.0)
-            .await
-            .expect("rec ok");
-        sink.record_raw("v", "m", 4, 5, 6, 0.0)
-            .await
-            .expect("rec ok");
+        sink.record_keyed(&keyed(1, 2)).await.expect("rec ok");
+        sink.record_keyed(&keyed(4, 2)).await.expect("rec ok");
         assert_eq!(
-            sink.tokens.lock().unwrap().iter().map(|t| t.2).sum::<u64>(),
+            sink.tokens
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|t| (t.prompt_tokens + t.completion_tokens) as u64)
+                .sum::<u64>(),
             9,
-            "聚合语义：total_tokens 可被消费方累加"
+            "聚合语义：用量可被消费方累加"
         );
 
         sink.fail.store(true, Ordering::Relaxed);
-        let result = sink.record_raw("v", "m", 1, 1, 1, 0.0).await;
+        let result = sink.record_keyed(&keyed(1, 0)).await;
         assert!(result.is_err(), "注入失败必须上抛");
         let count = sink.tokens.lock().unwrap().len();
         assert_eq!(count, 2, "被拒记录不得进缓冲");
@@ -302,6 +362,7 @@ mod tests {
             id: None,
             vendor: "v".to_string(),
             model: "m".to_string(),
+            api_key_hash: String::new(),
             date: "2026-10-04".to_string(),
             hour: 21,
             request_count: 3,
@@ -309,10 +370,17 @@ mod tests {
             prompt_tokens: 5,
             completion_tokens: 4,
             cost_usd_sum: 0.5,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            input_cost: 0.3,
+            output_cost: 0.2,
+            cache_read_cost: 0.0,
+            cache_creation_cost: 0.0,
         };
         let json = serde_json::to_string(&row).unwrap();
         let back: TokenUsageRow = serde_json::from_str(&json).unwrap();
         assert_eq!(back.hour, 21);
         assert_eq!(back.request_count, 3);
+        assert_eq!(back.api_key_hash, "");
     }
 }

@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! SSE（Server-Sent Events）编码与上游增量分帧（recId=3）。
+//! SSE（Server-Sent Events）编码与上游增量分帧。
 //!
 //! 实源头位于 protocol 模块（`vendor-management` 等 feature 不含
 //! `web-server`，而 vendor 层分帧需要本能力；protocol 无 feature 门控）。
@@ -40,7 +40,21 @@ pub fn encode_sse_error(msg: &str) -> String {
     format!("event: error\ndata: {msg}\n\n")
 }
 
-/// 解析后的 SSE 帧（recId=3）。
+/// 网关侧流中错误帧 — data 为 `{"error":{"type","message"}}` JSON 信封
+///（与 REST 错误体同构）：`type` 为稳定错误码字面量，`message` 由调用方
+/// 传入 Fluent 文案。帧内不得携带 vendor id / api_base 等内部拓扑
+///（内部错误详情只进 tracing 日志）。
+pub fn encode_gateway_stream_error(message: &str) -> String {
+    let payload = serde_json::json!({
+        "error": {
+            "type": "upstream_stream_interrupted",
+            "message": message,
+        }
+    });
+    encode_sse_error(&payload.to_string())
+}
+
+/// 解析后的 SSE 帧。
 ///
 /// `raw` 保留帧原文（不含定界空行），透传路径逐帧原样转发时与上游
 /// 字节级一致；`event`/`data` 为解析出的结构化字段，供错误检测与
@@ -72,7 +86,7 @@ impl SseFrame {
     }
 }
 
-/// 上游 SSE 增量分帧器（recId=3 阶段一）。
+/// 上游 SSE 增量分帧器（阶段一）。
 ///
 /// - **跨块缓冲**：网络块按字节 append 进内部 buffer，帧定界符自身被
 ///   劈在两块之间时自然跨块拼回；
@@ -176,11 +190,11 @@ fn build_frame(raw: String) -> SseFrame {
     SseFrame { raw, event, data }
 }
 
-/// 透传流适配器（recId=3 阶段一）：上游字节流过分帧器后逐帧原样转发。
+/// 透传流适配器（阶段一）：上游字节流过分帧器后逐帧原样转发。
 ///
 /// - 帧边界与上游一致：每帧转发 `raw + "\n\n"`（消除 openai.rs 旧实现的
 ///   「整块 `from_utf8_lossy` 再包一层 `data:`」嵌套包装）；
-/// - 中流错误（recId=14②）：上游 IO 错误或 `event: error` / 错误 JSON 帧
+/// - 中流错误：上游 IO 错误或 `event: error` / 错误 JSON 帧
 ///   → 发出带语义的 SSE error 事件并提前终止，不再继续正常转发；
 /// - 上游 EOF：冲刷残余帧后正常终止。
 ///
@@ -193,12 +207,42 @@ where
     S: Stream<Item = Result<Bytes, E>>,
     E: std::fmt::Display,
 {
+    // 无观测出口：空回调被内联掉，字节与终止行为与带观测形态逐字相同。
+    reframe_passthrough_stream_with_usage(stream, |_| {})
+}
+
+/// 透传流观测事件（配额结算的输入）：逐帧内容 + 终止通知。
+///
+/// 帧字段由 `SseFrame` 直接 move（无额外拷贝，透传热路径零分配增量）；
+/// `End.completed` 在 EOF 冲刷完最后一帧后为 `true`，上游 `Err` 或错误帧
+/// 提前终止时为 `false`——调用方据此决定回补或保持预扣。
+pub enum ReframeObservation {
+    /// 一帧已成形并即将转发（`event`/`data` 为帧内结构化字段）
+    Frame {
+        event: Option<String>,
+        data: Option<String>,
+    },
+    /// 流终止（`completed = true` 为正常 EOF，`false` 为错误/提前终止）
+    End { completed: bool },
+}
+
+/// 透传流适配器（带帧观测）：与 [`reframe_passthrough_stream`] 逐字节同输出，
+/// 额外把每帧的 `event`/`data` 与终止事件交给 `observe`。
+pub fn reframe_passthrough_stream_with_usage<S, E, F>(
+    stream: S,
+    observe: F,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>>
+where
+    S: Stream<Item = Result<Bytes, E>>,
+    E: std::fmt::Display,
+    F: FnMut(ReframeObservation),
+{
     // 上游流 Box::pin：S 仅保证 Stream，Unpin 由 Pin<Box<S>> 提供
     // （每流一次堆分配，可忽略）
     let stream = Box::pin(stream);
     futures::stream::unfold(
-        (SseFrameParser::new(), stream, false),
-        |(mut parser, mut stream, done)| async move {
+        (SseFrameParser::new(), stream, false, observe),
+        |(mut parser, mut stream, done, mut observe)| async move {
             loop {
                 if done {
                     return None;
@@ -206,37 +250,208 @@ where
                 // 倾倒 buffer 中已凑齐的帧（一次 unfold 一个 item，逐帧返回）
                 if let Some(frame) = parser.next_frame() {
                     let terminate = frame.is_error();
-                    let mut out = frame.raw;
+                    // 字段 move 进观测事件（零拷贝），raw 继续原样转发
+                    let SseFrame { raw, event, data } = frame;
+                    observe(ReframeObservation::Frame { event, data });
+                    if terminate {
+                        observe(ReframeObservation::End { completed: false });
+                    }
+                    let mut out = raw;
                     out.push_str("\n\n");
-                    return Some((Ok(Bytes::from(out)), (parser, stream, terminate)));
+                    return Some((Ok(Bytes::from(out)), (parser, stream, terminate, observe)));
                 }
                 // buffer 无完整帧：拉取上游下一块
                 match futures::StreamExt::next(&mut stream).await {
                     Some(Ok(chunk)) => parser.feed(&chunk),
                     Some(Err(e)) => {
-                        // recId=14②：流中断发带语义的 error 事件，提前终止
+                        // 流中断发带语义的 error 事件，提前终止
+                        let msg = t("protocol-stream-error-frame");
                         tracing::warn!(
                             error = %e,
                             "{}",
                             t("protocol-passthrough-stream-interrupted")
                         );
-                        let msg = t("protocol-stream-interrupted");
+                        observe(ReframeObservation::End { completed: false });
                         return Some((
-                            Ok(Bytes::from(encode_sse_error(&msg))),
-                            (parser, stream, true),
+                            Ok(Bytes::from(encode_gateway_stream_error(&msg))),
+                            (parser, stream, true, observe),
                         ));
                     }
                     None => {
                         // EOF：冲刷残余帧（此后 buffer 必空，下轮终止）
                         if let Some(frame) = parser.flush() {
-                            let mut out = frame.raw;
+                            let SseFrame { raw, event, data } = frame;
+                            observe(ReframeObservation::Frame { event, data });
+                            observe(ReframeObservation::End { completed: true });
+                            let mut out = raw;
                             out.push_str("\n\n");
-                            return Some((Ok(Bytes::from(out)), (parser, stream, true)));
+                            return Some((Ok(Bytes::from(out)), (parser, stream, true, observe)));
                         }
+                        observe(ReframeObservation::End { completed: true });
                         return None;
                     }
                 }
             }
         },
     )
+}
+
+#[cfg(test)]
+mod reframe_observation_tests {
+    use super::{
+        reframe_passthrough_stream, reframe_passthrough_stream_with_usage, ReframeObservation,
+    };
+    use bytes::Bytes;
+    use futures::StreamExt as _;
+    use std::sync::{Arc, Mutex};
+
+    /// 观测事件的测试侧结构化记录（避免比对了 `Debug` 文本格式）。
+    #[derive(Debug, Clone, PartialEq)]
+    enum Probe {
+        Frame(Option<String>, Option<String>),
+        End(bool),
+    }
+
+    fn ok_stream(texts: &[&str]) -> impl futures::Stream<Item = Result<Bytes, std::io::Error>> {
+        futures::stream::iter(
+            texts
+                .iter()
+                .map(|t| Ok(Bytes::from(t.to_string())))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// 抽干流并拼接转发字节（观测序列由调用方持有的 sink 读取）。
+    async fn drain<S>(stream: S) -> String
+    where
+        S: futures::Stream<Item = Result<Bytes, std::io::Error>>,
+    {
+        let mut stream = Box::pin(stream);
+        let mut out = String::new();
+        while let Some(item) = stream.next().await {
+            out.push_str(&String::from_utf8_lossy(&item.unwrap()));
+        }
+        out
+    }
+
+    fn record(sink: &Arc<Mutex<Vec<Probe>>>) -> Arc<Mutex<Vec<Probe>>> {
+        sink.clone()
+    }
+
+    fn observe_into(sink: &Arc<Mutex<Vec<Probe>>>) -> impl FnMut(ReframeObservation) {
+        let sink = record(sink);
+        move |ev| {
+            let probe = match ev {
+                ReframeObservation::Frame { event, data } => Probe::Frame(event, data),
+                ReframeObservation::End { completed } => Probe::End(completed),
+            };
+            sink.lock().unwrap_or_else(|p| p.into_inner()).push(probe);
+        }
+    }
+
+    /// 逐帧对应：两帧输入的观测与转发字节同序，EOF 给 `completed = true`。
+    #[tokio::test]
+    async fn frames_map_to_observations_and_normal_end() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let stream = reframe_passthrough_stream_with_usage(
+            ok_stream(&["data: {\"a\":1}\n\ndata: {\"b\":2}\n\n"]),
+            observe_into(&sink),
+        );
+        let bytes = drain(stream).await;
+        assert_eq!(bytes, "data: {\"a\":1}\n\ndata: {\"b\":2}\n\n", "字节保真");
+        let recorded = sink.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            recorded,
+            vec![
+                Probe::Frame(None, Some("{\"a\":1}".into())),
+                Probe::Frame(None, Some("{\"b\":2}".into())),
+                Probe::End(true),
+            ],
+            "观测需逐帧对应且正常收束"
+        );
+    }
+
+    /// 错误帧：观测到该帧后紧接 `completed = false`，后续帧不再转发。
+    #[tokio::test]
+    async fn error_frame_reports_incomplete_end_and_drops_tail() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let stream = reframe_passthrough_stream_with_usage(
+            ok_stream(&[
+                "event: error\ndata: {\"error\":{\"message\":\"boom\"}}\n\ndata: {\"c\":3}\n\n",
+            ]),
+            observe_into(&sink),
+        );
+        let bytes = drain(stream).await;
+        assert_eq!(
+            bytes, "event: error\ndata: {\"error\":{\"message\":\"boom\"}}\n\n",
+            "错误帧后不得继续转发"
+        );
+        let recorded = sink.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            recorded,
+            vec![
+                Probe::Frame(
+                    Some("error".into()),
+                    Some("{\"error\":{\"message\":\"boom\"}}".into())
+                ),
+                Probe::End(false),
+            ],
+            "错误终止必须报 completed=false 且不补正常尾帧"
+        );
+    }
+
+    /// 上游 Err：发出网关 error 帧且观测 `completed = false`（不回补的口径）。
+    #[tokio::test]
+    async fn upstream_error_reports_incomplete_end() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let input = futures::stream::iter(vec![
+            Ok(Bytes::from("data: {\"a\":1}\n\n")),
+            Err(std::io::Error::other("upstream broke")),
+        ]);
+        let stream = reframe_passthrough_stream_with_usage(input, observe_into(&sink));
+        let bytes = drain(stream).await;
+        assert!(
+            bytes.starts_with("data: {\"a\":1}\n\n"),
+            "已成形帧先行转发: {bytes}"
+        );
+        assert!(bytes.contains("event: error"), "断流补语义错误帧: {bytes}");
+        let recorded = sink.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            recorded,
+            vec![
+                Probe::Frame(None, Some("{\"a\":1}".into())),
+                Probe::End(false),
+            ],
+            "断流不得报 completed=true"
+        );
+    }
+
+    /// 无末尾定界空的残帧：EOF 冲刷为一帧 + `completed = true`。
+    #[tokio::test]
+    async fn eof_flush_reports_residual_frame() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let stream =
+            reframe_passthrough_stream_with_usage(ok_stream(&["data: tail"]), observe_into(&sink));
+        let bytes = drain(stream).await;
+        assert_eq!(bytes, "data: tail\n\n", "残帧仍转发为完整帧");
+        let recorded = sink.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(
+            recorded,
+            vec![Probe::Frame(None, Some("tail".into())), Probe::End(true)]
+        );
+    }
+
+    /// 回归门禁：无观测包装与带观测形态的转发字节逐字节一致（开关关时零行为变化）。
+    #[tokio::test]
+    async fn wrapper_preserves_bytes_identically_to_observed_form() {
+        let payload = "data: {\"x\":1}\n\n\ndata: {\"x\":2}\n\n";
+        let plain = drain(reframe_passthrough_stream(ok_stream(&[payload]))).await;
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let observed = drain(reframe_passthrough_stream_with_usage(
+            ok_stream(&[payload]),
+            observe_into(&sink),
+        ))
+        .await;
+        assert_eq!(plain, observed, "观测不得改变字节");
+    }
 }

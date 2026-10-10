@@ -41,6 +41,8 @@ fn make_config(docs_enabled: bool) -> Config {
         routing: nexusflow::config::RoutingSection::default(),
         cache: nexusflow::config::CacheSection::default(),
         admission: Default::default(),
+        health: Default::default(),
+        quota: Default::default(),
         grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
         docs: nexusflow::config::DocsSection {
@@ -85,6 +87,7 @@ async fn build_app(docs_enabled: bool) -> Router {
         affinity: None,
         response_cache: None,
         bandit: None,
+        quota: None,
     });
     create_router(state).await
 }

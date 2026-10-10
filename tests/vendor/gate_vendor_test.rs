@@ -454,7 +454,7 @@ mod manager {
             .expect("window info");
         assert_eq!(info.max_tokens, Some(500), "max_tokens should be 500");
         assert_eq!(info.used_tokens, 0, "used_tokens should be 0 initially");
-        // recId=5：Token 窗口迁移 FixedWindowLimiter 后，peek 提供 reset_secs
+        // Token 窗口迁移 FixedWindowLimiter 后，peek 提供 reset_secs
         assert!(
             info.window_end.is_some(),
             "Token window should report its reset time (recId=5)"
@@ -486,7 +486,7 @@ mod manager {
             .get_window_info("v-interval")
             .await
             .expect("window info");
-        // recId=5：Interval 直接映射 FixedWindowLimiter（容量 u64::MAX =
+        // Interval 直接映射 FixedWindowLimiter（容量 u64::MAX =
         // 无数量上限语义），snapshot 提供精确 used/reset
         assert_eq!(
             info.max_tokens,
@@ -560,6 +560,44 @@ mod manager {
         let response = result.unwrap();
         assert_eq!(response["id"], "chatcmpl-test", "response: {:?}", response);
         assert_eq!(response["object"], "chat.completion");
+        mock.assert_async().await;
+    }
+
+    /// WP2 集成：`extra_headers` 随出站请求注入（mockito 按头匹配断言）；
+    /// 与网关鉴权头冲突的配置项被跳过（出站仍为网关值）。
+    #[tokio::test]
+    async fn test_execute_passthrough_request_injects_extra_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_header("x-tenant-id", "acme")
+            .match_header("authorization", "Bearer test-key-for-mockito")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"chatcmpl-hdr","object":"chat.completion","choices":[]}"#)
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "openai-hdr",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.extra_headers.insert("x-tenant-id".into(), "acme".into());
+        // 冲突项：出站 Authorization 必须仍为网关值（mockito 精确匹配锁定）
+        v.extra_headers
+            .insert("authorization".into(), "Bearer evil".into());
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let result = manager
+            .execute_passthrough_request("openai-hdr", serde_json::json!({"model":"gpt-4"}))
+            .await;
+
+        assert!(result.is_ok(), "expected success: {:?}", result.err());
         mock.assert_async().await;
     }
 
@@ -833,7 +871,7 @@ mod manager {
         mock.assert_async().await;
     }
 
-    /// 用例③（recId=5 tests）：流式 permit 生命周期 —— 并发 3 个流请求对
+    /// 用例③（tests）：流式 permit 生命周期 —— 并发 3 个流请求对
     /// max_concurrent_requests=2 的 vendor，第 3 个在前两个流结束前不得进入。
     /// permit move 进返回的 Stream（unfold 持有），流丢弃后才释放。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -912,7 +950,7 @@ mod manager {
         mock.assert_async().await;
     }
 
-    /// 用例④（recId=5 tests）：worker 顺序对调回归 —— 空闲 2s 后 rps=1 的
+    /// 用例④（tests）：worker 顺序对调回归 —— 空闲 2s 后 rps=1 的
     /// vendor 仍能立即提供服务，且 3 个顺序请求因桶速 1/s 各等 ~1s。
     /// 旧实现（先 acquire 后 recv）空闲期以 10 tok/s 空烧令牌，3 个请求
     /// 会立即通过（elapsed 接近 0）——本用例锁定新顺序下不被空烧。
@@ -984,7 +1022,7 @@ mod manager {
         }
     }
 
-    // ============ recId=4③ tests：metrics 覆盖全部执行路径 ============
+    // ============ tests：metrics 覆盖全部执行路径 ============
     // 此前唯一生产记账点在透传非流式 —— 转换路径（worker）与失败路径是盲区。
 
     mod metrics_paths {
@@ -1148,7 +1186,7 @@ mod manager {
         }
     }
 
-    // ======== recId=13：TimeWindow 时段门控（get_window_info 判定委托） ========
+    // ======== TimeWindow 时段门控（get_window_info 判定委托） ========
 
     /// 回归锁定：同日窗口外 get_window_info 仍返回 window_end: None
     /// （既有语义不回退；跨午夜窗口内的 window_end 精确次日时刻为进阶项）。
@@ -1190,7 +1228,7 @@ mod manager {
         );
     }
 
-    // ======== recId=4（W2）：出站 HTTP 超时治理 ========
+    // ======== 出站 HTTP 超时治理 ========
     //
     // 三层模型，每个参数 0 = 对应层不限时（逃生阀；u64 零值若被误当
     // Duration::from_millis(0) 语义是「立即超时」，必须显式跳过包裹）：
@@ -1412,7 +1450,7 @@ mod queue {
             request: sample_request(),
             response_tx: tx,
             enqueued_at: std::time::Instant::now(),
-            // recId=8：出队时刻由 VendorQueue::recv 盖戳，构造方恒 None
+            // 出队时刻由 VendorQueue::recv 盖戳，构造方恒 None
             dequeued_at: None,
         }
     }
@@ -1462,12 +1500,12 @@ mod queue {
         assert!(result.is_err(), "recv on empty queue should block");
     }
 
-    // recId=4②：QueueManager 死件已删除（全库无 insert 方，queue_factor 恒 1.0
+    // QueueManager 死件已删除（全库无 insert 方，queue_factor 恒 1.0
     // 的根因）；原 test_queue_manager_returns_none_for_missing_vendor 随之退役。
 }
 
 mod advanced_rate_limiter {
-    //! recId=5：AdvancedRateLimiter 新 API 测试。
+    //! AdvancedRateLimiter 新 API 测试。
     //! - check() 为非消费 peek（async）；consume_tokens 为 CAS 全有全无（async）
     //! - should_reset/reset 已删除：窗口由 limiteron FixedWindowLimiter
     //!   check_and_reset_window 惰性重置（用例①回归"永久 Throttled"缺陷）
@@ -1531,7 +1569,7 @@ mod advanced_rate_limiter {
 
     #[tokio::test]
     async fn test_token_consume_over_cap_rejects_atomically() {
-        // recId=5：CAS 全有全无 —— 剩余 10 请求扣 15 → 整体拒绝、分文未扣
+        // CAS 全有全无 —— 剩余 10 请求扣 15 → 整体拒绝、分文未扣
         let config = RateLimitConfig::Token {
             max_tokens: 10,
             window_hours: None,
@@ -1549,7 +1587,7 @@ mod advanced_rate_limiter {
         assert!(limiter.check().await, "budget untouched");
     }
 
-    /// 用例①（recId=5 tests）：Token 窗口耗尽 → check false → 假时钟推进过
+    /// 用例①（tests）：Token 窗口耗尽 → check false → 假时钟推进过
     /// 窗口 → check true。回归旧实现 should_reset 不匹配 Token 变体导致的
     /// "vendor 被路由永久排除"。
     #[tokio::test]
@@ -1578,7 +1616,7 @@ mod advanced_rate_limiter {
         );
     }
 
-    /// 用例②（recId=5 tests）：100 并发任务对 max=50 窗口各扣 1 → 成功数恰 50。
+    /// 用例②（tests）：100 并发任务对 max=50 窗口各扣 1 → 成功数恰 50。
     /// 锁定 FixedWindowLimiter CAS 原子消费，不允许 check-then-act 超卖。
     #[tokio::test]
     async fn test_concurrent_consume_is_atomic_at_window_cap() {
@@ -1681,7 +1719,7 @@ mod advanced_rate_limiter {
     }
 }
 
-// ======== recId=13：TimeWindow 时段门控跨午夜判定（纯函数） ========
+// ======== TimeWindow 时段门控跨午夜判定（纯函数） ========
 
 mod time_window {
     use chrono::NaiveTime;
@@ -1731,7 +1769,7 @@ mod time_window {
     }
 }
 
-// ============ recId=11：Token/Interval 滑动窗口（ShardedSlidingWindowLimiter）============
+// ============ Token/Interval 滑动窗口（ShardedSlidingWindowLimiter）============
 
 #[cfg(test)]
 mod sliding_window {
@@ -1818,7 +1856,7 @@ mod sliding_window {
         let (limit, used, reset_secs) = sliding.window_snapshot().await.expect("sliding snapshot");
         assert_eq!(limit, 10, "limit 与 fixed 同构");
         assert_eq!(used, 0);
-        // recId=11 评审修复（major）：空窗（零消费）以窗口全长上报——
+        // 评审修复：空窗（零消费）以窗口全长上报——
         // 原断言锁定 sharded 空窗 reset_secs=0（「即时恢复」语义），但
         // 该值经 get_window_info 映射为 window_end=now → is_ending_soon
         // 恒 true → 最健康的零消耗 vendor 永久 window_factor 0.5（方向
@@ -1854,7 +1892,7 @@ mod sliding_window {
     }
 }
 
-// ============ recId=18：token 加权并发票据 ============
+// ============ token 加权并发票据 ============
 
 #[cfg(test)]
 mod token_weighted_tickets {
@@ -2049,6 +2087,7 @@ mod token_weighted_tickets {
                 type_: "openai".into(),
                 api_key_env: "NEXUSFLOW_TEST_KEY".into(),
                 api_key_envs: Vec::new(),
+                extra_headers: Default::default(),
                 api_base,
                 enabled: true,
                 priority: 1,
@@ -2076,6 +2115,8 @@ mod token_weighted_tickets {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),

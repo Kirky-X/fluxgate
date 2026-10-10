@@ -16,6 +16,7 @@ vendor-upstream-error = 上游错误
 vendor-upstream-non-success = 上游厂商返回非成功状态
 vendor-stream-upstream-non-success = 流式上游返回非成功状态
 vendor-upstream-stream-interrupted = 上游流中断
+vendor-stream-cooldown = 厂商 { $vendor } 流中失败，冷却 { $cooldown_ms } 毫秒后重新参与路由
 vendor-token-quota-underflow = token 配额下溢：用量未记账（将超出窗口上限）
 vendor-pool-semaphore-closed = 连接池信号量已关闭: { $error }
 # ---- key_pool.rs（vendor 内 key 池）----

@@ -12,7 +12,7 @@
 //! 3. /v1/chat/completions 无 key → 401（认证层拦截）
 //!
 //! build_app 内部执行 init_global_state（OnceCell 二次 set 即 panic，
-//! 见 api/global_state.rs:22），故全部断言收敛在单一 #[tokio::test] 内。
+//! 见 api/global_state.rs），故全部断言收敛在单一 #[tokio::test] 内。
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -39,7 +39,7 @@ fn test_config() -> Config {
         server: ServerConfig {
             host: "127.0.0.1".into(),
             // build_app 只装配不 bind，但 SdForgeConfig 校验拒绝 port=0
-            // （sdforge/src/config/server.rs:47）；取非常规高位端口避免
+            // （sdforge/src/config/server.rs）；取非常规高位端口避免
             // 与开发环境 8080 冲突
             port: 18421,
         },

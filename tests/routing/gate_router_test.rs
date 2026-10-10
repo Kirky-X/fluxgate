@@ -199,6 +199,8 @@ mod tests {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
@@ -233,6 +235,8 @@ mod tests {
             routing: nexusflow::config::RoutingSection::default(),
             cache: nexusflow::config::CacheSection::default(),
             admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
@@ -286,7 +290,7 @@ mod tests {
     }
 }
 
-// ============ recId=4/10：queue_factor 真实队列 + 权重公式升级 ============
+// ============ queue_factor 真实队列 + 权重公式升级 ============
 
 #[cfg(test)]
 mod scheduling_weight {
@@ -327,7 +331,7 @@ mod scheduling_weight {
         }
     }
 
-    /// recId=4①：塞 pending 请求不取走 → get_queue_length>0，且真实
+    /// 塞 pending 请求不取走 → get_queue_length>0，且真实
     /// calculate_weight 相应下降（queue_factor 生效，不再是死因子）。
     ///
     /// 塞队列机制：vendor 并发上限 1，慢响应占住 permit，后续请求滞留
@@ -418,7 +422,7 @@ mod scheduling_weight {
         }
     }
 
-    /// recId=6：在途（in-flight）信号只在 load_signal 选中时生效。
+    /// 在途（in-flight）信号只在 load_signal 选中时生效。
     ///
     /// 机制（评审 issue#9b 采纳：VendorInstance 私有，测试走 manager 公共
     /// API）：busy vendor 并发上限 max_concurrent_requests=2，两条慢
@@ -559,7 +563,7 @@ mod scheduling_weight {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// recId=4②：同权重一忙一闲 → weighted_select_with 注入固定 seed
+    /// 同权重一忙一闲 → weighted_select_with 注入固定 seed
     /// StdRng，200 次选择分布偏向空闲侧且**逐位可复现**（不再依赖
     /// thread_rng）。忙闲差 = queue 0 vs 100 的 queue_factor 全幅。
     #[test]
@@ -620,7 +624,7 @@ mod scheduling_weight {
         }
     }
 
-    // ============ recId=10 tests：权重公式升级 ============
+    // ============ tests：权重公式升级 ============
 
     /// ① 系数 (1,0,0)：queue/window 因子完全不影响权重（纯函数断言）。
     #[test]
@@ -700,7 +704,7 @@ mod scheduling_weight {
 
     /// ④ temperature 平滑：T=2 压平差距，且**全链路恰好平滑一次**。
     ///
-    /// 评审修正回归（recId=10④）：此前 compute_weight 与
+    /// 评审修正回归：此前 compute_weight 与
     /// weighted_select_with 各平滑一次，等效 w^(1/T²)。本测试经生产链路
     /// calculate_weights→weighted_select_with（T=2）断言：
     /// - compute_weight 返回未平滑的因子加权和（1.0/4.0 → 0.85/2.05）；
@@ -779,7 +783,7 @@ mod scheduling_weight {
         let router = Router::new(config_manager.clone(), vendor_manager.clone());
 
         // 制造 EWMA 数据：heavy 忙（500ms）、light 闲（10ms）。
-        // recId=8 迁移：延迟 EWMA 只由 e2e 道喂入（record_request 已分道），
+        // 迁移：延迟 EWMA 只由 e2e 道喂入（record_request 已分道），
         // 单样本即种子——Peak-EWMA 同刻重复采样 Δt=0 → α=0 是 no-op。
         vendor_manager.metrics().record_e2e(
             "busy-vendor",
@@ -930,7 +934,7 @@ mod scheduling_weight {
         );
     }
 
-    // ============ recId=8③ tests：min+buffer 候选集 ============
+    // ============ tests：min+buffer 候选集 ============
 
     /// min+buffer 候选集：buffer=0.5、候选 e2e [100ms, 120ms, 500ms] →
     /// 阈值 100×1.5=150，500ms 者不入集合（即使其权重巨大、纯轮盘赌下
@@ -948,7 +952,7 @@ mod scheduling_weight {
         let mut slow = config_manager.get_vendor("idle-vendor").unwrap();
         slow.id = "slow-vendor".to_string();
 
-        // e2e 道（recId=8：候选集判定口径 = vendor_ewma_e2e 有样本）
+        // e2e 道（候选集判定口径 = vendor_ewma_e2e 有样本）
         let now = std::time::Instant::now();
         vendor_manager
             .metrics()
@@ -1080,7 +1084,7 @@ mod scheduling_weight {
     }
 }
 
-// ============ recId=11：会话/前缀亲和路由（oxcache 亲和表） ============
+// ============ 会话/前缀亲和路由（oxcache 亲和表） ============
 
 #[cfg(test)]
 mod session_affinity {
@@ -1205,7 +1209,7 @@ mod session_affinity {
 
         let misses_before = vm.metrics().snapshot().affinity_misses;
 
-        // vendor-a 进入排除态（公开同步 API；recId=2 已核实 limiteron CB
+        // vendor-a 进入排除态（公开同步 API；已核实 limiteron CB
         // 无公开 force API，不再引用 force_circuit_open）
         vm.update_status("vendor-a", VendorStatus::Unavailable);
 
@@ -1283,7 +1287,7 @@ mod session_affinity {
     }
 }
 
-// ============ recId=7（W5）：失败率软降权（failure_rate_gate） ============
+// ============ 失败率软降权（failure_rate_gate） ============
 
 #[cfg(test)]
 mod failure_rate_gate {
@@ -1404,7 +1408,7 @@ mod failure_rate_gate {
     }
 }
 
-// ============ recId=19：冷却与候选集的低成本判定改进包 ============
+// ============ 冷却与候选集的低成本判定改进包 ============
 
 #[cfg(test)]
 mod cooldown_improvements {
@@ -1456,7 +1460,7 @@ mod cooldown_improvements {
         (Arc::new(Router::new(cm, vm.clone())), vm)
     }
 
-    // ---- recId=19(a)：请求级权重 ----
+    // ---- 请求级权重 ----
 
     /// allow_request_weight 门控：开启透传 Some、关闭（默认）丢弃为 None。
     #[tokio::test]
@@ -1647,7 +1651,7 @@ mod cooldown_improvements {
         );
     }
 
-    // ---- recId=19(b)：fail-open 安全网 ----
+    // ---- fail-open 安全网 ----
 
     /// (b) 两 vendor 全 Throttled（Token max_tokens=0 → check() 恒假 →
     /// get_status Throttled）：门控关（默认）→ Validation 错误（现状）；
@@ -1690,7 +1694,7 @@ mod cooldown_improvements {
     }
 }
 
-// ============ recId=10：会话亲和软化（soft 模式）/ 键租户隔离 E2E ============
+// ============ 会话亲和软化（soft 模式）/ 键租户隔离 E2E ============
 
 #[cfg(test)]
 mod soft_affinity {
@@ -1890,7 +1894,7 @@ mod soft_affinity {
     }
 }
 
-// ============ recId=14：SLA/满意度虚拟队列打分项（SLARouter 零模型版）============
+// ============ SLA/满意度虚拟队列打分项（SLARouter 零模型版）============
 
 #[cfg(test)]
 mod sla_virtual_queue {
@@ -2221,7 +2225,7 @@ mod sla_virtual_queue {
     }
 }
 
-// ============ recId=15：LinUCB 选择档（selection 第三档）============
+// ============ LinUCB 选择档（selection 第三档）============
 
 #[cfg(test)]
 mod linucb_selection {
@@ -2504,7 +2508,7 @@ mod linucb_selection {
     }
 }
 
-// ============ recId=17：LPS 排队论延迟前瞻（软约束 + deadline 硬约束）============
+// ============ LPS 排队论延迟前瞻（软约束 + deadline 硬约束）============
 
 #[cfg(test)]
 mod lps_lookahead {

@@ -3,7 +3,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use crate::database::{LogFilter, RequestLog, TokenUsageRow, VendorStatusRecord};
+use crate::database::{
+    CostGroupBy, CostUsageRow, LogFilter, RequestLog, TokenUsageRow, VendorStatusRecord,
+};
 use crate::i18n::t_args;
 use dbnexus::{DbError, DbPool, Session};
 use sea_orm::{
@@ -36,9 +38,9 @@ pub(crate) fn schema_sql_for_backend(backend: DatabaseBackend) -> &'static str {
 /// schema 初始化单一实现（`Database::new` 与 `Repository::initialize` 共用）。
 ///
 /// sqlite/postgres/mysql 走 dbnexus
-/// `MigrationExecutor` 版本化迁移（V1，见 `crate::database::migration`）；
+/// `MigrationExecutor` 版本化迁移（V1..=V2，见 `crate::database::migration`）；
 /// 其余后端（`DatabaseBackend` 非穷尽扩展）回落旧逐语句 DDL。
-/// MySQL 索引仍由 `ensure_indexes_mysql` 幂等创建（MySQL 8 无
+/// MySQL 普通索引仍由 `ensure_indexes_mysql` 幂等创建（MySQL 8 无
 /// `CREATE INDEX IF NOT EXISTS`，迁移重放必须幂等）。v0.1 列回填
 /// （`migrate_v0_1_columns`）保持在迁移之后——存量库基线化的一部分。
 /// 迁移失败直接返回 Err（`Database::new` 转启动 fail-fast，无静默降级）。
@@ -51,7 +53,7 @@ pub(crate) async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
     };
     match backend {
         DatabaseBackend::Postgres | DatabaseBackend::MySql | DatabaseBackend::Sqlite => {
-            crate::database::migration::apply_core_v1(pool).await?;
+            crate::database::migration::apply_core_migrations(pool).await?;
         }
         _ => {
             let session = pool.get_session("admin").await?;
@@ -87,18 +89,25 @@ async fn migrate_v0_1_columns(session: &Session, backend: DatabaseBackend) -> Re
     };
     Repository::ensure_column_exists(session, backend, "request_logs", "cost_usd", cost_type)
         .await?;
-    Repository::ensure_column_exists(session, backend, "token_usage", "cost_usd_sum", cost_type)
-        .await?;
     Ok(())
 }
 
 /// MySQL 索引幂等创建：`information_schema.statistics` 查存在性，缺则建。
+/// 含 WP9 成本查询索引（idx_token_usage_date / idx_token_usage_key_date，
+/// 与 sqlite/postgres 的 V2 UP 内联索引同语义；MySQL 无
+/// `CREATE INDEX IF NOT EXISTS` 故统一走本探针）。
 async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> {
-    const INDEXES: [(&str, &str, &str); 4] = [
+    const INDEXES: [(&str, &str, &str); 6] = [
         ("idx_timestamp", "request_logs", "timestamp"),
         ("idx_vendor", "request_logs", "actual_vendor"),
         ("idx_model", "request_logs", "abstract_model"),
         ("idx_request_id", "request_logs", "request_id"),
+        ("idx_token_usage_date", "token_usage", "date"),
+        (
+            "idx_token_usage_key_date",
+            "token_usage",
+            "api_key_hash, date",
+        ),
     ];
     for (index, table, column) in INDEXES {
         let exists_sql = format!(
@@ -203,7 +212,7 @@ impl Repository {
         Ok(())
     }
 
-    /// recId:G4 单事务参数化批量写入 — N 条 INSERT 包在一个 dbnexus 事务里
+    /// 单事务参数化批量写入 — N 条 INSERT 包在一个 dbnexus 事务里
     /// commit（SQLite 每事务一次 fsync，N 次 fsync 合为 1 次），与旧 sea-orm
     /// `begin()` 绕道语义等价（单事务批量 + 提交），但全程走 dbnexus 会话
     /// 防御链（权限解析/慢查询指标/事务感知）。
@@ -384,6 +393,88 @@ impl Repository {
         Ok(rows.iter().map(map_token_usage).collect())
     }
 
+    /// 成本分账聚合查询（WP9）：按 vendor 或 model 分组，对四类 token 与
+    /// 分项成本求和。`from`/`to` 为 `YYYY-MM-DD` 日期闭区间（None = 不限）；
+    /// `api_key_hash` 为请求方 key 摘要过滤（None = 不限）。空窗口返回空集。
+    /// 分组列白名单枚举（调用方已校验，SQL 插值安全）。
+    pub async fn query_cost_usage(
+        &self,
+        from: Option<&str>,
+        to: Option<&str>,
+        group_by: CostGroupBy,
+        api_key_hash: Option<&str>,
+    ) -> Result<Vec<CostUsageRow>, DbError> {
+        let dimension = match group_by {
+            CostGroupBy::Vendor => "vendor",
+            CostGroupBy::Model => "model",
+        };
+        let mut sql = format!(
+            "SELECT {dimension} AS dimension, \
+             SUM(request_count) AS request_count, SUM(input_tokens) AS input_tokens, \
+             SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, \
+             SUM(cache_creation_tokens) AS cache_creation_tokens, SUM(input_cost) AS input_cost, \
+             SUM(output_cost) AS output_cost, SUM(cache_read_cost) AS cache_read_cost, \
+             SUM(cache_creation_cost) AS cache_creation_cost \
+             FROM token_usage"
+        );
+        let mut values: Vec<Value> = Vec::new();
+        let mut clauses: Vec<String> = Vec::new();
+        if let Some(from) = from {
+            clauses.push("date >= ?".to_string());
+            values.push(from.into());
+        }
+        if let Some(to) = to {
+            clauses.push("date <= ?".to_string());
+            values.push(to.into());
+        }
+        if let Some(hash) = api_key_hash {
+            clauses.push("api_key_hash = ?".to_string());
+            values.push(hash.into());
+        }
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+        sql.push_str(&format!(" GROUP BY {dimension} ORDER BY {dimension}"));
+
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let stmt = Statement::from_sql_and_values(conn.get_database_backend(), &sql, values);
+        let rows = conn.query_all_raw(stmt).await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let input_cost: f64 = row.try_get("", "input_cost").unwrap_or_default();
+                let output_cost: f64 = row.try_get("", "output_cost").unwrap_or_default();
+                let cache_read_cost: f64 = row.try_get("", "cache_read_cost").unwrap_or_default();
+                let cache_creation_cost: f64 =
+                    row.try_get("", "cache_creation_cost").unwrap_or_default();
+                let dimension: String = row.try_get("", "dimension").unwrap_or_default();
+                let (vendor, model) = match group_by {
+                    CostGroupBy::Vendor => (Some(dimension), None),
+                    CostGroupBy::Model => (None, Some(dimension)),
+                };
+                CostUsageRow {
+                    vendor,
+                    model,
+                    request_count: row.try_get("", "request_count").unwrap_or_default(),
+                    input_tokens: row.try_get("", "input_tokens").unwrap_or_default(),
+                    output_tokens: row.try_get("", "output_tokens").unwrap_or_default(),
+                    cache_read_tokens: row.try_get("", "cache_read_tokens").unwrap_or_default(),
+                    cache_creation_tokens: row
+                        .try_get("", "cache_creation_tokens")
+                        .unwrap_or_default(),
+                    input_cost,
+                    output_cost,
+                    cache_read_cost,
+                    cache_creation_cost,
+                    total_cost: input_cost + output_cost + cache_read_cost + cache_creation_cost,
+                }
+            })
+            .collect())
+    }
+
     pub async fn get_all_vendor_status(&self) -> Result<Vec<VendorStatusRecord>, DbError> {
         let sql = "SELECT * FROM vendor_status ORDER BY vendor";
         let session = self.pool.get_session("admin").await?;
@@ -435,17 +526,32 @@ fn map_request_log(row: &QueryResult) -> RequestLog {
 }
 
 fn map_token_usage(row: &QueryResult) -> TokenUsageRow {
+    let input: i64 = row.try_get("", "input_tokens").unwrap_or_default();
+    let output: i64 = row.try_get("", "output_tokens").unwrap_or_default();
+    let cache_read: i64 = row.try_get("", "cache_read_tokens").unwrap_or_default();
+    let cache_creation: i64 = row.try_get("", "cache_creation_tokens").unwrap_or_default();
+    let input_cost: f64 = row.try_get("", "input_cost").unwrap_or_default();
+    let output_cost: f64 = row.try_get("", "output_cost").unwrap_or_default();
+    let cache_read_cost: f64 = row.try_get("", "cache_read_cost").unwrap_or_default();
+    let cache_creation_cost: f64 = row.try_get("", "cache_creation_cost").unwrap_or_default();
     TokenUsageRow {
         id: row.try_get::<Option<i64>>("", "id").unwrap_or(None),
         vendor: row.try_get("", "vendor").unwrap_or_default(),
         model: row.try_get("", "model").unwrap_or_default(),
+        api_key_hash: row.try_get("", "api_key_hash").unwrap_or_default(),
         date: row.try_get("", "date").unwrap_or_default(),
         hour: row.try_get("", "hour").unwrap_or_default(),
         request_count: row.try_get("", "request_count").unwrap_or_default(),
-        total_tokens: row.try_get("", "total_tokens").unwrap_or_default(),
-        prompt_tokens: row.try_get("", "prompt_tokens").unwrap_or_default(),
-        completion_tokens: row.try_get("", "completion_tokens").unwrap_or_default(),
-        cost_usd_sum: row.try_get("", "cost_usd_sum").unwrap_or_default(),
+        total_tokens: input + output + cache_read + cache_creation,
+        prompt_tokens: input,
+        completion_tokens: output,
+        cost_usd_sum: input_cost + output_cost + cache_read_cost + cache_creation_cost,
+        cache_read_tokens: cache_read,
+        cache_creation_tokens: cache_creation,
+        input_cost,
+        output_cost,
+        cache_read_cost,
+        cache_creation_cost,
     }
 }
 
@@ -575,13 +681,18 @@ mod schema_tests {
                     "id",
                     "vendor",
                     "model",
+                    "api_key_hash",
                     "date",
                     "hour",
                     "request_count",
-                    "total_tokens",
-                    "prompt_tokens",
-                    "completion_tokens",
-                    "cost_usd_sum",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_tokens",
+                    "cache_creation_tokens",
+                    "input_cost",
+                    "output_cost",
+                    "cache_read_cost",
+                    "cache_creation_cost",
                 ],
             ),
             (

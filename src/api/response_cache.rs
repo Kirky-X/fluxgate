@@ -3,8 +3,8 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 精确响应缓存 — 存储落地 oxcache（缓存库已就位必须用它，
-//! 绝不手写 HashMap 缓存）。
+//! 精确响应缓存 — 存储与并发去重均落地 oxcache（缓存库已就位必须用它，
+//! 绝不手写 HashMap 缓存 / 在途表）。
 //!
 //! - 键 `resp:{api_key_sha256}:{vendor_id}:{model_id}:{sha256(canonical_body)}`：
 //!   vendor+model+完整 canonical body 入键防错命中；调用方 API key 的
@@ -16,34 +16,46 @@
 //!   确定性请求查/写；`X-No-Cache: 1` 请求头强制回源（Cloudflare 语义，
 //!   兼容 `X-Skip-Cache` 别名）；
 //! - enabled/TTL 热读 `[cache]` 段（默认关闭，TTL 默认 300s）；
+//! - single-flight（并发去重）：由 oxcache `Cache::get_or_with_ttl` 承载
+//!   （64 路分片注册表、watch 唤醒、`AsyncSfGuard` panic/早退安全），
+//!   入口 [`ResponseCache::get_or_response`]。与退役手写版的已知行为
+//!   差异及缓解（design.md 钉住、测试承载）：
+//!   - 差异 A（等待模型）：follower 在 watch 上无超时等待（手写版 30s
+//!     超时窃取领导权自行回源）→ 闭包内 `timeout(DISPATCH_TIMEOUT)` 钳制
+//!     leader 派发：超时转 Err 放行 followers，等价恢复「30s 自愈」；
+//!     4096 在途表硬界随注册表删除（分片条目完成即移除，生命周期 ≤ 单
+//!     请求派发时长）。
+//!   - 差异 B（失败传播）：leader 失败 → followers 得
+//!     `OxCacheError::L1Error`（leader-not-cached 标记）不回源 → 调用侧
+//!     （`get_or_response`）自愈回源一次，恢复手写版窃取语义，错误不透传
+//!     客户端；leader 自身派发错误经 err_cell 原样传播。
 //! - 语义缓存不在本条范围（依赖运行期日志数据，二期顺延）。
 
 use crate::config::{CacheSection, ConfigManager};
+use crate::error::{GateError, NexusFlowError};
 use crate::utils::metrics::GlobalMetrics;
 use axum::http::HeaderMap;
 use oxcache::backend::CacheBackend;
+use oxcache::OxCacheError;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-/// 空值哨兵（与 oxcache `NULL_SENTINEL` 逐字节一致，互操作备用）。
-const NULL_SENTINEL_BYTES: &[u8] = b"\x00OXNULL";
+/// get_or 闭包内派发的超时钳制（设计差异 A 缓解）：oxcache follower 在
+/// watch 上无超时等待，释放仅取决于 leader future 的完成/panic/早退——
+/// 闭包内以此时长上限包裹派发：leader 超时转 Err → `AsyncSfGuard` 放行
+/// followers，等价恢复手写版「30s 自愈回源」，leader 永久挂起面亦被
+/// 钳制（覆盖上游 P99 时延）。
+const DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// follower 等待 leader 回写的最长时长。超限后窃取领导权自行上游
-///（安全降级，不永久挂起）；覆盖上游 P99 时延。
-const FOLLOWER_WAIT: Duration = Duration::from_secs(30);
+/// leader 闭包内派发失败的库错误携带标记（原始 `NexusFlowError` 经
+/// err_cell 原样取回，见 [`ResponseCache::get_or_response`]）。
+const LEADER_DISPATCH_FAILED: &str = "nexusflow:leader-dispatch-failed";
 
-/// 在途表上限：失败路径（上游错误不调 `store`）的条目靠超时窃取自愈，
-/// 上限保证最坏内存有界；超限的新 Miss 不登记直接上游（正确性不变，
-/// 只损失本次去重）。
-/// 在途 Miss 条目（leader 占位；`store()` 成功/失败都必须经
-/// `finish_flight` 释放，否则 followers 至多等一个 `FOLLOWER_WAIT`）。
-struct InFlightEntry {
-    notify: Arc<tokio::sync::Notify>,
-    since: Instant,
-}
+/// leader 闭包内派发超时的库错误携带标记（映射 `GateError::Timeout`）。
+const LEADER_DISPATCH_TIMEOUT: &str = "nexusflow:leader-dispatch-timeout";
 
 /// 响应缓存键前缀 — 与亲和表的 `affinity:` 命名空间隔离
 pub const RESPONSE_KEY_PREFIX: &str = "resp:";
@@ -138,16 +150,19 @@ pub fn skip_cache_requested(headers: &HeaderMap) -> bool {
 /// 从热配置现读。
 #[derive(Clone)]
 pub struct ResponseCache {
-    backend: Arc<dyn CacheBackend + Send + Sync>,
+    /// 存储本体 — oxcache `Cache<String, Value>`（JSON 序列化面，`Arc`
+    /// 包裹使结构体保持 `Clone`——库侧 Cache 未实现 Clone）：
+    /// `get_or` single-flight 注册表（64 路分片）、watch 唤醒、
+    /// AsyncSfGuard panic/早退安全均由库承载。库侧 `ttl_jitter_factor`
+    /// 构建期显式置 0——TTL 抖动是消费侧策略（`[cache].ttl_jitter`
+    /// 热读，见 [`Self::apply_ttl_jitter`]），置 0 防「配置抖动 + 库
+    /// 默认 0.1」双重抖动。
+    cache: Arc<oxcache::Cache<String, Value>>,
     config: Arc<ConfigManager>,
     /// 全局指标 — TTL 负载联动的 L_p（vendor_ewma 的
     /// ewma_e2e_ms）与 Q（traffic_shares 份额）来源；比 VendorManager
     /// 更轻的依赖面。
     metrics: Arc<GlobalMetrics>,
-    /// single-flight：在途 Miss 注册表（键 → leader 通知器）。`Arc` 包
-    /// 装使结构体保持 `Clone`。临界区无 `.await`，用
-    /// `std::sync::Mutex`（tokio Mutex 过重）。
-    in_flight: Arc<std::sync::Mutex<HashMap<String, InFlightEntry>>>,
 }
 
 /// 缓存键中与 vendor/model 无关的维度（评审修复 major#2：Miss 不再携带
@@ -160,9 +175,6 @@ pub struct CacheKeyParts {
     pub api_key_hash: String,
     /// canonical body 字符串（键序无关的确定性序列化）
     pub canonical: String,
-    /// single-flight 代际令牌：`store()` 只删除
-    /// 同代占位，防止慢 leader 误删窃取者的新条目；仅本模块构造。
-    pub(crate) flight: Option<Arc<tokio::sync::Notify>>,
 }
 
 /// 单次缓存查询结果
@@ -185,17 +197,58 @@ impl CacheOutcome {
     }
 }
 
+/// 回写键的最终路由维度（评审修复 major#2：resilience 换路成功后以
+/// **最终成功服务者**的 vendor/model 组装键——初始候选键回写会把
+/// vendor-b 的响应写进 vendor-a 的键，跨 vendor 污染）。由消费侧
+/// （handler）对其路由决策实现——response_cache 不反向依赖 router
+/// 类型（mod 接口隔离）。
+pub trait FinalRoute {
+    fn vendor_id(&self) -> &str;
+    fn model_id(&self) -> &str;
+}
+
+/// [`ResponseCache::get_or_response`] 的闭包流结果——替代原
+/// `cache_probe` → `cache_hit_response` → `persist_cache_miss` 三段。
+#[derive(Debug)]
+pub struct CacheFlow<R> {
+    /// 响应体（leader 计算值 / follower 复用值 / 未参与时的直派发值）
+    pub value: Value,
+    /// 最终成功路由：`Some` = 本次闭包派发产出（leader / 自愈回源 /
+    /// 未参与缓存的直派发）；`None` = 缓存复用（快速路径命中 / follower
+    /// 复用）——调用方以其**初始**路由决策收尾（与手写版
+    /// `cache_hit_response` 同口径）。
+    pub final_route: Option<R>,
+    /// 是否由本次请求计算（X-Cache 语义）：`true` = leader 或自愈回源
+    /// → MISS；`false` = 缓存复用 → HIT。
+    pub computed: bool,
+    /// 是否走了缓存面：`false` = 未接线 / [cache] 关闭 / 不可缓存 /
+    /// X-No-Cache / 空 canonical——响应不带 X-Cache 头。
+    pub participated: bool,
+}
+
 impl ResponseCache {
     pub fn new(
         backend: Arc<dyn CacheBackend + Send + Sync>,
         config: Arc<ConfigManager>,
         metrics: Arc<GlobalMetrics>,
     ) -> Self {
+        // 单后端 + 无 service_name：builder 唯一拒绝路径（多后端/空
+        // service）不成立，expect 为构建期不可能失败而非吞错。
+        // 用 builder 而非 `Cache::with_dependencies`：后者固定库侧
+        // ttl_jitter_factor=0.1，会把默认关闭的 `[cache].ttl_jitter`
+        // 悄悄打开（store 行为不再逐位不变）；builder 显式置 0 后
+        // 抖动策略单一来源留在消费侧（apply_ttl_jitter）。
+        let cache = Arc::new(
+            oxcache::Cache::<String, Value>::builder()
+                .backend_arc(backend)
+                .ttl_jitter(0.0)
+                .build_sync()
+                .expect("single-backend CacheBuilder build cannot fail"),
+        );
         Self {
-            backend,
+            cache,
             config,
             metrics,
-            in_flight: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -206,7 +259,7 @@ impl ResponseCache {
 
     /// 后端可用性探针（G7 就绪检查用）：`health_check` 透传，错误转字符串。
     pub async fn probe_backend(&self) -> Result<(), String> {
-        self.backend.health_check().await.map_err(|e| e.to_string())
+        self.cache.health_check().await.map_err(|e| e.to_string())
     }
 
     /// TTL 三段式 —
@@ -279,12 +332,12 @@ impl ResponseCache {
         (l_term + q_term).clamp(0.0, 1.0)
     }
 
-    /// 查询缓存。返回 [`CacheOutcome`]：Disabled（不参与）/ Hit（缓存值，
-    /// 含空哨兵命中的 `Hit(Null)`）/ Miss（leader：上游调用后由 [`Self::store`]
-    /// 以最终 vendor/model 组装完整键回写）。
+    /// 查询缓存（低层直读原语）。返回 [`CacheOutcome`]：Disabled（不参与）/
+    /// Hit（缓存值，含负缓存命中的 `Hit(Null)`）/ Miss（携带键的租户与
+    /// body 维度，回写由 [`Self::store`] 以最终 vendor/model 组装完整键）。
     ///
-    /// single-flight：同 key 并发 Miss 只放行第一个（leader），其余
-    /// follower 等待 leader 回写后复用——N 并发同 key 上游只调用 1 次。
+    /// 生产路径的并发去重（single-flight）由 [`Self::get_or_response`] 经
+    /// oxcache `get_or_with_ttl` 承载——本原语只读不写、不去重。
     /// 查询键以调用方传入的 vendor_id/model_id 组装（初始路由候选）；
     /// resilience 换路成功后回写键由 [`Self::store`] 以最终候选重建
     ///（评审修复 major#2）。
@@ -305,115 +358,13 @@ impl ResponseCache {
         let parts = CacheKeyParts {
             api_key_hash: cache_api_key_hash(headers),
             canonical,
-            flight: None,
         };
         let key = response_cache_key(&parts.api_key_hash, vendor_id, model_id, &parts.canonical);
-        match self.backend.get(&key).await {
-            Ok(Some(bytes)) => Self::decode_bytes(&bytes, parts),
-            _ => self.dedup_miss(key, parts).await,
-        }
-    }
-
-    /// 后端字节解码：空哨兵 → `Hit(Null)`（短窗口内不再穿透）；损坏值
-    /// 视为 Miss（下次成功后覆盖）。
-    fn decode_bytes(bytes: &[u8], parts: CacheKeyParts) -> CacheOutcome {
-        if bytes == NULL_SENTINEL_BYTES {
-            return CacheOutcome::Hit(Value::Null);
-        }
-        match serde_json::from_slice::<Value>(bytes) {
-            Ok(cached) => CacheOutcome::Hit(cached),
-            Err(_) => CacheOutcome::Miss(parts),
-        }
-    }
-
-    /// Miss 去重：首个 Miss 登记为 leader（调用方上游）；并发同 key 为
-    /// follower，等待 leader `store()` 后重读复用。leader 崩溃（无 store）
-    /// 时 follower 超时后窃取领导权，不永久挂起；远古泄漏条目直接窃取。
-    async fn dedup_miss(&self, key: String, mut parts: CacheKeyParts) -> CacheOutcome {
-        const MAX_IN_FLIGHT: usize = 4096;
-        let (notify, is_leader) = {
-            let mut guard = self
-                .in_flight
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            match guard.get(&key) {
-                Some(entry) if entry.since.elapsed() < FOLLOWER_WAIT => {
-                    (entry.notify.clone(), false)
-                }
-                _ => {
-                    if guard.len() >= MAX_IN_FLIGHT && !Self::evict_one_stale(&mut guard) {
-                        // 有界降级：不登记，直接上游（见常量注释）
-                        return CacheOutcome::Miss(parts);
-                    }
-                    let notify = Arc::new(tokio::sync::Notify::new());
-                    guard.insert(
-                        key.clone(),
-                        InFlightEntry {
-                            notify: notify.clone(),
-                            since: Instant::now(),
-                        },
-                    );
-                    (notify, true)
-                }
-            }
-        };
-        if is_leader {
-            parts.flight = Some(notify);
-            return CacheOutcome::Miss(parts);
-        }
-        let _ = tokio::time::timeout(FOLLOWER_WAIT, notify.notified()).await;
-        match self.backend.get(&key).await {
-            Ok(Some(bytes)) => Self::decode_bytes(bytes.as_ref(), parts),
-            _ => {
-                let notify = Arc::new(tokio::sync::Notify::new());
-                self.in_flight
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(
-                        key,
-                        InFlightEntry {
-                            notify: notify.clone(),
-                            since: Instant::now(),
-                        },
-                    );
-                parts.flight = Some(notify);
-                CacheOutcome::Miss(parts)
-            }
-        }
-    }
-
-    /// 释放指定键的在途占位并唤醒 followers。代际令牌一致才删除——慢
-    /// leader 不得误删窃取者的新条目；令牌缺失
-    /// （未登记的 Miss）时按旧语义无条件删（无条目即 no-op）。
-    async fn finish_flight(&self, key: &str, flight: Option<&Arc<tokio::sync::Notify>>) {
-        let mut guard = self
-            .in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let remove = match (guard.get(key), flight) {
-            (Some(entry), Some(token)) => Arc::ptr_eq(&entry.notify, token),
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-        if remove {
-            if let Some(entry) = guard.remove(key) {
-                entry.notify.notify_waiters();
-            }
-        }
-    }
-
-    /// 驱逐一个超期未认领的在途条目（满表时自清洁）；无可驱逐返回 false。
-    fn evict_one_stale(map: &mut HashMap<String, InFlightEntry>) -> bool {
-        let stale = map
-            .iter()
-            .find(|(_, e)| e.since.elapsed() >= FOLLOWER_WAIT)
-            .map(|(k, _)| k.clone());
-        match stale {
-            Some(k) => {
-                map.remove(&k);
-                true
-            }
-            None => false,
+        // 直读经 `Cache::get`（库序列化面解出 Value）：Err（损坏值）按
+        // Miss 重源——下次成功写覆盖，与手写 decode 期语义一致。
+        match self.cache.get(&key).await {
+            Ok(Some(value)) => CacheOutcome::Hit(value),
+            Ok(None) | Err(_) => CacheOutcome::Miss(parts),
         }
     }
 
@@ -437,9 +388,8 @@ impl ResponseCache {
     /// vendor 维度 L_p/Q）；存取失败静默降级——缓存故障不得影响请求成功率）。
     ///
     /// 写入 TTL 叠加 `ttl_jitter` 对称抖动（同批键过期不齐峰，关闭时
-    /// 精确）；Null 响应写空哨兵（`null_cache_ttl_secs` 短窗口，窗口内
-    /// check 直接 `Hit(Null)` 不再穿透）。回写后释放 single-flight 占位
-    ///（失败路径同样释放，followers 不永久挂起）。
+    /// 精确）；Null 响应写 JSON null 值（`null_cache_ttl_secs` 短窗口，
+    /// 窗口内 check 直接 `Hit(Null)` 不再穿透）。
     pub async fn store(
         &self,
         parts: &CacheKeyParts,
@@ -448,30 +398,246 @@ impl ResponseCache {
         response: &Value,
     ) {
         let key = response_cache_key(&parts.api_key_hash, vendor_id, model_id, &parts.canonical);
-        if response.is_null() {
-            let ttl = Duration::from_secs(self.config.read().cache.null_cache_ttl_secs.max(1));
-            let _ = self
-                .backend
-                .set(
-                    Arc::from(key.clone()),
-                    Arc::new(NULL_SENTINEL_BYTES.to_vec()),
-                    Some(ttl),
-                )
-                .await;
-            self.finish_flight(&key, parts.flight.as_ref()).await;
-            return;
-        }
-        if let Ok(bytes) = serde_json::to_vec(response) {
-            let ttl = self.ttl(vendor_id, model_id);
+        // Null 响应 = JSON null 值（负缓存：窗口内 check 得 Hit(Null)
+        // 不再穿透），短窗口 TTL；非 Null 三段式 TTL + 配置抖动
+        // （库侧因子已置 0，见 new()）。
+        let ttl = if response.is_null() {
+            Duration::from_secs(self.config.read().cache.null_cache_ttl_secs.max(1))
+        } else {
             let factor = self.config.read().cache.ttl_jitter;
             let uniform = rand::random::<f64>() * 2.0 - 1.0;
-            let ttl = Self::apply_ttl_jitter(ttl, factor, uniform);
-            let _ = self
-                .backend
-                .set(Arc::from(key.clone()), Arc::new(bytes), Some(ttl))
-                .await;
+            Self::apply_ttl_jitter(self.ttl(vendor_id, model_id), factor, uniform)
+        };
+        // 写路径经 `Cache::set_with_ttl`（库序列化 + 写路径指标/审计）
+        let _ = self.cache.set_with_ttl(&key, response, Some(ttl)).await;
+    }
+
+    /// get_or 闭包流 — single-flight 由 oxcache `Cache::get_or_with_ttl`
+    /// 承载（64 路分片注册表 + watch 唤醒 + `AsyncSfGuard` panic/早退
+    /// 安全），替代手写在途表：同 key 并发只放行第一个（leader）执行
+    /// `dispatch` 闭包，其余订阅其完成信号后复用缓存值。
+    ///
+    /// 已知行为差异与缓解（design.md 钉住）：
+    /// - 差异 A（等待模型）：follower 在 watch 上无超时等待、无 4096
+    ///   在途表硬界——闭包内 `timeout(DISPATCH_TIMEOUT)` 钳制派发
+    ///   恢复「30s 自愈」：leader 超时转 Err 放行 followers；分片表
+    ///   条目完成即移除，无上界（生命周期 ≤ 单请求派发时长）。
+    /// - 差异 B（失败传播）：leader 失败 → followers 重读未命中得
+    ///   `L1Error(leader-not-cached)`——调用侧（本方法）自愈回源一次
+    ///   （恢复手写版窃取语义，不透传客户端）；leader 自身派发错误经
+    ///   err_cell 原样映射 `NexusFlowError` 传播。
+    ///
+    /// 换路场景（major#2）：闭包成功后以**最终**路由维度写完整键，
+    /// `get_or` 返回后删除初始候选键的库侧写入（毫秒级残余窗口内晚到
+    /// follower 重读落空，走自愈回源——见 design Consequences）。
+    pub async fn get_or_response<R, F, Fut>(
+        &self,
+        headers: &HeaderMap,
+        vendor_id: &str,
+        model_id: &str,
+        body: &Value,
+        dispatch: F,
+    ) -> Result<CacheFlow<R>, NexusFlowError>
+    where
+        R: FinalRoute,
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<(Value, R), NexusFlowError>>,
+    {
+        // 门控与手写 check 同口径：未参与 = 闭包直派发（不经库、无超时）
+        let participate =
+            self.enabled() && !skip_cache_requested(headers) && is_cacheable_request(body);
+        let canonical = if participate {
+            canonical_body(body)
+        } else {
+            String::new()
+        };
+        if !participate || canonical.is_empty() {
+            let (value, route) = dispatch().await?;
+            return Ok(CacheFlow {
+                value,
+                final_route: Some(route),
+                computed: false,
+                participated: false,
+            });
         }
-        self.finish_flight(&key, parts.flight.as_ref()).await;
+
+        let api_key_hash = cache_api_key_hash(headers);
+        let initial_key = response_cache_key(&api_key_hash, vendor_id, model_id, &canonical);
+        let ttl = self.ttl(vendor_id, model_id);
+        // computed：闭包被执行 = 本次计算（leader / 自愈回源）→ X-Cache: MISS
+        let computed = Arc::new(AtomicBool::new(false));
+        let final_key_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let route_cell: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
+        let err_cell: Arc<Mutex<Option<NexusFlowError>>> = Arc::new(Mutex::new(None));
+
+        // 闭包经共享引用伴生（&F 为 Copy）：自愈回源路径还要再调一次
+        let dispatch_ref = &dispatch;
+        let leader_fut = {
+            let computed = Arc::clone(&computed);
+            let final_key_cell = Arc::clone(&final_key_cell);
+            let route_cell = Arc::clone(&route_cell);
+            let err_cell = Arc::clone(&err_cell);
+            let api_key_hash = api_key_hash.clone();
+            let canonical = canonical.clone();
+            async move {
+                computed.store(true, Ordering::SeqCst);
+                match tokio::time::timeout(DISPATCH_TIMEOUT, dispatch_ref()).await {
+                    Ok(Ok((value, route))) => {
+                        let final_key = self
+                            .write_final_key(&api_key_hash, &canonical, &route, &value)
+                            .await;
+                        *final_key_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(final_key);
+                        *route_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(route);
+                        Ok(value)
+                    }
+                    Ok(Err(e)) => {
+                        // 派发错误经 cell 伴生传递：原始 NexusFlowError 由
+                        // 外层原样取回（不丢错误类型），库错误仅作占位标记
+                        *err_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
+                        Err(OxCacheError::Operation(LEADER_DISPATCH_FAILED.to_string()))
+                    }
+                    Err(_elapsed) => {
+                        Err(OxCacheError::Operation(LEADER_DISPATCH_TIMEOUT.to_string()))
+                    }
+                }
+            }
+        };
+
+        // 完整初始候选键 + TTL 去重；闭包内换路后以最终键回写（库侧对
+        // 返回值的初始键写入由返回后的 delete 清理——见 match 臂）
+        let outcome = self
+            .cache
+            .get_or_with_ttl(&initial_key, Some(ttl), || leader_fut)
+            .await;
+
+        match outcome {
+            Ok(value) => {
+                let final_key = final_key_cell
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(final_key) = final_key {
+                    if final_key != initial_key {
+                        let _ = self.cache.delete(&initial_key).await;
+                    }
+                }
+                Ok(CacheFlow {
+                    value,
+                    final_route: route_cell.lock().unwrap_or_else(|e| e.into_inner()).take(),
+                    computed: computed.load(Ordering::SeqCst),
+                    participated: true,
+                })
+            }
+            Err(e) => {
+                // leader 自身错误：原始 NexusFlowError 原样传播
+                if let Some(original) = err_cell.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    return Err(original);
+                }
+                // leader 超时：504 语义（派发被 DISPATCH_TIMEOUT 钳制）
+                if Self::is_dispatch_timeout(&e) {
+                    return Err(NexusFlowError::Gate(GateError::Timeout {
+                        vendor: vendor_id.to_string(),
+                    }));
+                }
+                // 差异 B（leader-not-cached 标记）· 其余库侧错误（如损坏
+                // 值反序列化失败）：自愈回源一次——缓存故障不得影响请求
+                // 成功率（模块不变量），错误不透传客户端
+                if Self::is_leader_not_cached(&e) {
+                    tracing::debug!(
+                        vendor = %vendor_id,
+                        "response cache: leader-not-cached, follower self-heals from upstream"
+                    );
+                } else {
+                    tracing::debug!(
+                        vendor = %vendor_id,
+                        error = %e,
+                        "response cache: library fault, dispatching directly"
+                    );
+                }
+                self.redispatch_and_write(dispatch_ref, &api_key_hash, &canonical, &initial_key)
+                    .await
+            }
+        }
+    }
+
+    /// 自愈回源（差异 B / 库侧故障降级）：直接派发一次，成功后以最终
+    /// 路由维度写完整键并清理初始键——恢复手写版「窃取回源」语义。
+    async fn redispatch_and_write<R, F, Fut>(
+        &self,
+        dispatch: &F,
+        api_key_hash: &str,
+        canonical: &str,
+        initial_key: &str,
+    ) -> Result<CacheFlow<R>, NexusFlowError>
+    where
+        R: FinalRoute,
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<(Value, R), NexusFlowError>>,
+    {
+        let (value, route) = dispatch().await?;
+        let final_key = self
+            .write_final_key(api_key_hash, canonical, &route, &value)
+            .await;
+        if final_key != initial_key {
+            let stale_key: String = initial_key.to_owned();
+            let _ = self.cache.delete(&stale_key).await;
+        }
+        Ok(CacheFlow {
+            value,
+            final_route: Some(route),
+            computed: true,
+            participated: true,
+        })
+    }
+
+    /// 以最终路由维度写完整键（major#2）并返回该键。TTL 与 [`Self::store`]
+    /// 同口径（Null 短窗口；非 Null 三段式 + 配置抖动）；存取失败静默
+    /// 降级——缓存故障不得影响请求成功率。
+    async fn write_final_key<R: FinalRoute>(
+        &self,
+        api_key_hash: &str,
+        canonical: &str,
+        route: &R,
+        value: &Value,
+    ) -> String {
+        let final_key =
+            response_cache_key(api_key_hash, route.vendor_id(), route.model_id(), canonical);
+        let ttl = if value.is_null() {
+            Duration::from_secs(self.config.read().cache.null_cache_ttl_secs.max(1))
+        } else {
+            let factor = self.config.read().cache.ttl_jitter;
+            let uniform = rand::random::<f64>() * 2.0 - 1.0;
+            Self::apply_ttl_jitter(
+                self.ttl(route.vendor_id(), route.model_id()),
+                factor,
+                uniform,
+            )
+        };
+        let _ = self.cache.set_with_ttl(&final_key, value, Some(ttl)).await;
+        final_key
+    }
+
+    /// 库侧 follower 标记（get_or leader 未回写）：`OxCacheError` 公开
+    /// 变体 `L1Error` + 消息常量 `MSG_DETAIL_GET_OR_LEADER_NOT_CACHED`
+    /// 的当前 locale 渲染。以库公开面断言——库升级改文案/常量时由
+    /// `leader_not_cached_marker_matches_library_constant` 测试暴露漂移。
+    fn is_leader_not_cached(err: &OxCacheError) -> bool {
+        matches!(
+            err,
+            OxCacheError::L1Error(msg)
+                if msg == &oxcache::i18n::messages::t(
+                    oxcache::i18n::messages::MSG_DETAIL_GET_OR_LEADER_NOT_CACHED,
+                    &[]
+                )
+        )
+    }
+
+    /// 闭包内派发超时的库错误携带标记（`LEADER_DISPATCH_TIMEOUT`）。
+    fn is_dispatch_timeout(err: &OxCacheError) -> bool {
+        matches!(
+            err,
+            OxCacheError::Operation(msg) if msg == LEADER_DISPATCH_TIMEOUT
+        )
     }
 }
 
@@ -882,55 +1048,10 @@ mod single_flight_and_sentinel_tests {
         );
     }
 
-    /// N=8 并发同 key：仅 leader 见 Miss（上游 1 次），followers 全部复用
-    /// 回写 Hit；回写后新检查直接 Hit。
-    #[tokio::test]
-    async fn concurrent_same_key_upstream_runs_once() {
-        let cache = enabled_cache();
-        let body = test_body();
-        let headers = HeaderMap::new();
-
-        let CacheOutcome::Miss(parts) = cache.check(&headers, "v", "m", &body).await else {
-            panic!("leader 首次检查必须 Miss");
-        };
-        let mut handles = Vec::new();
-        for _ in 0..8 {
-            let c = cache.clone();
-            let b = body.clone();
-            handles.push(tokio::spawn(async move {
-                c.check(&HeaderMap::new(), "v", "m", &b).await
-            }));
-        }
-        // 让 followers 全部 park 到 leader 条目上
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let response = serde_json::json!({"id": "r1"});
-        cache.store(&parts, "v", "m", &response).await;
-
-        let mut hits = 0;
-        for h in handles {
-            match tokio::time::timeout(Duration::from_secs(5), h)
-                .await
-                .expect("join 超时")
-                .expect("任务 panic")
-            {
-                CacheOutcome::Hit(v) => {
-                    assert_eq!(v, response);
-                    hits += 1;
-                }
-                other => panic!("follower 必须复用 leader 回写，got {other:?}"),
-            }
-        }
-        assert_eq!(hits, 8, "8 个并发 followers 全部 Hit（上游只 1 次）");
-
-        let outcome = cache.check(&headers, "v", "m", &body).await;
-        assert!(
-            matches!(outcome, CacheOutcome::Hit(_)),
-            "回写后新检查直接 Hit"
-        );
-    }
-
-    /// 空响应写哨兵：窗口内 check 直接 Hit(Null) 不再穿透；后端存的是
-    /// 哨兵字节而非值。
+    /// 空响应负缓存：窗口内 check 直接 Hit(Null) 不再穿透；后端存的是
+    /// JSON null 值（经 `Cache::set_with_ttl` 序列化面落库）。
+    /// （N=8 并发同 key 的 single-flight 语义已随去重层迁移至 oxcache
+    /// `get_or_with_ttl`，见 `get_or_flow_tests` 的八并发测试。）
     #[tokio::test]
     async fn null_response_is_negative_cached() {
         let cache = enabled_cache();
@@ -949,13 +1070,16 @@ mod single_flight_and_sentinel_tests {
         );
 
         let key = response_cache_key(&parts.api_key_hash, "v", "m", &parts.canonical);
-        let bytes = cache
-            .backend
+        // 负缓存载体 = JSON null 值（经 `Cache::set_with_ttl` 序列化面
+        // 落库，`Cache::get` 解出即 Null）——旧手写哨兵字节随存储面
+        // 切库下线，行为（窗口内 Hit(Null)）不变。
+        let stored = cache
+            .cache
             .get(&key)
             .await
             .expect("backend 读")
-            .expect("哨兵必须落盘");
-        assert_eq!(bytes.as_slice(), b"\x00OXNULL".as_slice());
+            .expect("负缓存必须落值");
+        assert_eq!(stored, Value::Null);
     }
 
     /// 哨兵窗口过期后允许再次穿透（负缓存是短窗口，不是永久屏蔽）。
@@ -989,6 +1113,353 @@ mod single_flight_and_sentinel_tests {
                 CacheOutcome::Miss(_)
             ),
             "窗口过期后允许再次穿透"
+        );
+    }
+}
+
+#[cfg(test)]
+mod get_or_flow_tests {
+    //! get_or 闭包流（single-flight 由 oxcache `get_or_with_ttl` 承载）：
+    //! 并发同键上游仅 1 次、leader 失败 follower 自愈回源、leader 超时
+    //! followers 放行、库标记匹配。T002 行为钉住。
+
+    use super::*;
+    use crate::config::Config;
+    use std::sync::atomic::AtomicUsize;
+
+    fn make_cache(cache: CacheSection) -> ResponseCache {
+        let config = Config {
+            rate_limit: Default::default(),
+            server: crate::config::ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            database: crate::config::DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+                url: String::new(),
+            },
+            vendors: vec![],
+            global_model: None,
+            pricing: vec![],
+            model_catalog: Vec::new(),
+            auth: None,
+            cors: None,
+            retry: Default::default(),
+            routing: Default::default(),
+            cache,
+            admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
+            grpc: None,
+            resilience: Default::default(),
+            docs: Default::default(),
+        };
+        ResponseCache::new(
+            Arc::new(oxcache::backend::default_memory_backend()),
+            Arc::new(crate::config::ConfigManager::new(config)),
+            Arc::new(crate::utils::metrics::GlobalMetrics::new()),
+        )
+    }
+
+    fn enabled_cache() -> ResponseCache {
+        make_cache(CacheSection {
+            enabled: true,
+            ttl_secs: 300,
+            ..Default::default()
+        })
+    }
+
+    fn test_body() -> Value {
+        serde_json::json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+    }
+
+    /// 测试用最终路由维度（消费侧实现 [`FinalRoute`]）
+    #[derive(Debug, Clone)]
+    struct TestRoute {
+        vendor: String,
+        model: String,
+    }
+
+    impl FinalRoute for TestRoute {
+        fn vendor_id(&self) -> &str {
+            &self.vendor
+        }
+        fn model_id(&self) -> &str {
+            &self.model
+        }
+    }
+
+    fn route(vendor: &str, model: &str) -> TestRoute {
+        TestRoute {
+            vendor: vendor.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    /// 差异 B/库标记：leader-not-cached 断言以库公开错误变体 + 消息常量
+    /// 为准——库升级改文案/常量时本测试暴露漂移。
+    #[test]
+    fn leader_not_cached_marker_matches_library_constant() {
+        let marked = OxCacheError::L1Error(oxcache::i18n::messages::t(
+            oxcache::i18n::messages::MSG_DETAIL_GET_OR_LEADER_NOT_CACHED,
+            &[],
+        ));
+        assert!(
+            ResponseCache::is_leader_not_cached(&marked),
+            "库标记必须命中（变体 L1Error + 消息常量渲染）"
+        );
+        // 异变体 / 异消息不得误判
+        assert!(!ResponseCache::is_leader_not_cached(
+            &OxCacheError::NotFound("k".into())
+        ));
+        assert!(!ResponseCache::is_leader_not_cached(
+            &OxCacheError::L1Error("unrelated".into())
+        ));
+    }
+
+    /// N=8 并发同 key：仅 leader 闭包执行（上游 1 次），followers 复用
+    /// 回写值；computed 标志 leader=true（MISS）、follower=false（HIT）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn get_or_eight_concurrent_same_key_upstream_runs_once() {
+        let cache = enabled_cache();
+        let body = test_body();
+        let upstream_calls = Arc::new(AtomicUsize::new(0));
+        // watch 同步（保有版本号，无 Notify 丢唤醒）：leader 进闭包 / 放行
+        let (entered_tx, entered_rx) = tokio::sync::watch::channel(());
+        let (release_tx, release_rx) = tokio::sync::watch::channel(());
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let body = body.clone();
+            let upstream_calls = Arc::clone(&upstream_calls);
+            let entered_tx = entered_tx.clone();
+            let release_rx = release_rx.clone();
+            handles.push(tokio::spawn(async move {
+                let dispatch = move || {
+                    let upstream_calls = Arc::clone(&upstream_calls);
+                    let entered_tx = entered_tx.clone();
+                    let mut release_rx = release_rx.clone();
+                    async move {
+                        upstream_calls.fetch_add(1, Ordering::SeqCst);
+                        let _ = entered_tx.send(());
+                        // leader 在闭包内挂起，保证 followers 全部订阅后再放行
+                        let _ = release_rx.changed().await;
+                        Ok((serde_json::json!({"id": "r1"}), route("v-g1", "m")))
+                    }
+                };
+                cache
+                    .get_or_response(&HeaderMap::new(), "v-g1", "m", &body, dispatch)
+                    .await
+            }));
+        }
+
+        // leader 已进闭包；再等 200ms 保证 followers 全部 park 到注册表
+        let mut entered_rx = entered_rx;
+        let _ = tokio::time::timeout(Duration::from_secs(5), entered_rx.changed()).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = release_tx.send(());
+
+        let mut leader_count = 0;
+        let mut follower_count = 0;
+        for h in handles {
+            let flow = tokio::time::timeout(Duration::from_secs(10), h)
+                .await
+                .expect("join 超时")
+                .expect("任务 panic")
+                .expect("get_or 不得 Err");
+            assert_eq!(flow.value, serde_json::json!({"id": "r1"}));
+            assert!(flow.participated, "8 并发同 key 均参与缓存");
+            if flow.computed {
+                leader_count += 1;
+                assert!(flow.final_route.is_some(), "leader 携带最终路由");
+            } else {
+                follower_count += 1;
+                assert!(
+                    flow.final_route.is_none(),
+                    "follower 复用不携带路由（调用方用初始决策收尾）"
+                );
+            }
+        }
+        assert_eq!(
+            upstream_calls.load(Ordering::SeqCst),
+            1,
+            "8 并发同 key 上游只调用 1 次"
+        );
+        assert_eq!(leader_count, 1, "恰一个 leader（X-Cache: MISS）");
+        assert_eq!(follower_count, 7, "7 个 follower 复用（X-Cache: HIT）");
+    }
+
+    /// 差异 B 缓解：leader 派发失败（上游错误不写缓存）→ followers 得
+    /// L1Error leader-not-cached 标记，自愈回源一次成功（恢复手写版
+    /// 窃取语义，错误不透传客户端）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn get_or_leader_failure_follower_self_heals_from_upstream() {
+        let cache = enabled_cache();
+        let body = test_body();
+        let upstream_calls = Arc::new(AtomicUsize::new(0));
+        // watch 同步（保有版本号，无 Notify 丢唤醒）
+        let (entered_tx, entered_rx) = tokio::sync::watch::channel(());
+        let (release_tx, release_rx) = tokio::sync::watch::channel(());
+
+        // leader：闭包返回 Err（上游失败）
+        let leader_cache = cache.clone();
+        let leader_body = body.clone();
+        let leader: tokio::task::JoinHandle<Result<CacheFlow<TestRoute>, NexusFlowError>> = {
+            let upstream_calls = Arc::clone(&upstream_calls);
+            let entered_tx = entered_tx.clone();
+            let release_rx = release_rx.clone();
+            tokio::spawn(async move {
+                let dispatch = move || {
+                    let upstream_calls = Arc::clone(&upstream_calls);
+                    let entered_tx = entered_tx.clone();
+                    let mut release_rx = release_rx.clone();
+                    async move {
+                        upstream_calls.fetch_add(1, Ordering::SeqCst);
+                        let _ = entered_tx.send(());
+                        let _ = release_rx.changed().await;
+                        Err(NexusFlowError::Gate(GateError::VendorUnavailable {
+                            vendor: "v".into(),
+                        }))
+                    }
+                };
+                leader_cache
+                    .get_or_response(&HeaderMap::new(), "v-g2", "m", &leader_body, dispatch)
+                    .await
+            })
+        };
+
+        // 等 leader 进闭包后再起 follower——注册表条目已存在，必为 follower
+        let mut entered_rx = entered_rx;
+        let _ = tokio::time::timeout(Duration::from_secs(5), entered_rx.changed()).await;
+        let follower_cache = cache.clone();
+        let follower = {
+            let upstream_calls = Arc::clone(&upstream_calls);
+            tokio::spawn(async move {
+                let dispatch = move || {
+                    let upstream_calls = Arc::clone(&upstream_calls);
+                    async move {
+                        upstream_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok((serde_json::json!({"id": "healed"}), route("v-g2", "m")))
+                    }
+                };
+                follower_cache
+                    .get_or_response(&HeaderMap::new(), "v-g2", "m", &body, dispatch)
+                    .await
+            })
+        };
+
+        let _ = release_tx.send(());
+
+        let leader_result = tokio::time::timeout(Duration::from_secs(10), leader)
+            .await
+            .expect("leader join 超时")
+            .expect("leader 任务 panic");
+        assert!(
+            matches!(
+                leader_result,
+                Err(NexusFlowError::Gate(GateError::VendorUnavailable { .. }))
+            ),
+            "leader 自身派发错误原样传播，got {leader_result:?}"
+        );
+
+        let follower_flow = tokio::time::timeout(Duration::from_secs(10), follower)
+            .await
+            .expect("follower join 超时")
+            .expect("follower 任务 panic")
+            .expect("follower 自愈回源必须成功（不永久挂起、不透传库错误）");
+        assert_eq!(follower_flow.value, serde_json::json!({"id": "healed"}));
+        assert!(
+            follower_flow.computed,
+            "自愈回源 = 本次计算（X-Cache: MISS，同手写版窃取者语义）"
+        );
+        assert!(follower_flow.participated);
+        assert_eq!(
+            upstream_calls.load(Ordering::SeqCst),
+            2,
+            "leader 失败 1 次 + follower 自愈 1 次"
+        );
+    }
+
+    /// 差异 A 缓解：闭包内 timeout 钳制派发——leader 超时（sleep 31s >
+    /// DISPATCH_TIMEOUT 30s，paused clock 虚拟推进）→ AsyncSfGuard 放行
+    /// followers；leader 得 504 超时错误，follower 自愈回源成功。
+    #[tokio::test(start_paused = true)]
+    async fn get_or_leader_timeout_releases_followers_without_hang() {
+        let cache = enabled_cache();
+        let body = test_body();
+        let upstream_calls = Arc::new(AtomicUsize::new(0));
+        // watch 同步（有版本号、无定时器依赖，paused clock 下不受
+        // auto-advance 抢跑影响）
+        let (entered_tx, entered_rx) = tokio::sync::watch::channel(());
+
+        let leader_cache = cache.clone();
+        let leader_body = body.clone();
+        let leader: tokio::task::JoinHandle<Result<CacheFlow<TestRoute>, NexusFlowError>> = {
+            let upstream_calls = Arc::clone(&upstream_calls);
+            let entered_tx = entered_tx.clone();
+            tokio::spawn(async move {
+                let dispatch = move || {
+                    let upstream_calls = Arc::clone(&upstream_calls);
+                    let entered_tx = entered_tx.clone();
+                    async move {
+                        upstream_calls.fetch_add(1, Ordering::SeqCst);
+                        let _ = entered_tx.send(());
+                        // 超过 DISPATCH_TIMEOUT(30s)：paused clock 下虚拟推进即触发
+                        tokio::time::sleep(Duration::from_secs(31)).await;
+                        Ok((serde_json::json!({"id": "late"}), route("v-g3", "m")))
+                    }
+                };
+                leader_cache
+                    .get_or_response(&HeaderMap::new(), "v-g3", "m", &leader_body, dispatch)
+                    .await
+            })
+        };
+
+        // 等 leader 进闭包后再起 follower——注册表条目已存在，必为 follower
+        let mut entered_rx = entered_rx;
+        let _ = entered_rx.changed().await;
+        let follower_cache = cache.clone();
+        let follower = {
+            let upstream_calls = Arc::clone(&upstream_calls);
+            tokio::spawn(async move {
+                let dispatch = move || {
+                    let upstream_calls = Arc::clone(&upstream_calls);
+                    async move {
+                        upstream_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok((serde_json::json!({"id": "healed"}), route("v-g3", "m")))
+                    }
+                };
+                follower_cache
+                    .get_or_response(&HeaderMap::new(), "v-g3", "m", &body, dispatch)
+                    .await
+            })
+        };
+
+        let leader_result = tokio::time::timeout(Duration::from_secs(120), leader)
+            .await
+            .expect("leader join 超时")
+            .expect("leader 任务 panic");
+        assert!(
+            matches!(
+                leader_result,
+                Err(NexusFlowError::Gate(GateError::Timeout { .. }))
+            ),
+            "leader 派发超时 → 504 语义错误，got {leader_result:?}"
+        );
+
+        let follower_flow = tokio::time::timeout(Duration::from_secs(120), follower)
+            .await
+            .expect("follower join 超时")
+            .expect("follower 任务 panic")
+            .expect("follower 被放行后自愈回源必须成功");
+        assert_eq!(follower_flow.value, serde_json::json!({"id": "healed"}));
+        assert!(follower_flow.computed);
+        assert_eq!(
+            upstream_calls.load(Ordering::SeqCst),
+            2,
+            "leader 超时 1 次 + follower 自愈 1 次"
         );
     }
 }

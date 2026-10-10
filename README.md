@@ -68,7 +68,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>安全认证</b><br><span style="color:#64748B">API Key 仅存 SHA256 摘要、常量时间比较；上游密钥只存环境变量名；吊销/轮换经配置热更新立即生效</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>响应缓存</b><br><span style="color:#64748B">精确响应缓存（oxcache 存储），租户 + 厂商 + 请求体指纹键，TTL 分级乘数与负载联动，<code>X-No-Cache: 1</code> 强制回源</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>响应缓存</b><br><span style="color:#64748B">精确响应缓存（oxcache 存储），租户 + 厂商 + 请求体指纹键，TTL 分级乘数与负载联动，并发去重（single-flight）由 oxcache <code>get_or</code> 承载，<code>X-No-Cache: 1</code> 强制回源</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>请求日志与预聚合</b><br><span style="color:#64748B">异步批量写 SQLite（满载丢弃计数不阻塞响应），Token 用量按 (厂商, 模型, 日期, 小时) 预聚合 UPSERT</span></td>
@@ -345,7 +345,7 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
 ## ⚡ 性能设计
 
-当前未发布官方基准数据（路线图已列入），以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 arc-swap 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
+当前未发布官方基准数据（路线图已列入），以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 arc-swap 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载（响应缓存的并发 single-flight 亦由 oxcache `get_or` 注册表/watch 唤醒承载，派发经 30s 超时钳制、leader 失败 follower 自愈回源）。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
 
 ---
 
@@ -470,7 +470,7 @@ NexusFlow 通过 Cargo path 依赖集成以下本地源码库（需同级目录�
 | [dbnexus](https://github.com/Kirky-X/dbnexus) | SQLite 持久化（连接池 / 批量事务 / kit 集成） |
 | [inklog](https://github.com/Kirky-X/inklog) | 结构化日志（HTTP / CLI / SQLite） |
 | [limiteron](https://github.com/Kirky-X/limiteron) | 限流 / 熔断 / 重试原语 |
-| [oxcache](https://github.com/Kirky-X/oxcache) | 统一缓存 API（会话亲和与响应缓存存储层） |
+| [oxcache](https://github.com/Kirky-X/oxcache) | 统一缓存 API（会话亲和与响应缓存存储层 + single-flight 去重） |
 | [sdforge](https://github.com/Kirky-X/sdforge) | HTTP 服务框架（`#[forge]` 宏 / 路由注册） |
 | [trait-kit](https://github.com/Kirky-X/trait-kit) | DI 容器（AsyncKit，4 module 拓扑组装） |
 

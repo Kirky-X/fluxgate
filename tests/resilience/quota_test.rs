@@ -53,7 +53,7 @@ const ACTUAL_USAGE: (u64, u64) = (3, 2);
 const ACTUAL_USAGE_BODY: &str = r#"{"id":"q","object":"chat.completion","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#;
 
 /// 本文件既有用例保持「目录未登记 → `[[pricing]]` 回退」的档源形态（回归
-/// 锚：T012/叠加用例的期望数值不因成本档源改造而变）。
+/// 锚：叠加用例的期望数值不因成本档源改造而变）。
 fn no_catalog() -> Vec<ModelCatalogEntry> {
     Vec::new()
 }

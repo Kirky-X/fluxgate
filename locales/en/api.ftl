@@ -12,6 +12,11 @@ admin-model-deleted = model { $model } removed from the catalog
 admin-vendor-updated = Vendor updated
 admin-global-model-updated = Global model config updated
 admin-only-global-model-supported = Only 'global' model config is supported
+# ---- admin.rs /admin/cost 成本分账查询 ----
+admin-cost-group-by-invalid = group_by (must be vendor|model)
+admin-cost-date-format-invalid = { $name } (must be YYYY-MM-DD)
+admin-cost-usage-sink-unwired = usage sink is not wired; cost usage unavailable
+admin-vendor-reset-unknown-vendor = vendor '{ $id }' (unknown vendor)
 
 # ---- router_builder.rs ----
 router-rate-limit-exceeded = Rate limit exceeded
@@ -32,6 +37,17 @@ api-log-push-rejected = request log push rejected: { $error }
 api-usage-record-rejected = token usage record rejected: { $error }
 api-embeddings-openai-only = Embeddings only supported for OpenAI vendors
 
+# ---- api/response_cache.rs ----
+api-response-cache-leader-not-cached = response cache: leader-not-cached, follower self-heals from upstream
+api-response-cache-library-fault = response cache: library fault, dispatching directly
+
+# ---- api/count_tokens.rs / api/route_explain.rs ----
+api-count-tokens-model-invalid = model (missing or not a string)
+api-count-tokens-messages-invalid = messages (missing or not an array)
+api-count-tokens-messages-empty = messages (must not be empty)
+api-route-explain-model-invalid = model (missing or not a string)
+api-route-explain-model-unknown = model '{ $model }' (unknown model)
+
 # ---- 不变量 panic 文案（api/{anthropic,openai}.rs 最终路由 / api/route_explain.rs 入选者字段）----
 api-final-route-missing = leader/self-heal/non-participant path closure must produce a final route
 api-explain-no-factors = eligible candidate must carry a weight-factor breakdown
@@ -41,3 +57,9 @@ api-explain-no-selection = eligible candidate must carry a selection tier
 
 # ---- api/health.rs（#[forge] description，经 sdforge::i18n::register_translation 运行时注册） ----
 api-health-description = Health check endpoint
+
+# ---- api/openapi_docs.rs（OpenAPI description，经 sdforge::i18n::register_translation 运行时注册） ----
+api-openapi-models-list-description = Union of model catalog and enabled vendor models, deduplicated. Never cached.
+api-openapi-count-tokens-description = Approximate input token estimation (chars/4 + per-message overhead, deterministic).
+api-openapi-route-explain-description = Read-only per-candidate routing assessment (reason codes + weight breakdown).
+api-openapi-cost-usage-description = Aggregated token and cost ledger grouped by vendor or model, with optional time window and API key filter.

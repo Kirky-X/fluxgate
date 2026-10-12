@@ -116,7 +116,6 @@ impl RequestCredential {
     }
 
     /// 池命中时的 key 指纹；`LegacyEnv` 为 `None`（用 vendor 级熔断器）。
-    #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
     pub(crate) fn fingerprint(&self) -> Option<&str> {
         match self {
             RequestCredential::Pool { fingerprint, .. } => Some(fingerprint),
@@ -465,7 +464,7 @@ impl KeyPool {
     }
 
     /// 路由热路径用：只读当前指纹（不触 env、不写快照、不产生日志）；池空返回 `None`。
-    #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
+    #[cfg_attr(not(feature = "resilience"), allow(dead_code))] // 仅 resilience 组合的熔断聚合/选路读取
     pub(crate) fn peek_current_fingerprint(&self) -> Option<String> {
         if let Some(inline) = self.inline.lock().unwrap().clone() {
             return (!inline.keys.is_empty()).then(|| {

@@ -8,6 +8,9 @@
 #[cfg(feature = "vendor-management")]
 pub mod metrics;
 pub mod retry;
+// 租户身份辅助：消费面全在 api/middleware（web-server），且依赖 axum/sha2/hex
+// 均为 web-server 面的直接依赖——随 web-server 门控，避免精简组合拉入缺席依赖。
+#[cfg(feature = "web-server")]
 pub mod tenant;
 pub mod tokens;
 

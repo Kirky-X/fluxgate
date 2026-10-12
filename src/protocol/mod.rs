@@ -10,8 +10,12 @@ pub mod embedding_converter;
 pub mod openai_converter;
 pub mod sse_frame;
 pub mod unified;
+// usage 提数单源：消费面仅 api/middleware（web-server），内部模块无跨特性复用，
+// 随 web-server 门控——特性缺位时既不构成未用导入，也不产生死代码告警。
+#[cfg(feature = "web-server")]
 pub(crate) mod usage;
 
+#[cfg(feature = "web-server")]
 pub(crate) use usage::parse_usage_detailed;
 
 pub use anthropic_converter::{AnthropicConverter, AnthropicStreamEncoder};

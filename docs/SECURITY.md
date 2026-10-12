@@ -276,9 +276,12 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 | 门禁 | 命令/动作 | 执行时机 |
 |:-----|:----------|:---------|
 | 格式检查 | `cargo fmt --check --all` | 每次 push / PR |
-| 静态检查 | `cargo clippy --all-features -- -D warnings` | 每次 push / PR |
-| 依赖漏洞扫描 | `cargo audit`（actions-rs/audit-check） | 每次 push / PR + **每日定时**（cron `0 0 * * *`） |
-| 全量测试 | `cargo test --all-features --all` | 每次 push / PR |
+| 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings` | 每次 push / PR |
+| 编译检查 | `cargo check --workspace` + 非默认后端特性矩阵（`cargo check -p nexusflow --no-default-features --features "full,db-postgres"` / `"full,db-mysql"`） | 每次 push / PR |
+| 依赖漏洞扫描 | `cargo audit`（`taiki-e/install-action` 安装后直接运行） | 每次 push / PR + **每日定时**（cron `0 0 * * *`） |
+| 全量测试 | `cargo test --workspace` | 每次 push / PR |
+
+特性口径：default 携带 `full + db-sqlite`；db-* 三组后端互斥由 dbnexus 编译期守卫强制（见 [CONTRIBUTING](./CONTRIBUTING.md)），`--all-features` 会同时打开三组而必然编译失败——这是预期行为，门禁一律按 default 口径执行，非默认后端由上面的特性矩阵逐包检查（与 `ci.yml` 逐字一致）。
 
 镜像构建与 Trivy 扫描未纳入 CI，本机构建命令见 [USER_GUIDE · Docker 部署](./USER_GUIDE.md#-docker-部署)。镜像现为纯 registry 依赖（自研库经 crates.io 拉取，不取兄弟库源码），可独立构建；`docker/Dockerfile` 亦已移除兄弟库克隆与 `SIBLING_PINS` 机制。
 

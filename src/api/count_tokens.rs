@@ -9,6 +9,7 @@
 //! 统一错误体系；model 存在性不校验（估计与注册无关）
 
 use crate::error::{GateError, NexusFlowError};
+use crate::i18n::t;
 use crate::utils::estimate_messages_tokens;
 use crate::ApiState;
 use axum::{extract::State, Json};
@@ -22,18 +23,18 @@ pub async fn count_tokens(
 ) -> Result<Json<Value>, NexusFlowError> {
     if body.get("model").and_then(Value::as_str).is_none() {
         return Err(NexusFlowError::from(GateError::Validation {
-            field: "model (missing or not a string)".into(),
+            field: t("api-count-tokens-model-invalid"),
         }));
     }
     match body.get("messages").and_then(Value::as_array) {
         None => {
             return Err(NexusFlowError::from(GateError::Validation {
-                field: "messages (missing or not an array)".into(),
+                field: t("api-count-tokens-messages-invalid"),
             }));
         }
         Some(messages) if messages.is_empty() => {
             return Err(NexusFlowError::from(GateError::Validation {
-                field: "messages (must not be empty)".into(),
+                field: t("api-count-tokens-messages-empty"),
             }));
         }
         Some(_) => {}

@@ -7,6 +7,8 @@
 //! 文档路由由 [docs].enabled 开关挂载（默认 false = 404）——开关本身即
 //! 访问门（打开后免认证免限流，spec 非敏感）
 
+use std::sync::Once;
+
 /// OpenAPI 版本号（全条目统一；升级大版本时改此处一处）。
 const OPENAPI_VERSION: &str = "v1";
 
@@ -17,6 +19,36 @@ macro_rules! submit_route {
             sdforge::openapi::OpenApiRouteInfo::new(
                 $path, $method, $summary, $desc, OPENAPI_VERSION, $tags
             )
+        }
+    };
+}
+
+/// 提交简单条目（无路径参数）并登记描述翻译键。
+///
+/// `#[forge]` 宏不可用（手工 `inventory::submit!` 属 const 上下文），
+/// 故直接构造 `OpenApiRouteInfo` 填入 `i18n_key`：spec 生成期经
+/// `sdforge::i18n::translate_or_fallback` 按当前 locale 查表，未注册的键
+/// 回落编译期英文 `description`（见 [`register_openapi_i18n`]）。
+macro_rules! submit_route_i18n {
+    ($path:expr, $method:expr, $summary:expr, $desc:expr, $tags:expr, $i18n_key:expr) => {
+        sdforge::inventory::submit! {
+            sdforge::openapi::OpenApiRouteInfo {
+                path: $path,
+                method: $method,
+                summary: $summary,
+                description: $desc,
+                version: OPENAPI_VERSION,
+                tags: $tags,
+                path_params: &[],
+                success_status: None,
+                body_params: &[],
+                response_type: None,
+                response_schema: None,
+                i18n_key: Some($i18n_key),
+                deprecated: false,
+                sunset: None,
+                successor: None,
+            }
         }
     };
 }
@@ -38,6 +70,55 @@ macro_rules! submit_route_with_id {
             )
         }
     };
+}
+
+/// OpenAPI 条目描述翻译注册进 sdforge 运行时翻译注册表（幂等，建站期触发）；
+/// en/zh 字面量与 locales/{en,zh}/api.ftl 同源，两处同步维护
+static REGISTER_OPENAPI_I18N: Once = Once::new();
+
+pub(crate) fn register_openapi_i18n() {
+    REGISTER_OPENAPI_I18N.call_once(|| {
+        sdforge::i18n::register_translation(
+            "en",
+            "api-openapi-models-list-description",
+            "Union of model catalog and enabled vendor models, deduplicated. Never cached.",
+        );
+        sdforge::i18n::register_translation(
+            "zh",
+            "api-openapi-models-list-description",
+            "模型目录与已启用厂商模型的并集，去重；不缓存",
+        );
+        sdforge::i18n::register_translation(
+            "en",
+            "api-openapi-count-tokens-description",
+            "Approximate input token estimation (chars/4 + per-message overhead, deterministic).",
+        );
+        sdforge::i18n::register_translation(
+            "zh",
+            "api-openapi-count-tokens-description",
+            "近似输入 token 估算（字符数/4 + 每条消息结构开销，确定性）",
+        );
+        sdforge::i18n::register_translation(
+            "en",
+            "api-openapi-route-explain-description",
+            "Read-only per-candidate routing assessment (reason codes + weight breakdown).",
+        );
+        sdforge::i18n::register_translation(
+            "zh",
+            "api-openapi-route-explain-description",
+            "只读的逐候选路由评估（原因码 + 权重分解）",
+        );
+        sdforge::i18n::register_translation(
+            "en",
+            "api-openapi-cost-usage-description",
+            "Aggregated token and cost ledger grouped by vendor or model, with optional time window and API key filter.",
+        );
+        sdforge::i18n::register_translation(
+            "zh",
+            "api-openapi-cost-usage-description",
+            "按厂商或模型聚合的 token 与成本分账，支持可选时间窗与 API key 过滤",
+        );
+    });
 }
 
 // OpenAI 兼容面
@@ -62,33 +143,37 @@ submit_route!(
     "Unified embeddings API across vendors.",
     &["openai"]
 );
-submit_route!(
+submit_route_i18n!(
     "/v1/models",
     "GET",
     "OpenAI models list",
     "Union of model catalog and enabled vendor models, deduplicated. Never cached.",
-    &["openai"]
+    &["openai"],
+    "api-openapi-models-list-description"
 );
-submit_route!(
+submit_route_i18n!(
     "/v1/messages/count_tokens",
     "POST",
     "Anthropic token count",
     "Approximate input token estimation (chars/4 + per-message overhead, deterministic).",
-    &["anthropic"]
+    &["anthropic"],
+    "api-openapi-count-tokens-description"
 );
-submit_route!(
+submit_route_i18n!(
     "/admin/route/explain",
     "POST",
     "Route explanation",
     "Read-only per-candidate routing assessment (reason codes + weight breakdown).",
-    &["admin"]
+    &["admin"],
+    "api-openapi-route-explain-description"
 );
-submit_route!(
+submit_route_i18n!(
     "/admin/cost",
     "GET",
     "Cost ledger query",
     "Aggregated token and cost ledger grouped by vendor or model, with optional time window and API key filter.",
-    &["admin"]
+    &["admin"],
+    "api-openapi-cost-usage-description"
 );
 // 管理面
 submit_route!(
@@ -209,3 +294,40 @@ submit_route!(
     "RED metrics in Prometheus text exposition format.",
     &["health"]
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 描述翻译键与 inventory 条目对齐，且 en/zh 两档在 sdforge 注册表可解析：
+    /// 注册缺失或键名手误时 spec 静默回落编译期英文，翻译不生效——在此钉住。
+    #[test]
+    fn openapi_descriptions_resolve_for_en_and_zh() {
+        register_openapi_i18n();
+        for (path, key) in [
+            ("/v1/models", "api-openapi-models-list-description"),
+            (
+                "/v1/messages/count_tokens",
+                "api-openapi-count-tokens-description",
+            ),
+            (
+                "/admin/route/explain",
+                "api-openapi-route-explain-description",
+            ),
+            ("/admin/cost", "api-openapi-cost-usage-description"),
+        ] {
+            let route = sdforge::inventory::iter::<sdforge::openapi::OpenApiRouteInfo>()
+                .into_iter()
+                .find(|route| route.path == path)
+                .unwrap_or_else(|| panic!("{path} 必须登记进 OpenAPI inventory"));
+            assert_eq!(route.i18n_key, Some(key), "{path} 的描述翻译键失配");
+            for locale in ["en", "zh"] {
+                assert_ne!(
+                    sdforge::i18n::translate_for(locale, key, &[]),
+                    key,
+                    "{locale}/{key} 未注册——spec 将回落英文并静默丢失翻译"
+                );
+            }
+        }
+    }
+}

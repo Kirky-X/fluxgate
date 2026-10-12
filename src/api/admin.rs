@@ -123,7 +123,7 @@ pub async fn cost_usage(
         Some("model") => CostGroupBy::Model,
         _ => {
             return Err(NexusFlowError::from(crate::error::GateError::Validation {
-                field: "group_by (must be vendor|model)".into(),
+                field: t("admin-cost-group-by-invalid"),
             }));
         }
     };
@@ -131,7 +131,10 @@ pub async fn cost_usage(
         if let Some(date) = value {
             if !valid_cost_date(date) {
                 return Err(NexusFlowError::from(crate::error::GateError::Validation {
-                    field: format!("{name} (must be YYYY-MM-DD)"),
+                    field: t_args(
+                        "admin-cost-date-format-invalid",
+                        &[("name", name.to_string())],
+                    ),
                 }));
             }
         }
@@ -150,7 +153,7 @@ pub async fn cost_usage(
             .pre_aggregator
             .as_ref()
             .ok_or_else(|| crate::error::GateError::Config {
-                message: "usage sink is not wired; cost usage unavailable".to_string(),
+                message: t("admin-cost-usage-sink-unwired"),
             })?;
     let rows = usage_sink
         .query_cost_usage(
@@ -243,7 +246,7 @@ pub async fn reset_vendor(
     // limiteron 限流状态仍自动管理（令牌桶 refill），此处不触限流器。
     if !state.vendor_manager.reset_key_pool_state(&id) {
         return Err(NexusFlowError::from(crate::error::GateError::Validation {
-            field: format!("vendor '{id}' (unknown vendor)"),
+            field: t_args("admin-vendor-reset-unknown-vendor", &[("id", id.clone())]),
         }));
     }
     Ok(Json(serde_json::json!({
@@ -432,4 +435,40 @@ pub async fn delete_model(
         "success": true,
         "message": t_args("admin-model-deleted", &[("model", model_id)]),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 参数校验文案经 i18n 模板拼接：实参进响应文案、无未替换占位符、
+    /// 无参键不回落为裸键名（缺键时 `t` 原样返回键名——静默失败）。
+    #[test]
+    fn test_cost_param_validation_messages_are_localized() {
+        let date = GateError::Validation {
+            field: t_args("admin-cost-date-format-invalid", &[("name", "from".into())]),
+        }
+        .user_message();
+        assert!(date.contains("from"), "实参未进入文案: {date}");
+        assert!(!date.contains('$'), "占位符未被替换: {date}");
+
+        let vendor = GateError::Validation {
+            field: t_args(
+                "admin-vendor-reset-unknown-vendor",
+                &[("id", "vendor-a".into())],
+            ),
+        }
+        .user_message();
+        assert!(vendor.contains("vendor-a"), "实参未进入文案: {vendor}");
+        assert!(!vendor.contains('$'), "占位符未被替换: {vendor}");
+
+        let bare = GateError::Validation {
+            field: t("admin-cost-group-by-invalid"),
+        }
+        .user_message();
+        assert!(
+            !bare.contains("admin-cost-group-by-invalid"),
+            "键未登记，裸键名进入响应: {bare}"
+        );
+    }
 }

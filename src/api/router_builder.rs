@@ -23,7 +23,7 @@ use std::time::Duration;
 use tower_http::trace::TraceLayer;
 
 use super::state::ApiState;
-use super::{admin, anthropic, count_tokens, health, models, openai, route_explain};
+use super::{admin, anthropic, count_tokens, health, models, openai, openapi_docs, route_explain};
 use crate::config::{RateLimitRule, RateLimitSection};
 use crate::i18n::t;
 use crate::middleware::admission::{tier_for_request, AdmissionState};
@@ -670,6 +670,8 @@ fn build_inbound_limits(
 pub async fn create_router(state: Arc<ApiState>) -> Router {
     // forge 端点描述翻译注册进 sdforge（建站期一次性；见 health.rs）
     health::register_forge_i18n();
+    // OpenAPI 条目描述翻译注册进 sdforge（建站期一次性；见 openapi_docs.rs）
+    openapi_docs::register_openapi_i18n();
     // [rate_limit] 段消费点（此前该段被 serde 静默丢弃，中间件
     // 恒跑 Governor 库内置默认兜底规则）
     let rate_limit = state.config.read().rate_limit.clone();

@@ -8,6 +8,7 @@
 //! 按小时聚合 Token 使用统计，减少数据库查询压力。
 
 use crate::database::Repository;
+use crate::i18n::t_args;
 use crate::protocol::TokenUsage;
 use crate::storage::KeyedUsage;
 use chrono::Timelike;
@@ -362,7 +363,10 @@ impl crate::storage::UsageSink for TokenPreAggregator {
             .query_cost_usage(from, to, group_by, api_key_hash)
             .await
             .map_err(|e| crate::error::GateError::Config {
-                message: format!("cost usage query failed: {e}"),
+                message: t_args(
+                    "database-cost-usage-query-failed",
+                    &[("error", e.to_string())],
+                ),
             })
     }
 

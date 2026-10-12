@@ -6506,7 +6506,7 @@ mod route_explain {
     }
 }
 
-/// T011（收敛）：WP4 Anthropic 路径回退头（/v1/messages 入站）。
+/// WP4 Anthropic 路径回退头（/v1/messages 入站）。
 mod fallback_observation_headers_anthropic {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, routing::post, Router};

@@ -24,6 +24,7 @@ database-logger-secret-scan-dropped = Log dropped by outbound secret scan (total
 database-logger-join-failed = Failed to await async logger writer exit: { $error }
 database-preagg-flush-failed = Failed to flush token aggregation: { $error }
 database-preagg-final-flush-failed = Final token aggregation flush failed: { $error }
+database-cost-usage-query-failed = Failed to query cost usage: { $error }
 # utils-*: metrics.rs 运维告警。
 utils-metrics-concentration = traffic concentration alert: routing may have collapsed onto a single vendor/model
 database-backend-missing = database.url is empty and the sqlite fallback for path { $path } requires the db-sqlite feature: rebuild with --features "full,db-sqlite", or set [database] url to a full connection URL

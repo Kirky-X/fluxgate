@@ -10,6 +10,7 @@
 
 use crate::config::{CacheSection, ConfigManager};
 use crate::error::{GateError, NexusFlowError};
+use crate::i18n::t;
 use crate::utils::metrics::GlobalMetrics;
 use axum::http::HeaderMap;
 use oxcache::backend::CacheBackend;
@@ -472,13 +473,15 @@ impl ResponseCache {
                 if Self::is_leader_not_cached(&e) {
                     tracing::debug!(
                         vendor = %vendor_id,
-                        "response cache: leader-not-cached, follower self-heals from upstream"
+                        "{}",
+                        t("api-response-cache-leader-not-cached")
                     );
                 } else {
                     tracing::debug!(
                         vendor = %vendor_id,
                         error = %e,
-                        "response cache: library fault, dispatching directly"
+                        "{}",
+                        t("api-response-cache-library-fault")
                     );
                 }
                 self.redispatch_and_write(dispatch_ref, &api_key_hash, &canonical, &initial_key)

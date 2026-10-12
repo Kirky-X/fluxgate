@@ -8,7 +8,7 @@
 //! reason_code 为稳定机器码（不做 i18n）；未知模型 → 400
 
 use crate::error::{GateError, NexusFlowError};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::ApiState;
 use axum::{extract::State, Json};
 use serde_json::{json, Value};
@@ -21,7 +21,7 @@ pub async fn route_explain(
 ) -> Result<Json<Value>, NexusFlowError> {
     let model = body.get("model").and_then(Value::as_str).ok_or_else(|| {
         NexusFlowError::from(GateError::Validation {
-            field: "model (missing or not a string)".into(),
+            field: t("api-route-explain-model-invalid"),
         })
     })?;
     let session_id = body.get("session_id").and_then(Value::as_str);
@@ -29,7 +29,10 @@ pub async fn route_explain(
     let assessments = state.router.explain_route(model, session_id).await;
     if assessments.is_empty() {
         return Err(NexusFlowError::from(GateError::Validation {
-            field: format!("model '{model}' (unknown model)"),
+            field: t_args(
+                "api-route-explain-model-unknown",
+                &[("model", model.to_string())],
+            ),
         }));
     }
 

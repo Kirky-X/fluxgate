@@ -1016,7 +1016,6 @@ impl VendorManager {
     }
 
     /// 网关已设置的出站头（小写）：`extra_headers` 同名时跳过注入并记 warn，不覆盖。
-    #[cfg_attr(not(feature = "vendor-management"), allow(dead_code))]
     const RESERVED_OUTBOUND_HEADERS: &'static [&'static str] = &[
         "authorization",
         "x-api-key",
@@ -1027,7 +1026,6 @@ impl VendorManager {
     ];
 
     /// `extra_headers` 统一注入（静态值，不做模板替换）；非法头名/值 warn 后跳过，键按字典序注入。
-    #[cfg_attr(not(feature = "vendor-management"), allow(dead_code))]
     fn apply_extra_headers(
         mut builder: reqwest::RequestBuilder,
         extra: &HashMap<String, String>,
@@ -1087,7 +1085,6 @@ impl VendorManager {
 
     /// per-key 熔断键的 model 段 — 归一到配置面模型身份（vendor.models 的 model_id）：
     /// 先剥离 `{vendor_id}.` 前缀（hint 与 direct 形式须落同一键），再按 vendor.models 匹配。
-    #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
     fn cb_model<'a>(vendor_id: &str, config: &'a VendorConfig, request_model: &'a str) -> &'a str {
         let stripped = request_model
             .strip_prefix(vendor_id)

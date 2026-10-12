@@ -24,6 +24,7 @@ database-logger-secret-scan-dropped = 日志未通过出站密钥扫描已丢弃
 database-logger-join-failed = 等待异步日志写入器退出失败：{ $error }
 database-preagg-flush-failed = token 聚合刷新失败：{ $error }
 database-preagg-final-flush-failed = 停机前最终 token 聚合刷新失败：{ $error }
+database-cost-usage-query-failed = 成本分账查询失败：{ $error }
 # utils-*: metrics.rs 运维告警。
 utils-metrics-concentration = 流量集中度告警：路由可能已收敛到单一厂商/模型
 database-backend-missing = database.url 为空，path { $path } 的 sqlite 回退需要 db-sqlite feature：以 --features "full,db-sqlite" 重建，或在 [database] url 配置完整连接 URL

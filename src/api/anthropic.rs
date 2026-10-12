@@ -181,7 +181,7 @@ async fn chat_passthrough_stream(
 
     // 阶段一：透传流过分帧器逐帧原样转发 —— 此前原始字节
     // 直转（连重帧都没有），上游网络中断会伪装成正常流结束。
-    // WP8（T003）：受配额约束的 key 才挂帧观测并在正常 EOF 回补，
+    // WP8：受配额约束的 key 才挂帧观测并在正常 EOF 回补，
     // 其余形态零包装（透传字节逐字节不变）。三级早退判定在 quota 模块单点。
     let body_stream = crate::middleware::quota::passthrough_stream_body(
         &state.config,

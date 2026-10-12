@@ -8,7 +8,9 @@
 
 ---
 
-## [Unreleased]
+## [0.1.0] - 2026-10-12
+
+自初始提交起在 0.1.0 版本线上落地的全部变更（首次发布：下含近期批次与初始批次）。
 
 ### Changed
 
@@ -55,6 +57,7 @@
 
 ### Fixed
 
+- **路由大小写修复的两项 review 遗留闭环（配置 ID 校验歧义 + 指纹基线冻结）**：`9fe703a` 提交前 review 门禁（tiangang 安全 + diting 架构）报告的两项 MEDIUM 已修——① `validate_vendor_entries` 此前按精确大小写去重，配置可含仅差 ASCII 大小写的两个 vendor（或同 vendor 内两个仅差大小写的 model_id），而请求边界按 CI 折叠取声明序首个 → 请求侧任意写法都无法寻址第二项；现去重键改 `to_ascii_lowercase`，仅差大小写的重复条目在加载与热更新（同一 `validate_config`）两路均拒绝，错误插值报原始书写（**行为变更：该形态配置此前被接受，现加载即拒**；本仓示例与夹具无该形态）。② 热重载桥接对「解析结果 == 内存态」的语义等价外部编辑（仅注释/格式化）走 `continue` 不刷指纹基线 → 此后管理面写回被 `config-disk-modified-refusing-write` 拒绝、冻结至重启（i18n 文案「先热重载」对该场景不可执行）；现新增 `ConfigManager::adopt_disk_baseline()`（持写锁，防与写回的「读基线-比对-刷基线」序列交错产生陈旧基线），桥接等价分支调用之（不切内存态、不触发回调，保留「内容一致不形成写回环」的既有防环设计）。锁定测试：`gate_config_coverage_test::{loader_rejects_case_variant_duplicate_vendor_ids, loader_rejects_case_variant_duplicate_model_ids_within_vendor}`（两者修复前实测 `Ok(())` 红）、`loader_accepts_case_distinct_ids`（正向对照）、`config::manager::tests::test_adopt_disk_baseline_unfreezes_write_back`（拒绝→采纳→恢复，红→绿）、`server::hot_reload::tests::comment_only_external_edit_keeps_write_back_available`（真实监听全链路，修复前 5s 窗口写回持续被拒）。文档同步：USER_GUIDE vendors 表（`id`/`model_id` 行）、`config.example.toml` 模型条目注释（唯一性按 ASCII 大小写不敏感）。TOCTOU 窗口（比对与 rename 之间，无跨进程文件锁）为既有取舍，保留并登记。
 - **路由 ID 匹配大小写不一致（直连 / 提示 / 熔断键三处精确匹配）**：`vendor.model` 直连形式（`try_direct_route`）的 vendor 查找、`model_id`/`abstract_id` 匹配与换路排除集比较、`X-Vendor` 头查找（`try_vendor_route`）、熔断键归一 `cb_model` 的前缀剥离此前均为精确比较，与系统其余站点（抽象路由经 `resolve_model` 双侧 lowercase、`explain_route` 用 `eq_ignore_ascii_case`）的「大小写不敏感」全局语义相悖——配置 ID 含大写（`ConfigLoader` 与 admin 写入均不归一）时：`openai.GPT-4O` 直连误报 `router-model-not-found`（模型实际存在）、`X-Vendor: OpenAI` 误报 `router-vendor-unavailable` 且不 fallback、换路排除集失效（被排除 vendor 可经直连路径重新命中）、请求大小写变体产生分裂熔断键。现请求边界统一 ASCII 大小写不敏感：新增 `ConfigManager::get_vendor_ci`（`get_vendor` 精确语义保留给管理/内部调用方）、`try_vendor_route` 状态查询改用配置规范 id（`&vendor.id`，防 VendorStatus 门控随请求书写漂移）、`cb_model` 前缀剥离手写 CI 判定（`str::strip_prefix` 不可配置 CI；`get` 对非字符边界返回 None 自动落回原串）。锁定测试：`gate_router_test::tests::{test_route_direct_form_case_insensitive, test_route_direct_form_excluded_case_insensitive, test_route_direct_form_uppercase_config_ids}`、`route_gap_coverage::hints_vendor_header_case_insensitive`、`config::manager::tests::test_get_vendor_ci_case_insensitive`、`vendor::manager::tests::cb_model_{normalizes_case_variant_prefix_and_model, falls_back_to_stripped_or_original}`。验证：`cargo test --workspace` 全绿（lib 433 passed、gate_router_test 97 passed，59 套件 0 failed）、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all -- --check` 通过。文档同步：API_REFERENCE（两处头表、`vendor.model` 段、提示头附录）、USER_GUIDE（`abstract_id` 行）。**同批修正文档漂移**：`/v1/messages` 头表与提示头附录此前称 `X-Vendor`/`X-Model` 两端点均读取生效，实际仅 OpenAI 兼容端点消费（anthropic 侧仅 `X-Session-Id`/`X-Weight`，源码注释明确为既有无 hints 语义），已按代码修正。
 - **`[global_model].enabled=false` 静默空转（E2E 场景「auto 且全局模型关闭」）**：该开关此前无消费者——`ConfigManager::is_global_model_enabled` 在 `src/` 无调用者、`route_inner` 从不判开关，`model = "auto"` 无论开关取值都回落全局池；管理员关掉全局模型策略后 auto 仍照常选路（配置声明与运行行为不一致），而「全候选落空」时才报「未知模型」，把「开关关闭」与「模型不存在」混成同一错误。现 `route_inner` 的 auto 分支先判开关：关闭时不做全局池选路，以 `validation_error`(400) 显性拒绝，信息含「未找到」原句 + 开关来源（新增 FTL 键 `router-global-model-disabled`，zh/en 同步登记），不再静默空转；缺段（`global_model = None`）语义与字段级 `default_global_enabled` 对齐 = 启用，无该段配置的历史兜底行为逐位不变；显式模型名（抽象/直连路由）不受该开关影响。锁步测试：`gate_router_test::route_gap_coverage::auto_route_global_model_disabled_returns_validation_error`（修复前实测返回 `Ok(RoutingDecision{ strategy: Global })`，红）、`global_disabled_leaves_abstract_route_intact`、`api_test::global_model_switch::{auto_rejected_with_validation_error_when_global_disabled, auto_routes_when_global_enabled}`（HTTP 面 400 + `error.type=validation_error` + 信息含 `global_model`）、`config::manager::tests::test_is_global_model_enabled_defaults`。验证：`cargo test --test gate_router_test` 93 passed、`--test api_test` 131 passed、`--test i18n_parity_test` 4 passed、`--test gate_config_test --test gate_config_coverage_test --test config_toml_example_test` 43 passed、`cargo test --lib` 430 passed。文档同步：USER_GUIDE `[global_model]` 表（开关语义 + 缺段默认）、ARCHITECTURE 三级决策图（新增开关判定节点）、`config.example.toml` 注释。**未改动、已标注**：`strategy` 字段仍无独立消费者（仅档位声明，实际选路由 `[routing]` 决定），USER_GUIDE 已按当前实现改写，实现该档位不在本场景范围。
 - **模型清单与路由名不一致（真机端到端发现）**：`GET /v1/models` 此前列 vendor 的 `model_id`，而路由按 `abstract_id`
@@ -122,9 +125,7 @@
 
 ---
 
-## [0.1.0] - 2026-04-04
-
-自初始提交起在 0.1.0 版本线上落地的全部变更（63 个提交归纳）。
+### 初始批次（2026-04-04 归纳，63 个提交）
 
 ### Added
 

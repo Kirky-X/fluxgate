@@ -544,6 +544,8 @@ rate_limit = { type = "token", max_tokens = 10000000, window_hours = 24, sliding
 # 抽象名请求时按此匹配候选，缺省 = 只认 model_id）。GET /v1/models 也列这个
 # 公开名：声明 abstract_id 后，裸 model_id 不再是请求名（限定形式
 # "vendor.model_id" 仍可路由），清单不会给出回投即 400 的 id。
+# 唯一性：vendor id 全局唯一、同 vendor 内 model_id 唯一，去重按 ASCII 大小写
+# 不敏感（仅差大小写的重复条目加载即拒）。
 [[vendors.models]]
 model_id = "gpt-3.5-turbo"
 enabled = true

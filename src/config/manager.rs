@@ -154,6 +154,26 @@ impl ConfigManager {
         }
         Ok(())
     }
+
+    /// 采纳磁盘现值作为指纹基线（热重载桥接对「语义等价候选」调用）：
+    /// 外部编辑已被解析且无需切换内存态时，基线须跟进——否则后续管理面
+    /// 写回一律被误判为进程外编辑，冻结到重启。持写锁，防止与写回的
+    /// 读基线-比对-刷基线序列交错产生陈旧基线；无路径（纯内存构造）no-op。
+    pub fn adopt_disk_baseline(&self) {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(path) = self.path() {
+            if let Some(fingerprint) = file_fingerprint(&path) {
+                *self
+                    .disk_fingerprint
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fingerprint);
+            }
+        }
+    }
+
     /// 原子 read-modify-write：写锁内读当前配置 → 应用闭包 → 校验落盘切换；
     /// 闭包返回 Err 时整个更新中止
     pub fn update_config_with<F>(&self, mutate: F) -> Result<(), GateError>
@@ -637,6 +657,37 @@ mod tests {
             .update_config(sample_config("v2"))
             .expect("热重载提交后的写回不得被判为外部冲突");
         assert!(manager.get_vendor("v2").is_some(), "写回已生效");
+    }
+
+    /// 语义等价外部编辑（仅注释/格式化）经桥接采纳基线后写回必须恢复：
+    /// 采纳前拒绝（既有保护不变），adopt_disk_baseline 后同一写回成功。
+    #[test]
+    fn test_adopt_disk_baseline_unfreezes_write_back() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        let initial = toml::to_string_pretty(&sample_config("v1")).unwrap();
+        std::fs::write(&path, &initial).unwrap();
+
+        let manager = ConfigManager::new(sample_config("v1"));
+        manager.set_path(path.clone());
+
+        // 进程外注释级编辑：字节变、语义等价 → 未采纳前写回必须拒绝
+        let commented = format!("# 外部注释（语义等价）\n{initial}");
+        std::fs::write(&path, &commented).unwrap();
+        assert!(
+            manager.update_config(sample_config("v2")).is_err(),
+            "字节级外部编辑未采纳前必须拒绝写回"
+        );
+
+        // 桥接对等价候选采纳基线 → 同一写回恢复
+        manager.adopt_disk_baseline();
+        manager
+            .update_config(sample_config("v2"))
+            .expect("采纳基线后写回必须恢复");
+        assert!(manager.get_vendor("v2").is_some(), "写回已生效");
+
+        // no-op 分支：纯内存构造（无路径）不 panic
+        ConfigManager::new(sample_config("v3")).adopt_disk_baseline();
     }
 
     /// 并发 update 一致性（评审 major-1 场景）：多线程并发 POST 等价的

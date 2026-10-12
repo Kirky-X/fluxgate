@@ -264,6 +264,109 @@ model_id = "dup-model"
     }
 }
 
+/// 大小写变体重复 vendor id：去重按 ASCII 大小写不敏感——请求边界 ID
+/// 匹配已 CI 折叠（get_vendor_ci / 直连 / cb_model），仅差大小写的配置
+/// 会让请求侧无法寻址第二项，必须在配置面拒绝。
+#[test]
+fn loader_rejects_case_variant_duplicate_vendor_ids() {
+    let path = temp_toml(
+        "dup-vendor-ci.toml",
+        r#"
+[server]
+host = "127.0.0.1"
+[database]
+[[vendors]]
+id = "openai"
+name = "A"
+type_ = "openai"
+api_key_env = "K1"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+[[vendors]]
+id = "OpenAI"
+name = "B"
+type_ = "openai"
+api_key_env = "K2"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+"#,
+    );
+    match load_from(&path).map(|_| ()) {
+        Err(GateError::Config { message }) => {
+            assert!(
+                message.contains("OpenAI"),
+                "仅差大小写的重复 vendor 必须拒绝且插值报原始书写: {message}"
+            );
+        }
+        other => panic!("大小写变体重复 vendor id 必须报 Config 错误，实际 {other:?}"),
+    }
+}
+
+/// 大小写变体重复 model_id（同 vendor 内）：同理按 ASCII 折叠拒绝。
+#[test]
+fn loader_rejects_case_variant_duplicate_model_ids_within_vendor() {
+    let path = temp_toml(
+        "dup-model-ci.toml",
+        r#"
+[server]
+host = "127.0.0.1"
+[database]
+[[vendors]]
+id = "dup_models_ci_vendor"
+name = "A"
+type_ = "openai"
+api_key_env = "K"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+[[vendors.models]]
+model_id = "gpt-4"
+[[vendors.models]]
+model_id = "GPT-4"
+"#,
+    );
+    match load_from(&path).map(|_| ()) {
+        Err(GateError::Config { message }) => {
+            assert!(
+                message.contains("dup_models_ci_vendor") && message.contains("GPT-4"),
+                "错误必须插值携带 vendor 与第二项原始书写: {message}"
+            );
+        }
+        other => panic!("大小写变体重复 model id 必须报 Config 错误，实际 {other:?}"),
+    }
+}
+
+/// 正向对照：大小写各异但折叠后互异的 id 正常加载（校验收紧不误伤）。
+#[test]
+fn loader_accepts_case_distinct_ids() {
+    let path = temp_toml(
+        "case-distinct.toml",
+        r#"
+[server]
+host = "127.0.0.1"
+[database]
+[[vendors]]
+id = "OpenAI"
+name = "A"
+type_ = "openai"
+api_key_env = "K1"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+[[vendors.models]]
+model_id = "GPT-4"
+[[vendors.models]]
+model_id = "gpt-4-mini"
+[[vendors]]
+id = "openai-eu"
+name = "B"
+type_ = "openai"
+api_key_env = "K2"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+"#,
+    );
+    load_from(&path).expect("折叠后互异的 id 必须正常加载");
+}
+
 /// [resilience].circuit_open_timeout_ms 下限校验：窗口 <100ms 使 Open→HalfOpen
 /// 即刻转换（等于关闭熔断冷却）；加载与热更新两路同拒，下限值放行。
 #[test]

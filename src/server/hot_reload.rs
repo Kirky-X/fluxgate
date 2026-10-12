@@ -174,6 +174,10 @@ pub(crate) async fn maybe_start_hot_reload(
         while rx.changed().await.is_ok() {
             let next = rx.borrow().clone();
             if *next == *bridge_manager.read() {
+                // 语义等价（如仅注释/格式化改动）：候选已解析且无需切换内存态
+                //（不触发回调、不形成写回环），但指纹基线必须跟进磁盘现值——
+                // 否则后续管理面写回被误判为进程外编辑，冻结至重启
+                bridge_manager.adopt_disk_baseline();
                 continue;
             }
             let sections = changed_sections(&bridge_manager.read(), &next);
@@ -484,5 +488,65 @@ concurrency = { requests_per_second = 1 }
             reloader.reload_failures(),
             manager.read().retry.max_retries,
         );
+    }
+
+    /// 注释级外部编辑（语义等价）不得冻结管理面写回：桥接必须采纳基线
+    ///（真实文件监听 + 桥接全链路；修复前写回持续被拒到重启）。
+    #[tokio::test]
+    async fn comment_only_external_edit_keeps_write_back_available() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let base = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[database]
+path = ":memory:"
+pool_size = 1
+
+[retry]
+max_retries = 3
+
+[[vendors]]
+id = "v"
+name = "V"
+type_ = "openai"
+api_key_env = "K"
+rate_limit = { type = "token", max_tokens = 1 }
+concurrency = { requests_per_second = 1 }
+"#;
+        std::fs::write(&path, base).expect("seed config");
+        let manager = Arc::new(ConfigManager::new(
+            crate::config::loader::load_config_from_path(&path).expect("parse"),
+        ));
+        manager.set_path(path.clone());
+
+        let reloader = maybe_start_hot_reload(&manager)
+            .await
+            .expect("watcher must start");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // 注释级外部编辑：字节变、解析结果 == 内存态（桥接走等价分支）
+        std::fs::write(&path, format!("# 外部注释\n{base}")).expect("comment-only edit");
+
+        // 桥接收纳后（去抖 500ms）管理面写回必须恢复，不得冻结至重启
+        let mut next = crate::config::loader::load_config_from_path(&path).expect("re-parse");
+        assert_eq!(next.retry.max_retries, 3, "注释编辑不改语义");
+        next.retry.max_retries = 20;
+        let mut recovered = false;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if manager.update_config(next.clone()).is_ok() {
+                recovered = true;
+                break;
+            }
+        }
+        assert!(
+            recovered,
+            "注释级外部编辑后写回必须在窗口内恢复（failures={}）",
+            reloader.reload_failures()
+        );
+        assert_eq!(manager.read().retry.max_retries, 20, "写回已生效");
     }
 }

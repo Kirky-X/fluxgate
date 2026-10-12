@@ -112,10 +112,13 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
 
 /// vendor id 全局唯一 + 每 vendor 内 model id 唯一（跨 Vec 条目的唯一性
 /// 约束，confers::validator 的字段级规则无法表达，保留手写）。
+/// 去重按 ASCII 大小写不敏感：请求边界 ID 匹配（get_vendor_ci / 直连 /
+/// cb_model）均 CI 折叠，仅差大小写的重复条目会让请求侧无法寻址意图项
+///（get_vendor_ci 取声明序首个），故在配置面拒绝。
 fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
     let mut vendor_ids = std::collections::HashSet::new();
     for vendor in &config.vendors {
-        if !vendor_ids.insert(&vendor.id) {
+        if !vendor_ids.insert(vendor.id.to_ascii_lowercase()) {
             return Err(GateError::Config {
                 message: t_args(
                     "config-duplicate-vendor-id",
@@ -128,7 +131,7 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
     for vendor in &config.vendors {
         let mut model_ids = std::collections::HashSet::new();
         for model in &vendor.models {
-            if !model_ids.insert(&model.model_id) {
+            if !model_ids.insert(model.model_id.to_ascii_lowercase()) {
                 return Err(GateError::Config {
                     message: t_args(
                         "config-duplicate-model-id",

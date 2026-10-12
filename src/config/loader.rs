@@ -5,7 +5,7 @@
 
 use super::{Config, ConfigManager};
 use crate::error::GateError;
-use crate::i18n::t_args;
+use crate::i18n::{t, t_args};
 use confers::interface::ConfigProvider;
 use confers::security::rules::{JwtSecretValidator, SecurityValidator, ViolationSeverity};
 use confers::types::{AnnotatedValue, ConfigValue, SourceId};
@@ -148,9 +148,16 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
 /// 去重按 ASCII 大小写不敏感：请求边界 ID 匹配（get_vendor_ci / 直连 /
 /// cb_model）均 CI 折叠，仅差大小写的重复条目会让请求侧无法寻址意图项
 ///（get_vendor_ci 取声明序首个），故在配置面拒绝。
+/// 路由查找键（vendor id / model_id / 声明的 abstract_id）先行空白拒绝
+///（trim 为空），空白检查先于去重（空白非「重复」语义）。
 fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
     let mut vendor_ids = std::collections::HashSet::new();
     for vendor in &config.vendors {
+        if vendor.id.trim().is_empty() {
+            return Err(GateError::Config {
+                message: t("config-vendor-id-empty"),
+            });
+        }
         if !vendor_ids.insert(vendor.id.to_ascii_lowercase()) {
             return Err(GateError::Config {
                 message: t_args(
@@ -164,6 +171,26 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
     for vendor in &config.vendors {
         let mut model_ids = std::collections::HashSet::new();
         for model in &vendor.models {
+            if model.model_id.trim().is_empty() {
+                return Err(GateError::Config {
+                    message: t_args("config-model-id-empty", &[("vendor", vendor.id.clone())]),
+                });
+            }
+            if model
+                .abstract_id
+                .as_ref()
+                .is_some_and(|abstract_id| abstract_id.trim().is_empty())
+            {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-abstract-id-empty",
+                        &[
+                            ("vendor", vendor.id.clone()),
+                            ("model", model.model_id.clone()),
+                        ],
+                    ),
+                });
+            }
             if !model_ids.insert(model.model_id.to_ascii_lowercase()) {
                 return Err(GateError::Config {
                     message: t_args(

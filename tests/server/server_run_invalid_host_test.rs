@@ -18,8 +18,8 @@ use nexusflow::error::{GateError, NexusFlowError};
 
 #[tokio::test]
 async fn run_rejects_non_ipv4_server_host_with_localized_message() {
-    let dir = std::env::temp_dir().join(format!("nx-server-host-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+    let dir = tmpdir.path().to_path_buf();
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,

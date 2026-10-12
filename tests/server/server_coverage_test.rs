@@ -107,9 +107,8 @@ async fn wait_http_ready(addr: std::net::SocketAddr) {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_serves_http_until_sigterm_then_flushes() {
-    let dir = std::env::temp_dir().join(format!("nx-server-cov-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+    let dir = tmpdir.path().to_path_buf();
     let http_port = free_loopback_port();
     let grpc_port = free_loopback_port();
     let config_path = dir.join("config.toml");

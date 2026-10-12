@@ -9,8 +9,9 @@ use crate::i18n::{t, t_args};
 use confers::dynamic::DynamicField;
 use confers::snapshot::{SnapshotConfig, SnapshotFormat, SnapshotManager};
 use confers::types::SourceId;
+use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -24,20 +25,6 @@ const SNAPSHOT_KEEP: usize = 10;
 
 /// confers Redacted 序列化时打码的路径（api_keys 存的已是 SHA256 摘要，双保险）
 const SNAPSHOT_REDACT_PATHS: &[&str] = &["auth.api_keys"];
-
-/// 字节内容指纹（file_fingerprint 与验证式基线采纳共用同一哈希语义）
-fn bytes_fingerprint(bytes: &[u8]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// 磁盘配置内容指纹（本进程视角：加载 / 热重载提交 / 成功写回后刷新）。
-/// 写回前与磁盘现值比对，用于识别进程外编辑。
-fn file_fingerprint(path: &Path) -> Option<u64> {
-    let bytes = std::fs::read(path).ok()?;
-    Some(bytes_fingerprint(&bytes))
-}
 
 /// 落盘前的旧配置快照（confers SnapshotManager：时间戳命名 + 超量自动清理）。
 /// 解析/写盘任一步失败都只记 warn，绝不阻塞更新主路径。
@@ -90,8 +77,11 @@ pub struct ConfigManager {
     config: Arc<DynamicField<Config>>,
     /// 启动加载路径（ConfigLoader::load 时注入）；None = 纯内存构造，update_config 拒绝落盘
     path: Arc<RwLock<Option<PathBuf>>>,
-    /// 本进程上次观测到的磁盘配置指纹（见 file_fingerprint）
+    /// 本进程上次观测到的磁盘配置指纹（见 [`Self::file_fingerprint`]）
     disk_fingerprint: Arc<RwLock<Option<u64>>>,
+    /// 指纹哈希器：进程级随机键（SipHash）——指纹仅进程内比对、不持久化，
+    /// 随机键使离线构造碰撞不可行（防伪造指纹绕过外部编辑保护）
+    fingerprint_hash: RandomState,
     /// 写路径互斥（std Mutex：无 .await 穿越临界区，跨线程可用）
     write_lock: Arc<Mutex<()>>,
 }
@@ -102,8 +92,21 @@ impl ConfigManager {
             config: Arc::new(DynamicField::new(config)),
             path: Arc::new(RwLock::new(None)),
             disk_fingerprint: Arc::new(RwLock::new(None)),
+            fingerprint_hash: RandomState::new(),
             write_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// 字节内容指纹（进程随机键；file_fingerprint 与验证式基线采纳共用）
+    fn bytes_fingerprint(&self, bytes: &[u8]) -> u64 {
+        self.fingerprint_hash.hash_one(bytes)
+    }
+
+    /// 磁盘配置内容指纹（本进程视角：加载 / 热重载提交 / 成功写回后刷新）。
+    /// 写回前与磁盘现值比对，用于识别进程外编辑。
+    fn file_fingerprint(&self, path: &Path) -> Option<u64> {
+        let bytes = std::fs::read(path).ok()?;
+        Some(self.bytes_fingerprint(&bytes))
     }
 
     /// 记录配置文件加载路径（由 ConfigLoader::load 注入），并以当时磁盘
@@ -112,7 +115,7 @@ impl ConfigManager {
         *self
             .disk_fingerprint
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = file_fingerprint(&path);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.file_fingerprint(&path);
         *self.path.write().unwrap() = Some(path);
     }
 
@@ -192,7 +195,8 @@ impl ConfigManager {
         *self
             .disk_fingerprint
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(bytes_fingerprint(&bytes));
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(self.bytes_fingerprint(&bytes));
         true
     }
 
@@ -234,17 +238,20 @@ impl ConfigManager {
         // 外部编辑检测：磁盘内容 ≠ 本进程上次观测（加载/热重载提交/写回）时
         // 拒绝写回——全量序列化会静默抹掉进程外编辑（如需重启才生效的
         // vendor 拓扑变更、注释与自定义段）。显式失败，磁盘保持原样。
+        // 先做一次前置比对快速失败（避免无谓的快照/tmp 写），rename 前再做
+        // 末次比对（见下）把无保护窗口压到系统调用间隙。
+        let refuse_external_edit = || GateError::Config {
+            message: t_args(
+                "config-disk-modified-refusing-write",
+                &[("path", path.display().to_string())],
+            ),
+        };
         let observed = *self
             .disk_fingerprint
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if file_fingerprint(&path) != observed {
-            return Err(GateError::Config {
-                message: t_args(
-                    "config-disk-modified-refusing-write",
-                    &[("path", path.display().to_string())],
-                ),
-            });
+        if self.file_fingerprint(&path) != observed {
+            return Err(refuse_external_edit());
         }
 
         let mut tmp_name = path
@@ -271,6 +278,15 @@ impl ConfigManager {
                 ],
             ),
         })?;
+
+        // 末次比对（TOCTOU 窗口收窄）：快照与 tmp 写期间可能发生进程外编辑，
+        // rename 前再比对一次——无保护窗口从「快照+tmp 写」压到比对与 rename
+        // 的系统调用间隙；不匹配时清理 tmp 并显式拒绝
+        if self.file_fingerprint(&path) != observed {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(refuse_external_edit());
+        }
+
         if let Err(e) = std::fs::rename(&tmp_path, &path) {
             // rename 失败时清理临时文件，避免残留
             let _ = std::fs::remove_file(&tmp_path);
@@ -287,7 +303,7 @@ impl ConfigManager {
 
         // 4. 磁盘落定后才切换内存态（触发 on_change 回调），并把磁盘现值
         //    记为新的指纹基线（下次写回以此判外部编辑）
-        if let Some(fingerprint) = file_fingerprint(&path) {
+        if let Some(fingerprint) = self.file_fingerprint(&path) {
             *self
                 .disk_fingerprint
                 .write()

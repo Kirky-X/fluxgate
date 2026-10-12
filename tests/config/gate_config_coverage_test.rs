@@ -17,11 +17,18 @@ use std::path::PathBuf;
 #[path = "../common/mod.rs"]
 mod common;
 
-/// 写临时 TOML 并返回路径（临时目录 + 进程号隔离，避免并行任务互踩）
+/// 进程级临时目录（tempfile：随机名 + 0700，不可预测，避免固定名目录被
+/// 抢注——CWE-377）。注意：静态量不触发析构，进程退出后目录残留（随机名
+/// 小目录，CI 环境无害）
+fn temp_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| tempfile::tempdir().expect("tempdir creatable"))
+        .path()
+}
+
+/// 写临时 TOML 并返回路径（随机临时目录内按文件名隔离，防并行任务互踩）
 fn temp_toml(name: &str, content: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("nx-config-cov-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    let path = dir.join(name);
+    let path = temp_dir().join(name);
     std::fs::write(&path, content).expect("write toml");
     path
 }
@@ -367,6 +374,108 @@ concurrency = { requests_per_second = 1 }
     load_from(&path).expect("折叠后互异的 id 必须正常加载");
 }
 
+/// 路由查找键空白拒绝（vendor id）：空串与纯空白串均加载即拒，错误键原文
+/// 与配置校验同源（config-vendor-id-empty，无插值）。
+#[test]
+fn loader_rejects_blank_vendor_id() {
+    for id in ["", "   "] {
+        let path = temp_toml(
+            "blank-vendor.toml",
+            &format!(
+                r#"
+[server]
+host = "127.0.0.1"
+[database]
+[[vendors]]
+id = "{id}"
+name = "A"
+type_ = "openai"
+api_key_env = "K"
+rate_limit = {{ type = "interval", hours = 1 }}
+concurrency = {{ requests_per_second = 1 }}
+"#
+            ),
+        );
+        let expected = nexusflow::i18n::t_args("config-vendor-id-empty", &[]);
+        match load_from(&path).map(|_| ()) {
+            Err(GateError::Config { message }) => {
+                assert_eq!(message, expected, "空白 vendor id 必须报空白键原文");
+            }
+            other => panic!("空白 vendor id（{id:?}）必须报 Config 错误，实际 {other:?}"),
+        }
+    }
+}
+
+/// 路由查找键空白拒绝（model_id）：同 vendor 内空白 model_id 加载即拒。
+#[test]
+fn loader_rejects_blank_model_id() {
+    let expected = nexusflow::i18n::t_args(
+        "config-model-id-empty",
+        &[("vendor", "blank_model_vendor".to_string())],
+    );
+    match load_from(&temp_toml(
+        "blank-model.toml",
+        r#"
+[server]
+host = "127.0.0.1"
+[database]
+[[vendors]]
+id = "blank_model_vendor"
+name = "A"
+type_ = "openai"
+api_key_env = "K"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+[[vendors.models]]
+model_id = "  "
+"#,
+    ))
+    .map(|_| ())
+    {
+        Err(GateError::Config { message }) => {
+            assert_eq!(message, expected, "空白 model_id 必须报空白键原文");
+        }
+        other => panic!("空白 model_id 必须报 Config 错误，实际 {other:?}"),
+    }
+}
+
+/// 路由查找键空白拒绝（abstract_id）：声明的 abstract_id 为空白时加载即拒。
+#[test]
+fn loader_rejects_blank_abstract_id() {
+    let expected = nexusflow::i18n::t_args(
+        "config-abstract-id-empty",
+        &[
+            ("vendor", "blank_abstract_vendor".to_string()),
+            ("model", "m-real".to_string()),
+        ],
+    );
+    match load_from(&temp_toml(
+        "blank-abstract.toml",
+        r#"
+[server]
+host = "127.0.0.1"
+[database]
+[[vendors]]
+id = "blank_abstract_vendor"
+name = "A"
+type_ = "openai"
+api_key_env = "K"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = { requests_per_second = 1 }
+[[vendors.models]]
+model_id = "m-real"
+abstract_id = ""
+"#,
+    ))
+    .map(|_| ())
+    {
+        Err(GateError::Config { message }) => {
+            assert_eq!(message, expected, "空白 abstract_id 必须报空白键原文");
+        }
+        other => panic!("空白 abstract_id 必须报 Config 错误，实际 {other:?}"),
+    }
+}
+
 /// [resilience].circuit_open_timeout_ms 下限校验：窗口 <100ms 使 Open→HalfOpen
 /// 即刻转换（等于关闭熔断冷却）；加载与热更新两路同拒，下限值放行。
 #[test]
@@ -582,8 +691,7 @@ concurrency = { requests_per_second = 1 }
 
 #[test]
 fn loader_reports_file_not_found_with_path() {
-    let missing = std::env::temp_dir().join("nx-config-cov-definitely-missing.toml");
-    let _ = std::fs::remove_file(&missing);
+    let missing = temp_dir().join("definitely-missing.toml");
     match load_from(&missing).map(|_| ()) {
         Err(GateError::Config { message }) => {
             assert!(
@@ -665,8 +773,7 @@ fn update_without_path_is_rejected_and_memory_unchanged() {
 
 #[test]
 fn rmw_updates_disk_and_memory_atomically() {
-    let dir = std::env::temp_dir().join(format!("nx-config-cov-rmw-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = temp_dir().join("rmw");
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let path = dir.join("config.toml");
     std::fs::write(&path, "seed").unwrap();
@@ -701,8 +808,7 @@ fn rmw_updates_disk_and_memory_atomically() {
 
 #[test]
 fn rmw_closure_error_keeps_memory_and_disk() {
-    let dir = std::env::temp_dir().join(format!("nx-config-cov-rmw-err-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = temp_dir().join("rmw-err");
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let path = dir.join("config.toml");
     std::fs::write(&path, "seed").unwrap();
@@ -732,14 +838,7 @@ fn rmw_closure_error_keeps_memory_and_disk() {
 /// 进程 CWD 是全局态：切进独占临时目录再执行，不向仓库工作树落盘，
 #[test]
 fn snapshot_and_tmp_write_fall_back_to_cwd_for_bare_relative_paths() {
-    let sandbox = std::env::temp_dir().join(format!(
-        "nx-config-cov-cwd-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos()
-    ));
+    let sandbox = temp_dir().join("cwd-fallback");
     std::fs::create_dir_all(&sandbox).expect("create sandbox dir");
     let original_cwd = std::env::current_dir().expect("read cwd");
 

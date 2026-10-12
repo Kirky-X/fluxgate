@@ -2355,9 +2355,8 @@ mod manager_paths {
     /// 拒绝（worker 热读 fresh_config 失败分支），错误文案携带 vendor id。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worker_rejects_when_vendor_removed_from_hot_config() {
-        let dir = std::env::temp_dir().join("nexusflow-vendor-removed-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
         std::fs::write(&path, "seed").unwrap();
 

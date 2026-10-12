@@ -1135,9 +1135,8 @@ mod admin {
 
         let state = create_api_state().await;
         // update_config 需要路径记忆才落盘
-        let dir = std::env::temp_dir().join("nx-admin-restart-required");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
         std::fs::write(&path, "seed").unwrap();
         state.config.set_path(path.clone());
@@ -1180,10 +1179,8 @@ mod admin {
     #[tokio::test]
     async fn test_admin_update_config_refuses_after_external_edit() {
         let state = create_api_state().await;
-        let dir =
-            std::env::temp_dir().join(format!("nx-admin-external-edit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
         std::fs::write(&path, "seed").unwrap();
         state.config.set_path(path.clone());
@@ -1225,9 +1222,8 @@ mod admin {
     #[tokio::test]
     async fn test_admin_update_vendor_atomic_rmw() {
         let state = create_api_state().await;
-        let dir = std::env::temp_dir().join("nx-admin-rmw");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
         std::fs::write(&path, "seed").unwrap();
         state.config.set_path(path.clone());

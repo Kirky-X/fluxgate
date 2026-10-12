@@ -136,7 +136,7 @@ tier = "dedicated"
 
 | 字段 | 类型 | 默认值 | 说明 |
 |:-----|:-----|:-------|:-----|
-| `id` | String | 必填 | 厂商唯一标识；**跨条目去重校验**（按 ASCII 大小写不敏感），重复导致配置加载失败（`src/config/loader.rs`） |
+| `id` | String | 必填 | 厂商唯一标识；**不得为空白**；**跨条目去重校验**（按 ASCII 大小写不敏感），重复导致配置加载失败（`src/config/loader.rs`） |
 | `name` | String | 必填 | 显示名 |
 | `type_` | String | 必填（TOML 键名 `type`） | `"openai"` 或 `"anthropic"` |
 | `api_key_env` | String | 必填 | 存放上游密钥的环境变量名 |
@@ -156,8 +156,8 @@ tier = "dedicated"
 
 | 字段 | 默认值 | 说明 |
 |:-----|:-------|:-----|
-| `model_id` | 必填 | 上游真实模型名（同 vendor 内去重校验，按 ASCII 大小写不敏感） |
-| `abstract_id` | 无 | 抽象模型名（路由的逻辑标识，可多厂商映射同一抽象名；客户端按此请求，`GET /v1/models` 亦列此名——声明后裸 `model_id` 不再是请求名，限定形式 `vendor.model_id` 仍可路由；ID 匹配大小写不敏感） |
+| `model_id` | 必填 | 上游真实模型名（同 vendor 内去重校验，按 ASCII 大小写不敏感；不得为空白） |
+| `abstract_id` | 无 | 抽象模型名（路由的逻辑标识，可多厂商映射同一抽象名；客户端按此请求，`GET /v1/models` 亦列此名——声明后裸 `model_id` 不再是请求名，限定形式 `vendor.model_id` 仍可路由；ID 匹配大小写不敏感；声明后不得为空白） |
 | `weight` | `1.0` | 路由权重（通常 0.0–2.0） |
 | `enabled` | `true` | 模型开关 |
 

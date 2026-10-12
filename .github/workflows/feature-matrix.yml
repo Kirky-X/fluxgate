@@ -1,0 +1,82 @@
+#===============================================================================
+# 特性组合矩阵（对齐 confers 基线 feature-matrix.yml）
+#
+# `cargo hack check --each-feature` 逐特性单开编译，捕获「某 feature 单独开启
+# 即不可编译」类裂缝。每周定时 + 手动触发；PR 门禁由 ci.yml 的手写组合矩阵
+# （default / db-postgres / db-mysql / 单特性三组合）兜底，避免每个 PR 全量跑。
+#
+# 与 confers 基线的差异（按本仓特性语义适配，均经本机实测）：
+#   - 必须用 db-sqlite 打底：full / web-server / database / logging 单开会让
+#     inklog / dbnexus 处于「无数据库后端」态，触发编译期守卫（实测 4 项 FAIL，
+#     报错为 inklog 的 compile_error）。打底后 18/18 组合全通过；
+#   - 必须 --exclude-all-features：--all-features 同时打开 sqlite + postgres +
+#     mysql，撞 dbnexus 的「embedded 与 server-side 不可混」守卫（实测必失败）。
+#     三后端的逐一覆盖在 ci.yml 的 check 作业，此处不重复；
+#   - 两个 workspace 成员串行两 step（非 matrix 分腿）：examples 的 embedded
+#     特性拉 nexusflow full+db-sqlite，两腿依赖树大面积重叠——分腿是两个缓存
+#     桶，Cargo.lock 一变（dependabot 每周）同时冷编两遍；串行共用 target 与
+#     缓存桶。ci.yml 对 examples 只覆盖 default 与 grpc 两口径，rest / sdk /
+#     embedded 单开的裂缝由本矩阵捕获。
+#   - 不加 --all-targets（与 confers 一致）：测试目标逐特性全量编译成本高，
+#     lib/bin 层已能捕获特性裂缝。
+#===============================================================================
+name: feature-matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每周一 05:47 UTC（避开整点，与 ci.yml 每日 05:37 的 security 扫描错峰）
+    - cron: '47 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feature-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # MSRV 下限工具链（同 ci.yml）：本次跑的是「特性组合可编译性」，
+  # 用运行时机器的 stable 会让结论随工具链漂移
+  RUST_VERSION: '1.97'
+
+jobs:
+  #-----------------------------------------------------------------------------
+  # 逐特性单开（两个 workspace 成员串行，共用缓存；末步兜底断言）
+  #-----------------------------------------------------------------------------
+  each-feature:
+    name: cargo hack --each-feature
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # grpc 特性组合要编 proto（sdforge grpc 门面 / examples 的 tonic 客户端）
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-hack
+      - name: Check each feature alone (nexusflow)
+        id: nexusflow-leg
+        continue-on-error: true
+        # db-sqlite 打底 + 排除 all-features（理由见文件头差异说明）
+        run: cargo hack check -p nexusflow --each-feature --features db-sqlite --exclude-all-features
+      - name: Check each feature alone (nexusflow-examples)
+        id: examples-leg
+        continue-on-error: true
+        # 本成员无后端互斥，all-features（rest+sdk+embedded+grpc）组合保留
+        run: cargo hack check -p nexusflow-examples --each-feature
+      # continue-on-error 只为「一腿失败不跳另一腿」（诊断面）；本步把任一脚
+      # 失败还原成红作业，避免失败被吞
+      - name: Assert both legs passed
+        if: steps.nexusflow-leg.outcome != 'success' || steps.examples-leg.outcome != 'success'
+        run: |
+          echo "::error::特性矩阵存在失败腿（nexusflow=${{ steps.nexusflow-leg.outcome }}, examples=${{ steps.examples-leg.outcome }}）"
+          exit 1

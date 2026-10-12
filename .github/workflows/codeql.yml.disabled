@@ -1,0 +1,68 @@
+#===============================================================================
+# CodeQL 静态安全分析（GitHub 原生）— 停用态
+#
+# 停用原因：本仓为私有仓库，未启用 GitHub Advanced Security——SARIF 上传会被
+# API 拒绝（"Code scanning is not enabled"），作业必红。与 janvi / sinnan 私库
+# 同一处置（workflow 保留为 .disabled，文件不参与 Actions 调度）。
+#
+# 启用方式（二选一，仓库满足条件后把本文件重命名为 codeql.yml）：
+#   - 仓库转 public（与 confers / crawlrs / CalNexus 同）：删除 analyze 的
+#     upload: false，恢复 Security 标签页集成；
+#   - 保持私有 + 启用 GHAS（付费）：同样删除 upload: false。
+# 注：.disabled 后缀不被 dependabot 的 github_actions 生态位扫描，启用时需
+# 手动对齐 codeql-action 的 SHA（对齐基线见 confers/.github/workflows/codeql.yml）。
+#===============================================================================
+name: CodeQL
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: "37 4 * * 2" # 每周二 04:37 UTC（避开整点；与 ci.yml 每日 05:37 扫描错峰）
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # 默认特性（full + db-sqlite）走 sqlx 的 pkg-config 链接系统 libsqlite3
+      # （同 release.yml），autobuild 的 cargo build 需要该开发包
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: rust
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: "/language:rust"
+          # 私有仓未启用 GHAS 时不上传 SARIF（v4 的 upload 取值语义是
+          # always/failure-only/never 字符串枚举，不写 "false"——那会退化成
+          # failure-only，成功 run 不上传结果，Security 页静默哑火）；
+          # 转 public 或启用 GHAS 后删除本行，恢复上传
+          upload: never

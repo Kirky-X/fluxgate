@@ -1,13 +1,24 @@
 #===============================================================================
 # NexusFlow CI 质量门禁（对齐 confers 7 仓库统一基线）
 # fmt / clippy / check / test / coverage / security
+# （特性全量矩阵见 feature-matrix.yml，CodeQL 见 codeql.yml.disabled）
 #
 # 与 confers 基线的差异：
 #   - 自研 7 库经 crates.io registry 集成（版本写在 Cargo.toml、校验和锁在
 #     Cargo.lock），各 cargo 作业直接拉取，无兄弟库克隆步骤；
 #   - 本仓库无 Criterion 基准、无 deny.toml，故无 benchmarks 作业，
 #     security 作业仅跑 cargo audit（补 deny.toml 后再加 cargo deny check）；
-#   - 无 CodeQL（按安全门禁约定 CodeQL 为 opt-in，不进默认流程）；
+#   - CodeQL 为停用态：私有仓未启用 GHAS，SARIF 上传必被 API 拒绝——workflow
+#     保留为 .github/workflows/codeql.yml.disabled，转 public / 启用 GHAS 后
+#     重命名启用；
+#   - 特性组合：本作业只跑手写组合矩阵（default / 两后端 / 单特性三组合），
+#     逐特性全量矩阵在 feature-matrix.yml（每周定时 + 手动触发）；
+#   - 无 doc 作业：`cargo doc --workspace --no-deps` 配 RUSTDOCFLAGS=-D warnings
+#     现有 61 处 intra-doc link 断链（15 个文件，多为注释内 [段名] 简写被当作
+#     链接解析），先清断链再加门禁；
+#   - 无三平台 build 作业（基线有 ubuntu/macos/windows 矩阵）：本仓以
+#     x86_64-unknown-linux-gnu 交付（release.yml 二进制 + linux 镜像），跨平台
+#     构建未纳入 CI；如补矩阵，注意 db-* 互斥口径与 grpc 的 protoc 前置；
 #   - 无 docker 作业：镜像可独立构建（纯 registry 依赖，不取兄弟库源码），
 #     镜像构建与扫描仍未纳入 CI。
 #===============================================================================

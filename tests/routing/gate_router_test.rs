@@ -534,8 +534,8 @@ mod scheduling_weight {
         config.vendors[1].api_base = format!("{}/v1", server.url());
 
         // 热更配置面：update_config 需要路径（落盘 + DynamicField 切换）
-        let dir = std::env::temp_dir().join("nexusflow-router-inflight-test");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
         std::fs::write(&path, "seed").unwrap();
         let config_manager = Arc::new(ConfigManager::new(config));
@@ -2278,10 +2278,9 @@ mod sla_virtual_queue {
         let candidates = || vec![(vendor.clone(), vendor.models[0].clone())];
         assert_eq!(weight_of(&router, "v1", candidates()).await, BASELINE);
 
-        let dir = std::env::temp_dir().join("nexusflow-sla-hot-reload");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
-        let _ = std::fs::remove_file(&path);
         std::fs::write(&path, "seed").unwrap();
         cm.set_path(path.clone());
 
@@ -2559,10 +2558,9 @@ mod linucb_selection {
             bandit.update("shared-model", "bad", &x(), 0.0);
         }
         // 热切 linucb
-        let dir = std::env::temp_dir().join("nexusflow-linucb-hot-reload");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
-        let _ = std::fs::remove_file(&path);
         std::fs::write(&path, "seed").unwrap();
         cm.set_path(path.clone());
         cm.update_config(make_config(
@@ -2709,10 +2707,9 @@ mod lps_lookahead {
         seed_observations(&vm);
         assert_eq!(weight_of(&router, "busy").await, BASELINE);
 
-        let dir = std::env::temp_dir().join("nexusflow-lps-hot-reload");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
-        let _ = std::fs::remove_file(&path);
         std::fs::write(&path, "seed").unwrap();
         cm.set_path(path.clone());
         cm.update_config(make_config(

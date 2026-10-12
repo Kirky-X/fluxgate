@@ -1,5 +1,5 @@
 # Tag 删除时清理对应的 GitHub Release（对齐 confers 基线）。
-# NexusFlow 不发布 crates.io（path 依赖不可发布），故无 yank 提示环节：
+# NexusFlow 以应用形态发布（产物为二进制，不发 crates.io），故无 yank 提示环节：
 # 删除 tag 时只需删除 Release 与产物。
 
 name: Tag Deleted

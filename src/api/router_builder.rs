@@ -109,8 +109,9 @@ struct GlobalGate {
     /// 拒绝秒数槽（多租户并发拒绝下存在秒级错位，
     /// 量级 ≤ 窗口且仅影响等待时长，无正确性影响，故接受共享槽）。
     last_retry_after_secs: Arc<AtomicU64>,
-    /// 拒绝时回传的 Retry-After 回退值（配额门法取规则窗口；令牌桶取 1，
-    /// 精确值优先读剩余额度快照）。fail-open 统一后后端故障不再走到此处。
+    /// 拒绝时回传的 Retry-After 回退值 — 令牌桶门在剩余额度快照读不到时
+    /// 使用（未接线时取 1）；配额门经 `check_retry_after` 取窗口剩余秒，
+    /// 不读本值。fail-open 统一后后端故障不再走到此处。
     deny_retry_after_secs: u64,
 }
 
@@ -125,19 +126,26 @@ impl Limiter for GlobalGate {
 
     /// 失败语义统一 fail-open：后端故障放行（与端点表
     /// `Err` 分支、旧 Governor `Err` 分支一致）；仅真实配额耗尽拒绝。
-    /// Quota 拒绝回保守整窗秒数（避免二次 `check_retry_after` 重复扣费）。
+    /// Quota 拒绝回窗口剩余秒数（`check_retry_after` 与 `check` 同为单请求
+    /// 语义 cost=1、一次消费即得精确值，免去二次检查的重复扣费）。
+    ///
+    /// 边界：本门配额件恒为 `QuotaLimiter::new` 构造（无 storage，见
+    /// `build_inbound_limits`）——内存模式 `check_retry_after` 的 `Err` 只
+    /// 可能来自 `QuotaExceeded`，故 `Err(secs)` 全按超限处理，fail-open
+    /// 语义不变。**若将来改挂 storage（`QuotaLimiter::with_storage`），
+    /// 该库把后端故障也映射成 `Err(整窗秒数)`，此分支会由放行变 429
+    /// （fail-closed），届时必须改回可区分「后端故障 / 真超限」的错误通道。**
     async fn check(&self, key: &str) -> Result<(), limiteron::LimiteronError> {
         match &self.inner {
-            GateLimiter::Quota(q) => match q.check(key).await {
+            GateLimiter::Quota(q) => match q.check_retry_after(key).await {
                 Ok(()) => Ok(()),
-                Err(limiteron::LimiteronError::QuotaExceeded(_)) => {
+                Err(secs) => {
                     self.last_retry_after_secs
-                        .store(self.deny_retry_after_secs.max(1), Ordering::Relaxed);
+                        .store(secs.max(1), Ordering::Relaxed);
                     Err(limiteron::LimiteronError::LimitError(
                         "global rate limit exceeded".to_string(),
                     ))
                 }
-                Err(_) => Ok(()),
             },
             GateLimiter::TokenBucket(t) => match t.allow(1).await {
                 Ok(true) => Ok(()),

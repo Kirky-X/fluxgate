@@ -6,7 +6,7 @@
 
 //! ConnectionPool 单元测试。
 //!
-//! 测试属性（规则9）：
+//! 测试属性：
 //! 1. max_concurrent=2 时，第三个 acquire() 阻塞等待，drop 第一个后第三个成功
 //! 2. available_permits() 反映池容量变化：初始 == max_concurrent，
 //!    acquire 后减少，drop 后恢复

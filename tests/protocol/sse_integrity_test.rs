@@ -3,9 +3,8 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! SSE 事件完整性对账（WP10 R-protocol-fidelity-001/002）：单元级驱动
-//! 编码器 + 集成级全链路（复用 mock 上游基建），任何断言失败输出清晰的
-//! 事件序列差异。
+//! SSE 事件完整性对账：单元级编码器 + 集成级全链路，断言失败输出
+//! 清晰的事件序列差异。
 
 #![cfg(feature = "web-server")]
 
@@ -270,8 +269,7 @@ fn tool_call_frame(id: Option<&str>, name: Option<&str>, args: String) -> String
     .to_string()
 }
 
-/// 单元级：上游 OpenAI 增量帧解析 → ToolCall 片段（全链路工具丢失的
-/// 定位探针：解析层必须产出两片段）。
+/// 上游 OpenAI 增量帧解析 → ToolCall 片段（解析层必须产出两片段）。
 #[test]
 fn openai_upstream_tool_fragments_parse_to_chunks() {
     let converter = OpenAIConverter::new();
@@ -478,7 +476,6 @@ mod integration {
 
     /// Anthropic 全链路：Anthropic 入站 + OpenAI 上游（文本增量 +
     /// 终止 + usage 尾帧）→ 出站 Anthropic SSE 事件完整性（起止/配对/
-    /// usage/终止/无孤儿；转换路径经网关编码器重建）。
     #[tokio::test]
     async fn anthropic_full_chain_event_integrity() {
         let text_frame = json!({"id":"c1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}).to_string();
@@ -560,11 +557,10 @@ mod integration {
         mock.assert_async().await;
     }
 
-    /// Anthropic 出站全链路：OpenAI 上游增量 tool_calls → IR → Anthropic
-    /// tool_use 重建（解析无损的端到端证明；出站 OpenAI 形态由下式覆盖）。
+    /// OpenAI 上游增量 tool_calls → IR → Anthropic tool_use 重建（解析无损端到端证明）。
     #[tokio::test]
     async fn openai_full_chain_event_integrity() {
-        // 增量分片为原文字符串；帧经顶层 helper 组装（手写嵌套易错）。
+        // 增量分片为原文字符串；帧经顶层 helper 组装。
         let frag1_arg = "{\"city\":\"".to_string();
         let frag2_arg = "Paris\"}".to_string();
         let text_frame = json!({"id":"c1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}).to_string();
@@ -588,8 +584,7 @@ mod integration {
             .create_async()
             .await;
 
-        // OpenAI 上游 + Anthropic 入站 = 转换路径（出站 Anthropic）——
-        // 本用例锁定 OpenAI 上游增量解析；出站 OpenAI 形态由下式覆盖。
+        // 本用例锁定 OpenAI 上游增量解析（Anthropic 入站 + OpenAI 上游）。
         let state = make_state(vec![openai_vendor("fx-o", server.url())]).await;
         let app = Router::new()
             .route("/v1/chat/completions", post(chat_completions))

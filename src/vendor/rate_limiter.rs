@@ -5,8 +5,7 @@
 
 //! 限流器模块 — 基于 limiteron 实现
 //!
-//! `TokenBucket` 和 `ConcurrencyLimiter` 作为配置包装器，
-//! 内部委托给 `limiteron::limiters` 的对应实现。
+//! `TokenBucket` / `ConcurrencyLimiter` 为配置包装器，内部委托 limiteron::limiters。
 
 use crate::config::RateLimitConfig;
 use chrono::{Local, NaiveTime};
@@ -17,18 +16,8 @@ use limiteron::limiters::{
 use std::sync::Arc;
 use std::time::Duration;
 
-/// TimeWindow 时段门控的统一判定（含跨午夜窗口）。
-///
-/// 缺陷背景：旧实现两处（本文件 `check()` 与 `manager::get_window_info`）
-/// 均为同日判定——前者 `now >= start && now < end`，后者 `now < start ||
-/// now >= end`——当 start > end（如 22:00–06:00 跨午夜配置）时段门控整段
-/// 失效。提取为纯函数使两处判定同源（DRY）。
-///
-/// 语义（左闭右开）：同日窗口（start <= end）`start <= now < end`；
-/// 跨午夜窗口（start > end）`now >= start || now < end`。
-///
-/// 纯函数不读时钟，now 由调用方注入，可脱离真实时间单测。每窗口可选
-/// 时区字段（对齐 LiteLLM ZoneInfo）为进阶项，本轮不做。
+/// TimeWindow 时段门控判定（左闭右开）：同日窗口 `start <= now < end`；跨午夜窗口
+/// `now >= start || now < end`。纯函数不读时钟，now 由调用方注入（可脱离真实时间单测）。
 pub fn time_window_active(now: NaiveTime, start: NaiveTime, end: NaiveTime) -> bool {
     if start <= end {
         now >= start && now < end
@@ -37,7 +26,6 @@ pub fn time_window_active(now: NaiveTime, start: NaiveTime, end: NaiveTime) -> b
     }
 }
 
-/// 令牌桶限流器 — 委托给 limiteron::limiters::TokenBucketLimiter
 pub struct TokenBucket {
     inner: TokenBucketLimiter,
 }
@@ -49,7 +37,7 @@ impl TokenBucket {
         }
     }
 
-    /// 异步获取一个令牌，若桶为空则等待直到有令牌可用
+    /// 桶空则等待直到有令牌。
     pub async fn acquire(&self) {
         while !self.inner.allow(1).await.unwrap_or(false) {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -57,15 +45,10 @@ impl TokenBucket {
     }
 }
 
-/// 并发控制器 — 委托给 limiteron::limiters::ConcurrencyLimiter
-///
-/// 使用共享的 `Arc<Semaphore>` 以支持 `acquire_owned()` 跨 spawn 边界持有许可
 pub struct ConcurrencyLimiter {
     inner: LimiteronConcurrency,
     semaphore: Arc<tokio::sync::Semaphore>,
-    /// 构造时保存的并发上限 — `in_flight()` 的被减数。
-    /// 信号量本身不暴露容量（available_permits 会随占用变化），
-    /// 上限必须在构造点留存。
+    /// 并发上限 — 信号量不暴露固定容量（available_permits 随占用变化）。
     max_concurrency: usize,
 }
 
@@ -79,11 +62,7 @@ impl ConcurrencyLimiter {
         }
     }
 
-    /// 当前在途请求数 = 上限 − 可用许可（已发放未释放的 permit 数）。
-    ///
-    /// 零新增状态：信号量本就是权威计数器，acquire/drop 自动增减，流式
-    /// permit 随流存活故对长流真实生效。saturating_sub 防
-    /// 防御性钳位（正常路径 available_permits ≤ max）。
+    /// 当前在途请求数 = 上限 − 可用许可；信号量为权威计数器，流式 permit 随流存活。
     pub fn in_flight(&self) -> usize {
         self.max_concurrency
             .saturating_sub(self.semaphore.available_permits())
@@ -94,7 +73,6 @@ impl ConcurrencyLimiter {
         self.max_concurrency
     }
 
-    /// 异步获取一个并发许可，返回持有的 OwnedSemaphorePermit
     pub async fn acquire(&self) -> ConcurrencyPermit {
         let permit = self
             .semaphore
@@ -105,12 +83,7 @@ impl ConcurrencyLimiter {
         ConcurrencyPermit { _permit: permit }
     }
 
-    /// token 加权获取 —— 原子获取 cost 张许可（信号量多许可
-    /// 语义，与 limiteron ConcurrencyLimiter::acquire(cost) 的
-    /// acquire_many 对照 concurrency.rs）。cost 鉗 [1, 容量]
-    /// 低于 1 按单票据；超过容量按容量截断（否则 acquire_many 永久等待
-    /// 死锁——估算 max 可配置大于并配上限）。#6 的 in_flight（容量−可用）
-    /// 自动变为 token 加权口径（同一计数点、不同加权维度）。
+    /// token 加权获取 — 原子获取 cost 张许可；cost 钳制 [1, 容量]（超容量会永久等待）。
     pub async fn acquire_weighted(&self, cost: usize) -> ConcurrencyPermit {
         let cost = cost.clamp(1, self.max_concurrency) as u32;
         let permit = self
@@ -122,50 +95,26 @@ impl ConcurrencyLimiter {
         ConcurrencyPermit { _permit: permit }
     }
 
-    /// 非阻塞检查是否可以获取许可（委托给 limiteron ConcurrencyLimiter::allow）
     pub async fn try_acquire(&self) -> bool {
         self.inner.allow(1).await.unwrap_or(false)
     }
 }
 
-/// 并发许可 — 持有 OwnedSemaphorePermit，drop 时自动释放
+/// 并发许可 — drop 时自动释放 permit。
 pub struct ConcurrencyPermit {
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
-/// 窗口内部实现 — `RateLimitConfig` 的 `sliding` 开关在构造期
-/// 选定（枚举分派而非 `dyn Limiter`，避免对象安全不确定性）。两实现的
-/// `allow(cost)`/`peek(cost)`/`RateLimitSnapshot` 同构（limiteron
-/// sharded_sliding_window.rs 与 fixed_window.rs 对照）。
-/// `pub` 仅为满足 pub enum 变体字段的可见性约束（构造收敛于
-/// `AdvancedRateLimiter::with_clock`/`build_window`，外部不应直接构造）。
+/// 窗口内部实现 — `sliding` 开关构造期选定；`pub` 仅为满足 pub enum 变体字段可见性。
 pub enum WindowInner {
-    /// 固定窗口（默认）——窗口翻越点两侧可各打满配额（瞬时 2×），现状语义
+    /// 固定窗口（默认）——翻越点两侧可各打满配额（瞬时 2×）。
     Fixed(Arc<FixedWindowLimiter>),
-    /// 滑动窗口（`sliding: true`）——任意 1×窗口长度内配额守恒，消除
-    /// 翻越点双花。第二字段 = 窗口全长秒（空窗 reset_secs 修正用，见
-    /// [`Self::window_snapshot`]）。
+    /// 滑动窗口（`sliding: true`）——任意 1×窗长内配额守恒；第二字段 = 窗口全长秒。
     Sliding(Arc<ShardedSlidingWindowLimiter>, u64),
 }
 
-/// 高级限流器 — 业务逻辑层。
-///
-/// `Token` / `Interval` 变体迁移 `limiteron::limiters::FixedWindowLimiter`——
-/// 其 `allow(cost)` 内置 `check_and_reset_window()` + CAS 原子消费
-/// （limiteron src/limiters/fixed_window.rs），一举修掉两个缺陷
-/// 1. 旧 `should_reset` 只匹配 Interval 变体、`_ => false`，Token 窗口永不重置
-///    → vendor 被路由永久排除；
-/// 2. 旧 check() 与 consume_tokens 分离非原子，可超卖。
-///
-/// 窗口到期由 `check_and_reset_window` 惰性重置，无需后台 reset worker。
-///
-/// `sliding: true` 时内部换 `ShardedSlidingWindowLimiter`
-/// （`with_clock` 支持时钟注入，MockClock 测试路径保持；`allow(cost)`
-/// 支持 token 计量消费。明确不用 `SlidingWindowLimiter`——已
-/// `#[deprecated]` 且 allow 硬编码 `Instant::now` 破坏时钟注入）。
-///
-/// `TimeWindow` 变体保留手写：limiteron 无「每日时段」窗口原语
-/// （fixed/quota 均为时长窗口），手写为最小实现。
+/// 高级限流器 — 业务逻辑层：Token/Interval 委托 limiteron 窗口原语（惰性重置 + CAS，
+/// `sliding: true` 换 Sharded 滑动窗口）；`TimeWindow` 保留手写（limiteron 无此原语）。
 pub enum AdvancedRateLimiter {
     TimeWindow {
         start: NaiveTime,
@@ -230,8 +179,7 @@ impl AdvancedRateLimiter {
         }
     }
 
-    /// 按 sliding 开关选定窗口实现（构造期定死，热更改
-    /// sliding 需经 vendor 配置更新 + 实例重建路径）。
+    /// 按 sliding 开关选定窗口实现（构造期定死；热改需配置更新 + 实例重建）。
     fn build_window(
         window: Duration,
         max: u64,
@@ -249,11 +197,9 @@ impl AdvancedRateLimiter {
     }
 
     /// 非消费预检：peek 读窗口 remaining，不递增。
-    /// 原 check() 与 consume_tokens 分离的 check-then-act 超卖窗口随之消除。
     pub async fn check(&self) -> bool {
         match self {
             Self::TimeWindow { start, end } => {
-                // 跨午夜判定统一委托 time_window_active
                 let now = Local::now().time();
                 time_window_active(now, *start, *end)
             }
@@ -267,18 +213,12 @@ impl AdvancedRateLimiter {
         }
     }
 
-    /// 该变体是否承载 token 配额记账语义。
-    ///
-    /// Interval/TimeWindow/None 无配额上限，`consume_tokens` 恒 false 不代表
-    /// 「配额将超限被拒」——调用方（worker/passthrough 记账点）应先查本方法，
-    /// 非 Token 变体直接跳过记账分支，避免误导性的 quota-underflow 告警
-    /// （评审 major：Interval vendor 每个成功请求都打 underflow warn）。
+    /// 该变体是否承载 token 配额记账语义；非 Token 变体 `consume_tokens` 恒 false（避免误导 underflow 告警）。
     pub fn accounts_tokens(&self) -> bool {
         matches!(self, Self::Token { .. })
     }
 
-    /// 原子扣减 token 配额（CAS 全有全无）：剩余不足时整体拒绝并返回 false，
-    /// 不再像旧 fetch_add 一样无上限累加（超卖）。
+    /// 原子扣减 token 配额（CAS 全有全无）：剩余不足时整体拒绝返回 false。
     pub async fn consume_tokens(&self, tokens: u64) -> bool {
         match self {
             Self::Token { inner, .. } => match inner {
@@ -289,8 +229,7 @@ impl AdvancedRateLimiter {
         }
     }
 
-    /// 窗口快照（给 get_window_info 提供精确 remaining/reset_secs）。
-    /// Token/Interval 返回 `Some((limit, used, reset_secs))`；其余变体 None。
+    /// 窗口快照：Token/Interval 返回 Some((limit, used, reset_secs))，其余 None。
     pub async fn window_snapshot(&self) -> Option<(u64, u64, u64)> {
         match self {
             Self::Interval { inner } | Self::Token { inner, .. } => {
@@ -299,14 +238,7 @@ impl AdvancedRateLimiter {
                     WindowInner::Sliding(w, window_secs) => (w.peek(1).await.ok()?, *window_secs),
                 };
                 let mut reset_secs = snap.reset_secs;
-                // 评审修复：sharded 滑窗空窗（当前窗零消费）
-                // 的 reset_secs=0 是「即时恢复」语义，但路由权重面
-                // get_window_info 把它映射为 window_end=now →
-                // WindowInfo::is_ending_soon(<300s) 对完全空闲的 sliding
-                // vendor 恒 true → window_factor 恒 0.5——最健康的零消耗
-                // vendor 反被永久打折，方向与 window_factor 语义相反。
-                // 修正：空窗（无任何消费）以窗口全长上报（下一次翻转至多
-                // 一个全窗之外），与 fixed 空窗 reset>0 的行为对齐。
+                // 空窗 reset_secs=0 会被路由映射成 window_end=now，令空闲 sliding vendor 恒被判「即将结束」——以窗口全长上报修正。
                 if window_secs > 0 && snap.remaining == snap.limit {
                     reset_secs = window_secs;
                 }
@@ -327,13 +259,9 @@ mod tests {
 
     // ======== ConcurrencyLimiter::in_flight（路由负载信号） ========
 
-    /// acquire n 个 permit → in_flight == n；Drop 后归零；max 与构造入参一致
-    ///（max 为 新增字段的直接断言）。信号量容量 == max：第 max+1 个
-    /// acquire 会阻塞，此处以「max 个全部可同时持有」证明容量正确。
     #[tokio::test]
     async fn in_flight_tracks_acquired_permits_and_max() {
         let limiter = ConcurrencyLimiter::new(3);
-        // 新增字段的直接断言（同模块测试可读私有字段）
         assert_eq!(limiter.max_concurrency, 3);
         assert_eq!(limiter.in_flight(), 0, "空载在途为 0");
 
@@ -341,9 +269,7 @@ mod tests {
         let p2 = limiter.acquire().await;
         assert_eq!(limiter.in_flight(), 2, "acquire 2 个 → in_flight == 2");
 
-        // max=3：第 3 个 permit 可立即获取（占满），第 4 个会阻塞——
-        // 用 try_acquire 不行的语义（inner.allow 消费路径不同），
-        // 直接证明信号量容量：3 个 permit 全部持有成功
+        // max=3：3 个 permit 全部同时持有，证明信号量容量 == max
         let p3 = limiter.acquire().await;
         assert_eq!(
             limiter.in_flight(),
@@ -358,9 +284,6 @@ mod tests {
         assert_eq!(limiter.in_flight(), 0, "全部 Drop 后归零");
     }
 
-    /// max=1 的退化上限：acquire 后 in_flight==1，Drop 归零
-    ///（VendorInstance 缺省上限 = 队列容量，显式 1 是 tests/routing/gate_router_test.rs
-    /// 集成测试的配置形态）。
     #[tokio::test]
     async fn in_flight_with_single_permit_limit() {
         let limiter = ConcurrencyLimiter::new(1);

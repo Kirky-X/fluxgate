@@ -77,11 +77,9 @@ pub async fn token_stats(
     Ok(Json(serde_json::json!(stats)))
 }
 
-/// 成本分账查询参数（WP9）：`group_by` 必填（vendor|model），`from`/`to`
-/// 为 `YYYY-MM-DD` 日期闭区间（可选）。
-///
-/// key 过滤经请求头 `x-nexusflow-cost-key` 传递（审查 M1，CWE-598）：
-/// 明文 key 进 URL 会落入反代/访问日志——查询串不做敏感参数承载。
+/// 成本分账查询参数：`group_by` 必填（vendor|model），`from`/`to`
+/// 为 `YYYY-MM-DD` 日期闭区间（可选）；key 过滤经请求头传递
+///（明文 key 进 URL 会落入反代/访问日志，查询串不承载敏感参数）
 #[derive(serde::Deserialize)]
 pub struct CostQuery {
     pub from: Option<String>,
@@ -111,10 +109,8 @@ fn valid_cost_date(value: &str) -> bool {
     (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
-/// GET /admin/cost — 成本分账聚合查询（WP9）：从预聚合表按维度求和，
-/// 管理员鉴权（认证中间件）；空窗口返回空数组而非错误。可选 key 过滤经
-/// `x-nexusflow-cost-key` 请求头传明文（服务端哈希后比对，见
-/// [`COST_KEY_HEADER`]）。
+/// GET /admin/cost — 成本分账聚合查询：从预聚合表按维度求和，空窗口
+/// 返回空数组；可选 key 过滤经 `x-nexusflow-cost-key` 请求头
 #[axum::debug_handler]
 pub async fn cost_usage(
     State(state): State<Arc<ApiState>>,
@@ -170,10 +166,8 @@ pub async fn cost_usage(
     })))
 }
 
-/// 全局指标快照 — 返回请求计数、错误率、平均延迟、各厂商细分指标，以及
-/// 的日志背压丢弃计数（dropped_logs：channel 满被丢的日志条数）
-/// 与 secret gate 拒发丢弃计数（secret_scan_dropped：脱敏 fail-closed 丢
-/// 弃的日志条数）
+/// 全局指标快照：请求计数、错误率、平均延迟、各厂商细分、缓存命中计数，
+/// 及日志背压/secret gate 丢弃计数
 #[axum::debug_handler]
 pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, NexusFlowError> {
     let snapshot = state.vendor_manager.metrics().snapshot();
@@ -185,6 +179,11 @@ pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
         .as_ref()
         .map(|l| l.secret_scan_dropped())
         .unwrap_or(0));
+    // 缓存统计：库侧全局计数即本进程响应缓存计数——本模块只建一个
+    // oxcache `Cache`（response_cache），其默认指标记录器是
+    // `UnifiedMetricsRecorder::global()`，而亲和表走裸 backend 不记账。
+    // 供 `[cache].l_target` 等按 /admin/metrics 分布调参读数。
+    value["cache"] = serde_json::to_value(oxcache::get_enhanced_stats()).unwrap_or(Value::Null);
     Ok(Json(value))
 }
 
@@ -334,13 +333,9 @@ pub async fn update_vendor(
     })))
 }
 
-/// GET /admin/models — 模型能力目录列表。
-///
-/// 响应面从单 global_model 包装（历史形状错位：Config 只有单例策略段）
-/// 扩为 `Vec<ModelCatalogEntry>` 目录条目——sdk 客户端未消费本端点
-/// （sdk/admin.rs 只走 /v1/models），形状变更无存量消费方。
-/// 全局模型策略（global_model 段）经 GET /admin/config 或
-/// POST /admin/models/global 读写，不并入本列表。
+/// GET /admin/models — 模型能力目录列表（`Vec<ModelCatalogEntry>`）。
+/// 全局模型策略经 GET /admin/config 或 POST /admin/models/global 读写，
+/// 不并入本列表
 #[axum::debug_handler]
 pub async fn get_models(
     State(state): State<Arc<ApiState>>,
@@ -374,12 +369,8 @@ pub async fn update_model(
     }
 }
 
-/// PUT /admin/models/{model_id} — upsert 单条目录条目。
-///
-/// 原子 RMW（写锁内读-改-校验-落盘）：条目存在则整体替换，不存在则追加；
-/// 校验（model_id 去重 / context_window > 0）经 update_config_with 内的
-/// validate_config 同拒。path 的 model_id 权威——body 中的 model_id 被
-/// 覆写（REST 惯例：资源标识取自 URL）。
+/// PUT /admin/models/{model_id} — upsert 单条目录条目（原子 RMW）；
+/// path 的 model_id 权威，body 中的被覆写
 #[axum::debug_handler]
 pub async fn upsert_model(
     State(state): State<Arc<ApiState>>,
@@ -412,10 +403,8 @@ pub async fn upsert_model(
     })))
 }
 
-/// DELETE /admin/models/{model_id} — 目录下条。
-///
-/// 原子 RMW；条目不存在时显性 400（GateError 八核心变体无 NotFound，
-/// 冻结约束下以 Config 错误承载显性缺失，禁止静默成功）。
+/// DELETE /admin/models/{model_id} — 目录下条（原子 RMW）；条目不存在
+/// 时显性 400，禁止静默成功
 #[axum::debug_handler]
 pub async fn delete_model(
     State(state): State<Arc<ApiState>>,

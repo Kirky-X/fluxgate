@@ -411,7 +411,7 @@ async fn http_layer_put_delete_get_bound_on_router() {
     );
 }
 
-/// WP6 恢复通道 —— `POST /admin/vendors/{id}/reset` 清空该 vendor 的
+/// 恢复通道 —— `POST /admin/vendors/{id}/reset` 清空该 vendor 的
 /// key 池黑名单（含游标）与冷却状态；未知 vendor 显性 400。
 #[tokio::test]
 async fn reset_vendor_clears_blacklist_and_cooldown() {
@@ -506,7 +506,7 @@ async fn reset_vendor_clears_blacklist_and_cooldown() {
     assert_eq!(body["error"]["type"], "validation_error");
 }
 
-/// WP9 `GET /admin/cost`：维度分组、hash/日期过滤、空窗空数组、
+/// `GET /admin/cost`：维度分组、hash/日期过滤、空窗空数组、
 /// 参数错误 400、未鉴权 401。
 mod cost_endpoint {
     use crate::common;

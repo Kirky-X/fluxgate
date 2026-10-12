@@ -121,7 +121,7 @@ cd examples/assets/rest-http && npm install openai && NEXUSFLOW_API_KEY=你的ke
 
 ## 约束说明
 
-- **path 依赖布局**：nexusflow 的兄弟库 `confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit` 在仓库同级目录（根 `Cargo.toml` 的 `[dependencies]` 以 `path = "../<库名>"` 引用，`[patch.crates-io]` 统一身份）。克隆本仓库单目录无法编译，需同级放置这七个库（见根 README「环境要求」）。示例 crate 经 `nexusflow = { path = ".." }` 引用网关，同为 workspace 成员，共享这一布局。
+- **自研库经 registry 集成**：`confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit` 由根 `Cargo.toml` 以 crates.io 版本声明、`Cargo.lock` 锁定校验和，cargo 自动拉取——克隆本仓库即可编译，无需同级放置这七个库（见根 README「环境要求」）。示例 crate 经 `nexusflow = { path = ".." }` 引用本仓库网关（该 path 指向仓库自身，非兄弟库），同为 workspace 成员。
 - **示例不随发布流出**：`nexusflow-examples` 声明 `publish = false`，仅作为本地 workspace 成员存在；`cargo publish` 与任何发布流水线都不会带上它。
 - **protoc 隔离**：`grpc` 不在 default，`build.rs` 依 `CARGO_FEATURE_GRPC` 提前返回，故 `cargo check/build --workspace` 无需 protoc；CI 的 grpc 编译/lint 覆盖由 `.github/workflows/ci.yml` 中显式的 `cargo check/clippy -p nexusflow-examples --features grpc` 步骤承担（这些作业已安装 protoc）。
 - **根 README 未包含本目录入口**：根 `README.md` / `README_EN.md` 目前未列出 `examples/`，本文件是示例集的独立入口。

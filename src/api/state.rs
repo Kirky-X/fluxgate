@@ -64,19 +64,9 @@ impl std::fmt::Debug for ApiState {
 }
 
 impl ApiState {
-    /// LinUCB 奖励回传 — 落库记账点（成功/失败收敛处）调用。
-    /// **门控**：仅 `[routing].selection = "linucb"`（热读）且 bandit 接线
-    /// 时 update（r = 成功 1 / 失败 0）；默认 weighted 档无状态更新
-    ///（defaultOff 语义）。
-    ///
-    /// `arm_key` 由调用方经
-    /// `bandit::linucb_arm_key` 归一（与选择侧 route_inner 同源——
-    /// lowercase + auto→"__global__"），修复前奖励写原始
-    /// `request.get("model")`：auto 路径写 ("auto", vendor) 与被咨询臂
-    /// ("__global__", vendor) 永不相交（主路径永不学习）、大写 model
-    /// 同理错键。`None` = 直连 vendor 路径（X-Vendor，try_vendor_route
-    /// 单候选）——臂未被咨询，跳过奖励（与「未选择不更新」语义一致）。
-    /// 特征长度/有限性由 [`BanditState::update`] 兜底（脏样本丢弃）。
+    /// LinUCB 奖励回传（落库记账点调用）：仅 linucb 档且接线时 update
+    ///（r = 成功 1 / 失败 0）；arm_key 与选择侧同源归一，None = 臂未被
+    /// 咨询跳过奖励；脏样本由 BanditState::update 兜底丢弃
     pub fn record_linucb_reward(
         &self,
         arm_key: Option<&str>,

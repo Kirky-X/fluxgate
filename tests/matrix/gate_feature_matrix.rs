@@ -3,11 +3,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 路由半边特性组合矩阵测试（原 llm-gate 侧矩阵，随 crate 并回）。
-//!
-//! 验证不同 feature 组合下路由核心模块的可见性是否符合预期。
-//! 此文件随 `cargo test --workspace`（default = full + db-sqlite）编译运行
-//! 全部断言；在特定 feature 组合下只编译对应的 cfg 块。
+//! 路由半边特性组合矩阵测试：验证不同 feature 组合下路由核心模块的
+//! 可见性。随 cargo test --workspace 全部断言运行；特定组合下只编译
+//! 对应 cfg 块
 //!
 //! ## 已验证的特性组合矩阵（路由半边）
 //!
@@ -30,9 +28,8 @@
 //! resilience / cost-tracking / protocol（marker）独立
 //! ```
 //!
-//! 注意：vendor-management 不再联动任何存储 feature——纯路由零存储是
-//! workspace 化的验收项（原 nexusflow 侧 vendor-management→database
-//! 联动已解除，应用面组合矩阵见 nexusflow/tests/feature_matrix.rs）。
+//! 注意：vendor-management 不再联动任何存储 feature（纯路由零存储，
+//! 应用面组合矩阵见 tests/feature_matrix.rs）。
 
 /// 验证 GateError 在所有组合下都可用（核心错误类型，常开）
 #[test]

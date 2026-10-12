@@ -32,5 +32,12 @@ api-log-push-rejected = 请求日志推送被拒：{ $error }
 api-usage-record-rejected = Token 用量记账被拒：{ $error }
 api-embeddings-openai-only = embeddings 仅支持 OpenAI 类型厂商
 
+# ---- 不变量 panic 文案（api/{anthropic,openai}.rs 最终路由 / api/route_explain.rs 入选者字段）----
+api-final-route-missing = leader/自愈/未参与路径闭包必产出最终路由
+api-explain-no-factors = 入选者必有分解
+api-explain-no-weight = 入选者必有权重
+api-explain-no-base = 入选者必有合成基准
+api-explain-no-selection = 入选者必有档位
+
 # ---- api/health.rs（#[forge] description，经 sdforge::i18n::register_translation 运行时注册） ----
 api-health-description = 健康检查端点

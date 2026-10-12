@@ -43,24 +43,16 @@ impl ConfigLoader {
     }
 }
 
-/// 从路径解析并校验配置（加载路径与 G10 热重载共用；热重载不触发落盘）。
+/// 从路径解析并校验配置（加载路径与热重载共用；热重载不触发落盘）
 pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
-    // confers::loader::load_file：路径防护（symlink 穿越/大小限制/格式探测，
-    // confers/src/impl_/loader.rs）。LoaderConfig 默认拒绝绝对路径
-    // （防不可信输入穿越）；此处路径来自操作者显式 CLI 参数或热重载监听
-    // 的自有配置文件（可信输入），放行绝对路径，symlink 检查与 max_size
-    // 防护保留默认开启。
+    // 路径来自操作者显式 CLI 参数或热重载监听的自有配置文件（可信输入），
+    // 放行绝对路径；symlink 检查与 max_size 防护保留默认开启
     let loader_config = confers::loader::LoaderConfig::new().allow_absolute();
     let annotated =
         confers::loader::load_file(path, &loader_config).map_err(|e| GateError::Config {
             message: t_args("config-load-failed", &[("error", e.to_string())]),
         })?;
-    // 强类型投影走 confers AnnotatedValue::to_typed（取代手写递归剥壳）：
-    // 元数据丢弃、Bytes→base64、非有限 F64→null 语义与 to_json 一致
-    // （confers/src/types.rs）。TOML 解析链不产生 Bytes 变体
-    // （confers/src/impl_/convert.rs 的 toml_value_to_config_value 无
-    // Bytes 分支），base64 语义对 TOML 加载路径不可观察。错误有意脱敏：
-    // 只报字段路径不回显出错值（配置值可能是密钥原文）。
+    // 错误有意脱敏：只报字段路径不回显出错值（配置值可能是密钥原文）
     let config: Config = annotated.to_typed().map_err(|e| GateError::Config {
         message: t_args("config-parse-failed", &[("error", e.to_string())]),
     })?;
@@ -70,14 +62,8 @@ pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
     Ok(config)
 }
 
-/// 校验配置 — 加载路径（ConfigLoader::load）与更新路径
-/// （ConfigManager::update_config）共用。
-///
-/// 管理面弱密钥校验委托 confers security-rules 的 JwtSecretValidator 规则
-/// 内核（[`validate_admin_secrets`]）；vendor/model id 去重是跨 Vec 条目的
-/// 唯一性约束，confers::validator 的 ValidationRule 仅支持字段级规则
-///（MinLength/Range/Email 等，见 confers/src/impl_/validator.rs），
-/// 无法表达，故保留手写。
+/// 校验配置 — 加载路径与更新路径共用；管理面弱密钥委托 confers
+/// security-rules，跨 Vec 条目的唯一性约束保留手写（字段级规则无法表达）
 pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_admin_secrets(config)?;
     validate_vendor_entries(config)?;
@@ -123,10 +109,8 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
     Ok(())
 }
 
-/// 脱敏：缺失告警不回显配置原文（用户可能误将 key 原文当作
-/// env 名填入配置，回显会把密钥泄进日志）——只报值长度/序号 + 核对提示。
-/// key 池显式列表逐名校验（缺失只告警不拒——池解析时跳过缺失名
-/// 并显性化，与 api_key_env 同一宽容级别）。
+/// 脱敏：缺失告警不回显配置原文（防密钥泄进日志），只报值长度/序号；
+/// key 池显式列表逐名校验，缺失只告警不拒
 fn warn_missing_api_key_envs(config: &Config) {
     for vendor in &config.vendors {
         if std::env::var(&vendor.api_key_env).is_err() {
@@ -159,10 +143,8 @@ fn warn_missing_api_key_envs(config: &Config) {
     }
 }
 
-/// [[model_catalog]] 段校验 —— 条目数上限、model_id 去重（与
-/// vendor/model id 同级唯一性约束，confers 字段级规则无法表达，保留手写）、
-/// 登记条目 context_window > 0（0 会让 agentstem TUI auto-compact 静默
-/// 不装配）。加载与 POST /admin/config 热更新共用本函数，两路同拒。
+/// [[model_catalog]] 段校验：条目数上限、model_id 去重、context_window > 0；
+/// 加载与热更新共用，两路同拒
 fn validate_model_catalog(config: &Config) -> Result<(), GateError> {
     if config.model_catalog.len() > crate::config::model_catalog::MAX_MODEL_CATALOG_ENTRIES {
         return Err(GateError::Config {
@@ -234,8 +216,8 @@ fn validate_catalog_prices(
     Ok(())
 }
 
-/// 窗口 <100ms 使 CB Open→HalfOpen 即刻转换：故障期退化为探针风暴，
-/// 等于关闭熔断冷却。加载与 POST /admin/config 热更新共用本函数，两路同拒。
+/// 窗口 <100ms 使 CB Open→HalfOpen 即刻转换（故障期探针风暴，等于关闭
+/// 熔断冷却）。加载与热更新共用，两路同拒
 fn validate_resilience_circuit(config: &Config) -> Result<(), GateError> {
     if config.resilience.circuit_open_timeout_ms < 100 {
         return Err(GateError::Config {
@@ -251,8 +233,7 @@ fn validate_resilience_circuit(config: &Config) -> Result<(), GateError> {
     Ok(())
 }
 
-/// [quota] 窗口须 ≥1s：0 窗口每次访问即翻转（配额永不满），属配置 bug。
-/// 加载与热更新两路同拒（`validate_resilience_circuit` 同款）。
+/// [quota] 窗口须 ≥1s：0 窗口每次访问即翻转（配额永不满），两路同拒
 fn validate_quota_window(config: &Config) -> Result<(), GateError> {
     if config.quota.window_secs == 0 {
         return Err(GateError::Config {
@@ -265,12 +246,9 @@ fn validate_quota_window(config: &Config) -> Result<(), GateError> {
     Ok(())
 }
 
-/// [quota] × [auth] 组合告警（审查 L9）：配额开启而认证关闭/缺段时，配额
-/// 租户键取自客户端自报的 key 头（`api_key_digest` 不经认证校验）——任意
-/// 伪造头即可无限开新窗口，计费控制退化为尽力而为。认证关闭是既有合法
-/// 形态（无认证网关），故不构成拒绝级错误：显性 warn + 文档声明（
-/// docs/SECURITY.md、docs/USER_GUIDE [quota] 段），不静默。加载与热更新
-/// 两路同告警（`validate_config` 共用路径）。
+/// [quota] × [auth] 组合告警：配额开启而认证关闭/缺段时，配额租户键取自
+/// 客户端自报的 key 头（不经认证校验），计费控制退化为尽力而为——
+/// 不构成拒绝级错误，显性 warn 不静默
 fn warn_quota_without_auth(config: &Config) {
     if quota_without_auth(config) {
         tracing::warn!("{}", t_args("config-quota-without-auth", &[]));
@@ -282,10 +260,8 @@ fn quota_without_auth(config: &Config) -> bool {
     config.quota.enabled && !config.auth.as_ref().is_some_and(|auth| auth.enabled)
 }
 
-/// [auth] 段条目的 ConfigProvider 薄适配 — 把管理面密钥逐条挂到合成键
-/// （`auth.api_keys[{index}]` / `auth.keys[{index}].hash`）上，供
-/// JwtSecretValidator 按标量键读取（其规则内核只消费单个 string 键，见
-/// confers/src/security/rules/jwt.rs 的 with_secret_key）。
+/// [auth] 段条目的 ConfigProvider 薄适配：管理面密钥逐条挂到合成键上，
+/// 供 JwtSecretValidator 按标量键读取
 struct AdminSecretProvider {
     entries: HashMap<String, AnnotatedValue>,
 }
@@ -311,35 +287,12 @@ impl ConfigProvider for AdminSecretProvider {
     }
 }
 
-/// 管理面密钥启动校验 — `[auth].api_keys` 与 `[[auth.keys]].hash`
-/// 的配置契约是 SHA256 hex 摘要（64 个小写 hex 字符，api_keys 存储
-/// 约定见 config/mod.rs），/admin/* 管理路由与数据面共用同一认证
-/// 中间件，违约条目即无效或弱管理面凭证。
-///
-/// 两层校验：
-/// ① 形态契约（应用层业务约定）：长度 64 且全为小写 hex 字符（认证侧
-///    sha256_hex 经 hex::encode 恒输出小写，见 src 侧 auth 中间件，故
-///    契约按小写对齐）。认证对传入 key 现场算摘要后与存储值逐字节
-///    比对，非小写 hex-64 条目（含大写摘要——certutil/Get-FileHash 的
-///    真实输出形态）永远无法认证成功，属纯配置错误；confers 长度/
-///    弱词表拦不住「≥32 字节长口令误填当摘要」「大写摘要」这两类
-///    误填，由本层强制（FTL 宣称的 hex 契约以此为实现）。
-/// ② confers JwtSecretValidator 规则内核（最小长度 + 弱词表，词表不
-///    复制进本仓库；不接 CORS 校验器——其三键缺失语义会稳定误报），
-///    每条目一次 `with_secret_key` 适配标量读取形状。对已过形态关的
-///    条目当前无增量命中（64 小写 hex 必然 ≥32 字节且不可能是弱词表
-///    任何词）。继承边界：只有 Critical 级违规升级为拒绝启动，非
-///    Critical 级留 debug 日志痕迹不拦截——规则内核后续增强新增
-///    Critical 违规时本仓库自动继承拒绝行为。
-///
-/// 条目不达标 → 与其余配置校验同 fail-fast：加载拒绝启动、
-/// POST /admin/config 拒绝热更，防止误填明文在重启用时静默生效。
-/// `[auth]` 缺段或列表为空 = 无密钥可校验，直接放行（认证禁用是既有
-/// 合法形态；校验不看 enabled——条目落盘即按契约校验，与开关状态
-/// 无关）。错误明细按配置索引固定顺序拼装（api_keys 升序 → keys
-/// 升序；HashMap 随机序会让同一坏配置的重启日志文案漂移，妨碍日志
-/// 比对与告警去重），只报条目位置与规则结论，不回显条目原文（脱敏
-/// 先例同 env 告警）。
+/// 管理面密钥启动校验：[auth] 条目的契约是 64 个小写 hex 字符的 SHA256
+/// 摘要。两层校验——① 形态契约（confers 长度/弱词表拦不住「长口令误填
+/// 当摘要」「大写摘要」）；② confers JwtSecretValidator（仅 Critical 级
+/// 升级为拒绝启动，非 Critical 留 debug）。条目不达标 fail-fast（加载拒
+/// 启动、热更拒绝）；[auth] 缺段或列表为空直接放行。错误按配置索引固定
+/// 顺序拼装，只报位置与结论不回显原文
 fn validate_admin_secrets(config: &Config) -> Result<(), GateError> {
     let Some(auth) = &config.auth else {
         return Ok(());
@@ -363,10 +316,8 @@ fn validate_admin_secrets(config: &Config) -> Result<(), GateError> {
     let mut rejections: Vec<String> = Vec::new();
     let mut shape_ok: Vec<String> = Vec::new();
     for (label, secret) in &entries {
-        // 小写 hex-64：与认证侧 sha256_hex 输出形态逐位对齐（大写摘要
-        // 恒无法认证，放行只会把全量 401 推迟到重启后）。谓词必须是
-        // 「hex 字符且非大写」——单纯小写检查会放过非 hex 小写串
-        // （如 64 个 'x' 的长口令）
+        // 小写 hex-64：与认证侧 sha256_hex 输出形态对齐（大写摘要恒无法
+        // 认证）；谓词须「hex 字符且非大写」，防 64 个非 hex 小写串漏过
         if secret.len() != 64
             || !secret
                 .bytes()

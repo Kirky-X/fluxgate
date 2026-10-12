@@ -3,10 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 协议转换语义保真参数化回归（WP10 R-protocol-fidelity-003）。
-//!
-//! 先对现状运行：红则就地修复 `src/protocol/` 对应转换器（修复与测试
-//! 同一提交），绿则锁定行为。表驱动：每语义点至少一条用例。
+//! 协议转换语义保真参数化回归（表驱动：每语义点至少一条用例）。
 
 use nexusflow::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
 use serde_json::{json, Value};

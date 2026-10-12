@@ -92,12 +92,8 @@ fn ensure_sqlite_parent_dir(_url: &str) -> Result<(), NexusFlowError> {
     Ok(())
 }
 
-/// 解析数据库连接 URL（db-backend-selection D2：URL 单一事实源）。
-///
-/// `config.url` 非空时原样优先（postgres://、mysql://、sqlite://…）；
-/// 否则回退 `path` 按 sqlite 文件库归一——该回退要求编译期启用 `db-sqlite`
-/// （本 crate 的 feature；路由半边零存储假设，不感知后端轴），未启用时
-/// 返回带重建指引的错误。
+/// 解析数据库连接 URL：config.url 非空时原样优先；否则回退 path 按
+/// sqlite 文件库归一（需启用 db-sqlite feature，未启用返回带指引的错误）
 pub fn resolve_database_url(config: &DatabaseConfig) -> Result<String, NexusFlowError> {
     if !config.url.is_empty() {
         return Ok(config.url.clone());
@@ -114,13 +110,9 @@ pub fn resolve_database_url(config: &DatabaseConfig) -> Result<String, NexusFlow
     }
 }
 
-/// 数据库 URL 日志脱敏 — `config.url` 契约支持 postgres://、mysql:// 等
-/// 惯例内嵌口令的形态（userinfo），原样进日志会把凭证泄进日志通道（脱敏
-/// 先例同 sdk client 的 Debug 输出与 env 缺失告警）。剥除 userinfo
-/// 并以 `[REDACTED]` 显式标注「此处有凭证」，host/port/path 保留供排障定位；
-/// 无 userinfo 或非 scheme://host 形态（sqlite::memory:、裸路径）逐字节
-/// 原样返回。解析用 url crate（IPv6 主机/默认端口等边界），输出手工拼装——
-/// Url::to_string() 会把 userinfo 槽的 `[` `]` 百分号编码，日志不可读。
+/// 数据库 URL 日志脱敏：剥除 userinfo 并以 `[REDACTED]` 标注，host/port/path
+/// 保留供排障；无 userinfo 或非 scheme://host 形态原样返回。
+/// 输出手工拼装（Url::to_string 会把 userinfo 槽百分号编码，日志不可读）
 pub fn redact_db_url(url: &str) -> String {
     let Ok(parsed) = url::Url::parse(url) else {
         return url.to_string();

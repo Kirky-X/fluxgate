@@ -3,14 +3,13 @@
 # fmt / clippy / check / test / coverage / security
 #
 # 与 confers 基线的差异：
-#   - NexusFlow 通过 path 依赖集成 7 个兄弟库（Cargo.toml 中 ../<lib>），
-#     所有 cargo 作业先克隆兄弟库到仓库上级目录，否则依赖解析必然失败；
+#   - 自研 7 库经 crates.io registry 集成（版本写在 Cargo.toml、校验和锁在
+#     Cargo.lock），各 cargo 作业直接拉取，无兄弟库克隆步骤；
 #   - 本仓库无 Criterion 基准、无 deny.toml，故无 benchmarks 作业，
 #     security 作业仅跑 cargo audit（补 deny.toml 后再加 cargo deny check）；
 #   - 无 CodeQL（按安全门禁约定 CodeQL 为 opt-in，不进默认流程）；
-#   - 无 docker 作业：镜像构建依赖与本仓 Cargo.lock 同源的兄弟库提交，
-#     未全部推送远端前纯远端构建不可行（docker/Dockerfile 的 SIBLING_PINS
-#     已就绪，兄弟库推送后可随时恢复该作业）。
+#   - 无 docker 作业：镜像可独立构建（纯 registry 依赖，不取兄弟库源码），
+#     镜像构建与扫描仍未纳入 CI。
 #===============================================================================
 name: CI/CD
 
@@ -39,14 +38,6 @@ env:
   #   解析到当前最新 patch 1.97.1）。按 MSRV 跑 build/clippy 同时两个目的：
   #   守住兄弟库下限、让 clippy  lint 集合可复现（clippy 随工具链版本变化）。
   #   docker/Dockerfile 与 release.yml 用当前 stable（1.99），高于下限即可
-  # path 依赖的 7 个兄弟库，克隆到 $GITHUB_WORKSPACE/../ 下满足 ../<lib> 解析
-  SIBLING_REPOS: 'confers dbnexus inklog limiteron oxcache sdforge trait-kit'
-
-#-------------------------------------------------------------------------------
-# 兄弟库克隆说明：NexusFlow 的 Cargo.toml 以 ../<lib> path 依赖集成上列仓库，
-# 且 [patch.crates-io] 将自研库重定向到同级本地源码。CI 上必须先把它们
-# 克隆到仓库同级目录，cargo metadata 才能完成依赖解析。
-#-------------------------------------------------------------------------------
 
 jobs:
   #-----------------------------------------------------------------------------
@@ -59,12 +50,6 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Checkout sibling libraries (path dependencies)
-        run: |
-          set -euo pipefail
-          for repo in $SIBLING_REPOS; do
-            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
-          done
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -82,12 +67,6 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Checkout sibling libraries (path dependencies)
-        run: |
-          set -euo pipefail
-          for repo in $SIBLING_REPOS; do
-            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
-          done
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -117,12 +96,6 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Checkout sibling libraries (path dependencies)
-        run: |
-          set -euo pipefail
-          for repo in $SIBLING_REPOS; do
-            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
-          done
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -162,12 +135,6 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Checkout sibling libraries (path dependencies)
-        run: |
-          set -euo pipefail
-          for repo in $SIBLING_REPOS; do
-            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
-          done
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -192,12 +159,6 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Checkout sibling libraries (path dependencies)
-        run: |
-          set -euo pipefail
-          for repo in $SIBLING_REPOS; do
-            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
-          done
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -222,7 +183,7 @@ jobs:
 
   #-----------------------------------------------------------------------------
   # 供应链安全（每日 schedule 唯一响应者；cargo audit 只读 Cargo.lock，
-  # 无需兄弟库与编译）
+  # 无需编译）
   #-----------------------------------------------------------------------------
   security:
     name: Security

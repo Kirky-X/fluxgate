@@ -24,34 +24,25 @@ use std::time::Duration;
 /// 单次 flush 的缓冲阈值（条）：达到即提前落库
 const FLUSH_BUFFER_CAPACITY: usize = 100;
 
-/// 单条出站文本的截断门限（字节）：对齐 API 组装侧 messages/response 的
-/// 64KB 上限（src/api/mod.rs），并远离 fancy-regex 在长文本上的回溯限制
-/// （实测 1MiB 输入直接 BacktrackLimitExceeded panic——inklog mask 入口
-/// 的 1MiB 门限只防 CPU 放大，门限内仍可触雷，故本侧取保守值）。
-/// mask_checked 对超门限输入整条拒发，直接放行会把长上下文请求的审计
-/// 日志系统性吞掉：截断保留门限内前缀（尾部丢弃不外泄，无泄密面）。
+/// 单条出站文本的截断门限（字节）：对齐 API 侧 64KB 上限，并远离
+/// fancy-regex 长文本回溯 panic（门限内仍可触雷，取保守值）；
+/// 截断保留门限内前缀（尾部丢弃不外泄，无泄密面）
 pub(crate) const MASK_INPUT_LIMIT_BYTES: usize = 64 * 1024;
 
 /// 截断留痕标记：审计可辨识"此文本已按门限截断"。
 pub(crate) const TRUNCATION_MARKER: &str = "\n…[truncated]";
 
-/// 出站脱敏 masker：库默认内建值形态表（sk-/PEM/AKIA 等九类）+ 熵扫描
-///（默认阈值/最短 token）构造 SecretScanGate，规则与门限全部取库默认，
-/// 不做业务定制。console sink（bootstrap::init_logger 的 add_sink 通路）
-/// 与落库管道（writer_loop 消费侧）共用此构造，保证两条日志出站通路
-/// 同一脱敏面。
+/// 出站脱敏 masker：库默认规则构造 SecretScanGate，不做业务定制；
+/// console sink 与落库管道共用此构造，两条出站通路同一脱敏面
 pub(crate) fn outbound_masker() -> DataMasker {
     let gate = SecretScanGate::new(SecretPatternRegistry::with_builtins())
         .with_entropy(EntropyScanner::new());
     DataMasker::builder().with_secret_scan(gate).build()
 }
 
-/// 单条出站文本的统一脱敏策略——console 与落库两条通路共用，fail 姿态
-/// 一致：超门限先按 UTF-8 字符边界截断到门限内（尾部留痕标记，截掉的
-/// 部分不进任何出站通路），再 [`DataMasker::mask_checked`]（fail-closed）。
-/// 截断保留的前缀内命中仍超门限 → Err → 调用方整条拒发（宁可丢日志
-/// 不可泄密）；fail-open 的 [`DataMasker::mask`] 会把超限文本明文放行，
-/// 不满足该取舍。
+/// 单条出站文本的统一脱敏策略（console 与落库共用，fail 姿态一致）：
+/// 超门限先按 UTF-8 边界截断再 mask_checked（fail-closed）；仍超门限
+/// → Err → 整条拒发（宁可丢日志不可泄密）
 pub(crate) fn redact_text(masker: &DataMasker, text: &str) -> Result<String, InklogError> {
     let bounded: std::borrow::Cow<str> = if text.len() > MASK_INPUT_LIMIT_BYTES {
         std::borrow::Cow::Owned(format!("{}{TRUNCATION_MARKER}", truncate_to_limit(text)))
@@ -93,13 +84,9 @@ fn redact_value(masker: &DataMasker, value: &mut Value) -> Result<(), InklogErro
     Ok(())
 }
 
-/// console 出站包装：先按 [`redact_text`] 统一策略（fail-closed + 超门限
-/// 截断）改写 message/fields 再委托 inner sink。inklog ConsoleSink 内置
-/// 出口是 fail-open 的 [`DataMasker::mask`]（>门限输入原样放行）——包装
-/// 层先行脱敏后，已脱敏文本再过内置 mask 不再命中（替换标记不在检测
-/// 面内），两条出站通路 fail 姿态一致。gate 拒发按 Ok 处理（预期丢弃
-/// 而非 sink 故障，不触发 worker 健康机制），逐条 warn + [`Self::dropped`]
-/// 计数显性化，绝不携带记录内容。
+/// console 出站包装：先按 redact_text 统一策略改写 message/fields 再委托
+/// inner sink（两条出站通路 fail 姿态一致）。gate 拒发按 Ok 处理（预期
+/// 丢弃），逐条 warn + dropped 计数显性化，绝不携带记录内容
 #[cfg_attr(not(feature = "web-server"), allow(dead_code))] // 仅 server bootstrap 构造
 pub(crate) struct GateSink {
     inner: Arc<dyn inklog::LogSink>,
@@ -218,11 +205,8 @@ impl AsyncLogger {
         }
     }
 
-    /// 写入日志（非阻塞 push：channel 满即丢弃并计数，绝不等待）。
-    ///
-    /// 原 `send().await` 在 channel 满时会阻塞调用方（响应路径）；
-    /// 改 `try_send` 后背压语义明确 —— 满即丢并计入 `dropped_logs`。
-    /// 返回 Err 仅表示 logger 已 shutdown（channel 关闭）。
+    /// 写入日志（非阻塞 push：channel 满即丢弃并计数，绝不等待）；
+    /// 返回 Err 仅表示 logger 已 shutdown
     pub fn log(&self, log: RequestLog) -> Result<(), NexusFlowError> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(NexusFlowError::Database {
@@ -394,11 +378,7 @@ impl AsyncLogger {
     }
 }
 
-/// 异步日志写入器句柄
-///
-/// 去掉了每条日志一把的 `tokio::Mutex<Option<AsyncLogger>>` ——
-/// 句柄即 Clone 的 sender + `AtomicBool` 关闭标志，log() 无锁直通
-/// （原实现 N 条日志串行化在一把互斥锁上，与"push 即返回"目标相悖）。
+/// 异步日志写入器句柄：Clone 的 sender + AtomicBool 关闭标志，log() 无锁直通
 #[derive(Clone)]
 pub struct AsyncLoggerHandle {
     inner: AsyncLogger,
@@ -600,13 +580,8 @@ mod tests {
         logger.shutdown().await.expect("Shutdown failed");
     }
 
-    /// tests ②：容量 1 且消费侧被停机前缓冲卡住时连 push 3 条，
-    /// 全部 100ms 内返回（不阻塞）且 dropped_logs==2（背压：满即丢并计数）。
-    ///
-    /// 构造"不消费"：容量 1 的 channel + shutdown 命令排在消费循环里……
-    /// 更直接：writer 在消费前先占用 1 个槽位不可行——用 Tiny 容量 1，
-    /// push 3 条后 1 条在 channel、2 条被丢；writer_loop 正常消费（消费快
-    /// 不影响断言：try_send 是瞬时判定，满槽只可能是 1 条在途）。
+    /// tests ②：容量 1 时连 push 3 条，全部 100ms 内返回且
+    /// dropped_logs==2（背压：满即丢并计数；try_send 是瞬时判定，满槽只可能 1 条在途）
     #[tokio::test]
     async fn test_async_logger_backpressure_drops_and_counts() {
         let repository = setup_repository().await;

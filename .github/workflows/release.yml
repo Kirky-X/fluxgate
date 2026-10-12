@@ -1,12 +1,12 @@
 #===============================================================================
 # NexusFlow 发布流水线（对齐 confers 基线：推 v* tag 触发）
 #
-# 产物（NexusFlow 是应用，不发 crates.io——path 依赖决定其不可发布）：
+# 产物（NexusFlow 以应用形态发布，产物为二进制，不发 crates.io）：
 #   - nexusflow-<ver>-x86_64-unknown-linux-gnu.tar.gz
 #     ubuntu runner 编译，动态链接系统 libsqlite3（sqlx 走 pkg-config，非 bundled）
-# 说明：musl 静态产物曾借道 Docker 构建产出，因兄弟库本地状态未推送、
-# 纯远端 Docker 构建不可行而移除（CI 同步去 docker 化）；需要 musl 静态
-# 二进制时在本机执行 `docker build -f docker/Dockerfile .` 自行提取。
+# 说明：musl 静态产物曾借道 Docker 构建产出，后随 CI 去 docker 化移除（镜像
+# 现为纯 registry 依赖，可独立构建）；需要 musl 静态二进制时在本机执行
+# `docker build -f docker/Dockerfile .` 自行提取。
 #===============================================================================
 name: Release
 
@@ -30,7 +30,6 @@ env:
   # Cargo.toml 的 rust-version 校验，不靠本作业保证
   RUST_VERSION: '1.99'
   BIN_NAME: nexusflow
-  SIBLING_REPOS: 'confers dbnexus inklog limiteron oxcache sdforge trait-kit'
 
 jobs:
   #-----------------------------------------------------------------------------
@@ -65,12 +64,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install system dependencies (sqlx links system libsqlite3)
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-      - name: Checkout sibling libraries (path dependencies)
-        run: |
-          set -euo pipefail
-          for repo in $SIBLING_REPOS; do
-            git clone --depth 1 "https://github.com/Kirky-X/${repo}.git" "${{ github.workspace }}/../${repo}"
-          done
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}

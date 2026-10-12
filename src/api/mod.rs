@@ -39,12 +39,8 @@ use crate::i18n::t_args; // 仅 resilience 特性分支的重试预算代码（e
 #[cfg(feature = "resilience")]
 use std::time::Duration;
 
-/// 执行成功后回写会话亲和绑定（bifrost 语义——只记"上次成功
-/// 服务的 vendor"）。亲和表未接线或请求无会话键时为 no-op。
-/// (3)：`api_key_hash` 为租户维度（cache_api_key_hash 同源，
-/// 从已验证 key 派生）——`[routing].affinity_tenant_scoped` 开启时键带
-/// 租户维度且首绑定收敛（bind_if_absent，已绑定不覆盖）；关闭时 legacy
-/// 键无条件 set（现状逐位一致）。流式派发成功等「首绑定」场景走本方法。
+/// 执行成功后回写会话亲和绑定（只记"上次成功服务的 vendor"）；未接线或
+/// 无会话键时 no-op。`affinity_tenant_scoped` 开：首绑定收敛；关：legacy 键无条件 set。
 pub(crate) async fn bind_session_affinity(
     state: &std::sync::Arc<ApiState>,
     api_key_hash: &str,
@@ -62,9 +58,7 @@ pub(crate) async fn bind_session_affinity(
     }
 }
 
-/// 失败迁移重绑定 — 换路成功后无条件 set（覆盖旧绑定指向
-/// 新成功 vendor，不得收敛到已失败者）；租户维度判定同
-/// [`bind_session_affinity`]。
+/// 失败迁移重绑定 — 换路成功后无条件 set 指向新成功 vendor；租户维度判定同 [`bind_session_affinity`]。
 pub(crate) async fn rebind_session_affinity(
     state: &std::sync::Arc<ApiState>,
     api_key_hash: &str,
@@ -82,9 +76,7 @@ pub(crate) async fn rebind_session_affinity(
     }
 }
 
-/// 最终失败（含换路 fallback 耗尽）后解除会话亲和绑定，
-/// 避免旧键指向已失败的 vendor。亲和表未接线或请求无会话键时为 no-op。
-/// 租户维度判定同 [`bind_session_affinity`]。
+/// 最终失败（含换路 fallback 耗尽）后解除会话亲和绑定，避免旧键指向已失败 vendor；未接线/无会话键时 no-op。
 pub(crate) async fn clear_session_affinity(
     state: &std::sync::Arc<ApiState>,
     api_key_hash: &str,
@@ -101,8 +93,7 @@ pub(crate) async fn clear_session_affinity(
     }
 }
 
-/// 大 payload 截断 — 序列化后 >64KB 的 messages/response 存
-/// 前缀 + 截断标记（按 UTF-8 字符边界截断，避免劈开多字节字符）。
+/// 大 payload 截断 — 序列化后 >64KB 的 messages/response 存前缀 + 截断标记（按 UTF-8 字符边界截断，避免劈开多字节字符）。
 pub(crate) fn truncate_payload(s: String) -> String {
     const MAX: usize = 64 * 1024;
     if s.len() <= MAX {
@@ -119,9 +110,8 @@ pub(crate) fn truncate_payload(s: String) -> String {
     )
 }
 
-/// 从错误中提取上游真实状态码 — VendorUnavailable 的 vendor
-/// 字段携带上游状态（manager 层构造格式 "id (500 Internal Server Error)"），
-/// RateLimited 即上游/网关 429。提取不到返回 None。
+/// 从错误中提取上游真实状态码 — VendorUnavailable 的 vendor 字段携带上游
+/// 状态（格式 "id (500 ...)"），RateLimited 即 429；提取不到返回 None。
 pub(crate) fn upstream_status_code(err: &NexusFlowError) -> Option<i32> {
     match err {
         NexusFlowError::Gate(GateError::RateLimited { .. }) => Some(429),
@@ -134,10 +124,8 @@ pub(crate) fn upstream_status_code(err: &NexusFlowError) -> Option<i32> {
     }
 }
 
-/// 失败路径落库的 status_code — 优先上游真实状态码（回归
-/// "上游 500 落库 500"），否则取核心错误固定客户端映射（GateError::
-/// status_code，与 IntoResponse 同源）；
-/// Database 等应用面错误 500（落库值与客户端实际收到的状态一致）。
+/// 失败路径落库的 status_code — 优先上游真实状态码，否则核心错误固定
+/// 映射（GateError::status_code，与 IntoResponse 同源）；Database 错误 500。
 pub(crate) fn status_code_for_error(err: &NexusFlowError) -> i32 {
     upstream_status_code(err).unwrap_or(match err {
         NexusFlowError::Gate(e) => e.status_code() as i32,
@@ -145,14 +133,8 @@ pub(crate) fn status_code_for_error(err: &NexusFlowError) -> i32 {
     })
 }
 
-/// 守门器入口评估 — `[retry].amplification_gate` 开启时在
-/// fallback 入口评估放大信号：f > 0.8·f_c → 本请求 max_total_attempts
-/// 临时收紧到 1 + tracing::warn（误触发退化为单尝试，fail-safe 方向正确）；
-/// r·f > 0.95 → 发散告警（只 warn）。关闭（默认）时原样返回 base，
-/// 行为与现状逐位一致。
-///
-/// C = Σ enabled vendor 并发上限（None=不限时的 vendor 不贡献估计；全部
-/// 不限时 → C=0 → f_c 无解 → 不收紧，仅可能发散告警——fail-open）。
+/// 守门器入口评估 — `amplification_gate` 开启时：f > 0.8·f_c → 收紧尝试
+/// 上限到 1（fail-safe），r·f > 0.95 → 告警；关闭（默认）返回 base。C=Σ 启用 vendor 并发上限。
 #[cfg(feature = "resilience")]
 fn gate_adjusted_max_attempts(
     state: &std::sync::Arc<crate::api::state::ApiState>,
@@ -190,9 +172,7 @@ fn gate_adjusted_max_attempts(
     base
 }
 
-/// 换路排除原因 — Failed（5xx/timeout 等真实失败）/
-/// Throttled（RateLimited 错误或 get_status 实时判定限流），供
-/// Retry-After 提示的「全部原因为 Throttled」判定。
+/// 换路排除原因 — Failed（真实失败）/ Throttled（RateLimited 或实时判定限流），供 Retry-After 提示判定。
 #[cfg(feature = "resilience")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExclusionReason {
@@ -200,8 +180,7 @@ pub(crate) enum ExclusionReason {
     Throttled,
 }
 
-/// 排除原因判定 — RateLimited 错误或 vendor 实时状态为
-/// Throttled → Throttled；其余 → Failed。
+/// 排除原因判定 — RateLimited 或 vendor 实时状态为 Throttled → Throttled；其余 → Failed。
 #[cfg(feature = "resilience")]
 async fn exclusion_reason(
     state: &std::sync::Arc<crate::api::state::ApiState>,
@@ -218,11 +197,8 @@ async fn exclusion_reason(
     }
 }
 
-/// 耗尽收尾 — `[routing].retry_after_hint` 开启且全部排除
-/// 原因为 Throttled 时，取各 vendor 窗口重置剩余秒数的 min 抛
-/// AllVendorsThrottled（429 + Retry-After 头）；否则原错误冒泡（默认
-/// 503 语义不变）。窗口重置不可得的 vendor 不参与 min；全部不可得 →
-/// 原错误。
+/// 耗尽收尾 — `retry_after_hint` 开启且全部排除原因为 Throttled 时，取
+/// 各 vendor 窗口重置秒数 min 抛 AllVendorsThrottled（429 + Retry-After 头）；否则原错误冒泡。
 #[cfg(feature = "resilience")]
 async fn finalize_fallback_error(
     state: &std::sync::Arc<crate::api::state::ApiState>,
@@ -241,9 +217,8 @@ async fn finalize_fallback_error(
     finalize_all_throttled(all_throttled, &resets, hint_enabled, original)
 }
 
-/// vendor 限流窗口重置剩余秒数 — get_window_info 的
-/// window_end 与当前时刻差（向上取整：边界处宁可让客户端多等一瞬）。
-/// 无窗口信息 / 无 window_end（不限时窗口）→ None（不参与 hint）。
+/// vendor 限流窗口重置剩余秒数 — window_end 与当前时刻差（向上取整，
+/// 边界处宁可让客户端多等一瞬）；无窗口信息 / 无 window_end（不限时）→ None。
 #[cfg(feature = "resilience")]
 async fn throttle_reset_secs(
     state: &std::sync::Arc<crate::api::state::ApiState>,
@@ -258,10 +233,8 @@ async fn throttle_reset_secs(
     )
 }
 
-/// 耗尽收尾纯判定（脱离 state 单测）— `all_throttled` 为
-/// 「全部排除原因为 Throttled」；resets 为各 vendor 重置剩余秒数
-///（None = 不可得）。hint 开启、全 Throttled 且至少一个重置可得 →
-/// AllVendorsThrottled{min}；否则原错误冒泡。
+/// 耗尽收尾纯判定（脱离 state 单测）— `all_throttled` 全为 Throttled、
+/// hint 开启且至少一个重置秒数可得（None=不可得）→ AllVendorsThrottled{min}；否则原错误。
 #[cfg(feature = "resilience")]
 pub(crate) fn finalize_all_throttled(
     all_throttled: bool,
@@ -280,9 +253,8 @@ pub(crate) fn finalize_all_throttled(
     }
 }
 
-/// 两条换 vendor fallback 循环共享的初始化前言。
-/// 抽此结构仅为消重（行为逐位不变）：链构建、`[retry]` 段一次热读、守门器
-/// 收紧后的尝试上限与累计等待预算锚点的读取顺序 / 告警时机完全保持原样。
+/// 两条换 vendor fallback 循环共享的初始化前言：链构建、`[retry]` 段一次
+/// 热读、守门器收紧后的尝试上限与累计等待预算锚点。
 #[cfg(feature = "resilience")]
 struct FallbackBudget {
     chain: Option<crate::vendor::resilience::FallbackChain>,
@@ -297,8 +269,7 @@ fn build_fallback_budget(
     model: &str,
 ) -> FallbackBudget {
     let chain = state.router.build_fallback_chain(model);
-    // [retry] 段一次热读 —— 尝试上限（含守门器收紧）与
-    // 时间预算同源同拍；budget 锚点统一 tokio Instant（paused-clock 可测）
+    // [retry] 段一次热读：尝试上限（含守门器收紧）与时间预算同源；锚点统一 tokio Instant
     let retry_cfg = state.config.read().retry.clone();
     let max_attempts = gate_adjusted_max_attempts(state, &retry_cfg);
     let budget =
@@ -312,10 +283,8 @@ fn build_fallback_budget(
     }
 }
 
-/// `execute_dispatch_with_fallback` 的 `same_protocol_only` 重路由
-/// 候选选择——透传载荷不可跨协议，与 `expected_type` 不同的候选计入排除集
-/// 跳过（不发起 HTTP），直至同型候选命中或排除达上限。命中返回 `Some(next)`；
-/// 无可用候选或达上限返回 `None`（调用方以原错误冒泡，保留 5xx/429 语义）。
+/// `same_protocol_only` 重路由候选选择——透传载荷不可跨协议，与
+/// `expected_type` 不同的候选计入排除集跳过（不发起 HTTP）；无候选或达上限返回 None。
 #[cfg(feature = "resilience")]
 async fn next_compatible_route(
     state: &std::sync::Arc<crate::api::state::ApiState>,
@@ -339,27 +308,24 @@ async fn next_compatible_route(
                 }
             }
             Ok(n) => return Some(n),
-            // 无可用候选
             Err(_) => return None,
         }
     }
 }
 
-/// 回退可观测响应头（WP4）：trail 构造期注入的开关为开启时返回 4 头
-///（流式由调用方在响应头阶段写入），关闭时返回空表（与现状逐字节一致）。
-/// `trail` 为本次实际尝试链（含最终命中者）。
+/// 回退可观测响应头：trail 构造期注入的开关开启时返回 4 头（流式由调用方
+/// 在响应头阶段写入），关闭时返回空表；`trail` 为本次实际尝试链。
 #[cfg(feature = "resilience")]
 pub(crate) fn fallback_observation_headers(
     decision: &crate::router::RoutingDecision,
     trail: &crate::vendor::resilience::AttemptTrail,
 ) -> axum::http::HeaderMap {
     let mut headers = axum::http::HeaderMap::new();
-    // 开关在 trail 构造期读定（本请求口径一致；record 同门控零分配——L4）。
+    // 开关在 trail 构造期读定（本请求口径一致）
     if !trail.exposed() {
         return headers;
     }
-    // 头值均为受控字符（vendor/model id 为配置 slugs，链为其逗号连接），
-    // 解析失败时跳过该项（不使成功响应失败）。
+    // 头值为受控字符（vendor/model id 为配置 slugs），解析失败时跳过该项（不使成功响应失败）
     let pairs = [
         ("x-nexusflow-vendor", decision.vendor.id.clone()),
         ("x-nexusflow-model", decision.model.model_id.clone()),
@@ -377,8 +343,8 @@ pub(crate) fn fallback_observation_headers(
     headers
 }
 
-/// 成功响应附回退观测头（WP4 出站装配）：空表时原样返回。以值取
-/// Response（调用方无需 `mut` 绑定，特性关闭组合无 `unused_mut` 告警）。
+/// 成功响应附回退观测头：空表时原样返回。以值取 Response（特性关闭组合
+/// 无 `unused_mut` 告警）。
 pub(crate) fn with_fallback_headers(
     response: axum::response::Response,
     obs: &axum::http::HeaderMap,
@@ -393,9 +359,8 @@ pub(crate) fn with_fallback_headers(
     response
 }
 
-/// 四档成本（WP9）：`model_catalog` 单价；未登记模型全零。
-/// 档源随 `Arc<Config>` 快照引用（零深拷贝——审查 M3）。
-/// usage 提数单源 [`crate::protocol::parse_usage_detailed`]（已下沉 protocol）。
+/// 四档成本：`model_catalog` 单价，未登记模型全零；档源随 `Arc<Config>`
+/// 快照引用（零深拷贝），usage 提数单源 `parse_usage_detailed`。
 pub(crate) fn catalog_costs(
     state: &crate::api::state::ApiState,
     vendor_type: &str,
@@ -414,8 +379,7 @@ pub(crate) fn catalog_costs(
         cache_creation_tokens: cache_creation as u64,
         ..Default::default()
     };
-    // cache 包含语义单源于 `prompt_cache_semantics`（与配额回补、CostTracker
-    // 同一判定）——分账侧不得自成一套。
+    // cache 包含语义单源于 `prompt_cache_semantics`（与配额回补、CostTracker 同一判定）
     let semantics = prompt_cache_semantics(vendor_type);
     match estimate_cost_from_catalog(&snapshot.model_catalog, model, &usage, semantics) {
         Some(estimate) => (
@@ -428,9 +392,8 @@ pub(crate) fn catalog_costs(
     }
 }
 
-/// 分账记账（WP9）：usage 缺失跳过（保持预扣）；记账失败记 warn，
-/// 不失败请求。`api_key_hash` 由调用方透传请求方 key 摘要（不复用
-/// key_pool 进程随机盐指纹——后者跨重启不稳定）。
+/// 分账记账：usage 缺失跳过（保持预扣），记账失败记 warn。`api_key_hash`
+/// 由调用方透传请求方 key 摘要（不复用 key_pool 随机盐指纹，跨重启不稳定）。
 pub(crate) async fn record_keyed_usage(
     state: &crate::api::state::ApiState,
     vendor_id: &str,
@@ -473,7 +436,7 @@ pub(crate) async fn record_keyed_usage(
         })
         .await
     {
-        // 记账失败不失败请求（语义保持；错误显性化）
+        // 记账失败只记 warn，错误显性化
         tracing::warn!(
             "{}",
             crate::i18n::t_args("api-usage-record-rejected", &[("error", e.to_string())])
@@ -481,28 +444,11 @@ pub(crate) async fn record_keyed_usage(
     }
 }
 
-/// 单发调用的换 vendor fallback 循环（resilience feature）。
-///
-/// - 失败 vendor 进入排除集，重调 `Router::route_excluding`，
-///   weighted_select 对剩余候选天然重归一化；
-/// - 错误是否触发换路由存量 `FallbackChain::should_trigger` 判定
-///   （链由 config vendors 的 priority 字段经 `Router::build_fallback_chain`
-///   构建，trigger=All：耗尽/429/5xx/timeout 都换路）；
-/// - 总尝试预算 `retry.max_total_attempts`（默认 8）防
-///   vendor 数 × 重试数爆炸；
-/// - 跨 vendor 累计等待时间预算 `[retry].retry_budget_secs`
-///   （默认 0 = 不限时）——锚点含各 vendor 内部重试等待，重派前超限即放弃；
-/// - 无可用候选 / 预算耗尽 / 错误不触发 → 原错误冒泡
-///   （VendorUnavailable 经 error.rs 固定映射 503，与 同口径）；
-/// - 排除集带原因（Failed/Throttled），trigger/budget 耗尽
-///   与 route_excluding 无候选两处耗尽分支统一经收尾函数
-///   [`finalize_fallback_error`]——`[routing].retry_after_hint` 开启且
-///   全部为 Throttled → AllVendorsThrottled（429 + Retry-After）。
-///   已知边界：handler 首路由即全 Throttled 的入口场景（`?` 早退、
-///   Validation 错误丢失原因）本轮不覆盖。
-///
-/// 返回最终成功的 RoutingDecision —— request_logs.actual_vendor 记最终
-/// 成功者（一请求可能触达多 vendor）。
+/// 单发调用的换 vendor fallback 循环（resilience）：失败 vendor 进排除集
+/// 重路由，`FallbackChain::should_trigger` 判定换路；总尝试预算
+/// max_total_attempts（默认 8）、累计等待预算 retry_budget_secs（默认 0 =
+/// 不限时）；无候选/预算耗尽/不触发 → 原错误冒泡；耗尽分支统一经
+/// finalize_fallback_error 收尾。返回最终成功的 RoutingDecision
 #[cfg(feature = "resilience")]
 pub(crate) async fn execute_request_with_fallback(
     state: &std::sync::Arc<crate::api::state::ApiState>,
@@ -519,8 +465,7 @@ pub(crate) async fn execute_request_with_fallback(
 > {
     let mut decision = initial;
     trail.record(&decision.vendor.id);
-    // 排除集升级为 (vendor_id, 原因) —— Throttled 信息供
-    // Retry-After 提示判定
+    // 排除集带原因（Failed/Throttled），Throttled 供 Retry-After 提示判定
     let mut excluded: Vec<(String, ExclusionReason)> = Vec::new();
     let FallbackBudget {
         chain,
@@ -544,8 +489,7 @@ pub(crate) async fn execute_request_with_fallback(
                 let reason = exclusion_reason(state, &decision.vendor.id, &e).await;
                 excluded.push((decision.vendor.id.clone(), reason));
                 if !triggered || excluded.len() as u32 >= max_attempts {
-                    // trigger/预算耗尽收尾（全 Throttled 且
-                    // hint 开启 → AllVendorsThrottled；否则原错误）
+                    // trigger/预算耗尽收尾（全 Throttled 且 hint 开启 → AllVendorsThrottled）
                     return Err(finalize_fallback_error(state, e, &excluded).await);
                 }
                 // 跨 vendor 累计等待超预算 → 放弃换路
@@ -575,25 +519,11 @@ pub(crate) async fn execute_request_with_fallback(
     }
 }
 
-/// 透传非流式 / 两条流式路径的换 vendor fallback 循环
-///（resilience feature，仅 cover_all_paths 开启时由调用方选用）。
-///
-/// 镜像 [`execute_request_with_fallback`] 的结构：失败 vendor 进排除集 →
-/// `Router::route_excluding` 重路由（weighted_select 对剩余候选天然重归一
-/// 化）→ `FallbackChain::should_trigger` 判定 → `retry.max_total_attempts`
-/// 总尝试预算。载荷类型异构（透传 Value / 流式 Bytes·StreamChunk vs
-/// UnifiedResponse），以派发闭包泛型化而非强泛型统一。
-///
-/// 边界语义（OpenRouter）：流式 Err 均发生在响应头前（manager
-/// check_stream_status 早退），Ok 即流已建立 —— 调用方交出 body 后流中
-/// 错误仍以 SSE error 事件终止，不再换路。
-///
-/// `same_protocol_only`：透传载荷不可跨协议 —— 重路由时与初始 vendor
-/// type 不同的候选计入排除集跳过（不发起 HTTP），直至同型候选或预算耗尽
-///（UnifiedRequest 转换路径传 false，任意 vendor type 均合法）。
-///
-/// 返回最终成功的 RoutingDecision —— request_logs.actual_vendor 记最终
-/// 成功者（与 记账口径一致）。
+/// 透传非流式 / 两条流式路径的换 vendor fallback 循环（仅
+/// cover_all_paths 开启时选用），语义镜像 execute_request_with_fallback；
+/// 载荷类型异构，以派发闭包泛型化。流式 Err 均发生在响应头前，Ok 即流已
+/// 建立、流中错误不换路；same_protocol_only 时跨协议候选计入排除集跳过。
+/// 返回最终成功的 RoutingDecision
 #[cfg(feature = "resilience")]
 pub(crate) async fn execute_dispatch_with_fallback<T, F, Fut>(
     state: &std::sync::Arc<crate::api::state::ApiState>,
@@ -604,10 +534,8 @@ pub(crate) async fn execute_dispatch_with_fallback<T, F, Fut>(
     trail: &mut crate::vendor::resilience::AttemptTrail,
 ) -> Result<(T, crate::router::RoutingDecision), GateError>
 where
-    // 派发闭包持有决策的**所有权**并返回不借用环境的 future（owned
-    // captures）：稳定 Rust 下 Fn 返回的固定 Fut 类型无法表达「借用闭包
-    // 参数」的高阶生命周期（async-book 经典限制）。clone 成本
-    //（RoutingDecision / Arc / Value）相对 HTTP 往返可忽略。
+    // 派发闭包持有决策所有权并返回不借用环境的 future：稳定 Rust 的
+    // Fn->Fut 无法表达借用闭包参数的高阶生命周期（async-book 限制）。
     F: Fn(crate::router::RoutingDecision) -> Fut,
     Fut: std::future::Future<Output = Result<T, GateError>>,
 {
@@ -634,8 +562,7 @@ where
                 if !triggered || excluded.len() as u32 >= max_attempts {
                     return Err(e);
                 }
-                // 跨 vendor 累计等待超预算 → 放弃换路，
-                // 返回最后错误（保留其 5xx/429 语义）
+                // 跨 vendor 累计等待超预算 → 放弃换路，返回最后错误（保留 5xx/429 语义）
                 if let Some(b) = budget {
                     if crate::utils::retry::budget_exceeded(budget_anchor, b, Duration::ZERO) {
                         return Err(e);
@@ -671,13 +598,9 @@ where
 
 // ============ tests：fallback 预算与守门器 ============
 //
-// 两个 fallback 循环是 pub(crate)——集成面（tests/）只能走 HTTP 全链路，
-// 无法对注入计数/时钟做确定性断言；本模块以桩派发闭包（总是失败，可选
-// 先等待）直接驱动循环本体。注：这里用真实时钟——start_paused 与本模块
-// 接线的 sqlite 连接池冲突（PoolTimedOut，paused-clock × IO 陷阱的
-// sqlite 版，retry.rs budget_exceeded 注释同款记录）；tokio Instant 随
-// paused clock 推进的语义已由 retry.rs 纯函数测试锁定，本模块 2s 等待
-// 对 1s 预算余量充分，真实时钟同样确定性成立。
+// 两个 fallback 循环是 pub(crate)——集成面只能走 HTTP 全链路，无法对
+// 注入计数/时钟做确定性断言；本模块以桩派发闭包直接驱动循环本体。用
+// 真实时钟（start_paused 与本模块 sqlite 连接池冲突，PoolTimedOut）。
 #[cfg(all(test, feature = "resilience", feature = "database"))]
 mod fallback_guard_tests {
     use super::*;
@@ -819,8 +742,8 @@ mod fallback_guard_tests {
         })
     }
 
-    /// 灌超阈观测：6/6 全失败（f=1.0）、r=1.0（rf=1.0 发散）、C=20、
-    /// λ=0.1 → f_c=(20−0.1)/20≈0.995，f=1.0 > 0.8·f_c → 收紧。
+    /// 灌超阈观测：6/6 全失败（f=1.0）、r=1.0、C=20、λ=0.1 →
+    /// f_c≈0.995，f=1.0 > 0.8·f_c → 收紧。
     fn flood_superthreshold_metrics(state: &ApiState) {
         let m = state.vendor_manager.metrics();
         for _ in 0..6 {
@@ -832,9 +755,8 @@ mod fallback_guard_tests {
         }
     }
 
-    /// 总是失败的桩派发闭包：记调用次数，可选先虚拟等待（预算测试用）。
-    /// 输出 future 装箱为 trait 对象（`Fn -> impl Future` 嵌套 RPIT 不上
-    /// 稳定 Rust——E0782）。
+    /// 总是失败的桩派发闭包：记调用次数，可选先等待（预算测试用）。输出
+    /// future 装箱为 trait 对象（嵌套 RPIT 不上稳定 Rust，E0782）。
     fn failing_dispatcher(
         calls: Arc<AtomicUsize>,
         pre_sleep: Duration,
@@ -855,8 +777,7 @@ mod fallback_guard_tests {
         }
     }
 
-    /// gate=true + 超阈计数 → 本请求 max_total_attempts 收紧到 1：首次
-    /// 失败即放弃，健康 vendor v-b 不被触达（对照 gate_on=false 同数据）。
+    /// gate=true + 超阈计数 → max_total_attempts 收紧到 1：首次失败即放弃，v-b 不被触达。
     #[tokio::test]
     async fn gate_on_tightens_total_attempts_to_one() {
         let state = make_state(
@@ -895,8 +816,7 @@ mod fallback_guard_tests {
         );
     }
 
-    /// 双开关默认（gate=false、budget=0）：同样的超阈数据 → 换路 v-b 再
-    /// 失败才放弃（2 次派发）——默认路径与现状逐位一致（结构性回归）。
+    /// 双开关默认（gate=false、budget=0）：同样超阈数据 → 换路 v-b 再失败才放弃（2 次派发）。
     #[tokio::test]
     async fn defaults_keep_current_behavior_two_dispatches() {
         let state = make_state(
@@ -975,9 +895,8 @@ mod fallback_guard_tests {
 //
 // 全 Throttled 场景经配置注入（Token max_tokens=0 → worker 限流早退
 // RateLimited，无真实 HTTP）；初始决策用 direct 形式手工构造
-//（try_direct_route 不查状态——与 X-Vendor 提示同语义），否则首路由
-// 即被 ==Available 过滤、循环无法进入（该入口边界本轮不覆盖，见
-// execute_request_with_fallback 文档）。
+//（try_direct_route 不查状态），否则首路由即被 ==Available 过滤、
+// 循环无法进入。
 #[cfg(all(
     test,
     feature = "resilience",
@@ -1139,8 +1058,7 @@ mod cooldown_retry_after {
         .unwrap()
     }
 
-    /// direct 形式初始决策（不查 vendor 状态——绕过首路由的
-    /// ==Available 过滤，使 fallback 循环可达）。
+    /// direct 形式初始决策（不查 vendor 状态，绕过 ==Available 过滤使循环可达）。
     fn direct_decision(vendor: &VendorConfig) -> RoutingDecision {
         RoutingDecision {
             vendor: vendor.clone(),
@@ -1208,8 +1126,7 @@ mod cooldown_retry_after {
     // ---- E2E：execute_request_with_fallback 两处耗尽分支 ----
 
     /// 分支一（trigger/预算耗尽）：max_total_attempts=1，v-a 首失败即耗尽
-    /// → 全 Throttled + hint 开 → AllVendorsThrottled，响应 429 且带
-    /// Retry-After 头（秒数取自窗口快照，≥1）。
+    /// → 全 Throttled + hint 开 → AllVendorsThrottled，429 + Retry-After 头。
     #[tokio::test]
     async fn trigger_exhausted_all_throttled_yields_429_with_retry_after() {
         let state = make_state(
@@ -1285,9 +1202,8 @@ mod cooldown_retry_after {
         );
     }
 
-    /// 混合原因（v-a 限流 + v-b 真实失败）→ 原错误冒泡（503 语义不变，
-    /// 不产生 AllVendorsThrottled）。「原错误」= 最后一次失败的错误，
-    /// 故 Throttled 放前、真实失败放后。
+    /// 混合原因（v-a 限流 + v-b 真实失败）→ 原错误冒泡（503 语义不变）。
+    /// 「原错误」是最后一次失败的错误，故 Throttled 放前、真实失败放后。
     #[tokio::test]
     async fn mixed_reasons_keep_original_error() {
         let state = make_state(

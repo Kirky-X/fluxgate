@@ -640,8 +640,7 @@ mod batch_tx {
         assert!(all.is_empty());
     }
 
-    /// 全新文件路径自举建库（mode=rwc 回归：sqlx 默认不创建不存在的库文件，
-    /// 此前仅 :memory: 测试覆盖不到该路径，实机首次启动在全新路径上失败）
+    /// 全新文件路径自举建库（mode=rwc：sqlx 默认不创建不存在的库文件）。
     #[tokio::test]
     async fn test_database_new_creates_missing_file() {
         let nanos = std::time::SystemTime::now()
@@ -1306,7 +1305,7 @@ mod database_gap {
     }
 }
 
-// ============ WP9 成本分账落库（V2 分账聚合 + /admin/cost 查询面） ============
+// ============ 成本分账落库（V2 分账聚合 + /admin/cost 查询面） ============
 
 #[cfg(test)]
 mod cost_ledger {

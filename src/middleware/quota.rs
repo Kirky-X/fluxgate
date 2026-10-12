@@ -5,27 +5,10 @@
 
 //! 成本与 token 维度配额（WP8 预扣-回补）。
 //!
-//! 模型：请求入口按 `est = 预估输入 token×输入单价 + max_tokens×输出单价`
-//! 预扣（输入 token 估算与 count_tokens 同口径，见 [`crate::utils::tokens`]；
-//! 单价取 `[[pricing]]` 同模型跨 vendor 最高价——入口时 vendor 未定，保守
-//! 取高，响应后按实际回补找平）；非流式在响应后、（转换）流式在流结束后按
-//! 实际 usage 回补差额（可负向返还；实际超预估时追扣）。超限 429 +
-//! Retry-After（窗口剩余秒）。与 [rate_limit]/[admission] 独立叠加。
-//!
-//! 计数原语约束声明：limiteron 1.x 未暴露 keyed `(key, cost)` 原子消费与
-//! 回补（refund）API（`QuotaLimiter::check_and_consume` 为私有；公开的
-//! `check_retry_after` 固定 cost=1；`Limiter::allow` 仅匿名桶），预扣-
-//! 回补语义需消费/回补成对精确，故本模块以 std 原语实现固定窗口账本
-//! （与 limiteron 内存原语同语义：单实例、进程内存、10k key 上限、
-//! 窗口翻转惰性）；待 limiteron 暴露对应 API 后迁移。
-//!
-//! 热读：enabled/窗口/估算常数/per-key 限额/价格表每请求现读；用量账本
-//! 跨热更保留。档源/窗口/估算常数以 `Arc<Config>` 快照共享（每请求零深
-//! 拷贝，热更换新快照）。**透传流的条件性缺口**：入站协议 == 出站协议的
-//! 透传流经 [`passthrough_stream_body`] 逐帧观测 usage 并在正常 EOF 时回补；
-//! 上游断流、`event: error` 帧终止、或全程无可解析 usage（典型：OpenAI
-//! 透传流不带 `stream_options.include_usage`）时不回补、保持预扣（与「入口
-//! 被拒与失败请求预扣不返还」同一口径）。
+//! 入口按 `预估输入 token×输入单价 + max_tokens×输出单价` 预扣，响应后/流结束后按
+//! 实际 usage 回补（可负向返还、超预估追扣），超限 429 + Retry-After，与 rate_limit/
+//! admission 独立叠加。账本以 std 原语实现固定窗口（limiteron 1.x 无 keyed
+//! `(key, cost)` 原子消费/回补 API）；配置热读。透传流断流或无 usage 时不回补、保持预扣。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -47,11 +30,10 @@ use crate::protocol::sse_frame::{
 use crate::utils::tenant::api_key_digest;
 use crate::utils::tokens::estimate_messages_tokens_with;
 
-/// 1 millicent = 1e-5 USD（名从 `cost_quota_millicents`；整数计价避浮点误差）。
+/// 1 millicent = 1e-5 USD（整数计价避浮点误差）。
 pub const MILLICENTS_PER_USD: f64 = 100_000.0;
 
-/// 配额路径体上限（字节）：仅受限租户的适用路径缓冲时执行；超限 413
-/// （非适用路径与无限额租户零缓冲，不经过本上限）。
+/// 配额路径体上限（字节）：仅受限租户的适用路径缓冲时执行，超限 413。
 const MAX_QUOTA_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// USD → millicents（向上取整，保守预扣方向；非有限/负值按 0）。
@@ -65,8 +47,7 @@ pub fn usd_to_millicents(usd: f64) -> u64 {
 }
 
 /// 同模型跨 vendor 最高单价（每 1k tokens；入口 vendor 未定，保守取高；
-/// 无登记返回 (0,0) → 预扣零成本，行为退化为纯 token 窗口）。仅作
-/// [`unit_prices`] 在模型未登记目录时的回退档源。
+/// 无登记返回 (0,0)，预扣零成本）。
 pub fn max_unit_prices(pricing: &[PricingConfig], model: &str) -> (f64, f64) {
     let mut input = 0.0f64;
     let mut output = 0.0f64;
@@ -81,11 +62,8 @@ pub fn max_unit_prices(pricing: &[PricingConfig], model: &str) -> (f64, f64) {
     (input, output)
 }
 
-/// 档源解析单点：目录四档优先，未登记回退 `[[pricing]]` 两档。配额侧与
-/// 分账侧（`api::catalog_costs` → `estimate_cost_from_catalog`）共用同一档源，
-/// 不允许第二套价目表（R-quota-cost-003 约束：成本计算复用
-/// model_catalog 单价）；币种随目录条目，多币种归一不在本窗户口径内
-///（与 `/admin/cost` 同分歧）。
+/// 档源解析单点：目录四档优先，未登记回退 `[[pricing]]` 两档；成本计算
+/// 不允许第二套价目表。
 enum PriceSource {
     /// 目录条目四档价（每 1M tokens，cache 两档可有值）
     Catalog { input: f64, output: f64 },
@@ -107,11 +85,9 @@ fn resolve_price_source(
     }
 }
 
-/// 预扣估算（入口与回补共用同一口径）：返回（预估总 token，预估成本
-/// millicents）。模型缺失 → (0,0)。cache 两档不参与预估（请求侧无
-/// cache 用量可估），只在回补时按实际计量。分档保留各自原始表达式
-///（目录每 1M、回退每 1k），不取 ×1000/÷1M 来回换算，避免浮点尾差
-/// 改动既有用例的期望数值。
+/// 预扣估算（入口与回补共用同一口径）：返回（预估总 token，预估成本 millicents）。
+/// 模型缺失 → (0,0)；cache 两档不参与预估，只按回补实际计量。分档保留原始
+/// 表达式（目录每 1M、回退每 1k），不来回换算。
 pub fn precharge_for(
     body: &Value,
     catalog: &[ModelCatalogEntry],
@@ -135,8 +111,8 @@ pub fn precharge_for(
     (est_input.saturating_add(max_tokens), usd_to_millicents(usd))
 }
 
-/// 实际成本输入单束（usage 四档 + 档源 + 协议）：一次构造避免长参数列表。
-/// `model` 为请求体模型名（档源命中键），`vendor_type` 决定 cache 包含语义。
+/// 实际成本输入单束（usage 四档 + 档源 + 协议）：`model` 为档源命中键，
+/// `vendor_type` 决定 cache 包含语义。
 pub struct UsageCostInput<'a> {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -148,10 +124,8 @@ pub struct UsageCostInput<'a> {
     pub vendor_type: &'a str,
 }
 
-/// 实际成本（回补用，与预扣同单价源）：四档全计，cache 语义与分账侧
-/// 同一判定（`prompt_cache_semantics`）——同一请求的「分账成本」与
-/// 「配额扣减」由构造相等，仅余 `usd_to_millicents` 向上取整的 ≤1
-/// millicent 尾差。token 超预估或 cache 溢价时追扣为正差额。
+/// 实际成本（回补用，与预扣同单价源）：四档全计，cache 语义与分账侧同一
+/// 判定，仅余 ≤1 millicent 取整尾差。
 pub fn actual_cost_millicents(input: &UsageCostInput<'_>) -> u64 {
     let UsageCostInput {
         prompt_tokens,
@@ -165,8 +139,7 @@ pub fn actual_cost_millicents(input: &UsageCostInput<'_>) -> u64 {
     } = *input;
     let clamp = |v: u64| v.min(u32::MAX as u64) as u32;
     if let PriceSource::Catalog { .. } = resolve_price_source(catalog, pricing, model) {
-        // 目录命中 → 走分账同一函数（含 Inclusive/Exclusive 基数折算，
-        // cache 两档在此进入成本口径）。
+        // 目录命中 → 走分账同一函数（Inclusive/Exclusive 基数折算）。
         let usage = crate::protocol::TokenUsage {
             prompt_tokens: clamp(prompt_tokens),
             completion_tokens: clamp(completion_tokens),
@@ -190,10 +163,8 @@ pub fn actual_cost_millicents(input: &UsageCostInput<'_>) -> u64 {
     )
 }
 
-/// 响应 usage 提取（OpenAI `prompt_tokens`/`completion_tokens` 与 Anthropic
-/// `input_tokens`/`output_tokens` 双形态；无 usage → None，调用方保持预扣）。
-/// 提数单源于 [`crate::protocol::parse_usage_detailed`]（含 cache 两档），
-/// 配额侧不得保留第二套提数实现（R-quota-cost-003）。
+/// 响应 usage 提取（OpenAI/Anthropic 双形态；无 usage → None，调用方保持预扣），
+/// 提数单源 `parse_usage_detailed`。
 pub fn extract_usage_tokens(body: &Value) -> Option<(u64, u64)> {
     let (prompt, completion, _, _) = crate::protocol::parse_usage_detailed(body)?;
     Some((prompt as u64, completion as u64))
@@ -213,7 +184,7 @@ pub struct QuotaState {
     ledgers: Mutex<HashMap<String, KeyWindow>>,
 }
 
-/// 高基数 key 内存约束（与 limiteron `QuotaLimiter` 10k 上限同级）。
+/// 高基数 key 内存约束（与 limiteron `QuotaLimiter` 10k 同级）。
 const QUOTA_MAX_TRACKED_KEYS: usize = 10_000;
 
 impl QuotaState {
@@ -230,15 +201,14 @@ impl QuotaState {
     }
 
     /// 账本淘汰（consume/recompense 共用谓词）：超上限时仅保留未翻转窗口。
-    /// 各调用点在同一临界区内执行（锁内私有）。
     fn evict_if_over_cap(guard: &mut HashMap<String, KeyWindow>, now: Instant, window_secs: u64) {
         if guard.len() > QUOTA_MAX_TRACKED_KEYS {
             guard.retain(|_, w| !Self::flipped(w.window_start, now, window_secs));
         }
     }
 
-    /// 预扣（入口）：任一维度超限即拒（不落账），返回窗口剩余秒（≥1）。
-    /// 两限额均为 0 → 直接放行（不建账，零行为变化）。
+    /// 预扣（入口）：任一维度超限即拒（不落账），返回窗口剩余秒（≥1）；
+    /// 两限额均为 0 → 直接放行（不建账）。
     pub fn consume(
         &self,
         key: &str,
@@ -267,7 +237,6 @@ impl QuotaState {
             .saturating_sub(now.duration_since(window.window_start.unwrap_or(now))))
         .as_secs()
         .max(1);
-        // 任一维度超限即拒（与 rate_limit/admission 叠加语义一致：任一触发即拒）。
         let token_over =
             token_quota > 0 && pre_tokens > token_quota.saturating_sub(window.token_used);
         let cost_over = cost_quota > 0 && pre_cost > cost_quota.saturating_sub(window.cost_used);
@@ -279,11 +248,9 @@ impl QuotaState {
         Ok(())
     }
 
-    /// 回补（响应后/流结束后）：按实际结算差额（可负向返还；实际超预估
-    /// 时追扣）。**无账不建**：预扣未落账（入口跳过/拒收不落账/窗口已淘汰）
-    /// 时无差额可回——新建账只会把正向差额虚记进干净窗口。饱和钳 0
-    ///（回补不跨窗口追溯——翻转后差额落新窗，方向保守）。淘汰与
-    /// [`Self::consume`] 同谓词同款惰性。
+    /// 回补（响应后/流结束后）：按实际结算差额（可负向返还、超预估追扣）。
+    /// **无账不建**：未落账时无差额可回，新建账只会把正向差额虚记进干净窗口。
+    /// 饱和钳 0（回补不跨窗口追溯）。淘汰与 [`Self::consume`] 同谓词。
     pub fn recompense(
         &self,
         key: &str,
@@ -339,17 +306,14 @@ fn quotas_for(config_manager: &ConfigManager, tenant: &str) -> (u64, u64) {
     }
 }
 
-/// 配额中间件注入面（最小接口）：只携带判限所需两项数据，middleware 不
-/// 反向依赖 `crate::api::ApiState`；由 router_builder 从 ApiState 拆出经
-/// `from_fn_with_state` 注入。
+/// 配额中间件注入面（最小接口）：只携带判限所需两项数据，经 `from_fn_with_state` 注入。
 #[derive(Clone)]
 pub struct QuotaGate {
     pub config: Arc<ConfigManager>,
     pub quota: Option<Arc<QuotaState>>,
 }
 
-/// 配额适用性判定产物：账本句柄 + 配置快照（`Arc<Config>` 共享，零深
-/// 拷贝）+ per-key 双限额。
+/// 配额适用性判定产物：账本句柄 + 配置快照（`Arc<Config>` 共享，零深拷贝）+ 双限额。
 struct QuotaLease {
     quota: Arc<QuotaState>,
     config: Arc<Config>,
@@ -358,8 +322,7 @@ struct QuotaLease {
 }
 
 /// 配额适用性三级判定（入口/透传流/转换流共用单点）：未接线 /
-/// `[quota].enabled = false` / 该租户双限额为 0 → `None`（调用方零行为
-/// 直通：不缓冲、不解析、不克隆体与档源）；适用 → [`QuotaLease`]。
+/// `[quota].enabled = false` / 该租户双限额为 0 → `None`（调用方零行为直通）。
 fn quota_applies(
     config_manager: &Arc<ConfigManager>,
     quota: Option<&Arc<QuotaState>>,
@@ -382,16 +345,15 @@ fn quota_applies(
     })
 }
 
-/// 配额中间件（WP8 入口裁决）：仅 `/v1/chat/completions` 与 `/v1/messages`
-///（ embeddings/模型列表/计数/admin 不进配额）；关闭或无账本或双限额
-/// 不限时零行为（body 原样透传，零缓冲零解析——H1：限额判定先于体读取，
-/// 仅受限租户支付缓冲+解析成本）。超限 429 + Retry-After + i18n 文案。
+/// 配额中间件（WP8 入口裁决）：仅 `/v1/chat/completions` 与 `/v1/messages`；
+/// 关闭/无账本/双限额不限时零行为透传（限额判定先于体读取）。超限 429 +
+/// Retry-After + i18n 文案。
 pub async fn quota_middleware(
     State(gate): State<QuotaGate>,
     request: Request,
     next: Next,
 ) -> Response {
-    // 零分配路径判定（matches! 不产生 String）；日志路径改借 parts。
+    // 零分配路径判定（matches! 不产生 String）。
     let applicable = matches!(
         request.uri().path(),
         "/v1/chat/completions" | "/v1/messages"
@@ -401,7 +363,7 @@ pub async fn quota_middleware(
     if !applicable {
         return next.run(Request::from_parts(parts, body)).await;
     }
-    // 租户摘要：认证中间件在外层已放行，现场计算（与 tower 键提取器同口径）。
+    // 租户摘要：认证中间件在外层已放行，现场计算。
     let tenant = api_key_digest(&parts.headers);
     let Some(lease) = quota_applies(&gate.config, gate.quota.as_ref(), &tenant) else {
         return next.run(Request::from_parts(parts, body)).await;
@@ -416,12 +378,10 @@ pub async fn quota_middleware(
     let cpt = snapshot.quota.est_chars_per_token.max(1);
     let window_secs = snapshot.quota.window_secs.max(1);
 
-    // 受限租户才缓冲与解析（解析结果仅本层判限使用；handler 经 Json 提取器
-    // 自行解析——架构上不跨层传递已解析体，成本限于受限租户）。
+    // 受限租户才缓冲与解析（handler 经 Json 提取器自行解析，不跨层传递已解析体）。
     let body_bytes = match axum::body::to_bytes(body, MAX_QUOTA_BODY_BYTES).await {
         Ok(bytes) => bytes,
-        // 读体失败（超限/断流）：显性 413，不再吞错转发空体（L1——空体只
-        // 会换来误导性 400）。
+        // 读体失败（超限/断流）：显性 413，不吞错转发空体。
         Err(_) => {
             tracing::warn!(
                 path = %parts.uri.path(),
@@ -438,7 +398,7 @@ pub async fn quota_middleware(
     };
     let parsed: Value = match serde_json::from_slice(&body_bytes) {
         Ok(value) => value,
-        // 非法体：判限跳过，下游以 4xx 校验（fail-open，行为不变）。
+        // 非法体：判限跳过，下游以 4xx 校验（fail-open）。
         Err(_) => {
             return next
                 .run(Request::from_parts(
@@ -458,8 +418,7 @@ pub async fn quota_middleware(
         pre_cost,
         window_secs,
     ) {
-        // 预扣成功：body 原样重装交 handler（余量头为规格 Out of Scope，
-        // M7 移除后无响应面附加）。
+        // 预扣成功：body 原样重装交 handler。
         Ok(()) => {
             next.run(Request::from_parts(
                 parts,
@@ -476,10 +435,8 @@ pub async fn quota_middleware(
     }
 }
 
-/// 非流式回补钩（响应后）：有 usage 才结算（无 usage 保持预扣，保守）。
-/// `quota` 未接线时 no-op。usage 四档经 `protocol::parse_usage_detailed`
-/// 单源提取；`vendor_type` 决定 cache 包含语义（与分账侧同一判定）。
-/// 门控与入口一致（未启用/无限额租户无预扣可言，no-op）。
+/// 非流式回补钩（响应后）：有 usage 才结算（无 usage 保持预扣）。
+/// `quota` 未接线/未启用/无限额时 no-op。
 pub fn settle_nonstream(
     config: &Arc<ConfigManager>,
     quota: Option<&Arc<QuotaState>>,
@@ -524,9 +481,8 @@ pub fn settle_nonstream(
     );
 }
 
-/// 缓存 HIT 结算（M6）：命中请求无上游往返、实际用量为 0 —— 以 0 结算
-/// 回补入口预扣，防同一请求的重复命中虚耗配额。门控与入口一致（未接线/
-/// 未启用/无限额租户无预扣可言，no-op）。
+/// 缓存 HIT 结算：命中无上游往返、实际用量为 0，以 0 结算回补预扣；
+/// 门控与入口一致（未接线/未启用/无限额时 no-op）。
 pub fn settle_nonstream_cached(
     config: &Arc<ConfigManager>,
     quota: Option<&Arc<QuotaState>>,
@@ -546,18 +502,16 @@ pub fn settle_nonstream_cached(
         .recompense(tenant, pre_tokens, pre_cost, 0, 0, window_secs);
 }
 
-/// 结算上下文（转换流）：账本句柄、租户与预扣口径一次构造。预扣在构造期
-/// 算好（`pre_tokens`/`pre_cost`/`model`），上下文不持有请求体——整段对话
-/// 不再在流存活期常驻内存（与 [`PassthroughSettler`] 同形态）。
-/// `for_request` 内置三级早退（与 [`passthrough_stream_body`] 同口径）——
-/// 不适用返回 `None`，调用方零包装直通（不克隆请求体与档源）。
+/// 结算上下文（转换流）：账本句柄、租户与预扣口径一次构造，上下文不持有请求体
+///（整段对话不在流存活期常驻内存）。`for_request` 内置三级早退——不适用返回
+/// `None`，调用方零包装直通。
 pub struct SettlementCtx {
     quota: Arc<QuotaState>,
     tenant: String,
     model: String,
     vendor_type: String,
-    /// 配置快照共享（档源/窗口/估算常数随 `Arc<Config>` 引用，零深拷贝；
-    /// 快照存活到流结束，热更换新快照不影响已建立流的结算口径）。
+    /// 配置快照共享（`Arc<Config>` 引用，零深拷贝；热更换新快照不影响
+    /// 已建立流的结算口径）。
     config: Arc<Config>,
     pre_tokens: u64,
     pre_cost: u64,
@@ -598,9 +552,9 @@ impl SettlementCtx {
     }
 }
 
-/// 转换流结算包装（流结束后）：捕获末个 `Usage` chunk（含 cache 两档），
-/// 流正常结束（`None`）时回补；`ctx = None`（三级早退不适用）时仅原样
-/// 转发，零克隆零包装。透传流的结算见 [`passthrough_stream_body`]。
+/// 转换流结算包装（流结束后）：捕获末个 `Usage` chunk（含 cache 两档），流正常
+/// 结束时回补；`ctx = None`（三级早退不适用）时仅原样转发。透传流结算见
+/// [`passthrough_stream_body`]。
 pub fn settle_stream<S>(
     stream: S,
     ctx: Option<SettlementCtx>,
@@ -613,8 +567,7 @@ where
     async_stream::stream! {
         use futures::StreamExt as _;
         let mut stream = Box::pin(stream);
-        // 流式用量结算（取最后一次出现的值，见 StreamChunk::Usage；
-        // cache 两档随 chunk 携带，与 REST 响应同一口径）。
+        // 流式用量结算（取最后一次出现的值；cache 两档随 chunk 携带）。
         let mut last_usage: Option<(u32, u32, u32, u32)> = None;
         while let Some(item) = stream.next().await {
             if let Ok(crate::protocol::StreamChunk::Usage {
@@ -634,8 +587,7 @@ where
             }
             yield item;
         }
-        // 流结束：按实际回补（无 Usage 帧 → 保持预扣）。预扣值构造期已算好，
-        // 此处不再重算。
+        // 流结束：按实际回补（无 Usage 帧 → 保持预扣）；预扣值构造期已算好，此处不重算。
         if let (Some(ctx), Some((prompt, completion, cache_read, cache_creation))) =
             (ctx, last_usage)
         {
@@ -661,18 +613,15 @@ where
     }
 }
 
-/// 透传流帧内 usage 提取：Anthropic `message_start` 把 usage 嵌在 `message`
-/// 下，`message_delta` 与 OpenAI 尾帧在顶层；提数一律交给
-/// [`crate::protocol::parse_usage_detailed`]（包成 `{"usage": …}` 复用同一
-/// 取数分支），不维护第二套取数逻辑（R-quota-cost-003）。
+/// 透传流帧内 usage 提取：Anthropic `message_start` 把 usage 嵌在 `message` 下，
+/// 其余在顶层；提数一律交给 `parse_usage_detailed`（包成 `{"usage": …}` 复用同一分支）。
 fn frame_usage(data: &str) -> Option<(u64, u64, u64, u64)> {
     let trimmed = data.trim();
     if trimmed.is_empty() || trimmed == "[DONE]" {
         return None;
     }
-    // 廉价预筛（M4）：usage 只存在于含 "usage" 子串的帧——内容 delta 帧
-    // 绝大多数不含，直接跳过全量 JSON 解析与 clone（误含字样的帧解析后
-    // 自然落到 None，行为不变）。
+    // 廉价预筛：usage 只存在于含 "usage" 子串的帧——内容帧绝大多数不含，
+    // 直接跳过全量 JSON 解析。
     if !trimmed.contains("usage") {
         return None;
     }
@@ -680,9 +629,8 @@ fn frame_usage(data: &str) -> Option<(u64, u64, u64, u64)> {
     let usage = value
         .get("usage")
         .or_else(|| value.get("message")?.get("usage"))?;
-    // 流尾帧（Anthropic `message_delta`）只带 `output_tokens`：提数函数（REST
-    // 口径）要求 prompt/input 存在，故补 `input_tokens = 0` 后仍交给同一实现——
-    // 与 [`merge_usage`] 的取最大值语义配合即得终值，不另写取数。
+    // 流尾帧（Anthropic `message_delta`）只带 `output_tokens`：补
+    // `input_tokens = 0` 后仍交同一提数实现，配 `merge_usage` 取最大值得终值。
     let mut usage_obj = usage.clone();
     if usage_obj.get("prompt_tokens").is_none() && usage_obj.get("input_tokens").is_none() {
         // 既无 prompt/input 也无 output 的帧不含可用用量 → 跳过。
@@ -700,9 +648,8 @@ fn frame_usage(data: &str) -> Option<(u64, u64, u64, u64)> {
     ))
 }
 
-/// 观测字段合并：各档取最大值。OpenAI 尾帧 usage 为全量终值，Anthropic 的
-/// `message_start`（input/cache 两档）与 `message_delta`（output）分帧上报且
-/// output 单调递增——取最大即末值，无需按协议分支。
+/// 观测字段合并：各档取最大值。Anthropic 的 `message_start`（input/cache 两档）与
+/// `message_delta`（output）分帧上报且 output 单调递增——取最大即末值，无需按协议分支。
 fn merge_usage(prev: (u64, u64, u64, u64), next: (u64, u64, u64, u64)) -> (u64, u64, u64, u64) {
     (
         prev.0.max(next.0),
@@ -712,9 +659,8 @@ fn merge_usage(prev: (u64, u64, u64, u64), next: (u64, u64, u64, u64)) -> (u64, 
     )
 }
 
-/// 透传流结算器：累计观测到的 usage，正常 EOF 时按实际回补。预扣口径与
-/// 非流式/转换流共用 [`precharge_for`]，成本口径共用 [`actual_cost_millicents`]
-///（四档）。
+/// 透传流结算器：累计观测到的 usage，正常 EOF 时按实际回补。预扣口径与非流式/
+/// 转换流共用 [`precharge_for`]，成本口径共用 [`actual_cost_millicents`]。
 struct PassthroughSettler {
     quota: Arc<QuotaState>,
     tenant: String,
@@ -738,7 +684,7 @@ impl PassthroughSettler {
                     });
                 }
             }
-            // 正常收束才回补；断流/错误帧保持预扣（声明口径）。
+            // 正常收束才回补；断流/错误帧保持预扣。
             ReframeObservation::End { completed: true } => self.settle(),
             ReframeObservation::End { completed: false } => {}
         }
@@ -759,8 +705,8 @@ impl PassthroughSettler {
             model: &self.model,
             vendor_type: &self.vendor_type,
         });
-        // `actual_tokens` 与转换流同口径 = prompt + completion（cache 两档不并入
-        // token 窗基数，免改动已归档的窗口定义）。
+        // `actual_tokens` 与转换流同口径 = prompt + completion（cache 两档不
+        // 并入 token 窗基数）。
         self.quota.recompense(
             &self.tenant,
             self.pre_tokens,
@@ -773,8 +719,8 @@ impl PassthroughSettler {
 }
 
 /// 透传流响应体装配：仅当配额适用（已接线、`[quota].enabled` 且该 tenant
-/// 任一限额 > 0，判定单点 [`quota_applies`]）时挂帧观测包装；其余形态走
-/// 无观测 reframe（透传字节与本变更之前逐字节一致，零额外分配）。
+/// 任一限额 > 0，判定单点 [`quota_applies`]）时挂帧观测包装；其余形态走无观测
+/// reframe（零额外分配）。
 ///
 /// 上游错误类型仅需 `Display`（与 reframe 同一约束），输出统一为
 /// `Result<Bytes, std::io::Error>` 供 `Body::from_stream` 使用。
@@ -790,7 +736,7 @@ where
     S: futures::Stream<Item = Result<bytes::Bytes, E>> + Send + 'static,
     E: std::fmt::Display + Send + 'static,
 {
-    // 三级早退单点：未接线 / 关闭 / 无限额 → 无观测直通（字节与终止行为不变）。
+    // 三级早退单点：未接线 / 关闭 / 无限额 → 无观测直通。
     let Some(lease) = quota_applies(config, quota, tenant) else {
         return Body::from_stream(reframe_passthrough_stream(stream));
     };
@@ -849,11 +795,11 @@ mod tests {
     }
 
     /// 预扣公式：est 输入×输入单价 + max_tokens×输出单价（向上取整）；
-    /// 目录未登记时回退 `[[pricing]]`（每 1k），数值与本变更之前逐例一致。
+    /// 目录未登记时回退 `[[pricing]]`（每 1k）。
     #[test]
     fn precharge_formula_matches_spec() {
         // "hello!" 6 字符 → 2 token + 8 消息开销 = 10；max 10 → 总 20；
-        // 成本 10/1000*1 + 10/1000*3 = 0.04 USD = 4000 millicents。
+        // 成本 0.04 USD = 4000 millicents。
         let (tokens, cost) = precharge_for(&chat_body("hello!", 10), &[], &pricing(), 4);
         assert_eq!(tokens, 20);
         assert_eq!(cost, 4000);
@@ -876,13 +822,11 @@ mod tests {
         }]
     }
 
-    /// 档源优先：目录命中时预扣取目录价（每 1M），不再看 `[[pricing]]`；
-    /// 两档价互不相同才能区分出谁在供价。
+    /// 档源优先：目录命中时预扣取目录价（每 1M），不再看 `[[pricing]]`。
     #[test]
     fn precharge_prefers_catalog_over_pricing() {
         // 目录 input/output = 2000/6000 每 1M（即 2.0/6.0 每 1k），而
-        // `[[pricing]]` 为 1.0/3.0；预估 10/10 token → 0.02+0.06 = 8000 millicents，
-        // 回退路径则为 4000（上面一例已锁定）。
+        // `[[pricing]]` 为 1.0/3.0；预估 10/10 token → 0.08 USD = 8000 millicents。
         let (tokens, cost) = precharge_for(
             &chat_body("hello!", 10),
             &catalog(2000.0, 6000.0, 0.0, 0.0),
@@ -929,7 +873,7 @@ mod tests {
             + 600.0 / 1e6 * 300.0
             + 200.0 / 1e6 * 3750.0;
         assert_eq!(cost, usd_to_millicents(expected_usd), "与目录四档式一致");
-        // 旧两档口径（忽略 cache）必然更低——证明本例非虚断。
+        // 旧两档口径（忽略 cache）必然更低。
         let legacy =
             actual_cost_millicents(&cost_input(1000, 100, 0, 0, &cat, &pricing(), "openai"));
         assert!(
@@ -952,8 +896,7 @@ mod tests {
         );
     }
 
-    /// 目录未登记 → 回退 `[[pricing]]` 两档，cache 参数不参与计价（数值与
-    /// 本变更之前一致，防回退路径被改动）。
+    /// 目录未登记 → 回退 `[[pricing]]` 两档，cache 参数不参与计价。
     #[test]
     fn actual_cost_falls_back_to_pricing_when_model_absent() {
         let cost = actual_cost_millicents(&cost_input(10, 10, 600, 200, &[], &pricing(), "openai"));
@@ -979,16 +922,14 @@ mod tests {
         assert_eq!(frame_usage("[DONE]"), None);
         assert_eq!(frame_usage("keepalive"), None);
         assert_eq!(frame_usage(r#"{"choices":[]}"#), None);
-        // 预筛形态钉住：正文含 "usage" 字样但无 usage 字段的内容帧 → None
-        //（预筛仅是解析前的廉价跳过，语义与逐帧解析一致）。
+        // 预筛钉住：含 "usage" 字样但无 usage 字段的内容帧 → None。
         assert_eq!(
             frame_usage(r#"{"choices":[{"delta":{"content":"usage quota"}}]}"#),
             None
         );
     }
 
-    /// 分帧合并取各档最大：start 与 delta 合并后得全量终值（不丢 output，
-    /// 也不把 prompt/cache 档回退为 0）。
+    /// 分帧合并取各档最大：start 与 delta 合并得全量终值（output 不回退为 0）。
     #[test]
     fn merge_usage_keeps_max_per_tier() {
         let merged = merge_usage(
@@ -998,7 +939,7 @@ mod tests {
         assert_eq!(merged, (120, 44, 60, 30), "output 取末值且其余档不回退");
     }
 
-    /// 回补返还：实际低于预估时余额返还（后续请求恢复放行由集成锁定）。
+    /// 回补返还：实际低于预估时余额返还。
     #[test]
     fn recompense_refunds_difference() {
         let quota = QuotaState::new();
@@ -1013,8 +954,7 @@ mod tests {
         assert_eq!(quota.snapshot("k"), (30, 0));
     }
 
-    /// 回补不建账（L3）：无账可回时保持账本为空——正向差额不得虚记进
-    /// 干净窗口。
+    /// 回补不建账：无账可回时保持账本为空，正向差额不得虚记进干净窗口。
     #[test]
     fn recompense_without_ledger_does_not_create_account() {
         let quota = QuotaState::new();
@@ -1023,12 +963,11 @@ mod tests {
         assert_eq!(quota.snapshot("ghost"), (0, 0));
     }
 
-    /// 回补触发淘汰（L3）：超上限时惰性清理已翻转窗口（与 consume 同谓词）。
+    /// 回补触发淘汰：超上限时惰性清理已翻转窗口（与 consume 同谓词）。
     #[test]
     fn recompense_triggers_window_eviction() {
         let quota = QuotaState::new();
-        // 灌满上限 + 1（consume 的淘汰谓词是严格大于，第 10001 个 key 恰好
-        // 不触发）——窗口 1s，随后全部翻转。
+        // 灌满上限 + 1（淘汰谓词严格大于）——窗口 1s，随后全部翻转。
         for i in 0..=QUOTA_MAX_TRACKED_KEYS {
             quota
                 .consume(&format!("k{i}"), 100, 0, 1, 0, 1)
@@ -1045,7 +984,7 @@ mod tests {
         assert_eq!(quota.tracked_keys(), 0, "全部窗口已翻转 → 全清");
     }
 
-    /// 超限拒收且不落账；窗口翻转后恢复。
+    /// 超限拒收且不落账。
     #[test]
     fn over_quota_rejected_without_ledger_pollution() {
         let quota = QuotaState::new();
@@ -1054,10 +993,8 @@ mod tests {
         assert_eq!(quota.snapshot("k"), (60, 0), "拒收不得落账");
     }
 
-    /// usage 双形态提取；无 usage → None（保持预扣）。提数已委派到分账侧
-    /// `parse_usage_detailed`，因此单侧字段缺失时按 0 计（与本变更之前的
-    /// 「两者必须同时存在」相比是定向行为变更：单缺 completion 不再当作
-    /// 无用量保持全额预扣）。
+    /// usage 双形态提取；无 usage → None（保持预扣）。提数委派
+    /// `parse_usage_detailed`，单侧字段缺失按 0 计。
     #[test]
     fn usage_extraction_covers_both_shapes() {
         let openai = serde_json::json!({"usage": {"prompt_tokens": 5, "completion_tokens": 7}});
@@ -1174,8 +1111,7 @@ mod tests {
         );
     }
 
-    /// 缓存 HIT 结算（M6）：入口预扣后以 0 结算 → 预扣全额回补，重复命中
-    /// 不虚耗配额。
+    /// 缓存 HIT 结算：入口预扣后以 0 结算 → 预扣全额回补，重复命中不虚耗配额。
     #[tokio::test]
     async fn cached_settlement_refunds_full_precharge() {
         let config = Arc::new(ConfigManager::new(quota_enabled_config(true)));

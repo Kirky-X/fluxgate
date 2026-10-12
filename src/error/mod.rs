@@ -3,10 +3,8 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-// 应用层错误处理模块 — Database 等应用面变体定义在本模块；路由核心
-// 变体集（GateError）在子模块 [`gate`]（design.md D1.3），经 `Gate` 包装
-// 携带。`From<dbnexus::DbError>` 受孤儿规则约束必须与被实现的枚举同 crate，
-// 这是 Database 变体不进 gate 子模块的结构性原因。
+// 应用层错误处理：Database 等应用面变体定义在本模块，路由核心变体集（GateError）
+// 在子模块 gate 并经 `Gate` 包装携带（`From<dbnexus::DbError>` 受孤儿规则约束须同 crate）。
 #[cfg(feature = "web-server")]
 use axum::response::IntoResponse;
 #[cfg(feature = "web-server")]
@@ -19,9 +17,8 @@ mod gate;
 
 pub use gate::GateError;
 
-/// 错误双轨：`#[error]` Display 恒英文规范串（日志 / 错误链），HTTP 展示
-/// 走 [`NexusFlowError::user_message()`]（FTL，随 locale，见 i18n 基线 §4）。
-/// `Gate` 变体 `transparent` 透传 llm-gate 英文规范串。
+/// 错误双轨：`#[error]` Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`
+///（FTL，随 locale）；`Gate` 变体 `transparent` 透传英文规范串。
 #[derive(Error, Debug)]
 pub enum NexusFlowError {
     #[error("Database error: {message}")]
@@ -66,8 +63,7 @@ impl IntoResponse for NexusFlowError {
 
 #[cfg(feature = "web-server")]
 impl NexusFlowError {
-    /// 本地化用户消息（展示轨道）：随 locale 查 FTL 目录；与英文规范
-    /// Display 分轨，写入 HTTP 响应体 `error.message`。
+    /// 本地化用户消息（展示轨道）：随 locale 查 FTL 目录。
     fn user_message(&self) -> String {
         match self {
             NexusFlowError::Database { message } => {
@@ -77,7 +73,7 @@ impl NexusFlowError {
         }
     }
 
-    /// 返回固定的错误类型代码字符串（不暴露内部枚举结构）
+    /// 固定的错误类型代码字符串（不暴露内部枚举结构）
     fn error_code(&self) -> &'static str {
         match self {
             NexusFlowError::Database { .. } => "database_error",
@@ -119,7 +115,6 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
-    /// 从 Response 中提取 JSON body
     async fn extract_body(response: axum::response::Response) -> serde_json::Value {
         let bytes = to_bytes(response.into_body(), 1024 * 1024)
             .await
@@ -202,8 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_all_vendors_throttled_to_response_with_retry_after() {
-        // AllVendorsThrottled → 429 + Retry-After 头（秒数
-        // 原样带出）+ 固定错误代码
+        // AllVendorsThrottled → 429 + Retry-After 头：秒数原样带出 + 固定错误代码
         let response = NexusFlowError::from(GateError::AllVendorsThrottled {
             retry_after_secs: 30,
         })
@@ -238,13 +232,11 @@ mod tests {
         let response = err.into_response();
         let body = extract_body(response).await;
 
-        // 顶层必须包含 error 对象
         assert!(
             body["error"].is_object(),
             "response body must contain an 'error' object"
         );
         assert_eq!(body["error"]["message"], expected_message);
-        // error.type 必须是固定的错误代码字符串（不暴露内部枚举结构）
         let type_str = body["error"]["type"]
             .as_str()
             .expect("error.type must be a string");

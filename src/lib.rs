@@ -5,19 +5,16 @@
 
 // Smart LLM Proxy - Core Library
 
-// 路由半边（原 llm-gate crate，已并回单 crate）：config 单 struct（13 段）
-// + ConfigManager/ConfigLoader/DynamicField 整体在本模块（design.md D1.1：
-// 拆段会分裂 POST /admin/config 热更新语义）
+// config 单 struct 承载全部段：拆段会分裂 POST /admin/config 热更新语义
 pub mod config;
 pub mod error;
-// i18n 引擎（Fluent 目录随迁），crate 内外统一经 nexusflow::i18n 访问
+// i18n 引擎：crate 内外统一经 nexusflow::i18n 访问
 pub mod i18n;
 // utils：metrics / retry / cost_tracker
 pub mod utils;
 // protocol：IR 与双协议转换器
 pub mod protocol;
-// 存储边界缝（RequestLogSink/UsageSink + 契约类型）定义于本模块，
-// dbnexus 实现留在 database 模块（N2）
+// 存储边界缝（RequestLogSink/UsageSink + 契约类型）定义于本模块，实现留在 database 模块
 pub mod storage;
 
 #[cfg(feature = "database")]

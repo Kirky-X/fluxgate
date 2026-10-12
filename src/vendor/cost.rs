@@ -5,18 +5,13 @@
 
 //! CostCalculator — 基于 (vendor_id, model_id) 维度的定价表查找。
 //!
-//! 设计：
-//! - 内部用 `Arc<RwLock<HashMap<(String, String), PricingEntry>>>` 存储
-//! - `from_config` 从 `&[PricingConfig]` 初始化表
-//! - `calculate` 按 `(prompt/1000)*in_price + (completion/1000)*out_price` 计算 USD
-//! - 未命中返回 0.0（避免阻塞响应）
-//! - `update_entry` 运行时动态更新
+//! `calculate` 按 `(prompt/1000)*in_price + (completion/1000)*out_price`
+//! 计算 USD，未命中返回 0.0；`update_entry` 运行时动态更新。
 
 use crate::config::PricingConfig;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-/// 单条定价 — 输入/输出 token 单价（每 1k tokens，USD）
 #[derive(Debug, Clone, Copy)]
 pub struct PricingEntry {
     pub input_per_1k_tokens: f64,
@@ -38,7 +33,6 @@ pub struct CostCalculator {
 }
 
 impl CostCalculator {
-    /// 从 PricingConfig 列表构建定价表
     pub fn from_config(pricing: &[PricingConfig]) -> Self {
         let mut map = HashMap::with_capacity(pricing.len());
         for p in pricing {
@@ -52,14 +46,12 @@ impl CostCalculator {
         }
     }
 
-    /// 计算 USD 成本：`(prompt/1000)*in_price + (completion/1000)*out_price`
-    /// 未命中 vendor/model 返回 0.0
+    /// 未命中 vendor/model 返回 0.0。
     pub fn calculate(&self, vendor: &str, model: &str, prompt: u32, completion: u32) -> f64 {
         let guard = match self.table.read() {
             Ok(g) => g,
             Err(_) => {
-                // RwLock poisoned — 不应阻塞响应，返回 0.0
-                // 上层 tracing::warn! 已记录
+                // RwLock poisoned 不阻塞响应，返回 0.0（上层已 warn）
                 return 0.0;
             }
         };
@@ -91,23 +83,13 @@ impl Default for CostCalculator {
 
 // ── model_catalog 四档计价（cache token 进计价） ───────────────
 //
-// D7.11 双表裁决：[[model_catalog]] 承载能力 + 四档单价（本节消费）；
-// [[pricing]] 留 SLA 因子（sla_v 惩罚项）与旧 [`CostCalculator`]，至
-// 桥接切换后退役——本节不读 [[pricing]]。
+// [[model_catalog]] 承载能力与四档单价；[[pricing]] 仅留 SLA 因子。
 
 use crate::config::model_catalog::ModelCatalogEntry;
 use crate::protocol::TokenUsage;
 
-/// prompt_tokens 的 cache 档包含语义（IR 随上游协议分裂，线格式）
-/// - **Inclusive**（OpenAI 口径）：`prompt_tokens` 含 cached 部分——非缓存
-///   基数 = prompt − cache_read − cache_creation（饱和减法）；
-/// - **Exclusive**（Anthropic 口径）：`input_tokens` 不含 cache 档
-///   （cache_read/creation_input_tokens 为独立字段）——非缓存基数 =
-///   prompt 原值。
-///
-/// 调用方按 vendor `type_` 选择（openai → Inclusive、anthropic →
-/// Exclusive）；任务书公式 `(prompt−cache_read−cache_creation)×input`
-/// 即 Inclusive 臂。
+/// prompt_tokens 的 cache 档包含语义（按上游协议分裂）。调用方按 vendor `type_`
+/// 选择：openai → Inclusive、anthropic → Exclusive。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptCacheSemantics {
     /// prompt 含 cache 档（OpenAI 口径）：基数 = prompt − cache 档（饱和）
@@ -116,11 +98,7 @@ pub enum PromptCacheSemantics {
     Exclusive,
 }
 
-/// vendor 协议 → cache 包含语义的单源判定。调用方（分账 `catalog_costs`、
-/// 配额回补、CostTracker 记账）一律经本函数取语义，不得各写一套分支：三处
-/// 此前各自内联且未知协议方向相反（一处非 anthropic 即 Inclusive、一处非
-/// openai 即 Exclusive），收敛为「仅 openai 含 cache 档」——其余一律按
-/// Exclusive 处理，基数不缩减，计价方向保守（防少计）。
+/// vendor 协议 → cache 语义单源判定：仅 openai 为 Inclusive，其余一律 Exclusive（基数不缩减，防少计）。
 pub fn prompt_cache_semantics(vendor_type: &str) -> PromptCacheSemantics {
     if vendor_type == "openai" {
         PromptCacheSemantics::Inclusive
@@ -129,10 +107,8 @@ pub fn prompt_cache_semantics(vendor_type: &str) -> PromptCacheSemantics {
     }
 }
 
-/// 目录四档单价（每 1M tokens，币种随条目）：`Some((input, output,
-/// cache_read, cache_creation))`；未登记模型 `None`（调用方自行回退，不得
-/// 按 0 价处理）。与 [`estimate_cost_from_catalog`] 同一命中规则（精确→
-/// 短名前缀），供入口预估只取 input/output 两档使用。
+/// 目录四档单价（每 1M tokens，币种随条目）；未登记模型 `None`（不得按 0 价处理），
+/// 命中规则与 [`estimate_cost_from_catalog`] 一致。
 pub fn catalog_unit_prices(
     catalog: &[ModelCatalogEntry],
     model_id: &str,
@@ -158,11 +134,7 @@ pub struct CatalogCostEstimate {
     pub currency: crate::config::PricingCurrency,
 }
 
-/// 定价查找：精确命中 → 前缀回退（命中多个取字典序最小，确定性）。
-/// 对齐 agentstem `estimate_usage_cost` 的 `lookup_pricing` 短名语义
-///（`claude-sonnet-4` → `claude-sonnet-4-20250514`）。**与
-/// `capabilities_for`（纯精确）的非对称为 D7.11 有意裁决**：能力位取
-/// 「登记即真实」不容模糊；计价容忍用户短名习惯。
+/// 定价查找：精确命中 → 短名前缀回退（多命中取字典序最小，确定性）。
 pub fn lookup_pricing_entry<'a>(
     catalog: &'a [ModelCatalogEntry],
     model_id: &str,
@@ -176,12 +148,7 @@ pub fn lookup_pricing_entry<'a>(
         .min_by(|a, b| a.model_id.cmp(&b.model_id))
 }
 
-/// 四档成本估算——未登记模型返回 `None`（显式缺失，调用方不得
-/// 按 0 成本处理，防 0 价伪装免费； 语义延续）。
-///
-/// 公式（per 1M tokens，币种随条目；semantics 决定非缓存基数的折算）：
-/// `cost = base×input_price/1M + cache_read×cache_read_price/1M
-///       + cache_creation×cache_creation_price/1M + completion×output_price/1M`
+/// 四档成本估算——未登记模型返回 `None`（防 0 价伪装免费）。
 pub fn estimate_cost_from_catalog(
     catalog: &[ModelCatalogEntry],
     model_id: &str,
@@ -217,7 +184,7 @@ pub fn estimate_cost_from_catalog(
 
 #[cfg(test)]
 mod catalog_pricing_tests {
-    //! 覆盖：cache 档计价 / 短名前缀命中 / 未登记 None / 非对称锚。
+    //! 覆盖 cache 档计价 / 短名前缀命中 / 未登记 None。
 
     use super::*;
     use crate::config::model_catalog::ModelCatalogEntry;
@@ -251,7 +218,6 @@ mod catalog_pricing_tests {
         }
     }
 
-    /// 未登记模型 None（显式缺失，防 0 价伪装免费—— 语义延续）
     #[test]
     fn unregistered_model_returns_none() {
         let catalog = vec![claude_entry()];
@@ -265,7 +231,6 @@ mod catalog_pricing_tests {
         assert!(lookup_pricing_entry(&[], "anything").is_none());
     }
 
-    /// cache 档生效（Exclusive = Anthropic 口径：基数不含 cache 档）
     #[test]
     fn cache_tiers_priced_exclusive() {
         let catalog = vec![claude_entry()];
@@ -285,7 +250,6 @@ mod catalog_pricing_tests {
         assert_eq!(est.currency, PricingCurrency::Usd);
     }
 
-    /// Inclusive 臂 = 任务书公式：基数 = prompt − cache 档（饱和减法）
     #[test]
     fn cache_tiers_priced_inclusive() {
         let catalog = vec![claude_entry()];
@@ -312,7 +276,6 @@ mod catalog_pricing_tests {
         assert!((est.input_cost - 0.0).abs() < 1e-9);
     }
 
-    /// 短名前缀命中（estimate_usage_cost 语义）
     #[test]
     fn prefix_lookup_hits_full_name() {
         let catalog = vec![claude_entry()];
@@ -328,7 +291,6 @@ mod catalog_pricing_tests {
         assert!((est.input_cost - 3.0).abs() < 1e-9);
     }
 
-    /// 前缀歧义取字典序最小（确定性）
     #[test]
     fn ambiguous_prefix_takes_lexicographic_min() {
         let short = ModelCatalogEntry {
@@ -344,12 +306,10 @@ mod catalog_pricing_tests {
             ..Default::default()
         };
         let catalog = vec![short, long];
-        // 精确命中优先于前缀
         assert_eq!(
             lookup_pricing_entry(&catalog, "gpt-x-10").unwrap().model_id,
             "gpt-x-10"
         );
-        // 前缀 "gpt-x-1" 命中 gpt-x-10 与 gpt-x-2? "gpt-x-2" 不以 "gpt-x-1" 开头 → 唯一
         let entry = lookup_pricing_entry(&catalog, "gpt-x-1").unwrap();
         assert_eq!(entry.model_id, "gpt-x-10");
         // 真歧义：gpt-x vs {gpt-x-2, gpt-x-10} → 字典序 gpt-x-10 < gpt-x-2
@@ -357,8 +317,6 @@ mod catalog_pricing_tests {
         assert_eq!(entry.model_id, "gpt-x-10");
     }
 
-    /// D7.11 非对称锚契约：同一短名——capabilities 精确不命中走 per-flavor
-    /// 默认，pricing 前缀命中登记价。两查找语义的有意分叉由此测试钉住。
     #[test]
     fn asymmetry_anchor_capabilities_exact_vs_pricing_prefix() {
         use crate::config::capabilities_for;
@@ -373,7 +331,6 @@ mod catalog_pricing_tests {
             caps.max_context_tokens, 200_000,
             "capabilities 精确不命中 → per-flavor 默认（非前缀）"
         );
-        // pricing：同一短名前缀命中登记价
         let est = estimate_cost_from_catalog(
             &catalog,
             "claude-sonnet-4",
@@ -387,7 +344,6 @@ mod catalog_pricing_tests {
         );
     }
 
-    /// 零价缓存档（OpenAI 形态）不产生 cache write 成本
     #[test]
     fn zero_price_cache_tier_yields_zero() {
         let gpt4o = ModelCatalogEntry {

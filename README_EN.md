@@ -92,7 +92,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 
 - Rust 1.97.1+ (the MSRV declared by `rust-version` in `Cargo.toml`; edition 2021)
 - SQLite: **statically embedded** in the Docker/musl artifact (build needs `sqlite-dev` for headers plus `libsqlite3.a`); glibc local/release builds link the system library dynamically (needs `libsqlite3-dev`). TLS is pure rustls — no OpenSSL
-- **7 sibling libraries must sit next to this project** (path dependencies): `confers`, `dbnexus`, `inklog`, `limiteron`, `oxcache`, `sdforge`, `trait-kit`
+- The 7 self-developed libraries (`confers`, `dbnexus`, `inklog`, `limiteron`, `oxcache`, `sdforge`, `trait-kit`) come from crates.io registry — cargo fetches them automatically, no sibling directory needed
 
 ### 🔨 Build & run
 
@@ -418,7 +418,7 @@ See the [🤝 Contributing guide](docs/CONTRIBUTING.md) for the full workflow, c
 
 ### 🛠️ Development environment
 
-Toolchain baseline: MSRV floor **1.97.1** (declared in `Cargo.toml` via `rust-version`, matching the 7 sibling libraries; ci.yml builds and lints at that floor so the clippy lint set stays reproducible), while `docker/Dockerfile` and release.yml use the currently supported stable (1.99). Run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`). The 7 sibling libraries (confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit) must sit next to this project.
+Toolchain baseline: MSRV floor **1.97.1** (declared in `Cargo.toml` via `rust-version`, matching the 7 sibling libraries; ci.yml builds and lints at that floor so the clippy lint set stays reproducible), while `docker/Dockerfile` and release.yml use the currently supported stable (1.99). Run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`).
 
 ### 💖 Ways to contribute
 
@@ -473,7 +473,7 @@ This project is licensed under the [MIT License](LICENSE).
 
 ### 🌟 Core dependencies (sibling libraries)
 
-NexusFlow integrates the following local libraries via Cargo path dependencies (placed next to this project; `[patch.crates-io]` keeps identities unified):
+NexusFlow integrates the following self-developed libraries through the crates.io registry (versions declared in the root `Cargo.toml`, checksums locked in `Cargo.lock`):
 
 | Library | Purpose |
 |---------|---------|

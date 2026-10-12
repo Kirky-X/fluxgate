@@ -75,34 +75,34 @@ tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.7", features = ["cors", "trace", "request-id"], optional = true }
 
-# 数据库 — path dep 本地源码（kit feature 暴露 integrations::kit::DbNexusModule）。
+# 数据库 — crates.io rc.9（自研库全量走 registry）。kit feature 暴露 integrations::kit::DbNexusModule。
 # 后端（sqlite/postgres/mysql）与 runtime 不在此声明：Cargo feature 只加不减，写死会锁死单一后端，由 db-* 三组透传按构建选择。
-dbnexus = { path = "../dbnexus", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate"], optional = true }
+dbnexus = { version = "0.6.0-rc.9", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate"], optional = true }
 sea-orm = { version = "2.0.4", default-features = false, optional = true }
 
-# 日志 — path dep 确保 oxcache/dbnexus/trait-kit 全部本地对齐。
+# 日志 — crates.io 版（自研库全量走 registry；本地对齐以同版本发布保证）。
 # 落库后端（sqlite/postgres）随 db-* 三组经 inklog?/<backend> 透传，不在此写死。
 # fast-masking（掩码 literal 走 Aho-Corasick 单趟）+ secret-scan（出站裸 secret 形态+熵扫描门）；http/cli 面本仓零调用，不声明。
-inklog = { path = "../inklog", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
-# 配置加载与热重载 — path dep 本地源码：dynamic/snapshot/loader 三面 + json 强类型投影 + security-rules 弱密钥校验 + hot-reload-kit；不启用 env（无 .env 自动加载）。
-confers = { path = "../confers", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
+inklog = { version = "0.3.0-rc.9", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
+# 配置加载与热重载：dynamic/snapshot/loader 三面 + json 强类型投影 + security-rules 弱密钥校验 + hot-reload-kit；不启用 env（无 .env 自动加载）。
+confers = { version = "0.6.0-rc.10", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
 tracing = "0.1"
 # log 门面 → tracing 事件桥：reqwest/sea-orm 等依赖经 log crate 输出，而 inklog LogAdapter 只投 console+主 async 通道，
 # 自定义 sink 收不到——先装 LogTracer 把这些记录并入统一 tracing 总线。
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 tracing-subscriber = { version = "0.3", optional = true }
 
-# 流控 — path dep 本地源码；"retry" 提供重试原语（delay_for_attempt / RetryPolicy），是唯一的重试延迟实现。
-limiteron = { path = "../limiteron", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "retry", "kit"], optional = true }
+# 流控 — "retry" 提供重试原语（delay_for_attempt / RetryPolicy），是唯一的重试延迟实现。
+limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "retry", "kit"], optional = true }
 
-# 缓存 — path dep 本地源码
-oxcache = { path = "../oxcache", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
+# 缓存
+oxcache = { version = "0.5.0-rc.8", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 
-# DI — path dep 本地源码（async + shutdown 面）
-trait-kit = { path = "../trait-kit", default-features = false, features = ["async", "shutdown"], optional = true }
+# DI（async + shutdown 面）
+trait-kit = { version = "0.5.0-rc.9", default-features = false, features = ["async", "shutdown"], optional = true }
 
-# 服务框架 — path dep 本地源码（http/security/streaming/health/metrics/context/graceful/openapi 门面）
-sdforge = { path = "../sdforge", default-features = false, features = ["http", "security", "streaming", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
+# 服务框架（http/security/streaming/health/metrics/context/graceful/openapi 门面）
+sdforge = { version = "0.5.0-rc.8", default-features = false, features = ["http", "security", "streaming", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
 
 # 序列化与核心
 serde = { version = "1", features = ["derive"] }
@@ -154,7 +154,7 @@ http-body = "1.0"
 futures-util = "0.3"
 mockito = "1"
 # 测试需注入 limiteron MockClock（假时钟驱动熔断超时 / 限流窗口重置）；MockClock 仅在 test-clock feature 下公开。
-limiteron = { path = "../limiteron", features = ["test-clock"] }
+limiteron = { version = "0.3.0-rc.7", features = ["test-clock"] }
 
 # ===============================================================================
 # 集成测试注册表（autotests = false，按域分节）：name = 文件 stem（二进制名不变，
@@ -334,16 +334,10 @@ opt-level = 3
 lto = true
 codegen-units = 1
 
-# 统一自研库身份：所有对 crates.io 上自研库的依赖都重定向到同级本地源码，
-# 避免 path 版与 registry 版并存导致 trait 身份分裂
-[patch.crates-io]
-trait-kit = { path = "../trait-kit" }
-confers = { path = "../confers" }
-dbnexus = { path = "../dbnexus" }
-inklog = { path = "../inklog" }
-limiteron = { path = "../limiteron" }
-sdforge = { path = "../sdforge" }
-oxcache = { path = "../oxcache" }
+# 自研库全量走 crates.io registry（本地对齐以同版本发布保证）；
+# 原本地重定向（[patch.crates-io]）在全部库同版本发布后移除。
+# 若需临时回到本地开发态：给主依赖加回 path = "../<lib>"，并在本文件
+# 末尾恢复 [patch.crates-io] 段（否则 path 版与 registry 版并存会 trait 身份分裂）。
 
 [workspace]
 # 示例集合并为单一 crate（examples/），内部按 feature 划分模块与 bin。

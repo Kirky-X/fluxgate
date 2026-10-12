@@ -266,6 +266,31 @@ async fn test_admin_metrics_with_valid_key_is_200() {
     assert_eq!(status, StatusCode::OK, "valid key on admin surface → 200");
     let value: serde_json::Value = serde_json::from_slice(&body).expect("metrics JSON");
     assert!(value["total_requests"].is_number(), "metrics shape intact");
+    // 缓存统计块：oxcache 全局记录器读数（命中/未命中/写入/删除计数）——
+    // `[cache].l_target` 等按 /admin/metrics 分布调参的数据源。
+    let cache = value["cache"].as_object().unwrap_or_else(|| {
+        panic!(
+            "/admin/metrics 必须带 cache 统计块，实测 {}",
+            value["cache"]
+        )
+    });
+    for key in [
+        "l1_hits",
+        "l1_misses",
+        "l1_sets",
+        "l1_deletes",
+        "l2_hits",
+        "l2_misses",
+        "l2_sets",
+        "l2_deletes",
+        "total_operations",
+    ] {
+        assert!(
+            cache.get(key).is_some_and(serde_json::Value::is_u64),
+            "cache.{key} 必须是 u64 计数，实测 {:?}",
+            cache.get(key)
+        );
+    }
 }
 
 /// auth 状态从 [auth] 摘要构造的单元级复核：与 middleware/auth.rs 测试

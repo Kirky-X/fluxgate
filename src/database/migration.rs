@@ -3,33 +3,13 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 核心表版本化迁移。
+//! 核心表版本化迁移（V1..=V2）——sqlite/postgres/mysql 启动建表唯一入口。
 //!
-//! 运行源唯一性：sqlite/postgres/mysql 的启动建表只走本模块的版本化迁移
-//!（经 dbnexus `MigrationExecutor`），不再逐语句执行 `schema.*.sql`。
-//! `src/database/schema.sql`（及 mysql/postgres 方言投影）现为可读文档——
-//! 描述**最新版**（V1+V2 全部应用后）的表形态；后续表/列变更走新迁移
-//! 版本，**禁止**改动已发布的迁移常量（已部署库的历史行指向它们）。
-//!
-//! - **V1（FROZEN）**：request_logs/token_usage/vendor_status/model_stats
-//!   初版。token_usage 为组合聚合（total/prompt/completion tokens +
-//!   cost_usd_sum，UNIQUE(vendor, model, date, hour)）。
-//! - **V2（R-quota-cost-003 分账）**：token_usage 原地升级为分账形态——
-//!   新增 api_key_hash 与四类 token/四项分项成本列，UNIQUE 键扩为
-//!   (vendor, model, api_key_hash, date, hour)，移除四个组合列；旧行
-//!   映射 prompt→input、completion→output、cost_usd_sum→input_cost（组合
-//!   成本不可拆分，整额记入 input 档保总额，拆分归属自 V2 起才存在）、
-//!   api_key_hash 回填空串（历史流量不归属到 key）。另补 /admin/cost 查询
-//!   索引（date 范围 + api_key_hash 过滤两条访问路径）。
-//!
-//! 存量库基线策略 = 幂等重放：V1 UP 全为 `IF NOT EXISTS`，表已存在、历史为
-//! 空的旧库重放为 no-op，随后按序补记历史行；V2 只在 V1 形态上执行一次。
-//! MySQL 索引不在迁移 UP 内（MySQL 8 无 `CREATE INDEX IF NOT EXISTS`，重放
-//! 会失败）——普通索引由 `ensure_indexes_mysql` 按 information_schema 探针
-//! 幂等创建；V2 的 UNIQUE 键换绑属表结构变更，仍在 V2 UP 内一次性执行。
-//!
-//! 失败语义：迁移错误直接上浮（`Database::new` 转 fail-fast），无静默降级；
-//! V2 中途失败的库停在失败态（执行器事务保证不留半行历史），修复后重启重放。
+//! V1（FROZEN）建四张初版表；V2 把 token_usage 原地升级为分账形态（新增
+//! api_key_hash 与四类 token/四项分项成本列，UNIQUE 键扩为 (vendor, model,
+//! api_key_hash, date, hour)，旧行映射 prompt→input、cost_usd_sum 整额入 input 档）。
+//! 已发布的迁移常量禁止改动（已部署库的历史行指向它们），新变更走新版本。
+//! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级）。
 
 use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
 use sea_orm::DatabaseBackend;
@@ -38,7 +18,7 @@ use std::path::PathBuf;
 /// 核心表迁移最新版本（V2：token_usage 分账形态，见模块文档）。
 pub(crate) const CORE_SCHEMA_VERSION: u32 = 2;
 
-/// V1 UP（sqlite，FROZEN——源自 schema.sql 定稿，含 cost 列与 4 索引）。
+/// V1 UP（sqlite，FROZEN；含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
 CREATE TABLE IF NOT EXISTS request_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_model ON request_logs(abstract_model);
 CREATE INDEX IF NOT EXISTS idx_request_id ON request_logs(request_id);
 "#;
 
-/// V1 UP（postgres，FROZEN——源自 schema.postgres.sql 定稿）。
+/// V1 UP（postgres，FROZEN）。
 const UP_POSTGRES: &str = r#"
 CREATE TABLE IF NOT EXISTS request_logs (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -158,8 +138,7 @@ CREATE INDEX IF NOT EXISTS idx_model ON request_logs(abstract_model);
 CREATE INDEX IF NOT EXISTS idx_request_id ON request_logs(request_id);
 "#;
 
-/// V1 UP（mysql，FROZEN——源自 schema.mysql.sql 定稿；只含建表，索引走
-/// `ensure_indexes_mysql`，见模块文档）。
+/// V1 UP（mysql，FROZEN；只含建表，索引走 `ensure_indexes_mysql`）。
 const UP_MYSQL: &str = r#"
 CREATE TABLE IF NOT EXISTS request_logs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -215,9 +194,8 @@ CREATE TABLE IF NOT EXISTS model_stats (
 ) ENGINE = InnoDB;
 "#;
 
-/// V2 UP（sqlite，R-quota-cost-003）：sqlite 的 UNIQUE 是表 DDL 的一部分，
-/// 键换绑 + 删列只能重建表（rename → create → 搬数 → drop）。
-/// 旧行映射见模块文档（api_key_hash=''、cost_usd_sum 整额入 input_cost）。
+/// V2 UP（sqlite）：UNIQUE 是表 DDL 的一部分，键换绑 + 删列只能重建表
+///（rename → create → 搬数 → drop）；旧行 api_key_hash=''、cost_usd_sum 整额入 input_cost。
 const UP_V2_SQLITE: &str = r#"
 ALTER TABLE token_usage RENAME TO token_usage_v1;
 CREATE TABLE IF NOT EXISTS token_usage (
@@ -245,9 +223,8 @@ CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(date);
 CREATE INDEX IF NOT EXISTS idx_token_usage_key_date ON token_usage(api_key_hash, date);
 "#;
 
-/// V2 UP（postgres）：UNIQUE 约束按 postgres 自动命名惯例
-/// `{table}_{cols}_key` 换绑；新列带 DEFAULT 使旧行即时取得缺省值，
-/// 再 UPDATE 显式回填映射（api_key_hash='' 为规格明文要求）。
+/// V2 UP（postgres）：UNIQUE 约束按自动命名惯例 `{table}_{cols}_key` 换绑；
+/// 新列带 DEFAULT 使旧行即时取得缺省值，再 UPDATE 回填映射（api_key_hash='' 为规格明文要求）。
 const UP_V2_POSTGRES: &str = r#"
 ALTER TABLE token_usage ADD COLUMN api_key_hash TEXT NOT NULL DEFAULT '', ADD COLUMN input_tokens BIGINT DEFAULT 0, ADD COLUMN output_tokens BIGINT DEFAULT 0, ADD COLUMN cache_read_tokens BIGINT DEFAULT 0, ADD COLUMN cache_creation_tokens BIGINT DEFAULT 0, ADD COLUMN input_cost DOUBLE PRECISION DEFAULT 0.0, ADD COLUMN output_cost DOUBLE PRECISION DEFAULT 0.0, ADD COLUMN cache_read_cost DOUBLE PRECISION DEFAULT 0.0, ADD COLUMN cache_creation_cost DOUBLE PRECISION DEFAULT 0.0;
 UPDATE token_usage SET api_key_hash = '', input_tokens = prompt_tokens, output_tokens = completion_tokens, input_cost = cost_usd_sum;
@@ -258,9 +235,8 @@ CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(date);
 CREATE INDEX IF NOT EXISTS idx_token_usage_key_date ON token_usage(api_key_hash, date);
 "#;
 
-/// V2 UP（mysql）：mysql 的内联 UNIQUE 自动以首列命名（V1 键名 = vendor），
-/// 换绑 = DROP INDEX vendor + ADD UNIQUE KEY；普通索引走
-/// `ensure_indexes_mysql`（模块文档）。
+/// V2 UP（mysql）：内联 UNIQUE 自动以首列命名（V1 键名 = vendor），换绑 =
+/// DROP INDEX + ADD UNIQUE KEY；普通索引走 `ensure_indexes_mysql`。
 const UP_V2_MYSQL: &str = r#"
 ALTER TABLE token_usage ADD COLUMN api_key_hash VARCHAR(255) NOT NULL DEFAULT '', ADD COLUMN input_tokens BIGINT DEFAULT 0, ADD COLUMN output_tokens BIGINT DEFAULT 0, ADD COLUMN cache_read_tokens BIGINT DEFAULT 0, ADD COLUMN cache_creation_tokens BIGINT DEFAULT 0, ADD COLUMN input_cost DOUBLE DEFAULT 0.0, ADD COLUMN output_cost DOUBLE DEFAULT 0.0, ADD COLUMN cache_read_cost DOUBLE DEFAULT 0.0, ADD COLUMN cache_creation_cost DOUBLE DEFAULT 0.0;
 UPDATE token_usage SET api_key_hash = '', input_tokens = prompt_tokens, output_tokens = completion_tokens, input_cost = cost_usd_sum;
@@ -315,10 +291,8 @@ DROP TABLE IF EXISTS token_usage;
 DROP TABLE IF EXISTS request_logs;
 "#;
 
-/// 按连接后端与版本构造迁移文件（内存嵌入，无目录依赖——`-- UP`/`-- DOWN`
-/// 标记行供 `MigrationExecutor` 切分；UP 体内无以 UP/DOWN 开头的行）。
-/// 未知后端返回 Err（调用方回落旧 DDL；静默按 sqlite 会在 exotic 后端上
-/// 建错表）。未知版本返回 Err（调用方写错版本号属代码 bug，显性暴露）。
+/// 按连接后端与版本构造迁移文件（内存嵌入；`-- UP`/`-- DOWN` 标记行供
+/// `MigrationExecutor` 切分）。未知后端/未知版本返回 Err（不静默按 sqlite）。
 pub(crate) fn core_migration_file(
     backend: DatabaseBackend,
     version: u32,
@@ -373,14 +347,10 @@ pub(crate) fn core_migration_file(
     ))
 }
 
-/// 应用核心迁移 V1..=V2（幂等：已在历史中的版本跳过不重放）。
-///
-/// 返回本次应用的迁移数（0..=2）。调用方（`init_schema`）把 Err 直接上浮
-/// 为启动 fail-fast。`DatabaseBackend` 非穷尽扩展出的未来后端返回
-/// `DbError::Config`（调用方回落旧 DDL，见 `init_schema`）。
+/// 应用核心迁移 V1..=V2（幂等：已在历史中的版本跳过不重放），返回本次应用的迁移数。
+/// Err 上浮为启动 fail-fast；未知后端回落旧 DDL（见 `init_schema`）。
 pub(crate) async fn apply_core_migrations(pool: &DbPool) -> Result<u32, DbError> {
-    // 先释放 session 再跑 executor：测试池 max_connections=1，持有 session
-    // 的同时让 executor 另取连接会死等（clone 的只是池句柄）。
+    // 先释放 session 再跑 executor：测试池 max_connections=1，同时持有两个 session 会死等。
     let (backend, conn) = {
         let session = pool.get_session("admin").await?;
         let backend = session.connection()?.get_database_backend();
@@ -414,9 +384,8 @@ pub(crate) async fn apply_core_migrations(pool: &DbPool) -> Result<u32, DbError>
     Ok(applied)
 }
 
-/// 回滚全部核心迁移（测试面：自最新版本逆序执行 DOWN 并删除历史行）。
-/// 唯一调用点是 [`live_tests`] 的 DOWN 断言，cfg 门控与该模块逐位一致：
-/// 非测试构建、以及非 db-sqlite 后端的测试构建均不参与编译。
+/// 回滚全部核心迁移（测试面：逆序执行 DOWN 并删除历史行），唯一调用点是
+/// [`live_tests`] 的 DOWN 断言。
 #[cfg(all(test, feature = "db-sqlite"))]
 pub(crate) async fn rollback_core_all(pool: &DbPool) -> Result<(), DbError> {
     // 同 apply_core_migrations：先释放 session（size=1 池防死等）。
@@ -490,8 +459,7 @@ mod content_tests {
         }
     }
 
-    /// FROZEN 钉住：V1 token_usage 必须保持组合聚合形态（无 api_key_hash、
-    /// 组合列在）——分账形态只允许住在 V2，改 V1 即历史行指向漂移。
+    /// FROZEN 钉住：V1 token_usage 必须保持组合聚合形态——分账形态只允许住在 V2。
     #[test]
     fn v1_token_usage_is_frozen_combined_shape() {
         for backend in [
@@ -545,8 +513,7 @@ mod content_tests {
                 up.contains("api_key_hash, date, hour)") && up.contains("UNIQUE"),
                 "{backend:?} V2 UNIQUE 键必须含 api_key_hash"
             );
-            // 旧行映射（旧数据不丢）：sqlite 走重建搬数（INSERT..SELECT），
-            // postgres/mysql 走 ALTER+UPDATE 回填。
+            // 旧行映射（旧数据不丢）：sqlite 走重建搬数，postgres/mysql 走 ALTER+UPDATE 回填。
             let mapped = if backend == DatabaseBackend::Sqlite {
                 up.contains("SELECT vendor, model, '', date, hour, request_count, prompt_tokens, completion_tokens")
             } else {
@@ -598,9 +565,7 @@ mod content_tests {
         }
     }
 
-    /// FROZEN V1 与文档 schema.sql 表集合一致
-    /// 双源并存，表集合漂移即红——文档改了必须同步出新迁移版本，
-    /// 禁止静默改 V1。
+    /// FROZEN V1 与文档 schema.sql 表集合一致（双源并存，漂移即红——禁止静默改 V1）。
     #[test]
     fn frozen_v1_tables_match_documented_schema() {
         fn table_set(sql: &str) -> std::collections::HashSet<String> {
@@ -629,7 +594,7 @@ mod content_tests {
     }
 }
 
-/// sqlite 生效面 live 测试（G4 验收：批量/全新库/存量基线/V1 升级 V2/DOWN/只读 fail-fast）。
+/// sqlite 生效面 live 测试（批量/全新库/存量基线/V1 升级 V2/DOWN/只读 fail-fast）。
 #[cfg(all(test, feature = "db-sqlite"))]
 mod live_tests {
     use super::*;
@@ -682,8 +647,7 @@ mod live_tests {
     }
 
     /// 存量库基线表形态（表在、历史空；request_logs 缺 cost 列以覆盖
-    /// v0.1 列回填路径；token_usage 取 V1 冻结组合形态——真实存量 V1 库
-    /// 的升级路径以本形态为起点，见 `v1_db_upgrades_to_v2_in_place`）。
+    /// v0.1 列回填路径）。
     const LEGACY_TABLES_NO_COST: [&str; 4] = [
         "CREATE TABLE request_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT UNIQUE NOT NULL, timestamp INTEGER NOT NULL, endpoint TEXT NOT NULL, input_format TEXT NOT NULL, abstract_model TEXT, messages TEXT NOT NULL, actual_vendor TEXT NOT NULL, actual_model TEXT NOT NULL, routing_strategy TEXT NOT NULL, status_code INTEGER, response TEXT, error_message TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER, duration_ms INTEGER)",
         "CREATE TABLE token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor TEXT NOT NULL, model TEXT NOT NULL, date TEXT NOT NULL, hour INTEGER NOT NULL, request_count INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0, cost_usd_sum REAL DEFAULT 0.0, UNIQUE(vendor, model, date, hour))",
@@ -727,7 +691,7 @@ mod live_tests {
     }
 
     /// 全新库：迁移建四表+索引、记 v1+v2、幂等重跑 0；20 行批量（含注入形态
-    /// 载荷）逐行可读、字段完整——参数化绑定无手写转义。
+    /// 载荷）逐行可读——参数化绑定无手写转义。
     #[tokio::test]
     async fn fresh_db_migrates_and_batch_roundtrips() {
         let pool = memory_pool().await;
@@ -821,9 +785,7 @@ mod live_tests {
         assert_eq!(back.len(), 1);
     }
 
-    /// R-quota-cost-003 验收：V1 旧库启动自动原地升级到 V2，旧数据不丢
-    /// （行保留、token/成本映射可读），且新写入走分账新形态（UNIQUE 键含
-    /// api_key_hash，聚合入账正确）。
+    /// V1 旧库启动自动原地升级到 V2：旧数据不丢（映射可读），新写入走分账新形态。
     #[tokio::test]
     async fn v1_db_upgrades_to_v2_in_place() {
         let pool = memory_pool().await;
@@ -857,8 +819,7 @@ mod live_tests {
             "仅追加 V2"
         );
 
-        // 旧行保留且映射可读：api_key_hash=''（不归属 key）、prompt→input、
-        // completion→output、cost_usd_sum→input_cost（组合成本整额入 input 档）。
+        // 旧行保留且映射可读：api_key_hash=''、prompt→input、completion→output、cost_usd_sum 整额入 input_cost。
         let repo = Repository::new(pool.clone());
         let stats = repo.get_token_stats(None).await.expect("stats");
         assert_eq!(stats.len(), 1, "升级不丢行");
@@ -871,8 +832,7 @@ mod live_tests {
         assert!((row.cost_usd_sum - 0.5).abs() < 1e-9, "成本总额保留");
         assert_eq!(row.request_count, 3);
 
-        // 新写入走分账新形态：同 (vendor, model, hash, date, hour) 二次
-        // 记账各自累加（新 UNIQUE 键生效，不与旧行冲突）。
+        // 新写入走分账新形态：同键二次记账各自累加（新 UNIQUE 键生效，不与旧行冲突）。
         let pa = crate::database::TokenPreAggregator::new(
             std::sync::Arc::new(repo.clone()),
             std::time::Duration::from_secs(3600),
@@ -905,9 +865,8 @@ mod live_tests {
         assert!((ledger.input_cost - 0.02).abs() < 1e-9, "分项成本累加");
     }
 
-    /// 分账表形态（WP9）：token_usage 含 api_key_hash、四类 token 与分项
-    /// 成本列，UNIQUE 键含 api_key_hash；组合列不残留；/admin/cost 查询
-    /// 索引就位（P5）。
+    /// 分账表形态：token_usage 含 api_key_hash、四类 token 与分项成本列；
+    /// 组合列不残留；成本查询索引就位。
     #[tokio::test]
     async fn token_usage_ledger_shape() {
         let pool = memory_pool().await;
@@ -1021,8 +980,8 @@ mod live_tests {
         })
         .await
         .expect("rwc pool");
-        // 只建表、不记历史：模拟"表在、历史空"的存量库，使只读重开后迁移
-        // 真正尝试写（建表 no-op + 记历史行），而非被幂等短路掩盖。
+        // 只建表、不记历史：模拟"表在、历史空"存量库，使只读重开后迁移真正
+        // 尝试写（建表 no-op + 记历史行），而非被幂等短路掩盖。
         create_tables_raw(&rwc).await;
         drop(rwc);
 

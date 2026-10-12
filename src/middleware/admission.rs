@@ -5,23 +5,11 @@
 
 //! 拥塞感知优先级准入 — 把 429 的决定权从先到先得交给优先级。
 //!
-//! 拥塞信号 = 网关侧并发占用率 = Σ in_flight / Σ 并发上限（复用
-//! 的 `ConcurrencyLimiter::in_flight`，流式 permit 随流存活故对长流真实）
-//! ≥ `[admission].congestion_threshold` 时，新请求的档位优先级与「当前
-//! 在途最小档」比较：低于者直接 429 + Retry-After（不排队）。同档/高档
-//! 照常放行（同档内保持先到先得）；健康检查在 rate_limit_middleware 头部
-//! 白名单放行，永不卸载。
-//!
-//! 优先级（论文式 1）：`w_tier·(1+α_slo·ℓ*)⁻¹·(1+α_burst·b)⁻¹·
-//! (1+α_debt·d)⁻¹`。ℓ*（SLO 缺口）本条无数据源恒 0、该项恒 1（α_slo 配置
-//! 预留）；b/d 为 per-key burst（到达速率）/ debt（被 shed 频度）EWMA，
-//! AtomicU64 定点（×2¹⁶）。**语义定位（调研报告限定）**：网关侧近似、
-//! 粗分类 shed 顺序，不承诺论文的 TTFT 数字；burst/debt 的样本定义是
-//! 网关可达信号的自洽近似，非论文原始测度。
-//!
-//! 默认关闭：`[admission].enabled` 默认 false —— 判定旁路、EWMA 不记账、
-//! 在途计数不增减（行为与现状逐位一致）；热读，POST /admin/config 立即
-//! 生效。per-tier 在途计数经 guard 的 Drop 释放（panic 展开亦不泄漏）。
+//! 拥塞信号 = Σ in_flight / Σ 并发上限 ≥ `[admission].congestion_threshold` 时，
+//! 低于「当前在途最小档」的新请求直接 429 + Retry-After（不排队）；同档/高档照常
+//! 放行（同档内保持先到先得）。健康检查在 rate_limit_middleware 头部白名单放行。
+//! 默认关闭（`[admission].enabled` 默认 false）；per-tier 在途计数经 guard 的
+//! Drop 释放（panic 展开亦不泄漏）。优先级公式见 [`admission_priority`]。
 
 use crate::config::{AdmissionSection, AuthTier, ConfigManager};
 use crate::middleware::auth::{extract_api_key, ApiAuthState};
@@ -39,12 +27,11 @@ const FIXED_POINT: f64 = 65536.0;
 const BURST_EWMA_ALPHA: f64 = 0.5;
 /// debt EWMA 平滑系数（被拒样本 1 / 放行样本 0）
 const DEBT_EWMA_ALPHA: f64 = 0.25;
-/// per-key 表条目硬上限（auth 关闭时伪造 key 的内存放大守卫，
-/// 端点表同款策略）；超限后新 key 退化共享单桶
+/// per-key 表条目硬上限（auth 关闭时伪造 key 的内存放大守卫）；超限后新 key 退化共享单桶
 const MAX_KEY_STATS: usize = 1024;
 /// 溢出共享桶的键
 const OVERFLOW_KEY: &str = "__overflow__";
-/// 拥塞 429 的 Retry-After 秒数（粗分类 shed 的保守重试间隔）
+/// 拥塞 429 的 Retry-After 秒数（保守重试间隔）
 pub const RETRY_AFTER_SECS: u64 = 1;
 
 /// 档位 → 下标（权重降序：dedicated=0 … spot=3）
@@ -68,10 +55,8 @@ pub fn tier_weight(tier: AuthTier) -> f64 {
     }
 }
 
-/// 优先级纯函数（论文式 1）— `w_tier·(1+α_slo·ℓ*)⁻¹·
-/// (1+α_burst·b)⁻¹·(1+α_debt·d)⁻¹`。ℓ* 恒 0（SLO 缺口维度无数据源，
-/// 该项恒 1；α_slo 配置预留）。burst/debt 负值按 0（防御）。
-/// `pub` 供确定性单测。
+/// 优先级纯函数：`w_tier·(1+α_slo·ℓ*)⁻¹·(1+α_burst·b)⁻¹·(1+α_debt·d)⁻¹`。
+/// ℓ* 恒 0（SLO 缺口无数据源，该项恒 1）；burst/debt 负值按 0（防御）。
 pub fn admission_priority(
     section: &AdmissionSection,
     tier_weight: f64,
@@ -109,9 +94,8 @@ struct KeyStats {
     last_seen_ms: AtomicU64,
 }
 
-/// 准入状态 — 挂载于 [`super::router_builder::InboundLimitState`]
-///（的中间件 State 之上，评审 issue#14 依赖声明）。全局共享
-///（Arc）：per-tier 在途计数 + per-key burst/debt EWMA。
+/// 准入状态（挂载于中间件 State，全局共享 Arc）：per-tier 在途计数 +
+/// per-key burst/debt EWMA。
 pub struct AdmissionState {
     config: Arc<ConfigManager>,
     vendor_manager: Arc<VendorManager>,
@@ -122,10 +106,8 @@ pub struct AdmissionState {
     key_stats: RwLock<HashMap<String, Arc<KeyStats>>>,
 }
 
-/// 准入放行票据 — 持有期间该档在途计数 +1，Drop（含 panic
-/// 展开）−1。中间件作用域生命周期：包住 handler 执行至响应返回；流式
-/// body 传输期不计（粗分类定位，见模块注释）。Debug 手写（guard 的
-/// 存在性可日志，状态无内部可打印语义）。
+/// 准入放行票据 — 持有期间该档在途计数 +1，Drop（含 panic 展开）−1。
+/// 作用域包住 handler 至响应返回；流式 body 传输期不计（粗分类定位）。
 pub struct AdmissionGuard {
     counters: Arc<[AtomicU64; TIER_COUNT]>,
     index: usize,
@@ -155,11 +137,9 @@ impl AdmissionState {
         }
     }
 
-    /// 准入判定 — 返回 Ok(guard)（放行，调用方须持至响应返回）
-    /// 或 Err(retry_after_secs)（拥塞且优先级低于在途最小档 → 429）。
-    /// `now_ms` 注入（record_traffic_at 先例，测试驱动 EWMA）。
-    /// `[admission].enabled` 热读：false（默认）直接放行（guard 仍计入
-    /// 在途——计数是纯内存观测，不构成行为差异）。
+    /// 准入判定 — 返回 Ok(guard)（放行，调用方须持至响应返回）或 Err(retry_after_secs)
+    /// （拥塞且优先级低于在途最小档 → 429）。`now_ms` 注入供测试驱动 EWMA。
+    /// `[admission].enabled` 热读：false（默认）直接放行（guard 仍计入在途——纯内存观测）。
     pub fn admit(
         &self,
         tier: AuthTier,
@@ -170,7 +150,6 @@ impl AdmissionState {
         let stats = self.stats_for(key_hash);
         self.record_arrival(&stats, now_ms);
         if !section.enabled {
-            // 默认关闭：判定旁路（guard 仍计数——纯内存观测，不构成行为差异）
             return Ok(self.guard(tier));
         }
         let (burst, debt) = self.key_ewma(key_hash);
@@ -183,8 +162,7 @@ impl AdmissionState {
             true
         } else {
             match self.min_in_flight_weight() {
-                // 准入计数无在途而信号拥塞（流式近似误差/非网关侧占用）→
-                // 保守放行：没有可比较的在途档位，shed 无依据
+                // 无在途而信号拥塞（流式近似误差）→ 保守放行：没有可比较的在途档位
                 None => true,
                 Some(min_weight) => priority >= min_weight,
             }
@@ -225,8 +203,7 @@ impl AdmissionState {
         min
     }
 
-    /// per-key 状态取用（惰性创建 + 容量守卫：超限退化共享单桶，
-    /// 端点表同款策略；读快路径 + 写慢路径双检）
+    /// per-key 状态取用（惰性创建 + 容量守卫：超限退化共享单桶）。
     fn stats_for(&self, key_hash: &str) -> Arc<KeyStats> {
         if let Some(s) = self
             .key_stats

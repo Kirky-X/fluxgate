@@ -4,20 +4,13 @@
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
-//! 入站限流落地测试。
-//!
-//! 缺陷背景：config.toml 的 [rate_limit] 段此前被 serde 静默丢弃（Config
-//! 无该字段），rate_limit_middleware 一直跑 limiteron Governor 的库内置
-//! 默认兜底规则（TokenBucket 100/10）——配置的 requests_per_second 等
-//! 从未生效。
-//!
-//! 本文件锁定：
-//! - [[rate_limit.rules]] 配置解析（Red 形态：无字段编译即败）；
+//! 入站限流落地测试。本文件锁定：
+//! - [[rate_limit.rules]] 配置解析与生效；
 //! - per-endpoint 规则（path 前缀）经中间件端点表生效：超限 429 +
 //!   Retry-After、租户分桶（API key SHA256）、匿名归入单一 anonymous 桶、
 //!   健康检查白名单放行；
 //! - 全局规则（path 缺省）注入 limiteron Governor 生效；
-//! - rules 为空 = Governor 默认兜底 + 无端点表（与历史行为逐位一致）。
+//! - rules 为空 = Governor 默认兜底 + 无端点表。
 
 use axum::{body::Body, http::Request, http::StatusCode, Router};
 use dbnexus::{DbConfig, DbPool};
@@ -306,13 +299,10 @@ async fn path_prefix_scopes_rule_to_matching_endpoint() {
     );
 }
 
-/// 健康检查白名单断言位于 src/api/router_builder.rs 内联单元测试
-///（health_check_bypasses_endpoint_rate_limit）：axum 0.8 的 layer 只作用于
-/// 已有路由（axum-0.8.9 src/docs/routing/layer.md），create_router 返回后
-/// 再 .route 的路径不经过中间件——集成形态的断言空洞（评审 major 探针
-/// 实证），故以 route 先于 layer 的单测锁定，并带中间件生效对照组。
-/// 匿名语义锁定：无 Authorization 头的请求全部归入单一 anonymous 桶
-/// （沿用 response_cache::cache_api_key_hash 先例），第 3 个请求 429。
+/// 健康检查白名单断言位于 src/api/router_builder.rs 内联单测（axum 0.8 的
+/// layer 只作用于已有路由，create_router 返回后再 .route 的路径不经中间件，
+/// 集成形态存在断言空洞）。匿名语义锁定：无 Authorization 头的请求归入
+/// 单一 anonymous 桶，第 3 个请求 429
 #[tokio::test]
 async fn anonymous_requests_share_single_bucket() {
     let app = build_app(vec![rate_rule("chat-cap", Some("/v1/chat/completions"), 2)]).await;
@@ -425,7 +415,11 @@ async fn global_rule_rejection_carries_retry_after_and_standard_body() {
         .get("Retry-After")
         .expect("global 429 must carry Retry-After");
     let secs: u64 = retry_after.to_str().unwrap().parse().unwrap();
-    assert!(secs >= 1, "Retry-After must be positive, got {secs}");
+    assert!(
+        (1..60).contains(&secs),
+        "Retry-After must be the remaining window seconds (window 60s), got {secs} — \
+         整窗回法会给 60"
+    );
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -436,7 +430,55 @@ async fn global_rule_rejection_carries_retry_after_and_standard_body() {
     );
 }
 
-/// R-streaming-resilience-003 入口侧断言：stream=true 的请求同样只在
+/// 精确性：窗口内已流逝 ≥1s 后拒绝，Retry-After 必须随窗口递减
+/// （= 精确剩余秒），而非恒回整窗——遵守该头的客户端/agent 因此不白等
+/// 近一整窗。
+#[tokio::test]
+async fn global_rule_retry_after_tracks_window_remaining() {
+    let app = build_app(vec![rate_rule("global-precise", None, 1)]).await;
+
+    let first = send(
+        app.clone(),
+        "POST",
+        "/v1/chat/completions",
+        Some("tenant-a"),
+        CHAT_BODY,
+    )
+    .await;
+    assert_ne!(
+        first.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "窗口内首请求应放行"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    let resp = send(
+        app,
+        "POST",
+        "/v1/chat/completions",
+        Some("tenant-a"),
+        CHAT_BODY,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let secs: u64 = resp
+        .headers()
+        .get("Retry-After")
+        .expect("global 429 must carry Retry-After")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    // 窗口 60s、已流逝 ~1.2s → 剩余 ≈58.8s（向下取整 58）；断言 <60 即证
+    // 取值随窗口递减而非恒回整窗（慢机抖动只会让值更小）。
+    assert!(
+        (1..60).contains(&secs),
+        "Retry-After 应为窗口剩余秒，实测 {secs}（整窗回法会给 60）"
+    );
+}
+
+/// 入口侧断言：stream=true 的请求同样只在
 /// 请求入口裁决——首个请求消耗配额（handler 路由失败非 429），第二个
 /// 请求入口即 429。限流不进入流生命周期，不存在「流中途限流」形态。
 #[tokio::test]
@@ -564,7 +606,7 @@ async fn auth_runs_before_rate_limit_layers() {
     );
 }
 
-// ==================== R-streaming-resilience-003：已放行的流不因限流中断 ====================
+// ==================== 已放行的流不因限流中断 ====================
 
 fn request_content_length(head: &str) -> usize {
     for line in head.lines() {

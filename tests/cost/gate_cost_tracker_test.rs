@@ -5,7 +5,7 @@
 
 //! CostTracker 单元测试。
 //!
-//! 测试属性（规则9）：
+//! 测试属性：
 //! 1. 并发 1000 次 record(0.01) 后 total_usd ≈ 10.0（容差 0.01）
 //! 2. by_vendor_usd 累加正确，且 == total_usd（仅 openai vendor 时）
 //! 3. by_model_usd 累加正确

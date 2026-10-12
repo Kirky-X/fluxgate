@@ -3,18 +3,11 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! config 模块覆盖率补充测试。
+//! config 模块覆盖率补充测试：loader 文件加载链路、serde default
 //!
-//! 新建目的：src/config/loader.rs 的文件加载链路（路径不存在 / TOML 语法
-//! 错 / 类型不匹配 / vendor·model 重复 id / api_key_env 缺失只告警）与
-//! src/config/mod.rs 的 serde default 函数（port/db_path/weight/model
-//! enabled/rps/global_model/auth·cors enabled）、RoutingSection::preset
-//! 此前 0 覆盖；ConfigManager 的 RMW / 无路径拒绝 / 快照目录 "." 回退
-//! 分支也一并锁定。
+//! 函数与 ConfigManager RMW/快照分支（此前 0 覆盖）。
 //!
-//! 全部走公开 API：ConfigLoader::load 读临时目录中的 TOML，ConfigManager
-//! 做 RMW 与模型解析断言；错误分支断言 GateError 变体与插值参数，
-//! 不做"调用不报错"式断言。
+//! 全部走公开 API，错误分支断言 GateError 变体与插值参数。
 
 use nexusflow::config::loader::ConfigLoader;
 use nexusflow::config::{Config, ConfigManager, RateLimitConfig, RoutingSection, ServerConfig};
@@ -37,10 +30,8 @@ fn load_from(path: &std::path::Path) -> Result<ConfigManager, GateError> {
     ConfigLoader::new(Some(path.to_string_lossy().to_string())).load()
 }
 
-/// 缺省键全覆盖的 TOML：port / database 两键 / model weight·enabled /
-/// rps / global_model 两键 / auth·cors enabled 均缺席，由 serde default
-/// 函数回退；vendor_b 与 vendor_a 共享 abstract-a（映射聚合）、model-e
-/// 缺 abstract_id（model_id 回退）、vendor_c 整体禁用（解析剔除）。
+/// 缺省键全覆盖的 TOML：server/database/model/global_model/auth·cors
+/// 均缺席，由 serde default 回退（含聚合、禁用剔除与 model_id 回退）。
 const DEFAULTS_TOML: &str = r#"
 [server]
 host = "127.0.0.1"
@@ -274,8 +265,7 @@ model_id = "dup-model"
 }
 
 /// [resilience].circuit_open_timeout_ms 下限校验：窗口 <100ms 使 Open→HalfOpen
-/// 即刻转换，故障期退化为探针风暴（等于关闭熔断冷却）。加载与热更新共用
-/// validate_config，两路同拒；下限值本身必须放行。
+/// 即刻转换（等于关闭熔断冷却）；加载与热更新两路同拒，下限值放行。
 #[test]
 fn loader_rejects_circuit_open_timeout_below_floor() {
     const VENDOR_TOML: &str = r#"
@@ -328,10 +318,8 @@ fn loader_reports_toml_syntax_and_type_errors_distinctly() {
         other => panic!("非法 TOML 必须报 Config 错误，实际 {other:?}"),
     }
 
-    // 类型不匹配（port 为字符串）→ serde 解析层错误（config-parse-failed）。
-    // 经 confers AnnotatedValue::to_typed 投影后错误有意脱敏：只携带字段
-    // 路径（server.port），绝不回显出错值——配置值可能是密钥原文，回显会
-    // 经错误通道泄进日志/HTTP 响应（confers/src/types.rs to_typed 错误构造）。
+    // 类型不匹配（port 为字符串）→ serde 解析层错误（config-parse-failed），
+    // 错误只携带字段路径不回显值（配置值可能是密钥，禁止泄进日志/响应）。
     let mismatch = temp_toml(
         "type-mismatch.toml",
         r#"
@@ -367,18 +355,8 @@ concurrency = { requests_per_second = 1 }
     }
 }
 
-/// [auth] 管理面密钥启动拒绝：`api_keys` 与 `[[auth.keys]].hash` 的配置
-/// 契约是 SHA256 hex 摘要（64 个小写 hex 字符），违约条目必须在加载路径
-/// fail-fast 拒绝，防止无效/弱凭证在重启用时静默生效。校验分两层（与
-/// loader.rs validate_admin_secrets 的双层描述一致）：
-/// ① 形态契约（本仓库强制）：64 位小写 hex——用例 ①②④⑤ 均在本层被拒
-///    （"changeme"/"short"/长口令不是小写 hex-64，大写摘要被小写关拦下）；
-/// ② confers JwtSecretValidator 规则内核（长度 + 弱词表，词表不复制进
-///    本仓库）：过形态关的条目必然 ≥32 字节且不可能是弱词表任何词，
-///    内核对真实输入恒 Ok、路径当前不可达，为规则内核后续增强保留
-///    前向继承钩子（故无内核分支的独立测试用例）。
-/// 错误信息只报条目位置与规则结论，不回显条目原文（脱敏先例同
-/// validate_config 的 env 告警）。
+/// [auth] 管理面密钥启动拒绝：api_keys / [[auth.keys]].hash 必须是
+/// SHA256 hex 摘要（64 位小写 hex），违约 fail-fast 拒绝且不回显原文。
 #[test]
 fn loader_rejects_weak_admin_secrets_at_startup() {
     const VENDOR_TOML: &str = r#"
@@ -394,8 +372,7 @@ rate_limit = { type = "interval", hours = 1 }
 concurrency = { requests_per_second = 1 }
 "#;
 
-    // ① api_keys 明文误填 → 形态契约层拒绝（非小写 hex-64；confers 内核
-    //    长度/弱词表路径对真实输入不可达，见函数头注释），报条目位置
+    // ① api_keys 明文误填 → 形态契约层拒绝，报条目位置
     let path = temp_toml(
         "weak-api-key.toml",
         &format!("{VENDOR_TOML}\n[auth]\napi_keys = [\"changeme\"]\n"),
@@ -438,9 +415,8 @@ concurrency = { requests_per_second = 1 }
     );
     load_from(&path).expect("SHA256 hex 摘要形态的密钥必须放行");
 
-    // ④ 64 字节非 hex 明文（长口令误填当摘要）→ 形态契约拒绝。这是
-    //    confers 长度（≥32 字节）/弱词表检查拦不住的最常见误填形态——
-    //    错误消息宣称 SHA256 hex 契约，形态检查必须真实强制该契约。
+    // ④ 64 字节非 hex 明文（长口令误填当摘要）→ 形态契约拒绝（长度/
+    // 弱词表检查拦不住的最常见误填形态）。
     let long_passphrase = "x".repeat(64);
     let path = temp_toml(
         "long-plaintext-api-key.toml",
@@ -460,10 +436,8 @@ concurrency = { requests_per_second = 1 }
         other => panic!("64 字节非 hex 明文误填必须拒绝启动，实际 {other:?}"),
     }
 
-    // ⑤ 大写 hex 摘要同样拒绝：认证侧 sha256_hex 经 hex::encode 恒输出
-    //    小写（src/middleware/auth.rs）并逐字节比较，大写条目（certutil /
-    //    Get-FileHash 的真实输出形态）能过宽形态关却永远无法认证任何
-    //    key——重启后全量 401 的惰性误填，必须在形态关拦下。
+    // ⑤ 大写 hex 摘要同样拒绝：认证侧 sha256_hex 恒输出小写并逐字节
+    // 比较，大写条目永远无法认证任何 key。
     let upper_digest = "A".repeat(64);
     let path = temp_toml(
         "upper-digest-api-key.toml",
@@ -484,8 +458,7 @@ concurrency = { requests_per_second = 1 }
     }
 
     // ⑥ 多条目同时不达标 → 错误明细按配置索引固定顺序列出（api_keys
-    //    升序）。随机序会让同一份坏配置重启后日志文案漂移，妨碍日志
-    //    比对与告警去重。
+    // 升序），避免同一份坏配置重启后日志文案漂移。
     let path = temp_toml(
         "multi-weak-api-key.toml",
         &format!("{VENDOR_TOML}\n[auth]\napi_keys = [\"bad-one\", \"{digest}\", \"bad-two\"]\n"),
@@ -521,8 +494,7 @@ fn loader_reports_file_not_found_with_path() {
 
 #[test]
 fn missing_api_key_env_only_warns_and_load_still_succeeds() {
-    // env 键名独占（NX_COV_*_7Q2 唯一），与其他并行测试无共享态；
-    // edition 2021 下 set_var/remove_var 的理论竞态随迁移 2024 需一次性初始化
+    // env 键名独占（NX_COV_*_7Q2 唯一），与其他并行测试无共享态
     // ① env 未设置：validate 只告警不阻断，加载成功
     const UNSET: &str = "NX_COV_DEFINITELY_UNSET_7Q2";
     std::env::remove_var(UNSET);
@@ -654,10 +626,7 @@ fn rmw_closure_error_keeps_memory_and_disk() {
 /// 快照目录 "." 回退：相对文件名（无父目录）时，更新前快照与唯一 tmp
 /// 文件都落 CWD，不 panic 不静默丢快照。
 ///
-/// 进程 CWD 是全局态：切进独占临时目录再执行，既不向仓库工作树落盘，
-/// 也保证 Drop 清理不会触达生产快照目录（`config-backups` 与
-/// src/config/manager.rs 的 SNAPSHOT_DIR_NAME 同名，不能在真实 CWD 删它）。
-/// 本二进制内其余测试全部使用绝对路径，切 CWD 不影响并行用例。
+/// 进程 CWD 是全局态：切进独占临时目录再执行，不向仓库工作树落盘，
 #[test]
 fn snapshot_and_tmp_write_fall_back_to_cwd_for_bare_relative_paths() {
     let sandbox = std::env::temp_dir().join(format!(

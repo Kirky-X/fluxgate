@@ -433,6 +433,7 @@ mod scheduling_weight {
     ///   均值饱和触底，差距更大）；
     /// - load_signal="queue"（现状回归）→ 队列为空，同样的在途不影响
     ///   权重（历史行为锁定）。
+    ///
     /// 无需 20 并发，2/2 即覆盖「信号量占用 → 权重」链路。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn in_flight_load_signal_lowers_weight_only_when_selected() {

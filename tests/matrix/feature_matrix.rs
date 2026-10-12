@@ -3,13 +3,10 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! nexusflow 应用面特性组合矩阵测试（自原 feature_matrix 按归属拆分）。
-//!
+//! nexusflow 应用面特性组合矩阵测试。
 //! 应用面 feature 只保留可见性断言；路由核心矩阵见 gate_feature_matrix.rs。
-//! **语义变化（design.md D1）**：
-//! vendor-management→database 联动已解除——原「vendor-management 开启时
-//! database 必须也可用」的链条断言随之删除，database 现由 web-server 显式
-//! 携带（服务器装配 bootstrap 需要）与 database feature 自身声明。
+//! vendor-management→database 联动已解除，database 由 web-server 显式携带
+//! 与 database feature 自身声明
 //!
 //! ## 已验证的特性组合矩阵（nexusflow 侧）
 //!

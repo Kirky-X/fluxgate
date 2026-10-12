@@ -3,14 +3,11 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 集成测试 — 成本与 token 维度配额（WP8 预扣-回补）：预扣后超限 429、
+//! 集成测试 — 成本与 token 维度配额（预扣-回补）：预扣后超限 429、
 //! 响应后回补恢复、流式结束回补、窗口边界翻转、已放行流中途不中断、
 //! 与入站限流三闸门叠加（任一触发即拒且触发方可辨识）。
-//!
-//! 走 `create_router` 全中间件栈（认证 + 配额 + 限流与线上同形）。token
-//! 维度单测口径（无 pricing 条目 → 成本预扣为 0、成本不限，只行 token 窗）；
-//! 成本维度用 `[[pricing]]` 条目 + `cost_quota_millicents` 单独锁定（token
-//! 窗放宽至不参与），两维度任一触发即拒。
+//! 走 create_router 全中间件栈。token 维度单测口径（无 pricing → 成本
+//! 不限，只行 token 窗）；成本维度单独锁定
 
 #![cfg(feature = "web-server")]
 
@@ -221,7 +218,7 @@ async fn make_state_with_cache(config: Config, with_quota: bool) -> Arc<ApiState
     })
 }
 
-/// `with_usage_sink` 仅给成本档源一致性用例拉上分账链（WP9 预聚合器），
+/// `with_usage_sink` 仅给成本档源一致性用例拉上分账链，
 /// 其余用例保持 `None`（与线上未接线的默认形态一致）。
 async fn make_state_inner(
     config: Config,
@@ -375,7 +372,7 @@ fn chat_rate_rule(max_requests: u64) -> Vec<RateLimitRule> {
     }]
 }
 
-/// R-quota-cost-001/002：预扣超限即 429 + Retry-After + i18n 文案。
+///：预扣超限即 429 + Retry-After + i18n 文案。
 #[tokio::test]
 async fn over_quota_rejected_at_entry_with_retry_after() {
     let mut server = mockito::Server::new_async().await;
@@ -401,7 +398,7 @@ async fn over_quota_rejected_at_entry_with_retry_after() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-002：响应后回补——无回补时请求 2 必 429（2P > Q），
+///：响应后回补——无回补时请求 2 必 429（2P > Q），
 /// 有回补时放行（A+P ≤ Q）。
 #[tokio::test]
 async fn response_settles_quota_for_next_request() {
@@ -437,7 +434,7 @@ async fn response_settles_quota_for_next_request() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-001（成本窗口独立触发）：token 窗宽裕不参与，仅成本预扣
+///（成本窗口独立触发）：token 窗宽裕不参与，仅成本预扣
 /// 超限即 429 + Retry-After，上游零触达——两维度独立叠加、任一触发即拒。
 #[tokio::test]
 async fn over_cost_quota_rejected_at_entry_while_token_window_ample() {
@@ -482,7 +479,7 @@ async fn over_cost_quota_rejected_at_entry_while_token_window_ample() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-001/002（成本窗口回补）：限额 = 一次预扣 + 实际成本；
+///（成本窗口回补）：限额 = 一次预扣 + 实际成本；
 /// 无回补时第二请求 2×pre > quota 必 429，回补后恢复放行（token 窗始
 /// 终宽裕，不参与）。
 #[tokio::test]
@@ -540,7 +537,7 @@ async fn cost_response_settles_quota_for_next_request() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-002（流式）：转换流结束后回补；上限对照组（无回补必 429）。
+///（流式）：转换流结束后回补；上限对照组（无回补必 429）。
 #[tokio::test]
 async fn stream_end_settles_quota() {
     let p = est_input() + 10;
@@ -591,7 +588,7 @@ async fn stream_end_settles_quota() {
     mock_json.assert_async().await;
 }
 
-/// R-quota-cost-001：窗口边界翻转——耗尽后 429，窗口过后恢复。
+///：窗口边界翻转——耗尽后 429，窗口过后恢复。
 #[tokio::test]
 async fn window_flip_restores_quota() {
     let p = est_input() + 10;
@@ -633,7 +630,7 @@ async fn window_flip_restores_quota() {
     mock.assert_async().await;
 }
 
-/// R-streaming-resilience-003 流中侧：已放行流中途配额耗尽不被中断，
+/// 流中侧：已放行流中途配额耗尽不被中断，
 /// 且回补在流结束后生效。
 #[tokio::test]
 async fn admitted_stream_survives_mid_stream_exhaustion() {
@@ -710,7 +707,7 @@ async fn admitted_stream_survives_mid_stream_exhaustion() {
     mock_json.assert_async().await;
 }
 
-/// R-quota-cost-001（三闸门叠加·配额为触发方）：紧配额（成本窗 1
+///（三闸门叠加·配额为触发方）：紧配额（成本窗 1
 /// millicent）+ 宽限流（1000 次/窗）→ 429 且体为配额文案、上游
 /// 零触达（限流本可放行，拒因只能是配额）。
 #[tokio::test]
@@ -751,7 +748,7 @@ async fn stacked_gates_tight_quota_rejects_with_quota_message() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-001（三闸门叠加·限流为触发方）：宽配额（100× 预扣）+
+///（三闸门叠加·限流为触发方）：宽配额（100× 预扣）+
 /// 紧限流（1 次/窗）→ 首请求 200（上游 1 次）、次请求 429 且体为限流
 /// 文案（上游仍 1 次）——两闸门各自独立判定、触发方可辨识。
 /// 注：执行序 auth→quota→rate_limit→admission，次请求先被配额预扣后才
@@ -804,7 +801,7 @@ async fn stacked_gates_tight_rate_limit_rejects_with_rate_limit_message() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-001（三闸门叠加·不误拒）：两闸门均宽裕时连续请求
+///（三闸门叠加·不误拒）：两闸门均宽裕时连续请求
 /// 照常放行（叠加不互相吞掉）。
 #[tokio::test]
 async fn stacked_gates_both_ample_pass_repeated_requests() {
@@ -848,7 +845,7 @@ async fn stacked_gates_both_ample_pass_repeated_requests() {
 /// 含 prompt cache 的实际 usage（OpenAI 形态：prompt 含 cached）。
 const CACHE_USAGE_BODY: &str = r#"{"id":"c","object":"chat.completion","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100,"prompt_tokens_details":{"cached_tokens":600}}}"#;
 
-/// R-quota-cost-001/005（成本档源单点 + cache 档进入成本窗）：目录登记
+///（成本档源单点 + cache 档进入成本窗）：目录登记
 /// `gpt-4` 四档价（与 `[[pricing]]` 没有同价），两阶段限额分别落在
 /// 「目录四档 vs [[pricing]] 两档」与「不计 cache vs 计 cache」之间：
 /// 若配额侧仍走 [[pricing]] 档源或不计 cache 档，阶段 A/B 的次请求结果就会翻转。
@@ -996,7 +993,7 @@ async fn cost_window_uses_catalog_source_and_counts_cache_tiers() {
     mock_b.assert_async().await;
 }
 
-// ==================== T003：透传流结算（R-quota-cost-002 流式侧补齐） ====================
+// ==================== 透传流结算（ 流式侧补齐） ====================
 
 /// Anthropic 入站 + Anthropic 上游 = 真透传流（走 `passthrough_stream_body`）。
 fn claude_vendor(id: &str, api_base: String) -> VendorConfig {
@@ -1052,7 +1049,7 @@ async fn post_messages_app(app: &axum::Router, body: Value) -> axum::response::R
         .unwrap()
 }
 
-/// R-quota-cost-002（透传流）：正常收束后按实际回补——限额 = 一次预扣 + 实际
+///（透传流）：正常收束后按实际回补——限额 = 一次预扣 + 实际
 /// 用量，无回补则次请求 2P > Q 必 429，有回补时 5 + P ≤ Q 放行。
 #[tokio::test]
 async fn passthrough_stream_settles_quota_after_stream_end() {
@@ -1094,7 +1091,7 @@ async fn passthrough_stream_settles_quota_after_stream_end() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-002（条件性缺口）：OpenAI 透传流不带 `include_usage` → 全程
+///（条件性缺口）：OpenAI 透传流不带 `include_usage` → 全程
 /// 无可解析 usage → 不回补，次请求因预扣仍占额而 429（锁定模块头声明口径）。
 #[tokio::test]
 async fn passthrough_stream_without_usage_keeps_precharge() {
@@ -1132,7 +1129,7 @@ async fn passthrough_stream_without_usage_keeps_precharge() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-002（零包装形态一）：`quota.enabled = false` 时透传帧字节与
+///（零包装形态一）：`quota.enabled = false` 时透传帧字节与
 /// 包装前逐字节一致（等价于上游帧原文 + 定界空行），且无网关 error 帧。
 #[tokio::test]
 async fn passthrough_stream_bytes_unchanged_when_quota_disabled() {
@@ -1158,7 +1155,7 @@ async fn passthrough_stream_bytes_unchanged_when_quota_disabled() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-002（零包装形态二）：`quota.enabled = true` 但该 key 的
+///（零包装形态二）：`quota.enabled = true` 但该 key 的
 /// token 与成本限额均为 0 → 同样零包装（字节不变、不误判限）。
 #[tokio::test]
 async fn passthrough_stream_bytes_unchanged_when_key_has_no_limits() {
@@ -1244,7 +1241,7 @@ async fn cache_hit_requests_settle_zero_and_do_not_burn_quota() {
     mock.assert_async().await;
 }
 
-// ==================== T005：admission × quota 叠加（R-quota-cost-001 第三条） ====================
+// ==================== admission × quota 叠加（ 第三条） ====================
 
 /// 拥塞 shed 造数用的挂起监听地址（只 accept 不响应，同 admission_test 手法）。
 fn hanging_base() -> (std::net::TcpListener, String) {
@@ -1308,7 +1305,7 @@ async fn post_chat_with_key(app: &axum::Router, key: &str) -> axum::response::Re
         .unwrap()
 }
 
-/// R-quota-cost-001（三闸门叠加·准入为触发方）：配额窗宽裕、准入拥塞 →
+///（三闸门叠加·准入为触发方）：配额窗宽裕、准入拥塞 →
 /// 429 且响应体为准入文案（非配额文案），两文案必不相等 → 触发方可辨识。
 #[tokio::test]
 async fn stacked_admission_rejection_is_distinguishable_from_quota() {
@@ -1347,7 +1344,7 @@ async fn stacked_admission_rejection_is_distinguishable_from_quota() {
     }
 }
 
-/// R-quota-cost-001（三闸门叠加·配额为触发方）：同形态配置但 `[admission]`
+///（三闸门叠加·配额为触发方）：同形态配置但 `[admission]`
 /// 关闭 + 配额紧（token 窗 1）→ 429 且响应体为配额文案。
 #[tokio::test]
 async fn stacked_quota_rejection_is_distinguishable_when_admission_disabled() {
@@ -1364,7 +1361,7 @@ async fn stacked_quota_rejection_is_distinguishable_when_admission_disabled() {
     );
 }
 
-/// R-quota-cost-001（三闸门叠加·不误拒）：准入开启但不拥塞且配额宽裕 →
+///（三闸门叠加·不误拒）：准入开启但不拥塞且配额宽裕 →
 /// 请求正常送达上游（两闸门均不吞正常请求）。
 #[tokio::test]
 async fn stacked_gates_admission_open_and_quota_ample_passes() {
@@ -1390,7 +1387,7 @@ async fn stacked_gates_admission_open_and_quota_ample_passes() {
     mock.assert_async().await;
 }
 
-/// R-quota-cost-001（per-key 隔离）：GOOD_KEY 的 token 窗打满触发 429 时，
+///（per-key 隔离）：GOOD_KEY 的 token 窗打满触发 429 时，
 /// 同窗内第二个宽限额 key 照常放行——两 key 各自建账，互不污染。
 #[tokio::test]
 async fn quota_windows_are_isolated_per_key() {

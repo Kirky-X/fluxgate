@@ -32,5 +32,12 @@ api-log-push-rejected = request log push rejected: { $error }
 api-usage-record-rejected = token usage record rejected: { $error }
 api-embeddings-openai-only = Embeddings only supported for OpenAI vendors
 
+# ---- 不变量 panic 文案（api/{anthropic,openai}.rs 最终路由 / api/route_explain.rs 入选者字段）----
+api-final-route-missing = leader/self-heal/non-participant path closure must produce a final route
+api-explain-no-factors = eligible candidate must carry a weight-factor breakdown
+api-explain-no-weight = eligible candidate must carry a weight
+api-explain-no-base = eligible candidate must carry a composite base weight
+api-explain-no-selection = eligible candidate must carry a selection tier
+
 # ---- api/health.rs（#[forge] description，经 sdforge::i18n::register_translation 运行时注册） ----
 api-health-description = Health check endpoint

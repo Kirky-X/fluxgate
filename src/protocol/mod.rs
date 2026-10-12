@@ -52,13 +52,10 @@ pub trait ProtocolConverter: Send + Sync {
     fn parse_response(&self, response: serde_json::Value) -> Result<UnifiedResponse, GateError>;
     fn stream_chunk_to_external(&self, chunk: StreamChunk) -> Result<serde_json::Value, GateError>;
 
-    /// 上游 SSE 帧 `data` 负载 → IR StreamChunk（阶段二反向解析）。
+    /// 上游 SSE 帧 `data` 负载 → IR StreamChunk。
     ///
-    /// 与 [`ProtocolConverter::stream_chunk_to_external`] 互为逆操作：
-    /// 前者把上游协议的流式事件解析进 IR，后者把 IR 编码为目标协议。
-    /// 无法映射到 IR 的帧（OpenAI `[DONE]` 终止标记、Anthropic
-    /// message_start/content_block_start 等生命周期事件）返回 `None`，
-    /// 由调用方跳过。
+    /// 与 [`ProtocolConverter::stream_chunk_to_external`] 互为逆操作。无法
+    /// 映射到 IR 的帧（`[DONE]`、生命周期事件等）返回 `None`，由调用方跳过。
     fn parse_stream_frame(&self, _data: &str) -> Option<StreamChunk> {
         None
     }
@@ -68,8 +65,7 @@ pub trait ProtocolConverter: Send + Sync {
         self.output_protocol() == output_protocol
     }
 
-    /// 透传请求体（零拷贝优化）
-    /// 当入站协议与出站协议相同时，直接返回原始请求体，避免序列化/反序列化开销
+    /// 透传请求体：同协议直接返回原始请求体，避免序列化/反序列化开销。
     fn passthrough_request(&self, body: serde_json::Value) -> Result<serde_json::Value, GateError> {
         Ok(body)
     }

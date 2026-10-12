@@ -3,17 +3,10 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 路由核心错误 — 从原 `NexusFlowError` 拆出的核心变体集（design.md D1.3）。
-//!
-//! 变体集冻结约定：路由/协议/厂商/重试/熔断相关变体进本模块；
-//! `Database` 等应用面变体留应用面（`error/mod.rs`，其存储层错误转换受
-//! 孤儿规则约束必须随应用类型所在 crate），应用错误经 `From<GateError>`
-//! 包装携带核心错误。新增变体需两栏同步评估 error_map 映射层。
-//!
-//! 错误双轨：`#[error]` Display 恒英文规范串（日志 / 错误链），HTTP 展示
-//! 走 [`GateError::user_message()`]（FTL，随 locale）。状态码/错误码/
-//! Retry-After 以无 axum 依赖的固有方法暴露，由应用面（`error/mod.rs`）的
-//! `IntoResponse` 消费——本模块零 web 框架假设。
+//! 路由核心错误：从原 `NexusFlowError` 拆出的核心变体集（冻结）。
+//! `Database` 等应用面变体留应用面（受孤儿规则约束）；应用错误经 `From<GateError>` 包装。
+//! 错误双轨：`#[error]` Display 恒英文规范串，HTTP 展示走 [`GateError::user_message()`]
+//!（FTL，随 locale）；状态码/错误码/Retry-After 以固有方法暴露，由应用面 IntoResponse 消费。
 
 use thiserror::Error;
 
@@ -47,18 +40,14 @@ pub enum GateError {
     #[error("Routing error: {message}")]
     Routing { message: String },
 
-    /// 换路 fallback 耗尽且全部候选因限流被排除 —
-    /// `[routing].retry_after_hint` 开启时由应用层收尾函数抛出，
-    /// IntoResponse 映射 429 + Retry-After 头（reset 秒数取各 vendor
-    /// 窗口重置剩余的 min）。默认开关关闭时永不产生本变体（原错误
-    /// 冒泡保持 503 语义）。
+    /// `[routing].retry_after_hint` 开启时抛出：fallback 耗尽且全部候选因限流被排除，
+    /// 映射 429 + Retry-After；开关关闭时永不产生本变体。
     #[error("All candidate vendors rate limited: retry after {retry_after_secs}s")]
     AllVendorsThrottled { retry_after_secs: u64 },
 }
 
 impl GateError {
-    /// 固定客户端状态映射（u16 表达——本 crate 不引 http 类型，应用层
-    /// 转 `StatusCode`）。与拆分前 error.rs IntoResponse 的表逐项一致。
+    /// 固定客户端状态映射（u16：本 crate 不引 http 类型，应用层转 `StatusCode`）。
     pub fn status_code(&self) -> u16 {
         match self {
             GateError::Validation { .. } => 400,
@@ -72,8 +61,7 @@ impl GateError {
         }
     }
 
-    /// 本地化用户消息（展示轨道）：随 locale 查 FTL 目录；与英文规范
-    /// Display 分轨，写入 HTTP 响应体 `error.message`。
+    /// 本地化用户消息（展示轨道）：随 locale 查 FTL 目录，写入响应体 error.message。
     pub fn user_message(&self) -> String {
         match self {
             GateError::Config { message } => {
@@ -102,7 +90,7 @@ impl GateError {
         }
     }
 
-    /// 返回固定的错误类型代码字符串（不暴露内部枚举结构）
+    /// 固定的错误类型代码字符串（不暴露内部枚举结构）
     pub fn error_code(&self) -> &'static str {
         match self {
             GateError::Config { .. } => "config_error",
@@ -116,8 +104,7 @@ impl GateError {
         }
     }
 
-    /// AllVendorsThrottled 携带的 Retry-After 头秒数；
-    /// 其余变体 None。
+    /// AllVendorsThrottled 携带的 Retry-After 头秒数，其余变体 None。
     pub fn retry_after_secs(&self) -> Option<u64> {
         match self {
             GateError::AllVendorsThrottled { retry_after_secs } => Some(*retry_after_secs),
@@ -140,8 +127,7 @@ mod tests {
 
     #[test]
     fn test_user_message_uses_ftl_catalog() {
-        // 键必须在 FTL 目录注册（缺键时 t_args 回退返回键名本身）；
-        // 占位符必须被实参替换。断言与进程 locale 无关（en/zh 均成立）。
+        // 键必须在 FTL 目录注册（缺键时 t_args 回退键名本身），占位符必须被实参替换
         let message = GateError::Config {
             message: "bad key".to_string(),
         }
@@ -171,7 +157,6 @@ mod tests {
 
     #[test]
     fn test_status_code_table() {
-        // 固定客户端映射表（与拆分前 error.rs IntoResponse 逐项一致）
         let cases: Vec<(GateError, u16)> = vec![
             (
                 GateError::Validation {

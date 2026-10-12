@@ -3,23 +3,16 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! Integration tests for `nexusflow::utils::retry` module + 重试升级。
+//! Integration tests for `nexusflow::utils::retry` module。
 //!
 //! 测试覆盖：
 //! - `ErrorCategory`、`extract_status_code`（无 feature 门控）
-//! - `limiteron::retry::delay_for_attempt` 首试 1s（回归旧实现的
-//!   2s 起步偏移）
+//! - `limiteron::retry::delay_for_attempt` 首试 1s
 //! - `retry_delay_for` 纯函数（分类退避）与 `spread_delay`
-//!   （Retry-After 值的展宽——G3 后经 RetryDecision::RetryAfter 消费），
-//!   不使用 tokio::time::pause（在库先例 vendor_circuit_breaker_test.rs
-//!   已记录 paused clock auto-advance 与真实 mockito IO 冲突，禁用该组合）
+//!   （Retry-After 值的展宽）；不使用 tokio::time::pause（与 mockito
+//!   真实 IO 冲突，禁用该组合）。
 //!
-//! （G3 审查修复：第二份手写实现 `with_retry`/`RetryStrategy`/
-//! `BackoffStrategy`/`is_retryable_error` 已删除——生产调用方为零；
-//! vendor HTTP 主循环的行为锁定在 vendor_test.rs 的 mockito 集成测试。）
-//!
-//! （换 vendor fallback E2E 留 nexusflow tests/retry_test.rs——
-//! 经 api/ApiState 全栈驱动，属应用面。）
+//! 换 vendor fallback E2E 留 tests/retry_test.rs（全栈驱动，应用面）
 
 mod tests {
     use nexusflow::utils::{extract_status_code, ErrorCategory};
@@ -248,11 +241,8 @@ mod tests {
         // ======== 同步惊群展宽 ========
 
         /// spread_jitter=1.0（默认）下 Retry-After 值必须以 ra 为 base
-        /// 全范围展宽 ∈ [ra, 2×ra)（半开：gen_range(0.0..spread) 永不取上
-        /// 界）。修复前恒等于 ra——上游同一 Retry-After 下所有并发在同一
-        /// 刻唤醒重试（同步惊群源，Red 实测：delay == 7s）。
-        ///
-        /// 固定种子（StdRng::seed_from_u64）注入，确定性断言精确值。
+        /// 全范围展宽 ∈ [ra, 2×ra)（半开：永不取上界），消除同步惊群；
+        /// 固定种子注入，确定性断言精确值
         #[test]
         fn retry_after_gets_full_range_spread() {
             let mut policy = deterministic_policy();

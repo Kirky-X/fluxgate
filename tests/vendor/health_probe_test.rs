@@ -271,7 +271,7 @@ async fn minimal_call_recovers_blacklisted_key() {
     mock_b_200.assert_async().await;
 }
 
-// ==================== T006：并发上限与优雅停机退出（R-vendor-management-005） ====================
+// ==================== 并发上限与优雅停机退出 ====================
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

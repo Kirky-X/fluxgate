@@ -5,7 +5,7 @@
 
 //! FallbackChain 单元测试。
 //!
-//! 测试属性（规则9：验证有意义行为）：
+//! 测试属性：
 //! 1. primary 5xx 失败 → 返回 secondary（按 priority 升序）
 //! 2. trigger=Http5xx 时 429 错误不触发 fallback
 //! 3. trigger=All 时任何错误都触发

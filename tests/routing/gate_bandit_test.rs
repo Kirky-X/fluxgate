@@ -3,8 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! LinUCB bandit 纯函数与状态的集成侧单测——覆盖 d 维求逆
-//! 防御分支、部分主元交换、特征提取边界、argmax 的 NaN 兜底与平局决断。
+//! LinUCB bandit 纯函数与状态的集成侧单测——求逆防御、部分主元、特征边界、argmax 兜底与平局决断。
 
 #![cfg(feature = "router")]
 
@@ -200,8 +199,7 @@ mod bandit_units {
             .is_none());
     }
 
-    /// 分数溢出（inf）兜底：特征量级大 + 已采样臂的 A⁻¹b 非零 → quad 项
-    /// 溢出为 inf → argmax 走均匀随机兜底（两候选都可出现，不 panic）。
+    /// 分数溢出（inf）兜底：argmax 走均匀随机（两候选都可出现，不 panic）。
     #[test]
     fn argmax_non_finite_scores_falls_back_to_uniform() {
         let state = BanditState::new(1.0);
@@ -251,8 +249,7 @@ mod bandit_units {
         assert!(saw_v1 && saw_v2, "平局决断必须两臂都可被选中");
     }
 
-    /// 特征非法（长度/非有限）时 ucb 中性 0.0、update 丢弃脏样本（A/b 不被
-    /// 污染——污染后打分仍有限）。
+    /// 特征非法（长度/非有限）：ucb 中性 0.0，update 丢弃脏样本（不污染 A/b）。
     #[test]
     fn invalid_features_are_neutral_and_discarded() {
         let state = BanditState::new(1.0);

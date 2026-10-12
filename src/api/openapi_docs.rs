@@ -3,15 +3,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! OpenAPI 文档面：主 REST 端点经 sdforge
-//! 原生 inventory 机制（`OpenApiRouteInfo` + `inventory::submit!`，与
-//! `#[forge]` 宏同源）注册进全局 spec；文档路由（`/api-docs/*` +
-//! `/swagger-ui/*`）由 `[docs].enabled` 开关挂载（默认 false = 404）。
-//!
-//! 安全姿态：开关本身即访问门——打开后文档静态面免认证免限流（浏览器可用性；
-//! spec 非敏感）；默认关闭与网关攻击面最小化一致。
-//! 路径穿越：已核实——sdforge serve_swagger_ui 拒绝含
-//! `..` 的请求且资源来自内嵌包（非文件系统），`{*rest}` 无穿越面。
+//! OpenAPI 文档面：主 REST 端点经 sdforge inventory 机制注册进全局 spec；
+//! 文档路由由 [docs].enabled 开关挂载（默认 false = 404）——开关本身即
+//! 访问门（打开后免认证免限流，spec 非敏感）
 
 /// OpenAPI 版本号（全条目统一；升级大版本时改此处一处）。
 const OPENAPI_VERSION: &str = "v1";

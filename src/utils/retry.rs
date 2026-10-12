@@ -3,24 +3,12 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 智能重试机制模块
+//! 智能重试机制模块。
 //!
-//! 根据 PRD 设计，实现按状态码分类的重试策略：
-//! - 400, 401, 403, 404: 标记厂商 Unavailable，不重试
-//! - 429: 指数回退重试（1s, 2s, 4s, 8s, 16s）
-//! - 500, 502, 503: 重试 3 次，间隔 1s
-//! - 网络超时: 重试 2 次
-//!
-//! # 组成（G3 后）
-//!
-//! 重试主循环在 `vendor::manager`（`limiteron RetryPolicy::execute_with`，
-//! 决策闭包持业务分类）；本模块仅存纯函数支撑面：错误分类
-//!（[`ErrorCategory`]）、延迟计算（[`retry_delay_for`] / [`spread_delay`]）、
-//! 时间预算（[`budget_exceeded`]）、放大守门器（[`amplification`] /
-//! [`critical_failure_fraction`] / [`amplification_guard`]）与
-//! [`extract_status_code`]。第二份手写重试实现（`with_retry` /
-//! `RetryStrategy` / `BackoffStrategy` / `is_retryable_error`）已随 G3
-//! 删除——生产与测试均无消费者，锁定其行为的测试一并移除。
+//! 按状态码分类的重试策略：400/401/403/404 不重试；429 指数回退
+//! （1s,2s,4s,8s,16s）；500/502/503 重试 3 次间隔 1s；网络超时重试 2 次。
+//! 本模块仅存纯函数支撑面（错误分类 / 延迟计算 / 时间预算 / 放大守门器），
+//! 重试主循环在 `vendor::manager`。
 
 // 仅 vendor-management 分支使用（spread_delay/retry_delay_for 同在该 feature 下）
 #[cfg(feature = "vendor-management")]
@@ -147,27 +135,13 @@ impl RetryDelayPolicy {
     }
 }
 
-/// 纯延迟选择函数：按分类取退避（G3 后 `Retry-After` 头
-/// 不再经本函数覆盖——上游指示值由 `vendor::manager` 的决策闭包映射为
-/// `RetryDecision::RetryAfter`，时长生产端是 [`spread_delay`]）。
-///
-/// - `RetryableExponential`（429）→ `limiteron::retry::delay_for_attempt`
-///   （指数 + jitter + max_delay 封顶；jitter=0 时确定性可单测）
-/// - `RetryableFixed`（5xx）→ `[1s, 1s + spread_jitter × 1s)`
-///   （spread_jitter=0 时固定 1s）
-/// - `RetryableShort`（网络错误）→ 500ms × attempt
-/// - `Fatal` → 0（调用方不应重试）
-///
-/// 5xx 分支带全范围抖动——修复前延迟为常量（恒 1s），所有并发
-/// 在同一刻唤醒重试（同步惊群）。RNG 经 `&mut dyn rand::RngCore` 注入
-/// （对齐 `router::weighted_select_with` 的注入模式）：spread_jitter=0 时
-/// 不消耗 RNG，确定性可单测；生产传 `rand::thread_rng()`。
-///
-/// 纯函数无 IO，可脱离 HTTP 栈单测（规避 tests/resilience/gate_vendor_circuit_breaker_test.rs
-/// 书面记录的 paused-clock 与 mockito IO 冲突陷阱）。
-///
-/// Feature 门控：指数分支依赖 `limiteron::retry`（vendor-management 引入），
-/// 唯一调用方 `vendor::manager` 同在该 feature 下。
+/// 纯延迟选择函数：按分类取退避（上游 Retry-After 指示值不走本函数，
+/// 时长生产端是 spread_delay）。
+/// - 429 → limiteron 指数 + jitter + max_delay 封顶；5xx →
+///   `[1s, 1s + spread_jitter × 1s)`（全范围抖动消除同步惊群）；
+///   网络错误 → 500ms × attempt；Fatal → 0
+/// - RNG 经 &mut dyn RngCore 注入：spread_jitter=0 时不消耗 RNG（确定性可单测）；
+///   纯函数无 IO。指数分支依赖 vendor-management feature
 #[cfg(feature = "vendor-management")]
 pub fn retry_delay_for(
     category: ErrorCategory,
@@ -191,17 +165,9 @@ pub fn retry_delay_for(
     }
 }
 
-/// `base + U(0, spread_jitter) × base` 的全范围展宽。
-///
-/// 本函数是对上游 `Retry-After` 头的时长生产端：manager 的重试决策闭包把
-/// 「429/503 读到的上游指示值」经本函数展宽后映射为
-/// `RetryDecision::RetryAfter(duration)`（库按指示值原样睡眠，不封顶
-/// `max_delay`、不叠加策略抖动——指示契约由调用方负责合理性）。
-///
-/// spread_jitter <= 0 恒等 base（回滚阀：旧行为确定性可单测）；半开区间
-/// 上界由 `gen_range(0.0..spread)` 保证（永不取 spread 本身）。
-/// 全范围抖动：`base + U(0, spread_jitter)×base`，消除
-/// Retry-After / 固定间隔分支的同步惊群。
+/// `base + U(0, spread_jitter) × base` 的全范围展宽：上游 Retry-After 的
+/// 时长生产端（库按指示值原样睡眠，合理性由调用方负责）。
+/// spread_jitter <= 0 恒等 base（回滚阀）；消除同步惊群
 #[cfg(feature = "vendor-management")]
 pub fn spread_delay(
     base: Duration,
@@ -238,11 +204,8 @@ pub fn critical_failure_fraction(r: f64, c: f64, lambda: f64) -> Option<f64> {
     Some(((c - lambda) / (r * c)).max(0.0))
 }
 
-/// 重试时间预算判定 — 「锚点已耗时 + 下次等待」是否超出
-/// 预算。锚点必须用 `tokio::time::Instant`（std Instant 不随 paused clock
-/// 推进，`#[tokio::test(start_paused = true)]` 的自动推进依赖 tokio 时钟）。
-/// 纯函数无 IO，规避 tests/resilience/gate_vendor_circuit_breaker_test.rs 书面记录的
-/// paused-clock 与 mockito IO 冲突陷阱（retry_delay_for 同款理由）。
+/// 重试时间预算判定：「锚点已耗时 + 下次等待」是否超预算。
+/// 锚点必须用 tokio::time::Instant（std Instant 不随 paused clock 推进）
 pub fn budget_exceeded(
     anchor: tokio::time::Instant,
     budget: Duration,
@@ -252,15 +215,8 @@ pub fn budget_exceeded(
 }
 
 /// 重试放大守门器判定（纯函数）— 返回 `(收紧到 1, 发散告警)`。
-///
-/// - 收紧：`f > 0.8·f_c`（失败率闯入临界失败率的亚稳态带）。f_c 无解
-///   （r≤0 无重试放大 / C≤0 无容量估计）→ 不收紧（fail-open，只可能
-///   告警）；C<λ 容量饱和 → f_c=0.0 → 任何失败率都收紧（容量已打满，
-///   退化单尝试方向 fail-safe）。
-/// - 发散：`r·f > 0.95`（λ_eff=λ/(1−r·f) 无界预警，只 warn）。
-///
-/// 数学事实：发散阈值 0.95/r 恒大于 0.8·f_c（因 0.8(1−λ/C) ≤ 0.8 < 0.95），
-/// f_c 有解时发散必然已处收紧带——发散告警的意义在 f_c 无解（C=0）域。
+/// 收紧：f > 0.8·f_c（f_c 无解不收紧 fail-open；C<λ 饱和 → 任何失败率
+/// 都收紧）；发散：r·f > 0.95（λ_eff 无界预警，意义在 f_c 无解域）
 pub fn amplification_guard(r: f64, f: f64, c: f64, lambda: f64) -> (bool, bool) {
     let diverge = r * f > 0.95;
     let tighten = match critical_failure_fraction(r, c, lambda) {

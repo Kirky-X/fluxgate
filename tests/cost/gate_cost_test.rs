@@ -6,7 +6,7 @@
 
 //! CostCalculator 单元测试。
 //!
-//! 测试属性（规则9）：
+//! 测试属性：
 //! 1. 命中 pricing entry 时按公式计算 USD 成本
 //!    formula: (prompt/1000)*in_price + (completion/1000)*out_price
 //! 2. 未命中 vendor/model 返回 0.0

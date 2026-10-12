@@ -3,12 +3,8 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 路由提示提取器
-//!
-//! 从 HTTP 请求头提取路由信息：
-//! - X-Vendor: 指定具体厂商
-//! - X-Model: 使用抽象模型
-//! - X-Session-Id: 会话亲和键（；缺失时兜底 messages 前缀哈希）
+//! 路由提示提取器：从请求头提取 X-Vendor / X-Model / X-Session-Id
+//!（会话键缺失时兜底 messages 前缀哈希）
 
 use axum::http::HeaderMap;
 use serde_json::Value;

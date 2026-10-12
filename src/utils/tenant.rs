@@ -3,12 +3,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 租户身份辅助（头部键提取与摘要）的单一实现点。
+//! 租户身份辅助（API key 提取与摘要）的单一实现点。
 //!
-//! 下沉到 utils（原散在 middleware::auth 与 api::response_cache）：认证、
-//! 响应缓存键、会话亲和与配额租户键共用同一提取/摘要逻辑——middleware
-//! 不再反向依赖 crate::api，且「缓存键的租户维度 == 认证验证的 key 来源」
-//! 由单实现保证。
+//! 认证、响应缓存键、会话亲和与配额租户键共用同一提取/摘要逻辑。
 
 use axum::http::HeaderMap;
 use sha2::{Digest, Sha256};
@@ -58,8 +55,7 @@ mod tests {
         map
     }
 
-    /// Bearer 优先于 x-api-key；缺省归 anonymous；摘要与 sha256sum 同值
-    ///（64 位小写 hex）。
+    /// Bearer 优先于 x-api-key；缺省归 anonymous；摘要为 64 位小写 hex。
     #[test]
     fn extraction_precedence_and_anonymous_fallback() {
         assert_eq!(

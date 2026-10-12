@@ -34,40 +34,30 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup component add rustfmt clippy
 ```
 
-### ⚠️ 兄弟库必须同级目录
+### 🧩 自研库依赖（crates.io registry）
 
-NexusFlow 深度依赖 7 个自研兄弟库，通过 **path 依赖 + `[patch.crates-io]`** 统一重定向到本地源码（保证 trait 身份一致、避免 path 版与 registry 版并存分裂）。**这 7 个库必须克隆到与 `nexusflow/` 同级目录**，否则 `cargo build` 直接失败。CI 上同理——`.github/workflows/ci.yml` 的每个 cargo 作业会先把 7 个兄弟库浅克隆到仓库同级目录再执行检查。Docker 构建不在 CI 内（镜像构建依赖与本仓 `Cargo.lock` 同源的兄弟库提交，未全部推送远端前纯远端构建不可行），在本机执行 `docker build -f docker/Dockerfile .`——镜像内经 `SIBLING_PINS` 构建参数逐仓钉住与本仓锁文件同源的完整 SHA：
+NexusFlow 深度依赖 7 个自研库，经 **crates.io registry** 集成——版本声明在根 `Cargo.toml` 的 `[dependencies]`、校验和锁定在 `Cargo.lock`，cargo 自动拉取。**克隆本仓库即可 `cargo build`，无需把 7 个库放到同级目录**；CI 各作业同理，无兄弟库克隆步骤。Docker 构建不在 CI 内，在本机执行 `docker build -f docker/Dockerfile .`（镜像同为纯 registry 依赖，不取兄弟库源码）。
 
-```
-projects/
-├── NexusFlow/     # 本项目
-├── confers/
-├── dbnexus/
-├── inklog/
-├── limiteron/
-├── oxcache/
-├── sdforge/
-└── trait-kit/
-```
+（历史形态：迁移期以 `path = "../<lib>"` + `[patch.crates-io]` 统一身份以保证 trait 身份一致，该形态与配套的 CI 克隆步骤、Dockerfile `SIBLING_PINS` 机制已随全量切 registry 一并移除。）
 
 | 库 | 在 NexusFlow 中的职责 |
 |:---|:----------------------|
-| [confers](../confers) | 配置解析（TOML）、`DynamicField` 热读、配置快照（SnapshotManager） |
-| [dbnexus](../dbnexus) | SQLite 数据库层（rustls + 连接池 + 权限） |
-| [inklog](../inklog) | 结构化日志 |
-| [limiteron](../limiteron) | 限流 / 熔断 / 重试原语 |
-| [oxcache](../oxcache) | 统一缓存 API（会话亲和表 / 响应缓存存储层） |
-| [sdforge](../sdforge) | HTTP 服务框架（`#[forge]` 宏 + CORS） |
-| [trait-kit](../trait-kit) | DI 容器（AsyncKit，启动期统一组装上述模块） |
+| [confers](https://github.com/Kirky-X/confers) | 配置解析（TOML）、`DynamicField` 热读、配置快照（SnapshotManager） |
+| [dbnexus](https://github.com/Kirky-X/dbnexus) | SQLite 数据库层（rustls + 连接池 + 权限） |
+| [inklog](https://github.com/Kirky-X/inklog) | 结构化日志 |
+| [limiteron](https://github.com/Kirky-X/limiteron) | 限流 / 熔断 / 重试原语 |
+| [oxcache](https://github.com/Kirky-X/oxcache) | 统一缓存 API（会话亲和表 / 响应缓存存储层） |
+| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP 服务框架（`#[forge]` 宏 + CORS） |
+| [trait-kit](https://github.com/Kirky-X/trait-kit) | DI 容器（AsyncKit，启动期统一组装上述模块） |
 
 ### Fork 与 Clone
 
 | 步骤 | 操作 |
 |:----:|:-----|
 | **1. Fork 仓库** | 在 [github.com/Kirky-X/NexusFlow](https://github.com/Kirky-X/NexusFlow) 点击 "Fork" |
-| **2. Clone 本体与兄弟库** | 将 NexusFlow 与 7 个兄弟库克隆到同一父目录 |
+| **2. Clone 本体** | 只需克隆 NexusFlow 本体；7 个自研库由 cargo 从 crates.io 拉取 |
 | **3. 安装 Git 钩子** | `pip install pre-commit && pre-commit install --install-hooks`（见下节） |
-| **4. 构建验证** | `cargo build`（default = full + db-sqlite；首次构建同时编译兄弟库，耗时较长） |
+| **4. 构建验证** | `cargo build`（default = full + db-sqlite；首次构建同时编译 7 个自研库依赖，耗时较长） |
 
 ### 🪝 Git 钩子（pre-commit）
 
@@ -260,7 +250,7 @@ flowchart LR
 | 步骤 | 说明 |
 |:-----|:-----|
 | **1. Issue** | 先在 [Issues](https://github.com/Kirky-X/NexusFlow/issues) 描述问题或提案，重大改动先讨论达成一致（[Discussions](https://github.com/Kirky-X/NexusFlow/discussions) 适合开放性话题） |
-| **2. Fork** | Fork 仓库并连同 7 个兄弟库一起准备同级目录 |
+| **2. Fork** | Fork 本仓库即可；7 个自研库由 cargo 从 crates.io 拉取，无需额外准备 |
 | **3. 开发** | 新分支开发，保持 commit 原子性；新能力记得 feature 门控与测试 |
 | **4. 本地验证** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` 全绿（非默认后端另跑 `cargo check -p nexusflow --no-default-features --features "full,db-postgres"`） |
 | **5. PR** | 描述变更动机与影响面，关联 Issue；等待 CI 全绿与评审 |

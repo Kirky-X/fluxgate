@@ -3,14 +3,10 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! `POST /v1/messages/count_tokens` — Anthropic 兼容 token 计数（WP3）。
-//!
-//! 入参 `{model, messages, system?, tools?}`，返回 `{"input_tokens": u64}`。
-//! 计数为近似估算（[`estimate_messages_tokens`]，字符数/4 + 每消息结构
-//! 开销；确定性：同输入同输出，不引 tokenizer 依赖）。走既有 API key
-//! 鉴权（认证中间件）与统一错误体系：`model` 缺失/非 string、`messages`
-//! 缺失/非数组/空数组 → 400 `validation_error`（复用既有 i18n 键，无新增
-//! 文案）；`model` 存在性不校验（估计与注册无关，未知模型同样可估）。
+//! `POST /v1/messages/count_tokens` — Anthropic 兼容 token 计数。
+//! 入参 `{model, messages, system?, tools?}`，返回 `{"input_tokens": u64}`；
+//! 近似估算（字符数/4 + 结构开销，不引 tokenizer 依赖）。走既有鉴权与
+//! 统一错误体系；model 存在性不校验（估计与注册无关）
 
 use crate::error::{GateError, NexusFlowError};
 use crate::utils::estimate_messages_tokens;

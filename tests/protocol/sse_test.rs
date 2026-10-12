@@ -9,7 +9,7 @@ use nexusflow::api::sse::{
 };
 use std::time::Duration;
 
-// ==================== 编码器（既有行为回归） ====================
+// ==================== 编码器 ====================
 
 #[test]
 fn encodes_plain_data_without_event() {
@@ -43,10 +43,7 @@ fn encodes_error_event_terminates_with_double_newline() {
 
 // ==================== SseFrameParser（阶段一） ====================
 
-/// ① `data: {"a":1}` 劈两半喂入 → 恰出一完整帧。
-///
-/// 上游网络块边界劈在 JSON 字面量中间：分帧器跨块缓冲，凑齐定界符
-/// `\n\n` 才产出，帧内容完整无缺。
+/// `data: {"a":1}` 劈两半喂入 → 恰出一完整帧。
 #[test]
 fn frame_split_across_feed_chunks_yields_one_complete_frame() {
     let mut parser = SseFrameParser::new();
@@ -62,10 +59,7 @@ fn frame_split_across_feed_chunks_yields_one_complete_frame() {
     assert_eq!(frames[0].event, None);
 }
 
-/// ② 四字节 UTF-8 字符（😀 = F0 9F 98 80）劈在块边界 → 还原原文无 U+FFFD。
-///
-/// 旧实现逐块 `from_utf8_lossy` 会把劈开的两个半截各变成 U+FFFD；
-/// 分帧器在帧完整后才整体解码，跨块多字节序列自然拼回。
+/// 四字节 UTF-8 字符劈在块边界 → 还原原文无 U+FFFD。
 #[test]
 fn multibyte_utf8_split_at_chunk_boundary_no_replacement_char() {
     let full = "data: hello \u{1F600} world\n\n".to_string();
@@ -92,7 +86,7 @@ fn multibyte_utf8_split_at_chunk_boundary_no_replacement_char() {
     );
 }
 
-/// ③ 单块多事件（`data: x\n\ndata: y\n\n`）→ 两帧。
+/// 单块多事件（data: x 后接 data: y）→ 两帧。
 #[test]
 fn single_chunk_multiple_events_yield_multiple_frames() {
     let mut parser = SseFrameParser::new();
@@ -105,7 +99,7 @@ fn single_chunk_multiple_events_yield_multiple_frames() {
     assert!(parser.is_empty(), "消费完后 buffer 应为空");
 }
 
-/// ④ CRLF 变体：`\r\n` 行尾 + `\r\n\r\n` 帧定界。
+/// CRLF 行尾与 `\r\n\r\n` 帧定界。
 #[test]
 fn crlf_line_endings_and_delimiters() {
     let mut parser = SseFrameParser::new();
@@ -117,7 +111,7 @@ fn crlf_line_endings_and_delimiters() {
     assert_eq!(frames[1].data.as_deref(), Some("b"));
 }
 
-/// ④ 补充：CRLF 定界符本身劈在两块之间（`\r\n` | `\r\n`）。
+/// CRLF 定界符劈在两块之间（`\r\n` | `\r\n`）。
 #[test]
 fn crlf_delimiter_split_across_chunks() {
     let mut parser = SseFrameParser::new();
@@ -130,7 +124,7 @@ fn crlf_delimiter_split_across_chunks() {
     assert_eq!(frames[0].data.as_deref(), Some("z"));
 }
 
-/// ④ 补充：混合定界变体——行尾 `\n` + 空行 `\r\n`（`\n\r\n`）同样构成帧边界。
+/// 混合定界（`\n` 行尾 + `\r\n` 空行）构成帧边界。
 #[test]
 fn mixed_lf_line_with_crlf_blank_line_delimits_frame() {
     let mut parser = SseFrameParser::new();
@@ -227,8 +221,7 @@ fn plain_text_error_event_detected() {
     assert!(frame.is_error());
 }
 
-/// 错误帧检测：data 为非法 JSON 且无 event 字段 → is_error 假
-/// （JSON 解析失败按非错误处理，不得误终止透传流）。
+/// data 为非法 JSON 且无 event 字段 → is_error 为假，不误终止透传流。
 #[test]
 fn illegal_json_data_without_event_is_not_error() {
     let mut parser = SseFrameParser::new();
@@ -270,8 +263,7 @@ async fn drain_reframed(chunks: Vec<Result<&'static [u8], std::io::Error>>) -> S
     out
 }
 
-/// 透传重帧：劈块喂入的帧逐帧原样转发，帧边界与上游一致（消除旧实现的
-/// 整块 `data:` 嵌套包装）。
+/// 透传重帧：劈块喂入的帧逐帧原样转发。
 #[tokio::test]
 async fn reframe_passthrough_forwards_frames_verbatim() {
     let out = drain_reframed(vec![
@@ -303,8 +295,7 @@ async fn reframe_passthrough_utf8_safe() {
     assert!(!out.contains('\u{FFFD}'));
 }
 
-/// 上游 `event: error` 帧 → 该帧转发后流提前终止，
-/// 后续帧不再透传。
+/// 上游 `event: error` 帧转发后流提前终止。
 #[tokio::test]
 async fn reframe_passthrough_terminates_on_error_frame() {
     let out = drain_reframed(vec![
@@ -338,10 +329,7 @@ async fn reframe_passthrough_converts_io_error_to_sse_error_event() {
     assert!(!out.contains("[DONE]"));
 }
 
-/// 网关侧流中错误帧（R-streaming-resilience-002）：data 为
-/// `{"error":{"type","message"}}` JSON 信封（与 REST 错误体同构）——
-/// type 为稳定错误码字面量，message 为 Fluent 文案；恰一帧且
-/// 终止后不补 [DONE]。
+/// 流中错误帧：data 为 JSON 信封（type 稳定错误码、message 为 Fluent 文案），恰一帧且不补 [DONE]。
 #[tokio::test]
 async fn gateway_stream_error_frame_is_json_envelope() {
     let out = drain_reframed(vec![
@@ -390,10 +378,8 @@ async fn reframe_passthrough_empty_stream_ends_promptly() {
 
 // ==================== 覆盖补缺：SDK 客户端（chat / chat_stream / admin / builder） ====================
 //
-// src/sdk/tests/ 下的单元测试不走集成目标，这里从 tests/ 集成侧用 mockito
-// 锁定同一批 wire 行为：响应解析（含缺失 choices 的协议错误）、路由 hint
-// header、强制 stream=true、URL join 失败、read_timeout 停滞拦截与
-// Debug 脱敏。
+// 从 tests/ 集成侧用 mockito 锁定 SDK wire 行为：响应解析、路由 hint、
+// 强制 stream=true、URL join 失败、read_timeout 拦截与 Debug 脱敏。
 
 #[cfg(all(test, feature = "sdk"))]
 mod sdk_client_coverage {
@@ -500,7 +486,7 @@ mod sdk_client_coverage {
         assert_eq!(resp.content, "Hi there");
         assert_eq!(resp.usage.prompt_tokens, 10);
         assert_eq!(resp.usage.completion_tokens, 5);
-        // 网关响应无 vendor 键（旧 SDK vendor 字段恒空误导，已移除）
+        // 网关响应无 vendor 键
         assert_eq!(
             resp.finish_reason,
             nexusflow::sdk::ChatFinishReason::Standard(nexusflow::sdk::StandardFinishReason::Stop)
@@ -639,7 +625,7 @@ mod sdk_client_coverage {
         }
     }
 
-    /// cannot-be-a-base 的 base_url（mailto:）在 join 请求路径时失败 →
+    /// cannot-be-a-base 的 base_url（mailto:）join 失败 → Config 错误。
     /// Config 错误显性化（构造期 URL 合法、拼接期失败的分界）。
     #[tokio::test]
     async fn chat_join_failure_on_non_base_url_is_config_error() {
@@ -722,7 +708,6 @@ mod sdk_client_coverage {
     }
 
     /// chat_stream 错误路径：401 → Auth；500 → Server；mailto base → Config。
-    /// （ChatStream 无 Debug，错误分支用 match 而非 unwrap_err。）
     #[tokio::test]
     async fn chat_stream_maps_error_paths() {
         let mut server = mockito::Server::new_async().await;
@@ -775,7 +760,7 @@ mod sdk_client_coverage {
     async fn admin_endpoints_parse_success_payloads() {
         let mut server = mockito::Server::new_async().await;
 
-        // 失配修复：GET /admin/models（目录九字段，原 /v1/models 无路由）
+        // GET /admin/models（原 /v1/models 无路由）
         server
             .mock("GET", "/admin/models")
             .with_status(200)
@@ -808,7 +793,7 @@ mod sdk_client_coverage {
         assert_eq!(vendors[1].status, "Throttled");
         assert_eq!(vendors[1].queue_length, 2);
 
-        // 失配修复：GET /api/v1/health（admin/health 不存在）
+        // GET /api/v1/health
         server
             .mock("GET", "/api/v1/health")
             .with_status(200)

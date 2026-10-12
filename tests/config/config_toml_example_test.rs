@@ -137,13 +137,13 @@ fn config_toml_example_parses() {
     // [resilience] 段示例与默认行为一致 —— cover_all_paths 默认
     // false（三条裸路径行为与历史逐位一致；Po2C selection 开关同款结构性断言）
     assert!(!config.resilience.cover_all_paths);
-    // WP4 回退观测头默认关（成功响应与现状逐字节一致）；示例必须带出键名
+    // 回退观测头默认关（成功响应与现状逐字节一致）；示例必须带出键名
     assert!(!config.resilience.expose_fallback_headers);
     assert!(
         content.contains("expose_fallback_headers"),
         "config.example.toml 示例缺 expose_fallback_headers 键"
     );
-    // WP7 健康探针默认 off（零后台任务）；示例必须带出段与四键
+    // 健康探针默认 off（零后台任务）；示例必须带出段与四键
     assert_eq!(config.health.mode, "off");
     assert_eq!(config.health.interval_secs, 300);
     assert_eq!(config.health.timeout_ms, 5000);
@@ -156,7 +156,7 @@ fn config_toml_example_parses() {
         content.contains("probe_strategy"),
         "config.example.toml 示例缺 probe_strategy 键"
     );
-    // WP8 配额默认关（零判限）；示例必须带出段与三键 + keys 配额注释。
+    // 配额默认关（零判限）；示例必须带出段与三键 + keys 配额注释。
     // 余量响应头（expose_remaining_headers）为规格 Out of Scope，已移除——
     // 示例与结构体同步 absence（键回归即红）。
     assert!(!config.quota.enabled);
@@ -285,7 +285,7 @@ fn config_toml_example_parses() {
         content.contains("api_key_envs"),
         "config.example.toml 缺 api_key_envs 注释示例"
     );
-    // WP2 出站自定义头：默认空表（零行为变化），示例必须带出键名
+    // 出站自定义头：默认空表（零行为变化），示例必须带出键名
     //（✅ 热生效——出站构造每请求现读；早期 restart-required 标注不实）
     assert!(
         config.vendors[0].extra_headers.is_empty(),

@@ -3,33 +3,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! vendor 内 key 池（N5）— env 名池解析、轮换游标与按 key 指纹的
-//! 熔断状态隔离。
-//!
-//! 语义对齐 agentstem `provider_chain.rs`（实现不复用旧代码）
-//! - **池展开**：显式 env 名列表（`VendorConfig::api_key_envs`）优先于池
-//!   env（`api_key_env` 向后兼容单名，可逗号分隔多个名），两来源合并去重
-//!   定序（显式列表在前），池上限截断；
-//! - **轮换**：vendor 实例持解析后的 key 池与游标，出站请求用当前 key；
-//!   401/403 认证类失败推进游标到下一可用 key——轮换生效于**下次尝试**，
-//!   不在单请求内换 key 重试（与既有 limiteron 重试/fallback 预算语义
-//!   对齐，最小侵入）；
-//! - **隔离**：key 经 16 位十六进制指纹参与熔断状态键（vendor_id + model + endpoint + 指纹，对齐 provider_chain breaker_state_key 维度）——同 key 同 model 跨请求共享计数，不同 key / 不同 model 独立。指纹哈希用进程内随机密钥（`RandomState`，进程启动时随机）：进程内稳定、跨进程随机——admin 观测的指纹不可被离线复算（消除低熵 key 的离线穷举 oracle），指纹仍不出网原文；
-//! - **回退**：池耗尽/全缺 env 回退既有单 key 行为 + 显性告警，禁止静默
-//!   （含请求期 env 收缩路径——池收缩与全缺同样显性）。
-//!
-//! **与 provider_chain 的已知偏差**（记 design.md D7，编排方回写）：
-//! provider_chain 侧坏 key 被熔断短路后由候选链自动让位下一 key；本池
-//! 侧无请求内候选链，坏 key 的让位经**熔断冷却窗后的探针自愈**间接实现
-//! （每坏 key 每次到访约一个 cooling 窗自愈），游标仅由 401/403 认证类
-//! 失败联动。
-//!
-//! 记账口径声明：GlobalMetrics（成败/延迟/失败率滑窗）与 CostTracker 维持
-//! vendor 级——路由健康与成本报表是 vendor 维度的运营信号，不随 key 轮换
-//! 碎片化；按 key 隔离的仅熔断计数（对齐 provider_chain 语义的迁移范围）。
-//!
-//! 日志脱敏约定：env 名列表缺失告警不回显配置原文（用户可能误将 key
-//! 原文当作 env 名填入配置）——只打印序号 + 值长度 + 核对提示。
+//! vendor 内 key 池 — env 名池解析、轮换游标与按 key 指纹的
+//! 熔断状态隔离。指纹为进程内随机密钥哈希（进程内稳定、跨进程不可复算），
+//! env 缺失/截断/回退均显性告警，日志只报序号+值长度不回显配置原文。
 
 use serde::Serialize;
 use std::collections::HashSet;
@@ -39,21 +15,13 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::config::VendorConfig;
 
-/// 指纹哈希的进程内随机密钥（进程启动首次使用时初始化）：进程内所有
-/// 指纹同源（稳定），跨进程随机（不可离线复算）。
 static FINGERPRINT_KEYS: OnceLock<RandomState> = OnceLock::new();
 
-/// 单 vendor key 池上限（防配置爆炸；截断显性告警）。
-///
-/// agentstem 侧同名常量为 4（其链元素数 = 候选数 × 池大小，需防乘积爆炸）；
-/// 本池为 per-vendor 单层展开（无候选数乘积），取 8 对齐 server PUT
-/// 候选上限。截断时以 `tracing::warn` 显性化，禁止静默。
+/// 单 vendor key 池上限（截断显性 warn，禁止静默）。
 pub const MAX_KEY_POOL: usize = 8;
 
-/// 合并去重定序的 key 池 env 名（纯函数）。
-///
-/// `api_key_envs` 显式列表在前，`api_key_env`（向后兼容，可逗号分隔多个名）
-/// 兜底在后；条目 trim、去空、跨来源去重（保留首次出现位置）。
+/// 合并去重定序的 key 池 env 名（纯函数）：`api_key_envs` 显式列表在前，
+/// `api_key_env`（向后兼容，可逗号分隔）兜底；trim、去空、保留首现位置。
 pub(crate) fn merged_key_env_names(config: &VendorConfig) -> Vec<String> {
     let mut names = Vec::new();
     let mut seen = HashSet::new();
@@ -72,16 +40,11 @@ pub(crate) fn merged_key_env_names(config: &VendorConfig) -> Vec<String> {
     names
 }
 
-/// 池解析结果（纯函数 [`resolve_key_pool`] 的产物）。
-///
-/// Debug 手写脱敏：`keys` 只出 `[REDACTED n keys]` 数量（同
-/// [`RequestCredential`] 口径）；`missing` 为 env 名（非机密，同 config
-/// 暴露面）与截断计数保留可观测。
+/// 池解析结果；Debug 手写脱敏——`keys` 只出数量，env 名与截断计数可观测。
 #[derive(Default, PartialEq)]
 pub(crate) struct ResolvedPool {
-    /// 实际 key 串（顺序 = env 名顺序；未设置或空值的 env 视同缺失跳过）
+    /// 实际 key 串（顺序 = env 名顺序；缺失/空值跳过）
     pub keys: Vec<String>,
-    /// 缺失（未设置或空值）的 env 名——调用方逐名显性告警
     pub missing: Vec<String>,
     /// 超出 [`MAX_KEY_POOL`] 被截断的 env 名条数
     pub truncated: usize,
@@ -89,8 +52,7 @@ pub(crate) struct ResolvedPool {
 
 impl std::fmt::Debug for ResolvedPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // missing 只出计数——防「误将 key 原文填进 env 名位置」经 Debug 回显
-        // （与 log_resolution 只报序号+长度的脱敏约定同口径）。
+        // missing 只出计数——防误填的 key 原文经 Debug 回显
         f.debug_struct("ResolvedPool")
             .field("keys", &format!("[REDACTED {} keys]", self.keys.len()))
             .field("missing", &self.missing.len())
@@ -99,10 +61,7 @@ impl std::fmt::Debug for ResolvedPool {
     }
 }
 
-/// 池解析纯函数核（env 经 `lookup` 注入，可测）。
-///
-/// 名单先截断到 [`MAX_KEY_POOL`]（`truncated` 记超量条数），再逐名解析：
-/// 缺失/空值跳过并计入 `missing`，不中断后续名解析。
+/// 池解析核（env 经 `lookup` 注入，可测）：先截断到 [`MAX_KEY_POOL`]，缺失/空值跳过不中断后续。
 pub(crate) fn resolve_key_pool(
     names: &[String],
     lookup: impl Fn(&str) -> Option<String>,
@@ -119,32 +78,18 @@ pub(crate) fn resolve_key_pool(
     pool
 }
 
-/// key 指纹 — 16 位十六进制（进程内随机密钥哈希）。
-///
-/// 语义对齐 provider_chain.rs 的维度，密钥策略加固
-/// `RandomState` 进程启动时随机播种——**进程内稳定**（同 key 恒同指纹，
-/// 跨请求共享熔断计数的前提；admin 面同一进程内可对照），**跨进程随机**
-/// （指纹不可被离线复算——消除「拿 admin 指纹对候选 key 离线穷举验证」
-/// 的 oracle；低熵 key 亦不可穷举）。指纹仅进程内存活，禁止外泄。
+/// key 指纹 — 16 位十六进制：进程内稳定（共享熔断计数前提）、跨进程不可复算；禁止外泄。
 pub(crate) fn fingerprint_of(key: &str) -> String {
     let state = FINGERPRINT_KEYS.get_or_init(RandomState::new);
     format!("{:016x}", state.hash_one(key))
 }
 
-/// 请求级凭证——出站路径的 key 选择结果。
-///
-/// 纵深防御：`Debug` 手写脱敏——`Pool` 臂不回显 key 原文，输出
-/// `Pool { key: "[REDACTED n chars]", fingerprint: ... }` 形态（对齐
-/// GateCandidate 的 `[REDACTED]` 脱敏口径）；指纹为进程内随机密钥哈希
-/// （见 [`fingerprint_of`]），非机密可观测。`LegacyEnv` 臂无字段
-/// （build 时读 env，不持凭证），无脱敏面。
+/// 请求级凭证 — 出站 key 选择结果；Debug 手写脱敏（`Pool` 臂不回显 key 原文，指纹保留可观测）。
 #[derive(Clone, PartialEq)]
 pub(crate) enum RequestCredential {
-    /// 池命中：本次出站请求固定使用该 key（指纹参与熔断状态键）。
-    /// 单请求内所有重试尝试复用同一 key（轮换生效于下次尝试）。
+    /// 池命中：本次请求固定使用该 key（指纹参与熔断状态键）。
     Pool { key: String, fingerprint: String },
-    /// 池空回退：既有 `api_key_env` 单 key 行为（build 时读 env，
-    /// 缺失报 `Config` 错误——与历史逐位一致），不参与轮换与按 key 隔离。
+    /// 池空回退：`api_key_env` 单 key 行为（build 时读 env，缺失报 Config 错误）。
     LegacyEnv,
 }
 
@@ -171,7 +116,6 @@ impl RequestCredential {
     }
 
     /// 池命中时的 key 指纹；`LegacyEnv` 为 `None`（用 vendor 级熔断器）。
-    /// 无 resilience 组合下仅单测消费（按 key 隔离是 resilience 语义）。
     #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
     pub(crate) fn fingerprint(&self) -> Option<&str> {
         match self {
@@ -181,9 +125,7 @@ impl RequestCredential {
     }
 }
 
-/// key 池观测快照（admin 面）——只暴露 env 名 / 数量 / 下标 / 指纹，
-/// 绝不暴露 key 原文（掩码约定，与 `/admin/config` 仅存 env 名的既有
-/// 暴露面一致）。
+/// key 池观测快照（admin 面）——只暴露 env 名 / 数量 / 下标 / 指纹，绝不暴露 key 原文。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct KeyPoolInfo {
     /// 合并去重定序后的 env 名列表（env 名非机密，同 config 暴露面）
@@ -196,19 +138,14 @@ pub struct KeyPoolInfo {
     pub fingerprints: Vec<String>,
 }
 
-/// 解析快照——实例持有的「按 env 名单解析出的 key 池」（env 模式专属；
-/// 内联注入模式见 [`PoolSnapshot`]）。
-///
-/// Debug 手写脱敏同 [`ResolvedPool`]：`keys` 只出数量，env 名与计数保留。
+/// 解析快照（env 模式专属；内联注入模式见 [`PoolSnapshot`]）。Debug 手写脱敏同 [`ResolvedPool`]。
 #[derive(Default, PartialEq)]
 struct ResolvedSnapshot {
     /// 最近一次解析的合并 env 名（变更检测键：名单变 → 全量重解析）
     names: Vec<String>,
     /// 解析后的 key 池（空 = 池耗尽/全缺 env）
     keys: Vec<String>,
-    /// 缺失 env 名计数（显性化用）
     missing: usize,
-    /// 被截断的 env 名条数
     truncated: usize,
 }
 
@@ -224,25 +161,9 @@ impl std::fmt::Debug for ResolvedSnapshot {
     }
 }
 
-/// 预解析 key 池快照（编程式注入面，A2 审查回写安全 HIGH 根治）。
-///
-/// 由调用方以 **key 原文列表**直接构造（[`PoolSnapshot::from_keys`]），
-/// 经 [`crate::vendor::VendorManager::set_inline_key_pool`] 注入 vendor
-/// 实例，`select` 全程跳过 env 名单解析与环境变量读取（config 面仍只存
-/// env 名——注入是库 API 编程式能力，不改变 NexusFlow 的 config 暴露面
-/// 约定）。
-///
-/// 语义边界：
-/// - **指纹/游标与 env 池一致**：同一 `fingerprint_of`、同一轮换游标，
-///   401/403 推进游标轮换下一把，per-key 指纹熔断隔离照常生效；
-/// - **env 变更检测/重解析不适用**：内联池没有 env 名，名单比对与
-///   「env 值现读」分支整体跳过——池内容由调用方一次性给定，生命周期
-///   由调用方管理（vendor 实例存活期内有效；实例重建或换 vendor_id 后
-///   需重新注入）；
-/// - 空池（剔除空白项后无 key）等价 env 池耗尽：回退 legacy 单 key 行为
-///   （config `api_key_env` 现读，缺失则请求不带 Authorization 头）；
-/// - Debug 手写脱敏：`keys` 只出 `[REDACTED n keys]` 数量（指纹观测面在
-///   [`KeyPoolInfo`]，指纹非机密保留）。
+/// 预解析 key 池快照（编程式注入面）：由调用方以 key 原文列表构造，注入后 `select`
+/// 跳过 env 解析；空池等价 env 池耗尽，回退 legacy 单 key 行为。生命周期由调用方管理。
+/// Debug 手写脱敏，`keys` 只出数量。
 #[derive(Clone, PartialEq)]
 pub struct PoolSnapshot {
     keys: Vec<String>,
@@ -257,8 +178,7 @@ impl std::fmt::Debug for PoolSnapshot {
 }
 
 impl PoolSnapshot {
-    /// 由 key 原文列表构造（顺序即轮换序；空白项剔除；上界
-    /// [`MAX_KEY_POOL`] 截断——与 env 池同界）。
+    /// 由 key 原文列表构造（顺序即轮换序；空白剔除；上界 [`MAX_KEY_POOL`] 截断）。
     pub fn from_keys<I, S>(keys: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -283,30 +203,23 @@ impl PoolSnapshot {
         &self.keys
     }
 
-    /// 是否为空池。
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
 }
 
-/// vendor 实例持有的 key 池状态：解析快照 + 轮换游标 + 黑名单。
 pub(crate) struct KeyPool {
     snapshot: Mutex<ResolvedSnapshot>,
     /// 内联注入池（Some 时 select 全程跳过 env resolve，见 [`PoolSnapshot`]）。
     inline: Mutex<Option<PoolSnapshot>>,
-    /// 轮换游标：401/403 认证类失败 `fetch_add(1)`；出站取
-    /// keys[cursor % len]`。并发下多次 401 连续推进是保守方向（跳过
-    /// 失败 key），游标语义只要求「下次尝试换下一把」。
+    /// 轮换游标：401/403 认证类失败 `fetch_add(1)`，出站取 keys[cursor % len]。
     cursor: AtomicUsize,
-    /// 黑名单（WP6）：永久错误 key 的指纹集。不参与轮换、不随时间恢复；
-    /// 仅两条恢复通道可清：配置热更按 key 集合变化裁剪（[`Self::prune_blacklist`]）、
-    /// 管理面重置（[`Self::reset_key_state`]）。
+    /// 黑名单：永久错误 key 指纹集，不参与轮换、不随时间恢复；仅热更裁剪或管理面重置可清。
     blacklist: Mutex<HashSet<String>>,
 }
 
 impl KeyPool {
-    /// 实例构造期解析一次（admin 面在首个请求前即有快照可读）；
-    /// 后续每次 [`Self::select`] 按需刷新（名单变更或 env 值变化）。
+    /// 实例构造期解析一次；后续每次 [`Self::select`] 按需刷新。
     pub(crate) fn new(config: &VendorConfig, vendor_id: &str) -> Self {
         let pool = Self {
             snapshot: Mutex::new(ResolvedSnapshot::default()),
@@ -318,8 +231,7 @@ impl KeyPool {
         pool
     }
 
-    /// 单测基座：空快照池（首个 `select_with` 按注入 lookup 完成解析，
-    /// 不触真实环境变量）。
+    /// 单测基座：空快照池（select_with 按注入 lookup 解析，不触真实 env）。
     #[cfg(test)]
     fn default_for_test() -> Self {
         Self {
@@ -330,27 +242,19 @@ impl KeyPool {
         }
     }
 
-    /// 注入内联池（编程式；见 [`PoolSnapshot`]）。注入后 `select` 全程
-    /// 跳过 env resolve；重复注入以最后一次为准（调用方管理生命周期）。
-    /// 注入即按新 key 集合裁剪黑名单（WP6 恢复通道语义）。
+    /// 注入内联池（见 [`PoolSnapshot`]）：此后 select 跳过 env resolve，重复注入以最后一次为准。
     pub(crate) fn set_inline(&self, snapshot: PoolSnapshot) {
         *self.inline.lock().unwrap() = Some(snapshot.clone());
         self.prune_blacklist(&snapshot.keys);
     }
 
-    /// 请求级凭证选择——执行路径统一入口。
-    ///
-    /// 内联池激活时直接按游标取 key（跳过 env resolve，见
-    /// [`PoolSnapshot`]）。env 模式：名单变（配置热更新）→ 全量重解析并
-    /// 显性告警；名单不变 → env 值仍现读（env 值变化立即生效，与既有
-    /// per-attempt 读 env 语义一致），仅在结果变化时更新快照（避免日志
-    /// 刷屏）。池空回退 [`RequestCredential::LegacyEnv`]。
+    /// 请求级凭证选择——执行路径统一入口。env 模式名单变（热更新）→ 全量重解析并
+    /// 显性告警；名单不变 → env 值现读，仅结果变化时落快照。池空回退 `LegacyEnv`。
     pub(crate) fn select(&self, config: &VendorConfig, vendor_id: &str) -> RequestCredential {
         self.select_with(config, vendor_id, &|name| std::env::var(name).ok())
     }
 
-    /// [`Self::select`] 的可注入核（env 经 `lookup` 注入，可测）。
-    /// `lookup` 按引用传入——同一用例内可复用（对齐生产「每请求现读」语义）。
+    /// [`Self::select`] 的可注入核（env 经 `lookup` 注入，可测；按引用传入以便用例内复用）。
     pub(crate) fn select_with(
         &self,
         config: &VendorConfig,
@@ -359,14 +263,13 @@ impl KeyPool {
     ) -> RequestCredential {
         // 内联池快路径：跳过 env 名单解析与变更检测（见 [`PoolSnapshot`]）
         if let Some(inline) = self.inline.lock().unwrap().clone() {
-            // WP6：黑名单跳过（游标语义不变）；全黑 ≡ 池耗尽 → legacy 回退。
+            // 黑名单跳过（游标语义不变）；全黑 ≡ 池耗尽 → legacy 回退。
             return self.select_from_keys(inline.keys.clone());
         }
 
         let names = merged_key_env_names(config);
         // 快照刷新：名单变化全量重解析；名单不变则 env 值现读、变化才落快照。
-        // 黑名单裁剪仅在 key 集合变化分支执行（审查 L10：集合未变时逐 key
-        // 计指纹重建 live 集合是每请求空转——结果恒为全保留，谓词等价跳过）。
+        // 黑名单裁剪仅在集合变化分支执行（集合未变时为恒等空操作，避免每请求空转）。
         let keys = {
             let mut guard = self.snapshot.lock().unwrap();
             if guard.names != names {
@@ -381,9 +284,8 @@ impl KeyPool {
                 self.prune_blacklist(&guard.keys);
                 guard.keys.clone()
             } else {
-                // 名单未变：env 值现读，仅结果变化时落快照（热更新立即生效）。
-                // 收缩与全缺同样显性（禁止静默），明细只报
-                // 数量不回显 env 名（脱敏约定见模块 doc）。
+                // 名单未变：env 值现读，仅结果变化时落快照（热更新立即生效）；收缩与全缺
+                // 均显性告警，明细只报数量不回显 env 名。
                 let resolved = resolve_key_pool(&names, |name| lookup(name));
                 if resolved.keys != guard.keys {
                     if resolved.keys.len() < guard.keys.len() {
@@ -424,10 +326,8 @@ impl KeyPool {
         self.select_from_keys(keys)
     }
 
-    /// 黑名单裁剪（WP6 恢复通道）：仅保留仍在当前 key 集合中的指纹，
-    /// key 集合变化（热更/注入）即重置对应状态。仅在 [`Self::select_with`]
-    /// 的集合变化分支与 [`Self::set_inline`] 注入点执行——集合未变时裁剪
-    /// 为恒等空操作，无需逐请求重放（审查 L10）。
+    /// 黑名单裁剪：仅保留仍在当前 key 集合中的指纹（key 集合变化即重置对应状态）。
+    /// 仅在 [`Self::select_with`] 的集合变化分支与 [`Self::set_inline`] 注入点执行。
     fn prune_blacklist(&self, keys: &[String]) {
         let live: HashSet<String> = keys.iter().map(|k| fingerprint_of(k)).collect();
         self.blacklist
@@ -436,9 +336,7 @@ impl KeyPool {
             .retain(|fp| live.contains(fp));
     }
 
-    /// 由 key 集合选出站凭证：游标位起按序扫描首个非黑名单 key（保序、
-    /// 游标语义与现状逐位一致——黑名单仅跳过，不重排轮换）；空/全黑 →
-    /// legacy 回退（与池耗尽现状一致）。
+    /// 由 key 集合选出站凭证：游标位起按序扫描首个非黑名单 key（仅跳过，不重排轮换）；空/全黑 → legacy 回退。
     fn select_from_keys(&self, keys: Vec<String>) -> RequestCredential {
         if keys.is_empty() {
             return RequestCredential::LegacyEnv;
@@ -457,7 +355,7 @@ impl KeyPool {
         RequestCredential::LegacyEnv
     }
 
-    /// 永久错误 key 进黑名单（WP6）：不参与轮换、不随时间恢复。
+    /// 永久错误 key 进黑名单：不参与轮换、不随时间恢复。
     #[cfg(any(feature = "resilience", test))]
     pub(crate) fn mark_blacklisted(&self, fingerprint: &str) {
         self.blacklist
@@ -466,9 +364,8 @@ impl KeyPool {
             .insert(fingerprint.to_string());
     }
 
-    /// 池内全部 key 是否均已入黑名单（审查 M9，R-routing-explainability-002
-    /// 的 explain 判定面）。池空（legacy 单 key 回退形态）返回 false——
-    /// 回退凭证不受黑名单约束，路由仍可出站。
+    /// 池内全部 key 是否均已入黑名单（explain 判定面）。池空（legacy 回退形态）返回
+    /// false——回退凭证不受黑名单约束，路由仍可出站。
     pub(crate) fn all_blacklisted(&self) -> bool {
         let keys = self.keys_snapshot();
         if keys.is_empty() {
@@ -508,7 +405,7 @@ impl KeyPool {
         Some((key.clone(), fingerprint_of(key)))
     }
 
-    /// 管理面/恢复通道重置（WP6）：清空黑名单并回绕游标。
+    /// 管理面/恢复通道重置：清空黑名单并回绕游标。
     pub(crate) fn reset_key_state(&self) {
         self.blacklist.lock().unwrap().clear();
         self.cursor.store(0, Ordering::Relaxed);
@@ -520,10 +417,8 @@ impl KeyPool {
         self.blacklist.lock().unwrap().len()
     }
 
-    /// 解析显性化（仅名单变更时调用一次，禁止每请求刷屏）：
-    /// 逐缺失条目 warn、截断 warn、全缺回退 warn。
-    /// 脱敏：缺失条目不回显配置原文（防误填的 key 原文进日志），
-    /// 只报序号 + 值长度 + 核对提示。
+    /// 解析显性化（仅名单变更时调用一次，禁止每请求刷屏）：逐缺失条目 warn、截断 warn、
+    /// 全缺回退 warn。脱敏：缺失条目不回显配置原文，只报序号 + 值长度。
     fn log_resolution(vendor_id: &str, names: &[String], resolved: &ResolvedPool) {
         for (index, env) in resolved.missing.iter().enumerate() {
             tracing::warn!(
@@ -569,8 +464,7 @@ impl KeyPool {
         }
     }
 
-    /// 路由热路径用：只读当前指纹（不触 env、不写快照、不产生日志）。
-    /// 池空（legacy 回退）返回 `None`。无 resilience 组合下仅单测消费。
+    /// 路由热路径用：只读当前指纹（不触 env、不写快照、不产生日志）；池空返回 `None`。
     #[cfg_attr(not(feature = "resilience"), allow(dead_code))]
     pub(crate) fn peek_current_fingerprint(&self) -> Option<String> {
         if let Some(inline) = self.inline.lock().unwrap().clone() {
@@ -588,9 +482,8 @@ impl KeyPool {
         Some(fingerprint_of(&keys[index]))
     }
 
-    /// 401/403 认证类失败推进游标——轮换生效于**下次尝试**，当前请求的
-    /// 剩余尝试仍用启动时解析的同一 key。池未激活（keys 空）时 no-op。
-    /// 多 key 池时显性 warn（size≤1 无轮换语义，401 上游告警已覆盖，不刷屏）。
+    /// 401/403 认证类失败推进游标——轮换生效于**下次尝试**，本请求剩余尝试仍用同一 key。
+    /// 池未激活（keys 空）时 no-op；多 key 池时显性 warn。
     pub(crate) fn advance(&self, vendor_id: &str, status: u16) -> bool {
         let len = self.active_pool_len();
         if len == 0 {
@@ -616,11 +509,9 @@ impl KeyPool {
         true
     }
 
-    /// 请求错误记账（WP6 三态）：永久错误（401/402/403 或账务类正文）
-    /// → 黑名单 + 游标推进；瞬时错误（429/超时/5xx/网络）→ 无 key 动作
-    /// （冷却/退避走既有路径）。resilience 关闭时退化为 legacy 语义
-    /// （仅 401/403 推进、无黑名单——分类层随 resilience 门控，精简组合
-    /// 行为与历史逐位一致）。
+    /// 请求错误记账（三态）：永久错误（401/402/403 或账务类正文）→ 黑名单 + 游标推进；
+    /// 瞬时错误（429/超时/5xx/网络）→ 无 key 动作（冷却/退避走既有路径）。resilience
+    /// 关闭时退化为 legacy 语义（仅 401/403 推进、无黑名单）。
     pub(crate) fn note_request_error(
         &self,
         vendor_id: &str,
@@ -637,7 +528,8 @@ impl KeyPool {
                     tracing::warn!(
                         vendor = %vendor_id,
                         fingerprint = %fp,
-                        "key 已进黑名单（永久错误，不自动恢复）"
+                        "{}",
+                        crate::i18n::t("vendor-key-blacklisted")
                     );
                 }
                 self.advance(vendor_id, status);
@@ -652,8 +544,7 @@ impl KeyPool {
         }
     }
 
-    /// 激活池长度（内联池优先，env 快照兜底）——游标取模与轮换判定的
-    /// 单一事实源。
+    /// 激活池长度（内联池优先，env 快照兜底）；游标取模与轮换判定的单一事实源。
     fn active_pool_len(&self) -> usize {
         if let Some(inline) = self.inline.lock().unwrap().clone() {
             return inline.keys.len();
@@ -661,8 +552,7 @@ impl KeyPool {
         self.snapshot.lock().unwrap().keys.len()
     }
 
-    /// admin 观测快照（仅 env 名 / 数量 / 下标 / 指纹，绝无 key 原文）。
-    /// 内联池无 env 名，`envs` 为空列表、`size`/`fingerprints` 反映真实池。
+    /// admin 观测快照（仅 env 名 / 数量 / 下标 / 指纹，绝无 key 原文）；内联池 `envs` 为空列表。
     pub(crate) fn info(&self) -> KeyPoolInfo {
         if let Some(inline) = self.inline.lock().unwrap().clone() {
             let len = inline.keys.len();
@@ -694,9 +584,8 @@ impl KeyPool {
 
 #[cfg(test)]
 mod tests {
-    //! key 池单元测试（验收：轮换顺序与耗尽行为 / 指纹稳定性）。
-    //! env 经 lookup 注入，无真实环境变量竞态；同一用例内 lookup 恒定，
-    //! 对齐生产语义「env 值每次请求现读」。
+    //! key 池单元测试：env 经 lookup 注入，无真实环境变量竞态；同一用例内 lookup
+    //! 恒定，对齐生产「env 值每次请求现读」语义。
 
     use super::*;
 
@@ -791,9 +680,8 @@ mod tests {
 
     // ======== 指纹稳定性与区分度 ========
 
-    /// 指纹哈希用进程内随机密钥——**进程内**稳定（同 key 恒同
-    /// 指纹，共享计数前提）、不同 key 互异（隔离前提）；跨进程随机性
-    /// （不可离线复算）由 RandomState 播种保证，无法在单进程内断言。
+    /// 指纹哈希用进程内随机密钥：同 key 恒同指纹、不同 key 互异（共享计数与隔离前提）；
+    /// 跨进程随机性无法在单进程内断言。
     #[test]
     fn fingerprint_is_stable_hex16_and_distinct_per_key() {
         let a1 = fingerprint_of("alpha");
@@ -807,9 +695,6 @@ mod tests {
 
     // ======== Debug 脱敏（纵深防御） ========
 
-    /// `RequestCredential` 手工 Debug：Pool 臂不回显 key 原文（
-    /// `[REDACTED n chars]` 形态，对齐 GateCandidate 脱敏口径），指纹
-    /// 非机密保留可观测；LegacyEnv 臂无字段、无脱敏面。
     #[test]
     fn request_credential_debug_redacts_key_plaintext() {
         // 测试假凭证（detect-secrets 已人工核阅误报豁免）
@@ -835,10 +720,8 @@ mod tests {
         );
     }
 
-    /// PoolSnapshot / ResolvedPool / ResolvedSnapshot 手工 Debug（批复 2
-    /// 顺手修）：keys 列表只出 `[REDACTED n keys]` 数量，不回显 key 原文；
-    /// env 名同样只出计数——防「误将 key 原文填进 env 名位置」经 Debug 回显
-    /// （与 log_resolution 只报序号+长度的约定同口径）。
+    /// PoolSnapshot / ResolvedPool / ResolvedSnapshot 手工 Debug：keys 与 env 名只出
+    /// 计数，防 key 原文经 Debug 回显。
     #[test]
     fn pool_structs_debug_redact_key_plaintext() {
         // 测试假凭证（detect-secrets 已人工核阅误报豁免）
@@ -944,9 +827,7 @@ mod tests {
         );
     }
 
-    /// 请求期 env 收缩——部分消失收缩池（游标取模钳制），
-    /// 全部消失回退 legacy 且游标推进 no-op（显性 warn 在日志层，
-    /// 此处断言状态机语义）。
+    /// 请求期 env 收缩：部分消失收缩池（游标取模钳制），全部消失回退 legacy 且游标推进 no-op。
     #[test]
     fn select_reflects_env_shrink_and_full_vanish_fallback() {
         let config = vendor_config("ENV_X", &["ENV_P", "ENV_Q"]);
@@ -963,7 +844,6 @@ mod tests {
             Some("qk"),
             "收缩后游标取模钳制到现存 key"
         );
-        // 全部消失：回退 legacy，游标推进 no-op
         assert_eq!(
             pool.select_with(&config, "v", &none),
             RequestCredential::LegacyEnv
@@ -1020,8 +900,7 @@ mod tests {
 
 #[cfg(test)]
 mod inline_tests {
-    //! 内联池注入面（A2 审查回写）：指纹/游标与 env 池一致，env resolve
-    //! 整体跳过，生命周期由调用方管理。
+    //! 内联池注入面：指纹/游标与 env 池一致，env resolve 整体跳过，生命周期由调用方管理。
 
     use super::*;
 
@@ -1106,7 +985,7 @@ mod inline_tests {
 
 #[cfg(test)]
 mod blacklist_tests {
-    //! WP6 黑名单三态单测：跳过 / 全黑回退 / 热更裁剪 / 重置恢复。
+    //! 黑名单三态单测：跳过 / 全黑回退 / 热更裁剪 / 重置恢复。
 
     use super::tests::{lookup_map, vendor_config};
     use super::*;
@@ -1130,7 +1009,6 @@ mod blacklist_tests {
         }
     }
 
-    /// 黑名单 key 不再被选中，池内其余 key 继续服务。
     #[test]
     fn blacklisted_key_is_skipped_others_continue() {
         let pool = KeyPool::default_for_test();
@@ -1145,7 +1023,6 @@ mod blacklist_tests {
         assert_eq!(pool.blacklisted_len(), 1, "黑名单不随选择衰减");
     }
 
-    /// 全部 key 黑名单 ≡ 池耗尽 → legacy 回退（显性错误由上层承载）。
     #[test]
     fn all_blacklisted_falls_back_to_legacy() {
         let pool = KeyPool::default_for_test();
@@ -1160,7 +1037,6 @@ mod blacklist_tests {
         );
     }
 
-    /// 热更裁剪：key 集合变化后，旧 key 的黑名单条目被清除。
     #[test]
     fn hot_reload_prunes_blacklist_for_removed_keys() {
         let pool = KeyPool::default_for_test();
@@ -1175,7 +1051,6 @@ mod blacklist_tests {
         assert_eq!(pool.blacklisted_len(), 0, "移除 key 的黑名单必须被裁剪");
     }
 
-    /// 值变化同样裁剪：同名 env 换值视为 key 集合变化。
     #[test]
     fn value_change_prunes_stale_blacklist() {
         let pool = KeyPool::default_for_test();
@@ -1196,7 +1071,6 @@ mod blacklist_tests {
         assert_eq!(pool.blacklisted_len(), 0);
     }
 
-    /// reset 清空黑名单并回绕游标（管理面恢复通道）。
     #[test]
     fn reset_clears_blacklist_and_rewinds_cursor() {
         let pool = KeyPool::default_for_test();

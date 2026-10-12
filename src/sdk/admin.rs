@@ -234,12 +234,8 @@ impl NexusFlowClient {
         Ok(resp.json().await?)
     }
 
-    /// GET /api/v1/health — 服务健康状态。
-    ///
-    /// 失配修复：旧实现打 `GET /admin/health`——网关不存在该
-    /// 路由（`/health` 为 sdforge 明文 "OK"，JSON 健康面在
-    /// `/api/v1/health`）；且旧 `HealthStatus.vendors` 字段在线上不存在
-    ///（缺字段反序列化必败）。
+    /// GET /api/v1/health — 服务健康状态（JSON 健康面在 /api/v1/health，
+    /// 非 /admin/health）
     pub async fn health(&self) -> Result<HealthStatus, NexusFlowSdkError> {
         let url = self
             .base_url

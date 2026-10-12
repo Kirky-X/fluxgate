@@ -8,23 +8,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// 统一请求结构。
-///
-/// IR 字段对齐 agentstem core `CompletionRequest`（`crates/core/src/traits/types.rs`）。
-/// 双形态字段（flat 采样槽与 [`SamplingParams`]）并存：flat 为既有 wire
-/// 兼容槽，`sampling` 为 core 对齐槽；两侧转换器出站时 flat 优先、
-/// `sampling` 只补 flat 未设置的槽（不覆写）。
+/// 统一请求结构（对齐 core `CompletionRequest`）：flat 采样槽与
+/// [`SamplingParams`] 并存，出站时 flat 优先，`sampling` 只补未设置的槽
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UnifiedRequest {
     pub model: String,
     pub messages: Vec<Message>,
-    /// 规范系统提示槽（对齐 core `system_prompt`）。
-    ///
-    /// 单一事实源：Anthropic 入站将顶层 `system` 双写到本槽与首条
-    /// [`Role::System`] 消息（后者为兼容形态）；出站时 `system_prompt`
-    /// 优先，与 Role::System 消息文本合并去重（相同文本只保留一份，
-    /// `system_prompt` 在前）。OpenAI 入站不回填本槽（系统指令以
-    /// Role::System 消息形态表达）。
+    /// 规范系统提示槽：单一事实源，出站优先与 Role::System 消息合并去重；
+    /// OpenAI 侧无本槽
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -33,8 +24,7 @@ pub struct UnifiedRequest {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub stream: bool,
-    /// 停止序列。字段名沿用 wire 惯例 `stop`，语义即 core 的
-    /// `stop_sequences`（不改名避免无谓 ripple）。
+    /// 停止序列。字段名沿用 wire 惯例 `stop`
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stop: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,12 +37,8 @@ pub struct UnifiedRequest {
     pub logit_bias: HashMap<String, f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
-    /// core 对齐采样参数槽（temperature/top_k/top_p/penalties 全可选，
-    /// 对齐 core `SamplingParams` types.rs）。
-    ///
-    /// Option 双重可选语义：本槽 `Some` 表示请求显式携带采样参数；内部各
-    /// 字段 `None` 表示该维度沿用 provider 缺省。与 flat 槽并存时出站
-    /// flat 优先，本槽仅补 flat 未设置的槽（不覆写）。
+    /// core 对齐采样参数槽：槽 `Some` = 显式携带；内部字段 `None` = 沿用
+    /// provider 缺省。出站 flat 优先，本槽仅补未设置的槽
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling: Option<SamplingParams>,
     /// 思考深度配置（对齐 core `ThinkingConfig` types.rs）。
@@ -77,10 +63,8 @@ pub struct UnifiedRequest {
     pub vendor_extensions: HashMap<String, serde_json::Value>,
 }
 
-/// LLM 采样参数（对齐 core `SamplingParams`，`crates/core/src/traits/types.rs`）。
-///
-/// 全部可选：provider 侧有合理默认值，`None` 表示沿用默认。
-/// `top_k` 对齐 core 为 `u32`（任务文中「全 f32」以 core 证据为准）。
+/// LLM 采样参数（对齐 core `SamplingParams`）。全部可选：`None` 表示
+/// 沿用 provider 默认值。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SamplingParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,7 +85,7 @@ pub struct SamplingParams {
 pub enum ThinkingConfig {
     /// 模型自适应决定思考预算
     Adaptive,
-    /// 启用思考，指定 token 预算（u64 对齐 core 宽度 types.rs）
+    /// 启用思考，指定 token 预算（u64 对齐 core 宽度）
     Enabled {
         #[serde(default)]
         budget_tokens: u64,
@@ -111,7 +95,7 @@ pub enum ThinkingConfig {
     Disabled,
 }
 
-/// 任务努力级别（对齐 core `EffortLevel`，`crates/core/src/traits/types.rs`）。
+/// 任务努力级别（对齐 core `EffortLevel`）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
@@ -142,10 +126,10 @@ impl EffortLevel {
     }
 }
 
-/// LLM 补全完成原因（对齐 core `FinishReason`，`crates/core/src/traits/types.rs`）。
+/// LLM 补全完成原因（对齐 core `FinishReason`）。
 ///
-/// 与 [`Choice::finish_reason`] 的原始透传槽构成双轨：结构化槽存已知词的
-/// 映射结果，未知词只进原始槽（不猜变体）。
+/// 与 [`Choice::finish_reason`] 的原始透传槽构成双轨：结构化槽存已知词
+/// 的映射结果，未知词只进原始槽（不猜变体）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
@@ -156,8 +140,8 @@ pub enum FinishReason {
 }
 
 impl FinishReason {
-    /// 协议 wire 词汇（OpenAI finish_reason / Anthropic stop_reason 映射后
-    /// 的 IR 统一词汇）→ 结构化变体；未知词返回 `None`。
+    /// wire 词汇（OpenAI finish_reason / Anthropic stop_reason 映射后的
+    /// IR 统一词汇）→ 结构化变体；未知词返回 `None`。
     pub fn from_wire(s: &str) -> Option<Self> {
         match s {
             "stop" => Some(Self::Stop),
@@ -238,29 +222,17 @@ pub struct ToolFunction {
     pub name: String,
     /// 函数描述
     pub description: String,
-    /// 函数参数 —— **JSON Schema 原样保真**（M1 / D7.14 闭环，A3
-    /// 前置）：`serde_json::Value` 直存直出，不做结构化升降级——嵌套
-    /// schema / items / anyOf / $ref / 缺 type 属性等全量无损（A3 前的
-    /// 有损结构化仅幸存 type/properties/{type,description,enum}/required，
-    /// 其余静默丢失）。`Null` = 未携带（出站按协议缺省形状补齐）。
+    /// 函数参数 —— JSON Schema 原样保真：`Value` 直存直出，不做结构化
+    /// 升降级。`Null` = 未携带（出站按协议缺省形状补齐）。
     #[serde(default)]
     pub parameters: Value,
 }
 
-/// 单个工具 `parameters` schema 的序列化字节上限（128 KiB）。
-///
-/// 应用层显式上限（A3 审查 F4 挂账，纵深防御）：schema 经
-/// [`ToolFunction::parameters`] 的 `Value` 原样透传进上游请求，既有防线
-/// 仅 axum 2 MB 请求体限 + serde_json 128 层递归限；本上限在入站解析处
-/// 把单 schema 体积收进显式拒绝（[`GateError::Validation`] → 请求级
-/// 400），避免任意大 schema 原样消耗上游带宽与 token 预算。128 KiB 远超
-/// 常见工具 schema 量级（典型 < 4 KiB），正常业务零感知。
+/// 单个工具 `parameters` schema 的序列化字节上限（128 KiB），
+/// 超限入站 400 拒绝（防任意大 schema 消耗上游带宽与 token 预算）
 pub const MAX_TOOL_SCHEMA_BYTES: usize = 128 * 1024;
 
-/// 单个工具 `parameters` schema 的递归深度上限（32 层）。
-///
-/// serde_json 解析限 128 层（防栈溢出），本上限在应用层进一步收紧到
-/// JSON Schema 的合理嵌套量级（典型 ≤ 10 层）；超限入站 400 拒绝。
+/// 单个工具 `parameters` schema 的递归深度上限（32 层），超限入站 400 拒绝
 pub const MAX_TOOL_SCHEMA_DEPTH: usize = 32;
 
 /// 计算 [`serde_json::Value`] 的递归深度：叶子（标量/Null）为 0，
@@ -273,12 +245,8 @@ pub(crate) fn json_depth(value: &Value) -> usize {
     }
 }
 
-/// 工具 schema 体积/深度上限校验（入站解析处，A3 审查 F4 纵深）。
-///
-/// 对每个 tool 的 `parameters` 依次校验：序列化字节数 ≤
-/// [`MAX_TOOL_SCHEMA_BYTES`]、递归深度 ≤ [`MAX_TOOL_SCHEMA_DEPTH`]；
-/// 超限返回 [`GateError::Validation`]（应用层映射请求级 400），`field`
-/// 携带出错工具下标 + 实测值 + 上限值（显性化，不静默截断）。
+/// 工具 schema 体积/深度上限校验（入站解析处）：超限返回 Validation
+///（请求级 400），field 携带工具下标 + 实测值 + 上限值
 pub(crate) fn validate_tool_schemas(tools: &[Tool]) -> Result<(), GateError> {
     for (index, tool) in tools.iter().enumerate() {
         let parameters = &tool.function.parameters;
@@ -436,13 +404,7 @@ pub struct Choice {
     pub logprobs: Option<serde_json::Value>,
 }
 
-/// Token 使用统计（对齐 core `Usage`，`crates/core/src/usage.rs`）。
-///
-/// cache 双字段为 prompt cache 记账：OpenAI 侧读
-/// `prompt_tokens_details.cached_tokens`（无 cache_creation 概念，恒 0），
-/// Anthropic 侧读 `cache_read_input_tokens` / `cache_creation_input_tokens`。
-/// cache 宽度 u64 对齐 core；cost 选 `f64` vs core 的 `f32` 为金额精度裁决
-/// （成本累加避免 f32 有效位损失，映射层转换）。
+/// Token 使用统计（对齐 core `Usage`）。cache 宽度 u64 对齐 core。
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
     #[serde(default)]
@@ -465,22 +427,13 @@ pub struct TokenUsage {
     pub cost_cny: Option<f64>,
 }
 
-/// 流式响应块。
+/// 流式响应块（映射 core `StreamChunk`）。
 ///
-/// 与 core `StreamChunk`（types.rs）的映射
-/// - `Content{finish_reason: Some(_)}` ↔ core `StreamChunk::Done`
-///   （终止语义由 Content 的 finish_reason 承担，不设独立 Done 变体）；
-/// - [`StreamChunk::ToolCall`] ↔ core `StreamChunk::ToolCallDelta`
-///   （并行工具 = 多 id 交错流）；
-/// - `Usage` ↔ core `StreamChunk::Usage`；
-/// - `Heartbeat` 为网关保心跳，无 core 对应。
-///
-/// 表示统一（已落地）：双侧流式工具路径的规范表示为
-/// [`StreamChunk::ToolCall`] 片段流（openai 单片段帧直接映射；
-/// anthropic 帧类型显式判定）。`Content` 携带 `MessageContent::ToolCalls`
-/// 仅为旧表示回退——openai 单帧多片段 / 片段与 finish_reason 同帧的
-/// 非规范形状（trait 单 chunk 交付约束下的无损回退），消费方聚合状态
-/// （index → {id, name, arguments 缓冲}）对两种表示均可拼接。
+/// 终止语义由 `Content{finish_reason: Some(_)}` 承担，不设独立 Done 变体；
+/// [`StreamChunk::ToolCall`] 为流式工具片段流（并行工具 = 多 id 交错流）。
+/// `Content` 携带 `MessageContent::ToolCalls` 仅为旧表示回退——openai
+/// 单帧多片段 / 片段与 finish_reason 同帧的非规范形状（trait 单 chunk
+/// 交付约束下的无损回退）；`Heartbeat` 为网关保心跳，无 core 对应。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum StreamChunk {
@@ -556,7 +509,7 @@ pub struct EmbeddingUsage {
 /// 入站吸收未识别顶层字段 → [`UnifiedRequest::vendor_extensions`]（透传防丢）。
 ///
 /// `known_keys` 为该协议已显式映射进 IR 的键；其余顶层字段原样收进扩展表，
-/// 出站时按原键名透传（同协议往返零丢失）。
+/// 出站时按原键名透传。
 pub(crate) fn absorb_vendor_extensions(
     body: &serde_json::Value,
     known_keys: &[&str],
@@ -574,9 +527,7 @@ pub(crate) fn absorb_vendor_extensions(
 /// 出站透传 [`UnifiedRequest::vendor_extensions`] → 顶层键。
 ///
 /// `deny_keys` 为目标协议的合法键集（调用侧传入本协议 known_keys 反用）：
-/// 协议键永不由扩展表补入/覆写——消灭 stream 缺位注入与跨协议
-/// metadata/thinking 等计费行为键补入；非协议键原样透传（D2 透传语义，
-/// 跨协议严格上游 400 风险为显式 opt-in，裁决记录 D7）。
+/// 协议键永不由扩展表补入/覆写；非协议键原样透传。
 pub(crate) fn merge_vendor_extensions(
     body: &mut serde_json::Value,
     extensions: &HashMap<String, serde_json::Value>,
@@ -846,7 +797,7 @@ mod tests {
             data: "aGk=".into(),
         };
         let json = serde_json::to_value(&base64).unwrap();
-        // 与 Anthropic source 块同形（旧 IR 结构体形状向后兼容）
+        // 与 Anthropic source 块同形
         assert_eq!(
             json,
             json!({"type": "base64", "media_type": "image/png", "data": "aGk="})
@@ -977,7 +928,7 @@ mod tests {
         ));
     }
 
-    // ======== 工具 schema 体积/深度上限（A3 审查 F4 纵深） ========
+    // ======== 工具 schema 体积/深度上限 ========
 
     use crate::error::GateError;
 

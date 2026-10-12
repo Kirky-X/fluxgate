@@ -5,21 +5,9 @@
 
 //! 会话/前缀亲和表 — oxcache 承载存储。
 //!
-//! 语义（bifrost 式"上次成功服务的 vendor"）：
-//! - 存储走 oxcache `CacheBackend`（`CacheWriter::set` 带 TTL、
-//!   `CacheReader::get` 读取、`CacheWriter::expire` 续期），不手写 map；
-//! - 键 `affinity:{session_key}` 与响应缓存的 `resp:` 命名空间隔离；
-//!   `affinity_tenant_scoped` 开启时带租户维度
-//!   `affinity:{api_key_hash}:{session_key}`（租户劫持修复）；
-//! - 值为 vendor_id 的 UTF-8 字节；
-//! - TTL 活跃续期：lookup 命中即 `expire` 重置 TTL —— 活跃会话粘住，
-//!   闲置会话到点自动过期；
-//! - 只记"上次成功服务的 vendor"：路由层不写绑定，执行成功后由 API 层
-//!   回写（见 `crate::api` 的 bind/clear helper）；
-//! - 亲和是 boost 不是硬粘：命中 vendor 不在合格集合内时清除旧绑定，
-//!   绝不强选（负载均衡与故障迁移语义优先）。
-//!
-//! 存取出错一律静默降级为无亲和（缓存故障不得影响路由可用性）。
+//! 键 `affinity:{session_key}`；`affinity_tenant_scoped` 开启时带租户维度
+//! `affinity:{api_key_hash}:{session_key}`。值 = vendor_id，命中即续期 TTL
+//! （活跃会话粘住、闲置到点过期）；存取出错静默降级为无亲和。
 
 use oxcache::backend::CacheBackend;
 use std::sync::Arc;
@@ -39,7 +27,6 @@ pub struct AffinityTable {
 }
 
 impl AffinityTable {
-    /// 以给定 oxcache 后端与 TTL 构造
     pub fn new(backend: Arc<dyn CacheBackend + Send + Sync>, ttl: Duration) -> Self {
         Self { backend, ttl }
     }
@@ -49,10 +36,8 @@ impl AffinityTable {
         Self::new(Arc::new(oxcache::backend::default_memory_backend()), ttl)
     }
 
-    /// 亲和键构造 — `affinity:{session_key}`（legacy，默认）；
-    /// `affinity_tenant_scoped` 开启时调用方传 `Some(api_key_hash)` →
-    /// `affinity:{api_key_hash}:{session_key}`（租户隔离：两租户同
-    /// session id 不得互相劫持）。None/空租户一律 legacy 键。
+    /// 亲和键：legacy `affinity:{session_key}`；租户隔离开启时
+    /// `affinity:{api_key_hash}:{session_key}`。None/空租户一律 legacy 键
     fn key(tenant: Option<&str>, session_key: &str) -> Arc<str> {
         match tenant {
             Some(t) if !t.is_empty() => {
@@ -86,10 +71,11 @@ impl AffinityTable {
             .await;
     }
 
-    /// 首绑定收敛（get+set 模拟 SetNX）— 已绑定时不覆盖并
-    /// 返回 false，未绑定写入返回 true。供 API 层派发成功后的首绑定；
-    /// 并行首请求下竞态窗口仍可能双写（后写胜出），报告已声明可接受。
-    /// 命中已有绑定时照常续期 TTL（与 lookup 的活跃续期同拍）。
+    /// 首绑定收敛（真 SETNX）：已绑定不覆盖返回 false，未绑定写入返回 true。
+    ///
+    /// 后端提供原子面（`as_atomic_writer()` 返回 `Some`，moka 恒有）时走库侧
+    /// 原子 `set_if_absent` — 同一会话的并发首请求只有一个写入者胜出，不会各自
+    /// 绑到不同 vendor；无原子面的后端退回 get+set 兜底（并存竞态窗口，后写胜出）。
     pub async fn bind_if_absent(
         &self,
         tenant: Option<&str>,
@@ -97,6 +83,21 @@ impl AffinityTable {
         vendor_id: &str,
     ) -> bool {
         let key = Self::key(tenant, session_key);
+        if let Some(atomic) = self.backend.as_atomic_writer() {
+            return match atomic
+                .set_if_absent(&key, vendor_id.as_bytes().to_vec(), Some(self.ttl))
+                .await
+            {
+                Ok(true) => true,
+                // 已绑定：不覆盖；与其他 path 同口径按命中续期刷新 TTL
+                Ok(false) => {
+                    let _ = self.backend.expire(&key, self.ttl).await;
+                    false
+                }
+                // 存储出错：视为未写入（同 lookup 的静默无亲和降级，不谎报胜出）
+                Err(_) => false,
+            };
+        }
         if self.backend.get(&key).await.ok().flatten().is_some() {
             let _ = self.backend.expire(&key, self.ttl).await;
             return false;
@@ -108,8 +109,8 @@ impl AffinityTable {
         true
     }
 
-    /// 解除会话绑定 — 失败迁移耗尽（最终失败）或绑定 vendor 已不在
-    /// 合格集合时调用，避免旧键指向失效 vendor
+    /// 解除会话绑定 — 失败迁移耗尽或绑定 vendor 已不在合格集合时调用，
+    /// 避免旧键指向失效 vendor
     pub async fn unbind(&self, tenant: Option<&str>, session_key: &str) {
         let _ = self.backend.delete(&Self::key(tenant, session_key)).await;
     }
@@ -152,13 +153,7 @@ mod tests {
     }
 
     /// TTL 活跃续期：每次 lookup 都重置过期点——连续 lookup 跨越原 TTL
-    /// 后值仍存活（活跃会话粘住）。
-    ///
-    /// A4/ flake 前置加固：原参数（TTL 80ms / 步进 50ms）调度余量仅
-    /// 30ms，期间在全量并发下曾复现抖动过期。现放大为 TTL 500ms /
-    /// 步进 300ms（余量 200ms ≫ 常规调度抖动；3 × 300ms = 900ms > 500ms
-    /// 保持「跨原 TTL 后仍存活」断言强度）——纯测试侧参数调整，生产
-    /// `DEFAULT_AFFINITY_TTL` 不变。
+    /// 后值仍存活（活跃会话粘住）。参数已放大防调度抖动误过期。
     #[tokio::test]
     async fn lookup_renews_ttl_for_active_sessions() {
         let table = AffinityTable::with_memory_backend(Duration::from_millis(500));
@@ -184,11 +179,9 @@ mod tests {
         assert_eq!(raw, None, "亲和键必须带 affinity: 前缀");
     }
 
-    // ============ tests：键租户隔离（Red 先行） ============
+    // ============ tests：键租户隔离 ============
 
-    /// 两租户同 session id 不得互相劫持：tenant-A 绑定后，同 session key
-    /// 的 tenant-B lookup 必须 None（现状无租户维度会命中 vendor-a——
-    /// 本测试在实现前为 Red）。租户键与 legacy 键空间互不可见。
+    /// 两租户同 session id 不得互相劫持；租户键与 legacy 键空间互不可见
     #[tokio::test]
     async fn affinity_key_scoped_by_tenant() {
         let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
@@ -220,8 +213,7 @@ mod tests {
 
     // ============ tests：bind_if_absent 首绑定收敛 ============
 
-    /// 未绑定写入返回 true；已绑定不覆盖返回 false（get+set 模拟 SetNX，
-    /// 并行首请求竞态窗口可接受——报告已声明）。
+    /// 未绑定写入返回 true；已绑定不覆盖返回 false（后端有原子面走 SETNX）。
     #[tokio::test]
     async fn bind_if_absent_converges_first_binding() {
         let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
@@ -242,5 +234,103 @@ mod tests {
         // 租户维度同样收敛
         assert!(table.bind_if_absent(Some("t1"), "s", "vendor-a").await);
         assert!(!table.bind_if_absent(Some("t1"), "s", "vendor-b").await);
+    }
+
+    /// 并发首绑定：同一会话多请求同时首绑定 → 恰好一个写入者胜出，
+    /// 且胜出者的 vendor 就是最终绑定值（原子面 SETNX 语义，无后写覆盖）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn bind_if_absent_first_writer_wins_under_concurrency() {
+        let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let table = table.clone();
+            handles.push(tokio::spawn(async move {
+                let vendor = format!("vendor-{i}");
+                let won = table.bind_if_absent(None, "race", &vendor).await;
+                (won, vendor)
+            }));
+        }
+        let mut winners = Vec::new();
+        for handle in handles {
+            let (won, vendor) = handle.await.expect("并发任务不得 panic");
+            if won {
+                winners.push(vendor);
+            }
+        }
+        assert_eq!(winners.len(), 1, "并发首绑定只允许一个写入者胜出");
+        assert_eq!(
+            table.lookup(None, "race").await.as_deref(),
+            Some(winners[0].as_str()),
+            "最终绑定值必须是胜出者写入的值"
+        );
+    }
+
+    /// 绑定过期后重新绑定：过期条目对本方法等同未绑定，不得因残留条目
+    /// 而永久拒绝重新绑定（老会话重开仍能收敛到一次首绑定）。
+    #[tokio::test]
+    async fn bind_if_absent_rebinds_after_ttl_expiry() {
+        let table = AffinityTable::with_memory_backend(Duration::from_millis(50));
+        assert!(table.bind_if_absent(None, "exp", "vendor-a").await);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        assert_eq!(table.lookup(None, "exp").await, None, "TTL 到点已失效");
+        assert!(
+            table.bind_if_absent(None, "exp", "vendor-b").await,
+            "过期后应可重新绑定"
+        );
+        assert_eq!(table.lookup(None, "exp").await.as_deref(), Some("vendor-b"));
+    }
+
+    /// 已绑定分支按命中续期：不覆盖绑定 vendor，但把 TTL 刷回一个完整周期
+    ///（活跃会话粘住语义不因切到库侧原子面而丢失）。
+    #[tokio::test]
+    async fn bind_if_absent_renews_ttl_when_already_bound() {
+        let table = AffinityTable::with_memory_backend(Duration::from_millis(600));
+        assert!(table.bind_if_absent(None, "renew", "vendor-a").await);
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let remaining = table
+            .backend
+            .ttl(&AffinityTable::key(None, "renew"))
+            .await
+            .unwrap()
+            .expect("绑定应仍存活");
+        assert!(
+            remaining < Duration::from_millis(400),
+            "已走过 400ms，剩余 TTL 应不足 400ms（实测 {remaining:?}）"
+        );
+
+        assert!(!table.bind_if_absent(None, "renew", "vendor-b").await);
+        let renewed = table
+            .backend
+            .ttl(&AffinityTable::key(None, "renew"))
+            .await
+            .unwrap()
+            .expect("续期后绑定应仍存活");
+        assert!(
+            renewed > Duration::from_millis(500),
+            "已绑定分支应把 TTL 续回约一个完整周期（实测 {renewed:?}）"
+        );
+    }
+
+    /// 无原子面的后端（dashmap 后端 `as_atomic_writer()` 为 None）走 get+set
+    /// 兜底，语义与原子面一致：首绑写、后绑不覆盖。
+    #[tokio::test]
+    async fn bind_if_absent_falls_back_without_atomic_surface() {
+        let backend: Arc<dyn CacheBackend + Send + Sync> =
+            Arc::new(oxcache::backend::dashmap_memory());
+        assert!(
+            backend.as_atomic_writer().is_none(),
+            "本用例前提：该后端无原子面，必须走兜底 path"
+        );
+        let table = AffinityTable::new(backend, DEFAULT_AFFINITY_TTL);
+
+        assert!(table.bind_if_absent(None, "s", "vendor-a").await);
+        assert!(!table.bind_if_absent(None, "s", "vendor-b").await);
+        assert_eq!(
+            table.lookup(None, "s").await.as_deref(),
+            Some("vendor-a"),
+            "兜底 path 同样首绑定收敛"
+        );
     }
 }

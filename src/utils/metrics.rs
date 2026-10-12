@@ -29,19 +29,10 @@ pub const TRAFFIC_WINDOW: Duration = Duration::from_secs(60);
 pub const TRAFFIC_BUCKETS: usize = 10;
 
 /// 滑动窗口份额计数器 — 60s 窗、10 桶环形（每桶 6s）。
-///
-/// 以**绝对时刻**换算桶序：`abs = (now − base) / bucket_secs`（`base` 为
-/// 首样本的真实 Instant）。`Instant` 差保留亚秒残差且每次都用全量差值
-/// 计算——不丢残差，亚秒写入间隔（生产同 vendor QPS≥2）下窗口照常轮转。
-/// （评审修复：此前用「相对 last_seen 的整秒流逝 ÷ 桶宽」增量推进，
-/// last_seen 每次刷新导致亚秒间隔残差被截断丢弃、窗口永不轮转退化为
-/// 全生命期累计。）
-///
-/// 推进时惰性清零 `(last, abs]` 环形区间内的过期桶——跨度超过一整圈即
-/// 全清。`last_seen` 是最后一次观察（写或读推进）的真实时间锚点，读侧
-/// [`GlobalMetrics::traffic_shares`] 以全体 counter 的 `max(last_seen)`
-/// 为逻辑当前时刻推进：vendor 停止写入后其旧桶仍随全局时间衰减出窗。
-/// 测试经 [`GlobalMetrics::record_traffic_at`] 注入假时钟做确定性断言。
+/// 以**绝对时刻**换算桶序（不丢亚秒残差，亚秒写入间隔下窗口照常轮转）；
+/// 推进时惰性清零过期桶；读侧以全体 max(last_seen) 为逻辑当前时刻——
+/// 停止写入的 vendor 旧桶随全局时间衰减出窗。
+/// 测试经 record_traffic_at 注入假时钟做确定性断言
 pub(crate) struct SlidingCounter {
     bucket_secs: u64,
     buckets: Vec<u64>,
@@ -426,12 +417,8 @@ impl GlobalMetrics {
             .sum()
     }
 
-    /// 重试放大守门器的观测视图 `(r, f, λ)`。
-    ///
-    /// - r = retried_attempts / failed_requests_before_retry（重试请求数 /
-    ///   失败请求数；无失败 → None：无放大信号可言）
-    /// - f = 全生命期失败率（[`Self::error_rate`]，record_request 驱动）
-    /// - λ = 入站速率估计 = 流量滑窗总量 / 窗宽秒数（[`TRAFFIC_WINDOW`]）
+    /// 重试放大守门器的观测视图 `(r, f, λ)`：r = 重试/失败请求数（无失败
+    /// → None）；f = 全生命期失败率；λ = 入站速率估计（滑窗总量/窗宽）
     pub fn amplification_view(&self) -> Option<(f64, f64, f64)> {
         let failed = self.failed_requests_before_retry();
         if failed == 0 {
@@ -462,12 +449,9 @@ impl GlobalMetrics {
         hits as f64 / total as f64
     }
 
-    /// 滑窗内各 vendor 的流量份额 `[(vendor_id, share)]`。
-    ///
-    /// 只含窗内有流量的 vendor（window_total > 0）；总流量为 0 时返回空
-    /// vec。份额总和恒为 1.0。读侧先把全部 counter 推进到全体
-    /// `max(last_seen)`（逻辑当前时刻）——停止写入的 vendor 旧桶随全局
-    /// 时间衰减出窗，而不是滞留份额。
+    /// 滑窗内各 vendor 的流量份额 `[(vendor_id, share)]`：只含窗内有流量
+    /// 的 vendor，总和恒 1.0；读侧推进到全体 max(last_seen)，停止写入的
+    /// vendor 旧桶随全局时间衰减出窗
     pub fn traffic_shares(&self) -> Vec<(String, f64)> {
         let mut guard = match self.traffic.write() {
             Ok(g) => g,
@@ -542,33 +526,19 @@ impl GlobalMetrics {
         failed as f64 / total as f64
     }
 
-    /// vendor 的 EWMA 延迟（ms）与错误率快照 — 路由权重第 4 维
-    /// 的输入。该 vendor **无 e2e 延迟数据**（从未被记录，或只有
-    /// record_request/record_ttft 历史、无 record_e2e 样本）时返回 None
-    /// （Router 对无数据厂商走中性因子，不惩罚冷启动）。
-    ///
-    /// `ewma_latency_ms` 语义收窄为 **e2e 别名**——
-    /// 此前四路喂入点（worker 全程/两条流式 TTFT 近似/透传全程）口径各异
-    /// 汇入同一 EWMA，本方法返回的延迟从此只由 record_e2e 喂入。
-    ///
-    /// 评审 major 修复：Some/None 判定与 [`Self::vendor_ewma_e2e`] 同源
-    /// （e2e_samples > 0）。分道后 entry 可只被 record_request/record_ttft
-    /// 写入（纯流式 vendor），此时 ewma_latency_ms 停在 0.0 初始值——
-    /// 若照旧返回 Some((0.0, err))，w_latency>0 时 latency_factor=
-    /// ref/(ref+0)=1.0 恒满分、Po2C latency_score=0.0 恒胜，混部舰队会
-    /// 整体倾斜到流式 vendor。None 时 Router 走中性延迟因子 / Po2C 保守
-    /// 2×ref_ms。错误率观测不受影响（快照 ewma_error_rate 字段照常更新）。
+    /// vendor 的 EWMA 延迟（ms）与错误率快照 — 路由权重第 4 维输入。
+    /// 延迟只由 record_e2e 喂入（口径分道）；无 e2e 数据返回 None
+    ///（Router 走中性因子不惩罚冷启动；纯流式 vendor 若返回 Some(0.0)
+    /// 会被 latency_factor/Po2C 恒判优，舰队整体倾斜——判定必须与
+    /// vendor_ewma_e2e 同源 e2e_samples > 0）
     pub fn vendor_ewma(&self, vendor: &str) -> Option<(f64, f64)> {
         let guard = self.per_vendor.read().ok()?;
         let entry = guard.get(vendor)?;
         (entry.e2e_samples > 0).then_some((entry.ewma_latency_ms, entry.ewma_error_rate))
     }
 
-    /// vendor 的 60s 流量窗总数 — LPS 前瞻的到达率输入
-    ///（α = total / 60，与 软降权 / 流量份额共用同一
-    /// 计数器，经访问器而非复制）。读取时惰性推进到表内最新锚
-    ///（traffic_shares 同款口径），poison 按空表容错；vendor 无记录
-    /// 返回 0。
+    /// vendor 的 60s 流量窗总数 — LPS 前瞻的到达率输入（α = total/60），
+    /// 与软降权/流量份额共用计数器；读取时惰性推进，无记录返回 0
     pub fn vendor_window_total(&self, vendor: &str) -> u64 {
         let mut guard = match self.traffic.write() {
             Ok(g) => g,
@@ -927,13 +897,8 @@ mod tests {
 
     // ============ tests：EWMA 延迟/错误率 ============
 
-    /// 连续 100→200→400ms：ewma 逐次上升（100→120→176），且新值权重大于
-    /// 全生命期均值（176 < 全均值 233.3）。
-    ///
-    /// 迁移：驱动方式从 record_request 改为 record_e2e（口径分道后
-    /// 延迟 EWMA 只由 e2e 道喂入）；固定 α=0.2 的等价采样间隔由 Peak-EWMA
-    /// 反解：α_dyn = 1−exp(−Δt/τ) = 0.2 → Δt = −τ·ln(0.8) ≈ 2231.4ms
-    ///（now 注入，数值断言到 1e-6）。
+    /// 连续 100→200→400ms：ewma 逐次上升且新值权重大于全生命期均值；
+    /// 等价 α=0.2 的采样间隔由 Peak-EWMA 反解 Δt ≈ 2231.4ms（now 注入）
     #[test]
     fn test_ewma_latency_rises_and_weights_recent_samples() {
         let m = GlobalMetrics::new();
@@ -1345,13 +1310,8 @@ mod tests {
         assert!((m.top1_share() - 1.0).abs() < 1e-9);
     }
 
-    /// 评审回归（major#1）：亚秒写入间隔下窗口必须照常轮转。
-    ///
-    /// 旧实现以「相对 last_seen 的整秒流逝 ÷ 桶宽」增量推进，last_seen
-    /// 每次刷新 → 相邻写入间隔 <1s 时残差每次被截断丢弃，last_abs_bucket
-    /// 恒 0、窗口冻结退化为全生命期累计（窗内 == 总写入）。绝对时刻换算
-    /// 下 61s 的 0.5s 间隔写入（122 条）中 t<1s 的桶 0 旧量（12 条）必须
-    /// 已随轮转清零 → 窗内 < 总写入。
+    /// 回归：亚秒写入间隔下窗口必须照常轮转（旧实现的增量推进残差被截断
+    /// 丢弃会冻结窗口退化为全生命期累计，窗内 == 总写入）
     #[test]
     fn sliding_counter_rotates_under_subsecond_writes() {
         let t0 = Instant::now();

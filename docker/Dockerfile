@@ -27,27 +27,6 @@ FROM docker.io/library/rust:1.99-alpine3.24 AS build
 # 构建参数
 ARG APP_NAME=nexusflow
 ARG APP_VERSION=0.1.0
-# 兄弟库引用：Cargo.toml 以 ../<lib> path 依赖集成 7 个兄弟库，独立仓库
-# 构建时克隆到 /（即 /app 的上级）满足路径解析。
-# 逐仓钉住与本仓 Cargo.lock 同源的提交：浮动 main 已实测发生 API 漂移
-# （limiteron circuit 移动 CircuitCallError、MSRV 升 1.97.1），克隆 main 编不过
-# 本仓源码。
-# 不变式（两条，缺一即远端构建不可用）：
-#   1) pin 必须是该仓**已推送**的提交（fetch 走远端，本地未推送的 SHA 取不到）；
-#   2) pin 提交的版本串必须等于本仓 Cargo.lock 记录的版本（`cargo build
-#      --locked` 硬要求），且包含 Cargo.toml 声明的全部 feature。
-# 生成与校验（任一仓 HEAD != origin/main 即有未推送提交，先推送再刷 pin）：
-#   cd ~/projects && for r in confers dbnexus inklog limiteron oxcache sdforge \
-#     trait-kit; do printf '%s=%s ' "$r" "$(git -C $r rev-parse origin/main)"; done
-#   for r in <同上>; do git -C $r rev-list --count origin/main..HEAD; done  # 非 0 即未推送
-# 升级流程：本地更新兄弟库 + 刷新 Cargo.lock → 按上面命令重取 SHA 填入下方。
-# pin 滞后的典型表现（实测）：解析期报
-#   failed to select a version for `inklog` … package `nexusflow` depends on
-#   `inklog` with feature `secret-scan` but `inklog` does not have that feature
-# ——意为下方某个 pin 的提交还没有本仓 Cargo.toml 声明的 feature，按升级流程
-# 把该仓 pin 刷到已推送的对应提交即可（不是镜像/工具链问题）。
-# GitHub 支持按完整 40 位 SHA fetch（allowReachableSHA1InWant），短 SHA 不行。
-ARG SIBLING_PINS="confers=8c89c5b1b0c586b0b8bbd549678dac61582021f7 dbnexus=1b3663f29705ee02a23bff0582aae62e7ded2cee inklog=5288f050d42512a909fc58fcf2994b4d8373099f limiteron=d33862d69c975261cd2c9f84c2d8b35364931907 oxcache=51d44fa1395bfa555a48fd20e704ab0a97defd50 sdforge=1f55bb4b32dac8edd1af71dff5f573a4a97c43bc trait-kit=0ca5bdb8ce0f6a52c95aac31ded117f91a92b522"
 
 # 设置工作目录
 WORKDIR /app
@@ -55,7 +34,7 @@ WORKDIR /app
 # 安装构建依赖：sqlite-dev 提供头文件与 libsqlite3.a（musl 目标下静态内嵌，
 # 运行阶段不需配套 libsqlite3.so；glibc 发布产物则动态链接系统库，见
 # release.yml）；musl-dev 提供 libc 头，clang/lld 供 ring 等 C 依赖在 musl 目标
-# 下编译链接，git 供兄弟库取源。
+# 下编译链接。自研库已全量走 crates.io registry，无 git 依赖，故不装 git。
 # 不装 libressl-dev/openssl-dev：Cargo.lock 内无 openssl/openssl-sys/native-tls，
 # TLS 全栈走 rustls（db-* 透传 runtime-tokio-rustls），装了只会拖入 community
 # 仓依赖（libressl-dev 在 3.24 属 community，仅支持到下一个 stable）并误导
@@ -65,26 +44,13 @@ RUN apk add --no-cache \
     lld \
     musl-dev \
     pkgconfig \
-    sqlite-dev \
-    git
-
-# 克隆 7 个兄弟库到 /app 的上级目录（Cargo.toml 的 ../<lib> 相对路径
-# 以 /app/Cargo.toml 为基准解析到 /<lib>；[patch.crates-io] 同样指向这里）
-# 浅克隆默认分支后再按钉住的完整 SHA 二次浅取并检出（depth=1 首克隆不含
-# 历史 SHA 对象）
-RUN set -eux; \
-    for entry in ${SIBLING_PINS}; do \
-      repo="${entry%%=*}"; pin="${entry##*=}"; \
-      git init -q "/${repo}"; \
-      git -C "/${repo}" remote add origin "https://github.com/Kirky-X/${repo}.git"; \
-      git -C "/${repo}" fetch -q --depth 1 origin "${pin}"; \
-      git -C "/${repo}" checkout -q --detach FETCH_HEAD; \
-    done
+    sqlite-dev
 
 # 使用 BuildKit 缓存挂载优化构建速度
 # 缓存 Cargo 依赖和编译产物
-# --locked：兄弟库已钉在与本仓 Cargo.lock 同源的提交上（见 SIBLING_PINS 注），
-# 锁定依赖图防止 crates.io 侧静默漂移；失配即显性失败，升级时同步刷新 pins。
+# --locked：锁定依赖图，防止 crates.io 侧静默漂移；失配即显性失败，依赖版本
+# 变更时以 `cargo update` 刷新 Cargo.lock（自研库版本以 Cargo.toml 的
+# version 声明为准）。
 # Cargo.lock 以只读 bind mount 引入再拷为可写副本：bind 默认只读，避免
 # 解析器意外改写锁文件时因文件系统只读而报次生错误（实测）
 # locales 必须挂载：src/i18n/catalog.rs 以 include_str! 编译期内嵌
@@ -100,7 +66,6 @@ RUN --mount=type=bind,source=src,target=src \
     --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
     --mount=type=bind,source=Cargo.lock,target=/tmp/Cargo.lock.ro \
     --mount=type=cache,target=/app/target/ \
-    --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     --mount=type=cache,target=/root/.cache/ \
     cp /tmp/Cargo.lock.ro ./Cargo.lock && \

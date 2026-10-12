@@ -3,21 +3,11 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! LinUCB 打分项（零模型上下文 bandit，selection 第三档）。
-//!
-//! 每臂 = `(abstract_model, vendor_id)` 一个线性模型：闭式最小二乘
-//! `θ̂_k = A_k⁻¹ b_k`，选择按 `ucb(x, α) = ⟨x, θ̂_k⟩ + α√(xᵀ A_k⁻¹ x)`
-//! argmax（置信上界自动编码冷启动探索）。更新只动被选臂：
-//! `A_a += xxᵀ`、`b_a += r·x`（r = 成功 1 / 失败 0，代理奖励——稀疏反馈
-//! 局限见调研报告）。矩阵求逆手写部分主元高斯-约当（d≤5，不引新依赖）；
-//! 非有限/奇异时退化对角近似并 warn（进程一次）。
-//!
-//! 并发：per-臂 `Mutex`（更新与该臂的 UCB 读互斥），臂表 `RwLock`；
-//! 路由读侧容忍稍旧值。状态重启归零（特征集变更亦不可迁移——重启清空
-//! 可接受，见 plan risk）。
-//!
-//! 默认关闭：`[routing].selection` 默认 `"weighted"`，本模块不被咨询、
-//! 无状态更新（config_toml_example_test 结构性断言）。
+//! LinUCB 打分项（零模型上下文 bandit，selection 第三档）— 每臂 =
+//! `(abstract_model, vendor_id)` 一个线性模型，选择按 UCB argmax（闭式
+//! 最小二乘 θ̂，r = 成功 1 / 失败 0 代理奖励）。per-臂 Mutex + 臂表
+//! RwLock（读侧容忍稍旧值），状态重启归零。默认关闭：`[routing].selection`
+//! 为 "weighted" 时不咨询、无状态更新。
 
 use rand::Rng;
 use std::collections::HashMap;
@@ -42,8 +32,7 @@ struct Arm {
 }
 
 impl Arm {
-    /// 正则初值 A₀ = α²·I（α≤0/非有限时取 1.0 兜底，保 A 恒正定可逆——
-    /// α=0 纯贪心配置下 0 矩阵奇异，不可用作正则）。b₀ = 0。
+    /// 正则初值 A₀ = α²·I（α≤0/非有限取 1.0 兜底，保 A 恒正定可逆）；b₀ = 0。
     fn new(alpha_reg: f64) -> Self {
         let mut a = vec![0.0; LINUCB_DIM * LINUCB_DIM];
         for i in 0..LINUCB_DIM {
@@ -56,13 +45,8 @@ impl Arm {
     }
 }
 
-/// LinUCB 臂键归一 — 选择侧
-///（router.rs route_inner 的 `abstract_model.to_lowercase()` + auto →
-/// try_global_route 的 "__global__"）与奖励侧（handler 经
-/// ApiState::record_linucb_reward）共用本函数，保证两端 consulted /
-/// updated 的臂恒同键。修复前奖励侧写原始 `request.get("model")`：
-/// auto 路径奖励写进 ("auto", vendor) 与被咨询臂 ("__global__", vendor)
-/// 永不相交（主路径永不学习）；大写 model（"GPT-4"）同理错键。
+/// LinUCB 臂键归一（选择侧与奖励侧共用，保证两端同键）：
+/// auto → "__global__"，trim + 小写。
 pub fn linucb_arm_key(raw_model: &str) -> String {
     let normalized = raw_model.trim().to_lowercase();
     if normalized == "auto" {
@@ -89,8 +73,8 @@ pub fn linucb_features(
     ]
 }
 
-/// 从请求体提取特征（chat 端点共用；messages 数与 body 序列化
-/// 字符数、tools 非空、stream 标志）。
+/// 从请求体提取特征（chat 端点共用）：messages 数、body 序列化
+/// 字符数、tools 非空、stream 标志。
 pub fn linucb_features_from_body(body: &serde_json::Value) -> [f64; LINUCB_DIM] {
     let num_messages = body
         .get("messages")
@@ -110,8 +94,7 @@ pub fn linucb_features_from_body(body: &serde_json::Value) -> [f64; LINUCB_DIM] 
 }
 
 /// 部分主元高斯-约当求逆（d×d 行主序）。奇异（主元幅度低于
-/// 阈值）或含非有限元素时返回 None（调用方退化对角近似）。
-/// `pub` 供 d=2 手算参照的确定性单测。
+/// 阈值）或含非有限元素时返回 None（调用方退化对角近似）。`pub` 供确定性单测。
 pub fn linucb_invert(a: &[f64], d: usize) -> Option<Vec<f64>> {
     if d == 0 || a.len() != d * d {
         return None;
@@ -215,10 +198,8 @@ pub fn linucb_diag_inverse(a: &[f64], d: usize) -> Vec<f64> {
     inv
 }
 
-/// UCB 打分 — `⟨x, A⁻¹b⟩ + α√(xᵀA⁻¹x)`（A⁻¹ 由调用方传入，
-/// 已含奇异退化决策）。x 长度必须 == d（调用方门控）；α 非有限按 0
-///（纯贪心 ⟨x,θ̂⟩）。二次型对数值噪声取 max(0,·) 防负数开方。
-/// `pub` 供 d=2 手算参照的确定性单测。
+/// UCB 打分：`⟨x, A⁻¹b⟩ + α√(xᵀA⁻¹x)`；α 非有限按 0（纯贪心），
+/// 二次型 max(0,·) 防负数开方。pub 供确定性单测。
 pub fn linucb_ucb_from_arm(a_inv: &[f64], b: &[f64], x: &[f64], alpha: f64, d: usize) -> f64 {
     let alpha = if alpha.is_finite() {
         alpha.max(0.0)
@@ -256,14 +237,13 @@ pub fn linucb_arm_update(a: &mut [f64], b: &mut [f64], x: &[f64], r: f64, d: usi
     }
 }
 
-/// LinUCB 状态 — 臂表键 = `(abstract_model, vendor_id)`。
-/// 臂按需惰性创建（先验 = 正则初值），per-臂 Mutex（更新与读互斥），
-/// 臂表 RwLock（读侧容忍稍旧值）。全局共享（Arc）。
+/// LinUCB 状态：臂表键 = `(abstract_model, vendor_id)`，臂按需惰性创建
+///（先验 = 正则初值）；per-臂 Mutex + 臂表 RwLock。
 pub struct BanditState {
     arms: RwLock<ArmMap>,
     /// 正则初值（max(α², 1)·I；构造期定死，热更 α 只影响探索半径）
     alpha_reg: f64,
-    /// 奇异/非有限退化对角近似的进程内一次性 warn（防刷屏，#14 先例）
+    /// 奇异/非有限退化对角近似的进程内一次性 warn（防刷屏）
     diag_fallback_warned: AtomicBool,
 }
 
@@ -281,8 +261,7 @@ impl BanditState {
         }
     }
 
-    /// 臂获取（惰性创建）。双检：读快路径命中则 clone Arc，未命中落写锁
-    /// or_insert（并发首触只建一次）。
+    /// 臂惰性获取：读快路径命中 clone，未命中落写锁 or_insert（并发首触只建一次）
     fn arm(&self, key: &(String, String)) -> Arc<Mutex<Arm>> {
         if let Some(a) = self
             .arms
@@ -338,9 +317,8 @@ impl BanditState {
         linucb_arm_update(a, b, x, r, LINUCB_DIM);
     }
 
-    /// 选择核心 — 全部候选算 UCB 取 argmax，平局（|Δ|≤1e-9）rng 决断
-    ///（Po2C 的注入先例）。返回候选索引；全空候选集 None。分数全非有限
-    ///（NaN 污染等）时均匀随机兜底。
+    /// 选择核心 — 全部候选算 UCB 取 argmax，平局（|Δ|≤1e-9）rng 决断。
+    /// 返回候选索引；全空候选集 None；分数全非有限时均匀随机兜底。
     pub fn argmax(
         &self,
         model: &str,
@@ -536,8 +514,7 @@ mod tests {
         assert!(after_success > after_fail, "成功奖励抬高 UCB");
     }
 
-    /// 评审修复 major：臂键归一 — auto→"__global__"（与 global 路由
-    /// 选择键同源）、大小写归一、trim。
+    /// 臂键归一：auto→"__global__"、大小写、trim
     #[test]
     fn linucb_arm_key_normalizes_selection_and_reward() {
         assert_eq!(linucb_arm_key("auto"), "__global__");
@@ -547,7 +524,7 @@ mod tests {
         assert_eq!(linucb_arm_key("  Claude-3  "), "claude-3");
     }
 
-    /// has_arm 观测：键精确匹配（评审修复的断言入口）。
+    /// has_arm 观测：键精确匹配
     #[test]
     fn has_arm_exact_key_match() {
         let state = BanditState::new(1.0);

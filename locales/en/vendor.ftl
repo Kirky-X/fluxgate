@@ -25,4 +25,25 @@ vendor-key-pool-truncated = key pool of vendor { $vendor } exceeds the cap of { 
 vendor-key-pool-fallback-legacy = key pool of vendor { $vendor } is empty (all envs missing); falling back to legacy single-key behavior
 vendor-key-rotated = vendor { $vendor } auth failure ({ $status }); key cursor advanced, the next attempt uses the next key
 vendor-key-pool-shrunk = key pool of vendor { $vendor } shrank from { $before } to { $after } keys ({ $missing } pool envs now missing)
+vendor-key-blacklisted = key blacklisted (permanent error; not auto-recovered)
 vendor-cost-unregistered-model = model not registered in model_catalog; not priced (cost report under-counts by design)
+
+# ---- probe.rs（主动健康检查探针：配置热读告警 + 周期运维日志）----
+vendor-probe-unknown-mode = unknown [health].mode; falling back to off (fail-safe against a probe storm from misconfiguration)
+vendor-probe-unknown-strategy = unknown [health].probe_strategy; falling back to free
+vendor-probe-target-missing = probe target instance missing; skipped
+vendor-probe-task-error = probe task ended abnormally (state unchanged): { $error }
+vendor-probe-cycle-done = health probe cycle finished
+vendor-probe-free-recovered = health probe free succeeded: vendor cooldown cleared (passive recovery)
+vendor-probe-url-build-failed = probe URL construction failed; state unchanged
+vendor-probe-free-non-2xx = free probe returned non-2xx; state unchanged
+vendor-probe-free-failed = free probe failed; state unchanged
+vendor-probe-minimal-recovered = health probe minimal_call succeeded: key cooldown/blacklist cleared (passive recovery)
+vendor-probe-minimal-non-2xx = minimal_call probe returned non-2xx; state unchanged
+vendor-probe-minimal-failed = minimal_call probe failed; state unchanged
+vendor-probe-semaphore-closed = probe semaphore never closes
+
+# ---- manager.rs extra_headers 注入告警 ----
+vendor-extra-header-conflict = extra_headers conflicts with a gateway header; skipped
+vendor-extra-header-name-invalid = extra_headers header name invalid; skipped
+vendor-extra-header-value-invalid = extra_headers header value invalid; skipped

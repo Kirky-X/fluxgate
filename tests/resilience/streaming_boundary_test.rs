@@ -3,9 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 流式失败语义边界（R-streaming-resilience-001/002/003 入口侧）。
-//!
-//! 边界 =「尚未向客户端写出任何字节」：
+//! 流式失败语义边界测试。边界 =「尚未向客户端写出任何字节」：
 //! - 首字节前上游失败（429 / 连接错误 / 5xx）→ 走换路链重派，客户端无感
 //!   （5xx 形态已由 fallback_test::stream_fails_over_before_first_byte 锁定）；
 //! - 首字节后上游断流 → 禁止换路，客户端恰收一个网关错误帧
@@ -320,7 +318,7 @@ async fn spawn_stream_upstream(broken_conns: usize) -> (String, Arc<AtomicUsize>
     .await
 }
 
-/// R-streaming-resilience-001：首跳上游 429（首字节前失败）→ 换路
+///：首跳上游 429（首字节前失败）→ 换路
 /// 第二 vendor 建流，客户端拿到完整正常 SSE，响应不含任何错误帧。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_hop_429_fails_over_stream_before_first_byte() {
@@ -364,7 +362,7 @@ async fn first_hop_429_fails_over_stream_before_first_byte() {
     mock_b.assert_async().await;
 }
 
-/// R-streaming-resilience-001：首跳连接错误（连接拒绝，首字节前）→
+///：首跳连接错误（连接拒绝，首字节前）→
 /// 换路第二 vendor，客户端无感。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_hop_connection_error_fails_over_stream_before_first_byte() {
@@ -400,7 +398,7 @@ async fn first_hop_connection_error_fails_over_stream_before_first_byte() {
     mock_b.assert_async().await;
 }
 
-/// R-streaming-resilience-002：流建立后上游断流 → 客户端恰收
+///：流建立后上游断流 → 客户端恰收
 /// 1 个网关错误帧（data 为 {"error":{type,message}} JSON 信封、无
 /// vendor id/api_base 内部字段）、0 个 [DONE]、已收内容不重放。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -448,7 +446,7 @@ async fn mid_stream_break_single_json_error_frame_no_done_no_replay() {
     );
 }
 
-/// R-streaming-resilience-002：断流触发该 vendor 冷却 —— 后续请求
+///：断流触发该 vendor 冷却 —— 后续请求
 /// 立即可观测 Throttled（不再触达该上游）；冷却 TTL（此处取
 /// circuit_open_timeout_ms=300 短窗）到期后惰性恢复 Available，流量
 /// 重新可达。
@@ -521,7 +519,7 @@ fn error_frame_payload(body: &str) -> &str {
         .unwrap_or_default()
 }
 
-/// R-streaming-resilience-002（转换路径 · Anthropic 出站）：openai 型
+///（转换路径 · Anthropic 出站）：openai 型
 /// 上游断流前先发一帧可映射内容，/v1/messages 的转换流以恰一个网关
 /// 错误帧终止——错误帧后不得补 message_stop 等收尾事件（客户端可分辨
 /// 失败），已收内容不重放，帧内无内部拓扑。
@@ -577,7 +575,7 @@ async fn converted_anthropic_stream_break_single_error_frame_no_trailing_stop() 
     );
 }
 
-/// R-streaming-resilience-002（转换路径 · OpenAI 出站）：anthropic 型
+///（转换路径 · OpenAI 出站）：anthropic 型
 /// 上游断流前先发一帧可映射内容，/v1/chat/completions 的转换流以恰一个
 /// 网关错误帧终止、不补 [DONE]、已收内容不重放。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

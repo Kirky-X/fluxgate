@@ -22,9 +22,7 @@ const STREAM_HEADERS: [(&str, &str); 3] = [
 ];
 
 /// 单请求横切参数束 — 路由解析后一次构造，供派发失败收尾、缓存早退与
-/// 落库路径共用（收敛原 8 段重复收尾的长参数列表）。LinUCB 奖励臂键在
-/// [`log_request`] 内按 body.model 归一（anthropic 无 hints 路由语义），
-/// 不随 ctx 穿线。
+/// 落库路径共用；LinUCB 奖励臂键在 log_request 内归一，不随 ctx 穿线
 struct AnthropicDispatchCtx {
     request_id: String,
     start_time: std::time::Instant,
@@ -372,7 +370,7 @@ async fn chat_passthrough_json(
     // leader / 自愈回源 / 未参与：以最终成功者收尾（computed → X-Cache: MISS）
     let final_route = flow
         .final_route
-        .expect("leader/自愈/未参与路径闭包必产出最终路由");
+        .unwrap_or_else(|| panic!("{}", crate::i18n::t("api-final-route-missing")));
     log_success_dispatch(state, ctx, &final_route.decision, body, &flow.value).await;
 
     // WP8：非流式响应后回补（有 usage 才结算；无 usage 保持预扣）。
@@ -595,7 +593,7 @@ async fn chat_convert_json(
     // leader / 自愈回源 / 未参与：以最终成功者收尾（computed → X-Cache: MISS）
     let final_route = flow
         .final_route
-        .expect("leader/自愈/未参与路径闭包必产出最终路由");
+        .unwrap_or_else(|| panic!("{}", crate::i18n::t("api-final-route-missing")));
     log_success_dispatch(state, ctx, &final_route.decision, body, &flow.value).await;
 
     // WP8：非流式响应后回补（转换路径 usage 恒有，必结算）。
@@ -615,11 +613,8 @@ async fn chat_convert_json(
     ))
 }
 
-/// 路由解析 — Anthropic 入站保持既有无 hints 直连路由
-/// 语义（不接 route_with_hints，仅接入会话亲和与请求级权重）；LinUCB
-/// 请求特征仅 selection="linucb"（热读）且 bandit 接线时计算，默认
-/// weighted 档 None、零开销；x-deadline-ms 头消费与否由
-/// [routing].lps_deadline_gate 热读门控（默认关闭不消费）。
+/// 路由解析 — 无 hints 直连路由（仅接会话亲和与请求级权重）；LinUCB
+/// 特征仅 linucb 档且接线时计算；x-deadline-ms 头由 lps_deadline_gate 门控
 async fn resolve_route(
     state: &Arc<ApiState>,
     model: &str,
@@ -663,10 +658,8 @@ async fn resolve_route(
     Ok(decision)
 }
 
-/// 派发失败收尾单点 — 原实现 8 处（4 路径 ×
-/// resilience 开关）重复的「亲和解除 + 失败落库」收敛于此；换路耗尽与
-/// 单发失败同语义（最终失败解除亲和绑定，避免旧键指向已失败
-/// vendor）。错误经调用方包装后透传。
+/// 派发失败收尾单点：亲和解除 + 失败落库；换路耗尽与单发失败同语义。
+/// 错误经调用方包装后透传
 async fn on_dispatch_failure(
     state: &Arc<ApiState>,
     ctx: &AnthropicDispatchCtx,
@@ -719,13 +712,9 @@ async fn finish_dispatch<T>(
     }
 }
 
-/// 非流式转换路径派发 — resilience 开启时恒走换路 fallback
-/// 循环（execute_request_with_fallback：Throttled 原因追踪 + Retry-After
-/// 提示语义，与透传/流式的 cover_all_paths 门控路径不同源，不得合并）；
-/// 关闭时单发直连。失败收尾经 [`on_dispatch_failure`] 单点执行。
-///
-/// 返回三元组（统一响应，最终决策，WP4 观测头表——开关关闭/特性关闭时
-/// 为空表，调用方无条件叠加）。
+/// 非流式转换路径派发 — resilience 开启时恒走换路 fallback 循环，
+/// 关闭时单发直连；失败收尾经 on_dispatch_failure 单点执行。
+/// 返回（统一响应，最终决策，观测头表）
 #[cfg_attr(not(feature = "resilience"), allow(unused_variables))]
 async fn dispatch_unified_request(
     state: &Arc<ApiState>,
@@ -809,11 +798,8 @@ fn json_response_with_cache_flag(response: Value, participated: bool) -> axum::r
     }
 }
 
-/// 阶段二 / IR chunk 流 → Anthropic 出站 SSE 事件流。
-/// AnthropicStreamEncoder 状态机补齐 message_start/content_block_start/
-/// …_delta/…_stop/message_stop 生命周期，每事件加 `data:` 前缀（评审
-/// blocker：裸 JSON 行不构成 SSE 事件）。错误发带语义的 SSE error 事件后
-/// 提前终止（不补 message_stop，客户端可分辨成败）。
+/// IR chunk 流 → Anthropic 出站 SSE 事件流：AnthropicStreamEncoder 补齐
+/// 生命周期事件并加 `data:` 前缀；错误发 SSE error 事件后提前终止
 fn anthropic_sse_stream(
     chunk_stream: impl futures::Stream<Item = Result<crate::protocol::StreamChunk, GateError>>
         + Send
@@ -905,10 +891,8 @@ async fn log_success_dispatch(
     .await;
 }
 
-/// 异步日志 push — 构造 RequestLog 后 `logger.log()` push
-/// 即返回（try_send 背压，绝不阻塞响应路径）；token 从**响应 usage** 取
-/// （修复旧实现填请求 max_tokens 的语义错误）；status_code 从实际结果取；
-/// 大 payload（>64KB）截断。logger 未接线（None）时跳过落库。
+/// 异步日志 push：try_send 背压绝不阻塞响应路径；token 从响应 usage 取，
+/// status_code 从实际结果取，大 payload（>64KB）截断；logger 未接线时跳过
 #[allow(clippy::too_many_arguments)]
 async fn log_request(
     state: &Arc<ApiState>,

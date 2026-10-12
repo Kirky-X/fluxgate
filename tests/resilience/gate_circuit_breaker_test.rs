@@ -3,22 +3,14 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 熔断器测试— 直接驱动 `limiteron::circuit::CircuitBreaker<GateError>`。
-//!
-//! 手写三态机已删除（HalfOpen 死锁：默认 success_threshold=3 +
-//! half_open_max_calls=1，half_open_calls 从不在探针间清零，首个探针
-//! 成功后 success_count=1<3 恒拒，熔断一次即永久拒绝）。本文件用
-//! limiteron 库版 + 注入假 Clock（`with_clock`，limiteron
-//! src/circuit/types.rs）验证
+//! 熔断器测试— 直接驱动 `limiteron::circuit::CircuitBreaker<GateError>` +
+//! 注入假 Clock（手写三态机已删除：其 HalfOpen 死锁一次熔断即永久拒绝）。
 //! 1. 5 次可重试失败 → Open（failure_threshold=5）
-//! 2. 死锁回归：超时后探针连续成功 3 次 → Closed（手写版此场景永久卡 HalfOpen）
+//! 2. 死锁回归：超时后探针连续成功 3 次 → Closed
 //! 3. 探针失败 → 立即回 Open
-//! 4. GateError 分类器 variant 语义（直判 GateError——G3 泛型收口后无前缀串解码）
-//! 5. 业务错误无损穿透：GateError 即熔断器错误类型，execute 出口变体与
-//!    详情不变（前缀串双向编解码删除后，原 from_limiteron 的有损降级路径不复存在）
-//! 6. from_circuit_call：CB Open 拒绝 → `VendorUnavailable{(circuit open)}` 形态
-//! 7. 错误双轨（error_surface）：Display 恒英文规范串不经 FTL（随 locale
-//!    不变），user_message 走 FTL 随 locale 翻转
+//! 4. GateError 分类器 variant 语义；5. 业务错误无损穿透
+//! 6. from_circuit_call：CB Open 拒绝 → `VendorUnavailable{(circuit open)}`
+//! 7. 错误双轨：Display 恒英文规范串，user_message 走 FTL 随 locale 翻转
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
@@ -165,24 +157,11 @@ async fn threshold_minus_one_failures_stay_closed_and_keep_executing() {
 // ============ slow-call-rate 语义隔离证明 ============
 
 /// limiteron 慢调用参数语义证明（rate_threshold=1.0 下「非全慢」不熔断）：
-/// duration_threshold=100ms 时 1 快（0ms）+ 2 慢（800ms）→ 慢调用率依次
-/// 0/1、1/2、2/3，全程严格 < 1.0 → Closed；同序列在旧默认 rate=0.5
-/// （../limiteron src/constants.rs）下 1/2 = 0.5 即 Open。
-///
-/// 顺序说明（以源码为准，与 plan 假设的差异）：limiteron
-/// check_slow_call_rate（src/circuit/types.rs）是逐调用判定、无
-/// 最小样本数——total=1 时 rate 恒 1.0，故「慢调用先到」的序列第 1 次
-/// 即 Open，混合态无法达成；本测试因此让快调用先到，使慢调用率在
-/// 整个序列保持严格 < 1.0，这正是 rate=1.0 的判定边界。
-///
-/// 证明力边界（如实声明）：本测试证明 limiteron 参数语义；生产接线使用
-/// 修复后参数由 manager.rs #[cfg(test)] 的
-/// slow_ok_calls_do_not_open_production_circuit 证明；两者合一才完整。
-/// 「首调用即 >duration_threshold」的 1/1=1.0 残余触发场景与 plan risk
-/// 声明一致（生产主防线是 duration=60s：LLM 常态成功调用远低于它）。
-///
-/// MockClock 无法放大 execute() 实测时长（limiteron src/circuit/types.rs
-/// 的 elapsed 取真实墙钟），真睡眠 2×800ms 是必要成本。
+/// 1 快（0ms）+ 2 慢（800ms）→ 慢调用率全程严格 < 1.0 → Closed；
+/// 旧默认 rate=0.5 下 1/2 即 Open。check_slow_call_rate 逐调用判定无最小
+/// 样本数（total=1 时 rate 恒 1.0），故让快调用先到保持混合态。
+/// 生产接线参数由 manager.rs 的 slow_ok_calls_do_not_open_production_circuit
+/// 证明（两者合一才完整）；MockClock 无法放大实测时长，真睡眠是必要成本
 #[tokio::test]
 async fn slow_call_rate_threshold_one_requires_all_slow() {
     let clock = Arc::new(limiteron::MockClock::new());

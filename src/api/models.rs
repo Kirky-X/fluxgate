@@ -3,14 +3,9 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! `GET /v1/models` — OpenAI 兼容模型列表（WP3 数据面端点补齐）。
-//!
-//! 模型集合 = 模型目录（`[[model_catalog]]`）∪ 各 vendor 配置模型去重
-//! （仅 enabled vendor 的 enabled 模型；同 id 只出现一次，按 id 排序，
-//! 确定性输出）。走既有 API key 鉴权（认证中间件）与统一错误体系。
-//!
-//! 响应不进入响应缓存：本 handler 不 consult [`ResponseCache`]（模型列表
-//! 始终现算；`X-Cache` 头永不出现）。
+//! `GET /v1/models` — OpenAI 兼容模型列表：模型目录 ∪ 各 vendor 配置
+//! 模型去重（仅 enabled，按 id 排序确定性输出）。走既有鉴权与统一错误
+//! 体系；响应不进缓存（模型列表始终现算）
 
 use crate::error::NexusFlowError;
 use crate::ApiState;

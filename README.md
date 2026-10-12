@@ -92,7 +92,7 @@
 
 - Rust 1.97.1+（MSRV，由 `Cargo.toml` 的 `rust-version` 声明；edition 2021）
 - SQLite：Docker/musl 产物**静态内嵌**（构建需 `sqlite-dev` 提供头与 `libsqlite3.a`），glibc 本地/发布构建动态链接系统库（需 `libsqlite3-dev`）；TLS 为纯 rustls，不依赖 OpenSSL
-- **7 个兄弟库源码需与本项目同级目录**（path 依赖）：`confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit`
+- 自研 7 库经 crates.io registry 集成（`confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit`），由 cargo 自动拉取，无需置于同级目录
 
 ### 🔨 编译运行
 
@@ -407,7 +407,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ### 🛠️ 开发环境
 
-工具链基线：MSRV 下限 **1.97.1**（写在 `Cargo.toml` 的 `rust-version`，与 7 个兄弟库声明对齐；ci.yml 按此下限跑 build/clippy 并保证 clippy lint 集合可复现），`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。7 个兄弟库（confers / dbnexus / inklog / limiteron / oxcache / sdforge / trait-kit）需与本项目同级目录。
+工具链基线：MSRV 下限 **1.97.1**（写在 `Cargo.toml` 的 `rust-version`，与 7 个兄弟库声明对齐；ci.yml 按此下限跑 build/clippy 并保证 clippy lint 集合可复现），`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。
 
 ### 💖 贡献方式
 
@@ -462,7 +462,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ### 🌟 核心依赖（兄弟库）
 
-NexusFlow 通过 Cargo path 依赖集成以下本地源码库（需同级目录，`[patch.crates-io]` 统一身份）：
+NexusFlow 经 crates.io registry 集成以下自研库（版本声明在根 `Cargo.toml`，校验和锁定在 `Cargo.lock`）：
 
 | 库 | 用途 |
 |----|------|

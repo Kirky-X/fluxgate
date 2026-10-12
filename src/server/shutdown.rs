@@ -3,19 +3,11 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 优雅停机编排
-//! 信号与排空走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），组件
-//! 收尾序经 trait-kit `AsyncShutdownCoordinator` 显式化——替代此前手写
-//! 信号 + watch 广播（`ShutdownRx`/`spawn_shutdown_broadcaster` 已删除）
-//! 与 `run()` 尾部隐式 drop inklog manager。
-//!
-//! 收尾序（serve 排空返回后执行）：
-//! 1. `StopRequests` — AsyncLogger 关停并补刷缓冲（停接日志 intake）；
-//! 2. `DrainQueue` — pre-aggregator 停机位 + 最终 flush（聚合落定）；
-//! 3. `CloseConnections` — inklog manager 关闭（日志通道终端）。
-//!
-//! 流式排空语义保持现状（不引入新 permit 语义——排空由 sdforge serve 层
-//! 承担，与旧 axum `with_graceful_shutdown` 同行为）。
+//! 优雅停机编排：信号与排空走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），
+//! 组件收尾序经 trait-kit `AsyncShutdownCoordinator` 显式化。收尾序（serve 排空后执行）：
+//! 1. `StopRequests` — AsyncLogger 关停补刷；
+//! 2. `DrainQueue` — pre-aggregator 停机位 + 最终 flush；
+//! 3. `CloseConnections` — inklog manager 关闭。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -23,8 +15,7 @@ use std::sync::Arc;
 use crate::database::{AsyncLoggerHandle, TokenPreAggregator};
 use crate::i18n::{t, t_args};
 
-/// inklog 关闭钩子（`run()` 注入 manager，真关停；嵌入式未注入时该阶段
-/// no-op）。同步签名即可（关停是短平快本地操作）。
+/// inklog 关闭钩子（`run()` 注入 manager；嵌入式未注入时该阶段 no-op）。
 pub(crate) type InklogShutdownHook = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 /// 终止信号：sdforge 默认触发（SIGTERM/Ctrl-C，首个信号即决）。
@@ -32,15 +23,11 @@ pub(crate) async fn shutdown_signal() {
     sdforge::http::default_shutdown_signal().await;
 }
 
-/// 单钩子执行上限：trait-kit 阶段超时是钩子间软限制，挂起的单个钩子
-/// 不会被阶段超时打断——此处每个钩子体再包一层超时，真正有界。
-/// 超时记 warn 并继续后续阶段，不中断收尾。
+/// 单钩子执行上限（秒）：trait-kit 阶段超时是钩子间软限制，单个挂起的钩子不会被
+/// 阶段超时打断，故每个钩子体再包一层超时，超时记 warn 并继续。
 const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// 构建三阶段收尾协调器（调用方 `shutdown().await` 执行；幂等由
-/// `ServerHandle::shutdown` 的 done 位保证，此处每次新建）。
-/// 注册理论上不失败（仅锁中毒时 Err）；失败记 warn 并继续组装剩余阶段，
-/// 不 panic（生产路径 incident 中 panic 不可接受）。
+/// 构建三阶段收尾协调器（调用方 `shutdown().await` 执行；幂等由 `ServerHandle` 的 done 位保证）。
 pub(crate) fn build_teardown_coordinator(
     logger_handle: &Arc<AsyncLoggerHandle>,
     pre_aggregator: &Arc<TokenPreAggregator>,
@@ -160,8 +147,7 @@ mod tests {
         repo
     }
 
-    /// 真实组件 wiring：三阶段全部执行——logger 关停、聚合落库、
-    /// inklog 钩子触发、停机位赋值。
+    /// 真实组件 wiring：三阶段全部执行——logger 关停、聚合落库、inklog 钩子触发、停机位置位。
     #[tokio::test]
     async fn teardown_runs_all_components_in_order() {
         let repo = memory_repository().await;
@@ -216,8 +202,7 @@ mod tests {
         );
     }
 
-    /// 超时强退路径（serve 排空层）：drain 超时后挂起的请求被强制中止，
-    /// serve 在超时量级内返回（不断 permit 语义——排空仍先尝试自然完成）。
+    /// 超时强退：drain 超时后挂起请求被强制中止，serve 在超时量级内返回。
     #[tokio::test]
     async fn serve_drain_timeout_force_aborts_hanging_requests() {
         use std::time::{Duration, Instant};

@@ -212,12 +212,8 @@ pub struct ChatTool {
     pub function: ChatToolDefinition,
 }
 
-/// 工具函数定义 — `parameters` 为 JSON Schema。
-///
-/// **无损透传**（A3/ M1 闭环，原「有损透传警告」作废）：网关以
-/// `serde_json::Value` 原样直存直出（嵌套 schema/items/anyOf/$ref/缺
-/// `type` 属性全量保真）。注意：网关**不做 schema 校验**——schema 合法
-/// 性与上游模型兼容性由调用方自担（上游 4xx 原样回传）。
+/// 工具函数定义 — `parameters` 为 JSON Schema，Value 原样无损透传；
+/// 网关不做 schema 校验（合法性与上游兼容性由调用方自担）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatToolDefinition {
     pub name: String,
@@ -413,13 +409,9 @@ impl ChatRequest {
         self
     }
 
-    /// 透传 vendor 扩展（顶层键）。
-    ///
-    /// 安全（审查 HIGH）：`key` 不得与 ChatPayload 已序列化的 typed 键
-    /// 冲突——flatten 合并时扩展键会**覆写结构体字段**（如 `model`/
-    /// `messages`/`stream`），即客户端可借扩展键篡改请求骨架。
-    /// [`RESERVED_KEYS`] denylist 与网关侧 OPENAI_KNOWN_KEYS 同源同步
-    /// （两侧任一侧新增 typed 键须同步另一侧）。
+    /// 透传 vendor 扩展（顶层键）：key 不得与已序列化的 typed 键冲突
+    ///（flatten 合并时扩展键会覆写结构体字段）；RESERVED_KEYS 与网关侧
+    /// OPENAI_KNOWN_KEYS 同源，任一侧新增须同步
     pub fn with_vendor_extension(
         mut self,
         key: impl Into<String>,

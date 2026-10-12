@@ -9,10 +9,8 @@ use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-/// OpenAI 协议已显式映射进 IR 的顶层键（其余字段吸收进 vendor_extensions）。
-///
-/// 同时用作出站 merge 的 denylist（F1/M1，known_keys 反用）：协议键永不
-/// 由扩展表补入/覆写——stream 缺位注入、effort 经扩展表物化均被拦截。
+/// OpenAI 协议已显式映射进 IR 的顶层键（其余字段吸收进 vendor_extensions）；
+/// 同时用作出站 merge 的 denylist：协议键永不由扩展表补入/覆写
 const OPENAI_KNOWN_KEYS: &[&str] = &[
     "model",
     "messages",
@@ -498,13 +496,9 @@ impl ProtocolConverter for OpenAIConverter {
                 cache_creation_tokens: _,
                 finish_reason,
             } => {
-                // cache_creation 无 OpenAI 槽。
-                // 跨厂商合成（A4/，D7.13 扩项闭环）：finish_reason 有值
-                // 时（Anthropic 上游 stop_reason 经 映射进 IR Usage 帧）
-                // 写入本帧 choices 终止槽——OpenAI wire 合法形状（usage 帧
-                // 可携带收尾 choices），OpenAI 面客户端自此能拿到跨厂商终止
-                // 原因；None（OpenAI 原生上游，终止先行于 usage 帧）保持
-                // 空 choices 原样透传，零回归。
+                // cache_creation 无 OpenAI 槽；finish_reason 有值时写入本帧
+                // choices 终止槽（OpenAI wire 合法形状，跨厂商终止原因可达客户端）；
+                // None 保持空 choices 原样透传
                 let mut usage = json!({
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
@@ -541,18 +535,10 @@ impl ProtocolConverter for OpenAIConverter {
     }
 }
 
-/// OpenAI 出站流编码器（WP10）：流级一致性归一化。
-///
-/// [`OpenAIConverter::stream_chunk_to_external`] 为无状态单块映射（首块
-/// role 缺失、各块 id/created 发散：id 逐块编号、created 逐块取当前秒、
-/// usage 帧 id/created 与内容帧不一致）。本编码器持有流作用域状态：
-/// - 首块固定流 id（`chatcmpl-{uuid8}`）与 created（首块时刻），后续块
-///   （含 usage 帧）复用——OpenAI chunk 间一致性；
-/// - 首个内容 delta 补 `"role": "assistant"`（OpenAI 首帧规范）；
-/// - finish_reason 原样透传（各源流恰一次的语义由上游保证）。
-///
-/// 用法：handler 侧每流一个实例，对 `stream_chunk_to_external` 的每个
-/// 产出调用 [`Self::normalize`]（心跳等非 chunk 帧原样透传）。
+/// OpenAI 出站流编码器：流级一致性归一化。无状态单块映射会导致各块
+/// id/created 发散、首块缺 role，本编码器持有流作用域状态：
+/// 首块固定流 id 与 created 复用到全流；首个内容 delta 补 "role":
+/// "assistant"；finish_reason 原样透传。每流一个实例
 #[derive(Debug)]
 pub struct OpenAIStreamEncoder {
     stream_id: Option<String>,

@@ -39,10 +39,8 @@ pub struct DatabaseConfig {
     pub path: String,
     #[serde(default = "default_pool_size")]
     pub pool_size: u32,
-    /// 完整数据库 URL（postgres://、mysql://、sqlite://…）。非空时优先于
-    /// `path`（db-backend-selection D2：URL 单一事实源）；空值 = 旧语义，
-    /// `path` 由使用方按 sqlite 文件库回退处理。本 crate 零存储假设，
-    /// 不解析 scheme——后端合法性由连接期（dbnexus/sqlx）判定。
+    /// 完整数据库 URL（postgres://、mysql://、sqlite://…），非空时优先于
+    /// path；空值 = 旧语义，path 按 sqlite 文件库回退
     #[serde(default)]
     pub url: String,
 }
@@ -61,52 +59,34 @@ pub struct VendorConfig {
     pub name: String,
     pub type_: String,
     pub api_key_env: String,
-    /// 多 key 池的显式 env 名列表（N5）。语义对齐 agentstem
-    /// provider_chain.rs：显式列表优先于池 env——与 `api_key_env`
-    /// （向后兼容单 env 名，旧配置逐位可用）合并去重定序，本列表在前。
-    /// 池解析逐名读环境变量得实际 key 串，缺名的 env 跳过并显性告警；
-    /// 池上限截断见 `vendor::key_pool::MAX_KEY_POOL`。
-    /// 本字段只存环境变量名，绝不存 key 原文（admin 面掩码约定）。
+    /// 多 key 池的显式 env 名列表，与 api_key_env 合并去重（本列表在前）；
+    /// 缺名 env 跳过并告警，池上限见 key_pool::MAX_KEY_POOL。
+    /// 只存环境变量名，绝不存 key 原文
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub api_key_envs: Vec<String>,
-    /// 出站自定义头（WP2）：`[[vendors]].extra_headers`（TOML 表
-    /// string→string，静态值、不做模板替换）。请求构造处统一注入；
-    /// 与网关已设置的头（鉴权与协议头）冲突时跳过该项并记 warn。
-    /// ✅ 热生效：出站构造每请求从 fresh_config 现读（实现为准；早期
-    /// 「restart-required」标注不实）。代价权衡（审查 L7 反驳采纳）：每请求
-    /// 逐项解析 HeaderName/HeaderValue（头数量少、字符串短，为换取热生效
-    /// 接受该分配；若未来成为热点，可换版本化快照缓存）。
+    /// 出站自定义头（静态值，热生效）：请求构造处统一注入，
+    /// 与网关已设置的头（鉴权与协议头）冲突时跳过该项并记 warn
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub extra_headers: HashMap<String, String>,
     #[serde(default = "default_api_base")]
     pub api_base: String,
     #[serde(default = "default_vendor_enabled")]
     pub enabled: bool,
-    /// fallback 优先级：数值越小优先级越高（1 = primary）。
-    /// 换路 fallback 由该字段构建 FallbackChain。
+    /// fallback 优先级：数值越小优先级越高（1 = primary）
     #[serde(default = "default_vendor_priority")]
     pub priority: u8,
     #[serde(default = "Vec::new")]
     pub models: Vec<ModelConfig>,
     pub rate_limit: RateLimitConfig,
     pub concurrency: ConcurrencyConfig,
-    /// 出站 HTTP per-attempt 总超时（毫秒）— 从 `send` 发起起算至响应体
-    /// 读完（reqwest 请求级超时语义），不含本地排队等待。
-    /// 此前出站 Client 零超时，可无限等待。
-    /// **0 = 不限时**（逃生阀：u64 零值若被当作 `Duration::from_millis(0)`
-    /// 语义是「立即超时」，故实现必须显式跳过 timeout 包裹）。
+    /// 出站 HTTP 总超时（毫秒），自 send 起算至响应体读完；0 = 不限时
     #[serde(default = "default_vendor_timeout_ms")]
     pub timeout_ms: u64,
-    /// 流式 TTFT（Time-To-First-Token）超时（毫秒）— 包住 `send` 发起至
-    /// 上游响应头返回的段落；首包（头）返回后愿意继续等（Cloudflare
-    /// 口径）。此前流式 send 无超时。
-    /// **0 = 不限时**（逃生阀，同上）。
+    /// 流式 TTFT（Time-To-First-Token）超时（毫秒），包住 send 至上游
+    /// 响应头返回；0 = 不限时
     #[serde(default = "default_stream_ttft_ms")]
     pub stream_ttft_ms: u64,
-    /// 流式 chunk 间 idle 超时（毫秒）— 相邻上游字节块的最大间隔，超时
-    /// 以 `Timeout` 终止流。此前流式无 idle 超时，上游
-    /// 挂起可无限占用并发 permit。
-    /// **0 = 不限时**（逃生阀：防慢生成流被误杀的部署可关闭）。
+    /// 流式 chunk 间 idle 超时（毫秒），超时以 Timeout 终止流；0 = 不限时
     #[serde(default = "default_stream_idle_ms")]
     pub stream_idle_ms: u64,
 }
@@ -162,22 +142,15 @@ pub enum RateLimitConfig {
     #[serde(rename = "interval")]
     Interval {
         hours: u64,
-        /// 滑动窗口开关。**默认 false = FixedWindowLimiter
-        ///（现状，行为逐位一致）**；true = limiteron
-        /// ShardedSlidingWindowLimiter（消除固定窗口翻越点的瞬时 2×
-        /// 配额双花；reset_secs 以窗口全长近似上界，window_end 精度略降
-        /// ——window_factor 仅 is_ending_soon(<300s) 时惩罚，影响可忽略）。
-        /// 明确不用 SlidingWindowLimiter（deprecated 且硬编码系统时钟）。
+        /// 滑动窗口开关：默认 false = 固定窗口；true = 分片滑动窗口
+        ///（消除固定窗口翻越点的瞬时 2× 配额双花）
         #[serde(default)]
         sliding: bool,
     },
     #[serde(rename = "token")]
     Token {
         max_tokens: u64,
-        /// Token 配额窗口时长（小时）。窗口由
-        /// limiteron::limiters::FixedWindowLimiter 惰性重置（旧实现
-        /// should_reset 只匹配 Interval 变体，Token 窗口永不重置）。
-        /// 缺省 24h，兼容旧配置。
+        /// Token 配额窗口时长（小时），缺省 24h
         #[serde(default = "default_token_window_hours")]
         window_hours: Option<u64>,
         /// 滑动窗口开关（语义同 Interval.sliding）。
@@ -194,30 +167,20 @@ fn default_token_window_hours() -> Option<u64> {
 pub struct ConcurrencyConfig {
     #[serde(default = "default_rps")]
     pub requests_per_second: u32,
-    /// 最大并发在途请求数（含流式）。流式 permit 生命周期修复后
-    /// permit 真实持有至流结束，该上限对流式生效。缺省 None = 使用队列
-    /// 容量（100）。
+    /// 最大并发在途请求数（含流式）；缺省 None = 队列容量（100）
     #[serde(default)]
     pub max_concurrent_requests: Option<usize>,
-    /// token 加权并发票据开关。**默认 false = 单票据**
-    ///（行为与现状逐位一致）。开启时并发票据按预估 token 量计费
-    ///（cost = clamp(messages 序列化字节/4 + max_tokens, min, max)，
-    /// agentic 长会话不再与短请求等价占票）；#6 的 in_flight 信号
-    /// 自动变为 token 加权口径（同一计数点、不同加权维度）。注意：
-    /// 本段为 vendor 实例构造期消费（restart-required，与
-    /// max_concurrent_requests 同路径）。票据饥饿（长会话占满预算）
-    /// 是机制内生风险，token_ticket_max 封顶为逃逸阀。
+    /// token 加权并发票据开关：开启时按预估 token 量计费
+    ///（agentic 长会话不再与短请求等价占票）；构造期消费，restart-required
     #[serde(default)]
     pub token_weighted: bool,
-    /// 单请求票据下限（默认 1）。
+    /// 单请求票据下限（默认 1）
     #[serde(default = "default_token_ticket_min")]
     pub token_ticket_min: u64,
-    /// 单请求票据上限（逃逸阀，默认 16384 示例值——超长会话
-    /// 也至多占用该票据量，防预算被单个请求耗尽）。
+    /// 单请求票据上限（逃逸阀，防预算被单个请求耗尽）
     #[serde(default = "default_token_ticket_max")]
     pub token_ticket_max: u64,
-    /// max_tokens 缺省兜底（容量规划前提——请求未声明
-    /// max_tokens 时按该值计费）。默认 4096。
+    /// max_tokens 缺省兜底（请求未声明时按该值计费）
     #[serde(default = "default_token_ticket_default")]
     pub token_ticket_default: u64,
 }
@@ -254,10 +217,7 @@ fn default_strategy() -> String {
     "weighted".into()
 }
 
-/// API key 档位 — 拥塞准入的优先级基准
-///（dedicated/guaranteed/elastic/spot）。serde 严格枚举：未知档位字符串
-/// 使配置加载失败（显式配置错误早暴露；与 load_signal 的运行时单选档
-/// 不同，本值无运行时回退路径语义）。
+/// API key 档位（拥塞准入优先级基准）；serde 严格枚举，未知档位使配置加载失败
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum AuthTier {
     #[serde(rename = "dedicated")]
@@ -272,9 +232,8 @@ pub enum AuthTier {
     Spot,
 }
 
-/// [[auth.keys]] 单条 — key 摘要 → 档位 + 配额。hash 与 api_keys 同
-/// 形态（SHA256 hex，明文不落盘）。未在 keys 声明的 key（含 api_keys
-/// 列表全部）缺省 [`AuthTier::Elastic`]（行为不变）。
+/// [[auth.keys]] 单条：key 摘要（SHA256 hex，明文不落盘）→ 档位 + 配额；
+/// 未在 keys 声明的 key 缺省 [`AuthTier::Elastic`]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct AuthKeyEntry {
     pub hash: String,
@@ -288,15 +247,9 @@ pub struct AuthKeyEntry {
     pub cost_quota_millicents: u64,
 }
 
-/// [auth] 段 — API Key 认证配置。
-///
-/// `api_keys` 存 SHA256 hex 摘要（与 config.toml 注释一致）：
-/// `echo -n "your-api-key" | sha256sum`，认证时对请求 key 现场算摘要做
-/// 常量时间比较，明文密钥不落盘、不进内存。
-///
-/// 可选 `keys` 子表声明 key 档位（拥塞准入的优先级基准）；
-/// 缺省（空 vec）→ 全部 key 视为 elastic 且准入不启用，行为与现状
-/// 逐位一致。热读：认证与准入每请求从热配置现读。
+/// [auth] 段：api_keys 存 SHA256 hex 摘要（认证时对请求 key 现场算摘要
+/// 做常量时间比较，明文密钥不落盘）；keys 子表声明 key 档位，
+/// 缺省全 elastic 且准入不启用。热读：认证与准入每请求现读
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct AuthSection {
     #[serde(default = "default_auth_enabled")]
@@ -314,8 +267,7 @@ fn default_auth_enabled() -> bool {
     true
 }
 
-/// [auth.header] 子段 — 请求头名与前缀（保留段结构；当前中间件
-/// 按 Authorization/Bearer 提取，此处先保真加载防止回写抹段）
+/// [auth.header] 子段：请求头名与前缀（保真加载防回写抹段）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct AuthHeaderSection {
     #[serde(default = "default_auth_header_name")]
@@ -375,10 +327,7 @@ impl Default for CorsSection {
     }
 }
 
-/// [retry] 段 — 出站重试策略。
-///
-/// 热读路径：worker 每请求从 `ConfigManager::read().retry` 现读，
-/// POST /admin/config 全量更新后立即生效（热更新地基）。
+/// [retry] 段：出站重试策略，热读（POST /admin/config 更新后立即生效）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RetrySection {
     /// 单 vendor 内最大重试次数（不含首次调用）
@@ -399,28 +348,21 @@ pub struct RetrySection {
     /// 退避抖动比例（0.0–1.0）
     #[serde(default = "default_retry_jitter")]
     pub jitter: f64,
-    /// 同步惊群展宽比例：Retry-After 与 5xx 固定间隔分支的
-    /// 延迟 = base + U(0, spread_jitter) × base（base 为 Retry-After 值
-    /// 或 1s）。1.0 = 全范围展宽 [base, 2×base)，消除多实例同刻重试；
-    /// 0.0 = 完全恢复旧行为（Retry-After 原样返回、5xx 固定 1s）——回滚阀。
+    /// 同步惊群展宽比例：延迟 = base + U(0, spread_jitter) × base
+    ///（消除多实例同刻重试）；0.0 = 回滚阀（Retry-After 原样、5xx 固定 1s）
     #[serde(default = "default_retry_spread_jitter")]
     pub spread_jitter: f64,
     /// 跨 vendor 总尝试预算（换路 fallback 的 attempts 上限，防
     /// vendor 数 × 重试数爆炸）
     #[serde(default = "default_retry_total_attempts")]
     pub max_total_attempts: u32,
-    /// 单请求重试总时间预算（秒）。**默认 0 = 不限时**
-    ///（现状）；>0 时重试循环与跨 vendor fallback 循环在每次等待前检查
-    /// 「锚点耗时 + 下次延迟」是否超预算，超限返回最后错误（Portkey
-    /// 递减式预算对照——防重试等待把单请求拖到分钟级）。锚点统一
-    /// tokio::time::Instant（std Instant 不随 paused clock 推进）。
+    /// 单请求重试总时间预算（秒）：默认 0 = 不限时；>0 时重试循环每次
+    /// 等待前检查预算，超限返回最后错误
     #[serde(default)]
     pub retry_budget_secs: u64,
-    /// 重试放大守门器（λ_eff/f_c 亚稳态防护）。**默认
-    /// false = 只靠 metrics 计数、行为与现状逐位一致**。开启时在换路
-    /// fallback 入口评估：f > 0.8·f_c（失败率逼近临界失败率）→ 本请求
-    /// max_total_attempts 临时收紧到 1 + tracing::warn（误触发退化为单
-    /// 尝试，fail-safe 方向正确）；r·f > 0.95 → 发散告警（只 warn）。
+    /// 重试放大守门器：开启时失败率逼近临界（f > 0.8·f_c）则本请求
+    /// max_total_attempts 收紧到 1 并告警；r·f > 0.95 发散告警。
+    /// 默认 false 只靠 metrics 计数
     #[serde(default)]
     pub amplification_gate: bool,
 }
@@ -457,19 +399,9 @@ fn default_retry_total_attempts() -> u32 {
     8
 }
 
-/// [routing] 段 — 路由权重系数与选择算法。
-///
-/// 热读路径：`Router` 每次路由从热配置现读（confers::dynamic::DynamicField
-/// update 后 `read()` 立即可见），POST /admin/config 更新本段后**立即生效，
-/// 无需重启**。
-///
-/// 权重公式
-/// `weight = w_model×model.weight + w_queue×queue_factor + w_window×window_factor
-///        + w_latency×latency_factor + w_error×error_factor`，最终权重再经
-/// 温度平滑 `w^(1/T)`（herding 缓解）。
-///
-/// 硬约束：默认值与历史 3D 权重（0.4/0.3/0.3）完全一致，且新维度
-/// （w_latency/w_error）默认 0 —— 线上路由行为不变，显式开启才生效。
+/// [routing] 段：路由权重系数与选择算法，热读（POST /admin/config 立即生效）。
+/// 权重 = 五因子加权和，最终权重经温度平滑 w^(1/T)；默认系数与历史
+/// 3D 权重一致（0.4/0.3/0.3，新维度默认 0），显式开启才生效
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RoutingSection {
     /// 第 1 维：model.weight（配置权重，通常 0.0-2.0）系数
@@ -481,164 +413,91 @@ pub struct RoutingSection {
     /// 第 3 维：window_factor（Token 预算/窗口，[0,1]）系数
     #[serde(default = "default_w_window")]
     pub w_window: f64,
-    /// 第 4 维：EWMA 延迟因子系数。默认 0 = 关闭；开启后
-    /// latency_factor = latency_ref_ms / (latency_ref_ms + vendor_ewma_ms)，
-    /// 有界 (0,1)，快厂商得分高。
+    /// 第 4 维：EWMA 延迟因子系数（latency_ref/(latency_ref+ewma_ms)）。
+    /// 默认 0 = 关闭
     #[serde(default)]
     pub w_latency: f64,
-    /// 第 4 维：EWMA 错误率因子系数。默认 0 = 关闭；开启后
-    /// error_factor = 1 - ewma_error_rate，有界 [0,1]。
+    /// 第 4 维：EWMA 错误率因子系数（1 − ewma_error_rate）。默认 0 = 关闭
     #[serde(default)]
     pub w_error: f64,
-    /// latency_factor 的参考延迟（ms）：vendor EWMA 等于该值时因子 0.5。
-    /// 默认 1000ms，可按全局 P50 延迟热调整。
+    /// latency_factor 参考延迟（ms）：vendor EWMA 等于该值时因子 0.5
     #[serde(default = "default_latency_ref_ms")]
     pub latency_ref_ms: f64,
-    /// 温度平滑指数（herding 缓解）：最终权重 w^(1/T)。
-    /// T=1（默认）不平滑；T>1 压平差距（趋向均匀探索）；T<1 放大差距。
-    /// 必须 > 0，非法值按不平滑处理。
+    /// 温度平滑指数：最终权重 w^(1/T)；T=1（默认）不平滑，T>1 压平，
+    /// T<1 放大。必须 > 0，非法值按不平滑处理
     #[serde(default = "default_temperature")]
     pub temperature: f64,
     /// 选择算法："weighted"（默认轮盘赌）| "power_of_two"（Po2C 实验：
-    /// 均匀采样 2 候选、按 EWMA 延迟择优）| "linucb"（LinUCB
-    /// bandit 档——候选集内按 UCB=⟨x,θ̂⟩+α√(xᵀA⁻¹x) argmax，per
-    /// (abstract_model, vendor_id) 臂，成败 0/1 代理奖励；需 Router 接线
-    /// BanditState 且请求特征可得，未接线/特征缺失时回退 weighted）。默认
-    /// weighted，linucb 不被咨询、无状态更新；Po2C 为实验开关（Astrolabe
-    /// 数字属 vLLM 同模型场景，等熵监控有数据后再评估）。未知值一律按
-    /// "weighted"（默认与回滚同路径）。
+    /// 均匀采样 2 候选按 EWMA 延迟择优）| "linucb"（UCB argmax bandit 档，
+    /// 需接线 BanditState 且特征可得，否则回退 weighted）。未知值按 "weighted"
     #[serde(default = "default_selection")]
     pub selection: String,
-    /// 负载维（queue_factor）输入档位，单选开关
-    /// - `"queue"`（默认）— worker 队列深度（历史行为，线上路径不变）；
-    /// - `"in_flight"` — 在途请求数（并发 permit 占用，含长流，主信号）；
-    /// - `"in_flight_relative"` — 在途相对化 (x−fleet_mean)/max(1,fleet_mean)
-    ///   （production-stack 公式），线性映射到 queue_factor 的 0..100 输入域。
-    ///
-    /// 决策记录：排队深度**不**与在途数叠加为次级加权项——负载维输入是
-    /// 单选（叠加会双计同一请求且系数不可分）；选 in-flight 档时队列深度
-    /// 退出该维。未知值一律按 `"queue"`（默认与回滚同路径）。
+    /// 负载维（queue_factor）输入档位单选："queue"（默认，worker 队列
+    /// 深度）/ "in_flight"（在途数）/ "in_flight_relative"（相对化
+    /// (x−fleet_mean)/max(1,fleet_mean) 映射 0..100）。负载维单选不叠加
+    ///（叠加会双计同一请求）；未知值按 "queue"
     #[serde(default = "default_load_signal")]
     pub load_signal: String,
-    /// Peak-EWMA 时间常数 τ（ms）— α_dyn = 1−exp(−Δt/τ)（Kong
-    /// latency.lua DECAY_TIME=10s 同值）。久未采样 α→1 快速反映恢复，高频
-    /// 采样平滑抗噪。经 VendorManager 落账前热同步到 metrics。0 = 极限
-    /// 「完全采新样本」（无平滑），运维慎用。
+    /// Peak-EWMA 时间常数 τ（ms）：α_dyn = 1−exp(−Δt/τ)；0 = 无平滑（慎用）
     #[serde(default = "default_ewma_tau_ms")]
     pub ewma_tau_ms: u64,
-    /// min+buffer 候选集缓冲（LiteLLM lowest_latency_buffer 语义）—
-    /// 大于 0 时选择先取 ewma_e2e ≤ 最低×(1+buffer) 的候选集、集合内均匀随机
-    ///（防打爆最快者）。**默认 0.0 = 关闭**（轮盘赌/Po2C 与历史逐位一致；
-    /// config_toml_example_test 结构性断言）。
-    ///
-    /// 顺序依赖：延迟道已按 e2e 口径分道：w_latency 调非零应
-    /// 在分道落地之后评估（config.toml 注释同步注明）。
+    /// min+buffer 候选集缓冲：>0 时先取 ewma_e2e ≤ 最低×(1+buffer) 的
+    /// 候选集内均匀随机（防打爆最快者）；默认 0.0 = 关闭
     #[serde(default)]
     pub latency_buffer: f64,
-    /// 请求级权重开关（X-Weight 头，LiteLLM simple_shuffle
-    /// _router_weights 对照）。**默认 false = 头被忽略**（路由行为与现状
-    /// 逐位一致）。开启且请求携带合法 X-Weight（有限正数）时覆盖
-    /// model.weight 参与权重计算；门控在 Router 侧热读判定（本开关
-    /// POST /admin/config 更新后下一请求生效）。
+    /// 请求级权重开关（X-Weight 头）：默认 false 忽略该头；开启且携带
+    /// 合法 X-Weight（有限正数）时覆盖 model.weight。热读，下一请求生效
     #[serde(default)]
     pub allow_request_weight: bool,
-    /// 全冷却 fail-open 安全网。**默认 false = 全候选被剔除
-    /// 时保持 Validation 错误（现状）**。开启时全部候选因 CB Open /
-    /// Throttled 被路由层剔除的情况下，回落「忽略状态但 enabled」的候选
-    /// 集加权选择。现实约束：NexusFlow 无主动健康检查驱动的冷却，全部
-    /// 为真实失败冷却——本开关覆盖的是 CB Open 超时未过窗口 / 限流窗口
-    /// 未重置，语义弱于 LiteLLM 的 health-check 限定；仅建议有兜底容量
-    /// 的部署开启（把已冷却 vendor 重新纳入流量是有意冒险）。
+    /// 全冷却 fail-open 安全网：默认 false 保持 Validation 错误；开启时
+    /// 全候选被 CB/Throttled 剔除则回落「忽略状态但 enabled」候选集。
+    /// 仅建议有兜底容量的部署开启
     #[serde(default)]
     pub fail_open_when_all_cooling: bool,
-    /// Retry-After 提示。**默认 false = 耗尽时原错误冒泡
-    /// （503 语义不变）**。开启且换路 fallback 耗尽时全部排除原因为
-    /// Throttled → 返回 AllVendorsThrottled（429 + Retry-After 头，
-    /// reset 秒数取各 vendor 窗口重置剩余的 min）。首次路由即全
-    /// Throttled 的入口场景（handler 首路由 ? 早退）本轮不覆盖。
+    /// Retry-After 提示：默认 false 原错误冒泡；开启且换路耗尽且全为
+    /// Throttled 时返回 AllVendorsThrottled（429 + Retry-After 头）
     #[serde(default)]
     pub retry_after_hint: bool,
-    /// 会话亲和模式 — `"hard"`（默认，现状：命中即返回，
-    /// 绑定 vendor 在合格集合内时必选）；`"soft"`：命中软化为评分项——
-    /// 命中 vendor 权重 ×(1 + affinity_boost_factor) 后与其余候选照常
-    /// 竞争。未知值一律按 `"hard"`（默认与回滚同路径）。
+    /// 会话亲和模式："hard"（默认，命中即返回）/ "soft"（命中权重
+    /// ×(1+affinity_boost_factor) 参与竞争）；未知值按 "hard"
     #[serde(default = "default_affinity_mode")]
     pub affinity_mode: String,
-    /// soft 模式下命中 vendor 的权重乘子基准 — 权重乘
-    /// (1 + affinity_boost_factor)。默认 1.0（×2 boost）；仅在
-    /// affinity_mode = "soft" 时生效，负值按 0 处理（防负权重）。
-    /// production-stack score = 亲和收益 − β·相对负载的形态以乘子近似
-    ///（β=0 语义修正见调研报告）。热生效：POST /admin/config 下一请求
-    /// 即用新值。
+    /// soft 模式命中权重乘子基准：权重乘 (1 + 值)，默认 1.0；
+    /// 仅 soft 模式生效，负值按 0（防负权重）
     #[serde(default = "default_affinity_boost_factor")]
     pub affinity_boost_factor: f64,
-    /// 亲和键租户隔离。**默认 false = legacy 键
-    /// `affinity:{session_key}`（现状，行为与键格式逐位一致）**。开启时
-    /// 键改为 `affinity:{api_key_hash}:{session_key}`（hash 与响应缓存
-    /// cache_api_key_hash 同源）——实为租户劫持修复（两租户同 session id
-    /// 不再互相劫持），建议上线开启；注意键格式变更换代使存量绑定全部
-    /// 失效（一次性，TTL 1h 内自然过渡）。API 层 bind/rebind/lookup
-    /// 与路由侧 lookup 同源判定。
+    /// 亲和键租户隔离：默认 false = legacy 键；开启时键改为
+    /// affinity:{api_key_hash}:{session_key}（租户劫持修复，建议开启）。
+    /// 注意键格式变更使存量绑定失效（TTL 1h 内自然过渡）
     #[serde(default)]
     pub affinity_tenant_scoped: bool,
-    /// SLA/满意度虚拟队列打分项强度 V（SLARouter 零模型版）。
-    /// **默认 0.0 = 关闭**：惩罚因子不参与权重、虚拟队列 Q 不更新（路由
-    /// 行为与现状逐位一致）。>0 时每候选权重末尾乘惩罚因子
-    /// `1 / (1 + V·Ĉ_m + max(0, Q·(α − ŝ_m)))`，其中 ŝ_m = 1 − EWMA 错误率
-    ///（`vendor_ewma`，无观测数据 = 1.0 冷启动乐观）；Ĉ_m = [pricing] 的
-    /// (input+output)/2 每 1k 单价，缺价候选记「候选集内已知单价的中位数」
-    ///（保守不奖励——记 0 会让无定价 vendor 获得最小惩罚、乘法式下权重
-    /// 最高，与成本感知目的相反），候选集全无定价时成本项整体置中性 0
-    ///（退化为纯 Q 项）。非有限/负值同样视为关闭（>0 门控）。虚拟队列
-    /// 按租户（API key 哈希）分桶，不受 `affinity_tenant_scoped` 约束
-    ///（那只是亲和键格式开关）。
+    /// SLA 虚拟队列打分强度 V：默认 0.0 = 关闭；>0 时权重末尾乘
+    /// 1 / (1 + V·Ĉ + max(0, Q·(α − ŝ)))（Ĉ = [pricing] 每 1k 单价，缺价记
+    /// 候选集中位数；ŝ = 1 − EWMA 错误率）。按租户分桶，非有限/负值视为关闭
     #[serde(default)]
     pub sla_v: f64,
-    /// 价格因子 — model_catalog 单价参与加权路由（**默认开启**）。
-    /// 因子定义：候选模型单价 p = (input_price + output_price) / 2（每
-    /// 1M tokens；cache 档不进因子——随负载变化，基础对是稳定公布口径）；
-    /// 乘性修正 `weight ×= min_p / p`（集合内已登记最低价者因子 1，高价按
-    /// 价格比例衰减）——等价条件下低价候选胜出。中性豁免：目录为空 /
-    /// 候选全部未登记 / 单候选 / 未登记或 0 价候选（因子 1.0，不奖励无
-    /// 定价者）。查找用精确匹配（路由候选是 vendor 配置的精确模型身份；
-    /// 前缀回退属计价域，D7.11 非对称锚）。**关闭时路由行为与现状逐位
-    /// 一致**（开关 off 直接跳过整个因子路径）。热生效：POST /admin/config
-    /// 下一请求即用新值。
+    /// 价格因子（默认开启）：单价 p = (input+output)/2 每 1M tokens，
+    /// 乘性修正 weight ×= min_p / p（低价候选胜出）；未登记 / 0 价候选
+    /// 因子 1.0（中性豁免）。关闭时整体跳过。热生效
     #[serde(default = "default_price_factor_enabled")]
     pub price_factor_enabled: bool,
-    /// 目标服务水平 α（[0,1]）。虚拟队列对偶更新
-    /// `Q ← max(0, Q + α − ŝ_selected)`（决策时更新，SLARouter Eq 4/5 的
-    /// Lyapunov 语义）：α < ŝ（满意度达标）→ Q 衰减归 0；α > ŝ（服务
-    /// 欠账）→ Q 累积推高惩罚。默认 0.95；非有限/越界值钳到 [0,1]
-    ///（NaN 按 0 处理 = Q 恒 0，退化为纯成本项——fail-safe 方向）。
+    /// 目标服务水平 α（[0,1]，默认 0.95）：α > ŝ 欠账累积、α < ŝ 衰减归 0；
+    /// 非有限/越界钳 [0,1]
     #[serde(default = "default_sla_alpha")]
     pub sla_alpha: f64,
-    /// LPS 排队论延迟前瞻的软约束强度 δ。**默认 0.0 = 关闭**
-    /// Ŵ 不参与权重（行为与现状逐位一致）。>0 时权重末尾乘
-    /// `1/(1 + δ·Ŵ/Ŵ_ref)`（乘法软约束——对报告线性 −δ·Ŵ 的有意偏差：
-    /// 线性负项会触发 compute_weight 非正归零保护造成权重归零剔除，
-    /// 见 router.rs lps 注释）。Ŵ_ref = 当次候选集内 Ŵ 中位数（相对
-    /// 归一，零新增配置；全候选发散时中位数=CAP → 因子均匀不扭曲选择）。
-    /// 负值/非有限视为关闭。
+    /// LPS 延迟前瞻软约束强度 δ：默认 0.0 = 关闭；>0 时权重末尾乘
+    /// 1/(1 + δ·Ŵ/Ŵ_ref)（Ŵ_ref = 候选集内 Ŵ 中位数）；负值/非有限视为关闭
     #[serde(default)]
     pub lps_delta: f64,
-    /// LPS 硬约束门控。**默认 false = 不消费 deadline、不做
-    /// 可行集筛选**（行为与现状逐位一致）。开启后请求按 `Ŵ≤deadline`
-    /// 筛可行集（deadline = x-deadline-ms 头，缺省用
-    /// [`Self::default_deadline_ms`]），可行集为空时改选 Ŵ 最小者
-    ///（JITServe 软信号语义）。亲和 hard 命中优先于本筛选（现状语义）。
+    /// LPS 硬约束门控：默认 false 不筛选；开启后按 Ŵ≤deadline 筛可行集
+    ///（deadline = x-deadline-ms 头），空集改选 Ŵ 最小者
     #[serde(default)]
     pub lps_deadline_gate: bool,
-    /// 默认截止（毫秒）——lps_deadline_gate 开启且请求未携带
-    /// x-deadline-ms 头时使用。默认 10000（示例值，按业务 P99/滑动观察
-    /// /admin/metrics 的 ewma_e2e_ms 调整）。
+    /// 默认截止（毫秒）：lps_deadline_gate 开启且请求未带 x-deadline-ms 头时使用
     #[serde(default = "default_deadline_ms")]
     pub default_deadline_ms: f64,
-    /// LinUCB 探索参数 α — `ucb(x,α) = ⟨x,θ̂⟩ + α√(xᵀA⁻¹x)` 的
-    /// 探索半径。**仅 `[routing].selection = "linucb"` 时被咨询**（默认
-    /// selection="weighted"，本参数不参与任何路径——关闭由 selection 档位
-    /// 承担）；0/负值 = 关闭探索（纯贪心 θ̂ argmax），非有限按 0。臂矩阵
-    /// 正则初值 = max(α²,1)·I（构造期定死，α 热更只影响探索半径）。默认 1.0。
+    /// LinUCB 探索参数 α：仅 selection="linucb" 时被咨询；0/负值 = 纯贪心，
+    /// 非有限按 0。臂矩阵正则初值 = max(α²,1)·I。默认 1.0
     #[serde(default = "default_ucb_alpha")]
     pub ucb_alpha: f64,
 }
@@ -781,21 +640,10 @@ impl Default for RetrySection {
     }
 }
 
-/// [cache] 段 — 精确响应缓存。
-///
-/// 存储：oxcache `CacheBackend`（memory 后端），绝不手写 map。键形
-/// `resp:{api_key_sha256}:{vendor_id}:{model_id}:{sha256(canonical_body)}`
-/// （调用方 API key 哈希入键做租户隔离）。仅确定性请求查/写：
-/// `stream==false && tools 为空 && temperature==0 或缺省`。
-///
-/// 热读路径：`ResponseCache` 每次操作从 `ConfigManager::read().cache`
-/// 现读，POST /admin/config 更新后立即生效（无需重启）。
-///
-/// `enabled` 默认 **false**：TTL 内响应陈旧是产品语义，上线由运维显式
-/// 打开（config.toml 注释同步注明）。
-/// [[cache.categories]] 单条 — 按模型前缀的 TTL 类别乘数
-///（(endpoint, model) 划分的零开销近似：缓存键已含 model 维度，前缀
-/// 匹配即可）。无命中的 model 乘数 1.0。
+/// [cache] 段：精确响应缓存（oxcache memory 后端）。键含调用方 key 哈希
+/// 做租户隔离；仅确定性请求查/写（stream=false 且无 tools 且 temperature=0）。
+/// enabled 默认 false（TTL 内响应陈旧是产品语义，运维显式打开）。热读
+/// [[cache.categories]] 单条：按模型前缀的 TTL 类别乘数，无命中乘数 1.0
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct CacheCategory {
     pub model_id_prefix: String,
@@ -810,13 +658,9 @@ pub struct CacheSection {
     /// 响应缓存 TTL（秒），默认 300
     #[serde(default = "default_cache_ttl_secs")]
     pub ttl_secs: u64,
-    /// TTL 负载联动开关。**默认 false = 纯静态 TTL**（与现状
-    /// 逐位一致；类别乘数表独立生效）。开启时实际 TTL =
-    /// `ttl_secs × 类别乘数 × (1 + λ·(β_max−1))`，其中
-    /// λ = min(1, (L_p/L_target)·w_L + (Q/Q_target)·w_Q)。**口径降级
-    /// 声明**：论文 L_p 是延迟分位（P95），本实现以 ewma_e2e_ms 均值
-    /// 替代（不引入分位估计器；高估方向比低估安全——陈旧容忍度随负载
-    /// 放大符合论文意图）。热读：每请求从热配置现读。
+    /// TTL 负载联动开关（默认 false = 纯静态 TTL；类别乘数表独立生效）：
+    /// 开启时 TTL = ttl_secs × 类别乘数 × (1 + λ·(β_max−1))；λ 以
+    /// ewma_e2e_ms 均值替代论文的分位口径（高估方向安全）。热读
     #[serde(default)]
     pub ttl_load_linked: bool,
     /// 延迟项权重（默认 0 = 不参与；与 w_Q 同为 0 时 λ 恒 0、TTL=base）
@@ -839,9 +683,8 @@ pub struct CacheSection {
     /// 类别乘数表（缺省空 = 全部 1.0；与负载联动开关独立生效）
     #[serde(default)]
     pub categories: Vec<CacheCategory>,
-    /// TTL 抖动系数（默认 0 = 关闭，保持现状精确 TTL）。>0 时写入
-    /// TTL 按对称抖动 `ttl×(1±factor)`（与 oxcache `apply_jitter` 同口径），
-    /// 同批键过期不齐峰。热读：每次 store 现读。
+    /// TTL 抖动系数（默认 0 = 关闭）：>0 时写入 TTL 按 ttl×(1±factor)
+    /// 对称抖动，同批键过期错峰
     #[serde(default)]
     pub ttl_jitter: f64,
     /// 空响应负缓存窗口（秒，默认 60）。store() 收到 Null 响应时写
@@ -896,34 +739,18 @@ impl Default for CacheSection {
     }
 }
 
-/// [resilience] 段 — 韧性覆盖面。
-///
-/// 硬约束：必须定义为 Config 结构体的 Section 字段 —— persist_and_swap 以
-/// `toml::to_string_pretty` 全量写回 config.toml（manager.rs 实证），未进
-/// Config 的段会在首次 POST /admin/config 热更时从磁盘消失。
-///
-/// 热读路径：执行路径每请求从 `ConfigManager::read().resilience` 现读，
-/// POST /admin/config 更新后下一次请求即生效。
-/// Default 手写实现：cover_all_paths / failure_rate_gate 缺省 false
-///（结构上锁定默认路径行为不变），阈值参数给可用的非零缺省。
+/// [resilience] 段：韧性覆盖面。硬约束：必须定义为 Config 的 Section
+/// 字段——persist_and_swap 全量写回 config.toml，未进 Config 的段会在
+/// 首次热更时从磁盘消失。热读；Default 手写：开关缺省 false，阈值给非零缺省
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ResilienceSection {
-    /// 熔断/重试/换路覆盖到透传与流式路径。**默认 false**
-    /// 关闭时透传非流式（无 CB）、透传流式、转换流式三条裸路径与历史
-    /// 行为逐位一致（只有转换非流式有换路 fallback，先例）。
-    /// 开启后：
-    /// - 透传非流式由 per-vendor CircuitBreaker 包裹，失败进入换路循环；
-    /// - 两条流式路径 send+响应头校验段由 CB 包裹，首字节（响应头）前
-    ///   失败换 vendor 重派，流中错误仍以 SSE error 事件终止不换路；
-    /// - CB Open 状态会直接拒绝透传/流式请求（触发换路）——运维影响面
-    ///   见 config.toml [resilience] 注释。
+    /// 熔断/重试/换路覆盖到透传与流式路径（默认 false = 三条裸路径
+    /// 无 CB 不换路）。开启后：透传非流式由 per-vendor CB 包裹；流式路径
+    /// 首字节前失败换 vendor 重派，流中错误以 SSE error 终止；CB Open 直接拒绝
     #[serde(default)]
     pub cover_all_paths: bool,
-    /// 失败率软降权开关。**默认 false**——关闭时路由权重
-    /// 与现状逐位一致（窗口计数在 metrics 常开，纯观测）。开启时窗口
-    /// 样本达标且失败率超阈的 vendor 权重 ×`failure_rate_penalty`
-    ///（LiteLLM 数值对照 0.1）：软降权只打折不剔除——路由层 ==Available
-    /// 过滤不动，仅作用于仍 Available 的劣化 vendor。
+    /// 失败率软降权开关（默认 false）：开启时样本达标且失败率超阈的
+    /// vendor 权重 ×failure_rate_penalty；只打折不剔除
     #[serde(default)]
     pub failure_rate_gate: bool,
     /// 触发软降权的最小窗口样本数（total，60s 滑窗）。
@@ -936,17 +763,11 @@ pub struct ResilienceSection {
     /// 软降权乘子（权重 ×penalty）。0.1 = LiteLLM 数值对照。
     #[serde(default = "default_failure_rate_penalty")]
     pub failure_rate_penalty: f64,
-    /// CB Open→HalfOpen 的超时窗口（毫秒）。**默认 30000**：与既有硬编码
-    /// 行为逐位一致。调小加速故障恢复探测、调大避免对持续故障上游的
-    /// 探针风暴；测试经此注入短窗口以替代真实秒级睡眠。
+    /// CB Open→HalfOpen 超时窗口（毫秒），默认 30000；测试可注入短窗口
     #[serde(default = "default_circuit_open_timeout_ms")]
     pub circuit_open_timeout_ms: u64,
-    /// 回退链可观测响应头（WP4）。**默认 false**——关闭时成功响应与现状
-    /// 逐字节一致（零额外分配）；开启时成功响应附
-    /// `x-nexusflow-vendor`（最终命中）、`x-nexusflow-model`、
-    /// `x-nexusflow-attempts`（总尝试次数）、`x-nexusflow-fallbacks`
-    /// （逗号分隔尝试链，含最终命中者；流式在响应头阶段写入）。
-    /// 热更段（执行路径每请求现读）。
+    /// 回退链可观测响应头：默认 false；开启时成功响应附
+    /// x-nexusflow-vendor / model / attempts / fallbacks。热更段
     #[serde(default)]
     pub expose_fallback_headers: bool,
 }
@@ -981,24 +802,12 @@ impl Default for ResilienceSection {
     }
 }
 
-/// [admission] 段 — 拥塞感知优先级准入。
-///
-/// 网关侧并发占用率（Σ in_flight / Σ 上限，复用 #6 的
-/// ConcurrencyLimiter::in_flight）达到 [`Self::congestion_threshold`]
-/// 时，新请求按档位优先级与「当前在途最小档」比较：低于者直接
-/// 429 + Retry-After（不排队）。优先级 = w_tier·(1+α_slo·ℓ*)⁻¹·
-/// (1+α_burst·b)⁻¹·(1+α_debt·d)⁻¹（ℓ* SLO 缺口维度本条无数据源恒 0，
-/// 该项恒 1；b/d 为 per-key burst/debt EWMA）。
-///
-/// 硬约束：必须定义为 Config 结构体的 Section 字段 —— persist_and_swap
-/// 全量写回 config.toml（manager.rs 实证），未进 Config 的段会在首次
-/// POST /admin/config 热更时从磁盘消失。热读：准入每请求现读，
-/// enabled/阈值/系数热更立即生效。
+/// [admission] 段：拥塞感知优先级准入。并发占用率（Σ in_flight / Σ 上限）
+/// 达 congestion_threshold 时，低于「当前在途最小档」优先级的新请求直接
+/// 429 + Retry-After。Section 字段落地防热更抹段；热读
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct AdmissionSection {
-    /// **默认 false = 完全关闭**：准入判定旁路、EWMA 不记账、per-tier
-    /// 在途计数不增减（行为与现状逐位一致；config_toml_example_test
-    /// 结构性断言）。
+    /// 默认 false = 完全关闭（判定旁路、EWMA 不记账、计数不增减）
     #[serde(default)]
     pub enabled: bool,
     /// 拥塞阈值 — Σ in_flight / Σ 并发上限 ≥ 该值视为拥塞。默认 0.9。
@@ -1044,25 +853,10 @@ impl Default for AdmissionSection {
     }
 }
 
-/// [rate_limit] 段 — 入站限流规则。
-///
-/// 缺陷背景：该段此前被 serde 静默丢弃（Config 无此字段），
-/// rate_limit_middleware 一直跑 limiteron Governor 的库内置默认兜底规则，
-/// 配置文件中的限流参数从未生效。
-///
-/// 消费方式（方案 a/b）
-/// - `path = None` 的全局规则 → 转为 limiteron `Rule`（`Matcher::User` +
-///   SlidingWindow）于 Router 构造期注入 Governor；limiteron 决策链为规则级
-///   单例桶（`DecisionChain::check` 无 context 参数），该层不分租户；
-/// - `path = Some(前缀)` 的端点规则 → 中间件侧端点表（limiteron 原语
-///   `ShardedSlidingWindowLimiter` 直接实例化），按 `(rule, 租户)` 分桶
-///   （limiteron Matcher 六变体无 path 维度，端点自筛在中间件完成）。
-///
-/// 热更：**restart-required** —— 本段在 Router 构造期消费（与 [server]/
-/// [cors] 先例一致），POST /admin/config 更新不热生效；热下发列为二期。
-///
-/// `rules` 为空（缺省）= limiteron Governor 内置默认兜底 + 无端点表，
-/// 行为与历史版本逐位一致。
+/// [rate_limit] 段：入站限流规则。path=None 的全局规则注入 limiteron
+/// Governor（规则级单例桶）；path=Some(前缀) 的端点规则在中间件侧按
+/// (rule, 租户) 分桶。restart-required（Router 构造期消费）；
+/// rules 为空（缺省）= limiteron 内置默认兜底
 #[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 pub struct RateLimitSection {
     #[serde(default)]
@@ -1078,9 +872,8 @@ pub struct RateLimitRule {
     /// 缺省 = 全局规则（注入 limiteron Governor）
     #[serde(default)]
     pub path: Option<String>,
-    /// 按租户（调用方 API key 的 SHA256 摘要）分桶。默认 true。
-    /// 无 key 的请求统一归入单一 `anonymous` 租户（沿用
-    /// response_cache::cache_api_key_hash 先例）——此时退化为单一全局桶。
+    /// 按租户（API key SHA256 摘要）分桶，默认 true；无 key 请求归入
+    /// 单一 `anonymous` 租户（此时退化为单一全局桶）
     #[serde(default = "default_rate_limit_per_tenant")]
     pub per_tenant: bool,
     /// 滑动窗口时长（秒）
@@ -1145,11 +938,9 @@ pub struct Config {
     /// 价格表 — 用于成本计算。默认空 vec，未配置时 CostCalculator 全部返回 0.0
     #[serde(default)]
     pub pricing: Vec<PricingConfig>,
-    /// [[model_catalog]] 段 — per-model 能力/定价目录（N6，字段对齐
-    /// agentstem ModelEntry）。缺省空 vec（未登记模型走 per-flavor 保守
-    /// 默认，见 model_catalog::flavor_default_capabilities）；定价单位为
-    /// 「每 1M tokens」（对齐 estimate_usage_cost 口径，计价消费）。
-    /// 登记条目 context_window 必须 > 0 且 model_id 去重（validate_config）。
+    /// [[model_catalog]] 段：per-model 能力/定价目录。缺省空 vec（未登记
+    /// 模型走 per-flavor 保守默认）；定价单位每 1M tokens；context_window
+    /// 必须 > 0 且 model_id 去重（validate_config）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_catalog: Vec<ModelCatalogEntry>,
     /// [auth] 段 — API Key 认证（摘要存储）。None = 配置中无该段，认证禁用
@@ -1197,9 +988,8 @@ pub struct Config {
     pub docs: DocsSection,
 }
 
-/// [docs] 段 — OpenAPI 文档面开关（absorb-sibling-libs G11）。
-/// `enabled = false`（默认）时 /api-docs 与 Swagger UI 路由不存在（404）；
-/// 运维显式打开后可达（静态文档面，免认证免限流——开关本身即访问门）。
+/// [docs] 段：OpenAPI 文档面开关。默认 false 时 /api-docs 与 Swagger UI
+/// 不存在（404）；开启后可达（免认证免限流——开关本身即访问门）
 #[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 pub struct DocsSection {
     /// OpenAPI JSON + Swagger UI 是否挂载（默认 false）。
@@ -1207,17 +997,13 @@ pub struct DocsSection {
     pub enabled: bool,
 }
 
-/// [health] 段 — 主动健康检查探针（WP7）。
-///
-/// - `mode`: `off`（默认，零后台任务） | `suspect_only`（仅探测冷却/
-///   黑名单/不可用态对象） | `all`（全量周期探测）。未知值按 `off`
-///   处理并 warn（fail-safe，防误配探针风暴）。
-/// - `interval_secs`: 探测周期（默认 300）。
-/// - `timeout_ms`: 单次探测超时（默认 5000；0 = 不限时不推荐）。
-/// - `probe_strategy`: `free`（默认，零成本 GET 上游模型列表端点；
-///   成功仅清除 vendor 级冷却） | `minimal_call`（max_tokens=1 计费请求
-///   验证 key；成功额外清除该 key 黑名单/冷却与其名下模型级熔断计数）。
-///   未知值按 `free` 处理并 warn。
+/// [health] 段：主动健康检查探针。
+/// - mode: off（默认，零后台任务）| suspect_only（仅探测冷却/黑名单/
+///   不可用态）| all（全量周期探测）；未知值按 off 并 warn
+/// - interval_secs: 探测周期（默认 300）；timeout_ms: 单次探测超时（默认 5000）
+/// - probe_strategy: free（默认，GET 上游模型列表，成功仅清 vendor 级冷却）|
+///   minimal_call（max_tokens=1 计费验证，成功额外清 key 黑名单与模型级熔断）；
+///   未知值按 free 并 warn
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct HealthSection {
     #[serde(default = "default_health_mode")]
@@ -1257,18 +1043,10 @@ impl Default for HealthSection {
     }
 }
 
-/// [quota] 段 — 成本与 token 维度配额（WP8 预扣-回补）。
-///
-/// - `enabled`: 默认 false（零判限）；与 [rate_limit]/[admission] 独立叠加；
-/// - `window_secs`: 固定窗口（默认 3600；0 非法，`validate_config` 拒绝）；
-/// - `est_chars_per_token`: 预扣输入估算常数（默认 4，与 count_tokens 同口径）。
-///
-/// 配额余量的响应头暴露（X-RateLimit-* 形态）是 quota-cost spec 的明文
-/// Out of Scope（审查 M7 按规格纪律移除，不留配置位）。
-///
-/// per-key 限额放 `[[auth.keys]]`（`token_quota`/`cost_quota_millicents`，
-/// 0 = 不限）。窗口账本为进程内存（与 limiteron 内存原语同语义：单实例、
-/// 重启清零）。
+/// [quota] 段：成本与 token 维度配额（预扣-回补）。enabled 默认 false
+///（零判限）；window_secs 固定窗口（默认 3600，0 非法）；est_chars_per_token
+/// 输入估算常数（默认 4）。per-key 限额放 [[auth.keys]]（0 = 不限）；
+/// 窗口账本为进程内存（单实例、重启清零）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct QuotaSection {
     #[serde(default)]

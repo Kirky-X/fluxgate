@@ -40,12 +40,21 @@ protocol-anthropic-error = Anthropic error: { $type } - { $message }
 protocol-openai-error = OpenAI error: { $type } - { $message }
 protocol-passthrough-stream-interrupted = upstream passthrough stream interrupted
 protocol-stream-error-frame = Upstream stream interrupted; the stream was terminated after partial output.
+protocol-tool-buffer-malformed = dropped malformed tool buffer: both id and name are empty
 
 # ---- router/router.rs ----
 router-model-not-found = Model { $model } not found
 router-vendor-unavailable = Vendor { $vendor } unavailable or not configured
 router-fail-open-engaged = all candidates cooling; fail-open fallback engaged
 router-global-fail-open-engaged = all global candidates cooling; fail-open fallback engaged
+router-explain-not-in-catalog = Vendor { $vendor } does not provide model '{ $model }'
+router-explain-throttled = Rate-limit window exhausted (window has no budget)
+router-explain-cooling-down = Vendor status { $status } (not Available)
+router-explain-key-pool-exhausted = Key pool exhausted (all { $n }/{ $n } keys are blacklisted: { $prints })
+router-explain-affinity-bound-elsewhere = Session affinity bound to '{ $bound }' (hard mode is exclusive)
+router-explain-queue-over-limit = Queue depth { $queue_len } ≥ saturation point { $saturation }
+router-explain-weight-zero = Composite weight is 0 (production roulette may still pick uniformly when all weights are zero; diagnostic only)
+router-explain-eligible = Eligible candidate (selection={ $selection })
 
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = Missing API key

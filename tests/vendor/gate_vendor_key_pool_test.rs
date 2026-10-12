@@ -427,7 +427,7 @@ async fn hot_update_swaps_key_pool_for_next_request() {
     mock_second.assert_async().await;
 }
 
-/// WP6 三态集成 —— 永久错误黑名单：KEY_FIRST 首请求 401 后该 key 不再
+/// 三态集成 —— 永久错误黑名单：KEY_FIRST 首请求 401 后该 key 不再
 /// 被选中（后续 3 请求恒走 KEY_SECOND，不随时间恢复）；池内其余 key
 /// 继续服务；管理面 reset 后 KEY_FIRST 恢复可选。
 ///
@@ -495,7 +495,7 @@ async fn permanent_error_blacklists_key_until_reset() {
     mock_a_recovered.assert_async().await;
 }
 
-/// WP6 回归 —— 429 瞬时：同 key 复用（无轮换、无黑名单），行为与现状一致。
+/// 回归 —— 429 瞬时：同 key 复用（无轮换、无黑名单），行为与现状一致。
 #[tokio::test]
 async fn rate_limited_reuses_same_key_without_blacklist() {
     const ENV_A: &str = "NEXUSFLOW_KP_RL_A";

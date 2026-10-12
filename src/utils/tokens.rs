@@ -3,19 +3,12 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 近似 token 估算（WP3 `POST /v1/messages/count_tokens` 与 WP8 quota
-//! 预扣共用，同一口径）。
+//! 近似 token 估算（`POST /v1/messages/count_tokens` 与配额预扣共用同一口径）。
 //!
-//! 口径声明（近似，非精确分词）：
-//! - 英文文本 ≈ 字符数/4（`CHARS_PER_TOKEN`），向上取整；中文/多模态
-//!   偏差大（约 1.5-3×），属保守低估方向——配额预扣侧以回补找平，
-//!   此处如实声明不做精度承诺；
-//! - 每消息 + `MESSAGE_STRUCT_OVERHEAD`（role 等帧开销近似）；
-//! - 内容块数组每块 + `BLOCK_STRUCT_OVERHEAD`；
-//! - `tools` 按 schema 序列化字符数/4 计入（JSON 标点一并计入，近似）；
-//! - `model` 字段名开销忽略不计。
-//!
-//! 确定性：同输入同输出（count_tokens 两次调用结果一致）。
+//! 口径（近似，非精确分词）：英文 ≈ 字符数/4 向上取整，中文/多模态偏差大
+//! （属保守低估方向，配额预扣侧以回补找平）；每消息 + `MESSAGE_STRUCT_OVERHEAD`
+//! （role 等帧开销），内容块每块 + `BLOCK_STRUCT_OVERHEAD`。
+//! 确定性：同输入同输出。
 
 use serde_json::Value;
 
@@ -39,14 +32,13 @@ pub fn estimate_text_tokens_with(text: &str, chars_per_token: u64) -> u64 {
     (text.chars().count() as u64).div_ceil(chars_per_token.max(1))
 }
 
-/// 消息 `content` 字段的近似 token 数：string 直接估算；数组逐块拼接
-/// （取各块 `text` 字段，无 text 块按序列化字符计入）；其他形态按
-/// 序列化字符计入。调用方叠加消息级开销。
+/// 消息 `content` 字段的近似 token 数：string 直接估算；数组逐块拼接，
+/// 无 text 块按序列化字符计入。调用方叠加消息级开销。
 pub fn estimate_content_tokens(content: &Value) -> u64 {
     estimate_content_tokens_with(content, CHARS_PER_TOKEN)
 }
 
-/// [`estimate_content_tokens`] 的参数化口径（WP8 配额预扣用配置值）。
+/// [`estimate_content_tokens`] 的参数化口径（配额预扣用配置值）。
 pub fn estimate_content_tokens_with(content: &Value, chars_per_token: u64) -> u64 {
     match content {
         Value::String(s) => estimate_text_tokens_with(s, chars_per_token),
@@ -71,14 +63,13 @@ pub fn estimate_content_tokens_with(content: &Value, chars_per_token: u64) -> u6
     }
 }
 
-/// 请求体级输入 token 估算：`messages` 逐条（内容 + 8 开销）＋ `system`
-///（string 或内容块数组）＋ `tools`（schema 序列化字符数/4）。
-/// 缺失字段按 0 计（字段存在性校验由调用方负责）。
+/// 请求体级输入 token 估算：`messages` 逐条（内容 + `MESSAGE_STRUCT_OVERHEAD`）
+/// ＋ `system` ＋ `tools`（schema 序列化字符数/4）。缺失字段按 0 计。
 pub fn estimate_messages_tokens(body: &Value) -> u64 {
     estimate_messages_tokens_with(body, CHARS_PER_TOKEN)
 }
 
-/// [`estimate_messages_tokens`] 的参数化口径（WP8 配额预扣用配置值）。
+/// [`estimate_messages_tokens`] 的参数化口径（配额预扣用配置值）。
 pub fn estimate_messages_tokens_with(body: &Value, chars_per_token: u64) -> u64 {
     let mut total = 0u64;
 

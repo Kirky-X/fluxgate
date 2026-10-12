@@ -30,7 +30,7 @@
 | 项目 | 要求 | 说明 |
 |:-----|:-----|:-----|
 | Rust | 1.97.1+（MSRV） | 下限由根 `Cargo.toml` 的 `rust-version` 声明（与 7 个兄弟库一致）；`.github/workflows/ci.yml` 按 MSRV（`RUST_VERSION: '1.97'`）跑 build/clippy，`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99） |
-| 兄弟库 | 7 个，须与本项目同级目录 | `confers` / `dbnexus` / `inklog` / `limiteron` / `oxcache` / `sdforge` / `trait-kit`（均为 path 依赖并经 `[patch.crates-io]` 重定向，见根 `Cargo.toml`） |
+| 自研库 | 7 个，由 cargo 自动拉取 | `confers` / `dbnexus` / `inklog` / `limiteron` / `oxcache` / `sdforge` / `trait-kit`（crates.io registry 版本声明在根 `Cargo.toml`，校验和锁定在 `Cargo.lock`；无需同级目录） |
 | 上游密钥 | 按厂商注入环境变量 | 各 `[[vendors]]` 条目的 `api_key_env` 指定的环境变量（如 `OPENAI_API_KEY`） |
 
 ### 编译与启动
@@ -518,7 +518,7 @@ flowchart TB
 
 ### 文件监听热重载
 
-除 `POST /admin/config` 外，网关启动时若配置来自文件，会旁挂文件监听（去抖 500ms，监听父目录以兼容原子 rename 写盘）：
+除 `POST /admin/config` 外，网关启动时若配置来自文件，会旁挂文件监听（去抖 500ms，按配置文件路径监听——库内部改挂父目录 + 精确路径过滤，兼容原子 rename 写盘；同目录其他文件与子目录的写盘不触发重载）：
 
 - **热生效段**：`retry` / `routing` / `cache` / `resilience` / `admission` / `auth` / `pricing` / `model_catalog`——文件改动后下一请求即用新值（只切内存，不落盘；与 admin 写盘内容一致时跳过，不成环）。
 - **结构变更拒绝**：`vendors`（实例拓扑）、`server`、`database`、`grpc`、`cors`、`rate_limit`、`docs` 改动触发 `ReloadRejected`——旧快照继续服务，失败计数 + 日志留痕，改后须重启。

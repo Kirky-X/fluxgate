@@ -193,12 +193,9 @@ mod rate_limiter {
 }
 
 mod manager {
-    //! `VendorManager` 集成测试 — 覆盖状态方法（无 IO）和 HTTP 请求方法（mockito mock）。
-    //!
-    //! 测试设计原则（规则9）：
-    //! - 状态测试断言具体状态值、计数、字段值，而非"调用未 panic"
-    //! - HTTP 测试断言响应 JSON 内容、错误类型字段、副作用（token 消耗）
-    //! - 包含端到端集成场景（execute_request 经 worker 执行完整 HTTP 流程）
+    //! `VendorManager` 集成测试 — 覆盖状态方法（无 IO）和 HTTP 请求方法
+    //! （mockito mock），以及端到端集成场景（execute_request 经 worker
+    //! 执行完整 HTTP 流程）。
 
     use crate::common;
     use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
@@ -208,9 +205,8 @@ mod manager {
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// 构造测试 vendor config：type_/enabled/rate_limit 为参数化差异字段，
-    /// 其余走共享基座；rps=100 让 TokenBucket 立即放行，避免 acquire 阻塞
-    /// （本文件语义，显式覆盖基座 1000）
+    /// 构造测试 vendor config：type_/enabled/rate_limit 等差异字段参数化传入，
+    /// 其余走共享基座；rps=100 让 TokenBucket 立即放行（显式覆盖基座 1000）。
     fn make_vendor(
         id: &str,
         type_: &str,
@@ -563,7 +559,7 @@ mod manager {
         mock.assert_async().await;
     }
 
-    /// WP2 集成：`extra_headers` 随出站请求注入（mockito 按头匹配断言）；
+    /// `extra_headers` 随出站请求注入（mockito 按头匹配断言）；
     /// 与网关鉴权头冲突的配置项被跳过（出站仍为网关值）。
     #[tokio::test]
     async fn test_execute_passthrough_request_injects_extra_headers() {
@@ -871,9 +867,9 @@ mod manager {
         mock.assert_async().await;
     }
 
-    /// 用例③（tests）：流式 permit 生命周期 —— 并发 3 个流请求对
-    /// max_concurrent_requests=2 的 vendor，第 3 个在前两个流结束前不得进入。
-    /// permit move 进返回的 Stream（unfold 持有），流丢弃后才释放。
+    /// 流式 permit 生命周期：并发 3 个流请求对 max_concurrent_requests=2 的
+    /// vendor，第 3 个在前两个流结束前不得进入；permit move 进返回的
+    /// Stream（unfold 持有），流丢弃后才释放。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_stream_permit_limits_concurrent_streams() {
         let mut server = mockito::Server::new_async().await;
@@ -950,10 +946,8 @@ mod manager {
         mock.assert_async().await;
     }
 
-    /// 用例④（tests）：worker 顺序对调回归 —— 空闲 2s 后 rps=1 的
-    /// vendor 仍能立即提供服务，且 3 个顺序请求因桶速 1/s 各等 ~1s。
-    /// 旧实现（先 acquire 后 recv）空闲期以 10 tok/s 空烧令牌，3 个请求
-    /// 会立即通过（elapsed 接近 0）——本用例锁定新顺序下不被空烧。
+    /// worker 顺序回归：空闲后 rps=1 的 vendor 仍能立即提供服务，且 3 个
+    /// 顺序请求因桶速 1/s 各等 ~1s——空闲期不得空烧令牌。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_worker_does_not_burn_rps_tokens_while_idle() {
         let mut server = mockito::Server::new_async().await;
@@ -979,10 +973,8 @@ mod manager {
         let manager = Arc::new(VendorManager::new(cm));
         manager.initialize().await.expect("init should succeed");
 
-        // 空闲 10s：桶容量 100（=queue_size），旧顺序（先 acquire 后 recv）
-        // 以 10 tok/s 空烧，恰好烧光 100 个 → 此后第一个请求必须等回填 ≥1s；
-        // 新顺序（先 recv 后 acquire）空闲期零消耗，桶保持满 → 请求立即通过。
-        // 容量 100 下这是新旧行为可区分的最短窗口。
+        // 空闲 10s：桶容量 100（=queue_size）。空闲期零消耗，桶保持满 →
+        // 请求立即通过（空烧会耗尽令牌并强制等待回填）。
         tokio::time::sleep(Duration::from_secs(10)).await;
 
         // 3 个顺序请求：新顺序下桶满，全部立即通过

@@ -3,19 +3,15 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 存储边界缝（design.md D3）：请求日志与 Token 用量的存储契约。
-//!
-//! 契约类型与两 trait 同居于此，路由半边零数据库依赖——dbnexus/sea-orm
-//! 实现全部在 nexusflow 的 database 模块，经 trait 对象注入 ApiState。
-//! 管道前沿（异步日志 channel、预聚合器）与存储后端（Repository）实现
-//! 同一 trait：查询方法带「不支持」默认实现，写半边由各自真实承担——
-//! admin 读恒经存储后端实现，管道前沿不被虚构查询能力。
+//! 存储边界缝：请求日志与 Token 用量的存储契约；契约类型与两 trait 同居于此，
+//! 路由半边零数据库依赖（dbnexus/sea-orm 实现全在 database 模块经 trait 注入）。
+//! 管道前沿与存储后端实现同一 trait：查询方法带「不支持」默认实现，写半边各自承担——
+//! admin 读恒经存储后端，管道前沿不被虚构查询能力。
 
 use crate::error::GateError;
 use serde::{Deserialize, Serialize};
 
-/// 请求日志行：数据面写入与 admin 查询的共用契约（原 nexusflow
-/// database::RequestLog 随 N2 上收本模块，字段逐位保持）。
+/// 请求日志行：数据面写入与 admin 查询的共用契约。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestLog {
     pub id: Option<i64>,
@@ -48,16 +44,15 @@ pub struct LogFilter {
     pub limit: u32,
 }
 
-/// Token 用量按 (vendor, model, api_key_hash, date, hour) 预聚合行（V2）。
-/// V1 字段保留（`prompt_tokens`=`input_tokens`、`completion_tokens`=
-/// `output_tokens`、`total_tokens`=四类之和、`cost_usd_sum`=四项成本之和，
-/// `/admin/stats/tokens` 形状兼容），新增分账维度与四类明细。
+/// Token 用量按 (vendor, model, api_key_hash, date, hour) 预聚合行。
+/// `prompt_tokens`=`input_tokens`、`completion_tokens`=`output_tokens`、
+/// `total_tokens`=四类之和、`cost_usd_sum`=四项成本之和（V1 形状兼容）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsageRow {
     pub id: Option<i64>,
     pub vendor: String,
     pub model: String,
-    /// 请求方 API key 的 SHA-256 摘要（V1 历史行回填空串，不归属到 key）。
+    /// 请求方 API key 的 SHA-256 摘要（历史行回填空串，不归属到 key）。
     pub api_key_hash: String,
     pub date: String,
     pub hour: i32,
@@ -93,8 +88,8 @@ pub struct CostUsageRow {
     pub total_cost: f64,
 }
 
-/// 分账写入项（WP9）：调用方（API 层）透传请求方 key 摘要与四类用量及
-/// 分项成本（`model_catalog` 四档单价），聚合与 flush 由实现承担。
+/// 分账写入项：调用方透传请求方 key 摘要与四类用量及分项成本
+///（`model_catalog` 四档单价），聚合与 flush 由实现承担。
 #[derive(Debug, Clone)]
 pub struct KeyedUsage {
     pub vendor: String,
@@ -113,9 +108,8 @@ pub struct KeyedUsage {
 /// 请求日志存储缝：数据面写入（管道前沿 push 或存储后端直写）+ admin 查询。
 #[async_trait::async_trait]
 pub trait RequestLogSink: Send + Sync {
-    /// 写入一条请求日志。管道实现 = channel push 即返回（满载丢弃并计数，
-    /// 不阻塞响应）；存储后端实现 = 直接落库。错误由调用方记日志后吞掉
-    ///（日志失败不失败请求）。
+    /// 写入一条请求日志：管道实现 = channel push 即返回（满载丢弃并计数，不阻塞响应）；
+    /// 存储后端 = 直接落库。错误由调用方记日志后吞掉（日志失败不失败请求）。
     async fn log(&self, log: RequestLog) -> Result<(), GateError>;
 
     /// 背压丢弃计数：channel 满被丢的日志条数。直写实现恒 0（默认）。
@@ -123,20 +117,18 @@ pub trait RequestLogSink: Send + Sync {
         0
     }
 
-    /// secret gate fail-closed 拒发计数：出站密钥扫描拒发而丢弃的日志
-    /// 条数。直写实现恒 0（默认）。
+    /// secret gate fail-closed 拒发计数：出站密钥扫描拒发而丢弃的日志条数；直写实现恒 0。
     fn secret_scan_dropped(&self) -> u64 {
         0
     }
 
-    /// 关停写入前沿（幂等）：管道实现补最终落盘后退出；直写实现默认
-    /// 无操作。生产停机的最终 flush 由装配层经具体句柄承担，不依赖此方法。
+    /// 关停写入前沿（幂等）：管道实现补最终落盘后退出，直写实现默认无操作；
+    /// 生产停机的最终 flush 由装配层经具体句柄承担。
     async fn shutdown(&self) -> Result<(), GateError> {
         Ok(())
     }
 
-    /// admin 读：按过滤查日志。管道前沿默认不支持——admin 恒经存储后端
-    /// 实现调用。
+    /// admin 读：按过滤查日志；管道前沿默认不支持（admin 恒经存储后端调用）。
     async fn query_logs(&self, _filter: &LogFilter) -> Result<Vec<RequestLog>, GateError> {
         Err(unsupported_query())
     }
@@ -150,12 +142,10 @@ pub trait RequestLogSink: Send + Sync {
 /// Token 用量存储缝：数据面预聚合写入 + admin 统计查询。
 #[async_trait::async_trait]
 pub trait UsageSink: Send + Sync {
-    /// 记录分账用量（记录即返回，聚合与 flush 由实现承担）。
-    /// 错误上抛由调用方记 warn 后吞掉（记账失败不失败请求）。
+    /// 记录分账用量（即返回，聚合与 flush 由实现承担）；错误由调用方记 warn 后吞掉。
     async fn record_keyed(&self, usage: &KeyedUsage) -> Result<(), GateError>;
 
-    /// 把缓冲中的聚合行显式落库（幂等；测试与运维的确定性落盘点）。
-    /// 直写实现默认无操作。
+    /// 把缓冲中的聚合行显式落库（幂等；测试与运维的确定性落盘点）；直写实现默认 no-op。
     async fn flush(&self) -> Result<(), GateError> {
         Ok(())
     }
@@ -168,7 +158,7 @@ pub trait UsageSink: Send + Sync {
         Err(unsupported_usage_query())
     }
 
-    /// admin 读：成本分账聚合（WP9）。管道前沿默认不支持。
+    /// admin 读：成本分账聚合；管道前沿默认不支持。
     async fn query_cost_usage(
         &self,
         _from: Option<&str>,
@@ -230,8 +220,7 @@ mod tests {
         }
     }
 
-    /// 聚合原始 usage 的写前沿 mock（模拟预聚合器语义：按 (vendor, model)
-    /// 累加，含错误注入）
+    /// 聚合原始 usage 的写前沿 mock（模拟预聚合器语义，含错误注入）
     #[derive(Default)]
     struct MockUsageSink {
         tokens: Mutex<Vec<KeyedUsage>>,
@@ -348,8 +337,7 @@ mod tests {
         assert!(sink.get_token_stats(None).await.is_err());
     }
 
-    /// 契约类型 serde 往返：admin 端点按 JSON 序列化这些行，字段漂移在
-    /// 编译/测试期即暴露
+    /// 契约类型 serde 往返：admin 端点按 JSON 序列化这些行，字段漂移即暴露
     #[test]
     fn storage_contracts_serde_roundtrip() {
         let log = sample_log("serde");

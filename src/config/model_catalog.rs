@@ -3,32 +3,15 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! per-model 能力/定价目录（N6）——`[[model_catalog]]` 段的类型与
-//! 查询纯函数。
-//!
-//! 字段对齐 agentstem `crates/providers/src/model_catalog.rs` 的
-//! `ModelEntry`（实现不复用旧代码；agentstem 侧静态内置表 + 前缀匹配的
-//! 查询形态不迁——本目录由配置面/admin CRUD 显式登记）。
-//!
-//! **定价单位口径（计价消费的契约）** 四个价格字段均为
-//! 「currency 计价，**每 1M tokens**」——对齐 agentstem
-//! `model_catalog.rs estimate_usage_cost` 的
-//! `per_million(tokens, price) = (tokens / 1_000_000) * price` 公式。
-//! 缓存档：无独立计价的档位填 0（OpenAI 平台不单独计费 cache write；
-//! Anthropic cache read ≈ 0.1×输入价、cache write(5m) ≈ 1.25×输入价）。
-//!
-//! **落位裁决**：独立 `[[model_catalog]]` 全局段（按 model_id 键）而非
-//! 扩展 `[[vendors.models]]` ModelConfig——能力/定价是厂商公布的模型事实，
-//! 与路由身份（weight/abstract_id，ModelConfig 既有职责）正交；同一
-//! model_id 可被多 vendor/代理同时服务，嵌套会强制复制条目且全局查询
-//! 需扫描全部 vendor；admin CRUD 在平铺列表上按 model_id 单键操作。
-//! persist_and_swap 全量写回对两种落位无差（同在 Config 内，D7.1）。
+//! per-model 能力/定价目录——`[[model_catalog]]` 段的类型与查询纯函数。
+//! 四个价格字段均为「currency 计价，每 1M tokens」；无独立计价的缓存档
+//! 填 0（Anthropic cache read ≈ 0.1×输入价、cache write ≈ 1.25×输入价）。
+//! 落位为独立全局段（按 model_id 键）而非嵌套 [[vendors.models]]：
+//! 能力/定价与路由身份正交，同一 model_id 可被多 vendor 服务
 
 use serde::{Deserialize, Serialize};
 
-/// 定价币种 — 对齐 agentstem `core::usage::Currency`（Usd/Cny）。
-/// 严格枚举：未知币种串使配置加载失败（显性早暴露，与 api_key 档位同
-/// 策略——本值无运行时回退语义）。
+/// 定价币种 — 严格枚举，未知币种串使配置加载失败（无运行时回退语义）
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub enum PricingCurrency {
     /// 美元计价（默认；四个价格字段共用）
@@ -40,21 +23,16 @@ pub enum PricingCurrency {
     Cny,
 }
 
-/// 目录条目上限（审查 /3）：防配置爆炸——admin upsert 无上限会拖垮
-/// persist_and_swap 全量写回与 GET 列表面；超限 validate_config 拒绝
-/// （加载与热更新两路同拒）。
+/// 目录条目上限：防配置爆炸拖垮全量写回与 GET 列表面；超限两路同拒
 pub const MAX_MODEL_CATALOG_ENTRIES: usize = 1024;
 
-/// per-model 目录条目 — 字段对齐 agentstem ModelEntry（:18-39）。
-/// `Default` 仅为测试/占位便利：默认 `context_window = 0` 会被
-/// `validate_config` 拒绝（登记条目必须声明真实窗口）。
+/// per-model 目录条目。`Default` 仅为测试/占位便利：默认
+/// `context_window = 0` 会被 validate_config 拒绝（登记条目必须声明真实窗口）
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct ModelCatalogEntry {
     /// 模型全名（目录主键；validate_config 强制去重）
     pub model_id: String,
-    /// 上下文窗口（tokens）。**登记条目必须 > 0**（validate_config 强制）：
-    /// 0 会让 agentstem TUI auto-compact 静默不装配
-    /// （crates/tui/src/agent_session.rs 语义）。
+    /// 上下文窗口（tokens），登记条目必须 > 0
     pub context_window: u64,
     /// 输入单价（currency 计价，**每 1M tokens**）
     #[serde(default)]
@@ -80,35 +58,24 @@ pub struct ModelCatalogEntry {
     /// 是否支持思考模式
     #[serde(default)]
     pub supports_thinking: bool,
-    /// Anthropic 自动缓存断点注入策略（anthropic 型 vendor 转换出站
-    /// 生效）。None = 用内置默认（启用 / 上限 4 / 锚序 tools→system→
-    /// last_user，见 [`CacheBreakpointPolicy`]）。与 supports_* 能力位
-    /// 正交——能力位描述模型能做什么，缓存断点是请求侧计费/性能工程。
+    /// Anthropic 自动缓存断点注入策略（anthropic 型 vendor 转换出站生效）。
+    /// None = 用内置默认（启用 / 上限 4 / 锚序 tools→system→last_user）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_breakpoints: Option<CacheBreakpointPolicy>,
 }
 
-/// Anthropic 自动缓存断点注入策略。
-///
-/// 断点 = 出站请求内容块上的 `cache_control: {"type":"ephemeral"}` 标记
-/// （Anthropic prompt caching；平台单请求断点上限 4）。命中后续请求按
-/// 前缀缓存计费（cache read ≈ 0.1×输入价），未命中写缓存按 1.25×计费
-/// ——默认开启是成本/性能工程取舍，条目级可关。
+/// Anthropic 自动缓存断点注入策略：内容块上的 `cache_control` 标记
+///（平台单请求上限 4），命中按前缀缓存计费；默认开启，条目级可关
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct CacheBreakpointPolicy {
     /// 注入开关（anthropic 型 vendor 转换出站）
     #[serde(default = "default_cache_breakpoints_enabled")]
     pub enabled: bool,
-    /// 断点数上限（候选锚点超出时保留锚序**尾部**、丢弃头部——尾部锚
-    /// 更贴近对话末端，增量缓存命中率高）。0 = 不注入。
+    /// 断点数上限（超出保留锚序尾部、丢弃头部）；0 = 不注入
     #[serde(default = "default_max_cache_breakpoints")]
     pub max_breakpoints: u8,
-    /// 锚点与应用顺序（溢出按序丢弃头部元素）：
-    /// - `"tools"` — tools 数组最后一个定义块（工具前缀最稳定）；
-    /// - `"system"` — system 段（字符串提升为单块数组后标记）；
-    /// - `"last_user"` — 最后一条 user 消息的最后一个内容块。
-    ///
-    /// 未知锚名忽略（显性 debug 日志）。
+    /// 锚点与应用顺序（溢出按序丢弃头部元素）：tools / system / last_user；
+    /// 未知锚名忽略（debug 日志）
     #[serde(default = "default_cache_breakpoint_anchors")]
     pub anchors: Vec<String>,
 }

@@ -5,9 +5,8 @@
 
 //! SSE（Server-Sent Events）编码与上游增量分帧。
 //!
-//! 实源头位于 protocol 模块（`vendor-management` 等 feature 不含
-//! `web-server`，而 vendor 层分帧需要本能力；protocol 无 feature 门控）。
-//! `api::sse` re-export 本模块保持既有引用路径。
+//! 实源头位于 protocol 模块：vendor 层分帧需要本能力，而 protocol 无
+//! feature 门控；`api::sse` re-export 本模块保持既有引用路径。
 
 use bytes::Bytes;
 use futures::Stream;
@@ -16,12 +15,8 @@ use crate::i18n::t;
 
 /// 编码普通 SSE 事件。
 ///
-/// - `data` 为负载数据（必填）
-/// - `event` 为可选事件类型（如 `chunk`、`error`）
-///
-/// 输出格式：
-/// - 有 event：`event: <e>` + LF + `data: <data>` + LF + LF
-/// - 无 event：`data: <data>` + LF + LF
+/// - `data` 为负载数据（必填）；`event` 为可选事件类型（如 `chunk`、`error`）；
+/// - 有 event：`event: <e>` + LF + `data: <data>` + LF + LF；无 event：`data: <data>` + LF + LF
 pub fn encode_sse_event(data: &str, event: Option<&str>) -> String {
     match event {
         Some(e) => format!("event: {e}\ndata: {data}\n\n"),
@@ -34,15 +29,13 @@ pub fn encode_sse_done() -> &'static str {
     "data: [DONE]\n\n"
 }
 
-///
-/// 输出格式：`event: error` + LF + `data: <msg>` + LF + LF
+/// 编码 SSE error 事件：`event: error` + LF + `data: <msg>` + LF + LF。
 pub fn encode_sse_error(msg: &str) -> String {
     format!("event: error\ndata: {msg}\n\n")
 }
 
 /// 网关侧流中错误帧 — data 为 `{"error":{"type","message"}}` JSON 信封
-///（与 REST 错误体同构）：`type` 为稳定错误码字面量，`message` 由调用方
-/// 传入 Fluent 文案。帧内不得携带 vendor id / api_base 等内部拓扑
+///（与 REST 错误体同构）：帧内不得携带 vendor id / api_base 等内部拓扑
 ///（内部错误详情只进 tracing 日志）。
 pub fn encode_gateway_stream_error(message: &str) -> String {
     let payload = serde_json::json!({
@@ -56,9 +49,8 @@ pub fn encode_gateway_stream_error(message: &str) -> String {
 
 /// 解析后的 SSE 帧。
 ///
-/// `raw` 保留帧原文（不含定界空行），透传路径逐帧原样转发时与上游
-/// 字节级一致；`event`/`data` 为解析出的结构化字段，供错误检测与
-/// 上游 SSE → StreamChunk 反向解析使用。
+/// `raw` 保留帧原文（不含定界空行）供逐帧原样转发；`event`/`data` 为
+/// 解析出的结构化字段，供错误检测与 StreamChunk 反向解析使用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SseFrame {
     /// 帧原文（不含定界空行，已解码为 UTF-8）
@@ -86,18 +78,14 @@ impl SseFrame {
     }
 }
 
-/// 上游 SSE 增量分帧器（阶段一）。
+/// 上游 SSE 增量分帧器。
 ///
-/// - **跨块缓冲**：网络块按字节 append 进内部 buffer，帧定界符自身被
-///   劈在两块之间时自然跨块拼回；
-/// - **字节层切帧**：帧定界只认 `\n`（0x0A）与 `\r`（0x0D）——二者均不是
-///   合法 UTF-8 尾随字节（0x80-0xBF），因此在字节层扫描定界符永远不会把
-///   多字节序列误判为帧边界；
-/// - **增量 UTF-8 解码**：帧完整（已见定界）才解码，跨块劈开的多字节
-///   字符在 buffer 中拼齐后整体解码，消除逐块 `from_utf8_lossy` 的
-///   U+FFFD 劈裂；
-/// - **帧内逐行解析**：`data:`/`event:` 字段与注释行（`:` 前缀）按规范
-///   处理，多行 data 以 `\n` 连接。
+/// - 跨块缓冲：网络块按字节 append 进内部 buffer，帧定界符被劈在两块
+///   之间时自然跨块拼回；
+/// - 字节层切帧：帧定界只认 `\n`/`\r`——二者均不是合法 UTF-8 尾随字节
+///   （0x80-0xBF），字节层扫描永远不会把多字节序列误判为帧边界；
+/// - 增量 UTF-8 解码：帧完整才解码，跨块劈开的多字节字符拼齐后整体
+///   解码，消除逐块 `from_utf8_lossy` 的 U+FFFD 劈裂。
 #[derive(Debug, Default)]
 pub struct SseFrameParser {
     buffer: Vec<u8>,
@@ -140,9 +128,8 @@ impl SseFrameParser {
 
 /// 在字节 buffer 中扫描帧定界符。
 ///
-/// 支持 `\n\n`、`\r\n\r\n` 与混合 `\n\r\n`（行尾 `\n` + 空行 `\r\n`）。
-/// 返回 `(frame_end, consumed)`：帧内容止于 `frame_end`（第一个 `\n` 处，
-/// 其前若是 `\r` 由行解析剥离），调用方应消费掉前 `consumed` 个字节。
+/// 支持 `\n\n`、`\r\n\r\n` 与混合 `\n\r\n`；返回 `(frame_end, consumed)`：
+/// 帧内容止于 `frame_end`，调用方应消费掉前 `consumed` 个字节。
 fn scan_frame_delimiter(buf: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0;
     while i < buf.len() {
@@ -190,16 +177,14 @@ fn build_frame(raw: String) -> SseFrame {
     SseFrame { raw, event, data }
 }
 
-/// 透传流适配器（阶段一）：上游字节流过分帧器后逐帧原样转发。
+/// 透传流适配器：上游字节流过分帧器后逐帧原样转发。
 ///
-/// - 帧边界与上游一致：每帧转发 `raw + "\n\n"`（消除 openai.rs 旧实现的
-///   「整块 `from_utf8_lossy` 再包一层 `data:`」嵌套包装）；
-/// - 中流错误：上游 IO 错误或 `event: error` / 错误 JSON 帧
-///   → 发出带语义的 SSE error 事件并提前终止，不再继续正常转发；
+/// - 帧边界与上游一致：每帧转发 `raw + "\n\n"`；
+/// - 中流错误：上游 IO 错误或 `event: error` / 错误 JSON 帧 → 发出
+///   带语义的 SSE error 事件并提前终止；
 /// - 上游 EOF：冲刷残余帧后正常终止。
 ///
-/// 上游流错误类型仅需 `Display`（reqwest::Error 等），输出统一为
-/// `Result<Bytes, std::io::Error>` 供 `axum::body::Body::from_stream` 使用。
+/// 上游流错误类型仅需 `Display`，输出统一为 `Result<Bytes, std::io::Error>`。
 pub fn reframe_passthrough_stream<S, E>(
     stream: S,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>>
@@ -238,7 +223,6 @@ where
     F: FnMut(ReframeObservation),
 {
     // 上游流 Box::pin：S 仅保证 Stream，Unpin 由 Pin<Box<S>> 提供
-    // （每流一次堆分配，可忽略）
     let stream = Box::pin(stream);
     futures::stream::unfold(
         (SseFrameParser::new(), stream, false, observe),

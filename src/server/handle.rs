@@ -3,8 +3,8 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 停机收尾句柄：把原二进制 main.rs 的 flush 管道收尾能力暴露给
-//! 嵌入式调用方（build_app 产物），收尾顺序与 run() 共用同一实现。
+//! 停机收尾句柄：flush 管道收尾暴露给嵌入式调用方（`build_app` 产物），
+//! 收尾顺序与 `run()` 共用同一实现。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -14,14 +14,8 @@ use crate::i18n::{t, t_args};
 use crate::server::bootstrap::Assembly;
 use crate::server::shutdown::InklogShutdownHook;
 
-/// 服务器停机收尾句柄（[`build_app`](crate::server::build_app) 与
-/// [`run`](crate::server::run) 产物之一）。
-///
-/// 持有日志管道与预聚合器的运行时句柄；不持有则嵌入式退出时
-/// flush worker 泄漏（每 60s tick 持有 Repository）且缓冲数据丢失。
-///
-/// feature = "grpc" 时另持有装配好的 [`GrpcServer`]（`take_grpc_server`
-/// 取出后由调用方 spawn；未取出则随句柄丢弃——装配 ≠ 启动）。
+/// 停机收尾句柄（[`build_app`] 与 [`run`] 产物）：持有日志管道与预聚合器句柄，
+/// 不持有则嵌入式退出时 flush worker 泄漏、缓冲数据丢失；grpc feature 下另持 [`GrpcServer`]。
 pub struct ServerHandle {
     logger_handle: Arc<AsyncLoggerHandle>,
     pre_aggregator: Arc<TokenPreAggregator>,
@@ -30,11 +24,8 @@ pub struct ServerHandle {
     /// inklog 关闭钩子（`run()` 注入 manager；嵌入式未注入时收尾阶段 no-op）。
     inklog_hook: std::sync::OnceLock<Option<InklogShutdownHook>>,
     /// 热重载守护（装配期启动；随句柄存活，drop 即停止监听）。
-    /// 监听是否装配经 [`Debug`] 暴露（`hot_reload_watcher` 字段），
-    /// 嵌入式调用方据此查询热重载面状态。
     hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
-    /// 健康探针后台任务句柄（装配期按 `[health].mode` 启动；`shutdown()`
-    /// 首阶段 abort，随优雅停机退出）。
+    /// 健康探针任务句柄（装配期按 [health].mode 启动；shutdown() 首阶段 abort）。
     probe_handle: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "grpc")]
     grpc_server: std::sync::OnceLock<Option<crate::server::grpc::GrpcServer>>,
@@ -64,8 +55,7 @@ impl ServerHandle {
         }
     }
 
-    /// 登记 inklog 关闭钩子（`run()` 装配期一次性；重复调用为 no-op；
-    /// 未登记则收尾时该阶段跳过）。
+    /// 登记 inklog 关闭钩子（装配期一次性；重复调用 no-op，未登记则收尾跳过）。
     pub(crate) fn set_inklog_shutdown_hook(&self, hook: InklogShutdownHook) {
         let _ = self.inklog_hook.set(Some(hook));
     }
@@ -76,31 +66,24 @@ impl ServerHandle {
         let _ = self.grpc_server.set(grpc);
     }
 
-    /// 取出 gRPC 服务器（一次性）：`Some(server)` = [grpc] 段启用且装配
-    /// 成功，调用方 `tokio::spawn(server.serve(signal))` 启动；`None` =
-    /// gRPC 禁用或已被取走。不取则随句柄丢弃（装配 ≠ 启动）。
+    /// 取出 gRPC 服务器（一次性）：`Some` = [grpc] 段启用且装配成功，调用方 spawn 启动；
+    /// `None` = gRPC 禁用或已被取走（不取则随句柄丢弃）。
     #[cfg(feature = "grpc")]
     pub fn take_grpc_server(&mut self) -> Option<crate::server::grpc::GrpcServer> {
         self.grpc_server.take().flatten()
     }
 
-    /// 优雅停机收尾（G9）：serve 排空返回后执行三阶段收尾——AsyncLogger
-    /// 关停补刷 → pre-aggregator 停机位 + 最终 flush → inklog 关闭——经
-    /// trait-kit `AsyncShutdownCoordinator` 显式编排（顺序见
-    /// `crate::server::shutdown::build_teardown_coordinator`）。
-    ///
-    /// 幂等：重复调用为 no-op（首次调用后置位）。阶段超时只告警不中断
-    /// 后续阶段（协调器语义），最后统一汇报 dropped 日志数。
+    /// 优雅停机收尾：serve 排空后三阶段收尾（AsyncLogger 补刷 → pre-aggregator
+    /// 停机位 + 最终 flush → inklog 关闭）；幂等，阶段超时只告警不中断后续阶段。
     pub async fn shutdown(&self) {
         if self.done.swap(true, Ordering::Relaxed) {
             return;
         }
-        // 健康探针后台任务先停（abort 即停，不等待周期睡眠）。
+        // 探针任务先停（abort 即停，不等待周期睡眠）。
         if let Some(handle) = &self.probe_handle {
             handle.abort();
         }
-        // 优雅停机 flush — serve 返回即 in-flight 请求已全部完成，
-        // 此刻补最终 flush 保证缓冲中的日志与聚合数据不丢
+        // serve 返回即 in-flight 已完成，此刻补最终 flush 防缓冲日志与聚合数据丢失
         tracing::info!("{}", t("main-flushing-log-pipeline"));
         let coordinator = crate::server::shutdown::build_teardown_coordinator(
             &self.logger_handle,

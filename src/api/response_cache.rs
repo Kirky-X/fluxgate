@@ -6,30 +6,7 @@
 //! 精确响应缓存 — 存储与并发去重均落地 oxcache（缓存库已就位必须用它，
 //! 绝不手写 HashMap 缓存 / 在途表）。
 //!
-//! - 键 `resp:{api_key_sha256}:{vendor_id}:{model_id}:{sha256(canonical_body)}`：
-//!   vendor+model+完整 canonical body 入键防错命中；调用方 API key 的
-//!   SHA256 摘要入键做租户隔离（LaCache 键碰撞投毒面——明文 key 不入键
-//!   不入日志）；
-//! - canonical_body：`serde_json::to_value` 后**递归按 key 排序**再序列化，
-//!   防客户端键序差异错命中（不依赖 serde_json Map 的内部排序实现）；
-//! - 门控：仅 `stream==false && tools 为空 && temperature==0 或缺省` 的
-//!   确定性请求查/写；`X-No-Cache: 1` 请求头强制回源（Cloudflare 语义，
-//!   兼容 `X-Skip-Cache` 别名）；
-//! - enabled/TTL 热读 `[cache]` 段（默认关闭，TTL 默认 300s）；
-//! - single-flight（并发去重）：由 oxcache `Cache::get_or_with_ttl` 承载
-//!   （64 路分片注册表、watch 唤醒、`AsyncSfGuard` panic/早退安全），
-//!   入口 [`ResponseCache::get_or_response`]。与退役手写版的已知行为
-//!   差异及缓解（design.md 钉住、测试承载）：
-//!   - 差异 A（等待模型）：follower 在 watch 上无超时等待（手写版 30s
-//!     超时窃取领导权自行回源）→ 闭包内 `timeout(DISPATCH_TIMEOUT)` 钳制
-//!     leader 派发：超时转 Err 放行 followers，等价恢复「30s 自愈」；
-//!     4096 在途表硬界随注册表删除（分片条目完成即移除，生命周期 ≤ 单
-//!     请求派发时长）。
-//!   - 差异 B（失败传播）：leader 失败 → followers 得
-//!     `OxCacheError::L1Error`（leader-not-cached 标记）不回源 → 调用侧
-//!     （`get_or_response`）自愈回源一次，恢复手写版窃取语义，错误不透传
-//!     客户端；leader 自身派发错误经 err_cell 原样传播。
-//! - 语义缓存不在本条范围（依赖运行期日志数据，二期顺延）。
+//! 键 `resp:{api_key_sha256}:{vendor_id}:{model_id}:{sha256(canonical_body)}`：调用方 API key 摘要入键做租户隔离；canonical_body 递归按 key 排序，防客户端键序差异错命中。门控仅 `stream==false && tools 为空 && temperature==0 或缺省` 的确定性请求，`X-No-Cache: 1` 请求头强制回源（兼容 `X-Skip-Cache` 别名）；enabled/TTL 热读 `[cache]` 段（默认关闭，TTL 默认 300s）；single-flight 由 oxcache `Cache::get_or_with_ttl` 承载，入口 [`ResponseCache::get_or_response`]。
 
 use crate::config::{CacheSection, ConfigManager};
 use crate::error::{GateError, NexusFlowError};
@@ -43,15 +20,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// get_or 闭包内派发的超时钳制（设计差异 A 缓解）：oxcache follower 在
-/// watch 上无超时等待，释放仅取决于 leader future 的完成/panic/早退——
-/// 闭包内以此时长上限包裹派发：leader 超时转 Err → `AsyncSfGuard` 放行
-/// followers，等价恢复手写版「30s 自愈回源」，leader 永久挂起面亦被
-/// 钳制（覆盖上游 P99 时延）。
+/// get_or 闭包内派发的超时钳制：oxcache follower 在 watch 上无超时等待，
+/// 释放仅取决于 leader future 完成/panic/早退——闭包内以此上限包裹派发，
+/// leader 超时转 Err 放行 followers（30s 自愈），钳制永久挂起面。
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// leader 闭包内派发失败的库错误携带标记（原始 `NexusFlowError` 经
-/// err_cell 原样取回，见 [`ResponseCache::get_or_response`]）。
+/// leader 闭包内派发失败的库错误携带标记（原始 `NexusFlowError` 经 err_cell 取回）。
 const LEADER_DISPATCH_FAILED: &str = "nexusflow:leader-dispatch-failed";
 
 /// leader 闭包内派发超时的库错误携带标记（映射 `GateError::Timeout`）。
@@ -104,13 +78,11 @@ pub fn response_cache_key(
     )
 }
 
-/// 调用方 API key 的 SHA256 摘要（缓存键租户隔离维度）——实现已下沉
-/// [`crate::utils::tenant::api_key_digest`]（认证/亲和/配额同源单实现）。
+/// 调用方 API key 的 SHA256 摘要（缓存键租户隔离维度）；实现下沉
+/// [`crate::utils::tenant::api_key_digest`]（认证/亲和/配额同源）。
 pub use crate::utils::tenant::api_key_digest as cache_api_key_hash;
 
-/// 确定性请求判定（缓存门控）：仅
-/// `stream==false && tools 为空 && temperature==0 或缺省` 的请求查/写。
-/// 有工具调用或带采样语义的请求永不缓存。
+/// 确定性请求判定（缓存门控）：仅 `stream==false && tools 为空 && temperature==0 或缺省` 的请求查/写；工具调用/采样语义永不缓存。
 pub fn is_cacheable_request(body: &Value) -> bool {
     let streaming = body
         .get("stream")
@@ -119,7 +91,6 @@ pub fn is_cacheable_request(body: &Value) -> bool {
     if streaming {
         return false;
     }
-    // tools 缺失或空数组 = 可缓存；存在非空 tools = 不可缓存
     let has_tools = body
         .get("tools")
         .and_then(|v| v.as_array())
@@ -134,8 +105,7 @@ pub fn is_cacheable_request(body: &Value) -> bool {
     }
 }
 
-/// `X-No-Cache: 1` 跳过缓存（Cloudflare 语义；兼容 `X-Skip-Cache` 别名）。
-/// 跳过 = 不读不写。
+/// `X-No-Cache: 1` 跳过缓存（Cloudflare 语义，兼容 `X-Skip-Cache` 别名）——不读不写。
 pub fn skip_cache_requested(headers: &HeaderMap) -> bool {
     ["x-no-cache", "x-skip-cache"].iter().any(|name| {
         headers
@@ -145,30 +115,23 @@ pub fn skip_cache_requested(headers: &HeaderMap) -> bool {
     })
 }
 
-/// 非流式响应的结果缓存。None 接线 = 关闭（与 ApiState 的
-/// logger/pre_aggregator 降级语义一致）；接线后 enabled/TTL 每次操作
-/// 从热配置现读。
+/// 非流式响应的结果缓存；None 接线 = 关闭（同 ApiState 的
+/// logger/pre_aggregator 降级语义），接线后 enabled/TTL 每次操作热读。
 #[derive(Clone)]
 pub struct ResponseCache {
-    /// 存储本体 — oxcache `Cache<String, Value>`（JSON 序列化面，`Arc`
-    /// 包裹使结构体保持 `Clone`——库侧 Cache 未实现 Clone）：
-    /// `get_or` single-flight 注册表（64 路分片）、watch 唤醒、
-    /// AsyncSfGuard panic/早退安全均由库承载。库侧 `ttl_jitter_factor`
-    /// 构建期显式置 0——TTL 抖动是消费侧策略（`[cache].ttl_jitter`
-    /// 热读，见 [`Self::apply_ttl_jitter`]），置 0 防「配置抖动 + 库
-    /// 默认 0.1」双重抖动。
+    /// 存储本体 — oxcache `Cache<String, Value>`（Arc 包裹保持 Clone）；
+    /// single-flight/watch/panic 安全由库承载。库侧 ttl_jitter 置 0——
+    /// 抖动是消费侧策略（[cache].ttl_jitter 热读），防双重抖动
     cache: Arc<oxcache::Cache<String, Value>>,
     config: Arc<ConfigManager>,
     /// 全局指标 — TTL 负载联动的 L_p（vendor_ewma 的
     /// ewma_e2e_ms）与 Q（traffic_shares 份额）来源；比 VendorManager
-    /// 更轻的依赖面。
+    /// 依赖面更轻。
     metrics: Arc<GlobalMetrics>,
 }
 
-/// 缓存键中与 vendor/model 无关的维度（评审修复 major#2：Miss 不再携带
-/// 成品键——resilience 换路成功后 decision.vendor/model 会变成最终成功
-/// 者，store 时以**最终** vendor/model + 此处快照的租户/body 维度组装
-/// 键，杜绝"vendor-b 的响应写进 vendor-a 的键"的跨 vendor 污染）。
+/// 缓存键中与 vendor/model 无关的维度：resilience 换路成功后以**最终**
+/// vendor/model 与这些维度组装键，杜绝"vendor-b 响应写进 vendor-a 键"的跨 vendor 污染。
 #[derive(Debug, Clone)]
 pub struct CacheKeyParts {
     /// 调用方 API key 的 SHA256 摘要（租户隔离维度）
@@ -184,39 +147,33 @@ pub enum CacheOutcome {
     Disabled,
     /// 命中：直接以缓存值响应
     Hit(Value),
-    /// 未命中：携带键的租户与 body 维度，成功响应后由 [`ResponseCache::store`]
+    /// 未命中：携带键的租户与 body 维度，成功后由 [`ResponseCache::store`]
     /// 以最终 vendor/model 组装完整键回写
     Miss(CacheKeyParts),
 }
 
 impl CacheOutcome {
-    /// 本次请求是否参与了缓存（决定响应是否带 X-Cache 头——Disabled
-    /// 不带，Hit/Miss 分别带 HIT/MISS）
+    /// 本次请求是否参与了缓存（决定响应是否带 X-Cache 头——Disabled 不带，Hit/Miss 带 HIT/MISS）
     pub fn participated(&self) -> bool {
         matches!(self, CacheOutcome::Hit(_) | CacheOutcome::Miss(_))
     }
 }
 
-/// 回写键的最终路由维度（评审修复 major#2：resilience 换路成功后以
-/// **最终成功服务者**的 vendor/model 组装键——初始候选键回写会把
-/// vendor-b 的响应写进 vendor-a 的键，跨 vendor 污染）。由消费侧
-/// （handler）对其路由决策实现——response_cache 不反向依赖 router
-/// 类型（mod 接口隔离）。
+/// 回写键的最终路由维度（以**最终成功服务者**的 vendor/model 组装键，
+/// 防跨 vendor 污染）。由消费侧（handler）对其路由决策实现——
+/// response_cache 不反向依赖 router 类型。
 pub trait FinalRoute {
     fn vendor_id(&self) -> &str;
     fn model_id(&self) -> &str;
 }
 
-/// [`ResponseCache::get_or_response`] 的闭包流结果——替代原
-/// `cache_probe` → `cache_hit_response` → `persist_cache_miss` 三段。
+/// [`ResponseCache::get_or_response`] 的闭包流结果。
 #[derive(Debug)]
 pub struct CacheFlow<R> {
     /// 响应体（leader 计算值 / follower 复用值 / 未参与时的直派发值）
     pub value: Value,
-    /// 最终成功路由：`Some` = 本次闭包派发产出（leader / 自愈回源 /
-    /// 未参与缓存的直派发）；`None` = 缓存复用（快速路径命中 / follower
-    /// 复用）——调用方以其**初始**路由决策收尾（与手写版
-    /// `cache_hit_response` 同口径）。
+    /// 最终成功路由：`Some` = 本次派发产出（leader / 自愈回源 / 直派发）；
+    /// `None` = 缓存复用——调用方以其**初始**路由决策收尾。
     pub final_route: Option<R>,
     /// 是否由本次请求计算（X-Cache 语义）：`true` = leader 或自愈回源
     /// → MISS；`false` = 缓存复用 → HIT。
@@ -232,12 +189,11 @@ impl ResponseCache {
         config: Arc<ConfigManager>,
         metrics: Arc<GlobalMetrics>,
     ) -> Self {
-        // 单后端 + 无 service_name：builder 唯一拒绝路径（多后端/空
-        // service）不成立，expect 为构建期不可能失败而非吞错。
-        // 用 builder 而非 `Cache::with_dependencies`：后者固定库侧
-        // ttl_jitter_factor=0.1，会把默认关闭的 `[cache].ttl_jitter`
-        // 悄悄打开（store 行为不再逐位不变）；builder 显式置 0 后
-        // 抖动策略单一来源留在消费侧（apply_ttl_jitter）。
+        // 单后端 + 无 service_name：builder 拒绝路径不成立，expect 为构建期
+        // 不可能失败而非吞错。用 builder 而非 `Cache::with_dependencies`：
+        // 后者固定库侧 ttl_jitter_factor=0.1，会把默认关闭的
+        // `[cache].ttl_jitter` 悄悄打开；builder 显式置 0 后抖动策略
+        // 单一来源留在消费侧（apply_ttl_jitter）。
         let cache = Arc::new(
             oxcache::Cache::<String, Value>::builder()
                 .backend_arc(backend)
@@ -262,17 +218,10 @@ impl ResponseCache {
         self.cache.health_check().await.map_err(|e| e.to_string())
     }
 
-    /// TTL 三段式 —
-    /// 1. `base = ttl_secs × 类别乘数`（[[cache.categories]] 按 model_id
-    ///    前缀匹配，(endpoint, model) 划分的零开销近似；无命中 1.0）；
-    /// 2. 负载联动（`ttl_load_linked` 默认 false = 纯静态、与现状逐位
-    ///    一致）：`λ = min(1, (L_p/L_target)·w_L + (Q/Q_target)·w_Q)`；
-    /// 3. `实际 = base × (1 + λ·(β_max−1))`。
-    ///
-    /// **口径降级声明**：论文 L_p 是延迟分位（P95），本实现以
-    /// ewma_e2e_ms 均值替代（不引入分位估计器）——高估方向比低估安全
-    /// （陈旧容忍度随负载放大符合论文意图）。冷 vendor（无观测）λ=0
-    /// → TTL=base，不惩罚冷启动。
+    /// TTL 三段式：base = ttl_secs × 类别乘数；负载联动（默认关）
+    /// λ = min(1, (L_p/L_target)·w_L + (Q/Q_target)·w_Q)；实际 =
+    /// base × (1 + λ·(β_max−1))。L_p 以 ewma_e2e_ms 均值替代分位；
+    /// 冷 vendor λ=0 → TTL=base 不惩罚冷启动
     fn ttl(&self, vendor_id: &str, model_id: &str) -> Duration {
         let cache = self.config.read().cache.clone();
         let multiplier = Self::category_multiplier(&cache, model_id);
@@ -304,8 +253,8 @@ impl ResponseCache {
     }
 
     /// 负载联动 λ ∈ [0,1] — L_p（EWMA e2e 均值，口径降级见 ttl 注释）
-    /// 与 Q（traffic_shares 份额）的加权归一；目标值 ≤0/非有限时该项
-    /// 不参与（避免除零）。
+    /// 与 Q（traffic_shares 份额）加权归一；目标值 ≤0/非有限时该项不
+    /// 参与（避免除零）。
     fn load_lambda(&self, vendor_id: &str, cache: &CacheSection) -> f64 {
         let l_p = self
             .metrics
@@ -332,15 +281,9 @@ impl ResponseCache {
         (l_term + q_term).clamp(0.0, 1.0)
     }
 
-    /// 查询缓存（低层直读原语）。返回 [`CacheOutcome`]：Disabled（不参与）/
-    /// Hit（缓存值，含负缓存命中的 `Hit(Null)`）/ Miss（携带键的租户与
-    /// body 维度，回写由 [`Self::store`] 以最终 vendor/model 组装完整键）。
-    ///
-    /// 生产路径的并发去重（single-flight）由 [`Self::get_or_response`] 经
-    /// oxcache `get_or_with_ttl` 承载——本原语只读不写、不去重。
-    /// 查询键以调用方传入的 vendor_id/model_id 组装（初始路由候选）；
-    /// resilience 换路成功后回写键由 [`Self::store`] 以最终候选重建
-    ///（评审修复 major#2）。
+    /// 查询缓存（低层直读原语）：Disabled / Hit（含负缓存 Hit(Null)）/
+    /// Miss。只读不写不去重（single-flight 在 get_or_response）；
+    /// 查询键按调用方传入的初始候选 vendor/model 组装
     pub async fn check(
         &self,
         headers: &HeaderMap,
@@ -360,8 +303,7 @@ impl ResponseCache {
             canonical,
         };
         let key = response_cache_key(&parts.api_key_hash, vendor_id, model_id, &parts.canonical);
-        // 直读经 `Cache::get`（库序列化面解出 Value）：Err（损坏值）按
-        // Miss 重源——下次成功写覆盖，与手写 decode 期语义一致。
+        // 直读经 `Cache::get`（库序列化面解出 Value）：Err（损坏值）按 Miss 重源
         match self.cache.get(&key).await {
             Ok(Some(value)) => CacheOutcome::Hit(value),
             Ok(None) | Err(_) => CacheOutcome::Miss(parts),
@@ -369,11 +311,8 @@ impl ResponseCache {
     }
 
     /// 对称 TTL 抖动（与 oxcache `apply_jitter` 同口径）：
-    /// `ttl×(1+factor×u)`，u∈[-1,1]；factor≤0 或 u 非有限时原样返回。
-    /// 纯函数（随机源由调用方注入）， floor 1ms。
-    /// 分叉说明：oxcache 的实现为 `pub(super)`，
-    /// 且哨兵常量所在 `core` 模块未公开，无法引用——此处复刻口径，
-    /// 语义与库一致（对称界、1ms 下限、关闭即原样）。
+    /// `ttl×(1+factor×u)`，u∈[-1,1]；factor≤0 或 u 非有限时原样返回，
+    /// floor 1ms。oxcache 实现为 `pub(super)` 无法引用，此处复刻口径。
     fn apply_ttl_jitter(ttl: Duration, factor: f64, uniform_minus1_1: f64) -> Duration {
         if factor.is_nan() || factor <= 0.0 || !uniform_minus1_1.is_finite() {
             return ttl;
@@ -382,14 +321,9 @@ impl ResponseCache {
         Duration::from_millis(jittered.max(1.0) as u64)
     }
 
-    /// 成功响应回写缓存——以**最终成功服务**的 vendor_id/model_id 组装键
-    ///（resilience 换路成功后即 fallback 的最终候选，保证键维度与响应体
-    /// 一致；TTL 由 [cache].ttl_secs 热读 + 类别乘数 + 负载联动（
-    /// vendor 维度 L_p/Q）；存取失败静默降级——缓存故障不得影响请求成功率）。
-    ///
-    /// 写入 TTL 叠加 `ttl_jitter` 对称抖动（同批键过期不齐峰，关闭时
-    /// 精确）；Null 响应写 JSON null 值（`null_cache_ttl_secs` 短窗口，
-    /// 窗口内 check 直接 `Hit(Null)` 不再穿透）。
+    /// 成功响应回写缓存：以最终成功服务的 vendor/model 组装键（键维度与
+    /// 响应体一致）；存取失败静默降级（缓存故障不得影响请求成功率）。
+    /// 写入 TTL 叠加 ttl_jitter 抖动；Null 响应写短窗口负缓存
     pub async fn store(
         &self,
         parts: &CacheKeyParts,
@@ -399,8 +333,7 @@ impl ResponseCache {
     ) {
         let key = response_cache_key(&parts.api_key_hash, vendor_id, model_id, &parts.canonical);
         // Null 响应 = JSON null 值（负缓存：窗口内 check 得 Hit(Null)
-        // 不再穿透），短窗口 TTL；非 Null 三段式 TTL + 配置抖动
-        // （库侧因子已置 0，见 new()）。
+        // 不再穿透），短窗口 TTL；非 Null 三段式 TTL + 配置抖动（库侧因子已置 0）
         let ttl = if response.is_null() {
             Duration::from_secs(self.config.read().cache.null_cache_ttl_secs.max(1))
         } else {
@@ -414,22 +347,19 @@ impl ResponseCache {
 
     /// get_or 闭包流 — single-flight 由 oxcache `Cache::get_or_with_ttl`
     /// 承载（64 路分片注册表 + watch 唤醒 + `AsyncSfGuard` panic/早退
-    /// 安全），替代手写在途表：同 key 并发只放行第一个（leader）执行
-    /// `dispatch` 闭包，其余订阅其完成信号后复用缓存值。
+    /// 安全）：同 key 并发只放行第一个（leader）执行 `dispatch` 闭包，
+    /// 其余订阅完成信号后复用缓存值。
     ///
-    /// 已知行为差异与缓解（design.md 钉住）：
-    /// - 差异 A（等待模型）：follower 在 watch 上无超时等待、无 4096
-    ///   在途表硬界——闭包内 `timeout(DISPATCH_TIMEOUT)` 钳制派发
-    ///   恢复「30s 自愈」：leader 超时转 Err 放行 followers；分片表
-    ///   条目完成即移除，无上界（生命周期 ≤ 单请求派发时长）。
-    /// - 差异 B（失败传播）：leader 失败 → followers 重读未命中得
-    ///   `L1Error(leader-not-cached)`——调用侧（本方法）自愈回源一次
-    ///   （恢复手写版窃取语义，不透传客户端）；leader 自身派发错误经
-    ///   err_cell 原样映射 `NexusFlowError` 传播。
+    /// 行为差异与缓解：
+    /// - 差异 A（等待模型）：follower 在 watch 上无超时等待——闭包内
+    ///   `timeout(DISPATCH_TIMEOUT)` 钳制派发恢复「30s 自愈」：leader
+    ///   超时转 Err 放行 followers；分片表条目完成即移除。
+    /// - 差异 B（失败传播）：leader 失败 → followers 得
+    ///   `L1Error(leader-not-cached)` 不回源——调用侧自愈回源一次，
+    ///   错误不透传客户端；leader 自身派发错误经 err_cell 原样传播。
     ///
-    /// 换路场景（major#2）：闭包成功后以**最终**路由维度写完整键，
-    /// `get_or` 返回后删除初始候选键的库侧写入（毫秒级残余窗口内晚到
-    /// follower 重读落空，走自愈回源——见 design Consequences）。
+    /// 换路场景：闭包成功后以**最终**路由维度写完整键，返回后删除初始
+    /// 候选键的库侧写入（毫秒级残余窗口内晚到 follower 走自愈回源）。
     pub async fn get_or_response<R, F, Fut>(
         &self,
         headers: &HeaderMap,
@@ -443,7 +373,7 @@ impl ResponseCache {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<(Value, R), NexusFlowError>>,
     {
-        // 门控与手写 check 同口径：未参与 = 闭包直派发（不经库、无超时）
+        // 未参与 = 闭包直派发（不经库、无超时）
         let participate =
             self.enabled() && !skip_cache_requested(headers) && is_cacheable_request(body);
         let canonical = if participate {
@@ -491,8 +421,7 @@ impl ResponseCache {
                         Ok(value)
                     }
                     Ok(Err(e)) => {
-                        // 派发错误经 cell 伴生传递：原始 NexusFlowError 由
-                        // 外层原样取回（不丢错误类型），库错误仅作占位标记
+                        // 派发错误经 cell 伴生传递：原始 NexusFlowError 由外层原样取回
                         *err_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
                         Err(OxCacheError::Operation(LEADER_DISPATCH_FAILED.to_string()))
                     }
@@ -503,8 +432,7 @@ impl ResponseCache {
             }
         };
 
-        // 完整初始候选键 + TTL 去重；闭包内换路后以最终键回写（库侧对
-        // 返回值的初始键写入由返回后的 delete 清理——见 match 臂）
+        // 完整初始候选键 + TTL 去重；闭包内换路后以最终键回写（初始键由返回后 delete 清理）
         let outcome = self
             .cache
             .get_or_with_ttl(&initial_key, Some(ttl), || leader_fut)
@@ -539,9 +467,8 @@ impl ResponseCache {
                         vendor: vendor_id.to_string(),
                     }));
                 }
-                // 差异 B（leader-not-cached 标记）· 其余库侧错误（如损坏
-                // 值反序列化失败）：自愈回源一次——缓存故障不得影响请求
-                // 成功率（模块不变量），错误不透传客户端
+                // leader-not-cached 标记 / 其余库侧错误（损坏值反序列化失败等）：
+                // 自愈回源一次——缓存故障不得影响请求成功率（模块不变量）
                 if Self::is_leader_not_cached(&e) {
                     tracing::debug!(
                         vendor = %vendor_id,
@@ -561,7 +488,7 @@ impl ResponseCache {
     }
 
     /// 自愈回源（差异 B / 库侧故障降级）：直接派发一次，成功后以最终
-    /// 路由维度写完整键并清理初始键——恢复手写版「窃取回源」语义。
+    /// 路由维度写完整键并清理初始键。
     async fn redispatch_and_write<R, F, Fut>(
         &self,
         dispatch: &F,
@@ -590,9 +517,8 @@ impl ResponseCache {
         })
     }
 
-    /// 以最终路由维度写完整键（major#2）并返回该键。TTL 与 [`Self::store`]
-    /// 同口径（Null 短窗口；非 Null 三段式 + 配置抖动）；存取失败静默
-    /// 降级——缓存故障不得影响请求成功率。
+    /// 以最终路由维度写完整键并返回该键。TTL 与 [`Self::store`] 同口径
+    ///（Null 短窗口；非 Null 三段式 + 配置抖动）；存取失败静默降级。
     async fn write_final_key<R: FinalRoute>(
         &self,
         api_key_hash: &str,
@@ -617,10 +543,9 @@ impl ResponseCache {
         final_key
     }
 
-    /// 库侧 follower 标记（get_or leader 未回写）：`OxCacheError` 公开
-    /// 变体 `L1Error` + 消息常量 `MSG_DETAIL_GET_OR_LEADER_NOT_CACHED`
-    /// 的当前 locale 渲染。以库公开面断言——库升级改文案/常量时由
-    /// `leader_not_cached_marker_matches_library_constant` 测试暴露漂移。
+    /// 库侧 follower 标记（get_or leader 未回写）：`OxCacheError::L1Error`
+    /// 与消息常量 `MSG_DETAIL_GET_OR_LEADER_NOT_CACHED` 的 locale 渲染，
+    /// 以库公开面断言（库升级改文案/常量时由测试暴露漂移）。
     fn is_leader_not_cached(err: &OxCacheError) -> bool {
         matches!(
             err,
@@ -783,8 +708,8 @@ mod tests {
         assert!(matches!(outcome, CacheOutcome::Disabled));
     }
 
-    /// 评审回归（major#2）：resilience 换路成功后响应必须写进**最终**
-    /// vendor/model 的键——初始候选的键不得命中该响应（跨 vendor 污染）。
+    /// 换路成功后响应必须写进**最终** vendor/model 的键——初始候选的键
+    /// 不得命中该响应（跨 vendor 污染）。
     #[tokio::test]
     async fn fallback_vendor_response_lands_under_final_vendor_key() {
         let config = crate::config::ConfigManager::new(crate::config::Config {
@@ -901,8 +826,7 @@ mod ttl_load_linking_tests {
         (rc, metrics)
     }
 
-    /// 开关等价断言：ttl_load_linked=false（默认）+ 类别表空 → ttl 与
-    /// 配置值逐位相等（现状语义）。
+    /// 开关等价断言：ttl_load_linked=false（默认）+ 类别表空 → ttl 等于配置值。
     #[test]
     fn ttl_load_linked_off_equals_config_value() {
         let (cache, _m) = make_cache(CacheSection {
@@ -1050,8 +974,6 @@ mod single_flight_and_sentinel_tests {
 
     /// 空响应负缓存：窗口内 check 直接 Hit(Null) 不再穿透；后端存的是
     /// JSON null 值（经 `Cache::set_with_ttl` 序列化面落库）。
-    /// （N=8 并发同 key 的 single-flight 语义已随去重层迁移至 oxcache
-    /// `get_or_with_ttl`，见 `get_or_flow_tests` 的八并发测试。）
     #[tokio::test]
     async fn null_response_is_negative_cached() {
         let cache = enabled_cache();
@@ -1070,9 +992,8 @@ mod single_flight_and_sentinel_tests {
         );
 
         let key = response_cache_key(&parts.api_key_hash, "v", "m", &parts.canonical);
-        // 负缓存载体 = JSON null 值（经 `Cache::set_with_ttl` 序列化面
-        // 落库，`Cache::get` 解出即 Null）——旧手写哨兵字节随存储面
-        // 切库下线，行为（窗口内 Hit(Null)）不变。
+        // 负缓存载体 = JSON null 值（经 `Cache::set_with_ttl` 序列化面落库，
+        // `Cache::get` 解出即 Null）
         let stored = cache
             .cache
             .get(&key)
@@ -1121,7 +1042,7 @@ mod single_flight_and_sentinel_tests {
 mod get_or_flow_tests {
     //! get_or 闭包流（single-flight 由 oxcache `get_or_with_ttl` 承载）：
     //! 并发同键上游仅 1 次、leader 失败 follower 自愈回源、leader 超时
-    //! followers 放行、库标记匹配。T002 行为钉住。
+    //! followers 放行、库标记匹配。
 
     use super::*;
     use crate::config::Config;
@@ -1197,8 +1118,8 @@ mod get_or_flow_tests {
         }
     }
 
-    /// 差异 B/库标记：leader-not-cached 断言以库公开错误变体 + 消息常量
-    /// 为准——库升级改文案/常量时本测试暴露漂移。
+    /// leader-not-cached 断言以库公开错误变体 + 消息常量为准——库升级
+    /// 改文案/常量时本测试暴露漂移。
     #[test]
     fn leader_not_cached_marker_matches_library_constant() {
         let marked = OxCacheError::L1Error(oxcache::i18n::messages::t(
@@ -1291,9 +1212,8 @@ mod get_or_flow_tests {
         assert_eq!(follower_count, 7, "7 个 follower 复用（X-Cache: HIT）");
     }
 
-    /// 差异 B 缓解：leader 派发失败（上游错误不写缓存）→ followers 得
-    /// L1Error leader-not-cached 标记，自愈回源一次成功（恢复手写版
-    /// 窃取语义，错误不透传客户端）。
+    /// 差异 B 缓解：leader 派发失败 → followers 得 L1Error leader-not-cached
+    /// 标记，自愈回源一次成功（错误不透传客户端）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn get_or_leader_failure_follower_self_heals_from_upstream() {
         let cache = enabled_cache();
@@ -1390,8 +1310,7 @@ mod get_or_flow_tests {
         let cache = enabled_cache();
         let body = test_body();
         let upstream_calls = Arc::new(AtomicUsize::new(0));
-        // watch 同步（有版本号、无定时器依赖，paused clock 下不受
-        // auto-advance 抢跑影响）
+        // watch 同步（有版本号、无定时器依赖，paused clock 下不受 auto-advance 抢跑影响）
         let (entered_tx, entered_rx) = tokio::sync::watch::channel(());
 
         let leader_cache = cache.clone();

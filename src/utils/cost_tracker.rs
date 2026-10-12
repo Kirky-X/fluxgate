@@ -5,12 +5,8 @@
 
 //! CostTracker — 累积式成本统计器。
 //!
-//! 设计：
-//! - `total_micro_usd: AtomicU64` — 全局总成本（USD × 1e6 转 u64，避免浮点累加误差）
-//! - `by_vendor: DashMap<String, AtomicU64>` — 按 vendor 分桶
-//! - `by_model: DashMap<String, AtomicU64>` — 按 model 分桶
-//! - 所有计数原子操作，支持高并发
-//! - `record(0.0)` 不改变计数（fetch_add 0 是 no-op）
+//! 金额以 micro USD（USD × 1e6）整数原子累加，避免浮点误差；按 vendor /
+//! model 分桶，支持高并发 record。
 
 use dashmap::DashMap;
 use std::collections::HashMap;
@@ -42,12 +38,9 @@ impl CostTracker {
         }
     }
 
-    /// 记录一次成本（USD）。
-    /// 内部转 u64（micro_usd）后原子累加。
-    /// `cost_usd = 0.0` 时是 no-op，不修改任何计数。
+    /// 记录一次成本（USD，内部转 micro_usd 整数原子累加）。
     ///
-    /// 注：用 `.round()` 而非 `as u64` 截断，避免 `0.00021 * 1e6 = 209.9999...`
-    /// 被截为 209 的精度损失（f64 表示 0.00021 略小于真实值）。
+    /// 用 `.round()` 而非 `as u64` 截断，避免浮点表示误差导致的截断损失。
     pub fn record(&self, vendor: &str, model: &str, cost_usd: f64) {
         if cost_usd <= 0.0 {
             return;

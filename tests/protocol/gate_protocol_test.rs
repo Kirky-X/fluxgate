@@ -207,7 +207,7 @@ mod converter {
         assert!(unified.tool_choice.is_some());
     }
 
-    // ==================== Tool Schema Limits（A3 审查 F4 纵深） ====================
+    // ==================== Tool Schema Limits ====================
 
     #[tokio::test]
     async fn test_openai_to_unified_rejects_oversized_tool_schema() {
@@ -295,7 +295,6 @@ mod converter {
         let unified = unified.unwrap();
 
         assert_eq!(unified.messages.len(), 3);
-        // Check tool message
         let tool_msg = &unified.messages[2];
         assert_eq!(tool_msg.role, nexusflow::protocol::Role::Tool);
     }
@@ -329,12 +328,10 @@ mod converter {
         let unified = converter.to_unified(request).unwrap();
         let external = converter.request_to_external(unified).unwrap();
 
-        // Verify tools are present in external request
         assert!(external.get("tools").is_some());
         let tools = external.get("tools").unwrap().as_array().unwrap();
         assert_eq!(tools.len(), 1);
 
-        // Verify tool_choice is present
         assert!(external.get("tool_choice").is_some());
     }
 
@@ -402,7 +399,6 @@ mod converter {
 
         assert_eq!(parsed.choices.len(), 1);
         let msg = parsed.choices[0].message.as_ref().unwrap();
-        // Verify tool call is parsed correctly
         match &msg.content {
             nexusflow::protocol::MessageContent::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -499,11 +495,7 @@ mod converter {
         out
     }
 
-    /// ⑤ OpenAI chunk 帧 → StreamChunk → Anthropic 事件序列含
-    /// message_start / content_block_delta / message_stop（完整合法流）。
-    ///
-    /// 跨协议：parse 用 OpenAIConverter（上游协议），encode 用
-    /// AnthropicConverter（目标协议）。
+    /// OpenAI chunk 帧 → StreamChunk → Anthropic 完整事件序列。
     #[tokio::test]
     async fn test_openai_stream_frame_to_anthropic_event_lifecycle() {
         let openai = OpenAIConverter::new();
@@ -565,7 +557,7 @@ mod converter {
         assert_eq!(delta_event["delta"]["text"], "Hel");
     }
 
-    /// ⑥ usage 尾帧 → message_delta.output_tokens。
+    /// usage 尾帧 → message_delta.output_tokens。
     #[tokio::test]
     async fn test_usage_tail_frame_becomes_message_delta_output_tokens() {
         let openai = OpenAIConverter::new();
@@ -602,7 +594,7 @@ mod converter {
         assert_eq!(message_delta["usage"]["output_tokens"], 7);
     }
 
-    /// ⑦ tool_call delta 帧不静默丢弃（联动回归）。
+    /// tool_call delta 帧不静默丢弃。
     #[tokio::test]
     async fn test_tool_call_delta_frame_not_silently_dropped() {
         let converter = OpenAIConverter::new();
@@ -685,8 +677,7 @@ mod converter {
             .is_none());
     }
 
-    /// 端到端管线：上游 OpenAI SSE 原文劈在两块之间 → 分帧器拼帧 →
-    /// parse_stream_frame 反向解析 → IR chunk（manager 流的等价语义）。
+    /// 端到端管线：上游 SSE 劈块经分帧器拼帧还原为 IR chunk。
     #[tokio::test]
     async fn test_split_sse_bytes_through_parser_to_ir_chunk() {
         let converter = OpenAIConverter::new();
@@ -729,9 +720,7 @@ mod converter {
 
     use nexusflow::protocol::Role;
 
-    /// ① Anthropic 多轮 tool_use+tool_result 历史 → to_unified →
-    /// request_to_external(OpenAI vendor) 往返：assistant.tool_calls 与
-    /// role:"tool"+tool_call_id 保留（此前 tool_use/tool_result 静默丢弃）。
+    /// Anthropic 多轮 tool_use+tool_result 历史往返保留工具调用。
     #[tokio::test]
     async fn test_anthropic_tool_history_roundtrip_preserves_tools() {
         let anthropic = AnthropicConverter::new();
@@ -800,8 +789,7 @@ mod converter {
         assert_eq!(tool_out["content"], "Sunny, 25C");
     }
 
-    /// ② OpenAI assistant 消息 String content + 顶层 tool_calls →
-    /// TextWithToolCalls（此前 String 分支提前返回、tool_calls 丢失）。
+    /// OpenAI assistant String content + 顶层 tool_calls → TextWithToolCalls。
     #[tokio::test]
     async fn test_openai_string_content_with_tool_calls_becomes_text_with_tool_calls() {
         let converter = OpenAIConverter::new();
@@ -829,7 +817,7 @@ mod converter {
         }
     }
 
-    /// ③ OpenAI parse_response 读 message.tool_calls（此前只读 content）。
+    /// OpenAI parse_response 读 message.tool_calls。
     #[tokio::test]
     async fn test_openai_parse_response_extracts_tool_calls() {
         let converter = OpenAIConverter::new();
@@ -862,8 +850,7 @@ mod converter {
         }
     }
 
-    /// ④ Anthropic 顶层 system → UnifiedRequest 首条 System 消息 →
-    /// OpenAI 出站 messages[0].role=="system"。
+    /// Anthropic 顶层 system → IR 首条 System 消息。
     #[tokio::test]
     async fn test_anthropic_top_level_system_to_first_system_message() {
         let anthropic = AnthropicConverter::new();
@@ -893,8 +880,7 @@ mod converter {
         );
     }
 
-    /// ④ 反向：OpenAI system 消息 → Anthropic 出站顶层 system 字段
-    /// （Anthropic messages 数组不接受 system 角色）。
+    /// OpenAI system 消息 → Anthropic 出站顶层 system。
     #[tokio::test]
     async fn test_openai_system_message_lifted_to_anthropic_top_level() {
         let converter = AnthropicConverter::new();
@@ -926,7 +912,7 @@ mod converter {
         assert_eq!(msgs[0]["role"], "user");
     }
 
-    /// ⑤ stop_reason ↔ finish_reason 静态映射（双向）。
+    /// stop_reason ↔ finish_reason 静态映射（双向）。
     #[tokio::test]
     async fn test_stop_reason_finish_reason_bidirectional_mapping() {
         let anthropic = AnthropicConverter::new();
@@ -1004,9 +990,7 @@ mod converter {
         assert_eq!(out["stop_reason"], "end_turn");
     }
 
-    /// 评审 major 回归：出站 Anthropic 方向的工具历史 —— tool_result 块
-    /// 必须用 Anthropic 规范字段 tool_use_id（此前误写 tool_call_id，缺
-    /// 必填字段会被上游 400 拒收；使本分支首次可达）。
+    /// 出站 Anthropic 工具历史的 tool_result 块使用规范字段 tool_use_id。
     #[tokio::test]
     async fn test_anthropic_outbound_tool_result_uses_tool_use_id_field() {
         let openai = OpenAIConverter::new();
@@ -1176,8 +1160,7 @@ mod converter {
         ));
     }
 
-    /// to_unified → request_to_external 往返：stop_sequences、tool_choice
-    /// Strategy、采样参数与完整工具 schema（description/enum/required）。
+    /// to_unified → request_to_external 往返保留完整请求字段。
     #[tokio::test]
     async fn test_anthropic_request_roundtrip_with_full_tool_schema() {
         let converter = AnthropicConverter::new();
@@ -1278,8 +1261,7 @@ mod converter {
         }
     }
 
-    /// content 数组混合 text + tool_use + 未知块 → TextWithToolCalls，
-    /// 未知块类型在聚合循环中被跳过。
+    /// content 混合 text + tool_use + 未知块 → TextWithToolCalls（未知块跳过）。
     #[tokio::test]
     async fn test_anthropic_parse_response_mixed_text_tool_use_and_unknown_blocks() {
         let converter = AnthropicConverter::new();
@@ -1354,8 +1336,7 @@ mod converter {
         );
     }
 
-    /// stream_chunk_to_external 全变体：文本 / 多模态 / 工具调用 / 工具结果 /
-    /// 混合 / usage / 心跳。非文本 delta 首版不产出流式文本，但事件形状稳定。
+    /// stream_chunk_to_external 全变体输出形状。
     #[tokio::test]
     async fn test_anthropic_stream_chunk_to_external_variants() {
         let converter = AnthropicConverter::new();
@@ -1606,8 +1587,7 @@ mod converter {
         );
     }
 
-    /// 消息级边角：未知 role 归一 user、tool_use 解析失败降级纯文本、
-    /// 未知块跳过、content 缺失/非法。
+    /// 消息级边角：未知 role、tool_use 解析失败、未知块、content 缺失/非法。
     #[tokio::test]
     async fn test_anthropic_to_unified_message_edge_cases() {
         let converter = AnthropicConverter::new();
@@ -1658,8 +1638,7 @@ mod converter {
         }
     }
 
-    /// 并行工具调用的多 tool_result 聚合：首块 tool_use_id 为准、
-    /// content 支持字符串与 blocks 数组、缺 content 块跳过、is_error 任一为真即真。
+    /// 多 tool_result 聚合：首块 tool_use_id 为准，content 支持字符串与 blocks 数组。
     #[tokio::test]
     async fn test_anthropic_tool_result_aggregation_multi_block() {
         let converter = AnthropicConverter::new();
@@ -1692,8 +1671,7 @@ mod converter {
         }
     }
 
-    /// System 消息为多模态 / 工具调用内容时的顶层 system 提取：
-    /// 文本块拼接、非文本内容为空并被过滤。
+    /// 多模态 / 工具调用 System 消息的顶层 system 提取。
     #[tokio::test]
     async fn test_anthropic_system_message_multimodal_lifted_to_top_level() {
         let converter = AnthropicConverter::new();
@@ -1847,8 +1825,7 @@ mod converter {
         assert_eq!(content[2], json!({"type": "unknown"}));
     }
 
-    /// response_to_external：System 角色消息 + 文本与工具调用并列 →
-    /// Anthropic 形状（tool_use 块 input 反序列化）。
+    /// response_to_external：System 角色消息 + 文本与工具调用并列 → Anthropic 形状。
     #[tokio::test]
     async fn test_anthropic_response_to_external_system_role_with_tool_calls() {
         let converter = AnthropicConverter::new();
@@ -2273,8 +2250,7 @@ mod converter {
                 ));
                 match &blocks[1] {
                     ContentBlock::Image { source, detail } => {
-                        // URL 保真——https 直链进 Url 形态（旧实现硬编码
-                        // jpeg 并把 URL 塞 data 字段，往返产出坏 URI）
+                        // URL 保真：https 直链进 Url 形态
                         match source {
                             ImageSource::Url { url } => {
                                 assert_eq!(url, "https://example.com/a.png");
@@ -2418,7 +2394,7 @@ mod converter {
                 }]
             }))
             .expect("to_unified");
-        // A3 保真改造：parameters 原样 Value——enum 数组原样幸存
+        // parameters 原样 Value，enum 数组原样幸存
         assert_eq!(
             unified.tools[0].function.parameters["properties"]["city"]["enum"],
             json!(["Beijing", "Shanghai"])
@@ -2434,8 +2410,7 @@ mod converter {
     async fn test_openai_to_unified_tool_choice_fallbacks() {
         let converter = OpenAIConverter::new();
 
-        // WP10：{"type":"any"} 不得降级 auto（跨协议客户端常带 Anthropic
-        // 形态）→ required（OpenAI wire 词）。
+        // {"type":"any"} 映射 required（OpenAI wire 词），不得降级 auto
         let unified = converter
             .to_unified(json!({
                 "model": "gpt-4",
@@ -2489,7 +2464,7 @@ mod converter {
         );
     }
 
-    // ==================== IR 一次补全（design.md D2） ====================
+    // ==================== IR 一次补全 ====================
 
     use nexusflow::protocol::{EffortLevel, FinishReason, SamplingParams, ThinkingConfig};
 
@@ -2507,8 +2482,7 @@ mod converter {
 
     // ---- OpenAI：effort / vendor_extensions ----
 
-    /// 入站：reasoning_effort → effort；未识别顶层字段（top_k/seed）吸收进
-    /// vendor_extensions（防丢）；已知键不吸收。出站：双通道透传。
+    /// 入站 reasoning_effort → effort；未识别字段吸收进 vendor_extensions；出站双通道透传。
     #[tokio::test]
     async fn test_openai_effort_and_vendor_extensions_roundtrip() {
         let openai = OpenAIConverter::new();
@@ -2534,8 +2508,7 @@ mod converter {
         assert_eq!(out["top_k"], 40);
     }
 
-    /// F1/M1 denylist：协议键永不由扩展表补入——openai 侧 stream 缺位
-    /// 注入与 effort 经扩展表物化均被拦截；非协议键仍透传。
+    /// 协议键不得由 vendor_extensions 补入，非协议键仍透传。
     #[tokio::test]
     async fn test_openai_vendor_extensions_denylist_protocol_keys() {
         let openai = OpenAIConverter::new();
@@ -2563,8 +2536,7 @@ mod converter {
         assert_eq!(out["x_allowed"], "pass", "非协议键仍透传（D2 语义）");
     }
 
-    /// F1/M1 denylist：跨协议计费/行为键不得补入——anthropic 侧 thinking
-    /// 协议键过滤；metadata 为非协议键，同协议透传保留（400 风险 opt-in，D7）。
+    /// 跨协议协议键由扩展表过滤，非协议键同协议透传保留。
     #[tokio::test]
     async fn test_anthropic_vendor_extensions_denylist_protocol_keys() {
         let anthropic = AnthropicConverter::new();
@@ -2592,8 +2564,7 @@ mod converter {
         );
     }
 
-    /// 出站：sampling 只补 flat 未设置的槽（flat 优先不覆写）；sampling.top_k
-    /// 直出 top_k；effort → reasoning_effort 小写。
+    /// 出站 sampling 只补 flat 未设置的槽；sampling.top_k 直出 top_k。
     #[tokio::test]
     async fn test_openai_request_to_external_sampling_and_effort() {
         let openai = OpenAIConverter::new();
@@ -2612,8 +2583,7 @@ mod converter {
         assert_eq!(out["reasoning_effort"], "medium");
     }
 
-    /// 出站：system_prompt → 首条 system 消息；与 Role::System 消息并存时
-    /// system_prompt 优先合并去重；messages 为空时新建。
+    /// 出站 system_prompt → 首条 system 消息，与 Role::System 并存时优先合并去重。
     #[tokio::test]
     async fn test_openai_request_to_external_system_prompt_merge() {
         let openai = OpenAIConverter::new();
@@ -2804,8 +2774,7 @@ mod converter {
 
     // ---- OpenAI：StreamChunk::ToolCall ----
 
-    /// 出站：ToolCall → OpenAI delta.tool_calls 片段（首片段带 id/name，
-    /// 续片段省略）；该片段可经 parse_stream_frame 回读聚合。
+    /// 出站 ToolCall → OpenAI delta.tool_calls 片段（首片段带 id/name）。
     #[tokio::test]
     async fn test_openai_stream_tool_call_chunk_roundtrip() {
         let openai = OpenAIConverter::new();
@@ -2863,8 +2832,7 @@ mod converter {
 
     // ---- OpenAI：ImageSource::Url 保真 ----
 
-    /// 入站：https URL → Url 形态（不再硬编码 jpeg/塞 data）；data URI →
-    /// Base64 形态（media_type 从 URI 解析）。出站：Url 直出 url 字段。
+    /// 入站 https URL → Url 形态；data URI → Base64；出站 Url 直出 url 字段。
     #[tokio::test]
     async fn test_openai_image_url_source_roundtrip() {
         let openai = OpenAIConverter::new();
@@ -2931,8 +2899,7 @@ mod converter {
 
     // ---- Anthropic：system_prompt 双写与合并 ----
 
-    /// 入站：顶层 system → Role::System 消息（兼容形态照旧）+ system_prompt
-    /// 回填（规范槽）。string 与 blocks 数组两形状。
+    /// 入站顶层 system → Role::System 消息 + system_prompt 回填（string 与 blocks 数组）。
     #[tokio::test]
     async fn test_anthropic_system_prompt_backfill() {
         let anthropic = AnthropicConverter::new();
@@ -2965,8 +2932,7 @@ mod converter {
         assert_eq!(unified.system_prompt.as_deref(), Some("a\nb"));
     }
 
-    /// 出站：system_prompt → 顶层 system；与 Role::System 消息并存时
-    /// system_prompt 优先合并去重；仅 Role::System 消息时行为照旧。
+    /// 出站 system_prompt → 顶层 system，与 Role::System 并存时优先合并去重。
     #[tokio::test]
     async fn test_anthropic_request_to_external_system_prompt_merge() {
         let anthropic = AnthropicConverter::new();
@@ -3035,8 +3001,7 @@ mod converter {
         assert_eq!(parsed.usage.cache_creation_tokens, 4);
     }
 
-    /// 出站：IR cache 字段 → cache_read_input_tokens/cache_creation_input_tokens
-    ///（非零才携带）。
+    /// 出站 IR cache 字段 → Anthropic cache token 字段（非零才携带）。
     #[tokio::test]
     async fn test_anthropic_response_to_external_cache_tokens() {
         let anthropic = AnthropicConverter::new();
@@ -3131,8 +3096,7 @@ mod converter {
         );
     }
 
-    /// 流式：message_delta 尾帧 stop_reason 与 usage 同帧到达 → Usage
-    /// finish_reason 承载（映射后）；cache token 同帧读取。
+    /// 流式 message_delta 尾帧 stop_reason 与 usage 同帧 → Usage.finish_reason。
     #[tokio::test]
     async fn test_anthropic_stream_message_delta_stop_reason_and_cache() {
         let anthropic = AnthropicConverter::new();
@@ -3190,8 +3154,7 @@ mod converter {
 
     // ---- Anthropic：tool_choice 原生形状 ----
 
-    /// 入站：Anthropic 原生 any/tool/auto/none → IR；OpenAI function 对象
-    /// 形状保持容错；标量兜底 auto。
+    /// 入站 Anthropic 原生 any/tool/auto/none → IR；标量兜底 auto。
     #[tokio::test]
     async fn test_anthropic_to_unified_tool_choice_native_mapping() {
         let anthropic = AnthropicConverter::new();
@@ -3224,8 +3187,7 @@ mod converter {
         }
     }
 
-    /// 出站：IR → Anthropic 原生形状（required→any；Specific→tool），
-    /// 不再写 OpenAI 形状。
+    /// 出站 IR → Anthropic 原生形状（required→any；Specific→tool）。
     #[tokio::test]
     async fn test_anthropic_request_to_external_tool_choice_native_shape() {
         let anthropic = AnthropicConverter::new();
@@ -3259,8 +3221,7 @@ mod converter {
             "Specific 必须写 Anthropic tool 形状"
         );
 
-        // L3："none" 省略 tool_choice 字段（Anthropic 传统词汇为
-        // auto/any/tool，无 none 形状；缺省即 auto 语义）
+        // "none" → 省略 tool_choice 字段（Anthropic 无 none 形状）
         let mut request = minimal_unified_request("claude", "hi");
         request.tool_choice = Some(ToolChoice::Strategy("none".into()));
         let out = anthropic.request_to_external(request).expect("to external");
@@ -3272,8 +3233,7 @@ mod converter {
 
     // ---- Anthropic：thinking_config / top_k / effort / vendor_extensions ----
 
-    /// 入站：thinking enabled+budget → Enabled；出站 Enabled → thinking 块；
-    /// Adaptive/Disabled 出站省略（保守选择，见待裁决项）。
+    /// thinking enabled+budget → Enabled；出站 Enabled → thinking 块；Adaptive/Disabled 省略。
     #[tokio::test]
     async fn test_anthropic_thinking_config_roundtrip() {
         let anthropic = AnthropicConverter::new();
@@ -3314,8 +3274,7 @@ mod converter {
         assert!(out.get("thinking").is_none());
     }
 
-    /// 入站：top_k/temperature/top_p → sampling；出站 sampling.top_k → top_k，
-    /// temperature flat 优先、sampling 不覆写。
+    /// 入站 top_k/temperature/top_p → sampling；出站 sampling.top_k → top_k。
     #[tokio::test]
     async fn test_anthropic_sampling_top_k_roundtrip() {
         let anthropic = AnthropicConverter::new();
@@ -3346,9 +3305,7 @@ mod converter {
         assert_eq!(out["top_k"], 40);
     }
 
-    /// Anthropic 无原生 effort——出站不写顶层 effort（first-party
-    /// 严格校验会 400）；effort 仅经 vendor_extensions 显式携带时可达上游
-    ///（denylist 不含 effort = opt-in，400 风险自担）。
+    /// Anthropic 无原生 effort：出站不写顶层 effort，仅经 vendor_extensions 显式携带时可达。
     #[tokio::test]
     async fn test_anthropic_effort_option_via_vendor_extensions() {
         let anthropic = AnthropicConverter::new();
@@ -3394,8 +3351,7 @@ mod converter {
 
     // ---- Anthropic：StreamChunk::ToolCall ----
 
-    /// 入站：content_block_start(tool_use) 与 input_json_delta → ToolCall
-    /// 片段（并行工具 = 多 index 交错）。
+    /// 入站 content_block_start(tool_use) 与 input_json_delta → ToolCall 片段（多 index 交错）。
     #[tokio::test]
     async fn test_anthropic_stream_tool_call_frames_parse_to_ir() {
         let anthropic = AnthropicConverter::new();
@@ -3447,8 +3403,7 @@ mod converter {
             .is_none());
     }
 
-    /// 出站：ToolCall 首片段 → content_block_start(tool_use)；续片段 →
-    /// content_block_delta(input_json_delta)。
+    /// 出站 ToolCall 首片段 → content_block_start(tool_use)，续片段 → input_json_delta。
     #[tokio::test]
     async fn test_anthropic_stream_tool_call_chunk_to_external() {
         let anthropic = AnthropicConverter::new();
@@ -3537,8 +3492,7 @@ mod converter {
         arguments: String,
     }
 
-    /// golden 聚合器：显式状态跟踪 index → {id, name, arguments 缓冲}
-    ///（审查 F3 收口——不依赖 name 存在性判定），双侧入站与交叉往返共用。
+    /// golden 聚合器：显式状态跟踪 index → {id, name, arguments 缓冲}。
     struct ToolCallAggregator {
         slots: BTreeMap<u32, AggregatedCall>,
     }
@@ -3576,8 +3530,7 @@ mod converter {
         }
     }
 
-    /// golden：openai 入站并行工具——多 id/index 交错片段流经显式聚合
-    /// 状态还原完整调用（arguments 分片拼接），终止帧 finish_reason 不失。
+    /// openai 入站并行工具：多 id/index 交错片段经聚合还原完整调用。
     #[tokio::test]
     async fn test_openai_stream_parallel_tools_golden() {
         let openai = OpenAIConverter::new();
@@ -3633,9 +3586,7 @@ mod converter {
         );
     }
 
-    /// golden：anthropic 入站并行工具——相邻顺序块（tool_use 块无法并发
-    /// open）经显式聚合状态还原完整调用；content_block_stop 为生命周期
-    /// 事件不映射 IR，message_delta 尾帧 stop_reason 进 Usage.finish_reason。
+    /// anthropic 入站并行工具：相邻顺序块经聚合还原完整调用。
     #[tokio::test]
     async fn test_anthropic_stream_parallel_tools_golden() {
         let anthropic = AnthropicConverter::new();
@@ -3699,10 +3650,7 @@ mod converter {
         );
     }
 
-    /// golden 交叉：openai SSE → IR 片段流 → AnthropicStreamEncoder →
-    /// 合法事件序列（message_start 首位、工具块 start/delta*/stop 顺序块、
-    /// message_delta 携带 stop_reason、message_stop 收尾），事件回读经
-    /// anthropic 解析聚合后还原原始调用。
+    /// golden 交叉：openai SSE → IR → AnthropicStreamEncoder → 合法事件序列并可回读还原。
     #[tokio::test]
     async fn test_openai_to_anthropic_tool_stream_golden() {
         let openai = OpenAIConverter::new();
@@ -3792,8 +3740,7 @@ mod converter {
         );
     }
 
-    /// golden 交叉：anthropic SSE → IR 片段流 → openai chunk → 回读解析
-    /// 聚合，还原原始调用（分片语义与 index 经 openai delta.tool_calls 保留）。
+    /// golden 交叉：anthropic SSE → IR → openai chunk，回读还原原始调用。
     #[tokio::test]
     async fn test_anthropic_to_openai_tool_stream_golden() {
         let anthropic = AnthropicConverter::new();
@@ -3840,9 +3787,7 @@ mod converter {
         );
     }
 
-    /// stop_reason 流式透传专项：anthropic message_delta → Usage.finish_reason
-    /// → 编码器回注 message_delta.delta.stop_reason（闭环）；openai 侧
-    /// finish_reason 帧 → Content → chunk 透传。
+    /// stop_reason 流式透传：message_delta → Usage.finish_reason → 编码器回注；openai 侧 finish_reason 帧透传。
     #[tokio::test]
     async fn test_stop_reason_stream_passthrough_roundtrip() {
         let anthropic = AnthropicConverter::new();
@@ -3907,9 +3852,7 @@ mod converter {
         assert_eq!(wire["choices"][0]["finish_reason"], "tool_calls");
     }
 
-    /// 非规范形状无损回退：单帧多片段 → Content{ToolCalls} 旧聚合表示
-    ///（trait 单 chunk 交付约束下的无损路径）；片段与 finish_reason 同帧
-    /// 同样回退（ToolCall 片段无终止槽）。
+    /// 单帧多片段 → Content{ToolCalls} 回退表示；片段与 finish_reason 同帧同样回退。
     #[tokio::test]
     async fn test_openai_stream_multi_fragment_frame_falls_back() {
         let openai = OpenAIConverter::new();
@@ -3966,10 +3909,7 @@ mod converter {
         }
     }
 
-    /// MEDIUM 修复：非规范回退形状 Content{ToolCalls}（openai 多片段帧
-    /// 回退产物）经 anthropic 出站合成 tool_use 块还原调用，不再静默丢弃；
-    /// 事件序保持合法（工具块 + message_delta stop_reason + message_stop），
-    /// 且回读聚合跨表示还原原调用。
+    /// 非规范回退 Content{ToolCalls} 经 anthropic 出站还原调用，事件序合法。
     #[tokio::test]
     async fn test_anthropic_outbound_fallback_toolcalls_synthesized() {
         let mut encoder = AnthropicStreamEncoder::new();
@@ -4062,9 +4002,7 @@ mod converter {
         );
     }
 
-    /// id 与 name 均空的退化槽（畸形输入）刷写时跳过，不产出
-    /// tool_use 块（tracing::warn 显性化），事件序保持合法；Some("") 与
-    /// 空串同判。
+    /// id 与 name 均空的退化槽刷写时跳过，不产出 tool_use 块。
     #[tokio::test]
     async fn test_anthropic_encoder_degenerate_tool_slot_skipped() {
         let mut encoder = AnthropicStreamEncoder::new();
@@ -4132,8 +4070,7 @@ mod converter {
         assert_eq!(unified.model, "gpt-4o-mini");
     }
 
-    /// 出站：工具未携带 parameters（Null）→ function 省略 parameters 键
-    /// （parameters 为 OpenAI 可选字段，写出 null 会被严格上游拒收）。
+    /// 工具未携带 parameters → 出站省略 parameters 键。
     #[tokio::test]
     async fn test_openai_request_to_external_tool_without_parameters_omits_key() {
         let converter = OpenAIConverter::new();
@@ -4178,8 +4115,7 @@ mod converter {
         }
     }
 
-    /// 响应出站：finish 结构化槽有值且 finish_reason 为空 → 回填 OpenAI
-    /// wire 词汇；原始槽已有值（含未知词）时不被覆写。
+    /// finish 结构化槽有值且 finish_reason 空 → 回填 OpenAI wire 词汇，不覆写已有值。
     #[tokio::test]
     async fn test_openai_response_to_external_finish_slot_backfills_reason() {
         let converter = OpenAIConverter::new();
@@ -4229,8 +4165,7 @@ mod converter {
         );
     }
 
-    /// 流式入站：data 为不可解析文本 → None 不 panic（manager 层分帧器
-    /// is_error 已先行拦截错误，此处静默跳过）。
+    /// data 不可解析文本 → None 不 panic（错误帧已由分帧器先行拦截）。
     #[tokio::test]
     async fn test_openai_parse_stream_frame_illegal_json_returns_none() {
         let converter = OpenAIConverter::new();
@@ -4272,8 +4207,7 @@ mod converter {
         }
     }
 
-    /// 入站：thinking enabled 无 budget_tokens → Adaptive
-    /// （「启用但不定预算」在 IR 的最近表达）。
+    /// thinking enabled 无 budget_tokens → Adaptive。
     #[tokio::test]
     async fn test_anthropic_to_unified_thinking_enabled_without_budget_is_adaptive() {
         let converter = AnthropicConverter::new();
@@ -4287,8 +4221,7 @@ mod converter {
         assert_eq!(unified.thinking_config, Some(ThinkingConfig::Adaptive));
     }
 
-    /// 入站：max_tokens_to_sample 旧别名槽回退读取；与 max_tokens 并存时
-    /// max_tokens 优先。
+    /// max_tokens_to_sample 旧别名回退读取，max_tokens 优先。
     #[tokio::test]
     async fn test_anthropic_to_unified_max_tokens_to_sample_alias_fallback() {
         let converter = AnthropicConverter::new();
@@ -4350,8 +4283,7 @@ mod converter {
         }
     }
 
-    /// 响应出站：finish 与 finish_reason 均 None → stop_reason 缺省 end_turn
-    /// （Anthropic 语义下未携带终止原因按自然结束处理）。
+    /// finish 与 finish_reason 均 None → stop_reason 缺省 end_turn。
     #[tokio::test]
     async fn test_anthropic_response_to_external_stop_reason_defaults_end_turn() {
         let converter = AnthropicConverter::new();
@@ -4389,9 +4321,7 @@ mod converter {
 }
 
 mod embedding {
-    // embedding_response_from_openai 死代码已删除（零生产调用，
-    // embeddings 端点走治理透传），其两个用例随之退役；
-    // embedding_request_to_openai 仍被 api/openai.rs 使用，用例保留。
+    // embedding_response_from_openai 已删除，用例退役；embedding_request_to_openai 仍在使用。
     use nexusflow::protocol::embedding_request_to_openai;
     use serde_json::json;
 
@@ -4722,7 +4652,6 @@ mod unified {
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();
-        // None Option fields should be skipped
         assert!(!obj.contains_key("temperature"));
         assert!(!obj.contains_key("max_tokens"));
         assert!(!obj.contains_key("top_p"));
@@ -4736,11 +4665,9 @@ mod unified {
         assert!(!obj.contains_key("presence_penalty"));
         assert!(!obj.contains_key("user"));
         assert!(!obj.contains_key("tool_choice"));
-        // Empty collections should be skipped
         assert!(!obj.contains_key("stop"));
         assert!(!obj.contains_key("logit_bias"));
         assert!(!obj.contains_key("tools"));
-        // Required + non-skipped fields should be present
         assert!(obj.contains_key("model"));
         assert!(obj.contains_key("messages"));
         assert!(obj.contains_key("stream"));
@@ -4867,7 +4794,7 @@ mod unified {
         let tool = Tool::default();
         assert_eq!(tool.tool_type, "function");
         assert_eq!(tool.function.name, "");
-        // A3 保真改造：parameters 为原样 Value，未携带即 Null
+        // parameters 为原样 Value，未携带即 Null
         assert!(tool.function.parameters.is_null());
     }
 
@@ -4881,7 +4808,7 @@ mod unified {
 
     #[test]
     fn test_tool_full_roundtrip() {
-        // A3 保真改造：parameters 原样 Value 往返（嵌套/枚举/required 全保真）
+        // parameters 原样 Value 往返，嵌套/枚举/required 全保真
         let schema = json!({
             "type": "object",
             "properties": {
@@ -4905,7 +4832,6 @@ mod unified {
         let deserialized: Tool = serde_json::from_str(&json_str).unwrap();
         assert_eq!(deserialized.function.name, "get_weather");
         assert_eq!(deserialized.function.parameters, schema, "原样往返保真");
-        // Verify "type" rename (not "tool_type")
         let json_val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(json_val["type"], "function");
         assert!(json_val.get("tool_type").is_none());
@@ -4913,10 +4839,7 @@ mod unified {
         assert_eq!(json_val["function"]["parameters"]["type"], "object");
     }
 
-    /// 保真验收（M1 闭环）：嵌套 schema / anyOf / $ref / 缺 type
-    /// 属性——经公共转换面（to_unified 入站解析 → request_to_external 出站
-    /// 编码）原样幸存；anthropic 面 input_schema 同样原样 + 缺 schema 补
-    /// 协议最小形状。
+    /// 嵌套 schema / anyOf / $ref 经公共转换面往返原样幸存。
     #[test]
     fn test_tool_parameters_fidelity_nested_anyof_ref_missing_type() {
         let schema = json!({
@@ -5001,9 +4924,7 @@ mod unified {
         );
     }
 
-    /// A4/ 跨厂商 × OpenAI 出站面（D7.13 扩项闭环，裁决 a 补合成）
-    /// Anthropic 上游 stop_reason（经 message_delta 映射进 IR Usage 帧）→
-    /// OpenAI 出站 usage 帧 choices 终止槽合成；OpenAI 原生（None）零回归。
+    /// Anthropic stop_reason → IR Usage 帧 → OpenAI 出站 usage 帧 choices 终止槽合成。
     #[test]
     fn test_cross_vendor_openai_outbound_usage_finish_reason_synthesis() {
         let anthropic = AnthropicConverter::new();
@@ -5073,7 +4994,6 @@ mod unified {
         let json = serde_json::to_value(&choice).unwrap();
         // untagged: serializes as bare string
         assert_eq!(json, json!("auto"));
-        // Roundtrip
         let deserialized: ToolChoice = serde_json::from_str("\"auto\"").unwrap();
         match deserialized {
             ToolChoice::Strategy(s) => assert_eq!(s, "auto"),
@@ -5090,11 +5010,9 @@ mod unified {
             },
         };
         let json = serde_json::to_value(&choice).unwrap();
-        // "type" rename (not "choice_type")
         assert_eq!(json["type"], "function");
         assert!(json.get("choice_type").is_none());
         assert_eq!(json["function"]["name"], "get_weather");
-        // Roundtrip
         let json_str = serde_json::to_string(&choice).unwrap();
         let deserialized: ToolChoice = serde_json::from_str(&json_str).unwrap();
         match deserialized {
@@ -5188,7 +5106,6 @@ mod unified {
         assert_eq!(json["prompt_tokens"], 10);
         assert_eq!(json["completion_tokens"], 5);
         assert_eq!(json["total_tokens"], 15);
-        // Roundtrip
         let json_str = serde_json::to_string(&chunk).unwrap();
         let deserialized: StreamChunk = serde_json::from_str(&json_str).unwrap();
         match deserialized {
@@ -5212,7 +5129,6 @@ mod unified {
         let json = serde_json::to_value(&chunk).unwrap();
         assert_eq!(json["type"], "heartbeat");
         assert_eq!(json.as_object().unwrap().len(), 1);
-        // Roundtrip
         let json_str = serde_json::to_string(&chunk).unwrap();
         let deserialized: StreamChunk = serde_json::from_str(&json_str).unwrap();
         assert!(matches!(deserialized, StreamChunk::Heartbeat));
@@ -5270,13 +5186,12 @@ mod unified {
             data: "iVBOR".to_string(),
         };
         let json = serde_json::to_value(&src).unwrap();
-        // tag = "type"（snake_case 变体名），与旧 IR 结构体形状兼容
+        // tag = "type"（snake_case 变体名）
         assert_eq!(json["type"], "base64");
         assert!(json.get("type_").is_none());
         assert_eq!(json["media_type"], "image/png");
         assert_eq!(json["data"], "iVBOR");
     }
 
-    // A3 保真改造：ToolParameterProperty 结构体已删除（parameters 原样
-    // Value 透传，属性面保真由 schema 本身承载）——序列化测试随之退役。
+    // ToolParameterProperty 已删除（parameters 原样 Value 透传），相关序列化测试退役。
 }

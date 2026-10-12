@@ -5,8 +5,6 @@
 
 //! 装配链：logger → config → db → vendor → 日志管道 → DI kit →
 //! router/bandit/affinity/response_cache → ApiState → init_global_state。
-//!
-//! 自 main.rs 平移，装配顺序与原二进制逐位一致。
 
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -28,35 +26,17 @@ pub(crate) struct Assembly {
     pub(crate) logger_handle: Arc<AsyncLoggerHandle>,
     pub(crate) pre_aggregator: Arc<TokenPreAggregator>,
     pub(crate) pa_shutdown: Arc<AtomicBool>,
-    /// 热重载守护（`None` = 纯内存配置或监听失败；持有即监听生效，
-    /// drop 即停止）。
+    /// 热重载守护（`None` = 纯内存配置或监听失败；持有即监听生效，drop 即停止）。
     pub(crate) hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
-    /// 健康探针后台任务句柄（常驻；mode 每周期热读，off = no-op。持有即
-    /// 探测生效，随停机收尾 abort）。
+    /// 健康探针后台任务句柄（常驻；mode 每周期热读，off = no-op；随停机 abort）。
     pub(crate) probe_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// 初始化日志系统（原 main.rs）。
+/// 初始化日志系统。
 ///
-/// 返回的 LoggerManager 句柄由调用方（run）持有到进程结束——
-/// 原二进制中 `let _logger` 活在 main 作用域，提前丢弃会使 inklog
-/// worker 断连、tracing 事件静默丢失。嵌入式调用方自管日志。
-///
-/// 出站脱敏：自建 [`GateSink`] 包装内置 ConsoleSink（fail-closed + 超门限
-/// 截断，与落库通路同一 fail 姿态；见
-/// [`crate::database::async_logger::redact_text`]）。内置 console 通道的
-/// masker 由 inklog 写死为 `DataMasker::new()`（fail-open 无 gate），
-/// LoggerManager builder 层无注入配置——故 `console(false)` 关内置通道
-/// （防同一条记录双写），经 add_sink 挂自建 sink。行为代价：自定义 sink
-/// 通道会进 ops 事件广播，内部故障 ops 事件从此上控制台。
-///
-/// log 门面（reqwest/sea-orm/tokio-tungstenite 等依赖）：inklog 的
-/// LogAdapter 结构上只投 console+主 async 通道，自定义 sink 通道到不了，
-/// `console(false)` 后这些记录会无痕消失——故先装 tracing-log 的
-/// [`tracing_log::LogTracer`] 把 log 记录转成 tracing 事件进统一总线
-/// （随 tracing 事件走 gate console sink 输出并脱敏）；inklog 随后自身
-/// 的 LogLogger 安装会因全局 logger 已设置而良性跳过（其装配注释明言
-/// 该场景为预期）。重复初始化（测试）时 LogTracer 安装失败被忽略。
+/// 返回的句柄须由调用方持有到进程结束——提前丢弃会使 worker 断连、事件静默丢失。
+/// 出站脱敏：关内置 console 通道，经 add_sink 挂自建 GateSink（fail-closed）。
+/// log 门面（reqwest/sea-orm 等）经 LogTracer 转 tracing 事件统一走 gate sink。
 pub(crate) async fn init_logger() -> Result<inklog::LoggerManager, NexusFlowError> {
     install_log_facade_bridge();
     let console_sink = crate::database::async_logger::GateSink::new(
@@ -79,9 +59,7 @@ pub(crate) async fn init_logger() -> Result<inklog::LoggerManager, NexusFlowErro
         })
 }
 
-/// log 门面桥的进程级安装尝试标记：init_logger 每次装配都会触及——
-/// 装配测试以此锁「桥接线存在」与执行顺序无关（LogTracer 全局单例的
-/// 成功与否无法作为接线证据：并发测试的桥机制测试也会尝试安装）。
+/// 桥安装标记：init_logger 每次装配触及，装配测试据此断言桥接线存在。
 static LOG_BRIDGE_TOUCHED: AtomicBool = AtomicBool::new(false);
 
 fn install_log_facade_bridge() {
@@ -97,7 +75,6 @@ pub(crate) fn log_bridge_touched() -> bool {
     LOG_BRIDGE_TOUCHED.load(Ordering::Relaxed)
 }
 
-/// 加载配置（原 main.rs）。
 pub(crate) fn load_config(
     config_path: Option<String>,
 ) -> Result<Arc<ConfigManager>, NexusFlowError> {
@@ -111,8 +88,7 @@ pub(crate) fn load_config(
     Ok(config_manager)
 }
 
-/// 装配 db → vendor → 日志管道 → DI kit → 路由栈 → ApiState
-/// （原 main.rs，顺序逐位一致，含 init_global_state）。
+/// 装配 db → vendor → 日志管道 → DI kit → 路由栈 → ApiState。
 pub(crate) async fn assemble(
     config_manager: Arc<ConfigManager>,
 ) -> Result<Assembly, NexusFlowError> {
@@ -130,11 +106,9 @@ pub(crate) async fn assemble(
         let config = config_manager.read();
         config.database.clone()
     };
-    // URL 单一出口（db-backend-selection D2）：主库与下方 DI kit 共用同一
-    // 解析结果——url 配置优先，path 按编译期后端回退
+    // URL 单一出口：主库与下方 DI kit 共用同一解析结果（url 优先，path 按编译期后端回退）。
     let db_url = resolve_database_url(&db_config)?;
-    // 日志走脱敏形态：url 配置（postgres:// 等）惯例内嵌口令，原文只进
-    // 连接参数，绝不进日志通道（redact_db_url 剥 userinfo 留 host/port）
+    // url 内嵌口令：日志只走脱敏形态，原文只进连接参数。
     tracing::info!(
         "{}",
         t_args(
@@ -149,9 +123,7 @@ pub(crate) async fn assemble(
     vendor_manager.initialize().await?;
     tracing::info!("{}", t("main-vendor-manager-initialized"));
 
-    // 日志管道构造 — AsyncLogger（异步批量落 request_logs）与
-    // TokenPreAggregator（usage 小时预聚合）自 Database 的 repository 构造，
-    // 经 ApiState 注入 handler（push 即返回，flush 由后台 worker 承担）。
+    // 日志管道：AsyncLogger 批量落 request_logs，TokenPreAggregator 按小时预聚合 usage。
     let logger_handle = Arc::new(AsyncLoggerHandle::new(crate::database::AsyncLogger::new(
         database.repository.clone(),
         1024,
@@ -172,8 +144,7 @@ pub(crate) async fn assemble(
     }
     tracing::info!("{}", t("main-log-pipeline-initialized"));
 
-    // Build trait-kit AsyncKit DI container: oxcache → dbnexus → inklog
-    // chain + limiteron governor. Proves all 4 brother libs are DI-compatible.
+    // 构建 trait-kit AsyncKit DI 容器（oxcache → dbnexus → inklog + limiteron governor）
     #[cfg(all(
         feature = "infrastructure",
         feature = "database",
@@ -198,22 +169,17 @@ pub(crate) async fn assemble(
 
     let router = RouterStruct::new(config_manager.clone(), vendor_manager.clone());
 
-    // LinUCB 状态（Router 选择档与 handler 奖励回传共享）。
-    // 臂矩阵正则初值 = max(α²,1)·I 在构造期由 [routing].ucb_alpha 定死；
-    // selection 默认 "weighted" 时状态不被咨询、不更新（默认路径不变）。
+    // LinUCB 状态（Router 选择与 handler 奖励回传共享）；selection=weighted 时不咨询不更新。
     let bandit_state = Arc::new(crate::router::bandit::BanditState::new(
         config_manager.read().routing.ucb_alpha,
     ));
 
     // 会话亲和表（oxcache memory 后端，TTL 1h 活跃续期）。
-    // 存储完全走 oxcache CacheBackend（set 带 TTL / get / expire 续期）。
     let affinity_table = Arc::new(crate::router::affinity::AffinityTable::with_memory_backend(
         crate::router::affinity::DEFAULT_AFFINITY_TTL,
     ));
 
-    // 精确响应缓存（oxcache memory 后端）。enabled/TTL 由
-    // [cache] 段热读控制——默认关闭，运维在 config.toml 显式打开。
-    // TTL 负载联动的指标来源（L_p=vendor_ewma、Q=traffic_shares）
+    // 精确响应缓存（oxcache memory）；enabled/TTL 由 [cache] 段热读，默认关闭。
     let response_cache = Arc::new(crate::api::response_cache::ResponseCache::new(
         Arc::new(oxcache::backend::default_memory_backend()),
         config_manager.clone(),
@@ -250,27 +216,21 @@ pub(crate) async fn assemble(
         affinity: Some(affinity_table.clone()),
         response_cache: Some(response_cache),
         bandit: Some(bandit_state),
-        // WP8 配额账本：中间件入口预扣与回补钩共享同一实例（常驻构造，
-        // enabled=false 时零判限）。
+        // 配额账本：中间件入口预扣与回补钩共享同一实例（enabled=false 时零判限）。
         quota: Some(Arc::new(crate::middleware::quota::QuotaState::new())),
     });
 
     crate::api::init_global_state(api_state.clone());
     tracing::info!("{}", t("main-global-state-initialized"));
 
-    // WP7 主动健康检查探针（审查 M8）：任务常驻，mode/interval/strategy
-    // 每周期热读（mode=off 默认 → 周期 no-op，开销可忽略）——原「启动期
-    // 一次性 spawn」使 off→suspect_only 热改不启动探测，与 [health] 的
-    // ✅ 热生效标注不符。句柄随 Assembly 移交停机收尾 abort。
+    // 健康探针常驻（mode/interval/strategy 每周期热读），句柄移交 Assembly 停机 abort。
     let probe_handle = Some(tokio::spawn(crate::vendor::probe::run_probe_loop(
         vendor_manager.clone(),
         config_manager.clone(),
     )));
 
-    // 就绪探针注册（sdforge 全局表，装配期一次性；检查读既有句柄，
-    // 不发起上游请求）。
+    // 就绪探针注册（sdforge 全局表，装配期一次性；检查不发起上游请求）。
     crate::api::readiness::register_readiness_checks(&api_state, &database.pool);
-    // 配置热重载（旁挂；纯内存配置或监听失败时为 None，行为不变）。
     let hot_reloader = crate::server::hot_reload::maybe_start_hot_reload(&config_manager).await;
 
     Ok(Assembly {
@@ -291,25 +251,18 @@ mod tests {
     use std::sync::Mutex;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// 装配运行时验证：console 替代组装（内置通道关闭 + 自建 gate sink
-    /// 经 add_sink）必须能真实 build——通道拓扑错误只在构建期暴露，
-    /// 编译期查不出。
-    ///
-    /// 追加断言 log 门面桥已生效：LogTracer::init 成功时把 log 全局
-    /// max_level 提到 Trace（进程内唯一装点就是本模块的 init_logger）。
+    /// 装配运行时验证：通道拓扑错误只在构建期暴露。
+    /// 断言 log 门面桥已生效（LogTracer::init 把全局 max_level 提到 Trace）。
     #[tokio::test(flavor = "multi_thread")]
     async fn test_init_logger_builds_masked_console_assembly() {
         let manager = init_logger().await.expect("init_logger 必须能构建");
         manager.shutdown().ok();
-        // 接线锁：桥安装必须随装配被触及（与本测试执行顺序无关——旗标
-        // 只由 init_logger 的 install_log_facade_bridge 设置；删掉该调用
-        // 本断言即红，不受并发测试自装 LogTracer 影响）
+        // 桥安装必须随装配被触及（旗标仅由 install_log_facade_bridge 设置）。
         assert!(
             log_bridge_touched(),
             "init_logger 必须安装 log 门面桥（install_log_facade_bridge）"
         );
-        // LogTracer::init 成功时把 log 全局 max_level 提到 Trace；进程内
-        // 若并发测试先行安装亦为 Trace（同一装点族）——此为弱补强断言
+        // 并发测试先行安装时亦为 Trace，弱补强断言
         assert_eq!(
             log::max_level(),
             log::LevelFilter::Trace,
@@ -317,14 +270,7 @@ mod tests {
         );
     }
 
-    /// F1 桥端到端行为锁：log 门面记录经 LogTracer 转成 tracing 事件后，
-    /// 必须以 GateSink 同款脱敏通路出站——含明文 sk- token 的 log 记录
-    /// 到达捕获 sink 时 message 已被脱敏、target 保留。分层语义：桥本身
-    /// 只转发（tracing 事件层是明文），脱敏发生在 GateSink——本测试把
-    /// GateSink 挂在捕获 Layer 内，端到端锁「桥转发 + 出站脱敏」两环。
-    /// 进程级单例说明：log 全局 logger 只能装一次，LogTracer::init 失败
-    /// 意味着并发测试的 init_logger 已装桥——装上的同为 LogTracer，
-    /// 断言不受影响。
+    /// 桥端到端：log 门面记录经 LogTracer 转 tracing 后必须经 GateSink 脱敏出站。
     #[test]
     fn test_log_facade_bridge_forwards_to_gate_sink_redaction() {
         let _ = tracing_log::LogTracer::init();
@@ -357,8 +303,7 @@ mod tests {
                 }
             }
             fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                // tracing-log 转发布局（其 src/lib.rs）：事件 target 固定
-                // "log"，原始 target 落在 "log.target" 字段
+                // tracing-log 布局：事件 target 固定 "log"，原始 target 在 log.target 字段
                 if field.name() == "log.target" {
                     self.log_target = Some(value.to_string());
                 }
@@ -395,8 +340,7 @@ mod tests {
                     fields,
                     ..Default::default()
                 };
-                // Layer 回调是同步上下文：GateSink.write 无真实异步 IO，
-                // 独立 executor 驱动即可
+                // Layer 回调是同步上下文，block_on 驱动 GateSink.write 即可
                 futures::executor::block_on(self.0.write(&record)).ok();
             }
         }
@@ -413,8 +357,6 @@ mod tests {
             1,
             "log 门面记录必须经桥到达 tracing → GateSink 链"
         );
-        // tracing-log 转发特征：事件 callsite target 固定 "log"，原始
-        // target 保留在 log.target 字段
         assert_eq!(written[0].target, "log", "桥转发事件的特征 target");
         assert_eq!(
             written[0].fields["log.target"],

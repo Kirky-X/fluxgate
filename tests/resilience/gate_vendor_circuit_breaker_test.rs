@@ -4,14 +4,9 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试 — CircuitBreaker（limiteron::circuit）接入 VendorManager。
-//!
-//! `force_circuit_open` 已删除（limiteron 公开面无 force API），
-//! 测试改为 mockito 预置失败响应自然驱动熔断（failure_threshold=5）：
-//! - 预置 5×500 + 测试配置 [retry] max_retries=0——500 无内部
-//!   重试，每个请求恰好 1 次 HTTP，5 个请求即把失败计数推到阈值；
-//! - 熔断/限流的路由判定已全面实时化于 get_status（评审 blocker 修复：
-//!   持久回写会造成「路由排除→无探针→永不恢复」死锁），worker 回写仅剩
-//!   观测计数（inc_error / 成功清零）。
+//! mockito 预置 5×500 + [retry] max_retries=0 自然驱动熔断
+//!（failure_threshold=5，每请求恰好 1 次 HTTP）；熔断/限流的路由判定
+//! 实时化于 get_status（持久回写会造成「路由排除→无探针→永不恢复」死锁）。
 //!
 //! 集成属性：
 //! 1. 熔断后 route() 不再选中该 vendor（路由过滤接线断言）
@@ -343,15 +338,9 @@ async fn circuit_recovers_after_timeout_via_probes_and_route_resumes() {
     tokio::time::sleep(Duration::from_millis(WINDOW_SLEEP_MS)).await;
 
     // 超时放行：get_status 不再 Unavailable（探测窗口开启）。
-    //
-    // 判定链为墙钟域：circuit_probe_ready 用 chrono::Utc::now() 与
-    // last_failure_utc 差值比较（limiteron get_stats 仅暴露 UTC 域
-    // src/error/mod.rs；Instant 域 last_failure_time 为私有字段
-    // src/circuit/types.rs，无法在 manager 侧复刻库内单调钟判定）。
-    // WSL2 实时钟相对 tokio 单调钟存在秒级回跳（实测：sleep(31s) 正常
-    // 执行后 elapsed 仅 29.62s < 30s），瞬时断言会偶发误报。此处轮询
-    // 等待窗口内放行——断言语义不变（恢复通路必须存在），仅容忍墙钟
-    // 瞬时回跳；get_status 为只读 peek，轮询不消耗探针 mock（expect(3)）。
+    // 判定链为墙钟域（circuit_probe_ready 用 Utc::now 差值）；WSL2 实时钟
+    // 相对 tokio 单调钟有秒级回跳，瞬时断言会偶发误报——此处轮询等待窗口
+    // 内放行（get_status 为只读 peek，轮询不消耗探针 mock）
     let mut status = manager.get_status("vendor_a").await;
     for _ in 0..30 {
         if status == VendorStatus::Available {
@@ -463,13 +452,9 @@ async fn cover_all_paths_wraps_stream_and_passthrough_dispatch() {
     embeddings_mock.assert_async().await;
 }
 
-/// CB Open 超时窗口过后：首次探针成功使状态停在 HalfOpen
-///（success_threshold=3 未满），get_status 的 HalfOpen 臂放行探测流量
-///（不判 Unavailable）——「半开窗口必须存在放行通路」的语义断言。
-///
-/// 经 [resilience].circuit_open_timeout_ms 注入 300ms 短窗口：语义与
-/// 生产 30s 完全一致（elapsed >= threshold 的 limiteron 判定），仅
-/// 时间尺度缩短，测试从 31s 真实睡眠降到亚秒级。
+/// CB Open 超时窗口过后：首次探针成功使状态停在 HalfOpen（success_threshold
+/// 未满），get_status 的 HalfOpen 臂放行探测流量；经 circuit_open_timeout_ms
+/// 注入 300ms 短窗口（语义与生产 30s 一致，仅时间尺度缩短）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn half_open_admits_probe_and_get_status_releases_traffic() {
     let mut server = mockito::Server::new_async().await;

@@ -64,20 +64,14 @@ fn snapshot_current_config(manager: &ConfigManager, config_path: &Path) {
     }
 }
 
-/// 配置管理器 — 内存热读态由 confers::dynamic::DynamicField 承载
-/// （arc-swap 无锁读，O(1) get_ref；update 触发 on_change 回调），
-/// 文件写入为同目录唯一临时文件 + rename 的原子替换。
-///
-/// 写路径互斥（write_lock）：validate→序列化→tmp→rename→内存切换全程
-/// 串行，消除 axum handler 并发 POST /admin/config 的交错——无锁时
-/// 「A 写 tmp → B 覆盖 tmp → A rename 落盘 B 的内容 → B rename ENOENT」
-/// 会导致磁盘与内存态分裂。read-modify-write 场景使用 update_config_with
-/// 在同一锁内完成，杜绝丢失更新。
+/// 配置管理器：内存热读态由 confers DynamicField 承载（无锁读），
+/// 文件写入为唯一临时文件 + rename 原子替换。写路径互斥（write_lock）：
+/// 校验→序列化→落盘→内存切换全程串行，防并发落盘交错；RMW 场景用
+/// update_config_with 在同一锁内完成，杜绝丢失更新
 #[derive(Clone)]
 pub struct ConfigManager {
     config: Arc<DynamicField<Config>>,
-    /// 启动加载路径（ConfigLoader::load 时注入）；update_config 写回同一路径。
-    /// None = 纯内存构造（测试场景），update_config 拒绝落盘。
+    /// 启动加载路径（ConfigLoader::load 时注入）；None = 纯内存构造，update_config 拒绝落盘
     path: Arc<RwLock<Option<PathBuf>>>,
     /// 写路径互斥（std Mutex：无 .await 穿越临界区，跨线程可用）
     write_lock: Arc<Mutex<()>>,
@@ -111,11 +105,8 @@ impl ConfigManager {
         (*self.read()).clone()
     }
 
-    /// 更新配置：校验 → 原子落盘 → 内存态切换（写锁全程持有）。
-    ///
-    /// 顺序即事务语义：校验/落盘任一失败时内存态不变、磁盘文件不变；
-    /// 全部成功才切换内存态（DynamicField::update，触发 on_change 回调）。
-    /// 并发调用在本管理器内串行化，最终磁盘与内存一致（都为最后完成者）。
+    /// 更新配置：校验 → 原子落盘 → 内存切换（写锁全程持有）；
+    /// 校验/落盘任一失败时内存态与磁盘均不变
     pub fn update_config(&self, new_config: Config) -> Result<(), GateError> {
         let _guard = self
             .write_lock
@@ -124,9 +115,7 @@ impl ConfigManager {
         self.persist_and_swap(new_config)
     }
 
-    /// 内存态热交换（G10 热重载桥接用）：校验后只切内存，不落盘。
-    /// 磁盘仍是操作者编辑的源文件；落盘只走 `update_config`（admin 通道）。
-    /// 写锁同样持有——与 admin 并发写互斥，内存与磁盘最终一致。
+    /// 内存态热交换（热重载桥接用）：校验后只切内存不落盘，落盘只走 update_config
     pub fn swap_memory(&self, new_config: Config) -> Result<(), GateError> {
         let _guard = self
             .write_lock
@@ -136,11 +125,8 @@ impl ConfigManager {
         self.config.update(new_config);
         Ok(())
     }
-    /// 原子 read-modify-write：在写锁内读当前配置 → 应用闭包 → 校验落盘切换。
-    ///
-    /// 供 admin 的 update_vendor/update_model 等 RMW 端点使用，替代
-    /// 「get_config → 修改 → update_config」的裸三段式（并发下丢失更新）。
-    /// 闭包返回 Err 时整个更新中止，内存与磁盘均不变。
+    /// 原子 read-modify-write：写锁内读当前配置 → 应用闭包 → 校验落盘切换；
+    /// 闭包返回 Err 时整个更新中止
     pub fn update_config_with<F>(&self, mutate: F) -> Result<(), GateError>
     where
         F: FnOnce(&mut Config) -> Result<(), GateError>,
@@ -154,20 +140,17 @@ impl ConfigManager {
         self.persist_and_swap(next)
     }
 
-    /// 持锁前提下的公共尾部：校验 → 序列化 → 唯一 tmp → rename → 内存切换。
-    /// 调用方必须已持有 write_lock。
+    /// 持锁前提下的公共尾部：校验 → 序列化 → 唯一 tmp → rename → 内存切换
     fn persist_and_swap(&self, new_config: Config) -> Result<(), GateError> {
-        // 1. 共享校验（与加载路径同一条 validate_config）
+        // 共享校验（与加载路径同一条 validate_config）
         validate_config(&new_config)?;
 
-        // 2. 序列化先行 — 序列化失败不触碰磁盘与内存
+        // 序列化先行 — 失败不触碰磁盘与内存
         let content = toml::to_string_pretty(&new_config).map_err(|e| GateError::Config {
             message: t_args("config-serialize-failed", &[("error", e.to_string())]),
         })?;
 
-        // 3. 原子写：同目录唯一临时文件 + rename（POSIX 原子替换）。
-        //    唯一名（pid+序号）避免固定 "config.toml.tmp" 被并发/多进程实例
-        //    互踩：一方 rename 走后另一方拿到 ENOENT 或覆盖内容错乱。
+        // 原子写：同目录唯一临时文件 + rename；唯一名（pid+序号）防并发/多进程互踩
         let path = self.path().ok_or(GateError::Config {
             message: t("config-path-unknown"),
         })?;

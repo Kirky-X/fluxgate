@@ -665,13 +665,13 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 
 ### GET /admin/metrics
 
-返回全局指标快照（来自 `GlobalMetrics`，包含请求计数、错误率、平均延迟、各厂商细分指标、会话亲和命中率与流量分布熵），并附加日志背压丢弃计数。
+返回全局指标快照（来自 `GlobalMetrics`，包含请求计数、错误率、平均延迟、各厂商细分指标、会话亲和命中率与流量分布熵），并附加日志背压丢弃计数与响应缓存统计。
 
 **认证**: 需要 Bearer Token
 
 **Query 参数**: 无
 
-**响应**: `MetricsSnapshot`（另加 `dropped_logs` 字段）
+**响应**: `MetricsSnapshot`（另加 `dropped_logs`、`secret_scan_dropped`、`cache` 字段）
 
 ```json
 {
@@ -705,7 +705,24 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
   "affinity_hit_rate": 0.42,
   "top1_share": 0.7,
   "share_entropy": 0.88,
-  "dropped_logs": 0
+  "dropped_logs": 0,
+  "cache": {
+    "l1_hits": 420,
+    "l1_misses": 580,
+    "l1_sets": 580,
+    "l1_deletes": 12,
+    "l2_hits": 0,
+    "l2_misses": 0,
+    "l2_sets": 0,
+    "l2_deletes": 0,
+    "total_operations": 1592,
+    "l1_item_count": 300,
+    "l1_capacity_used": 300,
+    "prefetch_count": 0,
+    "compression_count": 0,
+    "compression_bytes_saved": 0,
+    "timestamp": "2026-01-01T00:00:00Z"
+  }
 }
 ```
 
@@ -724,6 +741,20 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 | `top1_share` | number | 滑窗 top-1 厂商流量占比（[0,1]） |
 | `share_entropy` | number | 流量份额 Shannon 熵（归一 [0,1]） |
 | `dropped_logs` | integer | 日志通道满被丢弃的日志条数 |
+| `secret_scan_dropped` | integer | secret gate 拦截的出站串计数 |
+| `cache` | object | 响应缓存统计（oxcache 全局记录器，见下表） |
+
+`cache` 对象的字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `l1_hits` / `l1_misses` | integer | L1 命中 / 未命中次数（两者之比即缓存命中率） |
+| `l1_sets` / `l1_deletes` | integer | L1 写入 / 删除次数 |
+| `l2_hits` / `l2_misses` / `l2_sets` / `l2_deletes` | integer | L2 同名计数（本仓单层内存后端，恒为 0） |
+| `total_operations` | integer | 记录的操作总数 |
+| `l1_item_count` / `l1_capacity_used` | integer | L1 当前条目数 / 占用容量 |
+| `prefetch_count` / `compression_count` / `compression_bytes_saved` | integer | 预取 / 压缩次数与压缩省下字节数（本仓未启用，恒为 0） |
+| `timestamp` | string | 快照时间（RFC 3339） |
 
 `vendors` 数组中每个元素的字段：
 

@@ -114,9 +114,8 @@ mod hot_reload {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// ③ [resilience] 段经热更全量写回后保留且取值不丢 ——
-    /// Section 字段落地的直接验证（persist_and_swap 以 toml::to_string_pretty
-    /// 全量写回，未进 Config 的段会在首次 POST /admin/config 时从磁盘消失）。
+    /// ③ [resilience] 段经热更全量写回后保留且取值不丢（全量写回用
+    /// toml::to_string_pretty，未进 Config 的段会从磁盘消失）。
     #[test]
     fn test_update_persists_resilience_section() {
         let mut seed = sample_config("v1", "KEY_A");
@@ -207,8 +206,7 @@ mod hot_reload {
     }
 
     /// ④ update 后执行路径拿到新 config：fresh_config/execute 读的
-    /// get_vendor 入口在 update 后立即返回新 api_key_env
-    /// （回归"改了配置没生效"）
+    /// get_vendor 入口在 update 后立即返回新 api_key_env。
     #[tokio::test]
     async fn test_execute_path_reads_fresh_config_after_update() {
         let (manager, path, _dir) = setup("nx-hot-execute", &sample_config("v1", "KEY_A"));
@@ -666,10 +664,9 @@ concurrency = { requests_per_second = 10 }
         validate_config(&config).expect("empty catalog must pass");
     }
 
-    // ======== 审查回写：价格/空白 id/条目上限 ========
+    // ======== 价格/空白 id/条目上限校验 ========
 
-    /// 审查：四个价格字段必须有限（拒 NaN/Inf）且 ≥ 0——
-    /// NaN 比较恒 false、负价是配置错误，加载与热更新两路同拒
+    /// 四个价格字段必须有限（拒 NaN/Inf）且 ≥ 0（加载与热更新两路同拒）。
     #[test]
     fn catalog_rejects_non_finite_and_negative_prices() {
         let cases: Vec<(&str, f64)> = vec![
@@ -725,7 +722,7 @@ concurrency = { requests_per_second = 10 }
         validate_config(&config).expect("zero and finite positive prices must pass");
     }
 
-    /// 审查：model_id trim 后非空（全空白 id 拒绝）
+    /// model_id trim 后非空（全空白 id 拒绝）。
     #[test]
     fn catalog_rejects_blank_model_id() {
         let mut config = create_test_config();
@@ -738,7 +735,7 @@ concurrency = { requests_per_second = 10 }
         assert!(matches!(err, GateError::Config { .. }));
     }
 
-    /// 审查：目录条目上限 1024——超限拒绝、恰在限额放行
+    /// 目录条目上限 1024：超限拒绝、恰在限额放行。
     #[test]
     fn catalog_rejects_over_cap_and_admits_at_cap() {
         let build_entry = |i: usize| ModelCatalogEntry {

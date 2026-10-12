@@ -2405,6 +2405,10 @@ mod response_cache_tests {
             "messages": [{"role": "user", "content": "hello"}],
             "temperature": 0
         });
+        // /admin/metrics 的 cache 块数据源：oxcache 全局记录器（本进程唯一
+        // 的 oxcache Cache 即此响应缓存）。计数为进程级单调量，并行用例只会
+        // 抬高基线，故按增量断言。
+        let stats_before = oxcache::get_enhanced_stats();
 
         let mut first = post_chat(state.clone(), body.clone(), &[]).await;
         assert_eq!(first.status(), 200);
@@ -2426,6 +2430,20 @@ mod response_cache_tests {
         assert_eq!(first_body, second_body, "缓存命中响应必须与首次一致");
 
         mock.assert_async().await; // 上游恰好 1 次
+
+        let stats_after = oxcache::get_enhanced_stats();
+        assert!(
+            stats_after.l1_misses > stats_before.l1_misses,
+            "首次 MISS 必须计入全局 l1_misses（before={}，after={}）",
+            stats_before.l1_misses,
+            stats_after.l1_misses,
+        );
+        assert!(
+            stats_after.l1_hits > stats_before.l1_hits,
+            "第二次 HIT 必须计入全局 l1_hits（before={}，after={}）",
+            stats_before.l1_hits,
+            stats_after.l1_hits,
+        );
     }
 
     /// ② temperature=0.7（采样语义）→ 两次都回源，不缓存。
@@ -2724,12 +2742,9 @@ mod linucb_reward_chain {
             .unwrap()
     }
 
-    /// 评审修复 major 回归（handler→奖励全链，修复前零覆盖）：
-    /// 1) 大写 model：选择键归一 "gpt-4"，奖励必须落同键
-    ///    （修复前写 ("GPT-4", vendor) 与被咨询臂永不相交）；
-    /// 2) auto 路径：选择走 "__global__" 臂，奖励必须同键
-    ///    （修复前写 ("auto", vendor)——主路径永不学习）；
-    /// 3) 失败奖励（r=0）压低被咨询臂 UCB（学习闭环生效）。
+    /// 奖励臂键回归（handler→奖励全链）：1) 大写 model 奖励落归一键
+    /// "gpt-4"；2) auto 路径奖励落 "__global__" 臂；3) 失败奖励（r=0）
+    /// 压低被咨询臂 UCB
     #[tokio::test]
     async fn reward_lands_on_selection_arm_key() {
         let (state, bandit) = create_linucb_state().await;
@@ -5254,7 +5269,7 @@ mod api_handler_coverage {
     }
 }
 
-/// WP3 数据面端点（R-api-surface-001/002/003）：GET /v1/models 与
+/// 数据面端点：GET /v1/models 与
 /// POST /v1/messages/count_tokens。走 `create_router` 全中间件栈
 /// （认证/限流与线上同形），覆盖成功/未鉴权/参数错误三路径 + 去重 +
 /// 不缓存。
@@ -5411,7 +5426,7 @@ mod data_plane_endpoints {
         (status, value)
     }
 
-    /// R-api-surface-001：模型集合 = 目录 ∪ vendor 配置去重；同模型多
+    ///：模型集合 = 目录 ∪ vendor 配置去重；同模型多
     /// vendor 只出现一次；禁用 vendor 的模型不出现。
     #[tokio::test]
     async fn models_lists_catalog_union_vendor_models_deduped() {
@@ -5443,7 +5458,7 @@ mod data_plane_endpoints {
         assert_eq!(body["data"][0]["owned_by"], "nexusflow");
     }
 
-    /// R-api-surface-001：未鉴权返回 401（与其它 /v1 端点一致）。
+    ///：未鉴权返回 401（与其它 /v1 端点一致）。
     #[tokio::test]
     async fn models_requires_auth() {
         let state = make_state(
@@ -5460,7 +5475,7 @@ mod data_plane_endpoints {
         assert_eq!(body["object"], "list");
     }
 
-    /// R-api-surface-003：模型列表始终现算——缓存开启且接线时二次请求
+    ///：模型列表始终现算——缓存开启且接线时二次请求
     /// 仍无 X-Cache 头（不命中响应缓存）。
     #[tokio::test]
     async fn models_responses_are_never_cached() {
@@ -5487,7 +5502,7 @@ mod data_plane_endpoints {
         }
     }
 
-    /// R-api-surface-002：合法请求返回正整数 input_tokens；相同输入两次
+    ///：合法请求返回正整数 input_tokens；相同输入两次
     /// 结果一致（确定性）；更长输入更大。
     #[tokio::test]
     async fn count_tokens_estimates_deterministically() {
@@ -5547,7 +5562,7 @@ mod data_plane_endpoints {
         );
     }
 
-    /// R-api-surface-002：未鉴权返回与其它 /v1 端点一致的 401。
+    ///：未鉴权返回与其它 /v1 端点一致的 401。
     #[tokio::test]
     async fn count_tokens_requires_auth() {
         let state = make_state(
@@ -5583,7 +5598,7 @@ mod data_plane_endpoints {
         assert!(ok["input_tokens"].as_u64().unwrap() > 0);
     }
 
-    /// R-api-surface-002：缺 messages / 非法 body 返回 Validation 错误结构。
+    ///：缺 messages / 非法 body 返回 Validation 错误结构。
     #[tokio::test]
     async fn count_tokens_rejects_bad_params() {
         let state = make_state(
@@ -5618,7 +5633,7 @@ mod data_plane_endpoints {
     }
 }
 
-/// WP4 回退观测头（R-streaming-resilience-004）：开关开启时成功响应附
+/// 回退观测头：开关开启时成功响应附
 /// 四头（单跳 attempts=1；首跳失败换路 attempts≥2 且链完整；流式与非
 /// 流式两类）；开关关闭时四头均不存在。
 mod fallback_observation_headers {
@@ -5953,7 +5968,7 @@ mod fallback_observation_headers {
     }
 }
 
-/// WP5 路由可解释性（R-routing-explainability-001/002/003）：只读端点，
+/// 路由可解释性：只读端点，
 /// reason_code 枚举覆盖，入选者权重分解与档位，解释与路由共用同一实现。
 mod route_explain {
     use crate::common;
@@ -6217,7 +6232,7 @@ mod route_explain {
         assert_eq!(item["reason_code"], "cooling_down");
     }
 
-    /// cooling_down（key 池粒度，M9/R-routing-explainability-002）：唯一 key
+    /// cooling_down（key 池粒度，M9/）：唯一 key
     /// 因 401 永久黑名单 → 池耗尽，explain 报 cooling_down 且 detail 注明
     /// key 池耗尽与指纹（vendor 状态本身仍 Available——修复前误报 eligible）。
     #[tokio::test]
@@ -6271,7 +6286,7 @@ mod route_explain {
         );
         let detail = item["detail"].as_str().unwrap_or_default();
         assert!(
-            detail.contains("key 池耗尽"),
+            detail.contains("key 池耗尽") || detail.contains("Key pool exhausted"),
             "detail 必须注明 key 池耗尽: {detail}"
         );
     }
@@ -6391,7 +6406,7 @@ mod route_explain {
         assert_eq!(item["reason_code"], "weight_zero");
     }
 
-    /// selection 档位随配置切换（R-routing-explainability-002）：linucb /
+    /// selection 档位随配置切换：linucb /
     /// power_of_two / 默认 weighted 均如实上报；linucb 大小写与空白不敏感
     /// （与选择层同口径），未知值回滚 weighted。因子分解不随档位变形。
     #[tokio::test]

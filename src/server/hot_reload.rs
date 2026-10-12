@@ -3,23 +3,11 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 配置热重载：`ConfigManager` 旁挂 confers
-//! `HotReloader`（watch + progressive-reload），监听配置文件变更。
-//!
-//! 生效语义（保守白名单）：
-//!
-//! - 热生效：每请求现读的段——retry/routing/cache/resilience/admission/
-//!   auth/pricing/model_catalog（读路径见各段 `config_manager.read()` 调用处）；
-//! - 拒绝（`ReloadRejected`，保旧快照继续服务）：构造期绑定、拓扑段或
-//!   非热读段——vendors（实例拓扑）/server（监听绑定）/database（连接池）/
-//!   grpc/cors（建站装配）/rate_limit（Router 构造期建表）/docs（文档路由
-//!   建站挂载）/global_model（无每请求热读点，接受即静默空转），改动需
-//!   重启进程生效；
-//! - 解析失败同样保旧（loader Err → 失败计数 + 日志，当前配置不动）。
-//!
-//! 回路安全：admin 通道写文件（`update_config` 落盘）同样触发 watcher 事件，
-//! 但内容与内存一致时桥接跳过交换（`PartialEq` 比对），不形成写回环；
-//! 不启用 confers env feature（无 .env 自动加载）。
+//! 配置热重载：监听文件变更，桥接进 `ConfigManager` 内存态（不落盘）。
+//! 内容一致时跳过，不形成写回环；解析或结构校验失败保旧快照。
+//! 热生效：retry/routing/cache/resilience/admission/auth/pricing/model_catalog。
+//! 拓扑与构造期段（vendors/server/database/grpc/cors/rate_limit/docs/
+//! global_model）变更被拒绝，需重启进程。
 
 use std::sync::Arc;
 
@@ -32,11 +20,10 @@ use confers::watcher::{
 use crate::config::{Config, ConfigManager};
 use crate::i18n::t_args;
 
-/// 热重载监听去抖（毫秒）：原子 rename 写穿透一次事件；编辑器多次保存
-/// 合并为一次重载。
+/// 去抖（毫秒）：原子 rename 穿透一次事件，多次保存合并为一次重载。
 const HOT_RELOAD_DEBOUNCE_MS: u64 = 500;
 
-/// 结构门：构造期绑定/拓扑段变化一律拒绝（旧快照继续服务）。
+/// 结构门：构造期绑定/拓扑段变化一律拒绝，旧快照继续服务。
 struct StructuralGate {
     manager: Arc<ConfigManager>,
 }
@@ -87,7 +74,7 @@ impl ConfigProvider for EmptyProvider {
     }
 }
 
-/// 变更段名（日志留痕用，只记段名不记值——值可能是密钥）。
+/// 变更段名（日志只记段名不记值，值可能是密钥）。
 fn changed_sections(old: &Config, new: &Config) -> Vec<&'static str> {
     let mut sections = Vec::new();
     if old.retry != new.retry {
@@ -114,7 +101,7 @@ fn changed_sections(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.model_catalog != new.model_catalog {
         sections.push("model_catalog");
     }
-    // 以下段变更走拒绝路径（保旧），正常提交中不应出现；列出以便日志完备
+    // 以下段变更走拒绝路径，正常提交不出现；列出仅为日志完备
     if old.vendors != new.vendors {
         sections.push("vendors");
     }
@@ -139,8 +126,7 @@ fn changed_sections(old: &Config, new: &Config) -> Vec<&'static str> {
     sections
 }
 
-/// 启动热重载（装配期一次性）：无配置文件路径（纯内存构造，如测试）或
-/// 监听建立失败时返回 `None`（热重载静默缺席，现有行为不变）。
+/// 启动热重载（装配期一次性）；无配置文件路径或监听建立失败时返回 `None`。
 pub(crate) async fn maybe_start_hot_reload(
     manager: &Arc<ConfigManager>,
 ) -> Option<HotReloader<Config>> {
@@ -153,18 +139,10 @@ pub(crate) async fn maybe_start_hot_reload(
         .with_pre_commit_check(Arc::new(StructuralGate {
             manager: manager.clone(),
         }));
-    // 监听父目录而非单文件——admin 通道 tmp+rename
-    // 原子写盘会换 inode，单文件监听在首次 rename 后永久失明；目录监听
-    // 下目录内杂项事件（tmp 文件、config-backups 快照）触发的冗余重载
-    // 由“内容一致跳过”终结，无副作用。
-    let watch_dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let watcher = FsWatcher::new(&watch_dir, HOT_RELOAD_DEBOUNCE_MS)
-        .await
-        .ok()?;
+    // 文件目标监听：库内部自动改挂父目录 + 精确路径过滤 + 出口去抖，
+    // 换 inode 的原子替换与 delete+recreate 都不会失明，同时只转发该文件
+    // 自身的事件（同目录 data/logs/config-backups 等旁路写盘不再触发重载）。
+    let watcher = FsWatcher::new(&path, HOT_RELOAD_DEBOUNCE_MS).await.ok()?;
     if !watcher.is_running() {
         tracing::warn!("{}", t_args("main-hot-reload-watcher-unavailable", &[]));
         return None;
@@ -189,8 +167,7 @@ pub(crate) async fn maybe_start_hot_reload(
 
     let reloader_handle = HotReloader::spawn(reloader, watcher, load);
 
-    // 桥接：已提交配置 → ConfigManager 内存态（只切内存，不落盘）。
-    // 内容一致时跳过（admin 写盘触发的自有事件在此处终结，不成环）。
+    // 桥接：已提交配置 → ConfigManager 内存态；内容一致时跳过。
     let mut rx = reloader_handle.subscribe();
     let bridge_manager = manager.clone();
     tokio::spawn(async move {
@@ -220,7 +197,7 @@ pub(crate) async fn maybe_start_hot_reload(
         }
     });
 
-    // 路径来自启动参数，过滤控制字符再入日志，防伪造日志行
+    // 过滤控制字符再入日志，防伪造日志行
     let watching_path: String = path
         .display()
         .to_string()
@@ -239,8 +216,7 @@ mod tests {
     use super::*;
 
     fn minimal_config() -> Config {
-        // 复用现有单测的最小合法形态：空 vendors + 默认段（validate 通过，
-        // 无 auth 段故无弱密钥校验）。
+        // 最小合法配置：空 vendors + 默认段。
         Config {
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".into(),
@@ -337,7 +313,7 @@ mod tests {
         );
     }
 
-    /// watcher 本体探针：文件改写必须产生事件（环境 inotify 可用性门禁）。
+    /// watcher 探针：文件改写必须产生事件（依赖 inotify 可用）。
     #[tokio::test]
     async fn fs_watcher_delivers_modify_events() {
         use confers::watcher::FsWatcher;
@@ -347,7 +323,6 @@ mod tests {
         std::fs::write(&path, "a = 1\n").expect("seed");
         let mut watcher = FsWatcher::new(&path, 100).await.expect("watch");
         assert!(watcher.is_running());
-        // 让监听线程就绪
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         std::fs::write(&path, "a = 2\n").expect("rewrite");
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), watcher.recv())
@@ -392,8 +367,7 @@ concurrency = { requests_per_second = 1 }
             .await
             .expect("watcher must start");
         assert_eq!(reloader.reload_failures(), 0);
-        // 监听线程建连是异步的：首写前等待就绪，否则事件可能落在
-        // watch 生效之前（生产常驻监听不受影响，仅测试时序）。
+        // 等待监听线程就绪，否则首写事件可能早于 watch 生效。
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // 热字段：max_retries 3 → 9，运行时生效
@@ -430,6 +404,85 @@ concurrency = { requests_per_second = 1 }
             manager.read().retry.max_retries,
             9,
             "拒绝后热字段旧值不受影响"
+        );
+    }
+
+    /// 文件目标监听的两条契约（本次改动本体）：
+    /// 1) 同目录兄弟文件与子目录（data/logs/config-backups 形态）的写盘
+    ///    不再触发重载——事件源收敛为配置文件本身；
+    /// 2) admin 落盘走 tmp+rename 原子替换，换 inode 后仍必须被捕获。
+    #[tokio::test]
+    async fn file_target_watch_ignores_sibling_noise_and_survives_atomic_replace() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let base = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[database]
+path = ":memory:"
+pool_size = 1
+
+[retry]
+max_retries = 3
+
+[[vendors]]
+id = "v"
+name = "V"
+type_ = "openai"
+api_key_env = "K"
+rate_limit = { type = "token", max_tokens = 1 }
+concurrency = { requests_per_second = 1 }
+"#;
+        std::fs::write(&path, base).expect("seed config");
+        let manager = Arc::new(ConfigManager::new(
+            crate::config::loader::load_config_from_path(&path).expect("parse"),
+        ));
+        manager.set_path(path.clone());
+
+        let reloader = maybe_start_hot_reload(&manager)
+            .await
+            .expect("watcher must start");
+        let reload_events = reloader.subscribe();
+        // 等待监听线程就绪，否则首写事件可能早于 watch 生效。
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // 旁路噪声：同目录兄弟文件 + 子目录写盘（等 ≥3 个去抖窗口）
+        std::fs::write(dir.path().join("sibling.toml"), "noise = 1\n").expect("sibling noise");
+        std::fs::create_dir_all(dir.path().join("data")).expect("mkdir data");
+        std::fs::write(dir.path().join("data/app.db"), b"noise").expect("subdir noise");
+        tokio::time::sleep(std::time::Duration::from_millis(1600)).await;
+        assert!(
+            !reload_events.has_changed().expect("reload channel alive"),
+            "旁路写盘不得触发重载（事件源必须收敛为配置文件本身）"
+        );
+        assert_eq!(
+            reloader.reload_failures(),
+            0,
+            "旁路写盘不得计失败（否则说明仍在对该盘事件做全量解析）"
+        );
+        assert_eq!(manager.read().retry.max_retries, 3);
+
+        // 原子替换：同目录 tmp + rename 覆盖配置文件（admin 落盘路径）
+        let tmp = dir.path().join("config.toml.tmp");
+        std::fs::write(&tmp, base.replace("max_retries = 3", "max_retries = 9"))
+            .expect("tmp write");
+        std::fs::rename(&tmp, &path).expect("atomic replace");
+
+        let mut applied = false;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if manager.read().retry.max_retries == 9 {
+                applied = true;
+                break;
+            }
+        }
+        assert!(
+            applied,
+            "rename 原子替换必须仍被捕获（failures={}，current_max_retries={}）",
+            reloader.reload_failures(),
+            manager.read().retry.max_retries,
         );
     }
 }

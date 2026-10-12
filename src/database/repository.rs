@@ -21,11 +21,8 @@ pub(crate) fn escape_like(keyword: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// 按连接后端选择方言投影。
-/// `schema.sql`（SQLite）为可读文档源；schema.postgres.sql / schema.mysql.sql
-/// 为方言投影。G4 后启动建表不再执行此处文本（sqlite/postgres/mysql 走
-/// `crate::database::migration` 的 FROZEN V1）；本函数仅服务非穷尽后端的
-/// 兜底 DDL 与投影一致性单测。
+/// 按连接后端选择方言投影。schema.sql（SQLite）为可读文档源；
+/// 启动建表已走版本化迁移，本函数仅服务非穷尽后端兜底 DDL 与一致性单测
 pub(crate) fn schema_sql_for_backend(backend: DatabaseBackend) -> &'static str {
     match backend {
         DatabaseBackend::Postgres => include_str!("schema.postgres.sql"),
@@ -35,17 +32,11 @@ pub(crate) fn schema_sql_for_backend(backend: DatabaseBackend) -> &'static str {
     }
 }
 
-/// schema 初始化单一实现（`Database::new` 与 `Repository::initialize` 共用）。
-///
-/// sqlite/postgres/mysql 走 dbnexus
-/// `MigrationExecutor` 版本化迁移（V1..=V2，见 `crate::database::migration`）；
-/// 其余后端（`DatabaseBackend` 非穷尽扩展）回落旧逐语句 DDL。
-/// MySQL 普通索引仍由 `ensure_indexes_mysql` 幂等创建（MySQL 8 无
-/// `CREATE INDEX IF NOT EXISTS`，迁移重放必须幂等）。v0.1 列回填
-/// （`migrate_v0_1_columns`）保持在迁移之后——存量库基线化的一部分。
-/// 迁移失败直接返回 Err（`Database::new` 转启动 fail-fast，无静默降级）。
-/// session 逐段获取逐段释放：测试池 max_connections=1，同时持有两个
-/// session 会死等。
+/// schema 初始化单一实现（Database::new 与 Repository::initialize 共用）：
+/// sqlite/postgres/mysql 走 dbnexus 版本化迁移（V1..=V2），其余后端回落
+/// 逐语句 DDL；MySQL 普通索引幂等创建（无 CREATE INDEX IF NOT EXISTS），
+/// v0.1 列回填保持在迁移之后。迁移失败直接返回 Err（启动 fail-fast）；
+/// session 逐段获取逐段释放（测试池 max_connections=1）
 pub(crate) async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
     let backend = {
         let session = pool.get_session("admin").await?;
@@ -76,11 +67,8 @@ pub(crate) async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
     Ok(())
 }
 
-/// V0.1 旧库列迁移：原仅存于 `Repository::initialize`
-/// 而其全部调用点在测试模块——生产链 `Database::new` 只跑 DDL，缺列旧库每次
-/// 落日志必失败。并入 `init_schema` 使迁移随生产建链可达。各后端均无
-/// ALTER TABLE ADD COLUMN IF NOT EXISTS 的可移植写法，探针查列存在性，
-/// 缺则 ALTER；列类型随方言（REAL / DOUBLE / DOUBLE PRECISION）。
+/// V0.1 旧库列迁移：并入 init_schema 使迁移随生产建链可达。各后端均无
+/// ALTER TABLE ADD COLUMN IF NOT EXISTS 的可移植写法，探针查列、缺则 ALTER
 async fn migrate_v0_1_columns(session: &Session, backend: DatabaseBackend) -> Result<(), DbError> {
     let cost_type = match backend {
         DatabaseBackend::MySql => "DOUBLE DEFAULT 0.0",
@@ -212,15 +200,9 @@ impl Repository {
         Ok(())
     }
 
-    /// 单事务参数化批量写入 — N 条 INSERT 包在一个 dbnexus 事务里
-    /// commit（SQLite 每事务一次 fsync，N 次 fsync 合为 1 次），与旧 sea-orm
-    /// `begin()` 绕道语义等价（单事务批量 + 提交），但全程走 dbnexus 会话
-    /// 防御链（权限解析/慢查询指标/事务感知）。
-    ///
-    /// 不用 `batch_execute_in_transaction`：它只收裸 SQL（`Vec<&str>`），用户
-    /// 内容（messages/response/error_message）需手写转义拼接，引入注入面；
-    /// 此处 `begin_transaction` + 逐条 `execute_with_params`（serde_json 参数
-    /// 绑定，无手写转义），单条失败回滚整批（不丢也不留半批）。
+    /// 单事务参数化批量写入：N 条 INSERT 包在一个事务里 commit（N 次 fsync
+    /// 合为 1），参数绑定无手写转义（不用裸 SQL batch——用户内容拼接引入
+    /// 注入面）；单条失败回滚整批
     pub async fn log_requests_batch(&self, logs: &[RequestLog]) -> Result<(), DbError> {
         if logs.is_empty() {
             return Ok(());

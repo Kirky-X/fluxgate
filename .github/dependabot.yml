@@ -3,7 +3,8 @@
 version: 2
 updates:
   # Rust 依赖更新(Cargo.toml / Cargo.lock)— 包根
-  # 注：path 依赖的 7 个兄弟库不在版本更新范围，只更新 crates.io 依赖
+  # 注：7 个自研库（confers / dbnexus / inklog / limiteron / oxcache / sdforge /
+  # trait-kit）同为 crates.io 依赖，随本生态位一并跟踪版本更新
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:

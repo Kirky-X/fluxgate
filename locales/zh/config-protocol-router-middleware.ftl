@@ -40,12 +40,21 @@ protocol-anthropic-error = Anthropic 错误: { $type } - { $message }
 protocol-openai-error = OpenAI 错误: { $type } - { $message }
 protocol-passthrough-stream-interrupted = 上游透传流中断
 protocol-stream-error-frame = 上游流中断：已输出部分内容后终止流。
+protocol-tool-buffer-malformed = 丢弃畸形工具缓冲：id 与 name 均空
 
 # ---- router/router.rs ----
 router-model-not-found = 模型 { $model } 未找到
 router-vendor-unavailable = 指定的厂商 { $vendor } 不可用或未配置
 router-fail-open-engaged = 全部候选冷却中；已启用 fail-open 回落
 router-global-fail-open-engaged = 全局候选全部冷却中；已启用 fail-open 回落
+router-explain-not-in-catalog = vendor { $vendor } 不提供模型 '{ $model }'
+router-explain-throttled = 限流窗口耗尽（window 无预算）
+router-explain-cooling-down = vendor 状态 { $status }（非 Available）
+router-explain-key-pool-exhausted = key 池耗尽（{ $n }/{ $n } 把 key 全部在黑名单：{ $prints }）
+router-explain-affinity-bound-elsewhere = 会话亲和绑定于 '{ $bound }'（hard 模式排他）
+router-explain-queue-over-limit = 队列深度 { $queue_len } ≥ 饱和点 { $saturation }
+router-explain-weight-zero = 合成权重为 0（生产轮盘赌全零时仍均匀回退可能选中，仅诊断提示）
+router-explain-eligible = 候选合格（selection={ $selection }）
 
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = 缺少 API Key

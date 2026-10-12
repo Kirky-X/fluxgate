@@ -5,8 +5,6 @@
 
 //! HTTP 服务器：SdForgeConfig 构建、sdforge 站点 + 业务路由合并、
 //! bind/serve、serve 结果映射与优雅停机 flush 管道收尾。
-//!
-//! 自 main.rs 平移，serve 与 flush 顺序逐位一致。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,25 +18,21 @@ use crate::i18n::{t, t_args};
 use crate::server::bootstrap;
 use crate::server::handle::ServerHandle;
 
-/// 装配至 Router 为止：bootstrap 全链装配 + sdforge 站点路由合并
-/// （原 main.rs）。供测试与嵌入式场景直接持有 Router。
+/// 装配至 Router 为止：bootstrap 全链装配 + sdforge 站点路由合并；供测试与嵌入式直接持有 Router。
 ///
-/// 返回的 [`ServerHandle`] 承载停机收尾（flush worker 停机位 +
-/// 日志/聚合补刷，幂等）：嵌入式进程退出前必须调用
-/// [`ServerHandle::shutdown`]，否则 flush worker 泄漏且缓冲数据丢失。
+/// 返回的 [`ServerHandle`] 承载停机收尾（幂等）：嵌入式进程退出前必须调用
+/// [`ServerHandle::shutdown`]，否则 flush worker 泄漏、缓冲数据丢失。
 ///
 /// # Panics
 ///
-/// 内部经 [`crate::api::init_global_state`] 注册 sdforge handler 全局态
-/// （OnceCell 一次性写入）：同进程**二次调用即 panic**
-/// （"Global state already initialized"）——重复装配是调用方 bug。
+/// 经 `init_global_state` 注册 sdforge handler 全局态（OnceCell 一次性写入）：
+/// 同进程二次调用即 panic（重复装配是调用方 bug）。
 pub async fn build_app(
     config_manager: Arc<ConfigManager>,
 ) -> Result<(Router, ServerHandle), NexusFlowError> {
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
     let app = assemble_router(&config_manager, &assembly).await?;
-    // gRPC 装配（feature = "grpc"）：禁用/缺段为 None，随句柄登记，
-    // 由调用方 take_grpc_server 取出后启动
+    // gRPC 装配（grpc feature）：禁用/缺段为 None；登记入句柄，由调用方 take 后启动
     #[cfg(feature = "grpc")]
     let grpc = crate::server::grpc::build(&config_manager, &assembly)?;
     let handle = ServerHandle::from_assembly(assembly);
@@ -47,19 +41,18 @@ pub async fn build_app(
     Ok((app, handle))
 }
 
-/// 完整运行时：bootstrap 装配 + serve + 优雅停机 flush 收尾
-/// （原 main() 的 serve 主体与收尾，main.rs）。
+/// 完整运行时：bootstrap 装配 + serve + 优雅停机 flush 收尾。
 ///
 /// # Panics
 ///
-/// 同 [`build_app`]：同进程二次调用经 `init_global_state` panic。
+/// 同 [`build_app`]：经 `init_global_state`，同进程二次调用 panic。
 pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
-    // 进程级日志句柄：活到 run 返回（原 main.rs 的 main 作用域语义）
+    // 进程级日志句柄：活到 run 返回
     let _logger = bootstrap::init_logger().await?;
     let config_manager = bootstrap::load_config(config_path)?;
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
     let app = assemble_router(&config_manager, &assembly).await?;
-    // gRPC 装配（与 build_app 同一登记路径；take 于下方 serve 前）
+    // gRPC 装配（同一登记路径；take 于下方 serve 前）
     #[cfg(feature = "grpc")]
     let mut handle = {
         let grpc = crate::server::grpc::build(&config_manager, &assembly)?;
@@ -104,17 +97,15 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("{}", t("main-press-ctrl-c"));
 
-    // 停机信号走 sdforge graceful 默认触发（SIGTERM/Ctrl-C），HTTP
-    // 与 gRPC 各自注册（同一信号各自决断；旧 watch 广播已删除）。
-    // inklog manager 移交收尾钩子——替代 run 尾部隐式 drop，关闭成为
-    // 三阶段显式收尾的一部分（logger 仍由 _logger 活到收尾完成）。
+    // 停机信号走 sdforge graceful 默认触发（SIGTERM/Ctrl-C），HTTP 与 gRPC 各自注册；
+    // inklog manager 移交收尾钩子（logger 仍由 _logger 活到收尾完成）。
     {
         let hook: crate::server::shutdown::InklogShutdownHook =
             std::sync::Arc::new(move || _logger.shutdown().map_err(|e| e.to_string()));
         handle.set_inklog_shutdown_hook(hook);
     }
 
-    // gRPC 服务器启动（[grpc] 段启用时；serve 内部打 starting/stopped 日志）
+    // gRPC 服务器启动（[grpc] 段启用时）
     #[cfg(feature = "grpc")]
     let grpc_task = match handle.take_grpc_server() {
         Some(grpc) => Some(tokio::spawn(async move {
@@ -123,10 +114,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
         None => None,
     };
 
-    // serve 走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），
-    // 排空语义与旧 axum with_graceful_shutdown 一致（流式不断 permit）。
-    // 排空超时显式 30s（默认配置不可见，挂起 handler
-    // 不得无限阻塞重启；超时强制中止并记日志）。
+    // serve 走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子）；排空超时 30s，超时强制中止。
     let result = sdforge::http::serve_with_graceful_shutdown(
         app,
         listener,
@@ -158,9 +146,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
         }
     }
 
-    // 优雅停机 flush（序列与 build_app 句柄共用同一实现）。
-    // gRPC 侧先收尾：HTTP serve 返回即 signal 已触发，gRPC 正在排空
-    // in-flight；等它返回（或超时）后再 flush，保证请求路径日志不丢。
+    // flush 与 build_app 句柄共用同一实现；gRPC 侧先收尾，等它返回或超时后再 flush。
     #[cfg(feature = "grpc")]
     if let Some(task) = grpc_task {
         const GRPC_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -191,17 +177,12 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
     Ok(())
 }
 
-/// SdForgeConfig 构建（原 main.rs）。
+/// SdForgeConfig 构建。
 fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdForgeConfig {
     let config_ref = config_manager.read();
 
-    // sdforge 0.5 rc.5: AppConfig 更名 SdForgeConfig，ServerConfig 新增
-    // max_body_size（旧版硬编码 10 MiB，沿用该值）。
-    //
-    // CORS：sdforge rc.5 校验强制 origin 带 http(s):// 前缀且拒绝空列表
-    // （sdforge/src/config/cors.rs），通配 "*" 不再合法。取 [cors]
-    // 段的 origin 并过滤 "*"；过滤后为空则不挂 CORS 层（网关场景由调用方
-    // 侧处理跨域）。
+    // CORS：sdforge 要求 origin 带 http(s):// 前缀且拒绝空列表，故过滤 "*"；
+    // 过滤后为空则不挂 CORS 层。
     let cors = config_ref.cors.as_ref().and_then(|c| {
         if !c.enabled {
             return None;
@@ -223,21 +204,17 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
     });
 
     sdforge::config::SdForgeConfig {
-        // Override server config with required fields
         server: sdforge::config::ServerConfig {
             host: config_ref.server.host.clone(),
             port: config_ref.server.port,
             request_timeout_secs: 300,
             max_body_size: 10 * 1024 * 1024,
             cors,
-            // NexusFlow 不经 sdforge 终结 TLS（自建 axum 明文监听，
-            // TLS 由外部反代承担）
+            // NexusFlow 不经 sdforge 终结 TLS（明文监听，TLS 由外部反代承担）
             tls: None,
         },
-        // 认证由自建 api_auth_middleware 承担（[auth] 段 SHA256 摘要 +
-        // 常量时间比较，见 middleware/auth.rs）。sdforge 层显式禁用：
-        // 其 ApiKey 模式仅支持站点级明文 keys 且空表在 build 时直接报错
-        // （sdforge/src/http/http_impl.rs），无摘要存储能力。
+        // 认证由自建 api_auth_middleware 承担（[auth] SHA256 摘要制）；
+        // sdforge ApiKey 仅支持站点级明文 keys，故禁用。
         authentication: sdforge::config::AuthConfig::None,
         timeout: Some(sdforge::config::TimeoutConfig::default()),
         security: sdforge::config::SecurityConfig::default(),
@@ -246,11 +223,7 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
     }
 }
 
-/// 生产装配链：sdforge 站点（#[forge] 注册的 /api/v1/health 等）+ 业务路由合并
-/// （原 main.rs）。
-/// 修复前 main 只 serve build_with_config 产物、未 merge create_router，
-/// /v1 与 /admin 全部 404。build_with_config 返回原生 axum::Router，
-/// 直接 merge（sdforge/src/http/http_impl.rs）。
+/// 装配链：sdforge 站点（#[forge] 注册）+ 业务路由合并。
 async fn assemble_router(
     config_manager: &Arc<ConfigManager>,
     assembly: &bootstrap::Assembly,

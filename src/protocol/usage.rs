@@ -5,16 +5,11 @@
 
 //! 响应 usage 提数（分账记账与配额回补共用单源）。
 //!
-//! 下沉到 protocol 层（原在 api/mod.rs）：OpenAI 与 Anthropic 的 usage
-//! 形态属协议知识，配额侧（middleware）与分账侧（api）都必须消费同一
-//! 实现，禁止第二套提数逻辑（R-quota-cost-003）。
+//! OpenAI 与 Anthropic 的 usage 形态属协议知识，配额侧与分账侧共用同一
+//! 实现，禁止第二套提数逻辑。
 
-/// 分账用量提取（WP9）：OpenAI（`prompt_tokens`/`completion_tokens` 必需；
-/// `prompt_tokens_details.cached_tokens` 计 cache_read）与 Anthropic
-/// （`input_tokens` 必需；`output_tokens`/`cache_read_input_tokens`/
-/// `cache_creation_input_tokens` 缺省 0）双形态。返回
-/// (prompt, completion, cache_read, cache_creation)，u64 饱和钳 u32。
-/// 无可用 usage → None（调用方跳过记账，保持预扣）。
+/// 分账用量提取：OpenAI 与 Anthropic 双形态，返回 (prompt, completion,
+/// cache_read, cache_creation)，u64 饱和钳 u32。无可用 usage → None（调用方跳过记账，保持预扣）。
 pub(crate) fn parse_usage_detailed(response: &serde_json::Value) -> Option<(u32, u32, u32, u32)> {
     let usage = response.get("usage")?;
     let clamp = |v: Option<u64>| v.unwrap_or(0).min(u32::MAX as u64) as u32;

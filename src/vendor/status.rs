@@ -17,9 +17,7 @@ pub struct VendorState {
     status: AtomicU8,
     status_changed: AtomicU64,
     error_count: AtomicU8,
-    /// Throttled 冷却到期时刻（unix 毫秒；0 = 非冷却）。读侧惰性恢复
-    /// ——路由排除冷却 vendor 后不会有成功请求到达为其翻状态，固定
-    /// 状态位会让冷却变成永久排除（record_outcome 注释的恢复死锁）。
+    /// Throttled 冷却到期时刻（unix 毫秒；0 = 非冷却）；读侧惰性恢复。
     throttled_until_ms: AtomicU64,
 }
 
@@ -84,8 +82,7 @@ impl VendorState {
     }
 
     pub fn mark_throttled(&self, backoff: std::time::Duration) {
-        // 先写到期时刻再翻状态：两写之间读侧看到的是旧状态，
-        // 不会把 Available 误读成无 TTL 的 Throttled
+        // 先写到期时刻再翻状态：避免读侧把 Available 误读成无 TTL 的 Throttled
         self.throttled_until_ms.store(
             unix_now_ms().saturating_add(backoff.as_millis() as u64),
             Ordering::Relaxed,
@@ -122,8 +119,6 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// 冷却 TTL 到期：读侧惰性翻回 Available（无请求/探针依赖，
-    /// 路由排除后仍可恢复，不死锁）。
     #[test]
     fn throttled_cooldown_recovers_after_backoff_expiry() {
         let state = VendorState::new();
@@ -132,8 +127,6 @@ mod tests {
         assert_eq!(state.throttled_until_ms.load(Ordering::Relaxed), 0);
     }
 
-    /// 冷却窗内保持 Throttled；显式 mark_available 清空冷却且不被
-    /// 残留到期时刻回翻。
     #[test]
     fn throttled_stays_within_window_and_available_clears_ttl() {
         let state = VendorState::new();

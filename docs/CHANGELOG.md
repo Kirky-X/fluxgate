@@ -4,7 +4,15 @@
 
 本格式基于 [Keep a Changelog 1.0.0](https://keepachangelog.com/en/1.0.0/)，版本号遵循语义化版本。
 
-> **注**：本项目尚未打 tag，以下版本对应 `Cargo.toml` 的版本线（当前 `version = "0.1.0"`）。
+> **注**：`v0.1.0` tag 已推送，以下版本对应 `Cargo.toml` 的版本线（当前 `version = "0.1.0"`）。
+
+---
+
+## [Unreleased]
+
+### Changed
+
+- **GitHub 工作流补全（对齐 confers 基线）**：新增 `feature-matrix.yml`（每周一定时 + 手动触发；`cargo hack check --each-feature` 逐特性单开，按 workspace 两成员串行两 step 共用缓存桶——nexusflow 口径以 `db-sqlite` 打底并 `--exclude-all-features`（`--all-features` 必撞 dbnexus 的 embedded 与 server-side 互斥守卫；`full`/`web-server`/`database`/`logging` 单开则因缺后端触发 inklog 编译期守卫，实测 4 项 FAIL），examples 口径保留 all-features 组合；两者本机实测 18/18 与 7/7 通过，末步断言把任一失败还原成红作业）；CodeQL 以 `codeql.yml.disabled` 停用态入库（私有仓未启用 GHAS 时 SARIF 上传被 API 拒绝，转 public / 启用 GHAS 后重命名启用即可）；`release.yml` 新增 `workflow_dispatch` 手动重发路径（版本号过 semver 校验 + tag 存在性校验，构建源 checkout 与产物挂载均显式钉在 tag 上，预发布判定按「版本含 `-`」的 semver 语义，build 作业超时按 fat-LTO 冷构建余量放到 60 分钟）；`tag-deleted.yml` 去掉 `github.event.ref` 的 shell 内插注入面（改经 env 传递）并把非 404 的查询失败显性化（不再吞成「无 Release」）；`docs/CONTRIBUTING.md` 发布步骤与 `docs/SECURITY.md` 工具链 SHA 同步。`ci.yml` 头部差异清单登记本批差异：CodeQL 停用态、特性矩阵分工、无三平台 build 作业，以及 doc 作业待办——`cargo doc --workspace --no-deps` 配 `-D warnings` 现有 61 处 intra-doc link 断链（15 个文件，多为注释内 `[段名]` 简写被当作链接解析），清断链后再加门禁。
 
 ---
 

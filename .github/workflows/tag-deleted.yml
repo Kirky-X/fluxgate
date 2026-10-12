@@ -21,23 +21,30 @@ jobs:
 
       - name: Get tag name
         id: get_tag
+        env:
+          # 经 env 传递：tag 名是用户可控数据，直接内插进 run 会形成命令注入面
+          REF: ${{ github.event.ref }}
         run: |
-          TAG_NAME="${{ github.event.ref }}"
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "tag_name=${REF}" >> "$GITHUB_OUTPUT"
 
       - name: Delete GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.get_tag.outputs.tag_name }}
         run: |
-          TAG_NAME="${{ steps.get_tag.outputs.tag_name }}"
-
-          RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG_NAME" \
-            --jq '.id' 2>/dev/null || echo "")
-
-          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            echo "Deleting release $RELEASE_ID for tag $TAG_NAME"
-            gh api -X DELETE "repos/${{ github.repository }}/releases/$RELEASE_ID"
-            echo "✅ GitHub Release deleted successfully"
-          else
-            echo "⚠️ No release found for tag $TAG_NAME"
+          # 404（无对应 Release）是预期分支，放行；其余失败（鉴权/限流/网络）
+          # 必须让作业变红——否则 tag 已删而 Release 与产物仍在下载
+          if ! RELEASE_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" \
+              --jq '.id' 2>/tmp/gh_err.txt); then
+            if grep -qE "HTTP 404|Not Found" /tmp/gh_err.txt; then
+              echo "⚠️ No release found for tag $TAG_NAME"
+              exit 0
+            fi
+            echo "::error::查询 Release 失败（非 404）:"
+            cat /tmp/gh_err.txt
+            exit 1
           fi
+
+          echo "Deleting release $RELEASE_ID for tag $TAG_NAME"
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          echo "✅ GitHub Release deleted successfully"

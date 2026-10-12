@@ -5271,10 +5271,8 @@ mod api_handler_coverage {
         )
         .await;
 
-        let dir =
-            std::env::temp_dir().join(format!("nx-coverage-server-restart-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
         std::fs::write(&path, "seed").unwrap();
         state.config.set_path(path.clone());
@@ -5320,10 +5318,8 @@ mod api_handler_coverage {
         )
         .await;
 
-        let dir =
-            std::env::temp_dir().join(format!("nx-coverage-cb-window-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
         std::fs::write(&path, "seed").unwrap();
         state.config.set_path(path.clone());
@@ -5396,10 +5392,8 @@ mod api_handler_coverage {
         .await;
 
         // update_config_with 原子 RMW 需要路径记忆才落盘
-        let dir =
-            std::env::temp_dir().join(format!("nx-coverage-update-model-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let path = dir.join("config.toml");
         std::fs::write(&path, "seed").unwrap();
         state.config.set_path(path.clone());

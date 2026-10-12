@@ -269,15 +269,19 @@ impl ConfigManager {
         //     快照失败只记 warn，不阻塞合法更新（主回滚手段仍是 tmp+rename 原子性）。
         snapshot_current_config(self, &path);
 
-        std::fs::write(&tmp_path, content).map_err(|e| GateError::Config {
-            message: t_args(
-                "config-tmp-write-failed",
-                &[
-                    ("path", tmp_path.display().to_string()),
-                    ("error", e.to_string()),
-                ],
-            ),
-        })?;
+        if let Err(e) = std::fs::write(&tmp_path, content) {
+            // 半程写入（如 ENOSPC/ENOTDIR）清理临时文件，避免残留
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-tmp-write-failed",
+                    &[
+                        ("path", tmp_path.display().to_string()),
+                        ("error", e.to_string()),
+                    ],
+                ),
+            });
+        }
 
         // 末次比对（TOCTOU 窗口收窄）：快照与 tmp 写期间可能发生进程外编辑，
         // rename 前再比对一次——无保护窗口从「快照+tmp 写」压到比对与 rename
@@ -737,6 +741,28 @@ mod tests {
             external,
             "受保护的磁盘编辑不得被覆盖"
         );
+    }
+
+    /// tmp 半程写失败清理：tmp 写失败（父路径非目录 → ENOTDIR）时显式拒绝
+    /// 且不留 tmp 残留（跨平台成立，不依赖文件权限）。
+    #[test]
+    fn test_tmp_write_failure_leaves_no_tmp_residue() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let not_a_dir = dir.path().join("not-a-dir");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let path = not_a_dir.join("config.toml");
+
+        let manager = ConfigManager::new(sample_config("v1"));
+        manager.set_path(path.clone());
+
+        match manager.update_config(sample_config("v2")) {
+            Err(GateError::Config { message }) => {
+                assert!(message.contains(".tmp-"), "必须报 tmp 写失败: {message}");
+            }
+            other => panic!("父路径非目录时写回必须失败，实际 {other:?}"),
+        }
+        assert!(not_a_dir.is_file(), "不得在文件路径下建目录或留残留");
+        assert!(manager.get_vendor("v2").is_none(), "内存态不得切换");
     }
 
     /// 语义等价外部编辑（仅注释/格式化）经桥接采纳基线后写回必须恢复：

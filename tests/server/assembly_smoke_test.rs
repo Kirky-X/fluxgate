@@ -80,12 +80,16 @@ async fn build_state() -> Arc<ApiState> {
     let config_manager = Arc::new(ConfigManager::new(test_config()));
     // 注入临时路径：auth 热生效测试需要经 update_config 切换 [auth] 段。
     // 每调用唯一（非进程共享）：同二进制并行测试各持独立文件——共享同名
-    // 文件的删除/重写会被指纹保护判为进程外编辑、显式拒绝写回（随机失败）
-    static SMOKE_CONFIG_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let key_store = std::env::temp_dir().join(format!(
-        "nx-smoke-auth-{}-{}.toml",
-        std::process::id(),
-        SMOKE_CONFIG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    // 文件的删除/重写会被指纹保护判为进程外编辑、显式拒绝写回（随机失败）。
+    // 父目录为进程级随机名 TempDir（静态不析构，残留随机名小目录，CI 无害）
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = DIR
+        .get_or_init(|| tempfile::tempdir().expect("tempdir creatable"))
+        .path();
+    let key_store = dir.join(format!(
+        "smoke-{}.toml",
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::write(&key_store, "smoke").expect("seed smoke config file");
     config_manager.set_path(key_store);

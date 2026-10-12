@@ -21,8 +21,8 @@ async fn run_maps_occupied_server_port_to_error() {
     let blocker = std::net::TcpListener::bind("127.0.0.1:0").expect("bind blocker");
     let port = blocker.local_addr().unwrap().port();
 
-    let dir = std::env::temp_dir().join(format!("nx-server-bind-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+    let dir = tmpdir.path().to_path_buf();
     let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,

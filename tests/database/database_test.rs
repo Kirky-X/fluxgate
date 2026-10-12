@@ -643,11 +643,8 @@ mod batch_tx {
     /// 全新文件路径自举建库（mode=rwc：sqlx 默认不创建不存在的库文件）。
     #[tokio::test]
     async fn test_database_new_creates_missing_file() {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("nx-db-create-{}-{nanos}", std::process::id()));
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
         let db_path = dir.join("fresh").join("llm_proxy.db");
         std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         assert!(!db_path.exists(), "前置：库文件尚不存在");
@@ -1262,12 +1259,8 @@ mod database_gap {
     /// 不得 panic 或默认成功。
     #[tokio::test]
     async fn database_new_fails_when_parent_path_is_a_file() {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let file =
-            std::env::temp_dir().join(format!("nx-not-a-dir-{}-{nanos}", std::process::id()));
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let file = tmpdir.path().join("not-a-dir");
         std::fs::write(&file, b"x").unwrap();
 
         let db_path = file.join("sub").join("db.sqlite");
@@ -1287,11 +1280,8 @@ mod database_gap {
     /// Database 错误显性化（mode=rwc 也建不出目录形态的库文件）。
     #[tokio::test]
     async fn database_new_fails_when_db_path_is_a_directory() {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("nx-db-as-dir-{}-{nanos}", std::process::id()));
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().join("as-dir");
         std::fs::create_dir_all(&dir).unwrap();
 
         let result = Database::new(&resolve_sqlite_url(dir.to_str().unwrap()), 1).await;

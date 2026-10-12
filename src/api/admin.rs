@@ -71,7 +71,7 @@ pub async fn token_stats(
             .pre_aggregator
             .as_ref()
             .ok_or_else(|| crate::error::GateError::Config {
-                message: "usage sink is not wired; token stats unavailable".to_string(),
+                message: t("admin-token-stats-usage-sink-unwired"),
             })?;
     let stats = usage_sink.get_token_stats(vendor).await?;
     Ok(Json(serde_json::json!(stats)))

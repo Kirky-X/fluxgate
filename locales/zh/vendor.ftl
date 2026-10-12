@@ -27,6 +27,9 @@ vendor-key-rotated = 厂商 { $vendor } 认证失败 ({ $status })，已推进 k
 vendor-key-pool-shrunk = 厂商 { $vendor } 的 key 池由 { $before } 把收缩至 { $after } 把（{ $missing } 个池 env 现缺失）
 vendor-key-blacklisted = key 已进黑名单（永久错误，不自动恢复）
 vendor-cost-unregistered-model = 模型未登记 model_catalog，不计价（成本报表按设计少计）
+# manager.rs 成本/重试运维告警：CNY 条目不入 USD 成本表 + Retry-After 超上限截断。
+vendor-cost-cny-not-recorded = 人民币计价条目未记入美元成本追踪器（T011 桥接待完成）
+vendor-upstream-retry-wait-truncated = 上游重试等待已截断
 
 # ---- probe.rs（主动健康检查探针：配置热读告警 + 周期运维日志）----
 vendor-probe-unknown-mode = 未知 [health].mode，按 off 处理（fail-safe，防误配探针风暴）

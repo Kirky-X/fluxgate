@@ -12,7 +12,7 @@
 
 // 仅 vendor-management 分支使用（spread_delay/retry_delay_for 同在该 feature 下）
 #[cfg(feature = "vendor-management")]
-use rand::Rng;
+use rand::RngExt;
 use std::time::Duration;
 
 /// 错误分类
@@ -140,14 +140,14 @@ impl RetryDelayPolicy {
 /// - 429 → limiteron 指数 + jitter + max_delay 封顶；5xx →
 ///   `[1s, 1s + spread_jitter × 1s)`（全范围抖动消除同步惊群）；
 ///   网络错误 → 500ms × attempt；Fatal → 0
-/// - RNG 经 &mut dyn RngCore 注入：spread_jitter=0 时不消耗 RNG（确定性可单测）；
+/// - RNG 经 &mut dyn Rng 注入：spread_jitter=0 时不消耗 RNG（确定性可单测）；
 ///   纯函数无 IO。指数分支依赖 vendor-management feature
 #[cfg(feature = "vendor-management")]
 pub fn retry_delay_for(
     category: ErrorCategory,
     attempt: u32,
     policy: &RetryDelayPolicy,
-    rng: &mut dyn rand::RngCore,
+    rng: &mut dyn rand::Rng,
 ) -> Duration {
     match category {
         ErrorCategory::RetryableExponential => limiteron::retry::delay_for_attempt(
@@ -172,12 +172,12 @@ pub fn retry_delay_for(
 pub fn spread_delay(
     base: Duration,
     policy: &RetryDelayPolicy,
-    rng: &mut dyn rand::RngCore,
+    rng: &mut dyn rand::Rng,
 ) -> Duration {
     if policy.spread_jitter <= 0.0 {
         return base;
     }
-    let extra = base.mul_f64(rng.gen_range(0.0..policy.spread_jitter));
+    let extra = base.mul_f64(rng.random_range(0.0..policy.spread_jitter));
     base.saturating_add(extra)
 }
 

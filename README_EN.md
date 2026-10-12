@@ -64,7 +64,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>Resilience</b><br><span style="color:#64748B">limiteron circuit breaker (opens after 5 failures for 30s, slow-call threshold 60s avoids false trips), status-classified retries (429 honors Retry-After with spread, 5xx fixed-interval delay + spread), priority-driven fallback chain (total attempt budget defaults to 8)</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>Inbound rate limiting & admission</b><br><span style="color:#64748B">limiteron sliding-window global limiter plus <code>[[rate_limit.rules]]</code> path rules (with no global rules configured, the Governor falls back to its built-in token bucket); congestion-aware priority admission (per-key tiers dedicated/guaranteed/elastic/spot)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>Inbound rate limiting & admission</b><br><span style="color:#64748B">limiteron tower-layer inbound rate limiting (endpoint table + global layer), plus <code>[[rate_limit.rules]]</code> path rules (with no global rules configured, a shared token bucket is the fallback); congestion-aware priority admission (per-key tiers dedicated/guaranteed/elastic/spot)</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>Secure auth</b><br><span style="color:#64748B">API keys stored only as SHA256 digests with constant-time comparison; upstream credentials referenced by environment variable name only; revocation/rotation takes effect immediately via hot reload</span></td>
@@ -76,7 +76,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); restart-required sections are reported explicitly in the <code>restart_required</code> response field</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">14 method endpoints: log query/search, token stats, global metrics (affinity hit rate, drop counts), vendor status, config & model management, health check</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">16 method endpoints: log query/search, token stats, cost breakdown query, global metrics (affinity hit rate, drop counts), vendor status & key-pool reset, route explain, config & model management, health check</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>NEXUSFLOW_LANG</code> → system locale → en fallback chain</span></td>
@@ -143,7 +143,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 
 ## ⚙️ Configuration Overview
 
-Runtime configuration is a single `config.toml` (**not committed** — start with `cp config.example.toml config.toml`; `config.example.toml` is the only full reference shipped in the repo, carrying every section and field with its default value), with 16 top-level sections (`model_catalog` and `grpc` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
+Runtime configuration is a single `config.toml` (**tracked in the repo** — a default config ships with it, and `.gitignore` also lists `config.toml`, which has no effect on an already-tracked file; deployments commonly start by `cp config.example.toml config.toml` to overlay the full reference, which carries every section and field with its default value), with 18 top-level sections (per-field details of `model_catalog` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
 
 | Section | Purpose | Hot reload |
 |---------|---------|------------|
@@ -152,7 +152,8 @@ Runtime configuration is a single `config.toml` (**not committed** — start wit
 | `auth` / `cors` | API key digests, CORS | auth ✅ / cors ❌ |
 | `routing` / `retry` / `resilience` | Routing coefficients & selection algorithm, retry policy, resilience coverage | ✅ |
 | `cache` / `rate_limit` / `admission` | Response cache, inbound rate limiting, congestion admission | cache/admission ✅ / rate_limit ❌ |
-| `pricing` | Input/output token unit prices (cost calculation) | ✅ |
+| `pricing` / `model_catalog` | Input/output token unit prices (cost calculation) / `[[model_catalog]]` model capability catalog | ✅ |
+| `health` / `quota` | Active health probes (default off), cost/token quota (default off) | ✅ both hot-read |
 | `grpc` / `docs` | gRPC facade, OpenAPI/Swagger UI surface (both opt-in) | ❌ restart required |
 
 ```toml
@@ -183,7 +184,7 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 | Document | Description |
 |----------|-------------|
 | [📖 User Guide](docs/USER_GUIDE.md) | End-to-end tutorial: configuration, deployment, operations |
-| [📘 API Reference](docs/API_REFERENCE.md) | All 14 method endpoints: parameters, responses, error codes |
+| [📘 API Reference](docs/API_REFERENCE.md) | All 21 method endpoints: parameters, responses, error codes |
 | [🏗️ Architecture](docs/ARCHITECTURE.md) | Design principles, routing decision system, resilience & hot reload |
 | [🔒 Security](docs/SECURITY.md) | Security design, supply-chain gates, vulnerability handling |
 | [❓ FAQ](docs/FAQ.md) | Common questions and known limitations |
@@ -312,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 Strategy
 
-Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by functional domain under `tests/` subdirectories (api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard, 42 files in total), each explicitly registered per file via `[[test]]` in the root `Cargo.toml` (one binary per file, process-exclusive semantics preserved). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
+Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by functional domain under `tests/` subdirectories (api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard, 48 `.rs` files in total — 47 test binaries plus the `tests/common/mod.rs` helper), each binary explicitly registered via `[[test]]` in the root `Cargo.toml` (one binary per file, process-exclusive semantics preserved). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
 
 ### ▶️ Commands (CI-consistent)
 
@@ -330,7 +331,7 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): **1132 tests pass, 0 failures** — 367 unit tests (inline in `src/`) plus 765 integration tests (42 files in `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1294 tests pass, 0 failures** — 426 unit tests (inline in `src/`) plus 868 integration tests (47 test binaries under `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
@@ -357,7 +358,7 @@ No official benchmarks have been published yet (tracked on the roadmap). Verifie
 
 ### 🛡️ Design
 
-API keys stored as SHA256 digests with constant-time comparison, upstream credentials referenced by env var name only, error responses exposing fixed `error.type` codes only, secrets masked in config snapshots, layered CORS and rate-limit banning (403), non-root Docker runtime. See the [🔒 Security guide](docs/SECURITY.md) for details.
+API keys stored as SHA256 digests with constant-time comparison, upstream credentials referenced by env var name only, error responses exposing fixed `error.type` codes only, secrets masked in config snapshots, layered CORS and inbound rate limiting (429), non-root Docker runtime. See the [🔒 Security guide](docs/SECURITY.md) for details.
 
 ### 🚨 Reporting a vulnerability
 
@@ -369,13 +370,13 @@ Please do not report security vulnerabilities through public issues. Use the Git
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
-<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 14 method endpoints</td></tr>
+<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 21 method endpoints</td></tr>
 <tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers</td></tr>
 <tr><td align="center">✅</td><td>Resilience</td><td>limiteron circuit / retry / fallback chain, congestion-aware admission, key tiers</td></tr>
 <tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, pricing-based cost tracking</td></tr>
 <tr><td align="center">✅</td><td>Hot reload</td><td>confers DynamicField lock-free reads, transactional writes, snapshots with restart_required reporting</td></tr>
 <tr><td align="center">✅</td><td>Internationalization</td><td>Fluent en/zh bundles covering all business messages</td></tr>
-<tr><td align="center">🔜</td><td>Cost query API</td><td>Persist request-level / aggregated costs and expose a <code>/admin/cost</code> endpoint (CostTracker is in-memory only today)</td></tr>
+<tr><td align="center">✅</td><td>Cost query API</td><td>Cost breakdown persisted (<code>token_usage</code> four-way cost columns, V2 migration) + <code>/admin/cost</code> aggregation endpoint (pre-aggregated table grouped by vendor/model); the in-process CostTracker still accumulates in memory and resets on restart (see known boundaries)</td></tr>
 <tr><td align="center">✅</td><td>Rust SDK</td><td>Merged into <code>src/sdk</code> (<code>sdk</code> feature gate; the broken workspace inheritance is gone): chat / stream / embed / admin</td></tr>
 <tr><td align="center">🔜</td><td>Performance baselines</td><td>Establish Criterion baselines (passthrough / conversion / routing decision paths)</td></tr>
 <tr><td align="center">🔜</td><td>Log query completion</td><td>Push <code>/admin/logs</code> end_time filtering into SQL (known gap, see the <a href="docs/FAQ.md">FAQ</a>)</td></tr>

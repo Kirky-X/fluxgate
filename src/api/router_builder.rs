@@ -25,7 +25,7 @@ use tower_http::trace::TraceLayer;
 use super::state::ApiState;
 use super::{admin, anthropic, count_tokens, health, models, openai, openapi_docs, route_explain};
 use crate::config::{RateLimitRule, RateLimitSection};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::middleware::admission::{tier_for_request, AdmissionState};
 use crate::middleware::auth_middleware;
 use crate::middleware::quota::{quota_middleware, QuotaGate};
@@ -272,10 +272,16 @@ where
                 // 内层错误原文不进响应体（信息外泄），
                 // 只记 warn，调用方收通用 500（内层为 Route 时不可达）。
                 Err(err) => {
-                    tracing::warn!("global rate limit layer error: {err}");
+                    tracing::warn!(
+                        "{}",
+                        t_args(
+                            "router-global-rate-limit-layer-error",
+                            &[("error", err.to_string())]
+                        )
+                    );
                     Ok((
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal server error",
+                        t("router-internal-server-error"),
                     )
                         .into_response())
                 }

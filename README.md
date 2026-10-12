@@ -64,7 +64,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>弹性容错</b><br><span style="color:#64748B">limiteron 熔断器（5 次失败开 30s，慢调用 60s 阈值防误判）、按状态码分类重试（429 尊重 Retry-After 展宽、5xx 固定间隔 + 展宽）、priority 驱动的 Fallback 换路链（总尝试预算默认 8）</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>入站限流与准入</b><br><span style="color:#64748B">limiteron 滑动窗口全局限流 + <code>[[rate_limit.rules]]</code> 路径规则（未配置全局规则时，Governor 以内置令牌桶兜底）；拥塞感知优先级准入（按 API Key 档位 dedicated/guaranteed/elastic/spot 分级 shed）</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>入站限流与准入</b><br><span style="color:#64748B">limiteron tower 层入站限流（端点表 + 全局层）+ <code>[[rate_limit.rules]]</code> 路径规则（未配置全局规则时，共享令牌桶兜底）；拥塞感知优先级准入（按 API Key 档位 dedicated/guaranteed/elastic/spot 分级 shed）</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>安全认证</b><br><span style="color:#64748B">API Key 仅存 SHA256 摘要、常量时间比较；上游密钥只存环境变量名；吊销/轮换经配置热更新立即生效</span></td>
@@ -76,7 +76,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；需重启的段在响应 <code>restart_required</code> 中显式提示</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">14 个方法端点：日志查询/搜索、Token 统计、全局指标（含亲和命中率、丢弃计数）、厂商状态、配置与模型管理、健康检查</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">16 个方法端点：日志查询/搜索、Token 统计、成本分账查询、全局指标（含亲和命中率、丢弃计数）、厂商状态与密钥池重置、路由解释、配置与模型管理、健康检查</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>国际化</b><br><span style="color:#64748B">Fluent 双语束（en/zh）覆盖全部业务消息与错误文案，<code>NEXUSFLOW_LANG</code> → 系统环境 → 回退 en 检测链</span></td>
@@ -97,7 +97,7 @@
 ### 🔨 编译运行
 
 ```bash
-# 运行时配置不入库（承载 API Key 摘要与 vendor 直连参数），从全量参考复制起步
+# 运行时配置为 config.toml——仓库已随附一份默认配置（[auth].api_keys 为空 + mock 厂商，开箱即可起服）；按需从全量参考覆盖起步
 cp config.example.toml config.toml
 
 # 默认读取工作目录 config.toml
@@ -142,7 +142,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 
 ## ⚙️ 配置概览
 
-运行时配置为单个 `config.toml`（**不入库**，`cp config.example.toml config.toml` 起步；`config.example.toml` 是随仓唯一的全量参考，每个段与字段都带默认值），共 16 个顶层段（`model_catalog` 与 `grpc` 见 [📖 用户指南](docs/USER_GUIDE.md)）：
+运行时配置为单个 `config.toml`（**随仓跟踪**——仓库自带一份默认配置，`.gitignore` 亦列 `config.toml` 但对已跟踪文件不生效；实际部署常以 `cp config.example.toml config.toml` 从全量参考覆盖起步，每段每字段带默认值），共 18 个顶层段（`model_catalog` 逐条字段见 [📖 用户指南](docs/USER_GUIDE.md)）：
 
 | 段 | 作用 | 热更新 |
 |----|------|--------|
@@ -151,7 +151,8 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 | `auth` / `cors` | API Key 摘要与 CORS | auth ✅ / cors ❌ |
 | `routing` / `retry` / `resilience` | 路由系数与选择算法、重试策略、韧性覆盖面 | ✅ |
 | `cache` / `rate_limit` / `admission` | 响应缓存、入站限流、拥塞准入 | cache/admission ✅ / rate_limit ❌ |
-| `pricing` | 输入/输出 token 单价（成本计算） | ✅ |
+| `pricing` / `model_catalog` | 输入/输出 token 单价（成本计算）/ `[[model_catalog]]` 模型能力目录 | ✅ |
+| `health` / `quota` | 主动健康探针（默认 off）、成本/token 维度配额（默认关） | ✅ 均热读 |
 | `grpc` / `docs` | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用） | ❌ 需重启 |
 
 ```toml
@@ -182,7 +183,7 @@ output_per_1k_tokens = 0.06
 | 文档 | 说明 |
 |------|------|
 | [📖 用户指南](docs/USER_GUIDE.md) | 从配置、部署到运维的完整使用教程 |
-| [📘 API 参考](docs/API_REFERENCE.md) | 全部 14 个方法端点的参数、响应与错误码 |
+| [📘 API 参考](docs/API_REFERENCE.md) | 全部 21 个方法端点的参数、响应与错误码 |
 | [🏗️ 架构文档](docs/ARCHITECTURE.md) | 设计原则、路由决策体系、弹性与热更新机制 |
 | [🔒 安全文档](docs/SECURITY.md) | 安全设计、供应链门禁与漏洞处理流程 |
 | [❓ FAQ](docs/FAQ.md) | 常见问题与已知边界 |
@@ -309,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 测试策略
 
-单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard，共 42 个文件，由根 `Cargo.toml` 的 `[[test]]` 逐文件显式注册；一文件一二进制，进程独占语义不变），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
+单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard，共 48 个 `.rs` 文件——47 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -326,7 +327,7 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1132 个用例通过、0 失败**——单元测试 367 个（`src/` 内联）+ 集成测试 765 个（`tests/` 42 文件）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：**1294 个用例通过、0 失败**——单元测试 426 个（`src/` 内联）+ 集成测试 868 个（`tests/` 47 个测试二进制）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
@@ -353,7 +354,7 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
 ### 🛡️ 安全设计
 
-API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环境变量名、错误响应仅暴露固定 `error.type` 代码、配置快照自动打码密钥、CORS 与限流封禁（403）分层防护、Docker 非 root 运行。逐项机制见 [🔒 安全文档](docs/SECURITY.md)。
+API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环境变量名、错误响应仅暴露固定 `error.type` 代码、配置快照自动打码密钥、CORS 与入站限流（429）分层防护、Docker 非 root 运行。逐项机制见 [🔒 安全文档](docs/SECURITY.md)。
 
 ### 🚨 报告安全漏洞
 
@@ -365,13 +366,13 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
-<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、14 个方法端点</td></tr>
+<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、21 个方法端点</td></tr>
 <tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层</td></tr>
 <tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
 <tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、pricing 成本追踪</td></tr>
 <tr><td align="center">✅</td><td>配置热更新</td><td>confers DynamicField 无锁热读、事务写路径、快照备份与 restart_required 提示</td></tr>
 <tr><td align="center">✅</td><td>国际化</td><td>Fluent en/zh 双语束覆盖全部业务消息</td></tr>
-<tr><td align="center">🔜</td><td>成本查询 API</td><td>请求级 / 聚合级成本落库与 <code>/admin/cost</code> 查询端点（CostTracker 当前仅内存累积）</td></tr>
+<tr><td align="center">✅</td><td>成本查询 API</td><td>成本分账落库（<code>token_usage</code> 四档成本列，V2 迁移）+ <code>/admin/cost</code> 聚合查询端点（预聚合表按 vendor/model 分组）；进程内 <code>CostTracker</code> 内存累积仍重启清零（见已知边界）</td></tr>
 <tr><td align="center">✅</td><td>Rust SDK</td><td>sdk 并入 <code>src/sdk</code>（<code>sdk</code> feature 门控，原 workspace 继承断裂已消除）：chat / stream / embed / admin</td></tr>
 <tr><td align="center">🔜</td><td>性能基准</td><td>建立 Criterion 基线（透传 / 转换 / 路由决策路径）</td></tr>
 <tr><td align="center">🔜</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤落 SQL（当前已知未生效，见 <a href="docs/FAQ.md">FAQ</a>）</td></tr>

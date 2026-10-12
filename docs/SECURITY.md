@@ -9,7 +9,7 @@ NexusFlow 将安全性作为核心设计目标。本文档介绍 NexusFlow 的�
 - [安全模型总览](#️-安全模型总览)
 - [API Key 认证设计](#-api-key-认证设计)
 - [上游密钥隔离](#️-上游密钥隔离)
-- [入站限流与封禁](#-入站限流与封禁)
+- [入站限流](#-入站限流)
 - [拥塞准入](#-拥塞准入)
 - [出站弹性边界](#-出站弹性边界)
 - [信息泄露控制](#️-信息泄露控制)
@@ -41,7 +41,7 @@ flowchart LR
 | 防线 | 拒绝方式 | 失效语义 |
 |:-----|:---------|:---------|
 | 认证 | 401 `authentication_error` | 认证关闭时全放行（须显式配置 `[auth]` 段） |
-| 入站限流 | 429 + `Retry-After`；封禁 403 | 限流器内部故障时 fail-open 放行 |
+| 入站限流 | 429 + `Retry-After` | 限流器内部故障时 fail-open 放行 |
 | 拥塞准入 | 429 + `Retry-After: 1` | 默认关闭；关闭时判定旁路 |
 | 路由 | 400 / 503 等（固定错误码） | 无可用候选时错误显性冒泡 |
 | 出站弹性 | 熔断 Open 直接拒绝并换路 | 候选耗尽后原错误冒泡 |
@@ -103,7 +103,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 部署要求
 
-**`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单仅 `/health`、`/api/v1/health`、`/`；其余路径（含全部 `/admin/*`）均需认证。
+**`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单共九条（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/middleware/auth.rs:159-168`）；其余路径（含全部 `/admin/*`）均需认证。
 
 ### Admin 端点暴露面与生产隔离要求（评审 M2）
 
@@ -131,26 +131,26 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ---
 
-## 🚦 入站限流与封禁
+## 🚦 入站限流
 
-入站限流基于 limiteron 实现（`src/api/router_builder.rs`），两层判定：
+入站限流基于 limiteron tower 化实现（`src/api/router_builder.rs`），两层判定：
 
 | 层 | 消费配置 | 实现 | 分桶维度 |
 |:---|:---------|:-----|:---------|
-| 全局规则 | `[[rate_limit.rules]]` 中 `path` 缺省的规则 | 构造期转 limiteron `Rule` 注入 Governor | 规则级单例桶 |
+| 全局规则 | `[[rate_limit.rules]]` 中 `path` 缺省的规则 | tower 全局层（`GlobalRateLimitLayer` + `QuotaLimiter` 固定窗口，一规则一层） | 按租户（已验证 API key 的 SHA256 摘要）分桶；`per_tenant = false` 的规则退为规则级共享桶 |
 | 端点规则 | `[[rate_limit.rules]]` 中带 `path` 前缀的规则 | 中间件侧端点表（`ShardedSlidingWindowLimiter` 惰性创建） | 按租户（调用方 API key 的 SHA256 摘要）分桶，可经 `per_tenant` 关闭 |
 
 响应语义：
 
 | 判定 | 响应 |
 |:-----|:-----|
-| 端点规则超限 | 429 + `Retry-After`（取窗口重置剩余秒数） |
-| 全局规则 `Decision::Rejected` | 429 |
-| 全局规则 `Decision::Banned` | **403 "Access denied"** |
+| 端点规则 / 全局规则超限 | 429 + `Retry-After`（窗口重置剩余秒数） |
+
+> 旧 `Governor` 路径的无头 429 与 `Decision::Banned → 403` 封禁分支已在 tower 化改造中删除（规则 ban 恒为 None，该分支不可达）；`rules` 为空时兜底为共享 `TokenBucket(100, 10/s)`（与旧 `Governor::new()` 默认逐位一致）。
 
 内存防护：端点表条目有硬上限（1024）——`[auth]` 关闭时攻击者伪造任意 Bearer key 也无法无限建桶，超限后新租户退化到规则级 `__overflow__` 共享单桶。
 
-健康检查白名单（限流侧，独立于认证侧）：`/health`、`/healthz`、`/ready`、`/api/v1/health`。
+限流豁免路径（限流侧，`is_quota_exempt_path` 共十条，独立于认证侧）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`。
 
 > 注意：`[rate_limit]` 段在 Router 构造期消费，**restart-required**——`POST /admin/config` 更新该段不热生效。
 
@@ -179,7 +179,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `src/vendor/manager.rs:176-212`）：
+`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `src/vendor/manager.rs:135-145`）：
 
 | 参数 | 值 | 语义 |
 |:-----|:---|:-----|
@@ -278,7 +278,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 | 格式检查 | `cargo fmt --check --all` | 每次 push / PR |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings` | 每次 push / PR |
 | 编译检查 | `cargo check --workspace` + 非默认后端特性矩阵（`cargo check -p nexusflow --no-default-features --features "full,db-postgres"` / `"full,db-mysql"`） | 每次 push / PR |
-| 依赖漏洞扫描 | `cargo audit`（`taiki-e/install-action` 安装后直接运行） | 每次 push / PR + **每日定时**（cron `0 0 * * *`） |
+| 依赖漏洞扫描 | `cargo audit`（`taiki-e/install-action` 安装后直接运行） | 每次 push / PR + **每日定时**（cron `37 5 * * *`） |
 | 全量测试 | `cargo test --workspace` | 每次 push / PR |
 
 特性口径：default 携带 `full + db-sqlite`；db-* 三组后端互斥由 dbnexus 编译期守卫强制（见 [CONTRIBUTING](./CONTRIBUTING.md)），`--all-features` 会同时打开三组而必然编译失败——这是预期行为，门禁一律按 default 口径执行，非默认后端由上面的特性矩阵逐包检查（与 `ci.yml` 逐字一致）。
@@ -309,7 +309,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 | 边界 | 说明 | 部署建议 |
 |:-----|:-----|:---------|
-| 成本聚合仅存内存 | `CostTracker`（by_vendor / by_model 聚合，`src/utils/cost_tracker.rs`）仅在内存累积，**重启清零**；逐请求成本不落库——生产日志构造 `cost_usd: None`、预聚合实参恒传 `0.0`（`src/api/openai.rs` / `src/api/anthropic.rs`），成本观测仅内存 `CostTracker` 一处 | 需要精确长期成本账时需自建统计；`request_logs` / `token_usage` 表的 `cost_usd` / `cost_usd_sum` 列仅为历史库兼容保留，生产路径恒写 NULL / 0.0 |
+| 成本聚合分两层 | 持久层：`token_usage` 表按 `(vendor, model, api_key_hash, date, hour)` 落库四档成本列（`input_cost`/`output_cost`/`cache_read_cost`/`cache_creation_cost`，`src/database/pre_aggregator.rs`），`GET /admin/cost` 可聚合查询，跨重启保留。内存层：进程内 `CostTracker`（`by_vendor`/`by_model`，`src/utils/cost_tracker.rs`）仅在内存累积、**重启清零**；逐请求日志 `request_logs.cost_usd` 仍恒写 `None`（该列仅历史库兼容保留） | 长期成本账以落库 `token_usage` + `GET /admin/cost` 为准；进程内 `CostTracker` 仅作当前进程粗观测，不应作为唯一成本来源 |
 | 请求消息明文落库 | `request_logs.messages` 列**明文存储请求消息**（含用户对话内容，见 `src/database/schema.sql`） | 部署者需自行加密磁盘（如 LUKS / 云盘加密）并严格控制数据库文件访问权限 |
 | 日志搜索为 LIKE 查询 | `GET /admin/logs/search` 对 `messages` / `error_message` 做关键词 LIKE 匹配；查询经参数化绑定（`Statement::from_sql_and_values`），**无 SQL 注入**，但关键词匹配会放大敏感内容读取面 | 限制 `/admin/*` 的网络暴露面，认证 key 仅发给可信运维 |
 

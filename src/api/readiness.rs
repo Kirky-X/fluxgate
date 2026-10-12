@@ -9,6 +9,7 @@
 //! 保留（存活探针），readyz 为就绪探针，两者语义分离。
 
 use crate::api::state::ApiState;
+use crate::i18n::t_args;
 use dbnexus::DbPool;
 
 /// DB 池探针：取 admin 会话 + `SELECT 1` 往返。任一环节失败即 unhealthy。
@@ -23,7 +24,10 @@ pub(crate) async fn db_pool_check(pool: &DbPool) -> sdforge::health::CheckOutcom
                 details: None,
             },
             Err(e) => {
-                tracing::warn!("readiness db probe failed: {e}");
+                tracing::warn!(
+                    "{}",
+                    t_args("api-readiness-db-probe-failed", &[("error", e.to_string())])
+                );
                 sdforge::health::CheckOutcome {
                     name: "db-pool".to_string(),
                     healthy: false,
@@ -32,7 +36,13 @@ pub(crate) async fn db_pool_check(pool: &DbPool) -> sdforge::health::CheckOutcom
             }
         },
         Err(e) => {
-            tracing::warn!("readiness db session failed: {e}");
+            tracing::warn!(
+                "{}",
+                t_args(
+                    "api-readiness-db-session-failed",
+                    &[("error", e.to_string())]
+                )
+            );
             sdforge::health::CheckOutcome {
                 name: "db-pool".to_string(),
                 healthy: false,
@@ -60,7 +70,13 @@ pub(crate) async fn cache_backend_check(
                 details: Some(serde_json::json!({"wired": true})),
             },
             Err(e) => {
-                tracing::warn!("readiness cache probe failed: {e}");
+                tracing::warn!(
+                    "{}",
+                    t_args(
+                        "api-readiness-cache-probe-failed",
+                        &[("error", e.to_string())]
+                    )
+                );
                 sdforge::health::CheckOutcome {
                     name: "cache-backend".to_string(),
                     healthy: false,

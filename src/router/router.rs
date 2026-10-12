@@ -195,6 +195,17 @@ impl Router {
 
         // For "auto" request, try global route
         if is_auto {
+            // [global_model].enabled=false：auto 档显式关闭（全局池不参与选路）。
+            // 报显性 Validation（含「未找到」原句 + 开关来源），避免配置开关
+            // 静默空转或把「管理员关闭」误报成「模型不存在」
+            if !self.config.is_global_model_enabled() {
+                return Err(GateError::Validation {
+                    field: t_args(
+                        "router-global-model-disabled",
+                        &[("model", abstract_model.to_string())],
+                    ),
+                });
+            }
             if let Some(decision) = self
                 .try_global_route(
                     excluded,
@@ -571,26 +582,27 @@ impl Router {
         vendor_id: &str,
         model_hint: Option<&str>,
     ) -> Option<RoutingDecision> {
-        let vendor = self.config.get_vendor(vendor_id)?;
+        // 请求头书写大小写不敏感；状态查询用配置规范 id，避免门控漂移
+        let vendor = self.config.get_vendor_ci(vendor_id)?;
         if !vendor.enabled {
             return None;
         }
 
-        if self.vendor_manager.get_status(vendor_id).await != VendorStatus::Available {
+        if self.vendor_manager.get_status(&vendor.id).await != VendorStatus::Available {
             return None;
         }
 
+        // 模型名匹配与直连路径同源：ASCII 大小写折叠、零分配
         if let Some(model_id) = model_hint {
-            let normalized = model_id.to_lowercase();
             if let Some(model) = vendor
                 .models
                 .iter()
                 .find(|m| {
                     m.enabled
-                        && (m.model_id.to_lowercase() == normalized
+                        && (m.model_id.eq_ignore_ascii_case(model_id)
                             || m.abstract_id
                                 .as_ref()
-                                .is_some_and(|a| a.to_lowercase() == normalized))
+                                .is_some_and(|a| a.eq_ignore_ascii_case(model_id)))
                 })
                 .cloned()
             {
@@ -619,11 +631,12 @@ impl Router {
 
         let (vendor_id, model_id) = (parts[0], parts[1]);
 
-        if excluded.iter().any(|e| e == vendor_id) {
+        // 排除集内容为配置规范 id，与请求侧书写大小写无关地比较
+        if excluded.iter().any(|e| e.eq_ignore_ascii_case(vendor_id)) {
             return None;
         }
 
-        let vendor = self.config.get_vendor(vendor_id)?;
+        let vendor = self.config.get_vendor_ci(vendor_id)?;
         if !vendor.enabled {
             return None;
         }
@@ -633,8 +646,10 @@ impl Router {
             .iter()
             .find(|m| {
                 m.enabled
-                    && (m.model_id == model_id
-                        || m.abstract_id.as_ref().is_some_and(|a| a == model_id))
+                    && (m.model_id.eq_ignore_ascii_case(model_id)
+                        || m.abstract_id
+                            .as_ref()
+                            .is_some_and(|a| a.eq_ignore_ascii_case(model_id)))
             })?
             .clone();
 
@@ -834,7 +849,7 @@ impl Router {
                 continue;
             }
             // 换路 fallback 的排除集
-            if excluded.iter().any(|e| e == &vendor.id) {
+            if excluded.iter().any(|e| e.eq_ignore_ascii_case(&vendor.id)) {
                 continue;
             }
             if self.vendor_manager.get_status(&vendor.id).await == VendorStatus::Available {
@@ -862,7 +877,7 @@ impl Router {
             if !vendor.enabled {
                 continue;
             }
-            if excluded.iter().any(|e| e == &vendor.id) {
+            if excluded.iter().any(|e| e.eq_ignore_ascii_case(&vendor.id)) {
                 continue;
             }
 
@@ -1007,7 +1022,7 @@ impl Router {
             }
         };
         let vendor_ids: Vec<&str> = candidates.iter().map(|(v, _)| v.id.as_str()).collect();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let pick = bandit.argmax(model_key, &vendor_ids, x, alpha, &mut rng)?;
         let (vendor, model) = candidates[pick].clone();
         Some(RoutingDecision {
@@ -1017,7 +1032,7 @@ impl Router {
         })
     }
 
-    /// 生产选择入口：async 算权重后注入 thread_rng 同步选择（rng 不跨 await）。
+    /// 生产选择入口：async 算权重后注入 rng 同步选择（rng 不跨 await）。
     /// affinity_boost 为 soft 命中乘子 (vendor_id, factor)
     async fn weighted_select(
         &self,
@@ -1034,7 +1049,7 @@ impl Router {
             apply_affinity_boost(&mut weighted, vendor_id, factor);
         }
         let decision = {
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             self.weighted_select_with(weighted, strategy, &mut rng)
         };
         // 选择完成后对偶更新 Q（决策时更新，无需执行结果回传）；
@@ -1045,7 +1060,7 @@ impl Router {
         decision
     }
 
-    /// async 权重收集：权重计算与 RNG 选择必须两段式（&mut dyn RngCore
+    /// async 权重收集：权重计算与 RNG 选择必须两段式（&mut dyn Rng
     /// 非 Send 不能跨 await）；pub 供集成测试确定性注入
     pub async fn calculate_weights(
         &self,
@@ -1143,12 +1158,12 @@ impl Router {
 
     /// RNG 注入版选择（确定性入口，测试经 StdRng 复现选择分布）。
     /// 温度平滑 w^(1/T) 在本方法内恰好应用一次；入参为已算权重的候选
-    ///（权重计算 async 而 &mut dyn RngCore 不能跨 await，只能两段式）。
+    ///（权重计算 async 而 &mut dyn Rng 不能跨 await，只能两段式）。
     pub fn weighted_select_with(
         &self,
         weighted: Vec<(f64, (VendorConfig, ModelConfig))>,
         strategy: RoutingStrategy,
-        rng: &mut dyn rand::RngCore,
+        rng: &mut dyn rand::Rng,
     ) -> RoutingDecision {
         // 系数与温度热读（同步段，无 await）
         let routing = self.config.read().routing.clone();
@@ -1175,7 +1190,7 @@ impl Router {
         let total_weight: f64 = weighted.iter().map(|(w, _)| w).sum();
 
         if total_weight <= 0.0 {
-            let idx = rng.gen_range(0..weighted.len());
+            let idx = rng.random_range(0..weighted.len());
             return RoutingDecision {
                 vendor: weighted[idx].1 .0.clone(),
                 model: weighted[idx].1 .1.clone(),
@@ -1183,7 +1198,7 @@ impl Router {
             };
         }
 
-        let target = rng.gen::<f64>() * total_weight;
+        let target = rng.random::<f64>() * total_weight;
         let mut cumulative = 0.0;
 
         for (weight, (vendor, model)) in weighted.iter() {
@@ -1224,12 +1239,12 @@ impl Router {
         weighted: &[(f64, (VendorConfig, ModelConfig))],
         strategy: RoutingStrategy,
         latency_ref_ms: f64,
-        rng: &mut dyn rand::RngCore,
+        rng: &mut dyn rand::Rng,
     ) -> RoutingDecision {
         let n = weighted.len();
-        let i1 = rng.gen_range(0..n);
+        let i1 = rng.random_range(0..n);
         // 无放回第二样本：撞车则取相邻（n>=2 时必为另一候选）
-        let mut i2 = rng.gen_range(0..n);
+        let mut i2 = rng.random_range(0..n);
         if i2 == i1 {
             i2 = (i1 + 1) % n;
         }
@@ -1272,7 +1287,7 @@ impl Router {
         weighted: &[(f64, (VendorConfig, ModelConfig))],
         strategy: RoutingStrategy,
         buffer: f64,
-        rng: &mut dyn rand::RngCore,
+        rng: &mut dyn rand::Rng,
     ) -> Option<RoutingDecision> {
         let metrics = self.vendor_manager.metrics();
         // 「有延迟数据」= e2e 道有样本；纯流式/纯失败史 vendor 不入判定
@@ -1295,7 +1310,7 @@ impl Router {
         if pool.is_empty() {
             return None;
         }
-        let idx = pool[rng.gen_range(0..pool.len())];
+        let idx = pool[rng.random_range(0..pool.len())];
         let (vendor, model) = weighted[idx].1.clone();
         Some(RoutingDecision {
             vendor,

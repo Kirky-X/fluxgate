@@ -9,7 +9,7 @@
 //! RwLock（读侧容忍稍旧值），状态重启归零。默认关闭：`[routing].selection`
 //! 为 "weighted" 时不咨询、无状态更新。
 
-use rand::Rng;
+use rand::RngExt;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -325,7 +325,7 @@ impl BanditState {
         vendor_ids: &[&str],
         x: &[f64],
         alpha: f64,
-        rng: &mut dyn rand::RngCore,
+        rng: &mut dyn rand::Rng,
     ) -> Option<usize> {
         if vendor_ids.is_empty() {
             return None;
@@ -336,7 +336,7 @@ impl BanditState {
             .collect();
         let best = scores.iter().fold(f64::NEG_INFINITY, |m, s| m.max(*s));
         if !best.is_finite() {
-            return Some(rng.gen_range(0..vendor_ids.len()));
+            return Some(rng.random_range(0..vendor_ids.len()));
         }
         const TIE_EPS: f64 = 1e-9;
         let tied: Vec<usize> = scores
@@ -345,7 +345,7 @@ impl BanditState {
             .filter(|(_, s)| (**s - best).abs() <= TIE_EPS)
             .map(|(i, _)| i)
             .collect();
-        Some(tied[rng.gen_range(0..tied.len())])
+        Some(tied[rng.random_range(0..tied.len())])
     }
 
     /// 臂存在性（测试观测：选择/奖励两端键对齐的断言入口）

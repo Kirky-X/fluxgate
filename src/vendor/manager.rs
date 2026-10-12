@@ -859,7 +859,8 @@ impl VendorManager {
                             vendor = %instance.vendor_id,
                             model = %response.model,
                             cost_cny = est.total_cost,
-                            "CNY-priced entry not recorded into USD cost tracker (T011 bridge pending)"
+                            "{}",
+                            crate::i18n::t("vendor-cost-cny-not-recorded")
                         );
                     }
                 }
@@ -1084,12 +1085,23 @@ impl VendorManager {
     }
 
     /// per-key 熔断键的 model 段 — 归一到配置面模型身份（vendor.models 的 model_id）：
-    /// 先剥离 `{vendor_id}.` 前缀（hint 与 direct 形式须落同一键），再按 vendor.models 匹配。
+    /// 先剥离 `{vendor_id}.` 前缀（hint 与 direct 形式须落同一键），再按 vendor.models
+    /// 匹配；前缀剥离与匹配均大小写不敏感（请求侧书写大小写不得分裂熔断键）。
+    /// 未登记模型回落剥离后原串（保留书写大小写，既有语义，不参与归一）。
     fn cb_model<'a>(vendor_id: &str, config: &'a VendorConfig, request_model: &'a str) -> &'a str {
-        let stripped = request_model
-            .strip_prefix(vendor_id)
-            .and_then(|rest| rest.strip_prefix('.'))
-            .unwrap_or(request_model);
+        // str::strip_prefix 语义为精确匹配，不可配置 CI，故手写前缀判定
+        //（get 对非字符边界返回 None，自动落回原串）
+        let prefix_matches = request_model
+            .get(..vendor_id.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(vendor_id));
+        let stripped = if prefix_matches {
+            request_model
+                .get(vendor_id.len()..)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .unwrap_or(request_model)
+        } else {
+            request_model
+        };
         if stripped.is_empty() {
             return request_model;
         }
@@ -1097,7 +1109,11 @@ impl VendorManager {
             .models
             .iter()
             .find(|m| {
-                m.enabled && (m.model_id == stripped || m.abstract_id.as_deref() == Some(stripped))
+                m.enabled
+                    && (m.model_id.eq_ignore_ascii_case(stripped)
+                        || m.abstract_id
+                            .as_deref()
+                            .is_some_and(|a| a.eq_ignore_ascii_case(stripped)))
             })
             .map(|m| m.model_id.as_str())
             .unwrap_or(stripped)
@@ -1395,9 +1411,9 @@ impl VendorManager {
         metrics.record_retry_attempt();
 
         // 延迟：Retry-After 展宽优先，否则按分类退避（RNG 注入，不跨 await）
-        let policy_delay = retry_delay_for(category, attempt, policy, &mut rand::thread_rng());
+        let policy_delay = retry_delay_for(category, attempt, policy, &mut rand::rng());
         let delay = match retry_after {
-            Some(ra) => spread_delay(ra, policy, &mut rand::thread_rng()),
+            Some(ra) => spread_delay(ra, policy, &mut rand::rng()),
             None => policy_delay,
         };
         // 安全封顶：超大 Retry-After 会占住 worker + 并发许可，指示值截断至上限并记 warn。
@@ -1408,7 +1424,8 @@ impl VendorManager {
                     vendor = %config.id,
                     status = ?retry_after,
                     capped_secs = MAX_UPSTREAM_WAIT.as_secs(),
-                    "upstream retry wait truncated",
+                    "{}",
+                    crate::i18n::t("vendor-upstream-retry-wait-truncated"),
                 );
                 MAX_UPSTREAM_WAIT
             } else {
@@ -2978,6 +2995,55 @@ mod tests {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
         }
+    }
+
+    // ======== cb_model 归一（单测） ========
+
+    /// 大小写变体前缀与模型名归一到配置模型身份（原实现精确匹配回落原串，
+    /// 请求大小写变体产生分裂熔断键）。
+    #[test]
+    fn cb_model_normalizes_case_variant_prefix_and_model() {
+        let mut config = pool_vendor_config("NEXUSFLOW_MGR_CI_A", "NEXUSFLOW_MGR_CI_B");
+        config.models = vec![crate::config::ModelConfig {
+            model_id: "GPT-4O".into(),
+            abstract_id: Some("gpt-4o".into()),
+            weight: 1.0,
+            enabled: true,
+        }];
+        // 前缀大小写变体 + 模型大小写变体 → canonical model_id
+        assert_eq!(
+            VendorManager::cb_model("v-pool-test", &config, "V-Pool-Test.GPT-4O"),
+            "GPT-4O"
+        );
+        // 抽象名（小写）命中同一 canonical model_id
+        assert_eq!(
+            VendorManager::cb_model("v-pool-test", &config, "v-pool-test.gpt-4o"),
+            "GPT-4O"
+        );
+        // 裸模型名（无前缀）经 CI 模型匹配
+        assert_eq!(
+            VendorManager::cb_model("v-pool-test", &config, "gpt-4o"),
+            "GPT-4O"
+        );
+    }
+
+    /// 无匹配回落剥离后原串；前缀不匹配/越界回落原串（不 panic）。
+    #[test]
+    fn cb_model_falls_back_to_stripped_or_original() {
+        let config = pool_vendor_config("NEXUSFLOW_MGR_CI_A", "NEXUSFLOW_MGR_CI_B");
+        assert_eq!(
+            VendorManager::cb_model("v-pool-test", &config, "v-pool-test.ghost"),
+            "ghost"
+        );
+        assert_eq!(
+            VendorManager::cb_model("v-pool-test", &config, "other.ghost"),
+            "other.ghost"
+        );
+        assert_eq!(VendorManager::cb_model("v-pool-test", &config, "vp"), "vp");
+        assert_eq!(
+            VendorManager::cb_model("v-pool-test", &config, "V-POOL-TEST."),
+            "V-POOL-TEST."
+        );
     }
 
     /// 同 key 跨请求共享计数（Arc 同源，5 次失败累计至阈值 → Open）；不同 key 隔离

@@ -16,6 +16,7 @@ admin-only-global-model-supported = Only 'global' model config is supported
 admin-cost-group-by-invalid = group_by (must be vendor|model)
 admin-cost-date-format-invalid = { $name } (must be YYYY-MM-DD)
 admin-cost-usage-sink-unwired = usage sink is not wired; cost usage unavailable
+admin-token-stats-usage-sink-unwired = usage sink is not wired; token stats unavailable
 admin-vendor-reset-unknown-vendor = vendor '{ $id }' (unknown vendor)
 
 # ---- router_builder.rs ----
@@ -24,6 +25,14 @@ router-admission-rejected = Admission rejected (congestion)
 router-access-denied = Access denied
 router-governor-init-failed = Governor init failed
 router-inbound-rate-limit-init-failed = inbound rate limit init failed
+# 全局 tower 限流层内层错误：原文只进日志，响应体为通用 500 文案。
+router-global-rate-limit-layer-error = global rate limit layer error: { $error }
+router-internal-server-error = internal server error
+
+# ---- readiness.rs（就绪探针组件检查失败：details 只给固定码，原文进日志）----
+api-readiness-db-probe-failed = readiness db probe failed: { $error }
+api-readiness-db-session-failed = readiness db session failed: { $error }
+api-readiness-cache-probe-failed = readiness cache probe failed: { $error }
 
 # ---- api/mod.rs ----
 api-log-truncated = ...[truncated, { $total_bytes } bytes total]
@@ -59,7 +68,7 @@ api-explain-no-selection = eligible candidate must carry a selection tier
 api-health-description = Health check endpoint
 
 # ---- api/openapi_docs.rs（OpenAPI description，经 sdforge::i18n::register_translation 运行时注册） ----
-api-openapi-models-list-description = Union of model catalog and enabled vendor models, deduplicated. Never cached.
+api-openapi-models-list-description = Union of model catalog and enabled vendor models, deduplicated; vendor entries list their routable public name (abstract_id, else model_id). Never cached.
 api-openapi-count-tokens-description = Approximate input token estimation (chars/4 + per-message overhead, deterministic).
 api-openapi-route-explain-description = Read-only per-candidate routing assessment (reason codes + weight breakdown).
 api-openapi-cost-usage-description = Aggregated token and cost ledger grouped by vendor or model, with optional time window and API key filter.

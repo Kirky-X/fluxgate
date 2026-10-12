@@ -42,3 +42,9 @@ main-hot-reload-committed = 配置热重载已生效；变更段：{ $sections }
 main-hot-reload-watching = 配置热重载已监听文件：{ $path }
 main-hot-reload-watcher-unavailable = 热重载监听启动失败；已继续运行但热重载不可用
 main-hot-reload-swap-failed = 配置热重载切换失败：{ $error }
+
+# ---- server/{bootstrap,shutdown}.rs 运维日志 ----
+main-log-bridge-already-installed = 日志门面桥已安装：{ $error }
+# $phase 为固定序收尾阶段名（ShutdownPhase 变体），不本地化。
+main-teardown-hook-timeout = 收尾 { $phase } 钩子超时
+main-teardown-hook-registration-failed = 收尾钩子登记失败：{ $error }

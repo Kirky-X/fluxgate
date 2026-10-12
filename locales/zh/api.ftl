@@ -16,6 +16,7 @@ admin-only-global-model-supported = 仅支持 'global' 模型配置
 admin-cost-group-by-invalid = group_by（必须为 vendor|model）
 admin-cost-date-format-invalid = { $name }（必须为 YYYY-MM-DD）
 admin-cost-usage-sink-unwired = usage sink 未接线；成本分账不可用
+admin-token-stats-usage-sink-unwired = usage sink 未接线；token 统计不可用
 admin-vendor-reset-unknown-vendor = 厂商 '{ $id }'（未知厂商）
 
 # ---- router_builder.rs ----
@@ -24,6 +25,14 @@ router-admission-rejected = 准入被拒绝（拥塞）
 router-access-denied = 访问被拒绝
 router-governor-init-failed = Governor 初始化失败
 router-inbound-rate-limit-init-failed = 入站限流初始化失败
+# 全局 tower 限流层内层错误：原文只进日志，响应体为通用 500 文案。
+router-global-rate-limit-layer-error = 全局限流层错误：{ $error }
+router-internal-server-error = 内部服务器错误
+
+# ---- readiness.rs（就绪探针组件检查失败：details 只给固定码，原文进日志）----
+api-readiness-db-probe-failed = 就绪探针 DB 探测失败：{ $error }
+api-readiness-db-session-failed = 就绪探针 DB 会话获取失败：{ $error }
+api-readiness-cache-probe-failed = 就绪探针缓存后端探测失败：{ $error }
 
 # ---- api/mod.rs ----
 api-log-truncated = ...[已截断，共 { $total_bytes } 字节]
@@ -59,7 +68,7 @@ api-explain-no-selection = 入选者必有档位
 api-health-description = 健康检查端点
 
 # ---- api/openapi_docs.rs（OpenAPI description，经 sdforge::i18n::register_translation 运行时注册） ----
-api-openapi-models-list-description = 模型目录与已启用厂商模型的并集，去重；不缓存
+api-openapi-models-list-description = 模型目录与已启用厂商模型的并集，去重；厂商条目列可路由的公开名（abstract_id，缺省 model_id）；不缓存
 api-openapi-count-tokens-description = 近似输入 token 估算（字符数/4 + 每条消息结构开销，确定性）
 api-openapi-route-explain-description = 只读的逐候选路由评估（原因码 + 权重分解）
 api-openapi-cost-usage-description = 按厂商或模型聚合的 token 与成本分账，支持可选时间窗与 API key 过滤

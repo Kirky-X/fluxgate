@@ -61,7 +61,8 @@ impl AnthropicConverter {
         tracing::debug!(
             model = %body.get("model").and_then(|v| v.as_str()).unwrap_or("?"),
             injected,
-            "anthropic cache breakpoints injected"
+            "{}",
+            t("protocol-anthropic-cache-breakpoints-injected")
         );
         Ok(body)
     }
@@ -1561,7 +1562,11 @@ pub fn inject_cache_control(body: &mut Value, policy: &CacheBreakpointPolicy) ->
                 }
             }
             other => {
-                tracing::debug!(anchor = %other, "unknown cache breakpoint anchor, skipped");
+                tracing::debug!(
+                    anchor = %other,
+                    "{}",
+                    t("protocol-anthropic-unknown-cache-anchor")
+                );
             }
         }
     }

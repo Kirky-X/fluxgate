@@ -24,6 +24,8 @@ config-quota-without-auth = [quota].enabled 已开启但 [auth] 关闭或缺段�
 # JwtSecretValidator 规则内核），只含长度数字，不含条目原文
 config-weak-admin-secret = 管理面密钥校验未通过，拒绝启动（条目必须为小写 SHA256 hex 摘要）: { $details }
 config-admin-secret-not-hex-digest = 不是小写 SHA256 hex 摘要（应为 64 个小写十六进制字符，实际 { $length } 字节）
+# 非 Critical 违规不拒绝启动，但必须留痕（错误显性化）。
+config-non-critical-admin-secret-violation = 管理面密钥非致命规则违规：{ $message }
 
 # ---- config/manager.rs ----
 config-snapshot-serialize-failed = 配置快照跳过：旧配置序列化失败
@@ -31,6 +33,7 @@ config-snapshot-failed = 配置快照失败（不阻塞更新）: { $error }
 config-snapshot-saved = 已留配置快照: { $path }
 config-serialize-failed = 配置序列化失败: { $error }
 config-path-unknown = 配置路径未知: ConfigManager 非经 ConfigLoader 创建；拒绝落盘更新
+config-disk-modified-refusing-write = { $path } 自上次加载或写回后被进程外修改；拒绝覆盖写回——请先热重载或重启以应用该外部编辑（待生效编辑可能落在 vendor 拓扑等仅重启生效的段）
 config-tmp-write-failed = 写入配置临时文件 { $path } 失败: { $error }
 config-atomic-replace-failed = 原子替换 { $path } 失败: { $error }
 
@@ -41,9 +44,13 @@ protocol-openai-error = OpenAI 错误: { $type } - { $message }
 protocol-passthrough-stream-interrupted = 上游透传流中断
 protocol-stream-error-frame = 上游流中断：已输出部分内容后终止流。
 protocol-tool-buffer-malformed = 丢弃畸形工具缓冲：id 与 name 均空
+# anthropic 自动缓存断点注入：注入计数与未知锚点跳过（调试留痕）。
+protocol-anthropic-cache-breakpoints-injected = 已注入 anthropic 缓存断点
+protocol-anthropic-unknown-cache-anchor = 未知缓存断点锚点，已跳过
 
 # ---- router/router.rs ----
 router-model-not-found = 模型 { $model } 未找到
+router-global-model-disabled = 模型 { $model } 未找到：全局模型路由已关闭（[global_model].enabled=false）
 router-vendor-unavailable = 指定的厂商 { $vendor } 不可用或未配置
 router-fail-open-engaged = 全部候选冷却中；已启用 fail-open 回落
 router-global-fail-open-engaged = 全局候选全部冷却中；已启用 fail-open 回落

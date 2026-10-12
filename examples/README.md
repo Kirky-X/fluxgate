@@ -59,8 +59,8 @@ cd examples/assets/rest-http && npm install openai && NEXUSFLOW_API_KEY=你的ke
 
 **协议事实与勘误**（编写时以源码核实）：
 
-- `GET /v1/models` 未在网关注册（服务端路由表 `src/api/router_builder.rs:360-377` 无此路由），请求会 404；真实模型列表是 `GET /admin/models`。SDK 的 `NexusFlowClient::models`（`src/sdk/admin.rs:42-46`）引用了这条不存在的路由，属 SDK 与服务端的既有偏差。
-- `X-Vendor`/`X-Model` 仅 `/v1/chat/completions` 消费（`src/api/openai.rs:83-95`）；`/v1/messages` 的 handler 只读 `X-Weight`，路由只认 body 的 `model`。
+- `GET /v1/models` 已在网关注册（`src/api/router_builder.rs:703`）：OpenAI list 格式，返回「模型目录 ∪ vendor 配置模型」去重排序、需鉴权、始终现算不缓存。`GET /admin/models` 是另一个端点——`[[model_catalog]]` 能力目录（含定价/能力位），管理员鉴权，二者用途不同。SDK 的 `NexusFlowClient::models`（`src/sdk/admin.rs:140-143`）打的是 `GET /admin/models`（旧版误打未注册的 `/v1/models` 恒 404 的失配已修复），已无 SDK 偏差。
+- `X-Vendor`/`X-Model` 等提示头两个推理端点均读取（`RoutingHints::from_headers`：`src/api/openai.rs:56`、`src/api/anthropic.rs:57`）——`/v1/chat/completions` 与 `/v1/messages` 都支持 `X-Vendor` / `X-Model` / `X-Session-Id` / `X-Weight`。
 - SSE 错误帧 `event: error` 之后网关不补 `[DONE]`（`src/api/openai.rs:592-624`、`src/protocol/sse_frame.rs:25-46`），客户端解析器按失败终止，不要等待 `[DONE]`。
 
 ---

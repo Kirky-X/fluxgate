@@ -70,15 +70,22 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi")
 
 [dependencies]
 # Web 框架
-axum = { version = "0.8", features = ["macros"], optional = true }
-tokio = { version = "1", features = ["full"] }
-tower = { version = "0.5", optional = true }
-tower-http = { version = "0.7", features = ["cors", "trace", "request-id"], optional = true }
+# axum 显式特性（关默认）：default = form/http1/json/matched-path/original-uri/query/tokio/tower-log/tracing，
+# 本仓只用 macros+http1+json+query+tokio 与请求 span 日志面；form/multipart/ws/original-uri/matched-path 零调用，裁掉。
+axum = { version = "0.8", default-features = false, features = ["macros", "http1", "json", "query", "tokio", "tower-log", "tracing"], optional = true }
+# tokio 关默认后按直用面声明最小集：rt-multi-thread（蕴含 rt，供 #[tokio::main] 多线程运行时）、
+# macros、net（TcpListener/TcpStream）、time、sync、io-util（AsyncWriteExt）；
+# full 携带的 fs/process/signal/parking_lot/io-std 本仓零调用（examples 的 ctrl_c 由该 crate
+# 自己的 entries 补 signal）。
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tower = { version = "0.5", default-features = false, optional = true }
+tower-http = { version = "0.7", default-features = false, features = ["cors", "trace", "request-id"], optional = true }
 
 # 数据库 — crates.io rc.9（自研库全量走 registry）。kit feature 暴露 integrations::kit::DbNexusModule。
 # 后端（sqlite/postgres/mysql）与 runtime 不在此声明：Cargo feature 只加不减，写死会锁死单一后端，由 db-* 三组透传按构建选择。
 dbnexus = { version = "0.6.0-rc.9", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate"], optional = true }
-sea-orm = { version = "2.0.4", default-features = false, optional = true }
+# sea-orm 零特性面（ConnectionTrait/Statement/DatabaseBackend/Value 直用，无 entity derive、无 sqlx 驱动）
+sea-orm = { version = "2.0", default-features = false, optional = true }
 
 # 日志 — crates.io 版（自研库全量走 registry；本地对齐以同版本发布保证）。
 # 落库后端（sqlite/postgres）随 db-* 三组经 inklog?/<backend> 透传，不在此写死。
@@ -86,11 +93,14 @@ sea-orm = { version = "2.0.4", default-features = false, optional = true }
 inklog = { version = "0.3.0-rc.9", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
 # 配置加载与热重载：dynamic/snapshot/loader 三面 + json 强类型投影 + security-rules 弱密钥校验 + hot-reload-kit；不启用 env（无 .env 自动加载）。
 confers = { version = "0.6.0-rc.10", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
-tracing = "0.1"
+# tracing 显式集（关默认等价声明）：std + attributes（info!/span! 等事件宏的展开面）
+tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 # log 门面 → tracing 事件桥：reqwest/sea-orm 等依赖经 log crate 输出，而 inklog LogAdapter 只投 console+主 async 通道，
 # 自定义 sink 收不到——先装 LogTracer 把这些记录并入统一 tracing 总线。
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
-tracing-subscriber = { version = "0.3", optional = true }
+# 主依赖只用 registry + 自定义 Layer（bootstrap.rs），不接 fmt/json/env-filter/ansi 面；
+# registry 蕴含 std，不再重复声明
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"], optional = true }
 
 # 流控 — "retry" 提供重试原语（delay_for_attempt / RetryPolicy），是唯一的重试延迟实现。
 limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "retry", "kit"], optional = true }
@@ -104,57 +114,68 @@ trait-kit = { version = "0.5.0-rc.9", default-features = false, features = ["asy
 # 服务框架（http/security/streaming/health/metrics/context/graceful/openapi 门面）
 sdforge = { version = "0.5.0-rc.8", default-features = false, features = ["http", "security", "streaming", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
 
-# 序列化与核心
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-async-trait = "0.1"
-futures = "0.3"
-chrono = { version = "0.4", features = ["serde"] }
-rand = { version = "0.8", optional = true }
-once_cell = { version = "1", optional = true }
-uuid = { version = "1", features = ["v4", "serde"] }
-url = { version = "2", optional = true }
-bytes = "1"
-reqwest = { version = "0.13", features = ["json", "stream", "socks"], optional = true }
+# 序列化与核心（全部显式特性 + 关默认）
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+thiserror = { version = "2", default-features = false, features = ["std"] }
+async-trait = { version = "0.1", default-features = false }
+# futures 显式集：executor（bootstrap.rs 的 block_on 同步桥；executor 蕴含 std）
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+# chrono 关默认：clock（Utc::now/Local::now，蕴含 std）+ serde；default 里的 oldtime/wasmbind 本仓零消费。
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+# rand 0.10（三方最新稳定版）：根侧实例与图内 dbnexus/inklog/sdforge/sqlx-postgres 已拉的
+# 0.10 收敛（锁中残余 0.8/0.9 实例由 rust_decimal/mockito/tungstenite 上游持有，非本仓直依赖）。
+# 0.10 API 迁移：gen_range → random_range、gen::<T>() → random::<T>()、thread_rng() → rng()、
+# &mut dyn RngCore → &mut dyn Rng（用户面方法在 RngExt）。
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"], optional = true }
+once_cell = { version = "1", default-features = false, features = ["std"], optional = true }
+uuid = { version = "1", default-features = false, features = ["v4", "serde", "std"] }
+url = { version = "2", default-features = false, features = ["std"], optional = true }
+bytes = { version = "1", default-features = false, features = ["std"] }
+# reqwest 0.13 语义下 default-tls = rustls；显式列出 default 面（default-tls/charset/http2/system-proxy），
+# 其余压缩（gzip/brotli/zstd/deflate）、cookies/form/multipart/http3/blocking/hickory-dns 本仓零调用。
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "socks", "default-tls", "charset", "http2", "system-proxy"], optional = true }
 # SSE 事件分帧（sdk feature 的流式响应解析）
-eventsource-stream = { version = "0.2", default-features = false, optional = true }
-async-channel = { version = "2", optional = true }
-async-stream = { version = "0.3", optional = true }
+eventsource-stream = { version = "0.2", default-features = false, features = ["std"], optional = true }
+async-channel = { version = "2", default-features = false, features = ["std"], optional = true }
+async-stream = { version = "0.3", default-features = false, optional = true }
 # CostTracker 的分片锁并发 map（cost-tracking）
-dashmap = { version = "6", optional = true }
-# 配置全量写回（persist_and_swap 的 toml::to_string_pretty）
-toml = "1"
+dashmap = { version = "6", default-features = false, features = ["inline"], optional = true }
+# 配置全量写回（persist_and_swap 的 toml::to_string_pretty）；显式列出 default 面
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse", "display"] }
 # i18n — Fluent 双束（en/zh）+ 语言检测链基座（i18n 模块常开）
 fluent-bundle = { version = "0.16", default-features = false }
 unic-langid = { version = "0.9", default-features = false }
 sys-locale = { version = "0.3", default-features = false }
 # API Key SHA256 摘要存储与常量时间比较（api/middleware 面三处消费）。
 # sha2 0.11 对齐兄弟库；sqlx 侧的 0.10 锁定属上游，随其升级自然收敛。
-sha2 = { version = "0.11", optional = true }
-hex = { version = "0.4", optional = true }
-subtle = { version = "2.6", default-features = false, optional = true }
+# 纯摘要面只需 alloc；default 的 oid（const-oid 对象标识）本仓零消费。
+sha2 = { version = "0.11", default-features = false, features = ["alloc"], optional = true }
+hex = { version = "0.4", default-features = false, features = ["std"], optional = true }
+subtle = { version = "2.6", default-features = false, features = ["std"], optional = true }
 
 
 [dev-dependencies]
-# retry 预算测试用 paused clock（start_paused）
-tokio = { version = "1", features = ["test-util"] }
+# retry 预算测试用 paused clock（start_paused）；特性与主 entries 联合（test-util 叠加在 rt/sync/time 上）
+tokio = { version = "1", default-features = false, features = ["test-util"] }
 # i18n 键位守卫：严格解析 .ftl（零 Junk）与占位符抽取（与 fluent-bundle 同源语法树）
 fluent-syntax = { version = "0.12", default-features = false }
 # log 门面桥测试：LogTracer 转发断言需 log 宏与 tracing Layer 捕获面
 # （tracing-subscriber 主依赖为 optional，测试单独声明 registry 面）
 log = { version = "0.4", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
-# admin CRUD 测试的 ConfigManager 写路径：RAII 唯一临时目录
-tempfile = "3"
-tokio-test = "0.4"
-mockall = "0.15"
-mockall_double = "0.3"
-http-body = "1.0"
-futures-util = "0.3"
-mockito = "1"
+# admin CRUD 测试的 ConfigManager 写路径：RAII 唯一临时目录（getrandom 供随机文件名）
+tempfile = { version = "3", default-features = false, features = ["getrandom"] }
+# tokio-test 已移除：全仓（src/tests/examples）零引用，属死开发依赖
+mockall = { version = "0.15", default-features = false }
+mockall_double = { version = "0.3", default-features = false }
+http-body = { version = "1", default-features = false }
+# 测试里的 StreamExt/SinkExt 面；io/sink/channel/compat 等重型面零调用
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+# mockito 关默认：default = color（colored 彩色终端输出）+ parking_lot，均非测试断言所需
+mockito = { version = "1", default-features = false }
 # 测试需注入 limiteron MockClock（假时钟驱动熔断超时 / 限流窗口重置）；MockClock 仅在 test-clock feature 下公开。
-limiteron = { version = "0.3.0-rc.7", features = ["test-clock"] }
+limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["test-clock"] }
 
 # ===============================================================================
 # 集成测试注册表（autotests = false，按域分节）：name = 文件 stem（二进制名不变，

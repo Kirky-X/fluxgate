@@ -65,7 +65,13 @@ static LOG_BRIDGE_TOUCHED: AtomicBool = AtomicBool::new(false);
 fn install_log_facade_bridge() {
     LOG_BRIDGE_TOUCHED.store(true, Ordering::Relaxed);
     if let Err(e) = tracing_log::LogTracer::init() {
-        tracing::debug!("log facade bridge already installed: {e}");
+        tracing::debug!(
+            "{}",
+            t_args(
+                "main-log-bridge-already-installed",
+                &[("error", e.to_string())]
+            )
+        );
     }
 }
 

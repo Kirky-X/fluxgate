@@ -24,6 +24,8 @@ config-quota-without-auth = [quota].enabled is on but [auth] is disabled or abse
 # JwtSecretValidator 规则内核），只含长度数字，不含条目原文
 config-weak-admin-secret = Admin-plane secret rejected at startup (entries must be lowercase SHA256 hex digests): { $details }
 config-admin-secret-not-hex-digest = not a lowercase SHA256 hex digest (expected 64 lowercase hex chars, got { $length } bytes)
+# 非 Critical 违规不拒绝启动，但必须留痕（错误显性化）。
+config-non-critical-admin-secret-violation = non-critical admin secret rule violation: { $message }
 
 # ---- config/manager.rs ----
 config-snapshot-serialize-failed = Config snapshot skipped: failed to serialize old config
@@ -31,6 +33,7 @@ config-snapshot-failed = Config snapshot failed (update not blocked): { $error }
 config-snapshot-saved = Config snapshot saved: { $path }
 config-serialize-failed = Failed to serialize config: { $error }
 config-path-unknown = config path unknown: ConfigManager not created via ConfigLoader; refusing to persist update
+config-disk-modified-refusing-write = { $path } was modified outside this process since it was last loaded or written back; refusing to overwrite it — reload or restart to apply the external edit first (pending edits may target restart-only sections such as the vendor topology)
 config-tmp-write-failed = Failed to write config tmp file { $path }: { $error }
 config-atomic-replace-failed = Failed to atomically replace { $path }: { $error }
 
@@ -41,9 +44,13 @@ protocol-openai-error = OpenAI error: { $type } - { $message }
 protocol-passthrough-stream-interrupted = upstream passthrough stream interrupted
 protocol-stream-error-frame = Upstream stream interrupted; the stream was terminated after partial output.
 protocol-tool-buffer-malformed = dropped malformed tool buffer: both id and name are empty
+# anthropic 自动缓存断点注入：注入计数与未知锚点跳过（调试留痕）。
+protocol-anthropic-cache-breakpoints-injected = anthropic cache breakpoints injected
+protocol-anthropic-unknown-cache-anchor = unknown cache breakpoint anchor, skipped
 
 # ---- router/router.rs ----
 router-model-not-found = Model { $model } not found
+router-global-model-disabled = Model { $model } not found: global model routing is disabled ([global_model].enabled=false)
 router-vendor-unavailable = Vendor { $vendor } unavailable or not configured
 router-fail-open-engaged = all candidates cooling; fail-open fallback engaged
 router-global-fail-open-engaged = all global candidates cooling; fail-open fallback engaged

@@ -78,7 +78,7 @@ NexusFlow 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 
 ## 🏗️ 项目结构
 
-`src/` 共 84 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`nexusflow::config` 等公开路径不变），按目录职责划分：
+`src/` 共 92 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`nexusflow::config` 等公开路径不变），按目录职责划分：
 
 | 目录 | 职责 | 关键文件 |
 |:-----|:-----|:---------|
@@ -101,8 +101,7 @@ NexusFlow 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 |:-----|:-----|
 | `src/server` | **服务器装配链**库模块（`all(web-server, logging)` 门控）：bootstrap / http / handle / shutdown，`run()` 起服、`build_app()` 返回 `(Router, ServerHandle)`（停机 flush 收尾，幂等；同进程二次装配 panic，见 `# Panics` 文档） |
 | `src/sdk` | **Rust 客户端 SDK** 模块（`sdk` feature 门控）：chat / embed / models / vendors / health，含 SSE 流式（原顶层 `sdk/` 独立 crate 已并入） |
-| `tests/` | **顶层集成测试**（20 个 `.rs` 文件：HTTP 全链路 / 配置示例断言 / feature 组合矩阵等，含 `common/` 辅助） |
-| `tests/` | **路由核心集成测试**（19 个 `.rs` 文件：路由 / 协议转换 / 厂商 / 熔断 / 重试 / 成本等，含 `common/` 辅助） |
+| `tests/` | **集成测试**（按功能域目录化，48 个 `.rs` 文件 = 47 个测试二进制 + `common/mod.rs` helper：HTTP 全链路 / 路由 / 协议转换 / 厂商 / 熔断 / 重试 / 成本 / 配置示例断言 / feature 组合矩阵 / 死代码守卫等） |
 
 > 架构惯例：`mod.rs` 只保留接口与 re-export，具体实现放独立文件（如 `router/router.rs`、`config/manager.rs`）。新增代码请遵循同一惯例。
 
@@ -139,8 +138,8 @@ cargo build --release
 
 | 类型 | 数量 | 位置 | 写法 |
 |:-----|:-----|:-----|:-----|
-| 单元测试 | **367 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
-| 集成测试 | **764 个** | `tests/`（41 个文件） | HTTP 全链路 / 跨模块行为 |
+| 单元测试 | **426 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
+| 集成测试 | **868 个** | `tests/`（48 个 `.rs` 文件 = 47 个测试二进制 + `common/mod.rs`） | HTTP 全链路 / 跨模块行为 |
 
 约定与工具：
 
@@ -165,7 +164,7 @@ cargo test --test gate_router_test             # 单个集成测试二进制（�
 
 ## 🚩 Feature 纪律
 
-`Cargo.toml` 定义 **11 个 feature**，`default = ["full", "db-sqlite"]`（全启用 + sqlite 后端）：
+`Cargo.toml` 定义 **18 条 feature 声明**（含 `default`，即 17 个非 default；其中 `full` 预设内含下表 11 个 feature），`default = ["full", "db-sqlite"]`（全启用 + sqlite 后端）：
 
 | Feature | 门控内容 |
 |:--------|:---------|

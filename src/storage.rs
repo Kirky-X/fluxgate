@@ -9,6 +9,7 @@
 //! admin 读恒经存储后端，管道前沿不被虚构查询能力。
 
 use crate::error::GateError;
+use crate::i18n::t;
 use serde::{Deserialize, Serialize};
 
 /// 请求日志行：数据面写入与 admin 查询的共用契约。
@@ -179,13 +180,13 @@ pub enum CostGroupBy {
 
 fn unsupported_query() -> GateError {
     GateError::Config {
-        message: "this RequestLogSink implementation is a data-plane write front and does not support queries (admin reads go through the storage backend implementation)".to_string(),
+        message: t("storage-log-query-unsupported"),
     }
 }
 
 fn unsupported_usage_query() -> GateError {
     GateError::Config {
-        message: "this UsageSink implementation does not provide stats queries (admin reads go through the storage backend implementation)".to_string(),
+        message: t("storage-usage-stats-unsupported"),
     }
 }
 

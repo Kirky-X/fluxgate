@@ -42,3 +42,9 @@ main-hot-reload-committed = Hot reload committed; changed sections: { $sections 
 main-hot-reload-watching = Hot reload watching config file: { $path }
 main-hot-reload-watcher-unavailable = Hot reload watcher failed to start; continuing without hot reload
 main-hot-reload-swap-failed = Hot reload swap failed: { $error }
+
+# ---- server/{bootstrap,shutdown}.rs 运维日志 ----
+main-log-bridge-already-installed = log facade bridge already installed: { $error }
+# $phase 为固定序收尾阶段名（ShutdownPhase 变体），不本地化。
+main-teardown-hook-timeout = teardown { $phase } hook timed out
+main-teardown-hook-registration-failed = teardown hook registration failed: { $error }

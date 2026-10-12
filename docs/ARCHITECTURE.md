@@ -106,7 +106,7 @@ flowchart TB
 | 文件 | 职责 |
 |---|---|
 | `api/mod.rs` | 业务路由组装与请求处理主循环：换路重试循环、亲和 bind/clear 编排（`src/api/mod.rs:42-94`、`src/api/mod.rs:282-460`） |
-| `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:657-728`）；admission 准入判定挂载（`src/api/router_builder.rs:459-470`） |
+| `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:695-731`）；admission 准入判定挂载（`src/api/router_builder.rs:474-560`） |
 | `api/openai.rs` | `POST /v1/chat/completions`、`POST /v1/embeddings` 端点 |
 | `api/anthropic.rs` | `POST /v1/messages` 端点 |
 | `api/health.rs` | `/health` 健康检查端点 |
@@ -154,7 +154,7 @@ flowchart TB
 
 | 目录 | 文件与职责 |
 |---|---|
-| `src/config/` | `mod.rs`：`Config` 结构体（15 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
+| `src/config/` | `mod.rs`：`Config` 结构体（18 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
 | `src/middleware/` | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`mod.rs`：中间件组织 |
 | `src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3） |
 | `src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器 |
@@ -182,7 +182,7 @@ sequenceDiagram
     C->>MW: POST /v1/chat/completions
     MW->>MW: TraceLayer 开启请求 span
     MW->>MW: auth（Bearer → x-api-key 备用）
-    MW->>MW: rate_limit（Governor 滑动窗口，未配置全局规则时以内置令牌桶兜底）+ admission 准入判定
+    MW->>MW: rate_limit（端点表 + tower 全局层，未配置全局规则时以共享令牌桶兜底）+ admission 准入判定
     MW->>H: 放行
     H->>H: 提取路由提示（X-Vendor / X-Model / X-Session-Id / X-Weight）
     H->>RC: 精确响应缓存查询（cache.enabled 时）
@@ -219,7 +219,7 @@ sequenceDiagram
 
 ### 三级决策顺序
 
-`route_inner` 按以下顺序尝试（`src/router/router.rs:170`）。注意顺序是**先抽象模型、再直连**，最后才是全局池：
+`route_inner` 按以下顺序尝试（`src/router/router.rs:153`）。注意顺序是**先抽象模型、再直连**，最后才是全局池：
 
 ```mermaid
 flowchart TB
@@ -228,12 +228,20 @@ flowchart TB
     S1 -->|未命中| S2{"try_direct_route<br/>vendor.model 直连命中？"}
     S2 -->|命中| EXEC["定点执行该 vendor + model"]
     S2 -->|未命中| S3{"model 名为 auto？"}
-    S3 -->|是| GLOB["try_global_route<br/>全局模型池 → 抽象层打分"]
-    S3 -->|否| ERR["UnknownModel 错误"]
+    S3 -->|是| SW{"[global_model].enabled？"}
+    S3 -->|否| ERR["UnknownModel 错误<br/>validation_error 400"]
+    SW -->|false| DISABLED["GlobalModelDisabled<br/>validation_error 400"]
+    SW -->|true| GLOB["try_global_route<br/>全局模型池 → 抽象层打分"]
     GLOB --> SCORE
     SCORE --> SEL["选择层：<br/>温度平滑 → 轮盘赌 / PoTC"]
     SEL --> OUT["(vendor_id, model) 决策结果"]
 ```
+
+> `[global_model].enabled=false` 关闭 auto 档：全局池不参与选路，请求以
+> `validation_error`(400) 拒绝（信息含「未找到」原句 + 开关来源，避免把
+> 「管理员关闭」误报成「模型不存在」）。段缺省（`Config.global_model = None`）
+> 沿用历史兜底语义 = 启用；显式模型名（抽象/直连路由）不受该开关影响。
+> `ConfigManager::is_global_model_enabled` 是该判定的单一读取点。
 
 ### 加权打分公式
 
@@ -352,7 +360,7 @@ flowchart TB
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`src/vendor/manager.rs:176-212`）：
+`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`src/vendor/manager.rs:135-145`）：
 
 | 参数 | 值 | 设计理由 |
 |---|---|---|
@@ -401,7 +409,7 @@ stateDiagram-v2
 | `CostCalculator` | `src/vendor/cost.rs` | 定价表来自热配置 `[[pricing]]`，按 `(prompt/1000)×in_price + (completion/1000)×out_price` 计算 USD；`(vendor_id, model_id)` 未命中计 0.0；每请求现读热配置，定价修改即时生效（`src/vendor/manager.rs` 的定价热读点） |
 | `CostTracker` | `src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径 |
 
-**已知边界（如实标注）**：成本数据当前不落库——`request_logs.cost_usd` 恒写 `None`，`token_usage` 聚合的 `cost_usd_sum` 传 0.0；亦无 `/admin/cost` 端点。成本统计仅在进程内累积，重启归零。
+**成本落库与内存边界（如实标注）**：成本分账已落库——`token_usage` 表按 `(vendor, model, api_key_hash, date, hour)` UPSERT，写入 `input_cost` / `output_cost` / `cache_read_cost` / `cache_creation_cost` 四档成本列（`src/database/pre_aggregator.rs`，单价取 `[[model_catalog]]` 四档，未登记记 0），并可由 `GET /admin/cost` 按 vendor/model 分组聚合查询。仍留的内存/历史边界：进程内 `CostTracker`（`by_vendor`/`by_model`）仅在内存累积、重启清零；逐请求日志 `request_logs.cost_usd` 仍恒写 `None`（该列为历史库兼容保留）。
 
 ---
 
@@ -442,7 +450,7 @@ flowchart LR
 
 ### 配置结构
 
-`Config` 顶层 16 段（`src/config/mod.rs:1115-1165`）：
+`Config` 顶层 18 段（`src/config/mod.rs:933-991`）：
 
 | 段 | 说明 | 段 | 说明 |
 |---|---|---|---|
@@ -453,6 +461,7 @@ flowchart LR
 | `pricing` | `[[pricing]]` 定价表 | `admission` | 拥塞准入 |
 | `auth`（Option） | API key 与档位 | `retry` | 重试与换路预算 |
 | `cors`（Option） | 跨域 | `model_catalog` | `[[model_catalog]]` 模型能力/定价目录（空目录时序列化省略） |
+| `health` | 主动健康探针（默认 off） | `quota` | 成本/token 维度配额（默认关） |
 | `grpc`（Option） | gRPC 服务器（缺段/禁用 = 不监听） | `docs` | OpenAPI 文档面开关（默认关 = 路由不存在） |
 
 **硬约束**：所有配置段必须进 `Config` 结构体——persist 是全量写回磁盘，结构体里没有的段会在写回时从文件中消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。
@@ -482,20 +491,20 @@ flowchart LR
 | 类别 | 段 |
 |---|---|
 | 热生效 | `routing`、`retry`、`resilience`、`admission`、`auth`、`cache`、`pricing`、`vendors`（enabled 与权重） |
-| 需重启 | `server`、`cors`（POST 响应以 `restart_required` 数组显式提示）、`rate_limit`（Governor 构造期注入）、vendor concurrency、`database` |
+| 需重启 | `server`、`cors`（POST 响应以 `restart_required` 数组显式提示）、`rate_limit`（tower 层构造期构建）、vendor concurrency、`database` |
 
 ---
 
 ## 🚦 中间件管线
 
-管线顺序（`src/api/router_builder.rs:719-728`）：
+管线顺序（`src/api/router_builder.rs:748-771`）：
 
 ```mermaid
 flowchart LR
     A["客户端请求"] --> T["TraceLayer"]
     T --> AUTH["auth_middleware<br/>SHA256 摘要存储 + 常量时间比较"]
-    AUTH --> RL["rate_limit_middleware<br/>limiteron Governor 滑动窗口<br/>（未配置全局规则时以内置令牌桶兜底）"]
-    RL --> ADM["admission 准入判定<br/>router_builder.rs:218-234"]
+    AUTH --> RL["入站限流<br/>端点表 + tower 全局层<br/>（空 rules 时共享令牌桶兜底）"]
+    RL --> ADM["admission 准入判定<br/>router_builder.rs:474-503"]
     ADM --> H["路由 handler"]
 ```
 
@@ -503,7 +512,7 @@ flowchart LR
 
 - API key 以 SHA256 摘要存储，比较使用常量时间比较，防时序侧信道；
 - 凭证提取：`Authorization: Bearer` 优先，`x-api-key` 备用；
-- `/health`、`/api/v1/health`、`/` 白名单放行；
+- `/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九条白名单放行（`src/middleware/auth.rs:159-168`）；
 - 每请求热读 `[auth]` 配置段，key 增删即时生效；
 - key 档位（recId=16，`[[auth.keys]]` 的 `tier`）：`dedicated` / `guaranteed` / `elastic` / `spot`。
 
@@ -517,9 +526,9 @@ flowchart LR
 
 ### 限流（rate_limit）
 
-- limiteron 滑动窗口限流：全局规则走 Governor，`[[rate_limit.rules]]` 按 path 前缀的端点规则走 `ShardedSlidingWindowLimiter`；
-- 触发封禁返回 403；
-- 健康检查白名单：`/health`、`/healthz`、`/ready`、`/api/v1/health`。
+- limiteron 入站限流分两层：`path` 前缀的端点规则走中间件侧端点表（`ShardedSlidingWindowLimiter`，按租户 API key 的 SHA256 摘要分桶）；`path` 缺省的全局规则走 tower 全局层（`GlobalRateLimitLayer` + `QuotaLimiter`，按租户摘要分桶，G5 起真正按租户生效）；
+- 超限一律返回 `429` + `Retry-After`；旧 `Decision::Banned → 403` 封禁分支已在 tower 化改造中删除（规则 ban 恒为 None），`rules` 为空时兜底为共享 `TokenBucket(100, 10/s)`；
+- 限流豁免路径（`is_quota_exempt_path` 共十条）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`。
 
 ---
 

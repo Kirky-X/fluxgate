@@ -10,6 +10,7 @@ use confers::dynamic::DynamicField;
 use confers::snapshot::{SnapshotConfig, SnapshotFormat, SnapshotManager};
 use confers::types::SourceId;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -23,6 +24,15 @@ const SNAPSHOT_KEEP: usize = 10;
 
 /// confers Redacted 序列化时打码的路径（api_keys 存的已是 SHA256 摘要，双保险）
 const SNAPSHOT_REDACT_PATHS: &[&str] = &["auth.api_keys"];
+
+/// 磁盘配置内容指纹（本进程视角：加载 / 热重载提交 / 成功写回后刷新）。
+/// 写回前与磁盘现值比对，用于识别进程外编辑。
+fn file_fingerprint(path: &Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
+}
 
 /// 落盘前的旧配置快照（confers SnapshotManager：时间戳命名 + 超量自动清理）。
 /// 解析/写盘任一步失败都只记 warn，绝不阻塞更新主路径。
@@ -67,12 +77,16 @@ fn snapshot_current_config(manager: &ConfigManager, config_path: &Path) {
 /// 配置管理器：内存热读态由 confers DynamicField 承载（无锁读），
 /// 文件写入为唯一临时文件 + rename 原子替换。写路径互斥（write_lock）：
 /// 校验→序列化→落盘→内存切换全程串行，防并发落盘交错；RMW 场景用
-/// update_config_with 在同一锁内完成，杜绝丢失更新
+/// update_config_with 在同一锁内完成，杜绝丢失更新。
+/// 另外以磁盘内容指纹做乐观并发控制：写回前发现文件被进程外改动即拒绝，
+/// 全量序列化不得静默抹掉尚未生效的外部编辑（如需重启的拓扑变更）。
 #[derive(Clone)]
 pub struct ConfigManager {
     config: Arc<DynamicField<Config>>,
     /// 启动加载路径（ConfigLoader::load 时注入）；None = 纯内存构造，update_config 拒绝落盘
     path: Arc<RwLock<Option<PathBuf>>>,
+    /// 本进程上次观测到的磁盘配置指纹（见 file_fingerprint）
+    disk_fingerprint: Arc<RwLock<Option<u64>>>,
     /// 写路径互斥（std Mutex：无 .await 穿越临界区，跨线程可用）
     write_lock: Arc<Mutex<()>>,
 }
@@ -82,12 +96,18 @@ impl ConfigManager {
         Self {
             config: Arc::new(DynamicField::new(config)),
             path: Arc::new(RwLock::new(None)),
+            disk_fingerprint: Arc::new(RwLock::new(None)),
             write_lock: Arc::new(Mutex::new(())),
         }
     }
 
-    /// 记录配置文件加载路径（由 ConfigLoader::load 注入）
+    /// 记录配置文件加载路径（由 ConfigLoader::load 注入），并以当时磁盘
+    /// 内容作为指纹基线
     pub fn set_path(&self, path: PathBuf) {
+        *self
+            .disk_fingerprint
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = file_fingerprint(&path);
         *self.path.write().unwrap() = Some(path);
     }
 
@@ -115,7 +135,8 @@ impl ConfigManager {
         self.persist_and_swap(new_config)
     }
 
-    /// 内存态热交换（热重载桥接用）：校验后只切内存不落盘，落盘只走 update_config
+    /// 内存态热交换（热重载桥接用）：校验后只切内存不落盘，落盘只走 update_config。
+    /// 桥接的候选配置来自磁盘当前内容，故提交后刷新指纹基线——后续写回不算冲突
     pub fn swap_memory(&self, new_config: Config) -> Result<(), GateError> {
         let _guard = self
             .write_lock
@@ -123,6 +144,14 @@ impl ConfigManager {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         validate_config(&new_config)?;
         self.config.update(new_config);
+        if let Some(path) = self.path() {
+            if let Some(fingerprint) = file_fingerprint(&path) {
+                *self
+                    .disk_fingerprint
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fingerprint);
+            }
+        }
         Ok(())
     }
     /// 原子 read-modify-write：写锁内读当前配置 → 应用闭包 → 校验落盘切换；
@@ -159,6 +188,23 @@ impl ConfigManager {
             .filter(|p| !p.as_os_str().is_empty())
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
+
+        // 外部编辑检测：磁盘内容 ≠ 本进程上次观测（加载/热重载提交/写回）时
+        // 拒绝写回——全量序列化会静默抹掉进程外编辑（如需重启才生效的
+        // vendor 拓扑变更、注释与自定义段）。显式失败，磁盘保持原样。
+        let observed = *self
+            .disk_fingerprint
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if file_fingerprint(&path) != observed {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-disk-modified-refusing-write",
+                    &[("path", path.display().to_string())],
+                ),
+            });
+        }
+
         let mut tmp_name = path
             .file_name()
             .map(|n| n.to_os_string())
@@ -197,7 +243,14 @@ impl ConfigManager {
             });
         }
 
-        // 4. 磁盘落定后才切换内存态（触发 on_change 回调）
+        // 4. 磁盘落定后才切换内存态（触发 on_change 回调），并把磁盘现值
+        //    记为新的指纹基线（下次写回以此判外部编辑）
+        if let Some(fingerprint) = file_fingerprint(&path) {
+            *self
+                .disk_fingerprint
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fingerprint);
+        }
         self.config.update(new_config);
         Ok(())
     }
@@ -207,6 +260,18 @@ impl ConfigManager {
             .vendors
             .iter()
             .find(|v| v.id == vendor_id)
+            .cloned()
+    }
+
+    /// 大小写不敏感厂商查找（请求边界语义：`vendor.model` 直连与
+    /// `X-Vendor` 头）；命中返回配置原文。配置中存在仅大小写不同的多
+    /// vendor 时取声明序首个（配置校验按精确 id 去重，未禁止该写法）。
+    /// 管理/内部按精确 id 的调用方仍用 [`Self::get_vendor`]。
+    pub fn get_vendor_ci(&self, vendor_id: &str) -> Option<VendorConfig> {
+        self.read()
+            .vendors
+            .iter()
+            .find(|v| v.id.eq_ignore_ascii_case(vendor_id))
             .cloned()
     }
 
@@ -250,13 +315,16 @@ impl ConfigManager {
             .collect()
     }
 
+    /// `[global_model]` 段路由开关（auto 档是否可用）。
+    /// 段缺省 = 启用：与字段级 `default_global_enabled` 同源，保持无该段
+    /// 配置的历史兜底语义（auto 走全局池），只有显式 `enabled=false` 才关闭。
     pub fn is_global_model_enabled(&self) -> bool {
         let config = self.read();
         config
             .global_model
             .as_ref()
             .map(|g| g.enabled)
-            .unwrap_or(false)
+            .unwrap_or(true)
     }
 
     pub fn get_all_model_mappings(&self) -> HashMap<String, Vec<(String, String)>> {
@@ -356,6 +424,25 @@ mod tests {
         }
     }
 
+    /// `[global_model]` 开关语义：显式 enabled 权威；段缺省 = 启用
+    ///（保持无该段配置的历史 auto 兜底行为）。
+    #[test]
+    fn test_is_global_model_enabled_defaults() {
+        let mut config = sample_config("v1");
+        config.global_model = Some(GlobalModelConfig {
+            enabled: false,
+            strategy: "weighted".into(),
+        });
+        assert!(!ConfigManager::new(config).is_global_model_enabled());
+
+        let mut config = sample_config("v1");
+        config.global_model = None;
+        assert!(
+            ConfigManager::new(config).is_global_model_enabled(),
+            "缺 [global_model] 段必须沿用历史兜底（启用）"
+        );
+    }
+
     #[test]
     fn test_path_roundtrip() {
         let manager = ConfigManager::new(sample_config("v1"));
@@ -374,6 +461,27 @@ mod tests {
         // 内存态未变
         assert_eq!(manager.get_vendor("v1").unwrap().id, "v1");
         assert!(manager.get_vendor("v2").is_none());
+    }
+
+    /// 请求边界 CI 查找：大写配置 id 可被任意书写大小写命中且返回规范值；
+    /// `get_vendor` 精确语义不回归（管理/内部调用方依赖）。
+    #[test]
+    fn test_get_vendor_ci_case_insensitive() {
+        let manager = ConfigManager::new(sample_config("OpenAI-Upper"));
+        assert_eq!(
+            manager.get_vendor_ci("openai-upper").unwrap().id,
+            "OpenAI-Upper",
+            "配置大写 id 必须被小写请求命中且返回规范值"
+        );
+        assert_eq!(
+            manager.get_vendor_ci("OPENAI-UPPER").unwrap().id,
+            "OpenAI-Upper"
+        );
+        assert!(manager.get_vendor_ci("ghost").is_none(), "未命中返回 None");
+        assert!(
+            manager.get_vendor("openai-upper").is_none(),
+            "get_vendor 精确语义不回归"
+        );
     }
 
     #[test]
@@ -472,6 +580,63 @@ mod tests {
         assert!(result.is_err(), "闭包 Err 必须传播");
         assert_eq!(manager.get_vendor("v1").unwrap().id, "v1", "内存态不变");
         assert_eq!(std::fs::read(&path).unwrap(), before, "磁盘文件字节不变");
+    }
+
+    /// 外部编辑保护：磁盘被进程外修改后写回必须显式拒绝，且磁盘逐字节
+    /// 保持原样——全量序列化不得静默抹掉待生效的外部编辑（如按约定
+    /// 「改 config.toml 后重启」新增、但热重载以 topology changed 拒绝的
+    /// vendor 段）。
+    #[test]
+    fn test_update_config_refuses_when_disk_modified_externally() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+
+        let manager = ConfigManager::new(sample_config("v1"));
+        manager.set_path(path.clone());
+
+        // 进程外编辑：在既有内容后追加待生效的 [[vendors]] 段
+        let edited = format!(
+            "{}\n[[vendors]]\nid = \"pending-vendor\"\n",
+            std::fs::read_to_string(&path).unwrap()
+        );
+        std::fs::write(&path, &edited).unwrap();
+
+        let result = manager.update_config(sample_config("v2"));
+        assert!(
+            matches!(result.as_ref(), Err(GateError::Config { .. })),
+            "外部编辑后写回必须以 Config 错误显式失败: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            edited,
+            "拒绝写回时磁盘保持原样（外部编辑不丢）"
+        );
+        assert!(manager.get_vendor("v1").is_some(), "内存态不变");
+        assert!(manager.get_vendor("v2").is_none(), "未切换到新配置");
+    }
+
+    /// 热重载提交刷新指纹基线：监听桥接接受磁盘内容后，后续写回不得
+    /// 被误判为外部冲突（否则成功热重载一次即永久禁用管理面写回）。
+    #[test]
+    fn test_write_back_succeeds_after_hot_reload_commit() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+
+        let manager = ConfigManager::new(sample_config("v1"));
+        manager.set_path(path.clone());
+
+        // 外部编辑 → 热字段变更被监听接受（swap_memory 即桥接落点）
+        let mut hot = sample_config("v1");
+        hot.retry.max_retries += 1;
+        std::fs::write(&path, toml::to_string_pretty(&hot).unwrap()).unwrap();
+        manager.swap_memory(hot).expect("热重载提交");
+
+        manager
+            .update_config(sample_config("v2"))
+            .expect("热重载提交后的写回不得被判为外部冲突");
+        assert!(manager.get_vendor("v2").is_some(), "写回已生效");
     }
 
     /// 并发 update 一致性（评审 major-1 场景）：多线程并发 POST 等价的

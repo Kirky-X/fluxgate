@@ -27,6 +27,9 @@ vendor-key-rotated = vendor { $vendor } auth failure ({ $status }); key cursor a
 vendor-key-pool-shrunk = key pool of vendor { $vendor } shrank from { $before } to { $after } keys ({ $missing } pool envs now missing)
 vendor-key-blacklisted = key blacklisted (permanent error; not auto-recovered)
 vendor-cost-unregistered-model = model not registered in model_catalog; not priced (cost report under-counts by design)
+# manager.rs 成本/重试运维告警：CNY 条目不入 USD 成本表 + Retry-After 超上限截断。
+vendor-cost-cny-not-recorded = CNY-priced entry not recorded into USD cost tracker (T011 bridge pending)
+vendor-upstream-retry-wait-truncated = upstream retry wait truncated
 
 # ---- probe.rs（主动健康检查探针：配置热读告警 + 周期运维日志）----
 vendor-probe-unknown-mode = unknown [health].mode; falling back to off (fail-safe against a probe storm from misconfiguration)

@@ -65,7 +65,7 @@
 
 HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API key"`）。
 
-> 认证中间件的放行路径为代码事实（`src/middleware/auth.rs`）：`/health`、`/api/v1/health`、`/` 三个路径显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 裸路径未注册路由（请求会 404），但保留在白名单中。
+> 认证中间件的放行路径为代码事实（`src/middleware/auth.rs:159-168`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。注意 `/healthz`、`/ready` 仅在限流白名单豁免，认证侧仍要求携带 key。
 
 ---
 
@@ -97,7 +97,7 @@ HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API
 
 | 错误类型 (`error.type`) | HTTP 状态码 | 触发场景 |
 |---|---|---|
-| `validation_error` | 400 Bad Request | 请求体缺少必填字段（如 `model`） |
+| `validation_error` | 400 Bad Request | 请求体缺少必填字段（如 `model`）、模型名无任何可用候选（含 `model = "auto"` 且 `[global_model].enabled = false` 的 auto 档关闭） |
 | `protocol_error` | 502 Bad Gateway | 协议转换失败、上游返回非预期响应、Embeddings 调用非 OpenAI 厂商 |
 | `vendor_unavailable` | 503 Service Unavailable | 厂商不可用、网络请求失败 |
 | `timeout` | 504 Gateway Timeout | 请求超时、`oneshot` 通道接收失败 |
@@ -112,7 +112,7 @@ HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API
 > - 入站限流中间件由两层组成：`[[rate_limit.rules]]` 端点规则表（`path` 前缀匹配、按租户分桶）+ limiteron tower 全局规则层（一规则一 `KeyedRateLimitLayer`，按租户摘要分桶；空规则时为共享 TokenBucket(100, 10/s) 兜底）。
 > - 端点规则超限 → `429 Too Many Requests` + `Retry-After` 头（重置秒数），body 为 JSON，`error.message` 文案随 locale（zh `"已超过速率限制"` / en `"Rate limit exceeded"`）。
 > - 全局规则超速 → `429 Too Many Requests` + `Retry-After` 头（窗口剩余秒），文案同上；旧 `Governor` 路径的无头 429 与 `403` 封禁分支已删除（规则 ban 恒为 None）。
-> - 限流白名单路径（不进入限流检查）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs/*`、`/swagger-ui/*`。
+> - 限流白名单路径（不进入限流检查，`is_quota_exempt_path` 共十条）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`。
 > - 每次响应（含 429）均回传 **`X-Request-Id`** 响应头：透传客户端所带 ID，未带时网关生成（`req-` 前缀）；同请求 tracing span 携带该 ID。
 > - **配额层**（按 key 的 token/成本固定窗口，`src/middleware/quota.rs`）：`[quota].enabled`（默认 `false`）
 >   开启且 `[[auth.keys]]` 的 `token_quota`/`cost_quota_millicents` 任一 > 0 时生效；仅作用于
@@ -142,8 +142,8 @@ OpenAI Chat Completions 兼容端点。根据请求体中的 `model` 字段进�
 |---|---|---|
 | `Authorization` | 是 | `Bearer <api_key>` |
 | `Content-Type` | 是 | `application/json` |
-| `X-Vendor` | 否 | 路由提示：优先使用的厂商 ID |
-| `X-Model` | 否 | 路由提示：优先使用的模型 ID |
+| `X-Vendor` | 否 | 路由提示：优先使用的厂商 ID（ID 匹配大小写不敏感） |
+| `X-Model` | 否 | 路由提示：优先使用的模型 ID（ID 匹配大小写不敏感） |
 | `X-Session-Id` | 否 | 会话亲和键；缺失时以 `messages[0]` 前缀哈希兜底（见[附录](#附录路由提示请求头)） |
 | `X-Weight` | 否 | 请求级权重（仅接受有限正数）；生效需服务端 `[routing].allow_request_weight` 开启 |
 
@@ -173,7 +173,7 @@ OpenAI Chat Completions 兼容端点。根据请求体中的 `model` 字段进�
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `model` | string | 是 | 模型 ID，用于路由决策 |
+| `model` | string | 是 | 模型 ID，用于路由决策。`"auto"` 走全局模型池（抽象/直连两级未命中后的兜底）；`[global_model].enabled = false` 时该档关闭，返回 `validation_error`(400)（`X-Vendor`/`X-Model` 提示属显式指定，不受该开关约束） |
 | `messages` | array | 是 | 消息列表 |
 | `stream` | boolean | 否 | 默认 `false`；`true` 时返回 SSE 流 |
 
@@ -323,8 +323,8 @@ Anthropic Messages API 兼容端点。当目标厂商类型为 `anthropic` 时�
 | `Authorization` | 是 | `Bearer <api_key>` |
 | `Content-Type` | 是 | `application/json` |
 | `anthropic-version` | 否 | 透传给上游 Anthropic API |
-| `X-Vendor` | 否 | 路由提示：优先使用的厂商 ID |
-| `X-Model` | 否 | 路由提示：优先使用的模型 ID |
+| `X-Vendor` | 否 | 路由提示：优先使用的厂商 ID（仅 OpenAI 兼容端点消费；本端点忽略该头） |
+| `X-Model` | 否 | 路由提示：优先使用的模型 ID（仅 OpenAI 兼容端点消费；本端点忽略该头） |
 | `X-Session-Id` | 否 | 会话亲和键；缺失时以 `messages[0]` 前缀哈希兜底 |
 | `X-Weight` | 否 | 请求级权重（仅接受有限正数）；生效需 `[routing].allow_request_weight` 开启 |
 
@@ -395,7 +395,7 @@ curl -X POST http://localhost:8080/v1/messages \
 
 ### GET /v1/models
 
-OpenAI 模型列表兼容端点。模型集合 = `[[model_catalog]]` 目录 ∪ 各 vendor 配置模型去重（仅 enabled vendor 的 enabled 模型；同 id 只出现一次，按 id 排序）。响应始终现算，不进入响应缓存（无 `X-Cache` 头）。
+OpenAI 模型列表兼容端点。模型集合 = `[[model_catalog]]` 目录 ∪ 各 vendor 配置模型去重（仅 enabled vendor 的 enabled 模型；同 id 只出现一次，按 id 排序）。vendor 条目列出的是**路由可解析的公开名**：声明了 `abstract_id` 的模型列 `abstract_id`，未声明的列 `model_id`——清单里的 `id` 可原样用于 `/v1/chat/completions`、`/v1/messages` 与 `X-Model` 头；限定形式 `vendor.model_id` 也可路由（ID 匹配大小写不敏感），但不出现在清单中（避免列出回投即 400 的裸上游名）。响应始终现算，不进入响应缓存（无 `X-Cache` 头）。
 
 **认证**: 需要 Bearer Token
 
@@ -471,7 +471,7 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 
 ## 管理端点
 
-所有 `/admin/*` 端点均要求 Bearer Token 认证，且受入站限流策略约束（`config.toml` 中 `[[rate_limit.rules]]` 的 `path` 前缀规则可覆盖 `/admin/*`；未配置时走 limiteron Governor 内置默认兜底）。
+所有 `/admin/*` 端点均要求 Bearer Token 认证，且受入站限流策略约束（`config.toml` 中 `[[rate_limit.rules]]` 的 `path` 前缀规则可覆盖 `/admin/*`；未配置端点规则时全局层以共享 `TokenBucket(100, 10/s)` 兜底）。
 
 ### GET /admin/logs
 
@@ -912,7 +912,7 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
 
 ### GET /admin/config
 
-返回当前运行时配置（完整 `Config` 结构，共 15 个顶层段：`server`、`database`、`vendors`、`global_model`、`pricing`、`model_catalog`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`、`grpc`；其中 `model_catalog` 为空目录、`grpc` 段缺省时在响应中省略 / 序列化为 `null`）。
+返回当前运行时配置（完整 `Config` 结构，共 18 个顶层段：`server`、`database`、`vendors`、`global_model`、`pricing`、`model_catalog`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`、`health`、`quota`、`grpc`、`docs`；其中 `model_catalog` 为空目录、`grpc` 段缺省时在响应中省略 / 序列化为 `null`）。
 
 **认证**: 需要 Bearer Token
 
@@ -1081,7 +1081,7 @@ curl http://localhost:8080/admin/config \
 
 **认证**: 需要 Bearer Token
 
-**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，15 个顶层段）
+**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，18 个顶层段）
 
 **响应**:
 
@@ -1103,7 +1103,7 @@ curl http://localhost:8080/admin/config \
 
 > 生效语义：`server` 或 `cors` 段变更时，`restart_required` 包含对应段名（`"server"` / `"cors"`），`message` 会提示这些段需重启后生效——两段在建站期被固化（axum Router 的 layer 在构造时编译），运行期不可热换；`resilience.circuit_open_timeout_ms` 变更时列入 `applies_to_new_instances`（对新建 vendor 实例生效）；其余段（vendors/pricing/auth 等）热生效。`[rate_limit]` 段在 Router 构造期消费，热更新不生效（当前实现未列入 `restart_required` 提示，重启后生效）。
 
-**错误码**: `config_error`(500，更新失败或反序列化失败)
+**错误码**: `config_error`(500，更新失败 / 反序列化失败 / 磁盘配置被进程外修改拒绝覆盖写回——`config-disk-modified-refusing-write`，先热重载或重启应用外部编辑后重试)
 
 **curl 示例**:
 
@@ -1261,7 +1261,9 @@ curl -X DELETE http://localhost:8080/admin/models/claude-sonnet-4-20250514 \
 }
 ```
 
-`strategy` 可选值：`weighted` | `fallback` | `priority`（见 `src/router/`）。
+`strategy` 可选值：`weighted` | `fallback` | `priority`（档位声明；当前选路统一由 `[routing]` 决定，`src/router/` 未按该字段分档）。
+
+`enabled = false` 关闭 `model = "auto"` 档：全局池不参与选路，auto 请求返回 `validation_error`(400)；显式模型名不受影响。写入在**当前进程内即时生效**（开关每请求热读），并同步落盘。
 
 **响应**:
 
@@ -1302,7 +1304,7 @@ curl -X POST http://localhost:8080/admin/models/global \
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `model` | string | 是 | 模型名（未知模型返回 `validation_error`） |
+| `model` | string | 是 | 模型名（未知模型返回 `validation_error`；`"auto"` 走全局模型池，`[global_model].enabled = false` 时该档关闭同样返回 `validation_error`(400)） |
 | `session_id` | string | 否 | 会话亲和键；缺省时跳过亲和判定 |
 
 **响应**: 逐候选 `{vendor, model, decision, reason_code, detail}`（入选者另附 `factors` 5 因子权重分解、`weight`/`base_weight`、`selection` 档位）：
@@ -1397,7 +1399,7 @@ enabled = true
 
 ## 附录：路由提示请求头
 
-LLM 推理端点（`/v1/chat/completions` 与 `/v1/messages` **两个端点均读取**路由提示请求头，见 `src/api/openai.rs` 与 `src/api/anthropic.rs` 中的 `RoutingHints::from_headers` 调用）支持通过请求头影响路由决策：
+LLM 推理端点（`/v1/chat/completions` 与 `/v1/messages`）均解析路由提示请求头（`RoutingHints::from_headers`，见 `src/api/openai.rs` 与 `src/api/anthropic.rs`）；其中 `X-Vendor`/`X-Model` 仅由 OpenAI 兼容端点消费（`route_with_hints`），`X-Session-Id`/`X-Weight` 两个端点均生效：
 
 | Header | 说明 | 生效条件 |
 |---|---|---|
@@ -1408,7 +1410,7 @@ LLM 推理端点（`/v1/chat/completions` 与 `/v1/messages` **两个端点均�
 
 **X-Session-Id 兜底规则**：请求未携带 `X-Session-Id` 时，以 `serde_json::to_string(messages[0])` 的前 2KB（UTF-8 字符边界安全截断）计算 SHA256，hex 编码后截取前 16 字符作为会话键——同前缀开头的对话自动粘住同一厂商；请求体无 `messages` 时无兜底键，该请求不参与亲和。
 
-**X-Vendor/X-Model 提示语义**：任一提示头非空时走提示路由（`route_with_hints`），否则走默认路由决策（权重/亲和等策略）。提示仅是"优先"语义，目标厂商执行失败时仍会进入换路 fallback（resilience 特性开启时）。
+**X-Vendor/X-Model 提示语义**：任一提示头非空时走提示路由（`route_with_hints`），否则走默认路由决策（权重/亲和等策略）。提示仅是"优先"语义，目标厂商执行失败时仍会进入换路 fallback（resilience 特性开启时）。**ID 匹配大小写不敏感**（ASCII 折叠）：`X-Vendor`/`X-Model`、`model` 字段的裸名与 `vendor.model` 限定形式、换路排除集比较同样适用。
 
 ---
 

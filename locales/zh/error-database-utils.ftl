@@ -21,6 +21,7 @@ database-logger-shutdown = 日志写入器已关闭
 database-logger-channel-closed = 异步日志写入器通道已关闭
 database-logger-flush-failed = 写入请求日志失败（共 { $count } 条）：{ $error }
 database-logger-secret-scan-dropped = 日志未通过出站密钥扫描已丢弃（累计 { $total } 条）：{ $error }
+database-logger-console-secret-gate-dropped = console 日志未通过出站密钥门禁，已丢弃（不打印）
 database-logger-join-failed = 等待异步日志写入器退出失败：{ $error }
 database-preagg-flush-failed = token 聚合刷新失败：{ $error }
 database-preagg-final-flush-failed = 停机前最终 token 聚合刷新失败：{ $error }
@@ -30,3 +31,7 @@ utils-metrics-concentration = 流量集中度告警：路由可能已收敛到�
 database-backend-missing = database.url 为空，path { $path } 的 sqlite 回退需要 db-sqlite feature：以 --features "full,db-sqlite" 重建，或在 [database] url 配置完整连接 URL
 # repository.rs 缺列补列（V0.1 旧库迁移）。
 database-repo-column-migrated = 迁移：已为表 { $table } 补齐缺失列 { $column }
+
+# storage.rs 契约默认实现：数据面写前沿不承担 admin 查询，显式拒绝。
+storage-log-query-unsupported = 此 RequestLogSink 实现为数据面写入前沿，不支持查询（admin 读取经存储后端实现）
+storage-usage-stats-unsupported = 此 UsageSink 实现不提供统计查询（admin 读取经存储后端实现）

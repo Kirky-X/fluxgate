@@ -1174,6 +1174,52 @@ mod admin {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// 真机回归：config.toml 被进程外修改后，管理面写回必须显式失败且磁盘
+    /// 编辑逐字节保留——此前的全量写回会用内存态覆盖磁盘，静默抹掉按约定
+    /// 「改文件后重启」新增、但热重载以 topology changed 拒绝的 vendor 段。
+    #[tokio::test]
+    async fn test_admin_update_config_refuses_after_external_edit() {
+        let state = create_api_state().await;
+        let dir =
+            std::env::temp_dir().join(format!("nx-admin-external-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+        state.config.set_path(path.clone());
+
+        // 进程外编辑（模拟操作者追加待重启生效的 [[vendors]] 段）
+        let edited = format!(
+            "{}\n[[vendors]]\nid = \"pending-vendor\"\n",
+            std::fs::read_to_string(&path).unwrap()
+        );
+        std::fs::write(&path, &edited).unwrap();
+
+        let mut next = state.config.get_config();
+        next.vendors[0].name = "renamed-after-external-edit".to_string();
+        match admin::update_config(State(state.clone()), Json(next)).await {
+            Err(NexusFlowError::Gate(GateError::Config { message })) => {
+                assert!(
+                    message.contains("config.toml"),
+                    "错误必须点名被外部修改的文件: {message}"
+                );
+            }
+            Err(other) => panic!("期望 Config 错误，实际: {other:?}"),
+            Ok(_) => panic!("外部编辑未消解前写回必须拒绝"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            edited,
+            "拒绝写回时磁盘保持原样（外部编辑不丢）"
+        );
+        assert_eq!(
+            state.config.get_vendor("openai_main").unwrap().name,
+            "OpenAI Main",
+            "内存态不变"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// update_vendor 经原子 RMW：改单字段不回退其他字段，且未找到时
     /// 内存不变
     #[tokio::test]
@@ -2786,6 +2832,135 @@ mod linucb_reward_chain {
         assert!(
             !bandit.has_arm("auto", "openai_main") && !bandit.has_arm("auto", "anthropic_main"),
             "不得产生未归一的 auto 臂"
+        );
+    }
+}
+
+// ============ [global_model].enabled 开关：HTTP 面语义 ============
+
+#[cfg(test)]
+mod global_model_switch {
+    //! E2E 场景「auto 且全局模型关闭」的 HTTP 层锁定：`[global_model].enabled=false`
+    //! 时 `model="auto"` 必须以 400 `validation_error` 拒绝（错误信息显性说明
+    //! 开关关闭），不得回落全局池；开启时 auto 照常选路（本用例 vendor 拒绝
+    //! 端口，路由成功后执行失败 → 非 4xx 客户端错误）。
+
+    use crate::common;
+    use nexusflow::config::{Config, ConfigManager, GlobalModelConfig, ServerConfig};
+    use nexusflow::database::Database;
+    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
+    use nexusflow::router::Router;
+    use nexusflow::vendor::VendorManager;
+    use nexusflow::ApiState;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    /// 单 vendor（拒绝端口 → 执行快速失败）+ 指定全局开关的 ApiState
+    async fn create_state(global_enabled: bool) -> Arc<ApiState> {
+        common::ensure_test_api_key();
+        let mut v = common::base_vendor("openai_main", "http://127.0.0.1:1");
+        v.name = "OpenAI Main".into();
+        v.timeout_ms = 2_000;
+        v.stream_ttft_ms = 2_000;
+        v.stream_idle_ms = 2_000;
+        let config = Config {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            global_model: Some(GlobalModelConfig {
+                enabled: global_enabled,
+                strategy: "weighted".into(),
+            }),
+            ..common::test_config(vec![v])
+        };
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let database = Arc::new(Database {
+            pool: pool.clone(),
+            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+        });
+        Arc::new(ApiState {
+            config: config_manager.clone(),
+            vendor_manager: vendor_manager.clone(),
+            router: Arc::new(Router::new(config_manager, vendor_manager)),
+            logger: None,
+            pre_aggregator: None,
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database,
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+        })
+    }
+
+    async fn post_chat(state: Arc<ApiState>) -> axum::response::Response {
+        use axum::routing::post;
+        let app = axum::Router::new()
+            .route(
+                "/v1/chat/completions",
+                post(nexusflow::api::openai::chat_completions),
+            )
+            .with_state(state);
+        app.oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "model": "auto",
+                        "messages": [{"role": "user", "content": "hi"}]
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn auto_rejected_with_validation_error_when_global_disabled() {
+        let resp = post_chat(create_state(false).await).await;
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "全局开关关闭时 auto 必须 400"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["type"], "validation_error");
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("global_model"),
+            "错误信息需显性说明全局开关关闭: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_routes_when_global_enabled() {
+        let resp = post_chat(create_state(true).await).await;
+        assert_ne!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "开关开启时 auto 必须进入全局池选路（执行失败另计，不得是 400）"
         );
     }
 }
@@ -5456,6 +5631,47 @@ mod data_plane_endpoints {
         assert_eq!(ids, vec!["aaa-catalog", "mmm-shared", "zzz-vendor"]);
         assert_eq!(body["data"][1]["owned_by"], "vendor-a");
         assert_eq!(body["data"][0]["owned_by"], "nexusflow");
+    }
+
+    /// 真机回归：声明 abstract_id 的 vendor 模型，目录必须列路由可解析的
+    /// 公开别名。裸列上游 model_id 时，客户端把清单里的 id 回投
+    /// /v1/chat/completions 会 400「model not found」——路由按 abstract_id
+    /// 匹配（缺省回落 model_id，见 ConfigManager::resolve_model）。
+    #[tokio::test]
+    async fn models_lists_the_routable_public_id_when_abstract_id_differs() {
+        let mut vendor =
+            vendor_with_models("stub-anthropic", true, &["claude-3-5-sonnet-20241022"]);
+        vendor.models[0].abstract_id = Some("claude-3.5-sonnet".into());
+        let state = make_state(base_config(vec![vendor]), false).await;
+
+        let (status, body) = read_json(get(state.clone(), "/v1/models", None).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .expect("data 数组")
+            .iter()
+            .map(|item| item["id"].as_str().expect("id 字符串"))
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["aaa-catalog", "claude-3.5-sonnet", "mmm-shared"],
+            "目录只列可路由的公开别名，不列裸上游 model_id"
+        );
+        assert_eq!(body["data"][1]["owned_by"], "stub-anthropic");
+
+        // 清单里的 vendor 条目回投路由必须命中（不可路由的 id 即错误引导）
+        let decision = state.router.route("claude-3.5-sonnet").await;
+        assert!(
+            decision.is_ok(),
+            "目录列出的公开别名必须可路由: {decision:?}"
+        );
+        assert!(
+            state
+                .config
+                .resolve_model("claude-3-5-sonnet-20241022")
+                .is_empty(),
+            "声明 abstract_id 后裸 model_id 不是路由名（目录不得再列它）"
+        );
     }
 
     ///：未鉴权返回 401（与其它 /v1 端点一致）。

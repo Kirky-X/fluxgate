@@ -36,7 +36,7 @@
 ### 编译与启动
 
 ```bash
-# 运行时配置不入库（部署私有物），从随仓全量参考复制起步
+# 运行时配置为 config.toml——仓库已随附默认配置（部署私有物在本地改），按需从随仓全量参考覆盖起步
 cp config.example.toml config.toml
 
 # 默认读取当前目录 config.toml
@@ -46,7 +46,7 @@ cargo run --release
 cargo run --release -- /path/to/config.toml
 ```
 
-配置路径参数解析见 `src/main.rs`（`std::env::args().nth(1)`，缺省 `config.toml`）。服务器默认监听 `0.0.0.0:8080`（`[server]` 段默认值，见 `src/config/mod.rs`）。**`config.example.toml` 是随仓唯一的全量参考**：`Config` 结构体的每个段、每个字段都在那里并标注默认值与热更新可用性，显式值与 serde default 逐位一致（复制即得默认行为）；新增配置项须同步该文件与 `tests/config/config_toml_example_test.rs`。
+配置路径参数解析见 `src/main.rs`（`std::env::args().nth(1)`，缺省 `config.toml`）。服务器默认监听 `0.0.0.0:8080`（`[server]` 段默认值，见 `src/config/mod.rs`）。**`config.example.toml` 是随仓的带注释全量参考**：`Config` 结构体的每个段、每个字段都在那里并标注默认值与热更新可用性，显式值与 serde default 逐位一致（复制即得默认行为）；仓库亦自带一份可直接运行的 `config.toml`。新增配置项须同步该文件与 `tests/config/config_toml_example_test.rs`。
 
 ### 验证服务
 
@@ -73,7 +73,7 @@ curl http://127.0.0.1:8080/v1/models -H "Authorization: Bearer $API_KEY"
 ```mermaid
 flowchart LR
     A["客户端<br/>OpenAI / Anthropic 格式"] --> B["认证中间件<br/>SHA256 API Key"]
-    B --> C["限流中间件<br/>limiteron Governor + 端点表"]
+    B --> C["限流中间件<br/>tower 全局层 + 端点表"]
     C --> D["准入判定<br/>拥塞感知（默认关闭）"]
     D --> E["路由器<br/>加权选择厂商"]
     E --> F["协议转换 / 零拷贝透传"]
@@ -126,7 +126,7 @@ tier = "dedicated"
 
 - 客户端携带 **`Authorization: Bearer <key>`**（优先）或 **`x-api-key: <key>`**（备用），提取逻辑见 `src/middleware/auth.rs:140-168`。
 - 认证状态**每请求从热配置现读**：吊销 / 轮换 key、切换 `enabled`，`POST /admin/config` 后立即生效，无需重启。
-- 认证豁免路径（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/middleware/auth.rs:201-210`）无需 key；注意 `/healthz` 与 `/ready` 只在限流侧豁免，**认证仍要求带 key**。
+- 认证豁免路径（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/middleware/auth.rs:159-168`）无需 key；注意 `/healthz` 与 `/ready` 只在限流侧豁免，**认证仍要求带 key**。
 
 ---
 
@@ -157,7 +157,7 @@ tier = "dedicated"
 | 字段 | 默认值 | 说明 |
 |:-----|:-------|:-----|
 | `model_id` | 必填 | 上游真实模型名 |
-| `abstract_id` | 无 | 抽象模型名（路由的逻辑标识，可多厂商映射同一抽象名） |
+| `abstract_id` | 无 | 抽象模型名（路由的逻辑标识，可多厂商映射同一抽象名；客户端按此请求，`GET /v1/models` 亦列此名——声明后裸 `model_id` 不再是请求名，限定形式 `vendor.model_id` 仍可路由；ID 匹配大小写不敏感） |
 | `weight` | `1.0` | 路由权重（通常 0.0–2.0） |
 | `enabled` | `true` | 模型开关 |
 
@@ -184,10 +184,14 @@ tier = "dedicated"
 
 ### [global_model] 全局模型
 
+全局池是 `model = "auto"` 的选路目标（抽象/直连两级都未命中时才尝试）。池成员 = 全部启用 vendor 的启用模型，按候选加权打分选择。
+
 | 字段 | 默认值 | 说明 |
 |:-----|:-------|:-----|
-| `enabled` | `true` | 全局模型路由开关 |
-| `strategy` | `"weighted"` | 策略档：`weighted` / `fallback` / `priority` |
+| `enabled` | `true` | auto 档开关（每请求热读）。`false` 时 `model = "auto"` 以 `validation_error`(400) 拒绝，全局池不参与选路；显式模型名与 `X-Vendor`/`X-Model` 提示（均为显式指定）不受影响。缺 `[global_model]` 段 = 启用（沿用历史兜底） |
+| `strategy` | `"weighted"` | 全局池策略档位声明；当前选路统一由 `[routing]`（加权 / `selection` 档）决定，该字段暂无独立消费者，保留档位语义 |
+
+> ⚠️ `global_model` 段无热重载点：直接改 `config.toml` 被结构门拒绝（旧快照继续服务），需重启进程；`POST /admin/models/global` 的写入在当前进程内即时生效（开关每请求热读）。
 
 ---
 
@@ -213,6 +217,7 @@ flowchart TB
 | `w_window` | `0.3` | Token 预算 / 窗口维系数 |
 | `w_latency` | `0.0` | EWMA 延迟因子系数（`0` = 关闭） |
 | `w_error` | `0.0` | EWMA 错误率因子系数（`0` = 关闭） |
+| `price_factor_enabled` | `true` | 价格因子开关：开启时对合格集中每个候选按「最低单价 / 该候选单价」乘性修正权重（weight ×= min_p/p，压低高价候选），默认开启 |
 | `latency_ref_ms` | `1000.0` | 延迟因子参考值：厂商 EWMA 等于该值时因子 0.5 |
 | `temperature` | `1.0` | 温度平滑指数；`>1` 压平差距，`<1` 放大差距，必须 `>0` |
 | `selection` | `"weighted"` | 选择算法：`weighted`（轮盘赌）/ `power_of_two`（Po2C 实验）/ `linucb`（bandit 档，未接线时回退 weighted）；未知值按 `weighted` |
@@ -280,7 +285,7 @@ flowchart TB
 
 ### 熔断器行为
 
-per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `src/vendor/manager.rs:176-212`。
+per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `src/vendor/manager.rs:135-145`。
 
 ---
 
@@ -333,7 +338,7 @@ multiplier = 2.0
 | 字段 | 默认值 | 说明 |
 |:-----|:-------|:-----|
 | `id` | 必填 | 规则标识（观测 / 日志维度） |
-| `path` | 无 | 端点路径前缀（前缀匹配，如 `/v1/chat/completions`）；**缺省 = 全局规则**（注入 limiteron Governor，按租户 `X-User-Id` 维度判定） |
+| `path` | 无 | 端点路径前缀（前缀匹配，如 `/v1/chat/completions`）；**缺省 = 全局规则**（tower 全局层 `GlobalRateLimitLayer` + `QuotaLimiter`，按已验证 API key 的 SHA256 摘要分桶） |
 | `per_tenant` | `true` | 按租户（调用方 API key 摘要）分桶；`false` 退化为规则级单桶 |
 | `window_secs` | 必填 | 滑动窗口时长（秒，`0` 按 1s 兜底） |
 | `max_requests` | 必填 | 窗口内最大请求数 |
@@ -354,9 +359,9 @@ max_requests = 100
 
 行为要点：
 
-- `rules` 为空（缺省）= limiteron Governor 内置默认兜底规则，无端点表。
+- `rules` 为空（缺省）= 单层共享 `TokenBucket(100, 10/s)` 兜底（与旧 `Governor::new()` 默认逐位一致），无端点表。
 - 超限返回 `429 + Retry-After`（取窗口重置剩余秒数）；限流器内部故障放行（fail-open）。
-- 限流豁免路径（`is_quota_exempt_path` 十条：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/api/router_builder.rs:50-58`）。
+- 限流豁免路径（`is_quota_exempt_path` 十条：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/api/router_builder.rs:51-58`）。
 - 端点表条目有硬上限（1024），auth 关闭时达到上限后新租户退化到共享桶，内存有界。
 
 ### [admission] 拥塞感知优先级准入
@@ -494,7 +499,7 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 | 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`、`resilience`、`admission`、`pricing`、`global_model` | `POST /admin/config` 后下一请求即用新值 |
 | 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑） | 修改后须重启进程 |
 
-> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组当前**只检测 `server` 与 `cors` 两段**（`src/api/admin.rs:176-206`）。`rate_limit` / `concurrency` / `database` 的重启要求在代码注释中声明，不会出现在数组里——改这些段后请自行安排重启。
+> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组当前**只检测 `server` 与 `cors` 两段**（`src/api/admin.rs:265-303`）。`rate_limit` / `concurrency` / `database` 的重启要求在代码注释中声明，不会出现在数组里——改这些段后请自行安排重启。
 
 ```mermaid
 flowchart TB
@@ -556,7 +561,7 @@ flowchart TB
 |:---|:---|
 | 服务名 / 镜像 | `app` / `nexusflow:${NEXUSFLOW_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签） |
 | 端口 | `8080:8080` |
-| 数据挂载 | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 已不入库，干净检出先 `cp config.example.toml config.toml`） |
+| 数据挂载 | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 随仓跟踪（干净检出即有一份默认配置），如需自定义先 `cp config.example.toml config.toml` 覆盖） |
 | 资源限制 | `cpus: '2.00'` / `memory: 512M`（预留 `0.50` / `128M`） |
 | 重启策略 | `unless-stopped` |
 | 密钥注入 | 环境变量（如 `OPENAI_API_KEY=${OPENAI_API_KEY}`） |
@@ -590,7 +595,7 @@ healthcheck:
 | `GET /admin/metrics` | 全局指标快照：请求计数、错误率、平均延迟、各厂商细分，含 `dropped_logs`（日志通道背压丢弃计数） |
 | `GET /admin/vendors` | 全部厂商状态与队列长度 |
 | `GET /admin/vendors/{id}/status` | 单厂商状态 |
-| `POST /admin/vendors/{id}/reset` | **no-op**：limiteron Governor 自动管理限流状态（令牌自动 refill），端点仅为 API 兼容保留（`src/api/admin.rs:112-123`） |
+| `POST /admin/vendors/{id}/reset` | 清空该厂商 key 池黑名单、轮换游标与冷却状态；未知 vendor 400 `validation_error`（`src/api/admin.rs:241-259` → `reset_key_pool_state`） |
 
 ### 日志语言
 

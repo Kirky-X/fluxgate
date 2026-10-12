@@ -21,6 +21,7 @@ database-logger-shutdown = Logger already shut down
 database-logger-channel-closed = Async logger channel closed
 database-logger-flush-failed = Failed to write request logs (batch of { $count }): { $error }
 database-logger-secret-scan-dropped = Log dropped by outbound secret scan (total { $total }): { $error }
+database-logger-console-secret-gate-dropped = console log rejected by outbound secret gate (dropped, not printed)
 database-logger-join-failed = Failed to await async logger writer exit: { $error }
 database-preagg-flush-failed = Failed to flush token aggregation: { $error }
 database-preagg-final-flush-failed = Final token aggregation flush failed: { $error }
@@ -30,3 +31,7 @@ utils-metrics-concentration = traffic concentration alert: routing may have coll
 database-backend-missing = database.url is empty and the sqlite fallback for path { $path } requires the db-sqlite feature: rebuild with --features "full,db-sqlite", or set [database] url to a full connection URL
 # repository.rs 缺列补列（V0.1 旧库迁移）。
 database-repo-column-migrated = migrated: added missing column { $column } to table { $table }
+
+# storage.rs 契约默认实现：数据面写前沿不承担 admin 查询，显式拒绝。
+storage-log-query-unsupported = this RequestLogSink implementation is a data-plane write front and does not support queries (admin reads go through the storage backend implementation)
+storage-usage-stats-unsupported = this UsageSink implementation does not provide stats queries (admin reads go through the storage backend implementation)

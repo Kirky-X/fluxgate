@@ -24,13 +24,18 @@ pub async fn list_models(
     let config = state.config.read();
 
     // vendor 模型先占（owned_by = vendor id），目录条目补缺（不覆盖 vendor
-    // 认领）；BTreeMap 保证输出按 id 确定性排序。
+    // 认领）；BTreeMap 保证输出按 id 确定性排序。列出的 id 必须是路由能解析
+    // 的公开名：路由按 abstract_id 匹配（缺省回落 model_id，见
+    // ConfigManager::resolve_model），裸列上游 model_id 会让清单里的 id
+    // 回投即 400「model not found」。
     let mut models: BTreeMap<String, String> = BTreeMap::new();
     for vendor in config.vendors.iter().filter(|v| v.enabled) {
         for model in vendor.models.iter().filter(|m| m.enabled) {
-            models
-                .entry(model.model_id.clone())
-                .or_insert_with(|| vendor.id.clone());
+            let public_id = model
+                .abstract_id
+                .clone()
+                .unwrap_or_else(|| model.model_id.clone());
+            models.entry(public_id).or_insert_with(|| vendor.id.clone());
         }
     }
     for entry in &config.model_catalog {

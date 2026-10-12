@@ -117,7 +117,8 @@ impl GateSink {
         tracing::warn!(
             total,
             error = %error,
-            "console log rejected by outbound secret gate (dropped, not printed)"
+            "{}",
+            t("database-logger-console-secret-gate-dropped")
         );
     }
 }

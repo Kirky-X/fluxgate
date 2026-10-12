@@ -138,6 +138,82 @@ mod tests {
         assert!(decision.is_ok());
     }
 
+    /// 直连形式（`vendor.model`）契约：请求侧任意书写大小写命中配置，
+    /// 决策为 Direct 且返回配置规范值（输入经入口 `linucb_arm_key` 归一
+    /// + CI 匹配）。本用例为契约回归（全小写配置下修复前亦通过）；
+    /// 区分性红用例见 `..._excluded_case_insensitive` 与
+    /// `..._uppercase_config_ids`。
+    #[tokio::test]
+    async fn test_route_direct_form_case_insensitive() {
+        let (_config, _vendor, router) = create_test_manager_and_router();
+
+        let decision = router
+            .route("OPENAI_PRIMARY.GPT-4")
+            .await
+            .expect("大写直连必须命中");
+        assert_eq!(decision.vendor.id, "openai_primary");
+        assert_eq!(decision.model.model_id, "gpt-4");
+        assert_eq!(decision.strategy, RoutingStrategy::Direct);
+    }
+
+    /// 排除集与请求侧直连比较大小写不敏感：被排除 vendor 不得经
+    /// `vendor.model` 直连路径重新命中（换路重试绕过排除即本用例钉住）。
+    #[tokio::test]
+    async fn test_route_direct_form_excluded_case_insensitive() {
+        let (_config, _vendor, router) = create_test_manager_and_router();
+
+        // 正向对照：无排除时直连命中
+        let ok = router.route("openai_primary.gpt-4").await;
+        assert!(ok.is_ok(), "无排除时直连必须命中: {ok:?}");
+
+        // 大小写变体排除必须同样生效
+        let excluded = vec!["OPENAI_PRIMARY".to_string()];
+        let err = router
+            .route_excluding("openai_primary.gpt-4", &excluded)
+            .await;
+        assert!(err.is_err(), "被排除 vendor 不得经直连重新命中: {err:?}");
+    }
+
+    /// 配置侧大写 ID（vendor id / model_id / abstract_id）直连命中：
+    /// CI 匹配的最终证明场景（原实现仅「全小写配置 + 全小写请求」可用）。
+    #[tokio::test]
+    async fn test_route_direct_form_uppercase_config_ids() {
+        let mut vendor = common::base_vendor("OpenAI-Upper", String::new());
+        vendor.models = vec![ModelConfig {
+            model_id: "GPT-4O".to_string(),
+            abstract_id: Some("GPT-4o-Latest".to_string()),
+            weight: 1.0,
+            enabled: true,
+        }];
+        let config_manager = Arc::new(ConfigManager::new(Config {
+            server: ServerConfig {
+                host: "0.0.0.0".to_string(),
+                port: 8080,
+            },
+            ..common::test_config(vec![vendor])
+        }));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let router = Router::new(config_manager, vendor_manager);
+
+        // model_id 分支：小写请求命中大写 model_id
+        let d = router
+            .route("openai-upper.gpt-4o")
+            .await
+            .expect("大写 model_id 必须被小写请求命中");
+        assert_eq!(d.vendor.id, "OpenAI-Upper", "返回配置规范 vendor id");
+        assert_eq!(d.model.model_id, "GPT-4O", "返回配置规范 model_id");
+        assert_eq!(d.strategy, RoutingStrategy::Direct);
+
+        // abstract_id 分支：大写 abstract_id 同样命中
+        let d = router
+            .route("openai-upper.gpt-4o-latest")
+            .await
+            .expect("大写 abstract_id 必须被小写请求命中");
+        assert_eq!(d.vendor.id, "OpenAI-Upper");
+        assert_eq!(d.model.model_id, "GPT-4O");
+        assert_eq!(d.strategy, RoutingStrategy::Direct);
+    }
+
     #[tokio::test]
     async fn test_route_weighted_selection() {
         let (_config, _vendor, router) = create_test_manager_and_router();
@@ -2716,8 +2792,8 @@ mod lps_lookahead {
 mod route_gap_coverage {
     use crate::common;
     use nexusflow::config::{
-        Config, ConfigManager, ModelConfig, PricingConfig, ResilienceSection, RoutingSection,
-        ServerConfig, VendorConfig,
+        Config, ConfigManager, GlobalModelConfig, ModelConfig, PricingConfig, ResilienceSection,
+        RoutingSection, ServerConfig, VendorConfig,
     };
     use nexusflow::error::GateError;
     use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
@@ -2823,6 +2899,46 @@ mod route_gap_coverage {
         );
     }
 
+    /// 装配 `[global_model].enabled` 显式取值后的 router（其余同 make_router）
+    async fn make_router_with_global(enabled: bool, vendors: Vec<VendorConfig>) -> Arc<Router> {
+        let mut config = make_config(RoutingSection::default(), vendors);
+        config.global_model = Some(GlobalModelConfig {
+            enabled,
+            strategy: "weighted".into(),
+        });
+        let cm = Arc::new(ConfigManager::new(config));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        Arc::new(Router::new(cm.clone(), vm))
+    }
+
+    /// `[global_model].enabled=false`：auto 档整体关闭——全局池内有健康候选
+    /// 也不得选路，收敛 Validation，且错误信息显性说明开关关闭（不得静默
+    /// 空转成「模型不存在」或照常返回决策）。
+    #[tokio::test]
+    async fn auto_route_global_model_disabled_returns_validation_error() {
+        let router = make_router_with_global(false, vec![single_shared("gx-on")]).await;
+        let err = router.route("auto").await.unwrap_err();
+        let GateError::Validation { field } = err else {
+            panic!("全局开关关闭时 auto 必须收敛 Validation 错误: {err}");
+        };
+        assert!(field.contains("auto"), "错误需携带请求模型名: {field}");
+        assert!(
+            field.contains("global_model"),
+            "错误需显性说明开关来源（[global_model].enabled=false）: {field}"
+        );
+    }
+
+    /// 同一开关只作用于 auto 档：显式模型名（抽象路由）不受影响。
+    #[tokio::test]
+    async fn global_disabled_leaves_abstract_route_intact() {
+        let router = make_router_with_global(false, vec![single_shared("gx-on")]).await;
+        let d = router
+            .route("shared-model")
+            .await
+            .expect("全局开关关闭不得影响抽象路由");
+        assert_eq!(d.vendor.id, "gx-on");
+    }
+
     /// 全部 vendor 运维置为 Unavailable 且 fail-open 关闭（默认）：global
     /// 路径把全部候选计入 status_dropped 后仍返回 None → Validation 错误
     ///（fail-open 不开启时不得把冷却 vendor 纳入流量）。
@@ -2924,6 +3040,20 @@ mod route_gap_coverage {
             }
             other => panic!("必须收敛 Validation 错误: {other:?}"),
         }
+    }
+
+    /// X-Vendor 头大小写不敏感：请求书写大写 vendor id 仍命中配置并返回
+    /// 规范 id（原实现 get_vendor 精确匹配 → router-vendor-unavailable）。
+    #[tokio::test]
+    async fn hints_vendor_header_case_insensitive() {
+        let (router, _vm, _cm) =
+            make_router(RoutingSection::default(), vec![single_shared("gx-a")]).await;
+        let d = router
+            .route_with_hints("shared-model", Some("GX-A"), None, None, None, None, None)
+            .await
+            .expect("大写 X-Vendor 必须命中");
+        assert_eq!(d.vendor.id, "gx-a", "必须返回配置规范 id");
+        assert_eq!(d.strategy, RoutingStrategy::Direct);
     }
 
     /// 指定 vendor 存在但配置禁用 → 不可用错误（enabled 门控先于状态查询）。

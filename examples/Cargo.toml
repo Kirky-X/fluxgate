@@ -36,8 +36,14 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 # 按示例门控：保住「轻 sdk 构建 / rest 不拖网关 / grpc 不引 nexusflow」的既有依赖足迹
 anyhow = { version = "1", default-features = false, features = ["std"], optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream"], optional = true }
-axum = { version = "0.8", default-features = false, features = ["macros"], optional = true }
+# default-tls 必留：rest 示例直连部署网关，缺 TLS 特性时 -p 单成员构建（--features rest）
+# 运行期 https 调用必失败；与根包口径一致（0.13 起 default-tls = rustls）
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "default-tls"], optional = true }
+# 按本成员直用面最小集（mount_router.rs：axum::{Json,Router} + routing::get + axum::serve）：
+# http1（serve 的 hyper 服务）+ json（Json 提取/响应）+ tokio（serve 运行时）；
+# macros/query/tower-log/tracing 本成员零消费（不加也能靠 workspace 归一化拿到根包集，
+# 但单成员构建下应自洽，不抄根包集）。
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"], optional = true }
 # default-features=false：由 embedded/sdk 各自精确开启，避免 full 被无条件并入 sdk 构建
 nexusflow = { path = "..", default-features = false, optional = true }
 tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"], optional = true }

@@ -17,8 +17,12 @@
 #
 # 热更新标注：✅ = POST /admin/config 或文件监听改后下一请求即生效；
 #             ❌ = restart-required（建站期消费，须重启进程）。
-#             全量写回语义：未进 Config 结构体的自定义段会在首次热更写回时从
-#             磁盘消失，不要在本文件里放网关不认识的段。
+#             写回语义：写回 = 内存态全量序列化，故 ① 未进 Config 结构体的自定义
+#             段会在首次写回时从磁盘消失，不要在本文件里放网关不认识的段；
+#             ② 写回前比对磁盘内容指纹：文件自上次加载/写回后被进程外修改（含按
+#             「改文件后重启」追加的段、被热重载以 restart-required 拒绝的编辑）时，
+#             管理面写回以 config-disk-modified-refusing-write 显式失败且不改磁盘——
+#             先热重载或重启应用该编辑，再走管理面写回。
 # =============================================================================
 
 # ❌ 需重启 —— 监听地址与端口（TLS 由外部反代承担，网关明文监听）
@@ -537,7 +541,9 @@ concurrency = { requests_per_second = 100, token_weighted = false, token_ticket_
 rate_limit = { type = "token", max_tokens = 10000000, window_hours = 24, sliding = false }
 
 # 模型条目：weight 参与路由加权第 1 维；abstract_id 为抽象模型名（客户端用
-# 抽象名请求时按此匹配候选，缺省 = 只认 model_id）。
+# 抽象名请求时按此匹配候选，缺省 = 只认 model_id）。GET /v1/models 也列这个
+# 公开名：声明 abstract_id 后，裸 model_id 不再是请求名（限定形式
+# "vendor.model_id" 仍可路由），清单不会给出回投即 400 的 id。
 [[vendors.models]]
 model_id = "gpt-3.5-turbo"
 enabled = true
@@ -572,7 +578,9 @@ model_id = "claude-3-opus-20240229"
 enabled = true
 weight = 1.0
 
-# 全局模型池：请求 model 未命中任何 vendor 条目时的兜底（auto 档）
+# 全局模型池：model = "auto" 的选路目标（抽象/直连两级都未命中时才尝试）。
+# enabled = false 时 auto 档以 validation_error(400) 拒绝（显式模型名不受影响）；
+# 缺本段 = 启用（沿用历史兜底）。strategy 为档位声明，当前选路由 [routing] 决定。
 [global_model]
 enabled = true
 strategy = "weighted"

@@ -54,12 +54,47 @@ pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
         })?;
     // 错误有意脱敏：只报字段路径不回显出错值（配置值可能是密钥原文）
     let config: Config = annotated.to_typed().map_err(|e| GateError::Config {
-        message: t_args("config-parse-failed", &[("error", e.to_string())]),
+        message: t_args(
+            "config-parse-failed",
+            &[("error", locate_data_error(&e.to_string(), path))],
+        ),
     })?;
 
     validate_config(&config)?;
 
     Ok(config)
+}
+
+/// confers data error 的定位增强：条目缺必填字段时原生消息只到容器坐标
+/// （`data error at 'vendors[2]'`）、字段名为空，排障需人工比对结构体。
+/// 此时回落一次纯 serde TOML 解析，补出「字段名 + 位置」。只透出 missing
+/// field 类信息，其余错误保持原生脱敏口径——不回显配置值，值可能是密钥原文。
+fn locate_data_error(original: &str, path: &Path) -> String {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return original.to_string();
+    };
+    let Err(error) = toml::from_str::<Config>(&raw) else {
+        return original.to_string();
+    };
+    let message = error.message();
+    if !message.contains("missing field") {
+        return original.to_string();
+    }
+    match error.span().and_then(|span| line_column(&raw, span.start)) {
+        Some((line, column)) => format!("{message} at {}:{line}:{column}", path.display()),
+        None => message.to_string(),
+    }
+}
+
+/// 字节偏移 → 1 起的（行, 列）；偏移不在字符边界时返回 None
+fn line_column(raw: &str, offset: usize) -> Option<(usize, usize)> {
+    let before = raw.get(..offset.min(raw.len()))?;
+    let line = before.matches('\n').count() + 1;
+    let column = before
+        .rfind('\n')
+        .map(|index| before.len() - index)
+        .unwrap_or(before.len() + 1);
+    Some((line, column))
 }
 
 /// 校验配置 — 加载路径与更新路径共用；管理面弱密钥委托 confers
@@ -350,8 +385,11 @@ fn validate_admin_secrets(config: &Config) -> Result<(), GateError> {
                         target: "nexusflow::config",
                         key = %key,
                         severity = ?violation.severity,
-                        "non-critical admin secret rule violation: {}",
-                        violation.message
+                        "{}",
+                        t_args(
+                            "config-non-critical-admin-secret-violation",
+                            &[("message", violation.message.clone())]
+                        )
                     );
                 }
             }
@@ -438,6 +476,44 @@ mod tests {
         assert!(
             !quota_without_auth(&config_with(false, None)),
             "quota 关 → 不告警"
+        );
+    }
+
+    /// vendors 条目缺必填字段的定位增强：confers data error 只给容器坐标
+    /// （`data error at 'vendors[0]'`）且字段名为空，回落纯 serde TOML
+    /// 解析后必须点名缺失字段并给出文件位置。
+    #[test]
+    fn missing_vendor_field_error_names_the_field() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"[server]
+host = "127.0.0.1"
+port = 8080
+
+[database]
+path = ":memory:"
+
+[[vendors]]
+id = "dead-vendor"
+name = "Dead"
+type_ = "openai"
+api_key_env = "DEAD_KEY"
+concurrency = { requests_per_second = 1 }
+"#,
+        )
+        .expect("write failing config");
+
+        let error = load_config_from_path(&path).expect_err("缺 rate_limit/concurrency 必须拒绝");
+        let message = error.to_string();
+        assert!(
+            message.contains("rate_limit"),
+            "错误必须点名缺失字段: {message}"
+        );
+        assert!(
+            message.contains(&format!("{}:", path.display())),
+            "错误必须带文件位置定位: {message}"
         );
     }
 }

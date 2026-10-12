@@ -53,13 +53,25 @@ pub(crate) fn build_teardown_coordinator(
                             );
                         }
                         Err(_) => {
-                            tracing::warn!("teardown StopRequests hook timed out");
+                            tracing::warn!(
+                                "{}",
+                                t_args(
+                                    "main-teardown-hook-timeout",
+                                    &[("phase", "StopRequests".to_string())]
+                                )
+                            );
                         }
                     }
                 })
             })
             .unwrap_or_else(|e| {
-                tracing::warn!("teardown hook registration failed: {e}");
+                tracing::warn!(
+                    "{}",
+                    t_args(
+                        "main-teardown-hook-registration-failed",
+                        &[("error", e.to_string())]
+                    )
+                );
             });
     }
 
@@ -81,13 +93,25 @@ pub(crate) fn build_teardown_coordinator(
                             );
                         }
                         Err(_) => {
-                            tracing::warn!("teardown DrainQueue hook timed out");
+                            tracing::warn!(
+                                "{}",
+                                t_args(
+                                    "main-teardown-hook-timeout",
+                                    &[("phase", "DrainQueue".to_string())]
+                                )
+                            );
                         }
                     }
                 })
             })
             .unwrap_or_else(|e| {
-                tracing::warn!("teardown hook registration failed: {e}");
+                tracing::warn!(
+                    "{}",
+                    t_args(
+                        "main-teardown-hook-registration-failed",
+                        &[("error", e.to_string())]
+                    )
+                );
             });
     }
 
@@ -111,12 +135,24 @@ pub(crate) fn build_teardown_coordinator(
                         }
                     };
                     if tokio::time::timeout(HOOK_TIMEOUT, run).await.is_err() {
-                        tracing::warn!("teardown CloseConnections hook timed out");
+                        tracing::warn!(
+                            "{}",
+                            t_args(
+                                "main-teardown-hook-timeout",
+                                &[("phase", "CloseConnections".to_string())]
+                            )
+                        );
                     }
                 })
             })
             .unwrap_or_else(|e| {
-                tracing::warn!("teardown hook registration failed: {e}");
+                tracing::warn!(
+                    "{}",
+                    t_args(
+                        "main-teardown-hook-registration-failed",
+                        &[("error", e.to_string())]
+                    )
+                );
             });
     }
 

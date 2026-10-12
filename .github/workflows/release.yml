@@ -7,6 +7,10 @@
 # 说明：musl 静态产物曾借道 Docker 构建产出，后随 CI 去 docker 化移除（镜像
 # 现为纯 registry 依赖，可独立构建）；需要 musl 静态二进制时在本机执行
 # `docker build -f docker/Dockerfile .` 自行提取。
+#
+# 触发面：tag 推送为主；workflow_dispatch 供恢复/重发（如 tag 已推送但流水线
+# 失败）——手动触发必须显式给 version，且该 tag 必须已存在（resolve 步骤做
+# 存在性校验），构建源钉在 tag 上（build 作业的 checkout ref），不走分支 HEAD。
 #===============================================================================
 name: Release
 
@@ -14,12 +18,20 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本（x.y.z 或 x.y.z-rc.N，不带 v 前缀；须已有对应 tag）'
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # 固定组：tag 推送（refs/tags/…）与手动重发（refs/heads/…）是不同 ref，
+  # 按 ref 分组会让同版本两条 run 并发建 Release / 传产物（422 与产物竞争）
+  group: Release
   cancel-in-progress: false
 
 env:
@@ -39,14 +51,46 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 本 job 只用 gh api 与 action-gh-release（release 侧走自己的 token
+          # 输入），无需把 contents: write 的 git 凭据落盘到 .git/config
+          persist-credentials: false
+      # 版本号解析：tag 触发取 tag 名（去 v 前缀），手动触发取输入值。
+      # 两条路都过 semver 校验，且必须命中已存在的 tag——Releases API 在 tag
+      # 不存在时按默认分支 HEAD 新建 tag，版本号笔误会静默产出「tag 版本号 +
+      # 分支代码」的错配发布，故先做存在性校验再建 Release。
+      # 输入与版本值均经 env 传递，不内插进 run。
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${INPUT_VERSION}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::非法版本号: ${VERSION}（期望 x.y.z 或 x.y.z-rc.N）"
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" >/dev/null \
+            || { echo "::error::tag v${VERSION} 不存在——先推送 tag 再重发"; exit 1; }
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
+          # 显式给 tag_name：手动触发时 GITHUB_REF 是分支，不显式指定会落在错误 ref
+          tag_name: v${{ steps.resolve.outputs.version }}
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          # 预发布判定跟 semver 语义走：版本含 '-' 即预发布（rc/beta/alpha 等）
+          prerelease: ${{ contains(steps.resolve.outputs.version, '-') }}
 
   #-----------------------------------------------------------------------------
   # gnu 动态链接二进制（Ubuntu 基线）
@@ -55,13 +99,22 @@ jobs:
     name: Build (${{ matrix.target }})
     needs: create-release
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # 冷构建余量：release profile 是 lto=true + codegen-units=1 + opt-level=3
+    # （对全部依赖生效），runner 为 2 核；缓存失效（依赖 bump）时冷编估 30~50
+    # 分钟，40 分钟上限落在估计区间内——超时即取消，已投入分钟全部沉没
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         target: [x86_64-unknown-linux-gnu]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 构建源钉在 tag 上：手动触发的事件 ref 是分支 HEAD，不钉 tag 会
+          # 编译出「tag 版本号 + tag 之后的代码」的错配产物；tag 不存在时
+          # 此处直接失败，不会静默构建错误源码
+          ref: v${{ needs.create-release.outputs.version }}
+          persist-credentials: false
       - name: Install system dependencies (sqlx links system libsqlite3)
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
@@ -74,12 +127,19 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }} --bin ${{ env.BIN_NAME }}
       - name: Package
+        env:
+          # 版本经 env 传递（已过 semver 校验）；手动触发时 GITHUB_REF_NAME 是
+          # 分支名，不能再用它拼产物名
+          VERSION: ${{ needs.create-release.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           ASSET="${{ env.BIN_NAME }}-${VERSION}-${{ matrix.target }}.tar.gz"
           tar -czf "$ASSET" -C "target/${{ matrix.target }}/release" "${{ env.BIN_NAME }}"
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
       - name: Attach to release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
+          # 手动触发时 GITHUB_REF 是分支，不显式给 tag_name 会被 action 以
+          # "GitHub Releases requires a tag" 拒绝（create-release 建出的
+          # Release 会停在「有 Release 无产物」的半状态）
+          tag_name: v${{ needs.create-release.outputs.version }}
           files: ${{ env.ASSET }}

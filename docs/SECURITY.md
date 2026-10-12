@@ -285,7 +285,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 镜像构建与 Trivy 扫描未纳入 CI，本机构建命令见 [USER_GUIDE · Docker 部署](./USER_GUIDE.md#-docker-部署)。镜像现为纯 registry 依赖（自研库经 crates.io 拉取，不取兄弟库源码），可独立构建；`docker/Dockerfile` 亦已移除兄弟库克隆与 `SIBLING_PINS` 机制。
 
-工具链基线：MSRV 下限 `rust-version = "1.97.1"` 写在根 `Cargo.toml`（与 7 个兄弟库声明一致，cargo 在依赖解析期硬拒更低工具链），ci.yml 按该下限安装工具链（`dtolnay/rust-toolchain@7e38f4b4 # v1`）以固定 clippy lint 集合，`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。基础镜像与 Rust 依赖由 `.github/dependabot.yml` 的 `cargo` / `github-actions` / `docker` 三个生态位每周跟踪，因此构建产物可追溯到具体基线版本。
+工具链基线：MSRV 下限 `rust-version = "1.97.1"` 写在根 `Cargo.toml`（与 7 个兄弟库声明一致，cargo 在依赖解析期硬拒更低工具链），ci.yml 按该下限安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1`）以固定 clippy lint 集合，`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。基础镜像与 Rust 依赖由 `.github/dependabot.yml` 的 `cargo` / `github-actions` / `docker` 三个生态位每周跟踪，因此构建产物可追溯到具体基线版本。
 
 ---
 

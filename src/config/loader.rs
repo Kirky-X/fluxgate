@@ -65,6 +65,39 @@ pub fn load_config_from_path(path: &Path) -> Result<Config, GateError> {
     Ok(config)
 }
 
+/// 从内容串解析并校验配置（格式按路径扩展名检测，与 `load_config_from_path`
+/// 的识别口径一致；与加载路径同一 confers 解析管线 + 共享校验，仅免去文件
+/// 读取与错误定位增强）。热重载基线采纳的等价性复核专用：调用方必须用
+/// 「被本函数解析的同一份字节」计算指纹，指纹与解析验证同源（字节绑定语义）。
+pub fn parse_config_content(path: &Path, content: &str) -> Result<Config, GateError> {
+    let format =
+        confers::loader::detect_format_from_path(path).ok_or_else(|| GateError::Config {
+            message: t_args(
+                "config-parse-failed",
+                &[(
+                    "error",
+                    format!("unknown extension: {:?}", path.extension()),
+                )],
+            ),
+        })?;
+    let annotated = confers::loader::parse_content(
+        content,
+        format,
+        SourceId::new("config-content"),
+        Some(path),
+    )
+    .map_err(|e| GateError::Config {
+        message: t_args("config-parse-failed", &[("error", e.to_string())]),
+    })?;
+    let config: Config = annotated.to_typed().map_err(|e| GateError::Config {
+        message: t_args("config-parse-failed", &[("error", e.to_string())]),
+    })?;
+
+    validate_config(&config)?;
+
+    Ok(config)
+}
+
 /// confers data error 的定位增强：条目缺必填字段时原生消息只到容器坐标
 /// （`data error at 'vendors[2]'`）、字段名为空，排障需人工比对结构体。
 /// 此时回落一次纯 serde TOML 解析，补出「字段名 + 位置」。只透出 missing

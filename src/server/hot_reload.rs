@@ -175,9 +175,13 @@ pub(crate) async fn maybe_start_hot_reload(
             let next = rx.borrow().clone();
             if *next == *bridge_manager.read() {
                 // 语义等价（如仅注释/格式化改动）：候选已解析且无需切换内存态
-                //（不触发回调、不形成写回环），但指纹基线必须跟进磁盘现值——
-                // 否则后续管理面写回被误判为进程外编辑，冻结至重启
-                bridge_manager.adopt_disk_baseline();
+                //（不触发回调、不形成写回环）。基线采纳为验证式：重读并重解析
+                // 同一份字节、再确认等价后才采纳——防两次外部写交错把未经
+                // 解析验证的中间态采纳为基线（基线领先会让后续管理面写回
+                // 静默覆盖该编辑）；未采纳则维持冻结，由后续事件或重启兜底。
+                if !bridge_manager.adopt_disk_baseline() {
+                    tracing::debug!("{}", t_args("main-hot-reload-baseline-not-adopted", &[]));
+                }
                 continue;
             }
             let sections = changed_sections(&bridge_manager.read(), &next);
@@ -534,6 +538,11 @@ concurrency = { requests_per_second = 1 }
         let mut next = crate::config::loader::load_config_from_path(&path).expect("re-parse");
         assert_eq!(next.retry.max_retries, 3, "注释编辑不改语义");
         next.retry.max_retries = 20;
+        // 前置保护断言：基线采纳前写回必须仍被外部编辑保护拒绝
+        assert!(
+            manager.update_config(next.clone()).is_err(),
+            "采纳前写回必须被外部编辑保护拒绝"
+        );
         let mut recovered = false;
         for _ in 0..50 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

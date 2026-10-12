@@ -42,6 +42,7 @@ main-hot-reload-committed = Hot reload committed; changed sections: { $sections 
 main-hot-reload-watching = Hot reload watching config file: { $path }
 main-hot-reload-watcher-unavailable = Hot reload watcher failed to start; continuing without hot reload
 main-hot-reload-swap-failed = Hot reload swap failed: { $error }
+main-hot-reload-baseline-not-adopted = Hot reload baseline not adopted for an equivalent candidate (re-read content not equivalent to memory state, or unreadable); external-edit protection stays active
 
 # ---- server/{bootstrap,shutdown}.rs 运维日志 ----
 main-log-bridge-already-installed = log facade bridge already installed: { $error }

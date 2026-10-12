@@ -42,6 +42,7 @@ main-hot-reload-committed = 配置热重载已生效；变更段：{ $sections }
 main-hot-reload-watching = 配置热重载已监听文件：{ $path }
 main-hot-reload-watcher-unavailable = 热重载监听启动失败；已继续运行但热重载不可用
 main-hot-reload-swap-failed = 配置热重载切换失败：{ $error }
+main-hot-reload-baseline-not-adopted = 热重载等价候选未采纳基线（重读内容与内存态不等价或不可读）；外部编辑保护保持生效
 
 # ---- server/{bootstrap,shutdown}.rs 运维日志 ----
 main-log-bridge-already-installed = 日志门面桥已安装：{ $error }

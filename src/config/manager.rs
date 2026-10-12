@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use super::{validate_config, Config, ModelConfig, VendorConfig};
+use super::{parse_config_content, validate_config, Config, ModelConfig, VendorConfig};
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use confers::dynamic::DynamicField;
@@ -25,13 +25,18 @@ const SNAPSHOT_KEEP: usize = 10;
 /// confers Redacted 序列化时打码的路径（api_keys 存的已是 SHA256 摘要，双保险）
 const SNAPSHOT_REDACT_PATHS: &[&str] = &["auth.api_keys"];
 
+/// 字节内容指纹（file_fingerprint 与验证式基线采纳共用同一哈希语义）
+fn bytes_fingerprint(bytes: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// 磁盘配置内容指纹（本进程视角：加载 / 热重载提交 / 成功写回后刷新）。
 /// 写回前与磁盘现值比对，用于识别进程外编辑。
 fn file_fingerprint(path: &Path) -> Option<u64> {
     let bytes = std::fs::read(path).ok()?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Some(hasher.finish())
+    Some(bytes_fingerprint(&bytes))
 }
 
 /// 落盘前的旧配置快照（confers SnapshotManager：时间戳命名 + 超量自动清理）。
@@ -136,42 +141,59 @@ impl ConfigManager {
     }
 
     /// 内存态热交换（热重载桥接用）：校验后只切内存不落盘，落盘只走 update_config。
-    /// 桥接的候选配置来自磁盘当前内容，故提交后刷新指纹基线——后续写回不算冲突
+    /// 桥接的候选配置来自磁盘当前内容，故提交后刷新指纹基线——刷新为验证式
+    ///（见 [`Self::refresh_baseline_if_matches`]）：候选与磁盘现值不等价
+    ///（两次外部写交错）时不刷新，防基线领先于未验证内容。
     pub fn swap_memory(&self, new_config: Config) -> Result<(), GateError> {
         let _guard = self
             .write_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         validate_config(&new_config)?;
+        self.refresh_baseline_if_matches(&new_config);
         self.config.update(new_config);
-        if let Some(path) = self.path() {
-            if let Some(fingerprint) = file_fingerprint(&path) {
-                *self
-                    .disk_fingerprint
-                    .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fingerprint);
-            }
-        }
         Ok(())
     }
 
-    /// 采纳磁盘现值作为指纹基线（热重载桥接对「语义等价候选」调用）：
-    /// 外部编辑已被解析且无需切换内存态时，基线须跟进——否则后续管理面
-    /// 写回一律被误判为进程外编辑，冻结到重启。持写锁，防止与写回的
-    /// 读基线-比对-刷基线序列交错产生陈旧基线；无路径（纯内存构造）no-op。
-    pub fn adopt_disk_baseline(&self) {
+    /// 验证式采纳磁盘现值作为指纹基线（热重载桥接对「语义等价候选」调用）：
+    /// 写锁内重读一次内容，仅当该份字节重解析后与当前内存态等价才采纳
+    /// （指纹绑定被解析验证的字节），返回是否采纳。防两次外部写交错把
+    /// 未经解析验证的中间态采纳为基线——基线领先会让后续管理面写回静默
+    /// 覆盖该编辑。无路径 / 读取 / 解析 / 等价性任一失败均不采纳（基线
+    /// 保持，写回继续受保护，由后续事件或重启兜底）。
+    pub fn adopt_disk_baseline(&self) -> bool {
         let _guard = self
             .write_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(path) = self.path() {
-            if let Some(fingerprint) = file_fingerprint(&path) {
-                *self
-                    .disk_fingerprint
-                    .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fingerprint);
-            }
+        let expected = self.read();
+        self.refresh_baseline_if_matches(&expected)
+    }
+
+    /// 验证式刷新基线（调用方须持 write_lock）：读一次字节 → 重解析（格式按
+    /// 路径扩展名检测）→ 仅当解析结果与 `expected` 等价时以该同一份字节的
+    /// 指纹刷新基线（字节绑定）；不等价 / 不可读不刷新。返回是否刷新。
+    fn refresh_baseline_if_matches(&self, expected: &Config) -> bool {
+        let Some(path) = self.path() else {
+            return false;
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            return false;
+        };
+        let Ok(content) = std::str::from_utf8(&bytes) else {
+            return false;
+        };
+        let Ok(parsed) = parse_config_content(&path, content) else {
+            return false;
+        };
+        if &parsed != expected {
+            return false;
         }
+        *self
+            .disk_fingerprint
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(bytes_fingerprint(&bytes));
+        true
     }
 
     /// 原子 read-modify-write：写锁内读当前配置 → 应用闭包 → 校验落盘切换；
@@ -284,9 +306,10 @@ impl ConfigManager {
     }
 
     /// 大小写不敏感厂商查找（请求边界语义：`vendor.model` 直连与
-    /// `X-Vendor` 头）；命中返回配置原文。配置中存在仅大小写不同的多
-    /// vendor 时取声明序首个（配置校验按精确 id 去重，未禁止该写法）。
-    /// 管理/内部按精确 id 的调用方仍用 [`Self::get_vendor`]。
+    /// `X-Vendor` 头）；命中返回配置原文。配置校验（`validate_vendor_entries`）
+    /// 已按 ASCII 大小写不敏感拒绝仅差大小写的重复条目，故经校验的配置
+    /// 至多一个命中；未经校验的进程内直构（如测试）若持有该形态，取
+    /// 声明序首个。管理/内部按精确 id 的调用方仍用 [`Self::get_vendor`]。
     pub fn get_vendor_ci(&self, vendor_id: &str) -> Option<VendorConfig> {
         self.read()
             .vendors
@@ -627,6 +650,13 @@ mod tests {
             matches!(result.as_ref(), Err(GateError::Config { .. })),
             "外部编辑后写回必须以 Config 错误显式失败: {result:?}"
         );
+        if let Err(GateError::Config { message }) = result.as_ref() {
+            let expected = t_args(
+                "config-disk-modified-refusing-write",
+                &[("path", path.display().to_string())],
+            );
+            assert_eq!(message, &expected, "拒绝必须为外部编辑保护键原文且指名路径");
+        }
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             edited,
@@ -659,6 +689,40 @@ mod tests {
         assert!(manager.get_vendor("v2").is_some(), "写回已生效");
     }
 
+    /// swap_memory 的基线刷新同为验证式（评审复核发现的同害窗口）：
+    /// 候选与磁盘现值不等价（两次外部写交错）时不刷新基线——磁盘上的
+    /// 待生效编辑继续受写回保护。
+    #[test]
+    fn test_swap_memory_baseline_refresh_is_verified() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, toml::to_string_pretty(&sample_config("v1")).unwrap()).unwrap();
+
+        let manager = ConfigManager::new(sample_config("v1"));
+        manager.set_path(path.clone());
+
+        // 模拟交错：热重载候选（v1 + retry 变化）已解析，但磁盘已被第二次
+        // 外部编辑（结构性 v9）覆盖
+        let mut hot = sample_config("v1");
+        hot.retry.max_retries += 1;
+        let external = toml::to_string_pretty(&sample_config("v9")).unwrap();
+        std::fs::write(&path, &external).unwrap();
+        manager
+            .swap_memory(hot)
+            .expect("热重载提交（内存态照常切换）");
+
+        // 基线不得被刷成 v9 的指纹：写回必须继续拒绝并保住 v9 磁盘内容
+        assert!(
+            manager.update_config(sample_config("v2")).is_err(),
+            "候选与磁盘不等价时基线不得刷新，写回必须被拒"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            external,
+            "受保护的磁盘编辑不得被覆盖"
+        );
+    }
+
     /// 语义等价外部编辑（仅注释/格式化）经桥接采纳基线后写回必须恢复：
     /// 采纳前拒绝（既有保护不变），adopt_disk_baseline 后同一写回成功。
     #[test]
@@ -680,14 +744,49 @@ mod tests {
         );
 
         // 桥接对等价候选采纳基线 → 同一写回恢复
-        manager.adopt_disk_baseline();
+        assert!(manager.adopt_disk_baseline(), "等价磁盘必须采纳成功");
         manager
             .update_config(sample_config("v2"))
             .expect("采纳基线后写回必须恢复");
         assert!(manager.get_vendor("v2").is_some(), "写回已生效");
 
-        // no-op 分支：纯内存构造（无路径）不 panic
-        ConfigManager::new(sample_config("v3")).adopt_disk_baseline();
+        // no-op 分支：纯内存构造（无路径）不采纳、不 panic
+        assert!(
+            !ConfigManager::new(sample_config("v3")).adopt_disk_baseline(),
+            "无路径必须不采纳"
+        );
+    }
+
+    /// 验证式采纳的拒绝面：磁盘重解析与内存态不等价（如待重启的拓扑编辑）
+    /// 或文件缺失时不得采纳——该编辑必须继续受写回保护。
+    #[test]
+    fn test_adopt_disk_baseline_refuses_non_equivalent_or_missing_disk() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, toml::to_string_pretty(&sample_config("v1")).unwrap()).unwrap();
+
+        let manager = ConfigManager::new(sample_config("v1"));
+        manager.set_path(path.clone());
+
+        // 进程外结构性编辑（语义不同）：拒绝采纳，写回继续被保护
+        std::fs::write(&path, toml::to_string_pretty(&sample_config("v9")).unwrap()).unwrap();
+        assert!(
+            !manager.adopt_disk_baseline(),
+            "不等价磁盘必须拒绝采纳（防基线领先于未验证内容）"
+        );
+        assert!(
+            manager.update_config(sample_config("v2")).is_err(),
+            "拒绝采纳后写回仍必须受外部编辑保护"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            toml::to_string_pretty(&sample_config("v9")).unwrap(),
+            "被保护编辑不得被覆盖"
+        );
+
+        // 文件缺失：不采纳、不 panic
+        std::fs::remove_file(&path).unwrap();
+        assert!(!manager.adopt_disk_baseline(), "文件缺失必须拒绝采纳");
     }
 
     /// 并发 update 一致性（评审 major-1 场景）：多线程并发 POST 等价的

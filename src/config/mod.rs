@@ -10,7 +10,7 @@ pub mod loader;
 pub mod manager;
 pub mod model_catalog;
 
-pub use loader::validate_config;
+pub use loader::{parse_config_content, validate_config};
 pub use manager::ConfigManager;
 pub use model_catalog::{
     capabilities_for, flavor_default_capabilities, ModelCapabilities, ModelCatalogEntry,

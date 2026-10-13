@@ -23,7 +23,10 @@ use std::time::Duration;
 use tower_http::trace::TraceLayer;
 
 use super::state::ApiState;
-use super::{admin, anthropic, count_tokens, health, models, openai, openapi_docs, route_explain};
+use super::{
+    admin, anthropic, count_tokens, health, models, openai, openapi_docs, route_difficulty_explain,
+    route_explain,
+};
 use crate::config::{RateLimitRule, RateLimitSection};
 use crate::i18n::{t, t_args};
 use crate::middleware::admission::{tier_for_request, AdmissionState};
@@ -729,7 +732,13 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
                 .delete(admin::delete_model),
         )
         // WP5 路由可解释性（只读 admin 端点：不发上游请求，不改状态）
-        .route("/admin/route/explain", post(route_explain::route_explain));
+        .route("/admin/route/explain", post(route_explain::route_explain))
+        // 难度定档解释（只读：S 分解/命中档/熔断状态；[routing.difficulty]
+        // 未接线或 groups 未命中返回 Validation 错误）
+        .route(
+            "/admin/route/difficulty-explain",
+            post(route_difficulty_explain::route_difficulty_explain),
+        );
     // Prometheus 指标出口（/metrics）与就绪探针（/readyz）由
     // sdforge 站点（build_with_config）在合并侧自挂（同一 handler +
     // 同一全局注册表）；create_router 侧再挂会导致 merge 时重复路由

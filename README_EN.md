@@ -60,7 +60,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 <table style="width:100%; border-collapse: collapse">
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔄 <b>Protocol conversion</b><br><span style="color:#64748B">Bidirectional OpenAI Chat / Embeddings ↔ Anthropic Messages conversion with SSE streaming on both sides; zero-copy passthrough when the inbound protocol matches the target vendor</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>Smart routing</b><br><span style="color:#64748B">Weighted-random selection over 5 factors (model weight × queue × time window, plus optional latency / error rate) with temperature smoothing; optional Power-of-Two-Choices, LinUCB contextual bandit, session affinity, SLA virtual queue and LPS queueing lookahead</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>Smart routing + difficulty tiers</b><br><span style="color:#64748B">Weighted-random selection over 5 factors (model weight × queue × time window, plus optional latency / error rate) with temperature smoothing; optional Power-of-Two-Choices, LinUCB contextual bandit, session affinity, SLA virtual queue and LPS queueing lookahead</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>Resilience</b><br><span style="color:#64748B">limiteron circuit breaker (opens after 5 failures for 30s, slow-call threshold 60s avoids false trips), status-classified retries (429 honors Retry-After with spread, 5xx fixed-interval delay + spread), priority-driven fallback chain (total attempt budget defaults to 8)</span></td>
@@ -331,7 +331,7 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): **1322 tests pass, 0 failures** — 438 unit tests (inline in `src/`) plus 884 integration tests (47 test binaries under `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1379 tests pass, 0 failures** — 490 unit tests (inline in `src/`) plus 889 integration tests (48 test binaries under `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
@@ -371,7 +371,7 @@ Please do not report security vulnerabilities through public issues. Use the Git
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
 <tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 21 method endpoints (5 data-plane + 15 admin + 1 health)</td></tr>
-<tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers</td></tr>
+<tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers; difficulty-tiered routing (rule + in-process decision-engine fusion behind the <code>difficulty-classifier</code> feature)</td></tr>
 <tr><td align="center">✅</td><td>Resilience</td><td>limiteron circuit / retry / fallback chain, congestion-aware admission, key tiers</td></tr>
 <tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, four-tier `[[model_catalog]]` costing and cost breakdown</td></tr>
 <tr><td align="center">✅</td><td>Hot reload</td><td>confers DynamicField lock-free reads, transactional writes, snapshots with restart_required reporting</td></tr>

@@ -60,7 +60,7 @@
 <table style="width:100%; border-collapse: collapse">
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔄 <b>协议互转</b><br><span style="color:#64748B">OpenAI Chat / Embeddings ↔ Anthropic Messages 双向转换，SSE 流式两端同支持；入站协议与目标厂商一致时零拷贝透传</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>智能路由</b><br><span style="color:#64748B">模型权重 × 队列 × 时间窗口（× 可选延迟 / 错误率）5 因子加权随机，温度平滑；可选 Power-of-Two-Choices、LinUCB 上下文老虎机、会话亲和、SLA 虚拟队列与 LPS 排队论前瞻</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>智能路由</b><br><span style="color:#64748B">模型权重 × 队列 × 时间窗口（× 可选延迟 / 错误率）5 因子加权随机，温度平滑；可选 Power-of-Two-Choices、LinUCB 上下文老虎机、会话亲和、SLA 虚拟队列与 LPS 排队论前瞻；难度定档（<code>[routing.difficulty]</code>，默认关）：规则计分 + vecboost laya 决策概率融合，按难度切 low/mid/high 三档改写目标模型——简单问题小模型、困难问题大模型</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>弹性容错</b><br><span style="color:#64748B">limiteron 熔断器（5 次失败开 30s，慢调用 60s 阈值防误判）、按状态码分类重试（429 尊重 Retry-After 展宽、5xx 固定间隔 + 展宽）、priority 驱动的 Fallback 换路链（总尝试预算默认 8）</span></td>
@@ -149,7 +149,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 | `server` / `database` | 监听地址与 SQLite 路径/池大小 | ❌ 需重启 |
 | `vendors` / `global_model` | 厂商、模型、权重、限流三形态 | ✅ 热读（`global_model` 仅经 admin 写入路径热生效，直接改文件被结构门拒绝） |
 | `auth` / `cors` | API Key 摘要与 CORS | auth ✅ / cors ❌ |
-| `routing` / `retry` / `resilience` | 路由系数与选择算法、重试策略、韧性覆盖面 | ✅ |
+| `routing` / `retry` / `resilience` | 路由系数与选择算法、重试策略、韧性覆盖面（含 `[routing.difficulty]` 难度定档子段） | ✅ |
 | `cache` / `rate_limit` / `admission` | 响应缓存、入站限流、拥塞准入 | cache/admission ✅ / rate_limit ❌ |
 | `model_catalog` / `pricing` | 模型能力目录（四档单价为计价正源）/ SLA 因子与未登记模型的配额回退档 | ✅ |
 | `health` / `quota` | 主动健康探针（默认 off）、成本/token 维度配额（默认关） | ✅ 均热读 |
@@ -310,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 测试策略
 
-单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard，共 48 个 `.rs` 文件——47 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
+单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard，共 49 个 `.rs` 文件——48 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -327,7 +327,7 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1322 个用例通过、0 失败**——单元测试 438 个（`src/` 内联）+ 集成测试 884 个（`tests/` 47 个测试二进制）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：**1379 个用例通过、0 失败**——单元测试 490 个（`src/` 内联）+ 集成测试 889 个（`tests/` 48 个测试二进制）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
@@ -335,6 +335,7 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 | api_test | 131 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
 | vendor_test | 111 | tests/vendor/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
 | router_test | 97 | tests/routing/ | 加权选择 / 亲和 / 提示路由 / 边界 |
+| difficulty_tier_test | 5 | tests/routing/ | 难度定档改写 → 既有路由链集成 |
 | database / sse | 41 / 40 | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK |
 | config / utils_coverage | 28 / 19 | tests/config/ · tests/utils/ | 配置加载 / 指标与限流边界 |
 | retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | 重试分类与延迟策略 / loader·manager 分支 |
@@ -367,7 +368,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
 <tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、21 个方法端点（数据面 5 + 管理 15 + 健康 1）</td></tr>
-<tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层</td></tr>
+<tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层；难度定档三档路由（规则 + 进程内决策引擎融合，<code>difficulty-classifier</code> feature 门控）</td></tr>
 <tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
 <tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、`[[model_catalog]]` 四档计价与成本分账</td></tr>
 <tr><td align="center">✅</td><td>配置热更新</td><td>confers DynamicField 无锁热读、事务写路径、快照备份与 restart_required 提示</td></tr>

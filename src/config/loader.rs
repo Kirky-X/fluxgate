@@ -140,7 +140,238 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_resilience_circuit(config)?;
     validate_quota_window(config)?;
     warn_quota_without_auth(config);
+    validate_difficulty(config)?;
+    warn_identical_difficulty_tiers(config);
     Ok(())
+}
+
+/// `[routing.difficulty]` 段校验（V1-V7）：enabled=false 完全旁路不校验
+///（与「缺段」同语义）；enabled=true 时全部规则刚性执行。加载与热更
+/// 共用本入口（manager 更新路径同样走 validate_config），热更失败保持旧配置
+fn validate_difficulty(config: &Config) -> Result<(), GateError> {
+    use super::{DifficultySection, Tier};
+
+    let d: &DifficultySection = &config.routing.difficulty;
+    if !d.enabled {
+        return Ok(());
+    }
+
+    // V1: 权重不可同时为 0（融合退化为常数，无意义）
+    if d.w_clf == 0.0 && d.w_rule == 0.0 {
+        return Err(GateError::Config {
+            message: t("config-difficulty-weights-all-zero"),
+        });
+    }
+    // V2: 阈值顺序
+    if d.score_low >= d.score_high {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-threshold-order",
+                &[
+                    ("low", d.score_low.to_string()),
+                    ("high", d.score_high.to_string()),
+                ],
+            ),
+        });
+    }
+    // V3: 中带策略枚举
+    if !matches!(
+        d.mid_band_policy.to_ascii_lowercase().as_str(),
+        "strong" | "cheap" | "nearest"
+    ) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-policy-invalid",
+                &[("policy", d.mid_band_policy.clone())],
+            ),
+        });
+    }
+    // V4: w_clf>0 需要编译期 feature（配置承诺了实现必须存在）
+    #[cfg(not(feature = "difficulty-classifier"))]
+    if d.w_clf > 0.0 {
+        return Err(GateError::Config {
+            message: t("config-difficulty-clf-feature-missing"),
+        });
+    }
+    // V9: 数值域（NaN 绕过 ==/>= 比较、负权重、阈值越界——审查 MEDIUM 收口）
+    for (name, value) in [("w_clf", d.w_clf), ("w_rule", d.w_rule)] {
+        if !value.is_finite() || value < 0.0 {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-difficulty-field-invalid",
+                    &[("field", name.to_string()), ("value", value.to_string())],
+                ),
+            });
+        }
+    }
+    for (name, value) in [("score_low", d.score_low), ("score_high", d.score_high)] {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-difficulty-field-invalid",
+                    &[("field", name.to_string()), ("value", value.to_string())],
+                ),
+            });
+        }
+    }
+    // V10: classifier 子段界（timeout_ms=0 → .max(1) 恒超时空转；超大值实质
+    // 取消超时兜底；engine 白名单防未知值静默回退）
+    if !(1..=60_000).contains(&d.classifier.timeout_ms) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-field-invalid",
+                &[
+                    ("field", "classifier.timeout_ms".to_string()),
+                    ("value", d.classifier.timeout_ms.to_string()),
+                ],
+            ),
+        });
+    }
+    if d.classifier.failure_threshold == 0 {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-field-invalid",
+                &[
+                    ("field", "classifier.failure_threshold".to_string()),
+                    ("value", "0".to_string()),
+                ],
+            ),
+        });
+    }
+    if !matches!(
+        d.classifier.engine.trim().to_ascii_lowercase().as_str(),
+        "candle" | "onnx"
+    ) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-field-invalid",
+                &[
+                    ("field", "classifier.engine".to_string()),
+                    ("value", d.classifier.engine.clone()),
+                ],
+            ),
+        });
+    }
+
+    // 真实 model_id 集（CI 折叠）——档位/分组只能指向抽象名，撞名即配置歧义
+    let model_ids: std::collections::HashSet<String> = config
+        .vendors
+        .iter()
+        .flat_map(|v| v.models.iter().map(|m| m.model_id.to_ascii_lowercase()))
+        .collect();
+
+    let tiers = [(Tier::Low, &d.tiers.low), (Tier::High, &d.tiers.high)];
+    for (tier, name) in tiers {
+        validate_tier_name(config, tier, name, &model_ids)?;
+    }
+    if let Some(mid) = &d.tiers.mid {
+        validate_tier_name(config, Tier::Mid, mid, &model_ids)?;
+    }
+
+    for group in &d.groups {
+        let normalized = group.trim().to_ascii_lowercase();
+        if model_ids.contains(&normalized) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-difficulty-group-collision",
+                    &[("name", group.clone())],
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// 单档校验：空名拒绝（V6 前置）+ model_id 撞名拒绝（V5）+ 无 enabled 候选拒绝
+///（V6/V7）。候选匹配语义与 Router::collect_abstract_candidates 一致：
+/// enabled vendor × enabled model × (model_id | abstract_id) CI 折叠
+fn validate_tier_name(
+    config: &Config,
+    tier: super::Tier,
+    name: &str,
+    model_ids: &std::collections::HashSet<String>,
+) -> Result<(), GateError> {
+    use super::Tier;
+
+    let tier_label = match tier {
+        Tier::Low => "low",
+        Tier::Mid => "mid",
+        Tier::High => "high",
+    };
+    if name.trim().is_empty() {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-tier-empty",
+                &[("tier", tier_label.to_string())],
+            ),
+        });
+    }
+    let normalized = name.trim().to_ascii_lowercase();
+    if model_ids.contains(&normalized) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-tier-collision",
+                &[("kind", "tier".to_string()), ("name", name.to_string())],
+            ),
+        });
+    }
+    let served = config.vendors.iter().any(|v| {
+        v.enabled
+            && v.models.iter().any(|m| {
+                m.enabled
+                    && (m.model_id.eq_ignore_ascii_case(&normalized)
+                        || m.abstract_id
+                            .as_deref()
+                            .is_some_and(|a| a.eq_ignore_ascii_case(&normalized)))
+            })
+    });
+    if !served {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-tier-no-candidate",
+                &[("tier", tier_label.to_string()), ("name", name.to_string())],
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// V8（warn 级）：各档候选集完全相同 → 定档对厂商选择无效果，提示不阻断
+fn warn_identical_difficulty_tiers(config: &Config) {
+    use super::Tier;
+
+    let d = &config.routing.difficulty;
+    if !d.enabled {
+        return;
+    }
+    let mut sets: Vec<Vec<String>> = Vec::new();
+    let mut tier_names: Vec<(Tier, &str)> =
+        vec![(Tier::Low, &d.tiers.low), (Tier::High, &d.tiers.high)];
+    if let Some(mid) = &d.tiers.mid {
+        tier_names.push((Tier::Mid, mid));
+    }
+    for (_, name) in &tier_names {
+        sets.push(
+            config
+                .vendors
+                .iter()
+                .filter(|v| {
+                    v.enabled
+                        && v.models.iter().any(|m| {
+                            m.enabled
+                                && (m.model_id.eq_ignore_ascii_case(name)
+                                    || m.abstract_id
+                                        .as_deref()
+                                        .is_some_and(|a| a.eq_ignore_ascii_case(name)))
+                        })
+                })
+                .map(|v| v.id.clone())
+                .collect(),
+        );
+    }
+    if sets.len() >= 2 && sets.windows(2).all(|w| w[0] == w[1]) {
+        tracing::warn!("{}", t("config-difficulty-tiers-identical"));
+    }
 }
 
 /// vendor id 全局唯一 + 每 vendor 内 model id 唯一（跨 Vec 条目的唯一性
@@ -577,6 +808,239 @@ concurrency = { requests_per_second = 1 }
         assert!(
             message.contains(&format!("{}:", path.display())),
             "错误必须带文件位置定位: {message}"
+        );
+    }
+
+    // ---- [routing.difficulty] 校验（V1-V8）----
+
+    /// 组装含 [[vendors]] 与 [routing.difficulty] 的完整配置并解析
+    ///（parse_config_content 解析即校验，难度校验错误在 Err 消息中点名字段）
+    fn parse_difficulty_toml(vendors: &str, difficulty: &str) -> Result<Config, GateError> {
+        // Config.vendors 无 serde default：空厂商场景必须显式 `vendors = []`；
+        // 顶层键须在任何 [table] 头之前，否则落进 [database]
+        let vendors_block = if vendors.is_empty() {
+            "vendors = []\n".to_string()
+        } else {
+            format!("{vendors}\n")
+        };
+        let toml = format!(
+            "{vendors_block}[server]\nhost = \"127.0.0.1\"\nport = 8080\n\n\
+             [database]\npath = \":memory:\"\n\n[routing]\n[routing.difficulty]\n{difficulty}\n"
+        );
+        parse_config_content(Path::new("config.toml"), &toml)
+    }
+
+    /// 一个 enabled vendor，models 为 `[[vendors.models]]` TOML 片段
+    fn difficulty_vendor(id: &str, models: &str) -> String {
+        format!(
+            "[[vendors]]\nid = \"{id}\"\nname = \"{id}\"\ntype_ = \"openai\"\n\
+             api_key_env = \"{id}_KEY\"\n\
+             rate_limit = {{ type = \"time_window\", start = \"00:00\", end = \"24:00\" }}\n\
+             concurrency = {{ requests_per_second = 1 }}\n{models}\n"
+        )
+    }
+
+    fn model_entry(model_id: &str, abstract_id: &str) -> String {
+        format!("[[vendors.models]]\nmodel_id = \"{model_id}\"\nabstract_id = \"{abstract_id}\"\n")
+    }
+
+    const DIFF_VENDORS_OK: &str = "";
+
+    #[test]
+    fn difficulty_disabled_bypasses_validation() {
+        // enabled=false：垃圾值也不校验（与「缺段」同语义）
+        let config = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = false\nw_clf = 0.0\nw_rule = 0.0\nscore_low = 0.9\nscore_high = 0.1\n",
+        )
+        .expect("disabled 段即使全非法也必须旁路");
+        assert!(!config.routing.difficulty.enabled);
+    }
+
+    #[test]
+    fn difficulty_v1_rejects_all_zero_weights() {
+        let error = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = true\nw_clf = 0.0\nw_rule = 0.0\nscore_low = 0.35\nscore_high = 0.65\n",
+        )
+        .expect_err("V1 权重全零必须拒绝");
+        assert!(
+            error.to_string().contains("w_clf"),
+            "错误必须点名 w_clf: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_v2_rejects_inverted_thresholds() {
+        let error = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = true\nscore_low = 0.65\nscore_high = 0.35\n",
+        )
+        .expect_err("V2 阈值倒置必须拒绝");
+        assert!(
+            error.to_string().contains("score_low"),
+            "错误必须点名 score_low: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_v3_rejects_unknown_policy() {
+        let error = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = true\nmid_band_policy = \"medium\"\n",
+        )
+        .expect_err("V3 非法策略必须拒绝");
+        assert!(
+            error.to_string().contains("mid_band_policy"),
+            "错误必须点名 mid_band_policy: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_v5_rejects_tier_model_id_collision() {
+        let vendors = difficulty_vendor("v1", &model_entry("gpt-x", "fast"));
+        let error = parse_difficulty_toml(
+            &vendors,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
+             [routing.difficulty.tiers]\nlow = \"gpt-x\"\nhigh = \"reasoning\"\n",
+        )
+        .expect_err("V5 档位撞 model_id 必须拒绝");
+        assert!(
+            error.to_string().contains("gpt-x"),
+            "错误必须点名撞名项: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_v6_rejects_tier_without_candidate() {
+        let error = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
+             [routing.difficulty.tiers]\nlow = \"fast\"\nhigh = \"reasoning\"\n",
+        )
+        .expect_err("V6 无候选档必须拒绝");
+        assert!(
+            error.to_string().contains("fast"),
+            "错误必须点名档名: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_v7_rejects_mid_without_candidate() {
+        let vendors = difficulty_vendor("v1", &model_entry("m1", "fast"))
+            + &difficulty_vendor("v2", &model_entry("m2", "reasoning"));
+        let error = parse_difficulty_toml(
+            &vendors,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
+             [routing.difficulty.tiers]\nlow = \"fast\"\nmid = \"balanced\"\nhigh = \"reasoning\"\n",
+        )
+        .expect_err("V7 mid 无候选必须拒绝");
+        assert!(
+            error.to_string().contains("balanced"),
+            "错误必须点名 mid 档名: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_group_collision_rejected() {
+        let vendors = difficulty_vendor("v1", &model_entry("m1", "fast"));
+        let error = parse_difficulty_toml(
+            &vendors,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\ngroups = [\"m1\"]\n\
+             [routing.difficulty.tiers]\nlow = \"fast\"\nhigh = \"fast\"\n",
+        )
+        .expect_err("分组名撞 model_id 必须拒绝");
+        assert!(
+            error.to_string().contains("m1"),
+            "错误必须点名分组: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_happy_path_three_tiers_resolving() {
+        // 两 vendor 分别服务 low/high 抽象名，mid 未配置 = 两档退化形态合法
+        let vendors = difficulty_vendor("v1", &model_entry("m1", "fast"))
+            + &difficulty_vendor("v2", &model_entry("m2", "reasoning"));
+        let config = parse_difficulty_toml(
+            &vendors,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\ngroups = [\"auto\"]\n\
+             [routing.difficulty.tiers]\nlow = \"fast\"\nhigh = \"reasoning\"\n",
+        )
+        .expect("合法三档（mid 缺省）必须通过");
+        assert_eq!(config.routing.difficulty.tiers.low, "fast");
+        assert_eq!(config.routing.difficulty.tiers.high, "reasoning");
+        assert!(config.routing.difficulty.tiers.mid.is_none());
+    }
+
+    #[test]
+    fn difficulty_tier_empty_name_rejected() {
+        let error = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
+             [routing.difficulty.tiers]\nlow = \"\"\nhigh = \"reasoning\"\n",
+        )
+        .expect_err("空档名必须拒绝");
+        assert!(
+            error.to_string().contains("low"),
+            "错误必须点名档位: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_v9_rejects_negative_weights_and_out_of_range_thresholds() {
+        // 负权重（NaN/inf 在 confers 解析层即拒，V9 的有限性检查是
+        // 结构体直构路径的纵深防御）；阈值越界 [0,1] 同拒
+        for toml in [
+            "enabled = true\nw_clf = -0.1\nw_rule = 0.4\nscore_low = 0.35\nscore_high = 0.65\n",
+            "enabled = true\nw_clf = 0.6\nw_rule = -0.4\nscore_low = 0.35\nscore_high = 0.65\n",
+            "enabled = true\nscore_low = 0.35\nscore_high = 1.5\n",
+        ] {
+            let error =
+                parse_difficulty_toml(DIFF_VENDORS_OK, toml).expect_err("V9 非法数值域必须拒绝");
+            let message = error.to_string();
+            assert!(
+                message.contains("w_clf")
+                    || message.contains("w_rule")
+                    || message.contains("score_high"),
+                "错误须点名字段: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn difficulty_v10_rejects_classifier_bounds_and_engine() {
+        let error = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n             [routing.difficulty.classifier]\ntimeout_ms = 0\n",
+        )
+        .expect_err("V10 timeout_ms=0 必须拒绝");
+        assert!(
+            error.to_string().contains("timeout_ms"),
+            "错误须点名 timeout_ms: {error}"
+        );
+        let error = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n             [routing.difficulty.classifier]\nengine = \"tpu\"\n",
+        )
+        .expect_err("V10 未知 engine 必须拒绝");
+        assert!(
+            error.to_string().contains("engine"),
+            "错误须点名 engine: {error}"
+        );
+    }
+
+    #[cfg(not(feature = "difficulty-classifier"))]
+    #[test]
+    fn difficulty_v4_rejects_clf_weight_without_feature() {
+        let error = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = true\nw_clf = 0.6\nscore_low = 0.35\nscore_high = 0.65\n\
+             [routing.difficulty.tiers]\nlow = \"fast\"\nhigh = \"reasoning\"\n",
+        )
+        .expect_err("V4 无 feature 时 w_clf>0 必须拒绝");
+        assert!(
+            error.to_string().contains("difficulty-classifier"),
+            "错误必须点名 feature: {error}"
         );
     }
 }

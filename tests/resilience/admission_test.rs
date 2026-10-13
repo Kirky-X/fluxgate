@@ -461,6 +461,7 @@ mod full_chain {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         });
         (create_router(state).await, vendor_manager)
     }

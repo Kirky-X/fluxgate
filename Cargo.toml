@@ -53,6 +53,11 @@ database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "dep:url", "proto
 vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand", "dep:async-channel"]
 # router 模块（含 vendor-management 联动）；dep:oxcache 供 response_cache/bootstrap 直用 CacheBackend。
 router = ["vendor-management", "dep:oxcache"]
+# 难度定档的 vecboost laya 进程内分类器（EngineFactory + InferenceEngine 直调）。
+# 关闭时 difficulty 模块以纯规则形态工作（w_clf>0 被配置校验 V4 拒绝）。
+# 依赖为 path dep（vecboost 库面处于快速演进期，git 发布面与内部 feature
+# 组合未稳定；升级跟随上游 tag 并跑全量测试——规则12）。
+difficulty-classifier = ["dep:vecboost"]
 # marker feature（当前无 cfg 消费点；保留组合位与单开关语义）
 protocol = []
 infrastructure = ["dep:oxcache", "dep:trait-kit"]
@@ -107,6 +112,11 @@ limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["tow
 
 # 缓存
 oxcache = { version = "0.5.0-rc.8", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
+
+# 难度定档分类器（difficulty-classifier feature）：vecboost laya 决策引擎
+# 进程内直调（EngineFactory + InferenceEngine）。path dep：库面快速演进期，
+# 跟随本地 checkout；default-features=false 避开 http/grpc 服务端栈。
+vecboost = { path = "../vecboost", default-features = false, optional = true }
 
 # DI（async + shutdown 面）
 trait-kit = { version = "0.5.0-rc.9", default-features = false, features = ["async", "shutdown"], optional = true }
@@ -349,6 +359,10 @@ path = "tests/utils/gate_utils_coverage_test.rs"
 [[test]]
 name = "dead_code_guard"
 path = "tests/guard/dead_code_guard.rs"
+
+[[test]]
+name = "difficulty_tier_test"
+path = "tests/routing/difficulty_tier_test.rs"
 
 [profile.release]
 opt-level = 3

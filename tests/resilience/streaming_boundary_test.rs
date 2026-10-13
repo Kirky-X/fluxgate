@@ -165,6 +165,7 @@ async fn make_state(config: Config) -> Arc<ApiState> {
         response_cache: None,
         bandit: None,
         quota: None,
+        difficulty: None,
     })
 }
 

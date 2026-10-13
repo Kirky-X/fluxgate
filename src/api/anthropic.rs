@@ -28,6 +28,8 @@ struct AnthropicDispatchCtx {
     start_time: std::time::Instant,
     session_key: Option<String>,
     api_key_hash: String,
+    // 难度档位标签（None = 定档未发生；仅 [routing.difficulty] 命中 groups 时有值）
+    difficulty_tier: Option<&'static str>,
 }
 
 #[axum::debug_handler]
@@ -59,10 +61,16 @@ pub async fn messages(
     // 亲和键租户维度（与响应缓存同源）
     let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
 
+    // 难度定档（[routing.difficulty]）：anthropic 入站无 hints 直连语义，
+    // groups 命中即定档改写（bypass=false）。None 接线 = 历史行为
+    let (difficulty_tier, routed_model) =
+        crate::router::difficulty::resolve_tier(state.difficulty.as_deref(), model, &body, false)
+            .await;
+
     // 路由决策
     let decision = resolve_route(
         &state,
-        model,
+        &routed_model,
         &headers,
         hints,
         session_key.as_deref(),
@@ -76,6 +84,7 @@ pub async fn messages(
         start_time,
         session_key,
         api_key_hash,
+        difficulty_tier,
     };
 
     // 检查是否可以使用零拷贝透传（入站格式 Anthropic == 出站格式 Anthropic）。
@@ -199,6 +208,7 @@ async fn chat_passthrough_stream(
     let obs_headers = crate::api::fallback_observation_headers(&decision, &fallback_trail);
     #[cfg(not(feature = "resilience"))]
     let obs_headers = axum::http::HeaderMap::new();
+    let obs_headers = crate::api::extend_obs_with_tier(obs_headers, ctx.difficulty_tier);
     Ok(crate::api::with_fallback_headers(
         (STREAM_HEADERS, body_stream).into_response(),
         &obs_headers,
@@ -360,11 +370,15 @@ async fn chat_passthrough_json(
             body,
         );
         log_success_dispatch(state, ctx, &decision, body, &flow.value).await;
-        return Ok((
+        let response = (
             [("Content-Type", "application/json"), ("X-Cache", "HIT")],
             Json(flow.value),
         )
-            .into_response());
+            .into_response();
+        return Ok(crate::api::with_difficulty_tier_response(
+            response,
+            ctx.difficulty_tier,
+        ));
     }
 
     // leader / 自愈回源 / 未参与：以最终成功者收尾（computed → X-Cache: MISS）
@@ -388,7 +402,7 @@ async fn chat_passthrough_json(
     // WP4 回退观测头叠加（开关关闭为空表，零行为变化）。
     Ok(crate::api::with_fallback_headers(
         json_response_with_cache_flag(flow.value, flow.participated),
-        &final_route.obs_headers,
+        &crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
     ))
 }
 
@@ -492,6 +506,7 @@ async fn chat_convert_stream(
     let obs_headers = crate::api::fallback_observation_headers(&decision, &fallback_trail);
     #[cfg(not(feature = "resilience"))]
     let obs_headers = axum::http::HeaderMap::new();
+    let obs_headers = crate::api::extend_obs_with_tier(obs_headers, ctx.difficulty_tier);
     Ok(crate::api::with_fallback_headers(
         (STREAM_HEADERS, body_stream).into_response(),
         &obs_headers,
@@ -583,11 +598,15 @@ async fn chat_convert_json(
             body,
         );
         log_success_dispatch(state, ctx, &decision, body, &flow.value).await;
-        return Ok((
+        let response = (
             [("Content-Type", "application/json"), ("X-Cache", "HIT")],
             Json(flow.value),
         )
-            .into_response());
+            .into_response();
+        return Ok(crate::api::with_difficulty_tier_response(
+            response,
+            ctx.difficulty_tier,
+        ));
     }
 
     // leader / 自愈回源 / 未参与：以最终成功者收尾（computed → X-Cache: MISS）
@@ -609,7 +628,7 @@ async fn chat_convert_json(
     // 缓存参与 → 响应带 X-Cache 头；WP4 回退观测头叠加（开关关闭为空表）。
     Ok(crate::api::with_fallback_headers(
         json_response_with_cache_flag(flow.value, flow.participated),
-        &final_route.obs_headers,
+        &crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
     ))
 }
 

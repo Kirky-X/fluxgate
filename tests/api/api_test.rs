@@ -110,6 +110,7 @@ mod endpoints {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -434,6 +435,7 @@ mod integration {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -914,6 +916,7 @@ mod admin {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
             openai_converter,
             anthropic_converter,
             database,
@@ -1338,6 +1341,7 @@ mod streaming_error_propagation {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -1743,6 +1747,7 @@ mod logging_pipeline {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         });
         (state, logger, pa, repository)
     }
@@ -1932,6 +1937,7 @@ mod logging_pipeline {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         });
 
         let response = Router::new()
@@ -2116,6 +2122,7 @@ mod embeddings_governance {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 
@@ -2380,6 +2387,7 @@ mod response_cache_tests {
             ))),
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 
@@ -2756,6 +2764,7 @@ mod linucb_reward_chain {
             response_cache: None,
             bandit: Some(bandit.clone()),
             quota: None,
+            difficulty: None,
         });
         (state, bandit)
     }
@@ -2901,6 +2910,7 @@ mod global_model_switch {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 
@@ -3125,6 +3135,7 @@ mod api_handler_coverage {
             response_cache,
             bandit,
             quota: None,
+            difficulty: None,
         })
     }
 
@@ -5528,6 +5539,7 @@ mod data_plane_endpoints {
             response_cache,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 
@@ -5956,6 +5968,7 @@ mod fallback_observation_headers {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 
@@ -6269,6 +6282,7 @@ mod route_explain {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 
@@ -6808,6 +6822,7 @@ mod fallback_observation_headers_anthropic {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 

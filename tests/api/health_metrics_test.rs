@@ -98,6 +98,7 @@ async fn build_app() -> (Router, Arc<ApiState>, DbPool) {
         response_cache: Some(response_cache),
         bandit: None,
         quota: None,
+        difficulty: None,
     });
     let app = create_router(state.clone()).await;
     // /readyz 由 sdforge 站点在生产合并侧自挂；直连 create_router 时经

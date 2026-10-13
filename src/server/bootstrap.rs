@@ -206,6 +206,68 @@ pub(crate) async fn assemble(
     let db_sink: Arc<dyn RequestLogSink> = database.clone();
     let log_front: Option<Arc<dyn RequestLogSink>> = Some(logger_handle.clone());
     let usage_front: Option<Arc<dyn UsageSink>> = Some(pre_aggregator.clone());
+
+    // 难度定档路由（[routing.difficulty]）：enabled=false 不接线（模块旁路，
+    // 行为与历史一致）。接线 = 决策缓存 + 熔断 guard + 分类器（feature 门控；
+    // laya 加载失败 → F3 常驻纯规则降级，ERROR 级显性日志）
+    let difficulty_router: Option<Arc<crate::router::difficulty::DifficultyRouter>> = {
+        let d = config_manager.read().routing.difficulty.clone();
+        if !d.enabled {
+            None
+        } else {
+            let cache = crate::router::difficulty::DecisionCache::with_memory_backend(
+                d.classifier.cache_ttl_secs,
+            );
+            #[cfg(feature = "difficulty-classifier")]
+            let (classifier, guard) = if d.w_clf > 0.0 {
+                match crate::router::difficulty::vecboost_engine::LayaClassifier::load(
+                    &d.classifier.model_path,
+                    &d.classifier.engine,
+                ) {
+                    Ok(engine) => (
+                        Some(Arc::new(engine)
+                            as Arc<dyn crate::router::difficulty::DifficultyClassifier>),
+                        crate::router::difficulty::Guard::new(
+                            d.classifier.failure_threshold,
+                            d.classifier.probe_interval_secs,
+                        ),
+                    ),
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            "difficulty classifier disabled: laya load failed; rule-only mode engaged"
+                        );
+                        (None, crate::router::difficulty::Guard::always_open())
+                    }
+                }
+            } else {
+                (
+                    None,
+                    crate::router::difficulty::Guard::new(
+                        d.classifier.failure_threshold,
+                        d.classifier.probe_interval_secs,
+                    ),
+                )
+            };
+            #[cfg(not(feature = "difficulty-classifier"))]
+            // V4 已保证该构建组合下 w_clf=0（enabled 时），纯规则形态
+            let (classifier, guard) = (
+                None,
+                crate::router::difficulty::Guard::new(
+                    d.classifier.failure_threshold,
+                    d.classifier.probe_interval_secs,
+                ),
+            );
+            Some(Arc::new(crate::router::difficulty::DifficultyRouter::new(
+                config_manager.clone(),
+                classifier,
+                guard,
+                cache,
+                vendor_manager.metrics().clone(),
+            )))
+        }
+    };
+
     let api_state = Arc::new(ApiState {
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
@@ -224,6 +286,8 @@ pub(crate) async fn assemble(
         bandit: Some(bandit_state),
         // 配额账本：中间件入口预扣与回补钩共享同一实例（enabled=false 时零判限）。
         quota: Some(Arc::new(crate::middleware::quota::QuotaState::new())),
+        // 难度定档：enabled=false / 分类器未接线时为 None（历史行为）
+        difficulty: difficulty_router,
     });
 
     crate::api::init_global_state(api_state.clone());

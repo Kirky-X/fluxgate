@@ -91,6 +91,7 @@ async fn create_state() -> Arc<ApiState> {
         response_cache: None,
         bandit: None,
         quota: None,
+        difficulty: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
@@ -449,6 +450,7 @@ async fn reset_vendor_clears_blacklist_and_cooldown() {
         response_cache: None,
         bandit: None,
         quota: None,
+        difficulty: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
@@ -600,6 +602,7 @@ mod cost_endpoint {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database: Arc::new(Database {

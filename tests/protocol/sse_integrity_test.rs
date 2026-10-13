@@ -442,6 +442,7 @@ mod integration {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 

@@ -128,6 +128,7 @@ async fn build_state() -> Arc<ApiState> {
         response_cache: None,
         bandit: None,
         quota: None,
+        difficulty: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database,

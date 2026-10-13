@@ -175,6 +175,7 @@ async fn build_app_with_vendors(rules: Vec<RateLimitRule>, vendors: Vec<VendorCo
         response_cache: None,
         bandit: None,
         quota: None,
+        difficulty: None,
     });
 
     create_router(state).await
@@ -567,6 +568,7 @@ async fn auth_runs_before_rate_limit_layers() {
         response_cache: None,
         bandit: None,
         quota: None,
+        difficulty: None,
     });
     let app = create_router(state).await;
 

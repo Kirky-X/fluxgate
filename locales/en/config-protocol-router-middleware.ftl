@@ -69,3 +69,15 @@ router-explain-eligible = Eligible candidate (selection={ $selection })
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = Missing API key
 middleware-invalid-api-key = Invalid API key
+
+# ---- router/difficulty (config validation) ----
+config-difficulty-weights-all-zero = [routing.difficulty] w_clf and w_rule must not both be 0
+config-difficulty-threshold-order = [routing.difficulty] score_low ({ $low }) must be less than score_high ({ $high })
+config-difficulty-policy-invalid = [routing.difficulty] mid_band_policy "{ $policy }" is invalid (strong/cheap/nearest)
+config-difficulty-clf-feature-missing = [routing.difficulty] enabled with w_clf>0 requires the difficulty-classifier feature at compile time
+config-difficulty-tier-empty = [routing.difficulty.tiers] tier { $tier } has an empty abstract model name
+config-difficulty-tier-collision = [routing.difficulty] { $kind } "{ $name }" collides with a real model_id (tiers/groups must point at abstract names only)
+config-difficulty-tier-no-candidate = [routing.difficulty.tiers] tier { $tier } "{ $name }" has no enabled candidate (needs an enabled vendor serving a matching model_id/abstract_id)
+config-difficulty-group-collision = [routing.difficulty] group name "{ $name }" collides with a real model_id
+config-difficulty-tiers-identical = [routing.difficulty] all tiers resolve to the identical candidate set; difficulty routing has no vendor-selection effect (advisory)
+config-difficulty-field-invalid = [routing.difficulty] field { $field } has invalid value { $value } (weights must be finite non-negative, thresholds within [0,1], timeout_ms within [1,60000], failure_threshold >= 1, engine must be candle or onnx)

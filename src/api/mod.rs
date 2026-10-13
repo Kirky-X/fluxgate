@@ -17,6 +17,7 @@ pub mod openai;
 pub mod openapi_docs;
 pub mod readiness;
 pub mod response_cache;
+pub mod route_difficulty_explain;
 pub mod route_explain;
 pub mod router_builder;
 pub mod routing_hints;
@@ -355,6 +356,36 @@ pub(crate) fn with_fallback_headers(
     let mut response = response;
     for (name, value) in obs {
         response.headers_mut().insert(name.clone(), value.clone());
+    }
+    response
+}
+
+/// 难度定档结果透出头名（仅定档路径出现；值 ∈ {low,mid,high}）
+pub(crate) const X_DIFFICULTY_TIER: &str = "x-difficulty-tier";
+
+/// 观测头合并难度档位（定档未发生 = None = 原样返回）。响应头组装点统一
+/// 经此合并，保证 X-Difficulty-Tier 与回退观测头同栈透出
+pub(crate) fn extend_obs_with_tier(
+    mut obs: axum::http::HeaderMap,
+    tier: Option<&str>,
+) -> axum::http::HeaderMap {
+    if let Some(label) = tier {
+        if let Ok(value) = axum::http::HeaderValue::from_str(label) {
+            obs.insert(X_DIFFICULTY_TIER, value);
+        }
+    }
+    obs
+}
+
+/// 响应直接附难度档位头（缓存 HIT 等不经 obs 组装的快速路径用）
+pub(crate) fn with_difficulty_tier_response(
+    mut response: axum::response::Response,
+    tier: Option<&str>,
+) -> axum::response::Response {
+    if let Some(label) = tier {
+        if let Ok(value) = axum::http::HeaderValue::from_str(label) {
+            response.headers_mut().insert(X_DIFFICULTY_TIER, value);
+        }
     }
     response
 }
@@ -739,6 +770,7 @@ mod fallback_guard_tests {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 
@@ -1047,6 +1079,7 @@ mod cooldown_retry_after {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         })
     }
 

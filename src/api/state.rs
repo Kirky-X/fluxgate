@@ -43,6 +43,9 @@ pub struct ApiState {
     /// 成本与 token 配额账本（WP8 预扣-回补）— 中间件入口预扣与回补钩
     /// 共享同一实例。None = 未接线（入口不预扣，行为与历史一致）。
     pub quota: Option<Arc<crate::middleware::quota::QuotaState>>,
+    /// 难度定档路由（`[routing.difficulty]`）— groups 命中的请求在路由前
+    /// 改写档位抽象名。None = 未接线（enabled=false，行为与历史一致）。
+    pub difficulty: Option<Arc<crate::router::difficulty::DifficultyRouter>>,
 }
 
 impl std::fmt::Debug for ApiState {
@@ -59,6 +62,7 @@ impl std::fmt::Debug for ApiState {
             .field("affinity", &self.affinity.is_some())
             .field("response_cache", &self.response_cache.is_some())
             .field("bandit", &self.bandit.is_some())
+            .field("difficulty", &self.difficulty.is_some())
             .finish()
     }
 }

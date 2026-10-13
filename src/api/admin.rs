@@ -280,6 +280,21 @@ pub async fn update_config(
     if old.cors != config.cors {
         restart_required.push("cors");
     }
+    // 难度分类器在 bootstrap 装配一次（EngineFactory 加载 checkpoint），
+    // 这两个键热更后惰性直到重启——显性告知防"已生效"误判
+    if old.routing.difficulty.classifier.model_path
+        != config.routing.difficulty.classifier.model_path
+    {
+        restart_required.push("routing.difficulty.classifier.model_path");
+    }
+    if old.routing.difficulty.classifier.engine != config.routing.difficulty.classifier.engine {
+        restart_required.push("routing.difficulty.classifier.engine");
+    }
+    if old.routing.difficulty.classifier.cache_ttl_secs
+        != config.routing.difficulty.classifier.cache_ttl_secs
+    {
+        restart_required.push("routing.difficulty.classifier.cache_ttl_secs");
+    }
     // 第三类生效语义：vendor 实例按 id 惰性创建后进程级缓存（manager 的
     // instances map 无失效路径），CB 窗口变更只对新建实例生效——既非重启级
     // （同段其余键每请求现读）也非即时级，单列 surfaced 防止误判。

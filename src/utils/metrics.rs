@@ -166,6 +166,21 @@ pub struct GlobalMetrics {
     /// 只在 manager 记账点的失败分支累加，语义 =「进入过重试候选路径的
     /// 失败」。
     failed_requests_before_retry: AtomicU64,
+    /// 难度定档计数（[routing.difficulty]）：融合 / 纯规则 / 缓存命中 /
+    /// 分类失败 / 特征退化 / 熔断开与恢复；tier 分布三维 + 延迟累计。
+    /// 定档未接线时恒 0
+    difficulty_fusion: AtomicU64,
+    difficulty_rule_only: AtomicU64,
+    difficulty_cache_hit: AtomicU64,
+    difficulty_classifier_failed: AtomicU64,
+    difficulty_features_degraded: AtomicU64,
+    difficulty_breaker_opened: AtomicU64,
+    difficulty_breaker_recovered: AtomicU64,
+    difficulty_tier_low: AtomicU64,
+    difficulty_tier_mid: AtomicU64,
+    difficulty_tier_high: AtomicU64,
+    difficulty_latency_ns_total: AtomicU64,
+    difficulty_latency_count: AtomicU64,
 }
 
 impl GlobalMetrics {
@@ -183,7 +198,68 @@ impl GlobalMetrics {
             ewma_tau_ms: AtomicU64::new(DEFAULT_EWMA_TAU_MS),
             retried_attempts: AtomicU64::new(0),
             failed_requests_before_retry: AtomicU64::new(0),
+            difficulty_fusion: AtomicU64::new(0),
+            difficulty_rule_only: AtomicU64::new(0),
+            difficulty_cache_hit: AtomicU64::new(0),
+            difficulty_classifier_failed: AtomicU64::new(0),
+            difficulty_features_degraded: AtomicU64::new(0),
+            difficulty_breaker_opened: AtomicU64::new(0),
+            difficulty_breaker_recovered: AtomicU64::new(0),
+            difficulty_tier_low: AtomicU64::new(0),
+            difficulty_tier_mid: AtomicU64::new(0),
+            difficulty_tier_high: AtomicU64::new(0),
+            difficulty_latency_ns_total: AtomicU64::new(0),
+            difficulty_latency_count: AtomicU64::new(0),
         }
+    }
+
+    // ---- 难度定档观测（difficulty 模块写、admin/快照读）----
+
+    /// 定档路径计数 + tier 分布 + 延迟（一次调用记齐；classifier_failed /
+    /// features_degraded / 熔断迁移由专门入口补记）
+    pub fn record_difficulty_decision(
+        &self,
+        fusion: bool,
+        cache_hit: bool,
+        tier: crate::config::Tier,
+        latency: std::time::Duration,
+    ) {
+        use crate::config::Tier;
+        match cache_hit {
+            true => self.difficulty_cache_hit.fetch_add(1, Ordering::Relaxed),
+            false if fusion => self.difficulty_fusion.fetch_add(1, Ordering::Relaxed),
+            false => self.difficulty_rule_only.fetch_add(1, Ordering::Relaxed),
+        };
+        match tier {
+            Tier::Low => &self.difficulty_tier_low,
+            Tier::Mid => &self.difficulty_tier_mid,
+            Tier::High => &self.difficulty_tier_high,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+        self.difficulty_latency_ns_total
+            .fetch_add(latency.as_nanos() as u64, Ordering::Relaxed);
+        self.difficulty_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_difficulty_classifier_failed(&self) {
+        self.difficulty_classifier_failed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_difficulty_features_degraded(&self) {
+        self.difficulty_features_degraded
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_difficulty_breaker_opened(&self) {
+        self.difficulty_breaker_opened
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_difficulty_breaker_recovered(&self) {
+        self.difficulty_breaker_recovered
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// 热同步 Peak-EWMA 时间常数 τ（ms）。VendorManager 在每次
@@ -603,6 +679,9 @@ impl GlobalMetrics {
         let affinity_hits = self.affinity_hits.load(Ordering::Relaxed);
         let affinity_misses = self.affinity_misses.load(Ordering::Relaxed);
 
+        let difficulty_latency_count = self.difficulty_latency_count.load(Ordering::Relaxed);
+        let difficulty_latency_ns_total = self.difficulty_latency_ns_total.load(Ordering::Relaxed);
+
         MetricsSnapshot {
             total_requests: total,
             successful_requests: success,
@@ -615,6 +694,21 @@ impl GlobalMetrics {
             affinity_hit_rate: self.affinity_hit_rate(),
             top1_share,
             share_entropy,
+            difficulty: DifficultyMetricsSnapshot {
+                fusion: self.difficulty_fusion.load(Ordering::Relaxed),
+                rule_only: self.difficulty_rule_only.load(Ordering::Relaxed),
+                cache_hit: self.difficulty_cache_hit.load(Ordering::Relaxed),
+                classifier_failed: self.difficulty_classifier_failed.load(Ordering::Relaxed),
+                features_degraded: self.difficulty_features_degraded.load(Ordering::Relaxed),
+                breaker_opened: self.difficulty_breaker_opened.load(Ordering::Relaxed),
+                breaker_recovered: self.difficulty_breaker_recovered.load(Ordering::Relaxed),
+                tier_low: self.difficulty_tier_low.load(Ordering::Relaxed),
+                tier_mid: self.difficulty_tier_mid.load(Ordering::Relaxed),
+                tier_high: self.difficulty_tier_high.load(Ordering::Relaxed),
+                avg_latency_ms: difficulty_latency_ns_total
+                    .checked_div(difficulty_latency_count)
+                    .map_or(0.0, |ns| ns as f64 / 1_000_000.0),
+            },
         }
     }
 
@@ -641,6 +735,21 @@ impl GlobalMetrics {
         if let Ok(mut guard) = self.vendor_windows.write() {
             guard.clear();
         }
+        self.difficulty_fusion.store(0, Ordering::Relaxed);
+        self.difficulty_rule_only.store(0, Ordering::Relaxed);
+        self.difficulty_cache_hit.store(0, Ordering::Relaxed);
+        self.difficulty_classifier_failed
+            .store(0, Ordering::Relaxed);
+        self.difficulty_features_degraded
+            .store(0, Ordering::Relaxed);
+        self.difficulty_breaker_opened.store(0, Ordering::Relaxed);
+        self.difficulty_breaker_recovered
+            .store(0, Ordering::Relaxed);
+        self.difficulty_tier_low.store(0, Ordering::Relaxed);
+        self.difficulty_tier_mid.store(0, Ordering::Relaxed);
+        self.difficulty_tier_high.store(0, Ordering::Relaxed);
+        self.difficulty_latency_ns_total.store(0, Ordering::Relaxed);
+        self.difficulty_latency_count.store(0, Ordering::Relaxed);
     }
 }
 
@@ -736,6 +845,8 @@ impl VendorMetrics {
 /// /admin/metrics 序列化自动带出。
 #[derive(Debug, Serialize)]
 pub struct MetricsSnapshot {
+    /// 难度定档观测子块（定档未接线时全零）
+    pub difficulty: DifficultyMetricsSnapshot,
     pub total_requests: u64,
     pub successful_requests: u64,
     pub failed_requests: u64,
@@ -752,6 +863,23 @@ pub struct MetricsSnapshot {
     pub top1_share: f64,
     /// 流量份额 Shannon 熵（归一 `[0,1]`；V≤1 为 0）
     pub share_entropy: f64,
+}
+
+/// 难度定档观测子块（/admin/metrics 快照字段）
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+pub struct DifficultyMetricsSnapshot {
+    pub fusion: u64,
+    pub rule_only: u64,
+    pub cache_hit: u64,
+    pub classifier_failed: u64,
+    pub features_degraded: u64,
+    pub breaker_opened: u64,
+    pub breaker_recovered: u64,
+    pub tier_low: u64,
+    pub tier_mid: u64,
+    pub tier_high: u64,
+    /// 定档决策平均延迟（ms，纯路径含缓存查写；分类器耗时应另看上游）
+    pub avg_latency_ms: f64,
 }
 
 fn now_unix_ts() -> i64 {

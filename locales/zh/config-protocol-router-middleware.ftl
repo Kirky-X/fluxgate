@@ -69,3 +69,15 @@ router-explain-eligible = 候选合格（selection={ $selection }）
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = 缺少 API Key
 middleware-invalid-api-key = API Key 无效
+
+# ---- router/difficulty (config validation) ----
+config-difficulty-weights-all-zero = [routing.difficulty] w_clf 与 w_rule 不可同时为 0
+config-difficulty-threshold-order = [routing.difficulty] score_low（{ $low }）必须小于 score_high（{ $high }）
+config-difficulty-policy-invalid = [routing.difficulty] mid_band_policy「{ $policy }」非法（可选 strong/cheap/nearest）
+config-difficulty-clf-feature-missing = [routing.difficulty] enabled 且 w_clf>0 需要编译期启用 difficulty-classifier feature
+config-difficulty-tier-empty = [routing.difficulty.tiers] { $tier } 档抽象模型名为空
+config-difficulty-tier-collision = [routing.difficulty] { $kind }「{ $name }」与真实 model_id 撞名（档位/分组只能指向抽象模型名）
+config-difficulty-tier-no-candidate = [routing.difficulty.tiers] { $tier } 档「{ $name }」无可用的 enabled 候选（需至少一个 enabled vendor 提供 model_id/abstract_id 匹配项）
+config-difficulty-group-collision = [routing.difficulty] 分组名「{ $name }」与真实 model_id 撞名
+config-difficulty-tiers-identical = [routing.difficulty] 各档候选集完全相同，定档对厂商选择无效果（仅提示）
+config-difficulty-field-invalid = [routing.difficulty] 字段 { $field } 的值 { $value } 非法（权重须非负有限、阈值须 ∈ [0,1]、timeout_ms ∈ [1,60000]、failure_threshold ≥ 1、engine 须为 candle 或 onnx）

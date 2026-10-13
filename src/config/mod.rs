@@ -500,6 +500,10 @@ pub struct RoutingSection {
     /// 非有限按 0。臂矩阵正则初值 = max(α²,1)·I。默认 1.0
     #[serde(default = "default_ucb_alpha")]
     pub ucb_alpha: f64,
+    /// `[routing.difficulty]` 子段 — 难度定档路由。缺省 enabled=false
+    ///（模块整体旁路，行为与历史逐位一致）。字段热读
+    #[serde(default)]
+    pub difficulty: DifficultySection,
 }
 
 fn default_price_factor_enabled() -> bool {
@@ -585,6 +589,7 @@ impl Default for RoutingSection {
             lps_delta: 0.0,
             lps_deadline_gate: false,
             default_deadline_ms: default_deadline_ms(),
+            difficulty: DifficultySection::default(),
         }
     }
 }
@@ -1083,4 +1088,159 @@ pub struct PricingConfig {
     pub model_id: String,
     pub input_per_1k_tokens: f64,
     pub output_per_1k_tokens: f64,
+}
+
+/// 难度档位：请求按融合分切到 low/mid/high 后改写为对应抽象模型名
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    Low,
+    Mid,
+    High,
+}
+
+/// 难度定档 `[routing.difficulty]` 段：规则计分 + 进程内分类概率加权融合，
+/// 阈值切三档后改写目标抽象模型名。默认 enabled=false 完全旁路（零开销，
+/// 行为与无此段逐位一致）。字段热读；tiers/classifier 语义变更经
+/// validate_difficulty 在加载与热更两处校验
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct DifficultySection {
+    /// 定档开关：默认 false，模块整体旁路
+    #[serde(default)]
+    pub enabled: bool,
+    /// 触发定档的请求模型名（归一化 trim+lowercase 后精确匹配）；命中才改写，
+    /// 其余模型名原样直通。不得与真实 model_id 撞名（validate_difficulty）
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// 分类概率权重：S = w_clf·p + w_rule·r；feature 未启用时必须为 0
+    #[serde(default = "default_difficulty_w_clf")]
+    pub w_clf: f64,
+    /// 规则计分权重；与 w_clf 不可同时为 0
+    #[serde(default = "default_difficulty_w_rule")]
+    pub w_rule: f64,
+    /// 下阈：S ≤ score_low → low
+    #[serde(default = "default_difficulty_score_low")]
+    pub score_low: f64,
+    /// 上阈：S ≥ score_high → high；(score_low, score_high) → mid
+    #[serde(default = "default_difficulty_score_high")]
+    pub score_high: f64,
+    /// 中带策略（仅 tiers.mid 未配置的两档退化形态消费）：
+    /// "strong"（默认，中带→high）/ "cheap"（→low）/ "nearest"（近阈值档，
+    /// 平局取 high）；未知值由 validate_difficulty 拒绝
+    #[serde(default = "default_difficulty_mid_band_policy")]
+    pub mid_band_policy: String,
+    /// 档位 → 抽象模型名映射
+    #[serde(default)]
+    pub tiers: DifficultyTiers,
+    /// 分类器（vecboost laya）运行参数
+    #[serde(default)]
+    pub classifier: DifficultyClassifierSection,
+}
+
+impl Default for DifficultySection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            groups: Vec::new(),
+            w_clf: default_difficulty_w_clf(),
+            w_rule: default_difficulty_w_rule(),
+            score_low: default_difficulty_score_low(),
+            score_high: default_difficulty_score_high(),
+            mid_band_policy: default_difficulty_mid_band_policy(),
+            tiers: DifficultyTiers::default(),
+            classifier: DifficultyClassifierSection::default(),
+        }
+    }
+}
+
+/// 档位 → 抽象模型名。mid 为 None = 两档退化形态（中带走 mid_band_policy）；
+/// 空串在 enabled 时由 validate_difficulty 以「无候选」拒绝
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub struct DifficultyTiers {
+    pub low: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mid: Option<String>,
+    pub high: String,
+}
+
+/// vecboost laya 决策引擎运行参数（`difficulty-classifier` feature 门控）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct DifficultyClassifierSection {
+    /// 单次推理超时（毫秒）；超时按分类失败降级纯规则
+    #[serde(default = "default_difficulty_timeout_ms")]
+    pub timeout_ms: u64,
+    /// 连续失败 N 次 → 熔断 open（不再调用分类器，纯规则）；成功清零
+    #[serde(default = "default_difficulty_failure_threshold")]
+    pub failure_threshold: u32,
+    /// 熔断 open → 半开探测间隔（秒）
+    #[serde(default = "default_difficulty_probe_interval_secs")]
+    pub probe_interval_secs: u64,
+    /// 定档结果缓存 TTL（秒）；0 = 不缓存。容量由 oxcache 内存后端默认值
+    /// 决定（本字段无独立旋钮）
+    #[serde(default = "default_difficulty_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    /// laya checkpoint 目录路径
+    #[serde(default = "default_difficulty_model_path")]
+    pub model_path: String,
+    /// 引擎档："candle"（默认）/ "onnx"；onnx 需上游 vecboost/onnx feature
+    /// 组合（加载期显性报错），其余值由 validate_difficulty 拒绝
+    #[serde(default = "default_difficulty_engine")]
+    pub engine: String,
+}
+
+impl Default for DifficultyClassifierSection {
+    fn default() -> Self {
+        Self {
+            timeout_ms: default_difficulty_timeout_ms(),
+            failure_threshold: default_difficulty_failure_threshold(),
+            probe_interval_secs: default_difficulty_probe_interval_secs(),
+            cache_ttl_secs: default_difficulty_cache_ttl_secs(),
+            model_path: default_difficulty_model_path(),
+            engine: default_difficulty_engine(),
+        }
+    }
+}
+
+fn default_difficulty_w_clf() -> f64 {
+    0.6
+}
+
+fn default_difficulty_w_rule() -> f64 {
+    0.4
+}
+
+fn default_difficulty_score_low() -> f64 {
+    0.35
+}
+
+fn default_difficulty_score_high() -> f64 {
+    0.65
+}
+
+fn default_difficulty_mid_band_policy() -> String {
+    "strong".to_string()
+}
+
+fn default_difficulty_timeout_ms() -> u64 {
+    150
+}
+
+fn default_difficulty_failure_threshold() -> u32 {
+    5
+}
+
+fn default_difficulty_probe_interval_secs() -> u64 {
+    30
+}
+
+fn default_difficulty_cache_ttl_secs() -> u64 {
+    300
+}
+
+fn default_difficulty_model_path() -> String {
+    "models/laya".to_string()
+}
+
+fn default_difficulty_engine() -> String {
+    "candle".to_string()
 }

@@ -10,6 +10,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **难度定档路由（三档，规则 + 进程内决策引擎融合）**：新增 `[routing.difficulty]` 配置段（默认 `enabled=false` 完全旁路，行为与历史逐位一致）。请求模型名命中 `groups` 时先做难度定档：确定性规则计分（中英双语 hard/easy 词表、数学符号密度、代码围栏、多问拆解、结构特征，文本有界 ≤2KB）+ vecboost laya 决策引擎的校准概率 P(high)（进程内直调 `EngineFactory::create` + `InferenceEngine::decide`，**不走 HTTP**）加权融合 `S = (w_clf·p + w_rule·r)/(w_clf+w_rule)`，按 `score_low`/`score_high` 阈值切 low/mid/high 三档并改写为目标抽象模型名（档位成员复用既有 `abstract_id` 分组，带内厂商选择完全复用现有 5 因子加权/亲和/LinUCB 链）；`tiers.mid` 缺省的两档退化形态支持 `mid_band_policy`（strong/cheap/nearest，平局取 high）。全部降级显性化：配置校验 V1-V7（权重全零/阈值倒置/策略非法/feature 缺失/撞名/无候选拒绝，候选集全同 warn）、laya 加载失败 → 纯规则常驻降级（F3，ERROR 限频）、单次推理失败/超时 → 该请求退纯规则（F5）、连续失败达阈值熔断 open + 半开探测恢复（F6，阈值/间隔热读）、畸形 body 特征退化（F7）、熔断 open 期直连（不再调用分类器）。观测：`/admin/metrics` 快照新增 `difficulty` 子块（fusion/rule_only/cache_hit/classifier_failed/features_degraded/breaker_opened/breaker_recovered、tier 三维分布、平均延迟）；新端点 `POST /admin/route/difficulty-explain`（S 分解/命中档/熔断状态，只读零计量副作用）；定档路径响应带 `X-Difficulty-Tier` 头。推理栈整体置于新 `difficulty-classifier` feature 后（`dep:vecboost` path 依赖，default-features=false；关闭 feature 时纯规则形态可用、w_clf>0 被启动校验拒绝）。配置校验在加载与热更两处执行（热更失败保持旧配置）：V1-V8 之外含数值域校验（负权重、阈值 ∈ [0,1]、timeout_ms 界、engine 白名单）。特征文本有界化（≤2KB 增量钳制 + 控制字符消毒——防粘贴 ANSI 转义码的正常请求被 vecboost 校验显性拒绝而误触熔断）与 body 结构长度免分配估算（封顶早停，不做全量序列化）。`routing.difficulty.classifier.model_path`/`engine` 热更列入 restart_required 提示（分类器 bootstrap 装配一次）。
+
 ### Changed
 
 - **发布形态改为源码包**：`release.yml` 删除二进制构建作业（原 `build-gnu`：gnu 动态链接产物 + 附件上传），Release 只带 GitHub 自动生成的源码压缩包、不附二进制、不发 crates.io；二进制部署走 docker 镜像（`docker build -f docker/Dockerfile .`）或本机构建 `cargo build --locked --release`。发布链路保留其余加固：`workflow_dispatch` 手动重发（版本号过 semver 校验 + `gh api` tag 存在性校验，防 Releases API 按默认分支 HEAD 新建幻影 tag）、固定 `Release` 并发组（tag 推送与手动重发互斥排队）、`persist-credentials: false`、预发布判定按「版本含 `-`」的 semver 语义。`docs/CONTRIBUTING.md` 发布步骤、`tag-deleted.yml` 头注同步；`tag-deleted.yml` 另去掉 `github.event.ref` 的 shell 内插注入面（改经 env 传递）并把非 404 的查询失败显性化（不再吞成「无 Release」）。

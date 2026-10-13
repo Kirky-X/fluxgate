@@ -498,6 +498,7 @@ mod cover_all_paths {
             response_cache: None,
             bandit: None,
             quota: None,
+            difficulty: None,
         });
         (state, logger, repository)
     }

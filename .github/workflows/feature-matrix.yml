@@ -67,8 +67,11 @@ jobs:
       - name: Check each feature alone (nexusflow)
         id: nexusflow-leg
         continue-on-error: true
-        # db-sqlite 打底 + 排除 all-features（理由见文件头差异说明）
-        run: cargo hack check -p nexusflow --each-feature --features db-sqlite --exclude-all-features
+        # db-sqlite 打底 + 排除 all-features（理由见文件头差异说明）；
+        # difficulty-classifier 需 sibling checkout 的 path dep（../vecboost），
+        # runner 上不存在——单开必红，显式排除（启用条件：vecboost 改 git
+        # source / 发 crates.io，或本作业补第二仓库 checkout）
+        run: cargo hack check -p nexusflow --each-feature --features db-sqlite --exclude-all-features --exclude-features difficulty-classifier
       - name: Check each feature alone (nexusflow-examples)
         id: examples-leg
         continue-on-error: true

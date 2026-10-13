@@ -88,6 +88,7 @@ async fn build_app(docs_enabled: bool) -> Router {
         response_cache: None,
         bandit: None,
         quota: None,
+        difficulty: None,
     });
     create_router(state).await
 }

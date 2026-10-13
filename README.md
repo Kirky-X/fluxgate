@@ -71,16 +71,16 @@
 <td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>响应缓存</b><br><span style="color:#64748B">精确响应缓存（oxcache 存储），租户 + 厂商 + 请求体指纹键，TTL 分级乘数与负载联动，并发去重（single-flight）由 oxcache <code>get_or</code> 承载，<code>X-No-Cache: 1</code> 强制回源</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>请求日志与预聚合</b><br><span style="color:#64748B">异步批量写 SQLite（满载丢弃计数不阻塞响应），Token 用量按 (厂商, 模型, 日期, 小时) 预聚合 UPSERT</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[pricing]]</code> 配置输入/输出单价，微美元原子累积按厂商/模型分账，单价热更新立即生效</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>请求日志与预聚合</b><br><span style="color:#64748B">异步批量写库（默认 SQLite，db-postgres/db-mysql 构建下写对应后端；满载丢弃计数不阻塞响应），Token 用量按 (厂商, 模型, api_key 摘要, 日期, 小时) 预聚合 UPSERT</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[model_catalog]]</code> 的四档单价为计价正源（微美元原子累积按厂商/模型分账，热更新立即生效）；<code>[[pricing]]</code> 仅用于路由 SLA 因子与未登记目录模型的配额回退档</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；需重启的段在响应 <code>restart_required</code> 中显式提示</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">16 个方法端点：日志查询/搜索、Token 统计、成本分账查询、全局指标（含亲和命中率、丢弃计数）、厂商状态与密钥池重置、路由解释、配置与模型管理、健康检查</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；<code>server</code>/<code>cors</code> 变更会在响应 <code>restart_required</code> 中显式提示（<code>rate_limit</code> 等其他需重启段无此字段，需自行重启）</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">16 个管理/健康方法端点：日志查询/搜索、Token 统计、成本分账查询、全局指标（含亲和命中率、丢弃计数）、厂商状态与密钥池重置、路由解释、配置与模型管理、健康检查</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>国际化</b><br><span style="color:#64748B">Fluent 双语束（en/zh）覆盖全部业务消息与错误文案，<code>NEXUSFLOW_LANG</code> → 系统环境 → 回退 en 检测链</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>生产就绪</b><br><span style="color:#64748B">Docker 多阶段构建 + 非 root 运行、docker-compose 资源限制与健康检查、GitHub Actions CI（fmt/clippy/test/coverage/audit）与自动发布流水线</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>生产就绪</b><br><span style="color:#64748B">Docker 多阶段构建 + 非 root 运行、镜像层健康检查（<code>HEALTHCHECK</code>）与 docker-compose 资源限制、GitHub Actions CI（fmt/clippy/test/coverage/audit）与自动发布流水线</span></td>
 </tr>
 </table>
 
@@ -91,13 +91,13 @@
 ### 📦 环境要求
 
 - Rust 1.97.1+（MSRV，由 `Cargo.toml` 的 `rust-version` 声明；edition 2021）
-- SQLite：Docker/musl 产物**静态内嵌**（构建需 `sqlite-dev` 提供头与 `libsqlite3.a`），glibc 本地/发布构建动态链接系统库（需 `libsqlite3-dev`）；TLS 为纯 rustls，不依赖 OpenSSL
+- SQLite：**全构建静态内嵌**——`libsqlite3-sys` 的 bundled 特性以 C 源现场编译并静态链接（`cargo tree` 显示 bundled、产物 `ldd` 无 sqlite 动态依赖；glibc 与 musl 同口径），无需系统 sqlite 库或 `libsqlite3-dev`；TLS 为纯 rustls，不依赖 OpenSSL
 - 自研 7 库经 crates.io registry 集成（`confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit`），由 cargo 自动拉取，无需置于同级目录
 
 ### 🔨 编译运行
 
 ```bash
-# 运行时配置为 config.toml——仓库已随附一份默认配置（[auth].api_keys 为空 + mock 厂商，开箱即可起服）；按需从全量参考覆盖起步
+# 运行时配置为 config.toml——该文件不入库（.gitignore 已列），先 cp config.example.toml config.toml 起步（示例为随仓全量参考；起服前按需配置厂商与 `api_key_env` 指向的环境变量）
 cp config.example.toml config.toml
 
 # 默认读取工作目录 config.toml
@@ -142,16 +142,16 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 
 ## ⚙️ 配置概览
 
-运行时配置为单个 `config.toml`（**随仓跟踪**——仓库自带一份默认配置，`.gitignore` 亦列 `config.toml` 但对已跟踪文件不生效；实际部署常以 `cp config.example.toml config.toml` 从全量参考覆盖起步，每段每字段带默认值），共 18 个顶层段（`model_catalog` 逐条字段见 [📖 用户指南](docs/USER_GUIDE.md)）：
+运行时配置为单个 `config.toml`（**不入库**——`.gitignore` 已列（承载 API Key 摘要与上游地址等部署私有物），干净检出先 `cp config.example.toml config.toml` 起步，每段每字段带默认值），共 18 个顶层段（`model_catalog` 逐条字段见 [📖 用户指南](docs/USER_GUIDE.md)）：
 
 | 段 | 作用 | 热更新 |
 |----|------|--------|
 | `server` / `database` | 监听地址与 SQLite 路径/池大小 | ❌ 需重启 |
-| `vendors` / `global_model` | 厂商、模型、权重、限流三形态 | ✅ enabled 与权重即时生效 |
+| `vendors` / `global_model` | 厂商、模型、权重、限流三形态 | ✅ 热读（`global_model` 仅经 admin 写入路径热生效，直接改文件被结构门拒绝） |
 | `auth` / `cors` | API Key 摘要与 CORS | auth ✅ / cors ❌ |
 | `routing` / `retry` / `resilience` | 路由系数与选择算法、重试策略、韧性覆盖面 | ✅ |
 | `cache` / `rate_limit` / `admission` | 响应缓存、入站限流、拥塞准入 | cache/admission ✅ / rate_limit ❌ |
-| `pricing` / `model_catalog` | 输入/输出 token 单价（成本计算）/ `[[model_catalog]]` 模型能力目录 | ✅ |
+| `model_catalog` / `pricing` | 模型能力目录（四档单价为计价正源）/ SLA 因子与未登记模型的配额回退档 | ✅ |
 | `health` / `quota` | 主动健康探针（默认 off）、成本/token 维度配额（默认关） | ✅ 均热读 |
 | `grpc` / `docs` | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用） | ❌ 需重启 |
 
@@ -183,7 +183,7 @@ output_per_1k_tokens = 0.06
 | 文档 | 说明 |
 |------|------|
 | [📖 用户指南](docs/USER_GUIDE.md) | 从配置、部署到运维的完整使用教程 |
-| [📘 API 参考](docs/API_REFERENCE.md) | 全部 21 个方法端点的参数、响应与错误码 |
+| [📘 API 参考](docs/API_REFERENCE.md) | 全部 21 个方法端点（数据面 5 + 管理 15 + 健康 1）的参数、响应与错误码 |
 | [🏗️ 架构文档](docs/ARCHITECTURE.md) | 设计原则、路由决策体系、弹性与热更新机制 |
 | [🔒 安全文档](docs/SECURITY.md) | 安全设计、供应链门禁与漏洞处理流程 |
 | [❓ FAQ](docs/FAQ.md) | 常见问题与已知边界 |
@@ -233,7 +233,7 @@ NexusFlow 同时是**库优先**组件：服务器装配链承载于 `nexusflow:
 
 ## 📚 作为库依赖
 
-`nexusflow` 既是可执行网关，也是 Rust 库（`src/lib.rs` 导出公共 API）。默认 `full` feature 已含服务器组件；客户端 SDK 由 `sdk` feature 提供。
+`nexusflow` 既是可执行网关，也是 Rust 库（`src/lib.rs` 导出公共 API）。默认 `full` feature 已含服务器组件；客户端 SDK 由 `sdk` feature 提供（已含于 `full`，亦可单独启用）。
 
 **嵌入式起服**（在自己的应用中托管网关）：
 
@@ -327,19 +327,19 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1294 个用例通过、0 失败**——单元测试 426 个（`src/` 内联）+ 集成测试 868 个（`tests/` 47 个测试二进制）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：**1322 个用例通过、0 失败**——单元测试 438 个（`src/` 内联）+ 集成测试 884 个（`tests/` 47 个测试二进制）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
-| protocol_test | 142 | tests/protocol/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
-| vendor_test | 110 | tests/vendor/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
-| api_test | 102 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
-| router_test | 91 | tests/routing/ | 加权选择 / 亲和 / 提示路由 / 边界 |
-| database / sse | 38 / 37 | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK |
-| retry | 25 | tests/resilience/ | 重试分类与延迟策略 |
+| protocol_test | 157 | tests/protocol/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
+| api_test | 131 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
+| vendor_test | 111 | tests/vendor/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
+| router_test | 97 | tests/routing/ | 加权选择 / 亲和 / 提示路由 / 边界 |
+| database / sse | 41 / 40 | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK |
 | config / utils_coverage | 28 / 19 | tests/config/ · tests/utils/ | 配置加载 / 指标与限流边界 |
-| fallback / admission | 17 / 16 | tests/resilience/ | 换路链 / 准入 |
-| bandit / config_coverage / circuit_breaker | 13 / 14 / 9 | tests/routing/ · tests/config/ · tests/resilience/ | bandit 路由 / loader·manager 分支 / 熔断 |
+| retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | 重试分类与延迟策略 / loader·manager 分支 |
+| quota / fallback / admission | 20 / 17 / 16 | tests/resilience/ | 配额窗 / 换路链 / 准入 |
+| bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit 路由 / 模型目录 admin |
 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池等 | 其余 138 | tests/server/ 等 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
 
 ---
@@ -366,10 +366,10 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
-<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、21 个方法端点</td></tr>
+<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、21 个方法端点（数据面 5 + 管理 15 + 健康 1）</td></tr>
 <tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层</td></tr>
 <tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
-<tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、pricing 成本追踪</td></tr>
+<tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、`[[model_catalog]]` 四档计价与成本分账</td></tr>
 <tr><td align="center">✅</td><td>配置热更新</td><td>confers DynamicField 无锁热读、事务写路径、快照备份与 restart_required 提示</td></tr>
 <tr><td align="center">✅</td><td>国际化</td><td>Fluent en/zh 双语束覆盖全部业务消息</td></tr>
 <tr><td align="center">✅</td><td>成本查询 API</td><td>成本分账落库（<code>token_usage</code> 四档成本列，V2 迁移）+ <code>/admin/cost</code> 聚合查询端点（预聚合表按 vendor/model 分组）；进程内 <code>CostTracker</code> 内存累积仍重启清零（见已知边界）</td></tr>
@@ -408,7 +408,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ### 🛠️ 开发环境
 
-工具链基线：MSRV 下限 **1.97.1**（写在 `Cargo.toml` 的 `rust-version`，与 7 个兄弟库声明对齐；ci.yml 按此下限跑 build/clippy 并保证 clippy lint 集合可复现），`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。
+工具链基线：MSRV 下限 **1.97.1**（写在 `Cargo.toml` 的 `rust-version`，与 7 个兄弟库声明对齐；ci.yml 按此下限跑 build/clippy 并保证 clippy lint 集合可复现），`docker/Dockerfile` 用当前受支持 stable（1.99）。提交前运行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings`；提交信息遵循 Conventional Commits（`feat(scope): ...` / `fix(scope): ...`）。
 
 ### 💖 贡献方式
 
@@ -449,7 +449,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
-| 0.1.0 | 2026-04-04 | 初始发布并持续迭代（63 commits）：协议互转网关、5 因子加权路由与可选智能层、limiteron 弹性体系、异步日志与预聚合、成本追踪、confers 热更新底座、i18n、35 项优化落地 |
+| 0.1.0 | 2026-10-12 | 初始发布并持续迭代（63 commits）：协议互转网关、5 因子加权路由与可选智能层、limiteron 弹性体系、异步日志与预聚合、成本追踪、confers 热更新底座、i18n、35 项优化落地 |
 
 ---
 

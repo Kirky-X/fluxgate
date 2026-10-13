@@ -68,19 +68,19 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>Secure auth</b><br><span style="color:#64748B">API keys stored only as SHA256 digests with constant-time comparison; upstream credentials referenced by environment variable name only; revocation/rotation takes effect immediately via hot reload</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>Response cache</b><br><span style="color:#64748B">Exact-match response cache (oxcache-backed) keyed by tenant + vendor + body fingerprint, tiered TTL multipliers with load linking, <code>X-No-Cache: 1</code> to force origin fetch</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>Response cache</b><br><span style="color:#64748B">Exact-match response cache (oxcache-backed) keyed by tenant + vendor + body fingerprint, tiered TTL multipliers with load linking, concurrent de-duplication (single-flight) carried by oxcache <code>get_or</code>, <code>X-No-Cache: 1</code> to force origin fetch</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Request logs & pre-aggregation</b><br><span style="color:#64748B">Asynchronous batched SQLite writes (drop-counting under backpressure, never blocks responses), token usage UPSERT pre-aggregated by (vendor, model, date, hour)</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>Cost tracking</b><br><span style="color:#64748B"><code>[[pricing]]</code> configures input/output unit prices; micro-USD atomic accumulation per vendor/model; price changes take effect immediately via hot reload</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Request logs & pre-aggregation</b><br><span style="color:#64748B">Asynchronous batched writes to the configured backend (SQLite by default; db-postgres/db-mysql builds write to that backend — drop-counting under backpressure, never blocks responses), token usage UPSERT pre-aggregated by (vendor, model, API-key digest, date, hour)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>Cost tracking</b><br><span style="color:#64748B">the four-tier unit prices in <code>[[model_catalog]]</code> are the costing source of truth (micro-USD atomic accumulation per vendor/model, hot-reloadable); <code>[[pricing]]</code> feeds only the routing SLA factor and the quota fallback tier for uncataloged models</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); restart-required sections are reported explicitly in the <code>restart_required</code> response field</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">16 method endpoints: log query/search, token stats, cost breakdown query, global metrics (affinity hit rate, drop counts), vendor status & key-pool reset, route explain, config & model management, health check</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); <code>server</code>/<code>cors</code> changes are reported explicitly in the <code>restart_required</code> response field (other restart-required sections such as <code>rate_limit</code> carry no such signal — restart manually)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">16 admin/health method endpoints: log query/search, token stats, cost breakdown query, global metrics (affinity hit rate, drop counts), vendor status & key-pool reset, route explain, config & model management, health check</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>NEXUSFLOW_LANG</code> → system locale → en fallback chain</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Production ready</b><br><span style="color:#64748B">Multi-stage Docker build with non-root runtime, docker-compose resource limits and health checks, GitHub Actions CI (fmt/clippy/test/coverage/audit) and automated release pipeline</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Production ready</b><br><span style="color:#64748B">Multi-stage Docker build with non-root runtime, image-level health check (<code>HEALTHCHECK</code>) plus docker-compose resource limits, GitHub Actions CI (fmt/clippy/test/coverage/audit) and automated release pipeline</span></td>
 </tr>
 </table>
 
@@ -91,7 +91,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 ### 📦 Requirements
 
 - Rust 1.97.1+ (the MSRV declared by `rust-version` in `Cargo.toml`; edition 2021)
-- SQLite: **statically embedded** in the Docker/musl artifact (build needs `sqlite-dev` for headers plus `libsqlite3.a`); glibc local/release builds link the system library dynamically (needs `libsqlite3-dev`). TLS is pure rustls — no OpenSSL
+- SQLite: **statically embedded in every build** — `libsqlite3-sys` compiles the bundled C source and links it statically (`cargo tree` shows bundled; `ldd` on the artifact shows no dynamic sqlite dependency; identical for glibc and musl), so neither a system sqlite library nor `libsqlite3-dev` is required. TLS is pure rustls — no OpenSSL
 - The 7 self-developed libraries (`confers`, `dbnexus`, `inklog`, `limiteron`, `oxcache`, `sdforge`, `trait-kit`) come from crates.io registry — cargo fetches them automatically, no sibling directory needed
 
 ### 🔨 Build & run
@@ -143,16 +143,16 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 
 ## ⚙️ Configuration Overview
 
-Runtime configuration is a single `config.toml` (**tracked in the repo** — a default config ships with it, and `.gitignore` also lists `config.toml`, which has no effect on an already-tracked file; deployments commonly start by `cp config.example.toml config.toml` to overlay the full reference, which carries every section and field with its default value), with 18 top-level sections (per-field details of `model_catalog` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
+Runtime configuration is a single `config.toml` (**not committed** — `.gitignore` lists it since it carries deployment-private material such as API key digests and upstream endpoints; start from `cp config.example.toml config.toml`, which carries every section and field with its default value), with 18 top-level sections (per-field details of `model_catalog` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
 
 | Section | Purpose | Hot reload |
 |---------|---------|------------|
 | `server` / `database` | Listen address, SQLite path / pool size | ❌ restart required |
-| `vendors` / `global_model` | Vendors, models, weights, rate-limit forms | ✅ enabled & weights apply immediately |
+| `vendors` / `global_model` | Vendors, models, weights, rate-limit forms | ✅ hot-read (`global_model` takes effect only through the admin write path; direct file edits are rejected by the structural gate) |
 | `auth` / `cors` | API key digests, CORS | auth ✅ / cors ❌ |
 | `routing` / `retry` / `resilience` | Routing coefficients & selection algorithm, retry policy, resilience coverage | ✅ |
 | `cache` / `rate_limit` / `admission` | Response cache, inbound rate limiting, congestion admission | cache/admission ✅ / rate_limit ❌ |
-| `pricing` / `model_catalog` | Input/output token unit prices (cost calculation) / `[[model_catalog]]` model capability catalog | ✅ |
+| `model_catalog` / `pricing` | Model capability catalog (its four-tier prices are the costing source of truth) / SLA factor and quota fallback tier | ✅ |
 | `health` / `quota` | Active health probes (default off), cost/token quota (default off) | ✅ both hot-read |
 | `grpc` / `docs` | gRPC facade, OpenAPI/Swagger UI surface (both opt-in) | ❌ restart required |
 
@@ -184,7 +184,7 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 | Document | Description |
 |----------|-------------|
 | [📖 User Guide](docs/USER_GUIDE.md) | End-to-end tutorial: configuration, deployment, operations |
-| [📘 API Reference](docs/API_REFERENCE.md) | All 21 method endpoints: parameters, responses, error codes |
+| [📘 API Reference](docs/API_REFERENCE.md) | All 21 method endpoints (5 data-plane + 15 admin + 1 health): parameters, responses, error codes |
 | [🏗️ Architecture](docs/ARCHITECTURE.md) | Design principles, routing decision system, resilience & hot reload |
 | [🔒 Security](docs/SECURITY.md) | Security design, supply-chain gates, vulnerability handling |
 | [❓ FAQ](docs/FAQ.md) | Common questions and known limitations |
@@ -234,7 +234,7 @@ NexusFlow is also a **library-first** component set: the server assembly chain l
 
 ## 📚 As a Library Dependency
 
-`nexusflow` is both an executable gateway and a Rust library (`src/lib.rs` exports the public API). The default `full` feature includes the server components; the client SDK is provided by the `sdk` feature.
+`nexusflow` is both an executable gateway and a Rust library (`src/lib.rs` exports the public API). The default `full` feature includes the server components; the client SDK is provided by the `sdk` feature (included in `full`, also independently enableable).
 
 **Embedded startup** (hosting the gateway inside your own app):
 
@@ -331,20 +331,20 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): **1294 tests pass, 0 failures** — 426 unit tests (inline in `src/`) plus 868 integration tests (47 test binaries under `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1322 tests pass, 0 failures** — 438 unit tests (inline in `src/`) plus 884 integration tests (47 test binaries under `tests/`); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
-| protocol_test | 142 | tests/protocol/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
-| vendor_test | 110 | tests/vendor/ | vendor management / rate limits / stream timeouts / health & metrics |
-| api_test | 102 | tests/api/ | endpoint integration / caching / rerouting / affinity / admin |
-| router_test | 91 | tests/routing/ | weighted selection / affinity / hint routing / edges |
-| database / sse | 38 / 37 | tests/database/ · tests/protocol/ | persistence & pre-aggregation / stream framing & SDK |
-| retry | 25 | tests/resilience/ | retry classes & delay policy |
+| protocol_test | 157 | tests/protocol/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
+| api_test | 131 | tests/api/ | endpoint integration / caching / rerouting / affinity / admin |
+| vendor_test | 111 | tests/vendor/ | vendor management / rate limits / stream timeouts / health & metrics |
+| router_test | 97 | tests/routing/ | weighted selection / affinity / hint routing / edges |
+| database / sse | 41 / 40 | tests/database/ · tests/protocol/ | persistence & pre-aggregation / stream framing & SDK |
 | config / utils_coverage | 28 / 19 | tests/config/ · tests/utils/ | config loading / metrics & limiter edges |
-| fallback / admission | 17 / 16 | tests/resilience/ | fallback chain / admission |
-| bandit / config_coverage / circuit_breaker | 13 / 14 / 9 | tests/routing/ · tests/config/ · tests/resilience/ | bandit routing / loader·manager branches / circuit |
-| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (101) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin / dead-code guard |
+| retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | retry classes & delay policy / loader·manager branches |
+| quota / fallback / admission | 20 / 17 / 16 | tests/resilience/ | quota window / fallback chain / admission |
+| bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit routing / model catalog admin |
+| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (138) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin / dead-code guard |
 
 ---
 
@@ -370,10 +370,10 @@ Please do not report security vulnerabilities through public issues. Use the Git
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
-<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 21 method endpoints</td></tr>
+<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 21 method endpoints (5 data-plane + 15 admin + 1 health)</td></tr>
 <tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers</td></tr>
 <tr><td align="center">✅</td><td>Resilience</td><td>limiteron circuit / retry / fallback chain, congestion-aware admission, key tiers</td></tr>
-<tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, pricing-based cost tracking</td></tr>
+<tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, four-tier `[[model_catalog]]` costing and cost breakdown</td></tr>
 <tr><td align="center">✅</td><td>Hot reload</td><td>confers DynamicField lock-free reads, transactional writes, snapshots with restart_required reporting</td></tr>
 <tr><td align="center">✅</td><td>Internationalization</td><td>Fluent en/zh bundles covering all business messages</td></tr>
 <tr><td align="center">✅</td><td>Cost query API</td><td>Cost breakdown persisted (<code>token_usage</code> four-way cost columns, V2 migration) + <code>/admin/cost</code> aggregation endpoint (pre-aggregated table grouped by vendor/model); the in-process CostTracker still accumulates in memory and resets on restart (see known boundaries)</td></tr>
@@ -419,7 +419,7 @@ See the [🤝 Contributing guide](docs/CONTRIBUTING.md) for the full workflow, c
 
 ### 🛠️ Development environment
 
-Toolchain baseline: MSRV floor **1.97.1** (declared in `Cargo.toml` via `rust-version`, matching the 7 sibling libraries; ci.yml builds and lints at that floor so the clippy lint set stays reproducible), while `docker/Dockerfile` and release.yml use the currently supported stable (1.99). Run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`).
+Toolchain baseline: MSRV floor **1.97.1** (declared in `Cargo.toml` via `rust-version`, matching the 7 sibling libraries; ci.yml builds and lints at that floor so the clippy lint set stays reproducible), while `docker/Dockerfile` uses the currently supported stable (1.99). Run `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` before committing; commit messages follow Conventional Commits (`feat(scope): ...` / `fix(scope): ...`).
 
 ### 💖 Ways to contribute
 
@@ -460,7 +460,7 @@ The full version history lives in the [📋 Changelog](docs/CHANGELOG.md) (follo
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| 0.1.0 | 2026-04-04 | Initial release, continuously iterated (63 commits): protocol-converting gateway, 5-factor weighted routing with optional smart layers, limiteron resilience system, async logging & pre-aggregation, cost tracking, confers hot-reload foundation, i18n, 35 optimization recommendations landed |
+| 0.1.0 | 2026-10-12 | Initial release, continuously iterated (63 commits): protocol-converting gateway, 5-factor weighted routing with optional smart layers, limiteron resilience system, async logging & pre-aggregation, cost tracking, confers hot-reload foundation, i18n, 35 optimization recommendations landed |
 
 ---
 

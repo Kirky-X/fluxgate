@@ -18,7 +18,7 @@
 #   2026-11-01，到期后仅剩按需的有限安全修复）。
 # - 两个 FROM 的 alpine 后缀仍建议同分支同步升级：产物为 musl 静态链接（实测
 #   ldd 只留 ld-musl 一条，sqlite 已静态内嵌），因此不存在 sqlite 符号跨版本
-#   风险；对齐两侧是为了运行期 loader、apk 包与构建头文件/静态库不跳分支。
+#   风险；对齐两侧是为了运行期 loader 与 apk 包不跳分支。
 #   运行阶段另有 ldd 门禁兜底：产物的每条动态依赖在运行 base 不可解即构建失败。
 # - 写全字面量而非 ${ARG} 拼接：dependabot-core 的 docker 解析器只对 FROM 行
 #   做正则匹配、不展开 ARG，拼接写法会让基础镜像脱离自动跟踪。
@@ -31,10 +31,12 @@ ARG APP_VERSION=0.1.0
 # 设置工作目录
 WORKDIR /app
 
-# 安装构建依赖：sqlite-dev 提供头文件与 libsqlite3.a（musl 目标下静态内嵌，
-# 运行阶段不需配套 libsqlite3.so；glibc 发布产物则动态链接系统库，见
-# release.yml）；musl-dev 提供 libc 头，clang/lld 供 ring 等 C 依赖在 musl 目标
-# 下编译链接。自研库已全量走 crates.io registry，无 git 依赖，故不装 git。
+# 安装构建依赖：clang/lld 供 ring 等 C 依赖在 musl 目标下编译链接；musl-dev
+# 提供 libc 头。sqlite 由 libsqlite3-sys 的 bundled 特性以 C 源现场编译并
+# 静态链接（实测：cargo tree 显示 bundled、build 输出 rustc-link-lib=static=
+# sqlite3、产物 ldd 无 sqlite 动态依赖——glibc 与 musl 两种目标同此口径），
+# 故 sqlite-dev 非构建必需，保留为特性图切换（如上游改走 pkg-config 探测）
+# 时的兜底。自研库已全量走 crates.io registry，无 git 依赖，故不装 git。
 # 不装 libressl-dev/openssl-dev：Cargo.lock 内无 openssl/openssl-sys/native-tls，
 # TLS 全栈走 rustls（db-* 透传 runtime-tokio-rustls），装了只会拖入 community
 # 仓依赖（libressl-dev 在 3.24 属 community，仅支持到下一个 stable）并误导

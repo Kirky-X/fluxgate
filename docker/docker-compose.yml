@@ -22,8 +22,6 @@ services:
     environment:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
-      # SQLite 数据库路径 (容器内)
-      - DATABASE_URL=/app/data/llm_proxy.db
       # 可选: API Keys (通过环境变量注入)
       # - OPENAI_API_KEY=${OPENAI_API_KEY}
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}

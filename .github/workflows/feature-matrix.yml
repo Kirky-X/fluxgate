@@ -48,7 +48,8 @@ jobs:
   each-feature:
     name: cargo hack --each-feature
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 每腿实测 2~3 分钟（热缓存）/~10-20 分钟（冷缓存），45 分钟留 2 倍以上余量
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # grpc 特性组合要编 proto（sdforge grpc 门面 / examples 的 tonic 客户端）

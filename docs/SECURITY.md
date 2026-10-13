@@ -103,7 +103,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 部署要求
 
-**`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单共九条（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/middleware/auth.rs:159-168`）；其余路径（含全部 `/admin/*`）均需认证。
+**`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单共九条（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/middleware/auth.rs:159-168`）；其余**业务路由**（含全部 `/admin/*`）均需认证。另有两个免认证例外：`/healthz` 与 `/readyz` 由 sdforge 在全部中间件**之后**挂载，不经过 NexusFlow 的认证/限流/超时层（免认证免限流）；`/readyz` 每请求真跑 DB 与缓存探针，故仅建议内网暴露。
 
 ### Admin 端点暴露面与生产隔离要求（评审 M2）
 
@@ -179,11 +179,11 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `src/vendor/manager.rs:135-145`）：
+`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `src/vendor/manager.rs:135-147`）：
 
 | 参数 | 值 | 语义 |
 |:-----|:---|:-----|
-| failure_threshold | 5 | 窗口内 5 次失败 → Open |
+| failure_threshold | 5 | 连续 5 次失败 → Open |
 | open 时长 | 30s | 到期转 Half-Open |
 | half-open 探针 | 3 | 探针成功恢复 Closed |
 | 慢调用判定 | 60s / 100% | 慢调用路径仅在窗口内 100% 调用皆 >60s 时可能触发，熔断由真实失败驱动 |
@@ -240,7 +240,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 管理端点
 
-`/admin/config`（GET/POST）与其他全部 `/admin/*` 路由都在认证中间件之下，**需认证访问**；白名单仅健康检查路径。
+`/admin/config`（GET/POST）与其他全部 `/admin/*` 路由都在认证中间件之下，**需认证访问**；认证白名单除九条显式条目外，另有 sdforge 平面的 `/healthz` 与 `/readyz`（在全部中间件之后挂载，免认证免限流，仅建议内网暴露）。
 
 ---
 
@@ -275,7 +275,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 | 门禁 | 命令/动作 | 执行时机 |
 |:-----|:----------|:---------|
-| 格式检查 | `cargo fmt --check --all` | 每次 push / PR |
+| 格式检查 | `cargo fmt --all -- --check` | 每次 push / PR |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings` | 每次 push / PR |
 | 编译检查 | `cargo check --workspace` + 非默认后端特性矩阵（`cargo check -p nexusflow --no-default-features --features "full,db-postgres"` / `"full,db-mysql"`） | 每次 push / PR |
 | 依赖漏洞扫描 | `cargo audit`（`taiki-e/install-action` 安装后直接运行） | 每次 push / PR + **每日定时**（cron `37 5 * * *`） |
@@ -285,7 +285,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 镜像构建与 Trivy 扫描未纳入 CI，本机构建命令见 [USER_GUIDE · Docker 部署](./USER_GUIDE.md#-docker-部署)。镜像现为纯 registry 依赖（自研库经 crates.io 拉取，不取兄弟库源码），可独立构建；`docker/Dockerfile` 亦已移除兄弟库克隆与 `SIBLING_PINS` 机制。
 
-工具链基线：MSRV 下限 `rust-version = "1.97.1"` 写在根 `Cargo.toml`（与 7 个兄弟库声明一致，cargo 在依赖解析期硬拒更低工具链），ci.yml 按该下限安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1`）以固定 clippy lint 集合，`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。基础镜像与 Rust 依赖由 `.github/dependabot.yml` 的 `cargo` / `github-actions` / `docker` 三个生态位每周跟踪，因此构建产物可追溯到具体基线版本。
+工具链基线：MSRV 下限 `rust-version = "1.97.1"` 写在根 `Cargo.toml`（与 7 个兄弟库声明一致，cargo 在依赖解析期硬拒更低工具链），ci.yml 按该下限安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1`）以固定 clippy lint 集合，`docker/Dockerfile` 用当前受支持 stable（1.99）。基础镜像与 Rust 依赖由 `.github/dependabot.yml` 的 `cargo` / `github-actions` / `docker` 三个生态位每周跟踪，因此构建产物可追溯到具体基线版本。
 
 ---
 

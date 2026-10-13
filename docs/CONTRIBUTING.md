@@ -24,7 +24,7 @@
 
 | 依赖 | 版本要求 | 说明 |
 |:-----|:---------|:-----|
-| Rust | **1.97.1+**（MSRV） | 下限声明在根 `Cargo.toml` 的 `rust-version`（与 7 个兄弟库一致）。ci.yml 按 MSRV 安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1` + `toolchain: 1.97`），既守住下限也让 clippy lint 集合可复现；`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99）。**clippy 的 MSRV 只取各包自己的 `rust-version`**：`clippy.toml` 不重复 `msrv` 键（曾写 1.75，与下限冲突——clippy 告警令 `-D warnings` 必红，且 MSRV 门控 lint 按旧基线静默抑制），成员 crate `examples` 也显式声明同值 `rust-version`，否则其 lint 基线会回落到运行时 stable 而漂移。改 MSRV 后验证 clippy 需先 `cargo clean -p nexusflow -p nexusflow-examples`：cargo 不把 `clippy.toml` 纳入 fingerprint，不清理则复用缓存诊断 |
+| Rust | **1.97.1+**（MSRV） | 下限声明在根 `Cargo.toml` 的 `rust-version`（与 7 个兄弟库一致）。ci.yml 按 MSRV 安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1` + `toolchain: 1.97`），既守住下限也让 clippy lint 集合可复现；`docker/Dockerfile` 用当前受支持 stable（1.99）。**clippy 的 MSRV 只取各包自己的 `rust-version`**：`clippy.toml` 不重复 `msrv` 键（曾写 1.75，与下限冲突——clippy 告警令 `-D warnings` 必红，且 MSRV 门控 lint 按旧基线静默抑制），成员 crate `examples` 也显式声明同值 `rust-version`，否则其 lint 基线会回落到运行时 stable 而漂移。改 MSRV 后验证 clippy 需先 `cargo clean -p nexusflow -p nexusflow-examples`：cargo 不把 `clippy.toml` 纳入 fingerprint，不清理则复用缓存诊断 |
 | Git | 任意近期版本 | 版本控制 |
 
 安装 Rust 工具链：
@@ -118,7 +118,7 @@ cargo fmt --all -- --check
 # Clippy 静态检查（必须零告警）
 cargo clippy --workspace --all-targets -- -D warnings
 
-# 全量测试（启用全部特性）
+# 全量测试（default 口径：full + db-sqlite；--all-features 因 db-* 互斥必失败）
 cargo test --workspace
 ```
 
@@ -138,8 +138,8 @@ cargo build --release
 
 | 类型 | 数量 | 位置 | 写法 |
 |:-----|:-----|:-----|:-----|
-| 单元测试 | **426 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
-| 集成测试 | **868 个** | `tests/`（48 个 `.rs` 文件 = 47 个测试二进制 + `common/mod.rs`） | HTTP 全链路 / 跨模块行为 |
+| 单元测试 | **438 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
+| 集成测试 | **884 个** | `tests/`（48 个 `.rs` 文件 = 47 个测试二进制 + `common/mod.rs`） | HTTP 全链路 / 跨模块行为 |
 
 约定与工具：
 
@@ -253,7 +253,7 @@ flowchart LR
 | **3. 开发** | 新分支开发，保持 commit 原子性；新能力记得 feature 门控与测试 |
 | **4. 本地验证** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` 全绿（非默认后端另跑 `cargo check -p nexusflow --no-default-features --features "full,db-postgres"`） |
 | **5. PR** | 描述变更动机与影响面，关联 Issue；等待 CI 全绿与评审 |
-| **6. 发布** | 维护者推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`（工具链 1.99，与 Dockerfile base 对齐）：自动创建 GitHub Release（rc/beta/alpha 后缀自动标记预发布），产出 gnu 动态链接二进制（链接系统 `libsqlite3`）；tag 已推送但流水线失败时，可在 Actions 手动触发同一 workflow 并填版本号（x.y.z，不带 v）重发；musl 静态产物不再在 CI 借道 Docker 构建，需要时在本机执行 `docker build -f docker/Dockerfile .` 从镜像提取；删除 tag 时 `tag-deleted.yml` 自动清理对应 Release |
+| **6. 发布** | 维护者推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`：自动创建 GitHub Release（版本含 `-` 即标记预发布），**Release 只带 GitHub 自动生成的源码压缩包、不附二进制**；tag 已推送但流水线失败时，可在 Actions 手动触发同一 workflow 并填版本号（x.y.z，不带 v）重发（要求该 tag 已存在）；二进制部署走 docker 镜像（`docker build -f docker/Dockerfile .`）或本机构建 `cargo build --locked --release`；删除 tag 时 `tag-deleted.yml` 自动清理对应 Release |
 
 安全相关修复请勿通过公开 PR 披露细节，走 [Security Advisories](https://github.com/Kirky-X/NexusFlow/security/advisories/new)（见 [安全文档](./SECURITY.md#-漏洞报告流程)）。
 

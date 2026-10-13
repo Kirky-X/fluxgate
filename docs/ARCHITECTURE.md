@@ -145,7 +145,7 @@ flowchart TB
 | 文件 | 职责 |
 |---|---|
 | `database/database.rs` | `Database`：连接建立（path + pool_size）与 repository 句柄 |
-| `database/migration.rs` | 版本化迁移：V1 FROZEN 迁移（sqlite/postgres/mysql 三方言）经 dbnexus `MigrationExecutor` 执行（UP 建表 + DOWN 回滚）；`schema.*.sql` 退为可读文档，一致性由守卫测试锁定 |
+| `database/migration.rs` | 版本化迁移：V1 FROZEN + V2 迁移（sqlite/postgres/mysql 三方言，当前 `CORE_SCHEMA_VERSION = 2`）经 dbnexus `MigrationExecutor` 执行（UP 建表 + DOWN 回滚）；`schema.*.sql` 退为可读文档，一致性由守卫测试锁定 |
 | `database/repository.rs` | 仓储：dbnexus 会话防御链上的参数化批量 INSERT（`execute_with_params` + 单事务批量） |
 | `database/async_logger.rs` | recId=9 背压语义异步日志写入器：`try_send` 满即丢弃计数，绝不阻塞响应路径；落库前经 inklog secret gate 脱敏 |
 | `database/pre_aggregator.rs` | Token 使用预聚合器：按小时聚合，减少数据库查询压力 |
@@ -309,7 +309,7 @@ weight = w_model·model.weight + w_queue·queue_factor
 
 - 键 `affinity:{session_key}`；`tenant_scoped` 开启时带 `api_key_hash` 前缀，与响应缓存的 `resp:` 命名空间隔离；
 - TTL 默认 1 小时，命中即续期；
-- **语义是 boost 而非硬粘**：命中 vendor 若不在本次合格集合中，回落加权选择；
+- **hard（默认）在合格集合内排他**：命中即选绑定 vendor；仅当绑定 vendor 不在本次合格集合中才回落加权选择（`soft` 模式全程为 boost）；
 - 只记录"上次成功服务的 vendor"——bind/clear 由 API 层在执行成功后调用（`src/api/mod.rs:44-84`）；
 - 命中率计入 `GlobalMetrics`。
 
@@ -360,7 +360,7 @@ flowchart TB
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`src/vendor/manager.rs:135-145`）：
+`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`src/vendor/manager.rs:135-147`）：
 
 | 参数 | 值 | 设计理由 |
 |---|---|---|
@@ -417,7 +417,7 @@ stateDiagram-v2
 
 ### 存储模型
 
-SQLite，4 张表（V1 迁移定义于 `src/database/migration.rs`，`schema.*.sql` 为同源可读文档）：
+SQLite，4 张表（迁移 V1↔V2 定义于 `src/database/migration.rs`（当前 `CORE_SCHEMA_VERSION = 2`），`schema.*.sql` 为同源可读文档）：
 
 | 表 | 用途 | 状态 |
 |---|---|---|
@@ -426,7 +426,7 @@ SQLite，4 张表（V1 迁移定义于 `src/database/migration.rs`，`schema.*.s
 | `vendor_status` | 厂商状态持久化 | 仅有 schema，无读写路径 |
 | `model_stats` | 模型统计 | 仅有 schema，无读写路径 |
 
-表结构经 dbnexus `MigrationExecutor` 版本化管理：启动装配链执行 V1 FROZEN 迁移（UP 建表 + 索引，DOWN 对应回滚），迁移历史记录于 dbnexus 默认历史表；存量库（表已存在、历史为空）由基线化检查兼容，不重复建表。三方言（sqlite/postgres/mysql）各有 FROZEN V1，与对应 `schema.*.sql` 文档的一致性由守卫测试锁定。
+表结构经 dbnexus `MigrationExecutor` 版本化管理：启动装配链执行 V1/V2 迁移（UP 建表 + 索引，DOWN 对应回滚），迁移历史记录于 dbnexus 默认历史表；存量库（表已存在、历史为空）由基线化检查兼容，不重复建表。三方言（sqlite/postgres/mysql）各有 FROZEN V1，与对应 `schema.*.sql` 文档的一致性由守卫测试锁定。
 
 ### 异步写入管线
 
@@ -490,7 +490,7 @@ flowchart LR
 
 | 类别 | 段 |
 |---|---|
-| 热生效 | `routing`、`retry`、`resilience`、`admission`、`auth`、`cache`、`pricing`、`vendors`（enabled 与权重） |
+| 热生效 | `routing`、`retry`、`resilience`、`admission`、`auth`、`cache`、`quota`、`health`、`pricing`、`vendors`（enabled 与权重） |
 | 需重启 | `server`、`cors`（POST 响应以 `restart_required` 数组显式提示）、`rate_limit`（tower 层构造期构建）、vendor concurrency、`database` |
 
 ---
@@ -501,9 +501,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["客户端请求"] --> T["TraceLayer"]
+    A["客户端请求"] --> CTX["context 层<br/>sdforge::context::context_middleware"]
+    CTX --> T["TraceLayer"]
     T --> AUTH["auth_middleware<br/>SHA256 摘要存储 + 常量时间比较"]
-    AUTH --> RL["入站限流<br/>端点表 + tower 全局层<br/>（空 rules 时共享令牌桶兜底）"]
+    AUTH --> Q["quota_middleware<br/>成本/token 配额（enabled 时）"]
+    Q --> RL["入站限流<br/>端点表 + tower 全局层<br/>（空 rules 时共享令牌桶兜底）"]
     RL --> ADM["admission 准入判定<br/>router_builder.rs:474-503"]
     ADM --> H["路由 handler"]
 ```
@@ -512,7 +514,7 @@ flowchart LR
 
 - API key 以 SHA256 摘要存储，比较使用常量时间比较，防时序侧信道；
 - 凭证提取：`Authorization: Bearer` 优先，`x-api-key` 备用；
-- `/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九条白名单放行（`src/middleware/auth.rs:159-168`）；
+- `/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九条白名单放行（`src/middleware/auth.rs:159-168`）；业务面之外另有 sdforge 平面的 `/healthz` 与 `/readyz`（在全部中间件之后挂载，免认证免限流，仅建议内网暴露）；
 - 每请求热读 `[auth]` 配置段，key 增删即时生效；
 - key 档位（recId=16，`[[auth.keys]]` 的 `tier`）：`dedicated` / `guaranteed` / `elastic` / `spot`。
 

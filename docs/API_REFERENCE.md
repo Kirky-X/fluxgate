@@ -65,13 +65,13 @@
 
 HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API key"`）。
 
-> 认证中间件的放行路径为代码事实（`src/middleware/auth.rs:159-168`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。注意 `/healthz`、`/ready` 仅在限流白名单豁免，认证侧仍要求携带 key。
+> 认证中间件的放行路径为代码事实（`src/middleware/auth.rs:159-168`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。`/healthz` 与 `/readyz` 由 sdforge 在**全部中间件之后**挂载（`build_with_config`；NexusFlow 的认证/限流/超时层只包业务路由，故探针不经过它们），**免认证免限流**（实测无 key 返回 200）；`/readyz` 每请求真跑 DB 与缓存探针，仅建议内网暴露；`/ready` 未注册（404），仅在限流豁免表里留存。
 
 ---
 
 ## 通用错误响应
 
-所有非 2xx 响应均使用以下结构（见 `src/error/mod.rs` 中的 `IntoResponse` 实现）：
+NexusFlow 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/mod.rs` 中的 `IntoResponse` 实现）；未注册路径的 404 由 sdforge 兜底，形状为 `{"code":"NOT_FOUND","message":"Route not found","trace_id":…}`。
 
 ```json
 {

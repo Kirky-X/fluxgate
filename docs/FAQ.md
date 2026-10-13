@@ -18,7 +18,7 @@
 
 因为健康检查的**注册路径是 `/api/v1/health`**。`src/api/health.rs:30-37` 的 `#[forge(version = "v1", path = "/health")]` 宏会自动给路径加 `/api/v1` 版本前缀后注册。
 
-裸 `/health` 出现在**限流**白名单里（`is_quota_exempt_path` 十条：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/api/router_builder.rs:51-58`）。认证侧是**另一份独立白名单**（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、文档面两组，见 `src/middleware/auth.rs:159-168`）——两处各自独立、语义不共享，**`/healthz` 与 `/ready` 仅在限流侧豁免，认证仍要求带 key**。白名单只保证「不会被中间件拦」，不等于「有 handler」，而裸 `/health` **没有任何路由注册在它上面**。请统一使用：
+裸 `/health` 出现在**限流**白名单里（`is_quota_exempt_path` 十条：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/api/router_builder.rs:51-58`）。认证侧是**另一份独立白名单**（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、文档面两组，见 `src/middleware/auth.rs:159-168`）——两处各自独立、语义不共享；`/healthz` 与 `/readyz` 例外——由 sdforge 在认证层之后挂载，**免认证免限流**（实测无 key 返回 200），`/ready` 未注册（404）只在限流豁免表里留存。白名单只保证「不会被中间件拦」，不等于「有 handler」，而裸 `/health` **没有任何路由注册在它上面**。请统一使用：
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/health
@@ -65,7 +65,7 @@ curl http://127.0.0.1:8080/api/v1/health
 
 已知限制。`LogFilter` 结构体有 `end_time` 字段，`/admin/logs` 也能接收该查询参数，但 `query_logs` 的 SQL 动态拼接**只实现了 `start_time` / `vendor` / `model` / `limit` 四个分支**，没有 `end_time` 对应的 `AND timestamp <= ?` 分支——参数被接收后未参与过滤。
 
-**代码位置**：`src/database/repository.rs:280-313`（`query_logs`，可见无 end_time 分支）
+**代码位置**：`src/database/repository.rs:271-303`（`query_logs`，可见无 end_time 分支）
 
 ### ❓ `/admin/logs/search` 的 `vendor` 参数为什么是搜索关键词？
 
@@ -105,7 +105,7 @@ curl "http://127.0.0.1:8080/admin/logs/search?vendor=timeout"
 
 清空该厂商 key 池的运行时状态——密钥池黑名单、轮换游标与冷却状态（WP6 密钥池三态）。限流令牌本就会按速率自动 refill，无需手动清零；此端点针对的是**错误分类驱动的 key 黑名单与冷却**（401/402/403 及账务形态错误把 key 拉黑后，用它恢复）。出站重试/换路不受影响。未知 vendor 显性返回 `validation_error`(400)，成功后返回 `success: true` 与「密钥池黑名单与冷却状态已清空」提示。
 
-**代码位置**：`src/api/admin.rs:241-259`（`reset_vendor` → `VendorManager::reset_key_pool_state`，`src/vendor/manager.rs:2444-2453`）
+**代码位置**：`src/api/admin.rs:241-256`（`reset_vendor` → `VendorManager::reset_key_pool_state`，`src/vendor/manager.rs`）
 
 ### ❓ 如何强制跳过响应缓存？
 
@@ -121,10 +121,10 @@ curl "http://127.0.0.1:8080/admin/logs/search?vendor=timeout"
 
 两个独立原因，逐项排查：
 
-1. **定价表未命中**：成本按 `(vendor_id, model_id)` 精确匹配 `[[pricing]]` 定价表，未配置该段、或表中的 vendor/model 与实际路由结果不完全一致时，`calculate` 直接返回 `0.0`（不阻塞响应）。
+1. **定价未命中**：成本按 `(vendor_id, model_id)` 精确匹配 `[[model_catalog]]` 的四档单价——catalog 是计价正源（`estimate_cost_from_catalog`），目录里没有该模型时直接返回 0（不阻塞响应）。`[[pricing]]` 只用于路由 SLA 因子与未登记模型的配额回退档，不是计价来源。
 2. **观测位置**：算出非零成本后会按 `(vendor, model, api_key_hash, date, hour)` 写入 `token_usage` 表的四档成本列（`input_cost`/`output_cost`/`cache_read_cost`/`cache_creation_cost`），并可由 `GET /admin/cost` 按 vendor/model 分组聚合查询，跨重启保留；进程内 `CostTracker` 亦在内存累积但重启清零。注意逐请求日志 `request_logs.cost_usd` 恒为 `None` 是历史兼容列，**不代表成本没算**。若 `GET /admin/cost` 仍为 0，请回到第 1 项排查 `[[pricing]]` / `[[model_catalog]]` 定价命中。
 
-**代码位置**：`src/vendor/cost.rs:57`（`calculate` 未命中返回 0.0）
+**代码位置**：`src/vendor/cost.rs:152-158`（`estimate_cost_from_catalog` 目录未命中返回 `None`）+ 调用方映射（`src/api/mod.rs:384-391` 分账、`src/middleware/quota.rs:141-168` 配额）；`[[pricing]]` 路径（`CostCalculator::calculate`，`src/vendor/cost.rs:26-74`）在生产代码零调用，仅测试使用
 
 ---
 
@@ -142,7 +142,7 @@ per-vendor 熔断器（limiteron CircuitBreaker）状态机：
 
 慢调用防误判：慢调用判定线为 **60 秒 / 100% 比例**——LLM 成功调用常态超过通用默认（500ms），若不抬高，混合流量下慢调用率轻易过阈导致与真实失败无关的熔断；取 60s / 1.0 后慢调用路径在混合流量下失活，熔断由真实失败驱动。
 
-**代码位置**：`src/vendor/manager.rs:135-145`（`gate_circuit_config`：`CircuitBreakerConfig::new(5, 3, 30s)` + 慢调用双参数）
+**代码位置**：`src/vendor/manager.rs:135-147`（`gate_circuit_config`：`CircuitBreakerConfig::new(5, 3, 30s)` + 慢调用双参数）
 
 ---
 

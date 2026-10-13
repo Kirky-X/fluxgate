@@ -29,14 +29,14 @@
 
 | 项目 | 要求 | 说明 |
 |:-----|:-----|:-----|
-| Rust | 1.97.1+（MSRV） | 下限由根 `Cargo.toml` 的 `rust-version` 声明（与 7 个兄弟库一致）；`.github/workflows/ci.yml` 按 MSRV（`RUST_VERSION: '1.97'`）跑 build/clippy，`docker/Dockerfile` 与 release.yml 用当前受支持 stable（1.99） |
+| Rust | 1.97.1+（MSRV） | 下限由根 `Cargo.toml` 的 `rust-version` 声明（与 7 个兄弟库一致）；`.github/workflows/ci.yml` 按 MSRV（`RUST_VERSION: '1.97'`）跑 build/clippy，`docker/Dockerfile` 用当前受支持 stable（1.99） |
 | 自研库 | 7 个，由 cargo 自动拉取 | `confers` / `dbnexus` / `inklog` / `limiteron` / `oxcache` / `sdforge` / `trait-kit`（crates.io registry 版本声明在根 `Cargo.toml`，校验和锁定在 `Cargo.lock`；无需同级目录） |
 | 上游密钥 | 按厂商注入环境变量 | 各 `[[vendors]]` 条目的 `api_key_env` 指定的环境变量（如 `OPENAI_API_KEY`） |
 
 ### 编译与启动
 
 ```bash
-# 运行时配置为 config.toml——仓库已随附默认配置（部署私有物在本地改），按需从随仓全量参考覆盖起步
+# 运行时配置为 config.toml——该文件不入库（部署私有物在本地维护），先 cp config.example.toml config.toml 起步
 cp config.example.toml config.toml
 
 # 默认读取当前目录 config.toml
@@ -46,7 +46,7 @@ cargo run --release
 cargo run --release -- /path/to/config.toml
 ```
 
-配置路径参数解析见 `src/main.rs`（`std::env::args().nth(1)`，缺省 `config.toml`）。服务器默认监听 `0.0.0.0:8080`（`[server]` 段默认值，见 `src/config/mod.rs`）。**`config.example.toml` 是随仓的带注释全量参考**：`Config` 结构体的每个段、每个字段都在那里并标注默认值与热更新可用性，显式值与 serde default 逐位一致（复制即得默认行为）；仓库亦自带一份可直接运行的 `config.toml`。新增配置项须同步该文件与 `tests/config/config_toml_example_test.rs`。
+配置路径参数解析见 `src/main.rs`（`std::env::args().nth(1)`，缺省 `config.toml`）。服务器默认监听 `0.0.0.0:8080`（`[server]` 段默认值，见 `src/config/mod.rs`）。**`config.example.toml` 是随仓的带注释全量参考**：`Config` 结构体的每个段、每个字段都在那里并标注默认值与热更新可用性（可选段如 `[[model_catalog]]` 以注释模板给出，按需取消注释），显式值与 serde default 逐位一致（复制即得默认行为）；`config.toml` 本身不入库（`.gitignore` 已列），干净检出必须自行复制。新增配置项须同步该文件与 `tests/config/config_toml_example_test.rs`。
 
 ### 验证服务
 
@@ -124,9 +124,9 @@ tier = "dedicated"
 
 ### 请求头与热读
 
-- 客户端携带 **`Authorization: Bearer <key>`**（优先）或 **`x-api-key: <key>`**（备用），提取逻辑见 `src/middleware/auth.rs:140-168`。
+- 客户端携带 **`Authorization: Bearer <key>`**（优先）或 **`x-api-key: <key>`**（备用），提取逻辑见 `src/utils/tenant.rs`（`auth.rs` 仅 re-export）。
 - 认证状态**每请求从热配置现读**：吊销 / 轮换 key、切换 `enabled`，`POST /admin/config` 后立即生效，无需重启。
-- 认证豁免路径（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/middleware/auth.rs:159-168`）无需 key；注意 `/healthz` 与 `/ready` 只在限流侧豁免，**认证仍要求带 key**。
+- 认证豁免路径（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/middleware/auth.rs:159-168`）无需 key；`/healthz` 与 `/readyz` 另由 sdforge 在认证层之后挂载，**免认证免限流**（实测无 key 返回 200），`/ready` 未注册（404）。
 
 ---
 
@@ -138,8 +138,10 @@ tier = "dedicated"
 |:-----|:-----|:-------|:-----|
 | `id` | String | 必填 | 厂商唯一标识；**不得为空白**；**跨条目去重校验**（按 ASCII 大小写不敏感），重复导致配置加载失败（`src/config/loader.rs`） |
 | `name` | String | 必填 | 显示名 |
-| `type_` | String | 必填（TOML 键名 `type`） | `"openai"` 或 `"anthropic"` |
+| `type_` | String | 必填（TOML 键名 `type`） | 协议方向：`"anthropic"` 走 Anthropic 面，其余值按 OpenAI 兼容面处理（代码不校验取值；模型能力档对未知类型回落 ollama 保守档） |
 | `api_key_env` | String | 必填 | 存放上游密钥的环境变量名 |
+| `api_key_envs` | 数组 | 空 | 多 key 池的额外环境变量名（与 `api_key_env` 合并去重，本列表在前；缺名 env 跳过并告警，池上限见 `key_pool::MAX_KEY_POOL`） |
+| `extra_headers` | 表 | 空 | 出站自定义头（静态值，热生效；与网关已设头冲突时跳过并记 warn） |
 | `api_base` | String | `""` | 上游 API 基地址 |
 | `enabled` | bool | `true` | 厂商开关 |
 | `priority` | u8 | `1` | fallback 优先级，**数值越小优先级越高**（1 = primary） |
@@ -382,7 +384,7 @@ max_requests = 100
 
 ## 💰 定价与成本 pricing
 
-### [[pricing]] 定价表
+### 定价与成本（`[[model_catalog]]` 为计价正源，`[[pricing]]` 为辅助档）
 
 | 字段 | 说明 |
 |:-----|:-----|
@@ -400,9 +402,9 @@ max_requests = 100
 
 ### 已知边界（如实声明）
 
-- **未配置 `[[pricing]]` 或 (vendor, model) 不匹配时成本按 `0.0` 计**，不会阻塞响应。
-- 定价热更立即生效（定价表支持运行时动态更新）。
-- 成本当前只进**内存 `CostTracker`** 累积：请求日志表 `request_logs.cost_usd` 恒为 `None`（`src/api/openai.rs` / `src/api/anthropic.rs` 构造日志条目时固定填 `None`）。
+- **`[[model_catalog]]` 未登记该 (vendor, model) 时成本按 `0` 计**，不会阻塞响应。
+- 目录与定价热更立即生效（下一次请求即用新值）。
+- 逐请求日志表 `request_logs.cost_usd` 恒为 `None`（`src/api/openai.rs` / `src/api/anthropic.rs` 构造日志条目时固定填 `None`）——它是历史兼容列，成本不写在这里，而走下方 token_usage 预聚合落库与进程内 `CostTracker`。
 
 ### 成本分账落库与查询
 
@@ -496,7 +498,7 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 
 | 类别 | 段 | 生效方式 |
 |:-----|:---|:---------|
-| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`、`resilience`、`admission`、`pricing`、`global_model` | `POST /admin/config` 后下一请求即用新值 |
+| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model` | `POST /admin/config` 后下一请求即用新值 |
 | 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑） | 修改后须重启进程 |
 
 > ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组当前**只检测 `server` 与 `cors` 两段**（`src/api/admin.rs:265-303`）。`rate_limit` / `concurrency` / `database` 的重启要求在代码注释中声明，不会出现在数组里——改这些段后请自行安排重启。
@@ -526,7 +528,7 @@ flowchart TB
 除 `POST /admin/config` 外，网关启动时若配置来自文件，会旁挂文件监听（去抖 500ms，按配置文件路径监听——库内部改挂父目录 + 精确路径过滤，兼容原子 rename 写盘；同目录其他文件与子目录的写盘不触发重载）：
 
 - **热生效段**：`retry` / `routing` / `cache` / `resilience` / `admission` / `auth` / `pricing` / `model_catalog`——文件改动后下一请求即用新值（只切内存，不落盘；与 admin 写盘内容一致时跳过，不成环）。
-- **结构变更拒绝**：`vendors`（实例拓扑）、`server`、`database`、`grpc`、`cors`、`rate_limit`、`docs` 改动触发 `ReloadRejected`——旧快照继续服务，失败计数 + 日志留痕，改后须重启。
+- **结构变更拒绝**：`vendors`（实例拓扑）、`server`、`database`、`grpc`、`cors`、`rate_limit`、`docs`、`global_model` 改动触发 `ReloadRejected`——旧快照继续服务，失败计数 + 日志留痕，改后须重启。
 - `docs` 段改动同样拒绝（路由建站期固化，见上表需重启段）。
 
 ---
@@ -539,7 +541,7 @@ Docker 相关文件位于 `docker/` 目录：`docker/Dockerfile`（构建定义�
 
 两阶段构建：`rust:1.99-alpine3.24`（编译）→ `alpine:3.24`（运行），运行态 apk 清单为 sqlite / sqlite-libs / ca-certificates（仅供容器内用 sqlite3 CLI 查库与读根证书：产物 musl 静态链接，本身不需要任何额外库；TLS 栈为纯 rustls，不再显式声明 libssl3/libcrypto3—该两包由 alpine 基础镜像自带），以非 root 用户 `appuser`（UID/GID 10001）运行，`EXPOSE 8080`，数据目录 `/app/data`。实测镜像 78.9 MB。
 
-两个阶段的 alpine 后缀建议同一分支升级：产物为 musl 静态链接（实测 `ldd /bin/server` 只留 `ld-musl` 一条，sqlite 已静态内嵌），因此不存在 sqlite 符号跨版本风险；对齐两侧是为了 loader、apk 包与构建头文件不跳分支。运行阶段的 `ldd /bin/server` 门禁作回验：一旦基座或依赖图改为动态链接（如引入 glibc 基座或 OpenSSL 绑定）而运行阶段没装对应包，构建直接失败而不是到容器启动时才暴露。
+两个阶段的 alpine 后缀建议同一分支升级：产物为 musl 静态链接（实测 `ldd /bin/server` 只留 `ld-musl` 一条，sqlite 已静态内嵌），因此不存在 sqlite 符号跨版本风险；对齐两侧是为了运行期 loader 与 apk 包不跳分支。运行阶段的 `ldd /bin/server` 门禁作回验：一旦基座或依赖图改为动态链接（如引入 glibc 基座或 OpenSSL 绑定）而运行阶段没装对应包，构建直接失败而不是到容器启动时才暴露。
 
 ```mermaid
 flowchart TB
@@ -561,7 +563,7 @@ flowchart TB
 |:---|:---|
 | 服务名 / 镜像 | `app` / `nexusflow:${NEXUSFLOW_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签） |
 | 端口 | `8080:8080` |
-| 数据挂载 | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 随仓跟踪（干净检出即有一份默认配置），如需自定义先 `cp config.example.toml config.toml` 覆盖） |
+| 数据挂载 | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 不入库（`.gitignore` 已列），compose 启动前必须先 `cp config.example.toml config.toml`，否则挂载缺文件） |
 | 资源限制 | `cpus: '2.00'` / `memory: 512M`（预留 `0.50` / `128M`） |
 | 重启策略 | `unless-stopped` |
 | 密钥注入 | 环境变量（如 `OPENAI_API_KEY=${OPENAI_API_KEY}`） |
@@ -607,7 +609,7 @@ healthcheck:
 |:-----|:-----|
 | 容器 unhealthy | 检查 healthcheck 是否指向 `/api/v1/health`（见 Docker 一节） |
 | 配置改了没生效 | 对照热生效段表；`rate_limit` / `concurrency` / `database` 需重启 |
-| 成本统计恒 0 | 核对 `[[pricing]]` 的 (vendor_id, model_id) 是否与实际路由完全一致 |
+| 成本统计恒 0 | 核对 `[[model_catalog]]` 是否登记了实际路由到的 (vendor_id, model_id) |
 | 更多怪癖 | 见 [FAQ](./FAQ.md) |
 
 ---
@@ -668,9 +670,9 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 | 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |
 
 > **SDK 对齐说明**（SDK ↔ 网关零失配，路径/形状以路由表为准）：admin 面
-> `models()` 走 `GET /admin/models`（模型能力目录；旧 `GET /v1/models`
-> 网关未注册已废弃）、`health()` 走 `GET /api/v1/health`（旧
-> `admin/health` 不存在）、`vendors()` 返回运行面状态
+> `models()` 走 `GET /admin/models`（模型能力目录）、`health()` 走
+> `GET /api/v1/health`（旧 `admin/health` 不存在）、`vendors()` 返回运行面状态；
+> 数据面另有 OpenAI 兼容的 `GET /v1/models`（`src/api/router_builder.rs` 已注册）
 > `{id,status,queue_length,key_pool}`（非配置面 `{name,enabled}`）；
 > 新增 `upsert_model` / `delete_model`（目录 CRUD）。chat 响应**无
 > vendor 字段**（网关不注入，已移除恒空字段）；`finish_reason` 为结构化

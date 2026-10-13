@@ -719,7 +719,7 @@ impl PassthroughSettler {
 }
 
 /// 透传流响应体装配：仅当配额适用（已接线、`[quota].enabled` 且该 tenant
-/// 任一限额 > 0，判定单点 [`quota_applies`]）时挂帧观测包装；其余形态走无观测
+/// 任一限额 > 0，判定单点 `quota_applies`）时挂帧观测包装；其余形态走无观测
 /// reframe（零额外分配）。
 ///
 /// 上游错误类型仅需 `Display`（与 reframe 同一约束），输出统一为

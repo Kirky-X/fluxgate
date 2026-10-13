@@ -145,7 +145,7 @@ impl ConfigManager {
 
     /// 内存态热交换（热重载桥接用）：校验后只切内存不落盘，落盘只走 update_config。
     /// 桥接的候选配置来自磁盘当前内容，故提交后刷新指纹基线——刷新为验证式
-    ///（见 [`Self::refresh_baseline_if_matches`]）：候选与磁盘现值不等价
+    ///（见 `Self::refresh_baseline_if_matches`）：候选与磁盘现值不等价
     ///（两次外部写交错）时不刷新，防基线领先于未验证内容。
     pub fn swap_memory(&self, new_config: Config) -> Result<(), GateError> {
         let _guard = self

@@ -33,7 +33,7 @@ use crate::utils::tenant::api_key_digest;
 
 /// G5：入站限流中间件状态 — per-endpoint 限流表与准入状态。
 /// 全局规则不再经常量 Governor 判定，改由 tower 层
-///（[`GlobalRateLimitLayer`]，`create_router` 装配）承担。
+///（`GlobalRateLimitLayer`，`create_router` 装配）承担。
 pub struct InboundLimitState {
     /// per-endpoint 限流表（path 前缀规则；在此挂载准入维度）
     endpoint_table: EndpointLimitTable,
@@ -46,8 +46,9 @@ pub struct InboundLimitState {
 /// 配额豁免路径（tower 键提取器与端点中间件共用同一判定，行为单点一致）。
 /// 健康探针（/health、/healthz、/ready、/api/v1/health、/readyz）、指标抓取
 ///（/metrics）与文档面（/api-docs/*、/swagger-ui/*）不消耗限流配额。
-/// 注意：/health、/healthz、/ready 无对应注册路由（历史遗留探针路径），
-/// 保留豁免使误配探针不烧配额（404 本就不计费）。
+/// 注意：/healthz 与 /readyz 由 sdforge 的 build_with_config 在认证层之后挂载
+/// （免认证免限流），此处豁免只为与白名单口径单点一致；/health 与 /ready 无
+/// 对应注册路由（历史遗留路径），保留豁免使误配探针不烧配额（404 本就不计费）。
 fn is_quota_exempt_path(path: &str) -> bool {
     matches!(
         path,
@@ -606,7 +607,7 @@ fn now_unix_ms() -> u64 {
 /// G5：由 [rate_limit] 段构建入站限流判定件。
 ///
 /// - path 前缀规则 → 中间件端点表（per-tenant 分桶在表内实现）；
-/// - path 缺省的全局规则 → 一规则一 tower 层（[`GlobalRateLimitLayer`]，
+/// - path 缺省的全局规则 → 一规则一 tower 层（`GlobalRateLimitLayer`，
 ///   QuotaLimiter 按租户摘要分桶；旧 Governor 路径是全租户共享桶——G5 起
 ///   全局规则真正按租户维度生效，见模块注释）；
 /// - rules 为空 → 单层 TokenBucket(100, 10/s) 共享桶（与旧
@@ -664,10 +665,10 @@ fn build_inbound_limits(
 ///
 /// 层次（外→内）：Context（请求追踪）→ Trace → 认证 → 端点限流 →
 /// 全局 tower 限流 → 准入 → handler。
-/// 认证中间件的 state 是 `Arc<ConfigManager>`：每请求从热配置现读 [auth] 段
+/// 认证中间件的 state 是 `Arc<ConfigManager>`：每请求从热配置现读 `[auth]` 段
 ///（SHA256 摘要存储），key 吊销/轮换与 enabled 开关热更新立即生效；
 /// 段缺失时 `enabled=false` 放行（旧配置兼容）。
-/// 限流判定件在 Router 构造期从 [rate_limit] 段构建
+/// 限流判定件在 Router 构造期从 `[rate_limit]` 段构建
 ///（restart-required，热下发列二期）：端点表 + 准入进 from_fn state，
 /// 全局规则进 tower 层（G5，一规则一层）。
 /// 注意：健康检查由 sdforge `#[forge(version="v1")]` 注册为 /api/v1/health

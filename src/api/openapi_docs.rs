@@ -4,7 +4,7 @@
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! OpenAPI 文档面：主 REST 端点经 sdforge inventory 机制注册进全局 spec；
-//! 文档路由由 [docs].enabled 开关挂载（默认 false = 404）——开关本身即
+//! 文档路由由 `[docs]`.enabled 开关挂载（默认 false = 404）——开关本身即
 //! 访问门（打开后免认证免限流，spec 非敏感）
 
 use std::sync::Once;
@@ -81,12 +81,12 @@ pub(crate) fn register_openapi_i18n() {
         sdforge::i18n::register_translation(
             "en",
             "api-openapi-models-list-description",
-            "Union of model catalog and enabled vendor models, deduplicated. Never cached.",
+            "Union of model catalog and enabled vendor models, deduplicated; vendor entries list their routable public name (abstract_id, else model_id). Never cached.",
         );
         sdforge::i18n::register_translation(
             "zh",
             "api-openapi-models-list-description",
-            "模型目录与已启用厂商模型的并集，去重；不缓存",
+            "模型目录与已启用厂商模型的并集，去重；厂商条目列可路由的公开名（abstract_id，缺省 model_id）；不缓存",
         );
         sdforge::i18n::register_translation(
             "en",
@@ -147,7 +147,7 @@ submit_route_i18n!(
     "/v1/models",
     "GET",
     "OpenAI models list",
-    "Union of model catalog and enabled vendor models, deduplicated. Never cached.",
+    "Union of model catalog and enabled vendor models, deduplicated; vendor entries list their routable public name (abstract_id, else model_id). Never cached.",
     &["openai"],
     "api-openapi-models-list-description"
 );

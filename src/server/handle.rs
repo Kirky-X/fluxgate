@@ -14,8 +14,8 @@ use crate::i18n::{t, t_args};
 use crate::server::bootstrap::Assembly;
 use crate::server::shutdown::InklogShutdownHook;
 
-/// 停机收尾句柄（[`build_app`] 与 [`run`] 产物）：持有日志管道与预聚合器句柄，
-/// 不持有则嵌入式退出时 flush worker 泄漏、缓冲数据丢失；grpc feature 下另持 [`GrpcServer`]。
+/// 停机收尾句柄（[`build_app`](crate::server::build_app) 与 [`run`](crate::server::run) 产物）：持有日志管道与预聚合器句柄，
+/// 不持有则嵌入式退出时 flush worker 泄漏、缓冲数据丢失；grpc feature 下另持 `GrpcServer`。
 pub struct ServerHandle {
     logger_handle: Arc<AsyncLoggerHandle>,
     pre_aggregator: Arc<TokenPreAggregator>,

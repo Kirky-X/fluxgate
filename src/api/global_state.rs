@@ -5,7 +5,7 @@
 
 //! Global state holder for sdforge handlers
 //!
-//! Since sdforge's #[service_api] macro doesn't support Axum's State extractor,
+//! Since sdforge's `#[service_api]` macro doesn't support Axum's State extractor,
 //! we use a global OnceCell to hold the ApiState reference.
 
 use crate::ApiState;

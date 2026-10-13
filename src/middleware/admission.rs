@@ -70,9 +70,9 @@ pub fn admission_priority(
         / (1.0 + section.alpha_debt * debt.max(0.0))
 }
 
-/// 请求的档位判定 — 请求 key（明文）经热配置 [auth] 段的
+/// 请求的档位判定 — 请求 key（明文）经热配置 `[auth]` 段的
 /// `keys` 子表查档（`ApiAuthState::tier_for_key`，与认证同一摘要比较）；
-/// 无 key / [auth] 缺失或关闭 → 缺省档 elastic。
+/// 无 key / `[auth]` 缺失或关闭 → 缺省档 elastic。
 pub fn tier_for_request(config: &ConfigManager, headers: &axum::http::HeaderMap) -> AuthTier {
     let Some(key) = extract_api_key(headers) else {
         return AuthTier::Elastic;
@@ -280,7 +280,7 @@ impl AdmissionState {
     }
 
     /// 热配置句柄 — 中间件取请求档位用（tier_for_request 读
-    /// [auth] 段）；[admission].enabled 的热读判定在 admit 内部完成。
+    /// `[auth]` 段）；`[admission]`.enabled 的热读判定在 admit 内部完成。
     pub fn config_handle(&self) -> Arc<ConfigManager> {
         self.config.clone()
     }

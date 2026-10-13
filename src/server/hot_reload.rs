@@ -101,6 +101,12 @@ fn changed_sections(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.model_catalog != new.model_catalog {
         sections.push("model_catalog");
     }
+    if old.quota != new.quota {
+        sections.push("quota");
+    }
+    if old.health != new.health {
+        sections.push("health");
+    }
     // 以下段变更走拒绝路径，正常提交不出现；列出仅为日志完备
     if old.vendors != new.vendors {
         sections.push("vendors");
@@ -122,6 +128,9 @@ fn changed_sections(old: &Config, new: &Config) -> Vec<&'static str> {
     }
     if old.docs != new.docs {
         sections.push("docs");
+    }
+    if old.global_model != new.global_model {
+        sections.push("global_model");
     }
     sections
 }

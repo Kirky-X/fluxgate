@@ -67,7 +67,7 @@ impl ApiAuthState {
         }
     }
 
-    /// 从 SHA256 hex 摘要列表构造（[auth].api_keys 的存储形态）
+    /// 从 SHA256 hex 摘要列表构造（`[auth]`.api_keys 的存储形态）
     pub fn from_hashes(hashes: Vec<String>) -> Self {
         let mut state = Self::new(true);
         for h in hashes {
@@ -76,7 +76,7 @@ impl ApiAuthState {
         state
     }
 
-    /// 从配置 [auth] 段构造
+    /// 从配置 `[auth]` 段构造
     pub fn from_section(section: &AuthSection) -> Self {
         let mut state = Self::new(section.enabled);
         for h in &section.api_keys {
@@ -112,7 +112,7 @@ impl ApiAuthState {
             .any(|stored| constant_time_eq(stored, &candidate))
     }
 
-    /// key 档位 — 现场摘要后与 [auth].keys 表做常量时间比较；未声明 → 缺省档
+    /// key 档位 — 现场摘要后与 `[auth]`.keys 表做常量时间比较；未声明 → 缺省档
     /// elastic，认证关闭时表为空 → 恒 elastic。
     pub fn tier_for_key(&self, key: &str) -> AuthTier {
         let candidate = sha256_hex(key);
@@ -129,7 +129,7 @@ impl ApiAuthState {
 pub(crate) use crate::utils::tenant::extract_api_key;
 
 /// API Key 认证中间件（from_fn_with_state 挂载形态）— State 是 `Arc<ConfigManager>`：
-/// 每请求从热配置现读 [auth] 段构造 ApiAuthState，key 吊销/轮换与 enabled 开关热生效。
+/// 每请求从热配置现读 `[auth]` 段构造 ApiAuthState，key 吊销/轮换与 enabled 开关热生效。
 /// 第三参数是裸 `Arc<ApiAuthState>`（便于直调/测试），此包装补齐该形态。
 pub async fn auth_middleware(
     axum::extract::State(config_manager): axum::extract::State<Arc<ConfigManager>>,

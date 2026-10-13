@@ -33,7 +33,7 @@ pub struct ApiState {
     /// 会话亲和表（oxcache）— 路由 `route_with_session` 的
     /// boost 来源；None = 未接线（亲和关闭，路由行为与历史一致）。
     pub affinity: Option<Arc<AffinityTable>>,
-    /// 精确响应缓存（oxcache）— enabled 由 [cache] 段热读控制
+    /// 精确响应缓存（oxcache）— enabled 由 `[cache]` 段热读控制
     ///（默认关闭）；None = 未接线。
     pub response_cache: Option<Arc<ResponseCache>>,
     /// LinUCB 状态 — selection="linucb" 档的臂状态；Router 与

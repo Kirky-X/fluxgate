@@ -49,7 +49,7 @@ impl AnthropicConverter {
     }
 
     /// 出站编码 + 自动缓存断点注入 — anthropic 型 vendor 转换路径专用
-    /// 入口（策略解析在 VendorManager 侧按 [[model_catalog]] 条目/内置
+    /// 入口（策略解析在 VendorManager 侧按 `[[model_catalog]]` 条目/内置
     /// 默认完成；透传路径字节保真不注入）。
     pub fn request_to_external_with_cache_policy(
         &self,

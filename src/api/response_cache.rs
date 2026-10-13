@@ -144,7 +144,7 @@ pub struct CacheKeyParts {
 /// 单次缓存查询结果
 #[derive(Debug)]
 pub enum CacheOutcome {
-    /// 缓存未接线 / [cache] 关闭 / 请求不可缓存 / X-No-Cache —— 不参与
+    /// 缓存未接线 / `[cache]` 关闭 / 请求不可缓存 / X-No-Cache —— 不参与
     Disabled,
     /// 命中：直接以缓存值响应
     Hit(Value),
@@ -179,7 +179,7 @@ pub struct CacheFlow<R> {
     /// 是否由本次请求计算（X-Cache 语义）：`true` = leader 或自愈回源
     /// → MISS；`false` = 缓存复用 → HIT。
     pub computed: bool,
-    /// 是否走了缓存面：`false` = 未接线 / [cache] 关闭 / 不可缓存 /
+    /// 是否走了缓存面：`false` = 未接线 / `[cache]` 关闭 / 不可缓存 /
     /// X-No-Cache / 空 canonical——响应不带 X-Cache 头。
     pub participated: bool,
 }
@@ -209,7 +209,7 @@ impl ResponseCache {
         }
     }
 
-    /// [cache].enabled 热读
+    /// `[cache]`.enabled 热读
     pub fn enabled(&self) -> bool {
         self.config.read().cache.enabled
     }

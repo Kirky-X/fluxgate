@@ -8,7 +8,7 @@
 //! 静态缓存，Send+Sync）。
 //!
 //! 内嵌保证部署产物无需携带磁盘 `locales/` 目录；新增 `.ftl` 文件必须
-//! 登记进 [`EMBEDDED_LOCALES`]，否则守卫测试
+//! 登记进 `EMBEDDED_LOCALES`，否则守卫测试
 //! `test_embedded_locales_cover_locales_dir` 失败。
 //!
 //! 查找顺序：当前语言束 → en 束 → 返回键名本身（绝不 panic）。

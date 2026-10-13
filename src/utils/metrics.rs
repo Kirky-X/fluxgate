@@ -244,7 +244,7 @@ impl GlobalMetrics {
     /// 记录流式 TTFT（Time-To-First-Token）样本。
     ///
     /// 口径 = send 发起 → 上游响应头返回（严格首 token 口径网关侧不可得，
-    /// 以响应头近似——config.toml [routing] 注释如实标注）。`now` 注入便于
+    /// 以响应头近似——config.toml `[routing]` 注释如实标注）。`now` 注入便于
     /// 测试驱动 Peak-EWMA 的时间衰减（record_traffic_at 先例）。
     pub fn record_ttft(&self, vendor: &str, duration: std::time::Duration, now: Instant) {
         let tau_ms = self.ewma_tau_ms.load(Ordering::Relaxed);
@@ -488,7 +488,7 @@ impl GlobalMetrics {
             .fold(0.0_f64, f64::max)
     }
 
-    /// 流量份额 Shannon 熵，除以 ln V 归一到 [0,1]。
+    /// 流量份额 Shannon 熵，除以 ln V 归一到 `[0,1]`。
     ///
     /// H = −Σ p·ln p / ln V。V=1（单 vendor 独占）与空窗均定义为 0——
     /// 前者是完全集中的极限（防 ln 1 = 0 除零），后者无流量无分布。
@@ -664,7 +664,7 @@ pub struct VendorMetrics {
     /// **语义变化（changelog 声明）** 从此只由 record_e2e 喂入
     /// （e2e 别名，Peak-EWMA 平滑），不再混流 TTFT/排队口径的样本。
     pub ewma_latency_ms: f64,
-    /// EWMA 错误率（[0,1]，α=0.2，成功=0/失败=1 的滑动平均）
+    /// EWMA 错误率（`[0,1]`，α=0.2，成功=0/失败=1 的滑动平均）
     pub ewma_error_rate: f64,
     /// EWMA 样本数（0 = 尚无观测，ewma 字段无意义）— record_request 驱动
     ///（后对齐错误率道的样本数）
@@ -746,11 +746,11 @@ pub struct MetricsSnapshot {
     pub affinity_hits: u64,
     /// 会话亲和未命中次数
     pub affinity_misses: u64,
-    /// 亲和命中率（[0,1]，无样本 0.0）
+    /// 亲和命中率（`[0,1]`，无样本 0.0）
     pub affinity_hit_rate: f64,
-    /// 滑窗 top-1 vendor 流量占比（[0,1]，空窗 0.0）
+    /// 滑窗 top-1 vendor 流量占比（`[0,1]`，空窗 0.0）
     pub top1_share: f64,
-    /// 流量份额 Shannon 熵（归一 [0,1]；V≤1 为 0）
+    /// 流量份额 Shannon 熵（归一 `[0,1]`；V≤1 为 0）
     pub share_entropy: f64,
 }
 

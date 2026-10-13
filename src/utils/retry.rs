@@ -92,7 +92,7 @@ pub fn extract_status_code(error: &str) -> u16 {
     500 // 默认返回服务器错误
 }
 
-/// 重试延迟策略参数（来自 Config [retry] 段的热读快照）
+/// 重试延迟策略参数（来自 Config `[retry]` 段的热读快照）
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetryDelayPolicy {
     /// 首次重试前延迟
@@ -123,7 +123,7 @@ impl Default for RetryDelayPolicy {
 }
 
 impl RetryDelayPolicy {
-    /// 从热配置的 [retry] 段构建
+    /// 从热配置的 `[retry]` 段构建
     pub fn from_config(retry: &crate::config::RetrySection) -> Self {
         Self {
             initial_delay: Duration::from_millis(retry.initial_delay_ms),

@@ -15,7 +15,7 @@ use nexusflow::server::build_app;
 use serde_json::json;
 
 /// 运行目录（CWD）须有 config.toml，可从仓库根 config.example.toml 复制为起点；
-/// 监听地址取 [server] 段的 host/port。
+/// 监听地址取 `[server]` 段的 host/port。
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config_manager = Arc::new(ConfigLoader::new(Some("config.toml".into())).load()?);
 

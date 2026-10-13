@@ -224,7 +224,7 @@ pub enum AuthTier {
     Dedicated,
     #[serde(rename = "guaranteed")]
     Guaranteed,
-    /// 缺省档（未在 [auth].keys 声明的 key 全部落此档——行为不变）
+    /// 缺省档（未在 `[auth]`.keys 声明的 key 全部落此档——行为不变）
     #[default]
     #[serde(rename = "elastic")]
     Elastic,
@@ -247,7 +247,7 @@ pub struct AuthKeyEntry {
     pub cost_quota_millicents: u64,
 }
 
-/// [auth] 段：api_keys 存 SHA256 hex 摘要（认证时对请求 key 现场算摘要
+/// `[auth]` 段：api_keys 存 SHA256 hex 摘要（认证时对请求 key 现场算摘要
 /// 做常量时间比较，明文密钥不落盘）；keys 子表声明 key 档位，
 /// 缺省全 elastic 且准入不启用。热读：认证与准入每请求现读
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -293,7 +293,7 @@ impl Default for AuthHeaderSection {
     }
 }
 
-/// [cors] 段 — CORS 配置（serde 全 default，未配置段时 Option 为 None）
+/// `[cors]` 段 — CORS 配置（serde 全 default，未配置段时 Option 为 None）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct CorsSection {
     #[serde(default = "default_cors_enabled")]
@@ -327,7 +327,7 @@ impl Default for CorsSection {
     }
 }
 
-/// [retry] 段：出站重试策略，热读（POST /admin/config 更新后立即生效）
+/// `[retry]` 段：出站重试策略，热读（POST /admin/config 更新后立即生效）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RetrySection {
     /// 单 vendor 内最大重试次数（不含首次调用）
@@ -399,7 +399,7 @@ fn default_retry_total_attempts() -> u32 {
     8
 }
 
-/// [routing] 段：路由权重系数与选择算法，热读（POST /admin/config 立即生效）。
+/// `[routing]` 段：路由权重系数与选择算法，热读（POST /admin/config 立即生效）。
 /// 权重 = 五因子加权和，最终权重经温度平滑 w^(1/T)；默认系数与历史
 /// 3D 权重一致（0.4/0.3/0.3，新维度默认 0），显式开启才生效
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -407,10 +407,10 @@ pub struct RoutingSection {
     /// 第 1 维：model.weight（配置权重，通常 0.0-2.0）系数
     #[serde(default = "default_w_model")]
     pub w_model: f64,
-    /// 第 2 维：queue_factor（队列空闲度，[0,1]）系数
+    /// 第 2 维：queue_factor（队列空闲度，`[0,1]`）系数
     #[serde(default = "default_w_queue")]
     pub w_queue: f64,
-    /// 第 3 维：window_factor（Token 预算/窗口，[0,1]）系数
+    /// 第 3 维：window_factor（Token 预算/窗口，`[0,1]`）系数
     #[serde(default = "default_w_window")]
     pub w_window: f64,
     /// 第 4 维：EWMA 延迟因子系数（latency_ref/(latency_ref+ewma_ms)）。
@@ -472,7 +472,7 @@ pub struct RoutingSection {
     #[serde(default)]
     pub affinity_tenant_scoped: bool,
     /// SLA 虚拟队列打分强度 V：默认 0.0 = 关闭；>0 时权重末尾乘
-    /// 1 / (1 + V·Ĉ + max(0, Q·(α − ŝ)))（Ĉ = [pricing] 每 1k 单价，缺价记
+    /// 1 / (1 + V·Ĉ + max(0, Q·(α − ŝ)))（Ĉ = `[pricing]` 每 1k 单价，缺价记
     /// 候选集中位数；ŝ = 1 − EWMA 错误率）。按租户分桶，非有限/负值视为关闭
     #[serde(default)]
     pub sla_v: f64,
@@ -481,8 +481,8 @@ pub struct RoutingSection {
     /// 因子 1.0（中性豁免）。关闭时整体跳过。热生效
     #[serde(default = "default_price_factor_enabled")]
     pub price_factor_enabled: bool,
-    /// 目标服务水平 α（[0,1]，默认 0.95）：α > ŝ 欠账累积、α < ŝ 衰减归 0；
-    /// 非有限/越界钳 [0,1]
+    /// 目标服务水平 α（`[0,1]`，默认 0.95）：α > ŝ 欠账累积、α < ŝ 衰减归 0；
+    /// 非有限/越界钳 `[0,1]`
     #[serde(default = "default_sla_alpha")]
     pub sla_alpha: f64,
     /// LPS 延迟前瞻软约束强度 δ：默认 0.0 = 关闭；>0 时权重末尾乘
@@ -640,7 +640,7 @@ impl Default for RetrySection {
     }
 }
 
-/// [cache] 段：精确响应缓存（oxcache memory 后端）。键含调用方 key 哈希
+/// `[cache]` 段：精确响应缓存（oxcache memory 后端）。键含调用方 key 哈希
 /// 做租户隔离；仅确定性请求查/写（stream=false 且无 tools 且 temperature=0）。
 /// enabled 默认 false（TTL 内响应陈旧是产品语义，运维显式打开）。热读
 /// [[cache.categories]] 单条：按模型前缀的 TTL 类别乘数，无命中乘数 1.0
@@ -739,7 +739,7 @@ impl Default for CacheSection {
     }
 }
 
-/// [resilience] 段：韧性覆盖面。硬约束：必须定义为 Config 的 Section
+/// `[resilience]` 段：韧性覆盖面。硬约束：必须定义为 Config 的 Section
 /// 字段——persist_and_swap 全量写回 config.toml，未进 Config 的段会在
 /// 首次热更时从磁盘消失。热读；Default 手写：开关缺省 false，阈值给非零缺省
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -802,7 +802,7 @@ impl Default for ResilienceSection {
     }
 }
 
-/// [admission] 段：拥塞感知优先级准入。并发占用率（Σ in_flight / Σ 上限）
+/// `[admission]` 段：拥塞感知优先级准入。并发占用率（Σ in_flight / Σ 上限）
 /// 达 congestion_threshold 时，低于「当前在途最小档」优先级的新请求直接
 /// 429 + Retry-After。Section 字段落地防热更抹段；热读
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -853,7 +853,7 @@ impl Default for AdmissionSection {
     }
 }
 
-/// [rate_limit] 段：入站限流规则。path=None 的全局规则注入 limiteron
+/// `[rate_limit]` 段：入站限流规则。path=None 的全局规则注入 limiteron
 /// Governor（规则级单例桶）；path=Some(前缀) 的端点规则在中间件侧按
 /// (rule, 租户) 分桶。restart-required（Router 构造期消费）；
 /// rules 为空（缺省）= limiteron 内置默认兜底
@@ -886,7 +886,7 @@ fn default_rate_limit_per_tenant() -> bool {
     true
 }
 
-/// [grpc] 段 — gRPC 服务器配置（sdforge grpc 门面，`feature = "grpc"`）。
+/// `[grpc]` 段 — gRPC 服务器配置（sdforge grpc 门面，`feature = "grpc"`）。
 /// 建站期消费（`GrpcServerConfig` 固化于服务器构造，与 `[server]`/`[cors]`
 /// 同语义），更新后需重启进程生效。
 #[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
@@ -935,7 +935,8 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub vendors: Vec<VendorConfig>,
     pub global_model: Option<GlobalModelConfig>,
-    /// 价格表 — 用于成本计算。默认空 vec，未配置时 CostCalculator 全部返回 0.0
+    /// 价格表 — 路由 SLA 因子与未登记目录模型的配额回退档（计价正源是
+    /// `[[model_catalog]]` 四档单价）。默认空 vec
     #[serde(default)]
     pub pricing: Vec<PricingConfig>,
     /// [[model_catalog]] 段：per-model 能力/定价目录。缺省空 vec（未登记
@@ -943,52 +944,52 @@ pub struct Config {
     /// 必须 > 0 且 model_id 去重（validate_config）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_catalog: Vec<ModelCatalogEntry>,
-    /// [auth] 段 — API Key 认证（摘要存储）。None = 配置中无该段，认证禁用
+    /// `[auth]` 段 — API Key 认证（摘要存储）。None = 配置中无该段，认证禁用
     #[serde(default)]
     pub auth: Option<AuthSection>,
-    /// [cors] 段。None = 配置中无该段
+    /// `[cors]` 段。None = 配置中无该段
     #[serde(default)]
     pub cors: Option<CorsSection>,
-    /// [retry] 段 — 出站重试策略。缺段时用 Default（429/5xx 重试 3 次 + jitter）
+    /// `[retry]` 段 — 出站重试策略。缺段时用 Default（429/5xx 重试 3 次 + jitter）
     #[serde(default)]
     pub retry: RetrySection,
-    /// [routing] 段 — 路由权重系数与选择算法。缺段时用 Default
+    /// `[routing]` 段 — 路由权重系数与选择算法。缺段时用 Default
     /// （0.4/0.3/0.3 + 新维度全关），与历史 3D 权重行为一致
     #[serde(default)]
     pub routing: RoutingSection,
-    /// [cache] 段 — 精确响应缓存。缺段时 enabled=false（关闭）
+    /// `[cache]` 段 — 精确响应缓存。缺段时 enabled=false（关闭）
     #[serde(default)]
     pub cache: CacheSection,
-    /// [rate_limit] 段 — 入站限流。缺段/空 rules = limiteron
+    /// `[rate_limit]` 段 — 入站限流。缺段/空 rules = limiteron
     /// Governor 内置默认兜底（与历史行为逐位一致）。restart-required。
     #[serde(default)]
     pub rate_limit: RateLimitSection,
-    /// [resilience] 段 — 韧性覆盖面。缺段时 cover_all_paths=false
+    /// `[resilience]` 段 — 韧性覆盖面。缺段时 cover_all_paths=false
     ///（三条裸路径行为与历史逐位一致）。Section 字段落地防热更抹段。
     #[serde(default)]
     pub resilience: ResilienceSection,
-    /// [admission] 段 — 拥塞感知优先级准入。缺段时 enabled=false
+    /// `[admission]` 段 — 拥塞感知优先级准入。缺段时 enabled=false
     ///（完全旁路，行为与历史逐位一致）。
     #[serde(default)]
     pub admission: AdmissionSection,
-    /// [health] 段 — 主动健康检查探针（WP7）。缺段时 mode=off（零后台
+    /// `[health]` 段 — 主动健康检查探针（WP7）。缺段时 mode=off（零后台
     /// 任务、行为与历史逐位一致）。Section 字段落地防热更抹段。
     #[serde(default)]
     pub health: HealthSection,
-    /// [quota] 段 — 成本与 token 维度配额（WP8）。缺段时 enabled=false
+    /// `[quota]` 段 — 成本与 token 维度配额（WP8）。缺段时 enabled=false
     ///（零判限、行为与历史逐位一致）。Section 字段落地防热更抹段。
     #[serde(default)]
     pub quota: QuotaSection,
-    /// [grpc] 段 — gRPC 服务器（`feature = "grpc"`）。None = 配置中无该段，
+    /// `[grpc]` 段 — gRPC 服务器（`feature = "grpc"`）。None = 配置中无该段，
     /// gRPC 服务器禁用（不监听 gRPC 端口，行为与历史逐位一致）
     #[serde(default)]
     pub grpc: Option<GrpcConfig>,
-    /// [docs] 段 — OpenAPI/Swagger UI 出口（G11）。缺段时关闭。
+    /// `[docs]` 段 — OpenAPI/Swagger UI 出口（G11）。缺段时关闭。
     #[serde(default)]
     pub docs: DocsSection,
 }
 
-/// [docs] 段：OpenAPI 文档面开关。默认 false 时 /api-docs 与 Swagger UI
+/// `[docs]` 段：OpenAPI 文档面开关。默认 false 时 /api-docs 与 Swagger UI
 /// 不存在（404）；开启后可达（免认证免限流——开关本身即访问门）
 #[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 pub struct DocsSection {
@@ -997,7 +998,7 @@ pub struct DocsSection {
     pub enabled: bool,
 }
 
-/// [health] 段：主动健康检查探针。
+/// `[health]` 段：主动健康检查探针。
 /// - mode: off（默认，零后台任务）| suspect_only（仅探测冷却/黑名单/
 ///   不可用态）| all（全量周期探测）；未知值按 off 并 warn
 /// - interval_secs: 探测周期（默认 300）；timeout_ms: 单次探测超时（默认 5000）
@@ -1043,7 +1044,7 @@ impl Default for HealthSection {
     }
 }
 
-/// [quota] 段：成本与 token 维度配额（预扣-回补）。enabled 默认 false
+/// `[quota]` 段：成本与 token 维度配额（预扣-回补）。enabled 默认 false
 ///（零判限）；window_secs 固定窗口（默认 3600，0 非法）；est_chars_per_token
 /// 输入估算常数（默认 4）。per-key 限额放 [[auth.keys]]（0 = 不限）；
 /// 窗口账本为进程内存（单实例、重启清零）

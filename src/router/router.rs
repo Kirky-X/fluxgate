@@ -62,7 +62,7 @@ impl Router {
         self
     }
 
-    /// 接线会话亲和表（builder）：亲和命中者优先（boost 而非硬粘）
+    /// 接线会话亲和表（builder）：亲和命中者优先（hard 模式在合格集合内直接选中，soft 为权重 boost；集合外绝不强选）
     pub fn with_affinity(mut self, affinity: Arc<AffinityTable>) -> Self {
         self.affinity = Some(affinity);
         self
@@ -111,7 +111,7 @@ impl Router {
         .await
     }
 
-    /// 带请求级权重的路由：request_weight 经 [routing].allow_request_weight
+    /// 带请求级权重的路由：request_weight 经 `[routing]`.allow_request_weight
     /// 门控后覆盖 model.weight；tenant 为调用方 API key 哈希，仅
     /// affinity_tenant_scoped 开启时参与亲和键。
     #[allow(clippy::too_many_arguments)] // 路由上下文穿线
@@ -957,7 +957,7 @@ impl Router {
         }
     }
 
-    /// 会话亲和命中：返回命中 vendor_id，boost 而非硬粘（集合外绝不强选）。
+    /// 会话亲和命中：返回命中 vendor_id（hard 模式由调用方在合格集合内直接选中，soft 为 boost；集合外绝不强选）。
     /// 记账：命中且在集合 → affinity_hits；命中但不可用 → 清旧键 + miss；
     /// 无绑定/未接线/无 session_key → miss 或不计
     async fn affinity_hit(

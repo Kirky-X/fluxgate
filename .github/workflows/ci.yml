@@ -1,6 +1,6 @@
 #===============================================================================
 # NexusFlow CI 质量门禁（对齐 confers 7 仓库统一基线）
-# fmt / clippy / check / test / coverage / security
+# fmt / clippy / check / test / build / doc / coverage / security
 # （特性全量矩阵见 feature-matrix.yml，CodeQL 见 codeql.yml.disabled）
 #
 # 与 confers 基线的差异：
@@ -13,12 +13,8 @@
 #     重命名启用；
 #   - 特性组合：本作业只跑手写组合矩阵（default / 两后端 / 单特性三组合），
 #     逐特性全量矩阵在 feature-matrix.yml（每周定时 + 手动触发）；
-#   - 无 doc 作业：`cargo doc --workspace --no-deps` 配 RUSTDOCFLAGS=-D warnings
-#     现有 61 处 intra-doc link 断链（15 个文件，多为注释内 [段名] 简写被当作
-#     链接解析），先清断链再加门禁；
-#   - 无三平台 build 作业（基线有 ubuntu/macos/windows 矩阵）：本仓以
-#     x86_64-unknown-linux-gnu 交付（release.yml 二进制 + linux 镜像），跨平台
-#     构建未纳入 CI；如补矩阵，注意 db-* 互斥口径与 grpc 的 protoc 前置；
+#   - build / doc 按本仓特性面适配：`--all-features` 因 db-* 互斥不可用，
+#     build 改「默认 + 零特性」两口径，doc 只跑默认口径；
 #   - 无 docker 作业：镜像可独立构建（纯 registry 依赖，不取兄弟库源码），
 #     镜像构建与扫描仍未纳入 CI。
 #===============================================================================
@@ -61,6 +57,9 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -78,6 +77,9 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -107,6 +109,9 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -146,6 +151,9 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -159,6 +167,64 @@ jobs:
         run: cargo test --workspace
 
   #-----------------------------------------------------------------------------
+  # 三平台编译（跨平台约束的 CI 落点）
+  # 默认特性（full + db-sqlite）经 bundled sqlite 静态编译（libsqlite3-sys
+  # 的 cc 构建 C 源），三平台均无系统库前置；grpc 不在默认面，无需 protoc。
+  # 默认图另含 aws-lc-sys（rustls 后端），其 C 构建需 cmake（Windows 另需
+  # NASM）——GH runner 镜像自带，无需额外安装
+  #-----------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # 超时按实测留 5~6 倍余量（冷编约 92s + checkout/工具链/缓存开销；
+    # windows 编译与链接更慢），把单腿挂死的尾部成本压住
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: cross-${{ runner.os }}
+      # --all-features 因 db-* 互斥不可用（同 check 注释），改「默认 + 零特性」
+      # 两口径；二者均已本机验证通过
+      - name: Build (default features)
+        run: cargo build --workspace
+      - name: Build (no default features)
+        run: cargo build --workspace --no-default-features
+
+  #-----------------------------------------------------------------------------
+  # 文档构建（零警告：断链、私有项链接、无效 HTML 一并拦下）
+  #-----------------------------------------------------------------------------
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Build documentation (zero warnings)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  #-----------------------------------------------------------------------------
   # 覆盖率（生成 + 上传 Codecov）
   # 注意：暂不设 --fail-under-lines 门禁——首次测量前不知道真实基线，
   # 先采集数据，基线明确后再按 confers 基线加 ≥80% 行覆盖率门禁。
@@ -170,6 +236,9 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -202,6 +271,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}

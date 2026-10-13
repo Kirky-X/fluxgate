@@ -1,16 +1,13 @@
 #===============================================================================
 # NexusFlow 发布流水线（对齐 confers 基线：推 v* tag 触发）
 #
-# 产物（NexusFlow 以应用形态发布，产物为二进制，不发 crates.io）：
-#   - nexusflow-<ver>-x86_64-unknown-linux-gnu.tar.gz
-#     ubuntu runner 编译，动态链接系统 libsqlite3（sqlx 走 pkg-config，非 bundled）
-# 说明：musl 静态产物曾借道 Docker 构建产出，后随 CI 去 docker 化移除（镜像
-# 现为纯 registry 依赖，可独立构建）；需要 musl 静态二进制时在本机执行
-# `docker build -f docker/Dockerfile .` 自行提取。
+# 产物：Release 只带 GitHub 自动生成的源码压缩包（zip / tar.gz），不附二进制
+# 产物、不发 crates.io。二进制部署走两条路：docker 镜像（docker/Dockerfile
+# 独立构建，纯 registry 依赖）或本机构建 `cargo build --locked --release`。
 #
 # 触发面：tag 推送为主；workflow_dispatch 供恢复/重发（如 tag 已推送但流水线
 # 失败）——手动触发必须显式给 version，且该 tag 必须已存在（resolve 步骤做
-# 存在性校验），构建源钉在 tag 上（build 作业的 checkout ref），不走分支 HEAD。
+# 存在性校验），避免 Releases API 按默认分支 HEAD 新建 tag 造出幻影发布。
 #===============================================================================
 name: Release
 
@@ -30,18 +27,9 @@ permissions:
 
 concurrency:
   # 固定组：tag 推送（refs/tags/…）与手动重发（refs/heads/…）是不同 ref，
-  # 按 ref 分组会让同版本两条 run 并发建 Release / 传产物（422 与产物竞争）
+  # 按 ref 分组会让同版本两条 run 并发建 Release
   group: Release
   cancel-in-progress: false
-
-env:
-  CARGO_TERM_COLOR: always
-  # 发布产物用当前受支持的 stable，与 docker/Dockerfile 的 rust base 对齐（1.99）。
-  # 原值 1.92 已低于兄弟库 MSRV（dbnexus/limiteron/sdforge 均声明 1.97.1），
-  # cargo 会在依赖解析期直接拒绝构建。MSRV 下限兼容性由 ci.yml 按
-  # Cargo.toml 的 rust-version 校验，不靠本作业保证
-  RUST_VERSION: '1.99'
-  BIN_NAME: nexusflow
 
 jobs:
   #-----------------------------------------------------------------------------
@@ -51,8 +39,6 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    outputs:
-      version: ${{ steps.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -61,8 +47,8 @@ jobs:
           persist-credentials: false
       # 版本号解析：tag 触发取 tag 名（去 v 前缀），手动触发取输入值。
       # 两条路都过 semver 校验，且必须命中已存在的 tag——Releases API 在 tag
-      # 不存在时按默认分支 HEAD 新建 tag，版本号笔误会静默产出「tag 版本号 +
-      # 分支代码」的错配发布，故先做存在性校验再建 Release。
+      # 不存在时按默认分支 HEAD 新建 tag，版本号笔误会造出「源码包 = 分支内容、
+      # tag 指向错提交」的幻影发布，故先做存在性校验再建 Release。
       # 输入与版本值均经 env 传递，不内插进 run。
       - name: Resolve version
         id: resolve
@@ -76,7 +62,9 @@ jobs:
             VERSION="${INPUT_VERSION}"
           fi
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "::error::非法版本号: ${VERSION}（期望 x.y.z 或 x.y.z-rc.N）"
+            # 清洗换行后再回显：原值经注解回显时，内嵌换行可伪造工作流命令
+            SAFE="${VERSION//$'\n'/%0A}"; SAFE="${SAFE//$'\r'/%0D}"
+            echo "::error::非法版本号: ${SAFE}（期望 x.y.z 或 x.y.z-rc.N）"
             exit 1
           fi
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" >/dev/null \
@@ -91,55 +79,3 @@ jobs:
           draft: false
           # 预发布判定跟 semver 语义走：版本含 '-' 即预发布（rc/beta/alpha 等）
           prerelease: ${{ contains(steps.resolve.outputs.version, '-') }}
-
-  #-----------------------------------------------------------------------------
-  # gnu 动态链接二进制（Ubuntu 基线）
-  #-----------------------------------------------------------------------------
-  build-gnu:
-    name: Build (${{ matrix.target }})
-    needs: create-release
-    runs-on: ubuntu-latest
-    # 冷构建余量：release profile 是 lto=true + codegen-units=1 + opt-level=3
-    # （对全部依赖生效），runner 为 2 核；缓存失效（依赖 bump）时冷编估 30~50
-    # 分钟，40 分钟上限落在估计区间内——超时即取消，已投入分钟全部沉没
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [x86_64-unknown-linux-gnu]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # 构建源钉在 tag 上：手动触发的事件 ref 是分支 HEAD，不钉 tag 会
-          # 编译出「tag 版本号 + tag 之后的代码」的错配产物；tag 不存在时
-          # 此处直接失败，不会静默构建错误源码
-          ref: v${{ needs.create-release.outputs.version }}
-          persist-credentials: false
-      - name: Install system dependencies (sqlx links system libsqlite3)
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: release-${{ matrix.target }}
-      - name: Build release binary
-        run: cargo build --locked --release --target ${{ matrix.target }} --bin ${{ env.BIN_NAME }}
-      - name: Package
-        env:
-          # 版本经 env 传递（已过 semver 校验）；手动触发时 GITHUB_REF_NAME 是
-          # 分支名，不能再用它拼产物名
-          VERSION: ${{ needs.create-release.outputs.version }}
-        run: |
-          ASSET="${{ env.BIN_NAME }}-${VERSION}-${{ matrix.target }}.tar.gz"
-          tar -czf "$ASSET" -C "target/${{ matrix.target }}/release" "${{ env.BIN_NAME }}"
-          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
-      - name: Attach to release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
-        with:
-          # 手动触发时 GITHUB_REF 是分支，不显式给 tag_name 会被 action 以
-          # "GitHub Releases requires a tag" 拒绝（create-release 建出的
-          # Release 会停在「有 Release 无产物」的半状态）
-          tag_name: v${{ needs.create-release.outputs.version }}
-          files: ${{ env.ASSET }}

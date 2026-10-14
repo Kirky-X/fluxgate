@@ -11,7 +11,9 @@ pub mod router;
 
 pub use affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
 pub use difficulty::{CachedDecision, DecisionCache, DifficultyRouter, TierDecision, TierPath};
-pub use router::{Router, RoutingDecision, RoutingStrategy};
+pub use router::{
+    prefix_candidates, prefix_hash_key, RouteCtx, Router, RoutingDecision, RoutingStrategy,
+};
 
 /// 权重纯函数导出 — 集成测试与运维调试的确定性断言入口（无 RNG、无 IO）。
 pub use router::compute_weight;

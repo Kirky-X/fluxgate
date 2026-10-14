@@ -251,6 +251,7 @@ mod tests {
                     timeout_ms: 60_000,
                     stream_ttft_ms: 60_000,
                     stream_idle_ms: 30_000,
+                    supports_batch: false,
                     id: "openai_main".to_string(),
                     name: "OpenAI Main".to_string(),
                     type_: "openai".to_string(),
@@ -291,6 +292,7 @@ mod tests {
                     timeout_ms: 60_000,
                     stream_ttft_ms: 60_000,
                     stream_idle_ms: 30_000,
+                    supports_batch: false,
                     id: "anthropic_main".to_string(),
                     name: "Anthropic Main".to_string(),
                     type_: "anthropic".to_string(),
@@ -337,6 +339,7 @@ mod tests {
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         }
     }
 
@@ -641,6 +644,8 @@ concurrency = { requests_per_second = 10 }
                 output_price: 15.0,
                 cache_read_price: 0.3,
                 cache_creation_price: 3.75,
+                long_context_input_price: 0.0,
+                long_context_threshold_tokens: 0,
                 currency: PricingCurrency::Usd,
                 max_output_tokens: Some(8192),
                 supports_tools: true,

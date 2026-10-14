@@ -242,6 +242,16 @@ impl GlobalMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// O2：厂商维度缓存命中记账（entry 不存在则惰性创建，与 record_request 同构）
+    pub fn record_vendor_cache(&self, vendor: &str, cache_read: u64, input_total: u64) {
+        if let Ok(mut guard) = self.per_vendor.write() {
+            guard
+                .entry(vendor.to_string())
+                .or_insert_with(|| VendorMetrics::with_vendor(vendor))
+                .record_cache_tokens(cache_read, input_total);
+        }
+    }
+
     pub fn record_difficulty_classifier_failed(&self) {
         self.difficulty_classifier_failed
             .fetch_add(1, Ordering::Relaxed);
@@ -763,6 +773,9 @@ impl Default for GlobalMetrics {
 #[derive(Debug, Clone, Serialize)]
 pub struct VendorMetrics {
     pub vendor: String,
+    /// O2 缓存命中率观测：厂商维度缓存读 token 与输入总 token 累计
+    pub cache_read_tokens_sum: u64,
+    pub cache_input_tokens_sum: u64,
     pub requests: u64,
     pub successes: u64,
     pub failures: u64,
@@ -803,6 +816,8 @@ impl VendorMetrics {
     fn new() -> Self {
         Self {
             vendor: String::new(),
+            cache_read_tokens_sum: 0,
+            cache_input_tokens_sum: 0,
             requests: 0,
             successes: 0,
             failures: 0,
@@ -828,6 +843,20 @@ impl VendorMetrics {
         let mut m = Self::new();
         m.vendor = vendor.to_string();
         m
+    }
+
+    /// O2：厂商维度缓存命中记账（prompt = 输入总量口径）
+    pub fn record_cache_tokens(&mut self, cache_read: u64, input_total: u64) {
+        self.cache_read_tokens_sum = self.cache_read_tokens_sum.saturating_add(cache_read);
+        self.cache_input_tokens_sum = self.cache_input_tokens_sum.saturating_add(input_total);
+    }
+
+    /// 缓存命中率 ∈ [0,1]；无输入样本时 0（除零安全）
+    pub fn cache_hit_ratio(&self) -> f64 {
+        if self.cache_input_tokens_sum == 0 {
+            return 0.0;
+        }
+        self.cache_read_tokens_sum as f64 / self.cache_input_tokens_sum as f64
     }
 
     pub fn avg_duration_ms(&self) -> f64 {

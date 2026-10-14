@@ -42,6 +42,7 @@ pub fn base_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         timeout_ms: 60_000,
         stream_ttft_ms: 60_000,
         stream_idle_ms: 30_000,
+        supports_batch: false,
         id: id.into(),
         name: format!("Test {}", id),
         type_: "openai".into(),
@@ -105,5 +106,6 @@ pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
         grpc: None,
         resilience: Default::default(),
         docs: Default::default(),
+        lexcompress: Default::default(),
     }
 }

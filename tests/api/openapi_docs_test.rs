@@ -49,6 +49,7 @@ fn make_config(docs_enabled: bool) -> Config {
             enabled: docs_enabled,
         },
         rate_limit: nexusflow::config::RateLimitSection { rules: vec![] },
+        lexcompress: Default::default(),
     }
 }
 

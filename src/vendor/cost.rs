@@ -203,6 +203,8 @@ mod catalog_pricing_tests {
             supports_tools: true,
             supports_thinking: true,
             cache_breakpoints: None,
+            long_context_input_price: 0.0,
+            long_context_threshold_tokens: 0,
         }
     }
 
@@ -353,6 +355,8 @@ mod catalog_pricing_tests {
             output_price: 10.0,
             cache_read_price: 1.25,
             cache_creation_price: 0.0,
+            long_context_input_price: 0.0,
+            long_context_threshold_tokens: 0,
             currency: PricingCurrency::Usd,
             max_output_tokens: Some(16_384),
             supports_tools: true,

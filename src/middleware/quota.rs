@@ -437,6 +437,7 @@ pub async fn quota_middleware(
 
 /// 非流式回补钩（响应后）：有 usage 才结算（无 usage 保持预扣）。
 /// `quota` 未接线/未启用/无限额时 no-op。
+#[allow(clippy::too_many_arguments)] // 结算参数面：与本变更内 route_ctx 化重构解耦
 pub fn settle_nonstream(
     config: &Arc<ConfigManager>,
     quota: Option<&Arc<QuotaState>>,
@@ -444,7 +445,18 @@ pub fn settle_nonstream(
     body: &Value,
     response_body: &Value,
     vendor_type: &str,
+    vendor_id: &str,
+    metrics: Option<&std::sync::Arc<crate::utils::metrics::GlobalMetrics>>,
 ) {
+    // O2 命中率观测：厂商维度缓存 token 记账（先于 quota 门控——无限额
+    // 租户同样计入，避免 cache_hit_ratio 系统性失真）
+    if let Some(metrics) = metrics {
+        if let Some((prompt, _, cache_read, _)) =
+            crate::protocol::parse_usage_detailed(response_body)
+        {
+            metrics.record_vendor_cache(vendor_id, cache_read as u64, prompt as u64);
+        }
+    }
     let Some(lease) = quota_applies(config, quota, tenant) else {
         return;
     };
@@ -510,6 +522,8 @@ pub struct SettlementCtx {
     tenant: String,
     model: String,
     vendor_type: String,
+    vendor_id: String,
+    metrics: Option<Arc<crate::utils::metrics::GlobalMetrics>>,
     /// 配置快照共享（`Arc<Config>` 引用，零深拷贝；热更换新快照不影响
     /// 已建立流的结算口径）。
     config: Arc<Config>,
@@ -524,6 +538,8 @@ impl SettlementCtx {
         tenant: &str,
         body: &Value,
         vendor_type: &str,
+        vendor_id: &str,
+        metrics: Option<Arc<crate::utils::metrics::GlobalMetrics>>,
     ) -> Option<Self> {
         let QuotaLease {
             quota,
@@ -538,6 +554,8 @@ impl SettlementCtx {
         );
         Some(Self {
             quota,
+            vendor_id: vendor_id.to_string(),
+            metrics,
             tenant: tenant.to_string(),
             model: body
                 .get("model")
@@ -568,6 +586,8 @@ where
         use futures::StreamExt as _;
         let mut stream = Box::pin(stream);
         // 流式用量结算（取最后一次出现的值；cache 两档随 chunk 携带）。
+        let ctx_vendor = ctx.as_ref().map(|c| c.vendor_id.clone()).unwrap_or_default();
+        let ctx_metrics = ctx.as_ref().and_then(|c| c.metrics.clone());
         let mut last_usage: Option<(u32, u32, u32, u32)> = None;
         while let Some(item) = stream.next().await {
             if let Ok(crate::protocol::StreamChunk::Usage {
@@ -584,6 +604,14 @@ where
                     *cache_read_tokens,
                     *cache_creation_tokens,
                 ));
+                // O2：流式记账按末次 usage 收敛（多 chunk 不重复计数）
+                if let Some(metrics) = &ctx_metrics {
+                    metrics.record_vendor_cache(
+                        &ctx_vendor,
+                        *cache_read_tokens as u64,
+                        *prompt_tokens as u64,
+                    );
+                }
             }
             yield item;
         }
@@ -1061,6 +1089,7 @@ mod tests {
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         }
     }
 
@@ -1102,11 +1131,22 @@ mod tests {
             Some(&quota),
             "tenant-digest",
             &body,
-            "openai"
+            "openai",
+            "vendor-x",
+            None
         )
         .is_some());
         assert!(
-            SettlementCtx::for_request(&config, Some(&quota), "unknown", &body, "openai").is_none(),
+            SettlementCtx::for_request(
+                &config,
+                Some(&quota),
+                "unknown",
+                &body,
+                "openai",
+                "vendor-x",
+                None
+            )
+            .is_none(),
             "无限额租户不构建 ctx（H2：默认配置零克隆）"
         );
     }

@@ -30,22 +30,30 @@ struct AnthropicDispatchCtx {
     api_key_hash: String,
     // 难度档位标签（None = 定档未发生；仅 [routing.difficulty] 命中 groups 时有值）
     difficulty_tier: Option<&'static str>,
+    // N2 词法压缩是否发生（X-Compressed 响应头来源）
+    lexcompressed: bool,
+    // N1 batch 标记（X-Batch-Routed 响应头来源）
+    batch: bool,
 }
 
 #[axum::debug_handler]
 pub async fn messages(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
 
-    let model = body.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
-        NexusFlowError::from(GateError::Validation {
-            field: "model".into(),
-        })
-    })?;
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            NexusFlowError::from(GateError::Validation {
+                field: "model".into(),
+            })
+        })?;
 
     let stream = body
         .get("stream")
@@ -56,7 +64,12 @@ pub async fn messages(
     // Anthropic 入站保持既有无 hints 路由语义，仅接入会话亲和；
     // X-Weight 请求级权重一并传入（[routing].
     // allow_request_weight 门控在 Router 侧热读判定，关闭时忽略）。
+    // N2 词法压缩：改写先于定档/缓存键/前缀哈希
+    let lexcompressed =
+        crate::middleware::lexcompress::apply_to_body(&state.config, &headers, &mut body);
+
     let hints = RoutingHints::from_headers(&headers);
+    let request_batch = hints.batch;
     let session_key = hints.effective_session_key(&body);
     // 亲和键租户维度（与响应缓存同源）
     let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
@@ -64,7 +77,7 @@ pub async fn messages(
     // 难度定档（[routing.difficulty]）：anthropic 入站无 hints 直连语义，
     // groups 命中即定档改写（bypass=false）。None 接线 = 历史行为
     let (difficulty_tier, routed_model) =
-        crate::router::difficulty::resolve_tier(state.difficulty.as_deref(), model, &body, false)
+        crate::router::difficulty::resolve_tier(state.difficulty.as_deref(), &model, &body, false)
             .await;
 
     // 路由决策
@@ -85,6 +98,8 @@ pub async fn messages(
         session_key,
         api_key_hash,
         difficulty_tier,
+        lexcompressed,
+        batch: request_batch && decision.vendor.supports_batch,
     };
 
     // 检查是否可以使用零拷贝透传（入站格式 Anthropic == 出站格式 Anthropic）。
@@ -95,22 +110,22 @@ pub async fn messages(
     if use_passthrough {
         // 零拷贝路径：直接透传请求体
         if stream {
-            return chat_passthrough_stream(&state, &ctx, model, &body, decision).await;
+            return chat_passthrough_stream(&state, &ctx, &model, &body, decision).await;
         }
-        return chat_passthrough_json(&state, &ctx, &headers, model, &body, decision).await;
+        return chat_passthrough_json(&state, &ctx, &headers, &model, &body, decision).await;
     }
 
     // 转换路径：Anthropic → Unified → 目标厂商
     let unified_request = state.anthropic_converter.to_unified(body.clone())?;
 
     if stream {
-        return chat_convert_stream(&state, &ctx, model, &body, decision, unified_request).await;
+        return chat_convert_stream(&state, &ctx, &model, &body, decision, unified_request).await;
     }
     chat_convert_json(
         &state,
         &ctx,
         &headers,
-        model,
+        &model,
         &body,
         decision,
         unified_request,
@@ -209,6 +224,7 @@ async fn chat_passthrough_stream(
     #[cfg(not(feature = "resilience"))]
     let obs_headers = axum::http::HeaderMap::new();
     let obs_headers = crate::api::extend_obs_with_tier(obs_headers, ctx.difficulty_tier);
+    let obs_headers = crate::api::extend_obs_with_flags(obs_headers, ctx.batch, ctx.lexcompressed);
     Ok(crate::api::with_fallback_headers(
         (STREAM_HEADERS, body_stream).into_response(),
         &obs_headers,
@@ -355,6 +371,7 @@ async fn chat_passthrough_json(
                 final_route: Some(final_route),
                 computed: false,
                 participated: false,
+                semantic: false,
             }
         }
     };
@@ -396,13 +413,19 @@ async fn chat_passthrough_json(
         body,
         &flow.value,
         &final_route.decision.vendor.type_,
+        &final_route.decision.vendor.id,
+        Some(state.vendor_manager.metrics()),
     );
 
     // 缓存参与（Miss 回写完成）→ 响应带 X-Cache: MISS；
     // WP4 回退观测头叠加（开关关闭为空表，零行为变化）。
     Ok(crate::api::with_fallback_headers(
-        json_response_with_cache_flag(flow.value, flow.participated),
-        &crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
+        json_response_with_cache_flag_semantic(flow.value, flow.participated, flow.semantic),
+        &crate::api::extend_obs_with_flags(
+            crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
+            ctx.batch,
+            ctx.lexcompressed,
+        ),
     ))
 }
 
@@ -477,6 +500,8 @@ async fn chat_convert_stream(
         &ctx.api_key_hash,
         body,
         &decision.vendor.type_,
+        &decision.vendor.id,
+        Some(std::sync::Arc::clone(state.vendor_manager.metrics())),
     );
     let chunk_stream = crate::middleware::quota::settle_stream(chunk_stream, settle_ctx);
 
@@ -507,6 +532,7 @@ async fn chat_convert_stream(
     #[cfg(not(feature = "resilience"))]
     let obs_headers = axum::http::HeaderMap::new();
     let obs_headers = crate::api::extend_obs_with_tier(obs_headers, ctx.difficulty_tier);
+    let obs_headers = crate::api::extend_obs_with_flags(obs_headers, ctx.batch, ctx.lexcompressed);
     Ok(crate::api::with_fallback_headers(
         (STREAM_HEADERS, body_stream).into_response(),
         &obs_headers,
@@ -585,6 +611,7 @@ async fn chat_convert_json(
                 final_route: Some(final_route),
                 computed: false,
                 participated: false,
+                semantic: false,
             }
         }
     };
@@ -623,12 +650,18 @@ async fn chat_convert_json(
         body,
         &flow.value,
         &final_route.decision.vendor.type_,
+        &final_route.decision.vendor.id,
+        Some(state.vendor_manager.metrics()),
     );
 
     // 缓存参与 → 响应带 X-Cache 头；WP4 回退观测头叠加（开关关闭为空表）。
     Ok(crate::api::with_fallback_headers(
-        json_response_with_cache_flag(flow.value, flow.participated),
-        &crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
+        json_response_with_cache_flag_semantic(flow.value, flow.participated, flow.semantic),
+        &crate::api::extend_obs_with_flags(
+            crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
+            ctx.batch,
+            ctx.lexcompressed,
+        ),
     ))
 }
 
@@ -662,6 +695,8 @@ async fn resolve_route(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|d| d.is_finite() && *d > 0.0);
+    // 前缀亲和 + 长上下文价 ctx：enabled 时算稳定前缀哈希与估 token 数
+    let ctx = crate::api::route_ctx(state, body, hints.batch);
     let decision = state
         .router
         .route_weighted(
@@ -672,6 +707,7 @@ async fn resolve_route(
             hints.preferred_weight,
             linucb_x.as_ref().map(|a| a.as_slice()),
             lps_deadline_ms,
+            ctx,
         )
         .await?;
     Ok(decision)
@@ -805,8 +841,22 @@ impl FinalRoute for FinalDispatch {
 
 /// 缓存参与 → 响应带 `X-Cache: MISS` 头（HIT 已提前返回）；不参与则裸
 /// JSON 头。
-fn json_response_with_cache_flag(response: Value, participated: bool) -> axum::response::Response {
-    if participated {
+/// O4：语义命中变体——X-Cache: SEMANTIC-HIT（区别于精确 HIT/MISS）
+fn json_response_with_cache_flag_semantic(
+    response: Value,
+    participated: bool,
+    semantic: bool,
+) -> axum::response::Response {
+    if participated && semantic {
+        (
+            [
+                ("Content-Type", "application/json"),
+                ("X-Cache", "SEMANTIC-HIT"),
+            ],
+            Json(response),
+        )
+            .into_response()
+    } else if participated {
         (
             [("Content-Type", "application/json"), ("X-Cache", "MISS")],
             Json(response),

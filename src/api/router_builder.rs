@@ -822,6 +822,7 @@ mod tests {
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
+            lexcompress: Default::default(),
         }
     }
 

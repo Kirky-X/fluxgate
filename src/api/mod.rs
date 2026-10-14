@@ -21,6 +21,7 @@ pub mod route_difficulty_explain;
 pub mod route_explain;
 pub mod router_builder;
 pub mod routing_hints;
+pub mod semantic_cache;
 pub mod sse;
 pub mod state;
 
@@ -360,6 +361,24 @@ pub(crate) fn with_fallback_headers(
     response
 }
 
+/// 前缀亲和 + 长上下文价的路由上下文（两协议共用）：
+/// enabled=false 返回 None（选路完全回退历史路径）
+pub(crate) fn route_ctx(
+    state: &std::sync::Arc<crate::api::state::ApiState>,
+    body: &serde_json::Value,
+    batch: bool,
+) -> Option<crate::router::RouteCtx> {
+    // 恒产 ctx：batch/长上下文价与前缀亲和开关互相独立（前缀亲和的
+    // enabled 由 Router::affinity_pair 内部热读判定）
+    let prefix_chars = state.config.read().routing.prefix_affinity.prefix_chars;
+    let bytes = serde_json::to_string(body).map(|s| s.len()).unwrap_or(0);
+    Some(crate::router::RouteCtx {
+        prefix_hash: crate::router::prefix_hash_key(body, prefix_chars),
+        est_prompt_tokens: (bytes / 4) as u64,
+        batch,
+    })
+}
+
 /// 难度定档结果透出头名（仅定档路径出现；值 ∈ {low,mid,high}）
 pub(crate) const X_DIFFICULTY_TIER: &str = "x-difficulty-tier";
 
@@ -373,6 +392,21 @@ pub(crate) fn extend_obs_with_tier(
         if let Ok(value) = axum::http::HeaderValue::from_str(label) {
             obs.insert(X_DIFFICULTY_TIER, value);
         }
+    }
+    obs
+}
+
+/// N1/N2 观测头合并（batch 路由 / 词法压缩发生时打标）
+pub(crate) fn extend_obs_with_flags(
+    mut obs: axum::http::HeaderMap,
+    batch: bool,
+    compressed: bool,
+) -> axum::http::HeaderMap {
+    if batch {
+        obs.insert("x-batch-routed", axum::http::HeaderValue::from_static("1"));
+    }
+    if compressed {
+        obs.insert("x-compressed", axum::http::HeaderValue::from_static("1"));
     }
     obs
 }
@@ -685,6 +719,7 @@ mod fallback_guard_tests {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            supports_batch: false,
         }
     }
 
@@ -718,6 +753,7 @@ mod fallback_guard_tests {
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
@@ -990,6 +1026,7 @@ mod cooldown_retry_after {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            supports_batch: false,
         }
     }
 
@@ -1027,6 +1064,7 @@ mod cooldown_retry_after {
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));

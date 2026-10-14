@@ -186,10 +186,43 @@ pub(crate) async fn assemble(
     ));
 
     // 精确响应缓存（oxcache memory）；enabled/TTL 由 [cache] 段热读，默认关闭。
-    let response_cache = Arc::new(crate::api::response_cache::ResponseCache::new(
+    // O4 语义响应缓存层（semantic-cache feature + [cache.semantic].enabled；
+    // BGE 加载失败 → 旁路 + ERROR 限频，精确缓存不受影响）
+    let semantic_layer: Option<std::sync::Arc<crate::api::semantic_cache::SemanticCacheLayer>> = {
+        let sem_cfg = config_manager.read().cache.semantic.clone();
+        if !sem_cfg.enabled {
+            None
+        } else {
+            #[cfg(feature = "semantic-cache")]
+            {
+                match crate::api::semantic_cache::BgeEmbedder::load(&sem_cfg.model_path) {
+                    Ok(embedder) => Some(std::sync::Arc::new(
+                        crate::api::semantic_cache::SemanticCacheLayer::new(
+                            sem_cfg.similarity,
+                            sem_cfg.max_entries,
+                            std::sync::Arc::new(embedder),
+                        ),
+                    )),
+                    Err(error) => {
+                        tracing::error!(%error, "semantic cache disabled: embedder load failed");
+                        None
+                    }
+                }
+            }
+            #[cfg(not(feature = "semantic-cache"))]
+            {
+                tracing::error!(
+                    "[cache.semantic].enabled requires the semantic-cache feature; layer bypassed"
+                );
+                None
+            }
+        }
+    };
+    let response_cache = Arc::new(crate::api::response_cache::ResponseCache::with_semantic(
         Arc::new(oxcache::backend::default_memory_backend()),
         config_manager.clone(),
         vendor_manager.metrics().clone(),
+        semantic_layer,
     ));
     {
         let cache_enabled = config_manager.read().cache.enabled;

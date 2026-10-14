@@ -224,6 +224,7 @@ mod build_fallback_chain {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             id: id.into(),
+            supports_batch: false,
             name: format!("Test {}", id),
             type_: "openai".into(),
             api_key_env: "NEXUSFLOW_TEST_KEY".into(),
@@ -284,6 +285,7 @@ mod build_fallback_chain {
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         };
         let cm = Arc::new(ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm.clone()));
@@ -377,6 +379,7 @@ mod cover_all_paths {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             id: id.into(),
+            supports_batch: false,
             name: format!("Test {}", id),
             type_: "openai".into(),
             api_key_env: "NEXUSFLOW_TEST_KEY".into(),
@@ -440,6 +443,7 @@ mod cover_all_paths {
                 ..Default::default()
             },
             docs: Default::default(),
+            lexcompress: Default::default(),
         }
     }
 

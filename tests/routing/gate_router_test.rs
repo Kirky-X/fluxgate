@@ -280,6 +280,7 @@ mod tests {
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         };
 
         let config_manager = Arc::new(ConfigManager::new(disabled_config));
@@ -316,8 +317,8 @@ mod tests {
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         };
-
         let config_manager = Arc::new(ConfigManager::new(disabled_config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
         let router = Router::new(config_manager.clone(), vendor_manager.clone());
@@ -672,8 +673,12 @@ mod scheduling_weight {
         let mut rng = StdRng::seed_from_u64(42);
         let mut idle_count = 0usize;
         for _ in 0..200 {
-            let d =
-                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            let d = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng,
+                None,
+            );
             if d.vendor.id == "idle-vendor" {
                 idle_count += 1;
             }
@@ -691,11 +696,13 @@ mod scheduling_weight {
                 weighted.clone(),
                 RoutingStrategy::Abstract,
                 &mut rng_a,
+                None,
             );
             let b = router.weighted_select_with(
                 weighted.clone(),
                 RoutingStrategy::Abstract,
                 &mut rng_b,
+                None,
             );
             assert_eq!(a.vendor.id, b.vendor.id, "固定 seed 下序列必须逐位一致");
         }
@@ -832,6 +839,7 @@ mod scheduling_weight {
                     weighted.clone(),
                     RoutingStrategy::Abstract,
                     &mut rng,
+                    None,
                 );
                 if d.vendor.id == "idle-vendor" {
                     n += 1;
@@ -886,8 +894,12 @@ mod scheduling_weight {
         let mut light_count = 0;
         let mut rng = StdRng::seed_from_u64(7);
         for _ in 0..200 {
-            let d =
-                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            let d = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng,
+                None,
+            );
             if d.vendor.id == "idle-vendor" {
                 light_count += 1;
             }
@@ -905,11 +917,13 @@ mod scheduling_weight {
                 weighted.clone(),
                 RoutingStrategy::Abstract,
                 &mut rng_a,
+                None,
             );
             let b = router.weighted_select_with(
                 weighted.clone(),
                 RoutingStrategy::Abstract,
                 &mut rng_b,
+                None,
             );
             assert_eq!(a.vendor.id, b.vendor.id);
         }
@@ -999,8 +1013,12 @@ mod scheduling_weight {
         let mut idle_count = 0;
         let mut rng = StdRng::seed_from_u64(7);
         for _ in 0..200 {
-            let d =
-                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            let d = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng,
+                None,
+            );
             if d.vendor.id == "idle-vendor" {
                 idle_count += 1;
             }
@@ -1053,8 +1071,12 @@ mod scheduling_weight {
         let mut rng = StdRng::seed_from_u64(42);
         let (mut fast_count, mut mid_count, mut slow_count) = (0, 0, 0);
         for _ in 0..200 {
-            let d =
-                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            let d = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng,
+                None,
+            );
             match d.vendor.id.as_str() {
                 "idle-vendor" => fast_count += 1,
                 "busy-vendor" => mid_count += 1,
@@ -1107,8 +1129,12 @@ mod scheduling_weight {
         let mut rng = StdRng::seed_from_u64(42);
         let mut slow_count = 0;
         for _ in 0..200 {
-            let d =
-                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            let d = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng,
+                None,
+            );
             if d.vendor.id == "slow-vendor" {
                 slow_count += 1;
             }
@@ -1148,8 +1174,12 @@ mod scheduling_weight {
         let mut rng = StdRng::seed_from_u64(42);
         let mut busy_count = 0;
         for _ in 0..200 {
-            let d =
-                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            let d = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng,
+                None,
+            );
             if d.vendor.id == "busy-vendor" {
                 busy_count += 1;
             }
@@ -1586,7 +1616,7 @@ mod cooldown_improvements {
         );
 
         let overridden = router
-            .calculate_weights_overridden(candidates, Some(3.0), None)
+            .calculate_weights_overridden(candidates, Some(3.0), None, None)
             .await;
         assert!(
             (overridden[0].0 - 1.65).abs() < 1e-9,
@@ -1654,6 +1684,7 @@ mod cooldown_improvements {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await
                 .expect("route");
@@ -1692,6 +1723,7 @@ mod cooldown_improvements {
                     None,
                     Some("shared-model"),
                     Some(3.0),
+                    None,
                     None,
                     None,
                     None,
@@ -1845,7 +1877,7 @@ mod soft_affinity {
         let mut weighted = router.calculate_weights(candidates).await;
         apply_affinity_boost(&mut weighted, "vendor-a", 10.0);
         let mut rng = StdRng::seed_from_u64(42);
-        let d = router.weighted_select_with(weighted, RoutingStrategy::Abstract, &mut rng);
+        let d = router.weighted_select_with(weighted, RoutingStrategy::Abstract, &mut rng, None);
         assert_eq!(
             d.vendor.id, "vendor-a",
             "×11 boost 下固定种子必选 bound vendor"
@@ -1881,11 +1913,13 @@ mod soft_affinity {
             weights.clone(),
             RoutingStrategy::Abstract,
             &mut StdRng::seed_from_u64(7),
+            None,
         );
         let d2 = router.weighted_select_with(
             boosted,
             RoutingStrategy::Abstract,
             &mut StdRng::seed_from_u64(7),
+            None,
         );
         assert_eq!(d1.vendor.id, d2.vendor.id, "boost=0 分布与无亲和一致");
     }
@@ -1944,6 +1978,7 @@ mod soft_affinity {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .expect("scoped 路由");
@@ -1958,6 +1993,7 @@ mod soft_affinity {
                 Some("sess-t"),
                 Some("hash-a"),
                 &[],
+                None,
                 None,
                 None,
                 None,
@@ -2090,11 +2126,20 @@ mod sla_virtual_queue {
 
         // 路由若干次（含租户键）→ Q 表不得被触碰
         router
-            .route_weighted("shared-model", None, None, &[], None, None, None)
+            .route_weighted("shared-model", None, None, &[], None, None, None, None)
             .await
             .unwrap();
         router
-            .route_weighted("shared-model", None, Some("hash-a"), &[], None, None, None)
+            .route_weighted(
+                "shared-model",
+                None,
+                Some("hash-a"),
+                &[],
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert!(
@@ -2126,7 +2171,7 @@ mod sla_virtual_queue {
         );
 
         router
-            .route_weighted("shared-model", None, None, &[], None, None, None)
+            .route_weighted("shared-model", None, None, &[], None, None, None, None)
             .await
             .unwrap();
         let q = router.sla_queue_snapshot();
@@ -2152,7 +2197,7 @@ mod sla_virtual_queue {
         .await;
         // 无任何 EWMA 数据 → ŝ=1.0（冷启动乐观）
         router
-            .route_weighted("shared-model", None, None, &[], None, None, None)
+            .route_weighted("shared-model", None, None, &[], None, None, None, None)
             .await
             .unwrap();
         let q = router.sla_queue_snapshot();
@@ -2242,19 +2287,46 @@ mod sla_virtual_queue {
         seed_failing_vendor(&vm, "v1"); // ŝ=0 → 每轮 Q += 0.95
 
         router
-            .route_weighted("shared-model", None, Some("hash-a"), &[], None, None, None)
+            .route_weighted(
+                "shared-model",
+                None,
+                Some("hash-a"),
+                &[],
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         router
-            .route_weighted("shared-model", None, Some("hash-a"), &[], None, None, None)
+            .route_weighted(
+                "shared-model",
+                None,
+                Some("hash-a"),
+                &[],
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         router
-            .route_weighted("shared-model", None, Some("hash-b"), &[], None, None, None)
+            .route_weighted(
+                "shared-model",
+                None,
+                Some("hash-b"),
+                &[],
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         router
-            .route_weighted("shared-model", None, None, &[], None, None, None)
+            .route_weighted("shared-model", None, None, &[], None, None, None, None)
             .await
             .unwrap();
 
@@ -2373,7 +2445,16 @@ mod linucb_selection {
         let vm = Arc::new(VendorManager::new(cm.clone()));
         let router = Router::new(cm, vm); // 不接线 bandit
         let d = router
-            .route_weighted("shared-model", None, None, &[], None, Some(&x()), None)
+            .route_weighted(
+                "shared-model",
+                None,
+                None,
+                &[],
+                None,
+                Some(&x()),
+                None,
+                None,
+            )
             .await
             .expect("未接线必须回退 weighted 而非失败");
         assert_eq!(d.vendor.id, "only-vendor");
@@ -2396,7 +2477,16 @@ mod linucb_selection {
         }
         for _ in 0..20 {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, Some(&x()), None)
+                .route_weighted(
+                    "shared-model",
+                    None,
+                    None,
+                    &[],
+                    None,
+                    Some(&x()),
+                    None,
+                    None,
+                )
                 .await
                 .expect("route");
             assert_eq!(d.vendor.id, "good", "未采样臂必须被探索选中");
@@ -2420,7 +2510,16 @@ mod linucb_selection {
         let mut saw_bad = false;
         for _ in 0..40 {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, Some(&x()), None)
+                .route_weighted(
+                    "shared-model",
+                    None,
+                    None,
+                    &[],
+                    None,
+                    Some(&x()),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             saw_bad |= d.vendor.id == "bad";
@@ -2432,7 +2531,16 @@ mod linucb_selection {
         }
         for _ in 0..20 {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, Some(&x()), None)
+                .route_weighted(
+                    "shared-model",
+                    None,
+                    None,
+                    &[],
+                    None,
+                    Some(&x()),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             assert_eq!(d.vendor.id, "good", "成功奖励后必须定向 good");
@@ -2455,7 +2563,16 @@ mod linucb_selection {
         let (mut good, mut bad) = (0usize, 0usize);
         for _ in 0..200 {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, Some(&x()), None)
+                .route_weighted(
+                    "shared-model",
+                    None,
+                    None,
+                    &[],
+                    None,
+                    Some(&x()),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             match d.vendor.id.as_str() {
@@ -2489,7 +2606,7 @@ mod linucb_selection {
         let (mut good, mut bad) = (0usize, 0usize);
         for _ in 0..200 {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, None, None)
+                .route_weighted("shared-model", None, None, &[], None, None, None, None)
                 .await
                 .unwrap();
             match d.vendor.id.as_str() {
@@ -2521,7 +2638,7 @@ mod linucb_selection {
 
         // auto 路径 → try_global_route → 臂键 "__global__"
         let d = router
-            .route_weighted("auto", None, None, &[], None, Some(&x()), None)
+            .route_weighted("auto", None, None, &[], None, Some(&x()), None, None)
             .await
             .expect("auto 路由");
         assert!(
@@ -2535,7 +2652,16 @@ mod linucb_selection {
 
         // 大写 model → 归一小写键
         let d = router
-            .route_weighted("SHARED-MODEL", None, None, &[], None, Some(&x()), None)
+            .route_weighted(
+                "SHARED-MODEL",
+                None,
+                None,
+                &[],
+                None,
+                Some(&x()),
+                None,
+                None,
+            )
             .await
             .expect("大写路由");
         assert!(
@@ -2574,7 +2700,16 @@ mod linucb_selection {
 
         for _ in 0..10 {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, Some(&x()), None)
+                .route_weighted(
+                    "shared-model",
+                    None,
+                    None,
+                    &[],
+                    None,
+                    Some(&x()),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             assert_eq!(d.vendor.id, "good", "热切后下一请求必须按 UCB argmax");
@@ -2748,6 +2883,7 @@ mod lps_lookahead {
                 None,
                 None,
                 Some(0.001), // deadline 1μs：busy(Ŵ>0) 与 idle(Ŵ=0→0ms≤0.001ms)……
+                None,
             )
             .await
             .expect("route");
@@ -2759,7 +2895,16 @@ mod lps_lookahead {
             vm.metrics().record_traffic_at("idle", Instant::now());
         }
         let d = router
-            .route_weighted("shared-model", None, None, &[], None, None, Some(0.001))
+            .route_weighted(
+                "shared-model",
+                None,
+                None,
+                &[],
+                None,
+                None,
+                Some(0.001),
+                None,
+            )
             .await
             .expect("route");
         // 空集规则：改选 Ŵ 最小者（busy α=10 vs idle α=20 → busy 更小）
@@ -2776,7 +2921,16 @@ mod lps_lookahead {
         let (router, vm, _cm) = make_router(RoutingSection::default()).await;
         seed_observations(&vm);
         let d = router
-            .route_weighted("shared-model", None, None, &[], None, None, Some(0.001))
+            .route_weighted(
+                "shared-model",
+                None,
+                None,
+                &[],
+                None,
+                None,
+                Some(0.001),
+                None,
+            )
             .await
             .expect("gate 关时头被忽略，正常路由");
         assert!(d.vendor.id == "busy" || d.vendor.id == "idle");
@@ -3028,7 +3182,16 @@ mod route_gap_coverage {
         let (router, _vm, _cm) =
             make_router(RoutingSection::default(), vec![single_shared("gx-a")]).await;
         let err = router
-            .route_with_hints("shared-model", Some("ghost"), None, None, None, None, None)
+            .route_with_hints(
+                "shared-model",
+                Some("ghost"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap_err();
         match err {
@@ -3046,7 +3209,16 @@ mod route_gap_coverage {
         let (router, _vm, _cm) =
             make_router(RoutingSection::default(), vec![single_shared("gx-a")]).await;
         let d = router
-            .route_with_hints("shared-model", Some("GX-A"), None, None, None, None, None)
+            .route_with_hints(
+                "shared-model",
+                Some("GX-A"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .expect("大写 X-Vendor 必须命中");
         assert_eq!(d.vendor.id, "gx-a", "必须返回配置规范 id");
@@ -3066,7 +3238,16 @@ mod route_gap_coverage {
         )
         .await;
         let err = router
-            .route_with_hints("shared-model", Some("gx-off"), None, None, None, None, None)
+            .route_with_hints(
+                "shared-model",
+                Some("gx-off"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap_err();
         assert!(
@@ -3085,7 +3266,16 @@ mod route_gap_coverage {
         vm.update_status("gx-a", VendorStatus::Unavailable);
 
         let err = router
-            .route_with_hints("shared-model", Some("gx-a"), None, None, None, None, None)
+            .route_with_hints(
+                "shared-model",
+                Some("gx-a"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap_err();
         assert!(
@@ -3118,6 +3308,7 @@ mod route_gap_coverage {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .expect("model_id 提示路由");
@@ -3131,6 +3322,7 @@ mod route_gap_coverage {
                 "shared-model",
                 Some("gx-alias"),
                 Some("M-ALIAS"),
+                None,
                 None,
                 None,
                 None,
@@ -3154,6 +3346,7 @@ mod route_gap_coverage {
                 "shared-model",
                 None,
                 Some("ghost-model"),
+                None,
                 None,
                 None,
                 None,
@@ -3255,7 +3448,16 @@ mod route_gap_coverage {
         let (mut good, mut bad) = (0usize, 0usize);
         for _ in 0..200 {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, Some(&bad_len), None)
+                .route_weighted(
+                    "shared-model",
+                    None,
+                    None,
+                    &[],
+                    None,
+                    Some(&bad_len),
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             match d.vendor.id.as_str() {
@@ -3295,7 +3497,7 @@ mod route_gap_coverage {
         }
         for _ in 0..20 {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, Some(&x), None)
+                .route_weighted("shared-model", None, None, &[], None, Some(&x), None, None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -3323,7 +3525,12 @@ mod route_gap_coverage {
         let weighted = vec![(0.0, a.clone()), (0.0, b.clone())];
 
         let mut rng = StdRng::seed_from_u64(42);
-        let d = router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+        let d = router.weighted_select_with(
+            weighted.clone(),
+            RoutingStrategy::Abstract,
+            &mut rng,
+            None,
+        );
         assert!(
             d.vendor.id == "gx-a" || d.vendor.id == "gx-b",
             "零总权重必须仍在候选内选择: {}",
@@ -3338,11 +3545,13 @@ mod route_gap_coverage {
                 weighted.clone(),
                 RoutingStrategy::Abstract,
                 &mut rng_a,
+                None,
             );
             let y = router.weighted_select_with(
                 weighted.clone(),
                 RoutingStrategy::Abstract,
                 &mut rng_b,
+                None,
             );
             assert_eq!(x.vendor.id, y.vendor.id);
         }
@@ -3352,8 +3561,12 @@ mod route_gap_coverage {
         let mut saw_b = false;
         for seed in 0..40u64 {
             let mut rng = StdRng::seed_from_u64(seed);
-            let d =
-                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            let d = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng,
+                None,
+            );
             saw_a |= d.vendor.id == "gx-a";
             saw_b |= d.vendor.id == "gx-b";
         }
@@ -3375,8 +3588,12 @@ mod route_gap_coverage {
 
         for seed in [1u64, 7, 42, 12345] {
             let mut rng = StdRng::seed_from_u64(seed);
-            let d =
-                router.weighted_select_with(weighted.clone(), RoutingStrategy::Abstract, &mut rng);
+            let d = router.weighted_select_with(
+                weighted.clone(),
+                RoutingStrategy::Abstract,
+                &mut rng,
+                None,
+            );
             assert_eq!(
                 d.vendor.id, "gx-b",
                 "NaN 污染下必须走兜底（最后一个候选）: seed={seed}"
@@ -3410,6 +3627,7 @@ mod route_gap_coverage {
                     weighted.clone(),
                     RoutingStrategy::Abstract,
                     &mut rng,
+                    None,
                 );
                 assert!(
                     d.vendor.id == "gx-a" || d.vendor.id == "gx-b",
@@ -3446,9 +3664,9 @@ mod route_gap_coverage {
         let heavy_a = vec![(2.0, a.clone()), (1.0, b.clone())];
         let heavy_b = vec![(1.0, a.clone()), (2.0, b.clone())];
         let mut rng = StdRng::seed_from_u64(7);
-        let d1 = router.weighted_select_with(heavy_a, RoutingStrategy::Abstract, &mut rng);
+        let d1 = router.weighted_select_with(heavy_a, RoutingStrategy::Abstract, &mut rng, None);
         let mut rng = StdRng::seed_from_u64(7);
-        let d2 = router.weighted_select_with(heavy_b, RoutingStrategy::Abstract, &mut rng);
+        let d2 = router.weighted_select_with(heavy_b, RoutingStrategy::Abstract, &mut rng, None);
 
         assert_eq!(d1.vendor.id, "gx-a", "平局时权重高者（v-a）胜出");
         assert_eq!(d2.vendor.id, "gx-b", "平局时权重高者（v-b）胜出");
@@ -3527,7 +3745,7 @@ mod route_gap_coverage {
             .record_e2e("gx-a", std::time::Duration::from_millis(10), Instant::now());
 
         router
-            .route_weighted("shared-model", None, None, &[], None, None, None)
+            .route_weighted("shared-model", None, None, &[], None, None, None, None)
             .await
             .unwrap();
         let q = router.sla_queue_snapshot();
@@ -3628,7 +3846,16 @@ mod route_gap_coverage {
         .await;
         for deadline in [f64::NAN, -1.0, 0.0] {
             let d = router
-                .route_weighted("shared-model", None, None, &[], None, None, Some(deadline))
+                .route_weighted(
+                    "shared-model",
+                    None,
+                    None,
+                    &[],
+                    None,
+                    None,
+                    Some(deadline),
+                    None,
+                )
                 .await
                 .unwrap_or_else(|e| panic!("deadline {deadline} 不得拒绝服务: {e}"));
             assert!(d.vendor.id == "gx-a" || d.vendor.id == "gx-b");
@@ -3654,7 +3881,7 @@ mod route_gap_coverage {
             .record_e2e("gx-b", std::time::Duration::from_millis(8), now);
 
         let d = router
-            .route_weighted("shared-model", None, None, &[], None, None, Some(1e9))
+            .route_weighted("shared-model", None, None, &[], None, None, Some(1e9), None)
             .await
             .expect("全可行不得拒绝服务");
         assert!(d.vendor.id == "gx-a" || d.vendor.id == "gx-b");
@@ -3688,7 +3915,7 @@ mod route_gap_coverage {
         }
 
         let d = router
-            .route_weighted("auto", None, None, &[], None, None, Some(0.001))
+            .route_weighted("auto", None, None, &[], None, None, Some(0.001), None)
             .await
             .expect("route");
         assert_eq!(d.vendor.id, "gx-idle", "可行集应只剩 idle（global 路径）");
@@ -3724,7 +3951,7 @@ mod route_gap_coverage {
         }
 
         let d = router
-            .route_weighted("auto", None, None, &[], None, None, Some(0.001))
+            .route_weighted("auto", None, None, &[], None, None, Some(0.001), None)
             .await
             .expect("route");
         assert_eq!(

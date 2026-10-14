@@ -46,6 +46,13 @@ pub struct ModelCatalogEntry {
     /// 缓存创建单价（cache write；无独立计价填 0）
     #[serde(default)]
     pub cache_creation_price: f64,
+    /// 长上下文输入单价（price_factor_mode=cache_expected 且估 tokens 超过
+    /// long_context_threshold_tokens 时替代 input_price 参与因子；0/缺省不启用）
+    #[serde(default)]
+    pub long_context_input_price: f64,
+    /// 长上下文价触发的估 prompt token 阈值（0 = 不启用）
+    #[serde(default)]
+    pub long_context_threshold_tokens: u64,
     /// 定价币种 — 四个价格字段共用的计价币种
     #[serde(default)]
     pub currency: PricingCurrency,
@@ -207,6 +214,8 @@ mod tests {
             supports_tools: true,
             supports_thinking: true,
             cache_breakpoints: None,
+            long_context_input_price: 0.0,
+            long_context_threshold_tokens: 0,
         }
     }
 
@@ -345,6 +354,8 @@ currency = "eur"
             output_price: 10.0,
             cache_read_price: 1.25,
             cache_creation_price: 0.0,
+            long_context_input_price: 0.0,
+            long_context_threshold_tokens: 0,
             currency: PricingCurrency::Usd,
             max_output_tokens: Some(16_384),
             supports_tools: true,

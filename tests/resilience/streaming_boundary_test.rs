@@ -46,6 +46,7 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         stream_ttft_ms: 60_000,
         stream_idle_ms: 30_000,
         id: id.into(),
+        supports_batch: false,
         name: format!("Test {id}"),
         type_: "openai".into(),
         api_key_env: "NEXUSFLOW_TEST_KEY".into(),
@@ -121,6 +122,7 @@ fn make_config(vendors: Vec<VendorConfig>, circuit_open_timeout_ms: u64) -> Conf
             ..Default::default()
         },
         docs: Default::default(),
+        lexcompress: Default::default(),
     }
 }
 

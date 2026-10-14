@@ -32,30 +32,44 @@ struct ChatDispatchCtx {
     linucb_reward_key: Option<String>,
     // 难度档位标签（None = 定档未发生；仅 [routing.difficulty] 命中 groups 时有值）
     difficulty_tier: Option<&'static str>,
+    // N2 词法压缩是否发生（X-Compressed 响应头来源）
+    lexcompressed: bool,
+    // N1 batch 标记（X-Batch-Routed 响应头来源）
+    batch: bool,
 }
 
 #[axum::debug_handler]
 pub async fn chat_completions(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Result<impl IntoResponse, NexusFlowError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
 
-    let model = body.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
-        NexusFlowError::from(GateError::Validation {
-            field: "model".into(),
-        })
-    })?;
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            NexusFlowError::from(GateError::Validation {
+                field: "model".into(),
+            })
+        })?;
 
     let stream = body
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    // N2 词法压缩（[lexcompress] + X-Compress: 1）：改写 body 必须先于
+    // 特征/缓存键/前缀哈希，保证下游口径一致
+    let lexcompressed =
+        crate::middleware::lexcompress::apply_to_body(&state.config, &headers, &mut body);
+
     // 提取路由提示与会话亲和键（X-Session-Id 优先，messages 前缀哈希兜底）
     let hints = RoutingHints::from_headers(&headers);
+    let request_batch = hints.batch;
     let session_key = hints.effective_session_key(&body);
     // 亲和键租户维度（与响应缓存同源，从已验证 key 派生；affinity_tenant_scoped 关闭时不参与键构造）
     let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
@@ -64,7 +78,7 @@ pub async fn chat_completions(
     // 亲和）。None 接线 = 历史行为
     let (difficulty_tier, routed_model) = crate::router::difficulty::resolve_tier(
         state.difficulty.as_deref(),
-        model,
+        &model,
         &body,
         hints.has_hints(),
     )
@@ -89,6 +103,8 @@ pub async fn chat_completions(
         api_key_hash,
         linucb_reward_key,
         difficulty_tier,
+        lexcompressed,
+        batch: request_batch && decision.vendor.supports_batch,
     };
 
     // 零拷贝透传（入站格式 OpenAI == 出站格式 OpenAI）；透传路径不做工具
@@ -97,22 +113,22 @@ pub async fn chat_completions(
 
     if use_passthrough {
         if stream {
-            return chat_passthrough_stream(&state, &ctx, model, &body, decision).await;
+            return chat_passthrough_stream(&state, &ctx, &model, &body, decision).await;
         }
-        return chat_passthrough_json(&state, &ctx, &headers, model, &body, decision).await;
+        return chat_passthrough_json(&state, &ctx, &headers, &model, &body, decision).await;
     }
 
     // 转换路径：OpenAI → Unified → 目标厂商
     let unified_request = state.openai_converter.to_unified(body.clone())?;
 
     if stream {
-        return chat_convert_stream(&state, &ctx, model, &body, decision, unified_request).await;
+        return chat_convert_stream(&state, &ctx, &model, &body, decision, unified_request).await;
     }
     chat_convert_json(
         &state,
         &ctx,
         &headers,
-        model,
+        &model,
         &body,
         decision,
         unified_request,
@@ -206,6 +222,7 @@ async fn chat_passthrough_stream(
     #[cfg(not(feature = "resilience"))]
     let obs_headers = axum::http::HeaderMap::new();
     let obs_headers = crate::api::extend_obs_with_tier(obs_headers, ctx.difficulty_tier);
+    let obs_headers = crate::api::extend_obs_with_flags(obs_headers, ctx.batch, ctx.lexcompressed);
     Ok(crate::api::with_fallback_headers(
         (STREAM_HEADERS, body_stream).into_response(),
         &obs_headers,
@@ -348,6 +365,7 @@ async fn chat_passthrough_json(
                 final_route: Some(final_route),
                 computed: false,
                 participated: false,
+                semantic: false,
             }
         }
     };
@@ -388,11 +406,17 @@ async fn chat_passthrough_json(
         body,
         &flow.value,
         &final_route.decision.vendor.type_,
+        &final_route.decision.vendor.id,
+        Some(state.vendor_manager.metrics()),
     );
 
     Ok(crate::api::with_fallback_headers(
-        json_response_with_cache_flag(flow.value, flow.participated),
-        &crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
+        json_response_with_cache_flag_semantic(flow.value, flow.participated, flow.semantic),
+        &crate::api::extend_obs_with_flags(
+            crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
+            ctx.batch,
+            ctx.lexcompressed,
+        ),
     ))
 }
 
@@ -463,6 +487,8 @@ async fn chat_convert_stream(
         &ctx.api_key_hash,
         body,
         &decision.vendor.type_,
+        &decision.vendor.id,
+        Some(std::sync::Arc::clone(state.vendor_manager.metrics())),
     );
     let chunk_stream = crate::middleware::quota::settle_stream(chunk_stream, settle_ctx);
 
@@ -488,6 +514,7 @@ async fn chat_convert_stream(
     #[cfg(not(feature = "resilience"))]
     let obs_headers = axum::http::HeaderMap::new();
     let obs_headers = crate::api::extend_obs_with_tier(obs_headers, ctx.difficulty_tier);
+    let obs_headers = crate::api::extend_obs_with_flags(obs_headers, ctx.batch, ctx.lexcompressed);
     Ok(crate::api::with_fallback_headers(
         (STREAM_HEADERS, body_stream).into_response(),
         &obs_headers,
@@ -564,6 +591,7 @@ async fn chat_convert_json(
                 final_route: Some(final_route),
                 computed: false,
                 participated: false,
+                semantic: false,
             }
         }
     };
@@ -602,12 +630,18 @@ async fn chat_convert_json(
         body,
         &flow.value,
         &final_route.decision.vendor.type_,
+        &final_route.decision.vendor.id,
+        Some(state.vendor_manager.metrics()),
     );
 
     // 缓存参与 → 响应带 X-Cache 头；回退观测头叠加（开关关闭为空表）。
     Ok(crate::api::with_fallback_headers(
-        json_response_with_cache_flag(flow.value, flow.participated),
-        &crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
+        json_response_with_cache_flag_semantic(flow.value, flow.participated, flow.semantic),
+        &crate::api::extend_obs_with_flags(
+            crate::api::extend_obs_with_tier(final_route.obs_headers.clone(), ctx.difficulty_tier),
+            ctx.batch,
+            ctx.lexcompressed,
+        ),
     ))
 }
 
@@ -654,6 +688,7 @@ async fn resolve_route(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|d| d.is_finite() && *d > 0.0);
+    let ctx = crate::api::route_ctx(state, body, hints.batch);
     let decision = if hints.has_hints() {
         state
             .router
@@ -665,6 +700,7 @@ async fn resolve_route(
                 Some(api_key_hash),
                 linucb_features,
                 lps_deadline_ms,
+                ctx,
             )
             .await?
     } else {
@@ -678,6 +714,7 @@ async fn resolve_route(
                 request_weight,
                 linucb_features,
                 lps_deadline_ms,
+                ctx,
             )
             .await?
     };
@@ -811,8 +848,22 @@ impl FinalRoute for FinalDispatch {
 
 /// 缓存参与 → 响应带 `X-Cache: MISS` 头（HIT 已提前返回）；不参与则裸
 /// JSON 头。
-fn json_response_with_cache_flag(response: Value, participated: bool) -> axum::response::Response {
-    if participated {
+/// O4：语义命中变体——X-Cache: SEMANTIC-HIT（区别于精确 HIT/MISS）
+fn json_response_with_cache_flag_semantic(
+    response: Value,
+    participated: bool,
+    semantic: bool,
+) -> axum::response::Response {
+    if participated && semantic {
+        (
+            [
+                ("Content-Type", "application/json"),
+                ("X-Cache", "SEMANTIC-HIT"),
+            ],
+            Json(response),
+        )
+            .into_response()
+    } else if participated {
         (
             [("Content-Type", "application/json"), ("X-Cache", "MISS")],
             Json(response),

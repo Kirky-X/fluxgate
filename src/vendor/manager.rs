@@ -2874,6 +2874,7 @@ mod tests {
             grpc: None,
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         }
     }
 
@@ -3000,6 +3001,7 @@ mod tests {
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
+            supports_batch: false,
         }
     }
 

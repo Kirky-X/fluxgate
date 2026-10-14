@@ -609,6 +609,7 @@ mod tests {
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
+            supports_batch: false,
         }
     }
 
@@ -924,6 +925,7 @@ mod inline_tests {
             timeout_ms: 30_000,
             stream_ttft_ms: 30_000,
             stream_idle_ms: 30_000,
+            supports_batch: false,
         }
     }
 

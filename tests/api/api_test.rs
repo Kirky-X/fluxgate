@@ -1043,6 +1043,7 @@ mod admin {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            supports_batch: false,
         };
         let result =
             admin::update_vendor(State(state), Path("nonexistent".to_string()), Json(vendor)).await;
@@ -5904,6 +5905,7 @@ mod fallback_observation_headers {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            supports_batch: false,
         }
     }
 

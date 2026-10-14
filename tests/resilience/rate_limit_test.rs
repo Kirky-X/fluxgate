@@ -126,6 +126,7 @@ fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Co
         grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
         docs: Default::default(),
+        lexcompress: Default::default(),
         rate_limit: RateLimitSection { rules },
     }
 }

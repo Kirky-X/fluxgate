@@ -24,6 +24,8 @@ pub struct RoutingHints {
     pub preferred_model: Option<String>,
     /// 会话亲和键（X-Session-Id header）
     pub session_key: Option<String>,
+    /// N1 batch 标记（X-Batch: 1）
+    pub batch: bool,
     /// 请求级权重（X-Weight header，LiteLLM simple_shuffle
     /// _router_weights 对照）。仅接受有限正数——非数值 / 非有限 / 非正
     /// 一律忽略为 None（非法值忽略语义）。是否生效由
@@ -55,6 +57,11 @@ impl RoutingHints {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.trim().parse::<f64>().ok())
                 .filter(|w| w.is_finite() && *w > 0.0),
+            batch: headers
+                .get("x-batch")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false),
         }
     }
 

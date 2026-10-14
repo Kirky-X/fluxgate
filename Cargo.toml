@@ -59,6 +59,8 @@ router = ["vendor-management", "dep:oxcache"]
 # 依赖为 path dep（vecboost 库面处于快速演进期，git 发布面与内部 feature
 # 组合未稳定；升级跟随上游 tag 并跑全量测试——规则12）。
 difficulty-classifier = ["dep:vecboost"]
+# 语义响应缓存（O4）：vecboost BGE 嵌入 + 线性余弦检索（强制租户隔离）
+semantic-cache = ["dep:vecboost"]
 # marker feature（当前无 cfg 消费点；保留组合位与单开关语义）
 protocol = []
 infrastructure = ["dep:oxcache", "dep:trait-kit"]
@@ -370,6 +372,10 @@ path = "tests/routing/difficulty_tier_test.rs"
 [[test]]
 name = "routing_benchmark_test"
 path = "tests/routing/routing_benchmark_test.rs"
+
+[[test]]
+name = "cache_cost_test"
+path = "tests/routing/cache_cost_test.rs"
 
 [profile.release]
 opt-level = 3

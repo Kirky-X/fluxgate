@@ -120,6 +120,9 @@ pub fn skip_cache_requested(headers: &HeaderMap) -> bool {
 /// logger/pre_aggregator 降级语义），接线后 enabled/TTL 每次操作热读。
 #[derive(Clone)]
 pub struct ResponseCache {
+    /// O4 语义层（semantic-cache feature + [cache.semantic].enabled 接线；
+    /// None = 旁路）
+    pub semantic: Option<std::sync::Arc<crate::api::semantic_cache::SemanticCacheLayer>>,
     /// 存储本体 — oxcache `Cache<String, Value>`（Arc 包裹保持 Clone）；
     /// single-flight/watch/panic 安全由库承载。库侧 ttl_jitter 置 0——
     /// 抖动是消费侧策略（[cache].ttl_jitter 热读），防双重抖动
@@ -179,6 +182,8 @@ pub struct CacheFlow<R> {
     /// 是否由本次请求计算（X-Cache 语义）：`true` = leader 或自愈回源
     /// → MISS；`false` = 缓存复用 → HIT。
     pub computed: bool,
+    /// O4 语义命中（X-Cache: SEMANTIC-HIT）：精确 miss 后的嵌入相似复用
+    pub semantic: bool,
     /// 是否走了缓存面：`false` = 未接线 / `[cache]` 关闭 / 不可缓存 /
     /// X-No-Cache / 空 canonical——响应不带 X-Cache 头。
     pub participated: bool,
@@ -189,6 +194,16 @@ impl ResponseCache {
         backend: Arc<dyn CacheBackend + Send + Sync>,
         config: Arc<ConfigManager>,
         metrics: Arc<GlobalMetrics>,
+    ) -> Self {
+        Self::with_semantic(backend, config, metrics, None)
+    }
+
+    /// 带语义层的构造（bootstrap 在 semantic-cache feature + enabled 时接线）
+    pub fn with_semantic(
+        backend: Arc<dyn CacheBackend + Send + Sync>,
+        config: Arc<ConfigManager>,
+        metrics: Arc<GlobalMetrics>,
+        semantic: Option<std::sync::Arc<crate::api::semantic_cache::SemanticCacheLayer>>,
     ) -> Self {
         // 单后端 + 无 service_name：builder 拒绝路径不成立，expect 为构建期
         // 不可能失败而非吞错。用 builder 而非 `Cache::with_dependencies`：
@@ -203,6 +218,7 @@ impl ResponseCache {
                 .expect("single-backend CacheBuilder build cannot fail"),
         );
         Self {
+            semantic,
             cache,
             config,
             metrics,
@@ -382,6 +398,21 @@ impl ResponseCache {
         } else {
             String::new()
         };
+        // O4：语义层接线（精确面之前；命中即免派发，结算按缓存复用口径）
+        if participate {
+            if let Some(sem) = self.semantic.as_ref() {
+                let tenant = cache_api_key_hash(headers);
+                if let Some(value) = sem.lookup(&tenant, body).await {
+                    return Ok(CacheFlow {
+                        value,
+                        final_route: None,
+                        computed: false,
+                        participated: true,
+                        semantic: true,
+                    });
+                }
+            }
+        }
         if !participate || canonical.is_empty() {
             let (value, route) = dispatch().await?;
             return Ok(CacheFlow {
@@ -389,6 +420,7 @@ impl ResponseCache {
                 final_route: Some(route),
                 computed: false,
                 participated: false,
+                semantic: false,
             });
         }
 
@@ -403,6 +435,9 @@ impl ResponseCache {
 
         // 闭包经共享引用伴生（&F 为 Copy）：自愈回源路径还要再调一次
         let dispatch_ref = &dispatch;
+        // O4 语义缓存生产写路径：leader 成功回写后入列语义层（精确写失败不影响主流程）
+        let semantic_layer = self.semantic.clone();
+        let semantic_body = self.semantic.as_ref().map(|_| body.clone());
         let leader_fut = {
             let computed = Arc::clone(&computed);
             let final_key_cell = Arc::clone(&final_key_cell);
@@ -419,6 +454,11 @@ impl ResponseCache {
                             .await;
                         *final_key_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(final_key);
                         *route_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(route);
+                        if let (Some(sem), Some(sem_body)) =
+                            (semantic_layer.as_ref(), semantic_body.as_ref())
+                        {
+                            sem.store(&api_key_hash, sem_body, &value);
+                        }
                         Ok(value)
                     }
                     Ok(Err(e)) => {
@@ -455,6 +495,7 @@ impl ResponseCache {
                     final_route: route_cell.lock().unwrap_or_else(|e| e.into_inner()).take(),
                     computed: computed.load(Ordering::SeqCst),
                     participated: true,
+                    semantic: false,
                 })
             }
             Err(e) => {
@@ -517,6 +558,7 @@ impl ResponseCache {
             final_route: Some(route),
             computed: true,
             participated: true,
+            semantic: false,
         })
     }
 
@@ -655,14 +697,13 @@ mod tests {
             vendors: vec![],
             global_model: None,
             pricing: vec![],
-            model_catalog: Vec::new(),
+            model_catalog: vec![],
             auth: None,
             cors: None,
             retry: Default::default(),
             routing: Default::default(),
             cache: crate::config::CacheSection {
                 enabled: true,
-                ttl_secs: 300,
                 ..Default::default()
             },
             admission: Default::default(),
@@ -671,6 +712,7 @@ mod tests {
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         });
         let cache = ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),
@@ -729,14 +771,13 @@ mod tests {
             vendors: vec![],
             global_model: None,
             pricing: vec![],
-            model_catalog: Vec::new(),
+            model_catalog: vec![],
             auth: None,
             cors: None,
             retry: Default::default(),
             routing: Default::default(),
             cache: crate::config::CacheSection {
                 enabled: true,
-                ttl_secs: 300,
                 ..Default::default()
             },
             admission: Default::default(),
@@ -745,6 +786,7 @@ mod tests {
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         });
         let cache = ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),
@@ -815,6 +857,7 @@ mod ttl_load_linking_tests {
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         }
     }
 
@@ -931,6 +974,7 @@ mod single_flight_and_sentinel_tests {
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         };
         ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),
@@ -1078,6 +1122,7 @@ mod get_or_flow_tests {
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         };
         ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),

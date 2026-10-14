@@ -250,6 +250,8 @@ async fn claude_cache_token_usage_priced_with_cache_tiers() {
             output_price: 15.0,
             cache_read_price: 0.3,
             cache_creation_price: 3.75,
+            long_context_input_price: 0.0,
+            long_context_threshold_tokens: 0,
             currency: nexusflow::config::PricingCurrency::Usd,
             max_output_tokens: Some(8192),
             supports_tools: true,

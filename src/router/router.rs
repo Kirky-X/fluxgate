@@ -107,6 +107,7 @@ impl Router {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -126,6 +127,8 @@ impl Router {
         linucb_features: Option<&[f64]>,
         // x-deadline-ms（毫秒），仅 [routing].lps_deadline_gate 开启时消费
         lps_deadline_ms: Option<f64>,
+        // 前缀亲和 + 长上下文价的请求级上下文（None = 旁路）
+        ctx: Option<RouteCtx>,
     ) -> Result<RoutingDecision, GateError> {
         let gated = self.gate_request_weight(request_weight);
         self.route_inner(
@@ -136,6 +139,7 @@ impl Router {
             gated,
             linucb_features,
             lps_deadline_ms,
+            ctx,
         )
         .await
     }
@@ -159,6 +163,7 @@ impl Router {
         request_weight: Option<f64>,
         linucb_features: Option<&[f64]>,
         lps_deadline_ms: Option<f64>,
+        ctx: Option<RouteCtx>,
     ) -> Result<RoutingDecision, GateError> {
         // SLA 分桶用原始租户，不受 affinity_tenant_scoped 门控约束
         let sla_tenant = tenant;
@@ -182,6 +187,7 @@ impl Router {
                 request_weight,
                 linucb_features,
                 lps_deadline_ms,
+                ctx,
             )
             .await
         {
@@ -215,6 +221,7 @@ impl Router {
                     request_weight,
                     linucb_features,
                     lps_deadline_ms,
+                    ctx,
                 )
                 .await
             {
@@ -465,7 +472,7 @@ impl Router {
             })
             .collect();
         let finals = self
-            .calculate_weights_overridden(eligible.clone(), None, None)
+            .calculate_weights_overridden(eligible.clone(), None, None, None)
             .await;
         let final_by_vendor: HashMap<&str, f64> = finals
             .iter()
@@ -530,6 +537,8 @@ impl Router {
         linucb_features: Option<&[f64]>,
         // x-deadline-ms 头（语义同 [`Self::route_weighted`]）
         lps_deadline_ms: Option<f64>,
+        // 前缀亲和 + 长上下文价 ctx（None = 旁路）
+        ctx: Option<RouteCtx>,
     ) -> Result<RoutingDecision, GateError> {
         // 入口统一过权重门控（route_weighted 末尾二次门控幂等）
         let request_weight = self.gate_request_weight(request_weight);
@@ -558,6 +567,7 @@ impl Router {
                     request_weight,
                     linucb_features,
                     lps_deadline_ms,
+                    ctx,
                 )
                 .await
             {
@@ -573,6 +583,7 @@ impl Router {
             request_weight,
             linucb_features,
             lps_deadline_ms,
+            ctx,
         )
         .await
     }
@@ -674,6 +685,7 @@ impl Router {
         linucb_features: Option<&[f64]>,
         // x-deadline-ms 头（lps_deadline_gate 开启时消费）
         lps_deadline_ms: Option<f64>,
+        ctx: Option<RouteCtx>,
     ) -> Option<RoutingDecision> {
         let (available_candidates, status_dropped) = self
             .collect_abstract_candidates(abstract_id, excluded)
@@ -731,6 +743,7 @@ impl Router {
             &available_candidates,
             linucb_features,
             RoutingStrategy::Abstract,
+            ctx.as_ref(),
         ) {
             return Some(decision);
         }
@@ -742,6 +755,7 @@ impl Router {
                 request_weight,
                 None,
                 sla_tenant,
+                ctx,
             )
             .await,
         )
@@ -760,6 +774,7 @@ impl Router {
         linucb_features: Option<&[f64]>,
         // x-deadline-ms 头（语义同 try_abstract_route）
         lps_deadline_ms: Option<f64>,
+        ctx: Option<RouteCtx>,
     ) -> Option<RoutingDecision> {
         let config = self.config.read();
 
@@ -816,6 +831,7 @@ impl Router {
             &all_models,
             linucb_features,
             RoutingStrategy::Global,
+            ctx.as_ref(),
         ) {
             return Some(decision);
         }
@@ -827,6 +843,7 @@ impl Router {
                 request_weight,
                 None,
                 sla_tenant,
+                ctx,
             )
             .await,
         )
@@ -912,8 +929,15 @@ impl Router {
         }
         tracing::warn!(count = status_dropped.len(), "{}", t(engaged_msg));
         Some(
-            self.weighted_select(status_dropped, strategy, request_weight, None, sla_tenant)
-                .await,
+            self.weighted_select(
+                status_dropped,
+                strategy,
+                request_weight,
+                None,
+                sla_tenant,
+                None,
+            )
+            .await,
         )
     }
 
@@ -943,6 +967,7 @@ impl Router {
                     request_weight,
                     Some((&bound, factor)),
                     sla_tenant,
+                    None,
                 )
                 .await);
         }
@@ -988,6 +1013,17 @@ impl Router {
         }
     }
 
+    /// 前缀亲和候选对（D1）：enabled 且 ctx 带哈希且 n≥2 时产出 (i1,i2)，
+    /// 否则 None（选路完全回退历史路径）
+    fn affinity_pair(&self, n: usize, ctx: Option<&RouteCtx>) -> Option<(usize, usize)> {
+        let ctx = ctx?;
+        let enabled = self.config.read().routing.prefix_affinity.enabled;
+        if !enabled {
+            return None;
+        }
+        prefix_candidates(ctx.prefix_hash, n)
+    }
+
     /// LinUCB 选择档：selection="linucb"（热读）且接线且特征长度正确时
     /// argmax UCB；任一条件不满足返回 None 回退 weighted。α 热读 ucb_alpha
     ///（非有限/负值按 0 = 纯贪心）
@@ -997,7 +1033,35 @@ impl Router {
         candidates: &[(VendorConfig, ModelConfig)],
         features: Option<&[f64]>,
         strategy: RoutingStrategy,
+        ctx: Option<&RouteCtx>,
     ) -> Option<RoutingDecision> {
+        // N1：batch 候选收缩（语义同 weighted_select）
+        let batch_restricted;
+        let candidates: &[(VendorConfig, ModelConfig)] = if ctx.map(|c| c.batch).unwrap_or(false)
+            && candidates.iter().any(|(v, _)| v.supports_batch)
+        {
+            batch_restricted = candidates
+                .iter()
+                .filter(|(v, _)| v.supports_batch)
+                .cloned()
+                .collect::<Vec<_>>();
+            &batch_restricted
+        } else {
+            candidates
+        };
+        // 前缀亲和：UCB argmax 限定在前缀哈希候选对内（DualMap 形态）
+        let restricted;
+        let candidates: &[(VendorConfig, ModelConfig)] =
+            match self.affinity_pair(candidates.len(), ctx) {
+                Some((i1, i2)) => match (candidates.get(i1), candidates.get(i2)) {
+                    (Some(a), Some(b)) => {
+                        restricted = vec![a.clone(), b.clone()];
+                        &restricted
+                    }
+                    _ => candidates,
+                },
+                None => candidates,
+            };
         if !self
             .config
             .read()
@@ -1034,6 +1098,7 @@ impl Router {
 
     /// 生产选择入口：async 算权重后注入 rng 同步选择（rng 不跨 await）。
     /// affinity_boost 为 soft 命中乘子 (vendor_id, factor)
+    #[allow(clippy::too_many_arguments)]
     async fn weighted_select(
         &self,
         candidates: Vec<(VendorConfig, ModelConfig)>,
@@ -1041,16 +1106,30 @@ impl Router {
         request_weight: Option<f64>,
         affinity_boost: Option<(&str, f64)>,
         tenant: Option<&str>,
+        ctx: Option<RouteCtx>,
     ) -> RoutingDecision {
+        // N1：batch 标记且候选含 supports_batch 厂商 → 收缩候选集（空则忽略）
+        let mut candidates = candidates;
+        if ctx.map(|c| c.batch).unwrap_or(false) {
+            let any_batch = candidates.iter().any(|(v, _)| v.supports_batch);
+            if any_batch {
+                candidates.retain(|(v, _)| v.supports_batch);
+            }
+        }
         let mut weighted = self
-            .calculate_weights_overridden(candidates, request_weight, tenant)
+            .calculate_weights_overridden(candidates, request_weight, tenant, ctx)
             .await;
         if let Some((vendor_id, factor)) = affinity_boost {
             apply_affinity_boost(&mut weighted, vendor_id, factor);
         }
+        let pair = ctx.as_ref().and_then(|c| {
+            routing_pair_enabled(self)
+                .then(|| prefix_candidates(c.prefix_hash, weighted.len()))
+                .flatten()
+        });
         let decision = {
             let mut rng = rand::rng();
-            self.weighted_select_with(weighted, strategy, &mut rng)
+            self.weighted_select_with(weighted, strategy, &mut rng, pair)
         };
         // 选择完成后对偶更新 Q（决策时更新，无需执行结果回传）；
         // direct/亲和 hard 等单候选路径不经此，无对偶更新
@@ -1066,7 +1145,7 @@ impl Router {
         &self,
         candidates: Vec<(VendorConfig, ModelConfig)>,
     ) -> Vec<(f64, (VendorConfig, ModelConfig))> {
-        self.calculate_weights_overridden(candidates, None, None)
+        self.calculate_weights_overridden(candidates, None, None, None)
             .await
     }
 
@@ -1078,17 +1157,19 @@ impl Router {
         candidates: Vec<(VendorConfig, ModelConfig)>,
         request_weight: Option<f64>,
         tenant: Option<&str>,
+        ctx: Option<RouteCtx>,
     ) -> Vec<(f64, (VendorConfig, ModelConfig))> {
         // 容量权重（第 3 级）：仅无请求级覆盖时计算
         let mut capacity: HashMap<String, f64> = HashMap::new();
         if request_weight.is_none() {
             capacity = self.capacity_shares(&candidates).await;
         }
+        let est_prompt_tokens = ctx.as_ref().map(|c| c.est_prompt_tokens);
 
         // 价格因子上下文（开关关闭时零查询开销）
         let price_factor_enabled = self.config.read().routing.price_factor_enabled;
         let price_factors = if price_factor_enabled {
-            self.price_factor_multipliers(&candidates)
+            self.price_factor_multipliers(&candidates, est_prompt_tokens)
         } else {
             Vec::new()
         };
@@ -1130,17 +1211,39 @@ impl Router {
     fn price_factor_multipliers(
         &self,
         candidates: &[(VendorConfig, ModelConfig)],
+        est_prompt_tokens: Option<u64>,
     ) -> Vec<Option<f64>> {
+        let cache_expected = {
+            let config = self.config.read();
+            config
+                .routing
+                .price_factor_mode
+                .trim()
+                .eq_ignore_ascii_case("cache_expected")
+        };
         let catalog = &self.config.read().model_catalog;
         if catalog.is_empty() {
             return vec![None; candidates.len()];
         }
         let unit_price = |model_id: &str| -> Option<f64> {
-            catalog
-                .iter()
-                .find(|e| e.model_id == model_id)
-                .map(|e| (e.input_price + e.output_price) / 2.0)
-                .filter(|p| p.is_finite() && *p > 0.0)
+            let entry = catalog.iter().find(|e| e.model_id == model_id)?;
+            let mut input = entry.input_price;
+            if cache_expected {
+                // cache_expected：缓存读价参与期望输入价（前缀亲和生效的部署口径）
+                if entry.cache_read_price > 0.0 {
+                    input = entry.cache_read_price;
+                }
+                // N3 长上下文斜率：估 tokens 超阈值且登记了长上下文价则替代
+                if let Some(est) = est_prompt_tokens {
+                    if entry.long_context_threshold_tokens > 0
+                        && est > entry.long_context_threshold_tokens
+                        && entry.long_context_input_price > 0.0
+                    {
+                        input = entry.long_context_input_price;
+                    }
+                }
+            }
+            Some((input + entry.output_price) / 2.0).filter(|p| p.is_finite() && *p > 0.0)
         };
         let prices: Vec<Option<f64>> = candidates
             .iter()
@@ -1164,9 +1267,24 @@ impl Router {
         weighted: Vec<(f64, (VendorConfig, ModelConfig))>,
         strategy: RoutingStrategy,
         rng: &mut dyn rand::Rng,
+        pair: Option<(usize, usize)>,
     ) -> RoutingDecision {
         // 系数与温度热读（同步段，无 await）
         let routing = self.config.read().routing.clone();
+
+        // 前缀亲和 PoTC（D1）：候选生成从"均匀随机"换为"前缀哈希对"，
+        // 对内按平滑权重择优。启用时取代 min+buffer 与 power_of_two
+        if let Some((i1, i2)) = pair {
+            if let (Some(a), Some(b)) = (weighted.get(i1), weighted.get(i2)) {
+                let chosen = if a.0 >= b.0 { i1 } else { i2 };
+                let (vendor, model) = weighted[chosen].1.clone();
+                return RoutingDecision {
+                    vendor,
+                    model,
+                    strategy,
+                };
+            }
+        }
 
         // min+buffer 候选集（平滑前）：buffer=0（默认）完全跳过
         if routing.latency_buffer > 0.0 {
@@ -1765,6 +1883,68 @@ pub struct WeightBreakdown {
     pub latency: f64,
     pub error: f64,
     pub total: f64,
+}
+
+fn routing_pair_enabled(router: &Router) -> bool {
+    router.config.read().routing.prefix_affinity.enabled
+}
+
+/// 单请求路由上下文：前缀亲和与价格因子的请求级输入
+///（prefix_hash = API 层对稳定前缀的进程内哈希；est_prompt_tokens = body 字节/4 估算）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RouteCtx {
+    pub prefix_hash: u64,
+    pub est_prompt_tokens: u64,
+    /// N1：X-Batch 请求标记——带内收缩到 supports_batch 厂商（无则忽略）
+    pub batch: bool,
+}
+
+/// 前缀键纯函数：system + tools 序列化 + 首条 user content 头部 prefix_chars 字符。
+/// 进程内一致性哈希（DefaultHasher）——与亲和表同口径，不跨进程
+pub fn prefix_hash_key(body: &serde_json::Value, prefix_chars: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let obj = body.as_object();
+    let system = obj
+        .and_then(|o| o.get("system"))
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    system.hash(&mut h);
+    let tools = obj
+        .and_then(|o| o.get("tools"))
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    tools.hash(&mut h);
+    let first_user = obj
+        .and_then(|o| o.get("messages"))
+        .and_then(|m| m.as_array())
+        .and_then(|a| {
+            a.iter()
+                .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        })
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    let head: String = first_user.chars().take(prefix_chars.max(1)).collect();
+    head.hash(&mut h);
+    h.finish()
+}
+
+/// 前缀亲和候选对（DualMap 双映射 PoTC 网关形态）：同 hash 恒定同对，
+/// 相等则邻位错开；n<2 返回 None（无可选空间）
+pub fn prefix_candidates(hash: u64, n: usize) -> Option<(usize, usize)> {
+    if n < 2 {
+        return None;
+    }
+    let i1 = (hash % n as u64) as usize;
+    let mixed = hash ^ (hash >> 31);
+    let mixed = mixed.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let i2 = ((mixed >> 17) % n as u64) as usize;
+    if i1 == i2 {
+        Some((i1, (i1 + 1) % n))
+    } else {
+        Some((i1, i2))
+    }
 }
 
 /// 路由解释 reason_code 稳定机器码（客户端可匹配，不做 i18n）。

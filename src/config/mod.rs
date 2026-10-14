@@ -89,6 +89,9 @@ pub struct VendorConfig {
     /// 流式 chunk 间 idle 超时（毫秒），超时以 Timeout 终止流；0 = 不限时
     #[serde(default = "default_stream_idle_ms")]
     pub stream_idle_ms: u64,
+    /// 支持 batch 端点（X-Batch: 1 路由的过滤标记）；默认 false
+    #[serde(default)]
+    pub supports_batch: bool,
 }
 
 fn default_vendor_priority() -> u8 {
@@ -481,6 +484,15 @@ pub struct RoutingSection {
     /// 因子 1.0（中性豁免）。关闭时整体跳过。热生效
     #[serde(default = "default_price_factor_enabled")]
     pub price_factor_enabled: bool,
+    /// 价格因子单价口径："nominal"（默认，(input+output)/2 与历史一致）/
+    /// "cache_expected"（cache_read_price>0 的条目用 (cache_read+output)/2，
+    /// 配合前缀亲和表达缓存友好偏好；长上下文价规则见 model_catalog）。
+    /// 未知值按 nominal
+    #[serde(default = "default_price_factor_mode")]
+    pub price_factor_mode: String,
+    /// 前缀亲和 PoTC 子段（默认关）
+    #[serde(default)]
+    pub prefix_affinity: PrefixAffinitySection,
     /// 目标服务水平 α（`[0,1]`，默认 0.95）：α > ŝ 欠账累积、α < ŝ 衰减归 0；
     /// 非有限/越界钳 `[0,1]`
     #[serde(default = "default_sla_alpha")]
@@ -508,6 +520,69 @@ pub struct RoutingSection {
 
 fn default_price_factor_enabled() -> bool {
     true
+}
+
+fn default_price_factor_mode() -> String {
+    "nominal".to_string()
+}
+
+/// 前缀亲和 PoTC `[routing.prefix_affinity]`：稳定前缀哈希出 2 个带内候选、
+/// 按平滑权重择优（DualMap 双映射网关形态）。默认 enabled=false 选路路径
+/// 与历史逐位一致
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PrefixAffinitySection {
+    /// 前缀亲和开关：默认 false
+    #[serde(default)]
+    pub enabled: bool,
+    /// 前缀键截取的首条 user content 头部字符数
+    #[serde(default = "default_prefix_chars")]
+    pub prefix_chars: usize,
+}
+
+impl Default for PrefixAffinitySection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            prefix_chars: default_prefix_chars(),
+        }
+    }
+}
+
+fn default_prefix_chars() -> usize {
+    512
+}
+
+/// 词法压缩 `[lexcompress]`：training-free 确定性剪枝，仅 X-Compress: 1 且
+/// 单条消息超阈值的请求生效；默认 enabled=false 完全旁路
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct LexCompressSection {
+    /// 压缩开关：默认 false
+    #[serde(default)]
+    pub enabled: bool,
+    /// 单条消息触发压缩的最小字符数
+    #[serde(default = "default_lexcompress_min_chars")]
+    pub min_chars: usize,
+    /// 压缩比例上限（最多压掉的比例，0.5 = 结果至少保留一半）
+    #[serde(default = "default_lexcompress_ratio_ceiling")]
+    pub ratio_ceiling: f64,
+}
+
+impl Default for LexCompressSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_chars: default_lexcompress_min_chars(),
+            ratio_ceiling: default_lexcompress_ratio_ceiling(),
+        }
+    }
+}
+
+fn default_lexcompress_min_chars() -> usize {
+    4000
+}
+
+fn default_lexcompress_ratio_ceiling() -> f64 {
+    0.5
 }
 
 fn default_affinity_mode() -> String {
@@ -590,6 +665,8 @@ impl Default for RoutingSection {
             lps_deadline_gate: false,
             default_deadline_ms: default_deadline_ms(),
             difficulty: DifficultySection::default(),
+            price_factor_mode: default_price_factor_mode(),
+            prefix_affinity: PrefixAffinitySection::default(),
         }
     }
 }
@@ -696,6 +773,9 @@ pub struct CacheSection {
     /// 哨兵而非值，窗口内 check() 直接 Hit(Null) 不再穿透上游。
     #[serde(default = "default_cache_null_cache_ttl_secs")]
     pub null_cache_ttl_secs: u64,
+    /// 语义响应缓存子段（`semantic-cache` feature 门控；默认关）
+    #[serde(default)]
+    pub semantic: CacheSemanticSection,
 }
 
 fn default_cache_ttl_secs() -> u64 {
@@ -726,6 +806,47 @@ fn default_cache_null_cache_ttl_secs() -> u64 {
     60
 }
 
+/// 语义响应缓存 `[cache.semantic]`：精确 miss 后的嵌入相似检索层。
+/// 默认 enabled=false；强制租户隔离（检索域限同 api_key_hash），无共享开关
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct CacheSemanticSection {
+    /// 语义缓存开关：默认 false
+    #[serde(default)]
+    pub enabled: bool,
+    /// 余弦相似度命中阈值 ∈ (0,1]
+    #[serde(default = "default_cache_semantic_similarity")]
+    pub similarity: f64,
+    /// 向量条目容量上限（FIFO 逐出）
+    #[serde(default = "default_cache_semantic_max_entries")]
+    pub max_entries: usize,
+    /// BGE embedding 模型目录名（vecboost models/ 下）
+    #[serde(default = "default_cache_semantic_model_path")]
+    pub model_path: String,
+}
+
+impl Default for CacheSemanticSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            similarity: default_cache_semantic_similarity(),
+            max_entries: default_cache_semantic_max_entries(),
+            model_path: default_cache_semantic_model_path(),
+        }
+    }
+}
+
+fn default_cache_semantic_similarity() -> f64 {
+    0.92
+}
+
+fn default_cache_semantic_max_entries() -> usize {
+    1000
+}
+
+fn default_cache_semantic_model_path() -> String {
+    "BAAI-bge-small-zh-v1.5".to_string()
+}
+
 impl Default for CacheSection {
     fn default() -> Self {
         Self {
@@ -740,6 +861,7 @@ impl Default for CacheSection {
             categories: Vec::new(),
             ttl_jitter: 0.0,
             null_cache_ttl_secs: default_cache_null_cache_ttl_secs(),
+            semantic: Default::default(),
         }
     }
 }
@@ -992,6 +1114,10 @@ pub struct Config {
     /// `[docs]` 段 — OpenAPI/Swagger UI 出口（G11）。缺段时关闭。
     #[serde(default)]
     pub docs: DocsSection,
+    /// `[lexcompress]` 段 — 词法压缩（X-Compress 触发）。缺段时 enabled=false
+    ///（完全旁路，行为与历史逐位一致）
+    #[serde(default)]
+    pub lexcompress: LexCompressSection,
 }
 
 /// `[docs]` 段：OpenAPI 文档面开关。默认 false 时 /api-docs 与 Swagger UI

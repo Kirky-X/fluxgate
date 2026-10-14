@@ -446,6 +446,7 @@ mod tests {
             grpc: None,
             resilience: Default::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         }
     }
 

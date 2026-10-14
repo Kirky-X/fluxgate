@@ -2075,6 +2075,7 @@ mod token_weighted_tickets {
                 stream_ttft_ms: 2_000,
                 stream_idle_ms: 2_000,
                 id: "v1".to_string(),
+                supports_batch: false,
                 name: "V1".into(),
                 type_: "openai".into(),
                 api_key_env: "NEXUSFLOW_TEST_KEY".into(),
@@ -2112,6 +2113,7 @@ mod token_weighted_tickets {
             grpc: None,
             resilience: nexusflow::config::ResilienceSection::default(),
             docs: Default::default(),
+            lexcompress: Default::default(),
         };
         let cm = Arc::new(nexusflow::config::ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm));

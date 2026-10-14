@@ -49,6 +49,7 @@ fn make_config() -> Config {
         grpc: None,
         resilience: nexusflow::config::ResilienceSection::default(),
         docs: Default::default(),
+        lexcompress: Default::default(),
         rate_limit: nexusflow::config::RateLimitSection { rules: vec![] },
     }
 }

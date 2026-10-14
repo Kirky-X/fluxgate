@@ -96,6 +96,7 @@ fn test_config(grpc_port: u16) -> Config {
         }),
         resilience: nexusflow::config::ResilienceSection::default(),
         docs: Default::default(),
+        lexcompress: Default::default(),
     }
 }
 

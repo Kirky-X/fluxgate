@@ -1920,7 +1920,13 @@ impl VendorManager {
                         error = %e,
                         cooldown_ms = cooldown.as_millis() as u64,
                         "{}",
-                        crate::i18n::t("vendor-stream-cooldown")
+                        crate::i18n::t_args(
+                            "vendor-stream-cooldown",
+                            &[
+                                ("vendor", instance.vendor_id.clone()),
+                                ("cooldown_ms", cooldown.as_millis().to_string()),
+                            ],
+                        )
                     );
                 }
             }

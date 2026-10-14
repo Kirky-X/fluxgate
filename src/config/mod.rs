@@ -92,6 +92,11 @@ pub struct VendorConfig {
     /// 支持 batch 端点（X-Batch: 1 路由的过滤标记）；默认 false
     #[serde(default)]
     pub supports_batch: bool,
+    /// chat 端点路径覆盖（如 Zhipu 用 "/chat/completions" 而非默认的
+    /// "/v1/chat/completions"）：设置后出站 URL = api_base + 该路径，
+    /// 跳过 /v1 自动拼接规则；None/缺省走历史规则
+    #[serde(default)]
+    pub chat_path: Option<String>,
 }
 
 fn default_vendor_priority() -> u8 {

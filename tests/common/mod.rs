@@ -43,6 +43,7 @@ pub fn base_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         stream_ttft_ms: 60_000,
         stream_idle_ms: 30_000,
         supports_batch: false,
+        chat_path: None,
         id: id.into(),
         name: format!("Test {}", id),
         type_: "openai".into(),

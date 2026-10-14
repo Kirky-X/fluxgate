@@ -467,6 +467,7 @@ mod tests {
                 stream_ttft_ms: 60_000,
                 stream_idle_ms: 30_000,
                 supports_batch: false,
+                chat_path: None,
             }],
             global_model: Some(GlobalModelConfig {
                 enabled: true,

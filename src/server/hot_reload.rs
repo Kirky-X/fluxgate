@@ -286,6 +286,7 @@ mod tests {
             type_: "openai".to_string(),
             api_key_env: "K".to_string(),
             supports_batch: false,
+            chat_path: None,
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base: String::new(),

@@ -47,6 +47,7 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         stream_idle_ms: 30_000,
         id: id.into(),
         supports_batch: false,
+        chat_path: None,
         name: format!("Test {id}"),
         type_: "openai".into(),
         api_key_env: "NEXUSFLOW_TEST_KEY".into(),

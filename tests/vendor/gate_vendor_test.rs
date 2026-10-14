@@ -2074,6 +2074,7 @@ mod token_weighted_tickets {
                 timeout_ms: 2_000,
                 stream_ttft_ms: 2_000,
                 stream_idle_ms: 2_000,
+                chat_path: None,
                 id: "v1".to_string(),
                 supports_batch: false,
                 name: "V1".into(),

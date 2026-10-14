@@ -38,6 +38,7 @@ mod vendor_fallback_integration {
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
+            chat_path: None,
             id: id.into(),
             supports_batch: false,
             name: format!("Test {}", id),

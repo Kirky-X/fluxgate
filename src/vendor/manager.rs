@@ -978,6 +978,19 @@ impl VendorManager {
             &config.api_base
         };
 
+        // chat_path 覆盖（如 Zhipu /api/paas/v4 + /chat/completions）：
+        // 直接 api_base + 覆盖路径，跳过 /v1 自动拼接
+        if let Some(override_path) = config.chat_path.as_deref() {
+            let override_path = override_path.trim_start_matches('/');
+            if !override_path.is_empty() {
+                return Ok(format!(
+                    "{}/{}",
+                    api_base.trim_end_matches('/'),
+                    override_path
+                ));
+            }
+        }
+
         let url = if api_base.ends_with("/v1") {
             format!("{}/{}", api_base, path)
         } else {
@@ -3028,6 +3041,7 @@ mod tests {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             supports_batch: false,
+            chat_path: None,
         }
     }
 
@@ -3377,5 +3391,40 @@ mod tests {
             ),
             Duration::from_secs(30)
         );
+    }
+}
+
+#[cfg(test)]
+mod chat_path_tests {
+    use super::*;
+    use crate::config::VendorConfig;
+
+    fn vendor(api_base: &str, chat_path: Option<String>) -> VendorConfig {
+        serde_json::from_value(serde_json::json!({
+            "id": "v1", "name": "V1", "type_": "openai",
+            "api_key_env": "K", "api_base": api_base,
+            "chat_path": chat_path,
+            "rate_limit": {"type": "time_window", "start": "00:00", "end": "24:00"},
+            "concurrency": {"requests_per_second": 10},
+        }))
+        .expect("vendor fixture")
+    }
+
+    #[test]
+    fn chat_path_override_bypasses_v1_rule() {
+        // Zhipu 形态：base 以 /v4 结尾，覆盖路径跳过 /v1 拼接
+        let v = vendor(
+            "https://open.bigmodel.cn/api/paas/v4",
+            Some("/chat/completions".into()),
+        );
+        let url = VendorManager::build_vendor_url_at(&v, "chat/completions").unwrap();
+        assert_eq!(url, "https://open.bigmodel.cn/api/paas/v4/chat/completions");
+    }
+
+    #[test]
+    fn no_override_keeps_v1_rule() {
+        let v = vendor("http://localhost:11434/v1", None);
+        let url = VendorManager::build_vendor_url_at(&v, "chat/completions").unwrap();
+        assert_eq!(url, "http://localhost:11434/v1/chat/completions");
     }
 }

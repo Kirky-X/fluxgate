@@ -132,7 +132,7 @@ pub(crate) async fn assemble(
     // 密钥保密柜（key-vault）：master key 分层解析 → 按构建形态选后端（db 优先，
     // 无库回落文件柜）→ env 吸收（幂等不覆盖）→ 全量注入 inline key pool。
     #[cfg(feature = "vault")]
-    let _vault_store: Arc<dyn crate::vault::KeyStore> = {
+    {
         use crate::vault::{load_or_create_master_key, KeyStore};
         let master_key = load_or_create_master_key()?;
         let store: Arc<dyn KeyStore> = {

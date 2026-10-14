@@ -88,5 +88,6 @@ CREATE TABLE IF NOT EXISTS vault_keys (
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL
 );
-CREATE UNIQUE INDEX idx_vault_keys_vendor_fingerprint ON vault_keys (vendor_id, fingerprint);
-CREATE INDEX idx_vault_keys_vendor ON vault_keys (vendor_id);
+-- 索引（idx_vault_keys_vendor_fingerprint 唯一 / idx_vault_keys_vendor）
+-- 不落本文档：MySQL 投影将索引推迟到 ensure_indexes_mysql 运行时探针
+-- （与 V3 迁移内联索引一致），见 repository.rs。

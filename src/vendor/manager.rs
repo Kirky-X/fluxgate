@@ -355,6 +355,9 @@ pub struct VendorManager {
     metrics: Arc<GlobalMetrics>,
     #[cfg(feature = "cost-tracking")]
     cost_tracker: Arc<CostTracker>,
+    /// 密钥保密柜（key-vault）：bootstrap 装配时 set 一次；API 管理面经此读写。
+    #[cfg(feature = "vault")]
+    vault: std::sync::RwLock<Option<Arc<dyn crate::vault::KeyStore>>>,
 }
 
 /// TCP 连接建立超时 — Client 级共享常量（对端不响应时连接阶段不无限挂起）。
@@ -370,6 +373,8 @@ impl VendorManager {
             config,
             instances: Arc::new(RwLock::new(std::collections::HashMap::new())),
             inline_key_pools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            #[cfg(feature = "vault")]
+            vault: std::sync::RwLock::new(None),
             // 连接阶段 10s 超时
             client: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
@@ -411,6 +416,27 @@ impl VendorManager {
         if let Some(instance) = self.instances.read().unwrap().get(vendor_id) {
             instance.set_inline_key_pool(snapshot);
         }
+    }
+
+    /// 清除某 vendor 的内联 key 池（柜内条目清空时回退 env 兜底语义）；
+    /// 既有实例的池也一并撤除（置 None 恢复 env 解析路径）。
+    pub fn clear_inline_key_pool(&self, vendor_id: &str) {
+        self.inline_key_pools.lock().unwrap().remove(vendor_id);
+        if let Some(instance) = self.instances.read().unwrap().get(vendor_id) {
+            instance.key_pool.clear_inline();
+        }
+    }
+
+    /// 装配保密柜（bootstrap 一次）；重复 set 以最后一次为准。
+    #[cfg(feature = "vault")]
+    pub fn set_vault(&self, store: Arc<dyn crate::vault::KeyStore>) {
+        *self.vault.write().unwrap() = Some(store);
+    }
+
+    /// API 管理面消费；None = vault feature 关闭或装配未发生。
+    #[cfg(feature = "vault")]
+    pub(crate) fn vault(&self) -> Option<Arc<dyn crate::vault::KeyStore>> {
+        self.vault.read().unwrap().clone()
     }
 
     /// `[routing].ewma_tau_ms` 热同步到 metrics（每次延迟道落账前刷新）。

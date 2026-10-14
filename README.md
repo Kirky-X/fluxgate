@@ -67,7 +67,7 @@
 <td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>入站限流与准入</b><br><span style="color:#64748B">limiteron tower 层入站限流（端点表 + 全局层）+ <code>[[rate_limit.rules]]</code> 路径规则（未配置全局规则时，共享令牌桶兜底）；拥塞感知优先级准入（按 API Key 档位 dedicated/guaranteed/elastic/spot 分级 shed）</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>安全认证</b><br><span style="color:#64748B">API Key 仅存 SHA256 摘要、常量时间比较；上游密钥只存环境变量名；吊销/轮换经配置热更新立即生效</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>安全认证与密钥保密柜</b><br><span style="color:#64748B">API Key 仅存 SHA256 摘要、常量时间比较；上游密钥支持保密柜持久化（<code>POST/GET/DELETE /admin/vault/keys</code>，cocoon AEAD 加密入库、响应与日志零明文），首装由 env 引导吸收、之后免二次输入——主钥经 <code>NEXUSFLOW_MASTER_KEY</code> 或自动生成文件（<code>~/.nexusflow/vault_master.key</code>，0600）分层提供，<b>主钥丢失不可恢复，请备份</b></span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>响应缓存</b><br><span style="color:#64748B">精确响应缓存（oxcache 存储），租户 + 厂商 + 请求体指纹键，TTL 分级乘数与负载联动，并发去重（single-flight）由 oxcache <code>get_or</code> 承载，<code>X-No-Cache: 1</code> 强制回源</span></td>
 </tr>
 <tr>

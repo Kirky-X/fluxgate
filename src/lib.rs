@@ -41,6 +41,9 @@ pub mod server;
 #[cfg(feature = "sdk")]
 pub mod sdk;
 
+#[cfg(feature = "vault")]
+pub mod vault;
+
 pub use config::{
     Config, ConfigManager, DatabaseConfig, DocsSection, ModelConfig, PricingConfig, ServerConfig,
     VendorConfig,

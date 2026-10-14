@@ -26,6 +26,11 @@ pub enum NexusFlowError {
 
     #[error(transparent)]
     Gate(#[from] GateError),
+
+    /// 密钥保密柜（key-vault）：Display 走 VaultError 英文规范串。
+    #[cfg(feature = "vault")]
+    #[error(transparent)]
+    Vault(#[from] crate::vault::VaultError),
 }
 
 #[cfg(feature = "web-server")]
@@ -35,11 +40,19 @@ impl IntoResponse for NexusFlowError {
         let retry_after_secs = match &self {
             NexusFlowError::Gate(e) => e.retry_after_secs(),
             NexusFlowError::Database { .. } => None,
+            #[cfg(feature = "vault")]
+            NexusFlowError::Vault(_) => None,
         };
         let status = match &self {
             NexusFlowError::Database { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             NexusFlowError::Gate(e) => axum::http::StatusCode::from_u16(e.status_code())
                 .expect("GateError::status_code must yield a valid HTTP status code"),
+            #[cfg(feature = "vault")]
+            NexusFlowError::Vault(e) => match e {
+                crate::vault::VaultError::NotFound(_) => axum::http::StatusCode::NOT_FOUND,
+                crate::vault::VaultError::UnknownVendor(_) => axum::http::StatusCode::CONFLICT,
+                _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            },
         };
 
         let body = json!({
@@ -70,6 +83,16 @@ impl NexusFlowError {
                 t_args("error-database", &[("message", message.clone())])
             }
             NexusFlowError::Gate(e) => e.user_message(),
+            #[cfg(feature = "vault")]
+            NexusFlowError::Vault(e) => match e {
+                crate::vault::VaultError::NotFound(id) => {
+                    t_args("error-vault-not-found", &[("id", id.clone())])
+                }
+                crate::vault::VaultError::UnknownVendor(vendor) => {
+                    t_args("error-vault-unknown-vendor", &[("vendor", vendor.clone())])
+                }
+                other => t_args("error-vault", &[("message", other.to_string())]),
+            },
         }
     }
 
@@ -78,6 +101,8 @@ impl NexusFlowError {
         match self {
             NexusFlowError::Database { .. } => "database_error",
             NexusFlowError::Gate(e) => e.error_code(),
+            #[cfg(feature = "vault")]
+            NexusFlowError::Vault(_) => "vault_error",
         }
     }
 }

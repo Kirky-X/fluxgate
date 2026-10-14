@@ -312,6 +312,12 @@ path = "tests/vendor/health_probe_test.rs"
 name = "gate_vendor_test"
 path = "tests/vendor/gate_vendor_test.rs"
 
+# ---- vault：密钥保密柜管理面（key-vault）----
+[[test]]
+name = "vault_api_test"
+path = "tests/vault/vault_api_test.rs"
+required-features = ["vault", "web-server"]
+
 # ---- cost：定价 / 累积 / 集成 ----
 [[test]]
 name = "gate_cost_test"

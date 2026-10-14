@@ -24,6 +24,8 @@ pub mod routing_hints;
 pub mod semantic_cache;
 pub mod sse;
 pub mod state;
+#[cfg(feature = "vault")]
+pub mod vault;
 
 pub use router_builder::create_router;
 pub use routing_hints::RoutingHints;
@@ -132,6 +134,12 @@ pub(crate) fn status_code_for_error(err: &NexusFlowError) -> i32 {
     upstream_status_code(err).unwrap_or(match err {
         NexusFlowError::Gate(e) => e.status_code() as i32,
         NexusFlowError::Database { .. } => 500,
+        #[cfg(feature = "vault")]
+        NexusFlowError::Vault(e) => match e {
+            crate::vault::VaultError::NotFound(_) => 404,
+            crate::vault::VaultError::UnknownVendor(_) => 409,
+            _ => 500,
+        },
     })
 }
 

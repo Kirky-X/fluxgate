@@ -553,6 +553,30 @@ async fn admission_middleware(
 /// 未知路径归 `unmatched`（基数有界）。
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
+    #[cfg(feature = "vault")]
+    const TEMPLATES: [&str; 20] = [
+        "/v1/chat/completions",
+        "/v1/embeddings",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1/models",
+        "/admin/route/explain",
+        "/admin/logs",
+        "/admin/logs/search",
+        "/admin/stats/tokens",
+        "/admin/cost",
+        "/admin/metrics",
+        "/admin/vendors",
+        "/admin/vendors/{id}/status",
+        "/admin/vendors/{id}/reset",
+        "/admin/config",
+        "/admin/models",
+        "/admin/models/{id}",
+        "/admin/vault/keys",
+        "/admin/vault/keys/{id}",
+        "/api/v1/health",
+    ];
+    #[cfg(not(feature = "vault"))]
     const TEMPLATES: [&str; 18] = [
         "/v1/chat/completions",
         "/v1/embeddings",
@@ -738,6 +762,17 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route(
             "/admin/route/difficulty-explain",
             post(route_difficulty_explain::route_difficulty_explain),
+        );
+    // 密钥保密柜（key-vault）：录入/掩码列表/删除，随既有层叠受 auth 保护
+    #[cfg(feature = "vault")]
+    let router = router
+        .route(
+            "/admin/vault/keys",
+            get(crate::api::vault::list_keys).post(crate::api::vault::put_key),
+        )
+        .route(
+            "/admin/vault/keys/{id}",
+            axum::routing::delete(crate::api::vault::delete_key),
         );
     // Prometheus 指标出口（/metrics）与就绪探针（/readyz）由
     // sdforge 站点（build_with_config）在合并侧自挂（同一 handler +

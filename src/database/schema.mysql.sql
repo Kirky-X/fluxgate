@@ -75,3 +75,19 @@ CREATE TABLE IF NOT EXISTS model_stats (
     avg_duration_ms DOUBLE,
     UNIQUE(model, vendor, date)
 ) ENGINE = InnoDB;
+
+-- 密钥保密柜（key-vault，V3）：payload VARBINARY(8192) 存 cocoon 密文，
+-- TEXT 不能作 MySQL 主键，id 走 VARCHAR(64)。
+CREATE TABLE IF NOT EXISTS vault_keys (
+    id VARCHAR(64) PRIMARY KEY,
+    vendor_id VARCHAR(255) NOT NULL,
+    label VARCHAR(255),
+    payload VARBINARY(8192) NOT NULL,
+    mask VARCHAR(64) NOT NULL,
+    fingerprint VARCHAR(16) NOT NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+-- 索引（idx_vault_keys_vendor_fingerprint 唯一 / idx_vault_keys_vendor）
+-- 不落本文档：MySQL 投影将索引推迟到 ensure_indexes_mysql 运行时探针
+-- （与 V3 迁移内联索引一致），见 repository.rs。

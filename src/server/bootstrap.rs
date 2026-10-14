@@ -129,6 +129,43 @@ pub(crate) async fn assemble(
     vendor_manager.initialize().await?;
     tracing::info!("{}", t("main-vendor-manager-initialized"));
 
+    // 密钥保密柜（key-vault）：master key 分层解析 → 按构建形态选后端（db 优先，
+    // 无库回落文件柜）→ env 吸收（幂等不覆盖）→ 全量注入 inline key pool。
+    #[cfg(feature = "vault")]
+    let _vault_store: Arc<dyn crate::vault::KeyStore> = {
+        use crate::vault::{load_or_create_master_key, KeyStore};
+        let master_key = load_or_create_master_key()?;
+        let store: Arc<dyn KeyStore> = {
+            #[cfg(feature = "database")]
+            {
+                Arc::new(crate::vault::DbKeyStore::new(
+                    master_key,
+                    database.pool.clone(),
+                ))
+            }
+            #[cfg(not(feature = "database"))]
+            {
+                Arc::new(crate::vault::FileKeyStore::open(
+                    master_key,
+                    crate::vault::home_vault_path()?,
+                )?)
+            }
+        };
+        let vendors = config_manager.read().vendors.clone();
+        let lookup = crate::vault::std_env_lookup;
+        let absorbed = crate::vault::absorb_env_keys(store.as_ref(), &vendors, &lookup).await?;
+        if absorbed > 0 {
+            tracing::info!("vault: absorbed {absorbed} key(s) from env");
+        }
+        for vendor in &vendors {
+            if vendor.enabled {
+                crate::vault::inject_vendor_keys(store.as_ref(), &vendor_manager, &vendor.id)
+                    .await?;
+            }
+        }
+        store
+    };
+
     // 日志管道：AsyncLogger 批量落 request_logs，TokenPreAggregator 按小时预聚合 usage。
     let logger_handle = Arc::new(AsyncLoggerHandle::new(crate::database::AsyncLogger::new(
         database.repository.clone(),

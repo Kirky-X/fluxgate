@@ -12,12 +12,17 @@
 use secrecy::SecretString;
 use serde::Serialize;
 
+#[cfg(feature = "vendor-management")]
+mod bootstrap;
 mod crypto;
 #[cfg(feature = "database")]
 mod db_store;
 mod file_store;
 mod master_key;
 
+#[cfg(feature = "vendor-management")]
+pub use bootstrap::inject_vendor_keys;
+pub(crate) use bootstrap::{absorb_env_keys, std_env_lookup};
 #[cfg(feature = "database")]
 pub use db_store::DbKeyStore;
 pub use file_store::{home_vault_path, FileKeyStore};

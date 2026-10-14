@@ -12,6 +12,13 @@
 use secrecy::SecretString;
 use serde::Serialize;
 
+mod crypto;
+mod file_store;
+mod master_key;
+
+pub use file_store::{home_vault_path, FileKeyStore};
+pub use master_key::load_or_create_master_key;
+
 /// 柜内条目的对外形态：永不携带明文。
 #[derive(Debug, Clone, Serialize)]
 pub struct SecretKeyRecord {

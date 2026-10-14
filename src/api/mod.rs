@@ -23,6 +23,8 @@ pub mod router_builder;
 pub mod routing_hints;
 pub mod sse;
 pub mod state;
+#[cfg(feature = "vault")]
+pub mod vault;
 
 pub use router_builder::create_router;
 pub use routing_hints::RoutingHints;

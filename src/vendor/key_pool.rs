@@ -247,6 +247,11 @@ impl KeyPool {
         self.prune_blacklist(&snapshot.keys);
     }
 
+    /// 撤除内联池（置 None）：后续 select 恢复 env 名单解析路径（legacy 兜底）。
+    pub(crate) fn clear_inline(&self) {
+        *self.inline.lock().unwrap() = None;
+    }
+
     /// 请求级凭证选择——执行路径统一入口。env 模式名单变（热更新）→ 全量重解析并
     /// 显性告警；名单不变 → env 值现读，仅结果变化时落快照。池空回退 `LegacyEnv`。
     pub(crate) fn select(&self, config: &VendorConfig, vendor_id: &str) -> RequestCredential {

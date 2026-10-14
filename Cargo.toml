@@ -9,8 +9,9 @@ rust-version = "1.97.1"
 # 否则 examples/build.rs 等顶层 .rs 会被误认作本包 example target 而在 --all-targets 下编译失败。
 autoexamples = false
 # tests/ 已按功能域目录化，Cargo 自动发现不递归——改用下方 [[test]] 注册表逐个声明。
-# 纪律：新增集成测试必须登记 [[test]]；**禁止加 required-features**——特性门控留在文件顶部
-# `#![cfg(feature = ...)]`，否则 default 口径下本为空的二进制会变成不编译，覆盖率报告形态漂移。
+# 纪律：新增集成测试必须登记 [[test]]；特性门控留在文件顶部 `#![cfg(feature = ...)]`；
+# 非 default 特性专用（default 口径下 0 用例）的测试必须加 required-features（与文件顶 cfg 同集）——
+# 避免 default 口径产出空壳二进制（0 用例也占编译位、污染测试报告与覆盖率报告）。
 autotests = false
 description = "智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度 | Intelligent multi-provider LLM routing gateway"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
@@ -321,9 +322,11 @@ path = "tests/server/di_test.rs"
 [[test]]
 name = "grpc_coverage_test"
 path = "tests/server/grpc_coverage_test.rs"
+required-features = ["grpc", "web-server", "logging"]
 [[test]]
 name = "grpc_smoke_test"
 path = "tests/server/grpc_smoke_test.rs"
+required-features = ["grpc", "web-server", "logging"]
 [[test]]
 name = "server_coverage_test"
 path = "tests/server/server_coverage_test.rs"
@@ -363,6 +366,10 @@ path = "tests/guard/dead_code_guard.rs"
 [[test]]
 name = "difficulty_tier_test"
 path = "tests/routing/difficulty_tier_test.rs"
+
+[[test]]
+name = "routing_benchmark_test"
+path = "tests/routing/routing_benchmark_test.rs"
 
 [profile.release]
 opt-level = 3

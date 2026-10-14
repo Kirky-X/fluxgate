@@ -3,11 +3,12 @@
 // Copyright (c) 2026 NexusFlow Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 核心表版本化迁移（V1..=V2）——sqlite/postgres/mysql 启动建表唯一入口。
+//! 核心表版本化迁移（V1..=V3）——sqlite/postgres/mysql 启动建表唯一入口。
 //!
 //! V1（FROZEN）建四张初版表；V2 把 token_usage 原地升级为分账形态（新增
 //! api_key_hash 与四类 token/四项分项成本列，UNIQUE 键扩为 (vendor, model,
 //! api_key_hash, date, hour)，旧行映射 prompt→input、cost_usd_sum 整额入 input 档）。
+//! V3 建密钥保密柜表 vault_keys（key-vault：cocoon 加密 blob + 掩码/指纹列）。
 //! 已发布的迁移常量禁止改动（已部署库的历史行指向它们），新变更走新版本。
 //! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级）。
 
@@ -15,8 +16,8 @@ use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
 use sea_orm::DatabaseBackend;
 use std::path::PathBuf;
 
-/// 核心表迁移最新版本（V2：token_usage 分账形态，见模块文档）。
-pub(crate) const CORE_SCHEMA_VERSION: u32 = 2;
+/// 核心表迁移最新版本（V3：vault_keys 密钥保密柜，见模块文档）。
+pub(crate) const CORE_SCHEMA_VERSION: u32 = 3;
 
 /// V1 UP（sqlite，FROZEN；含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
@@ -283,6 +284,60 @@ UPDATE token_usage SET prompt_tokens = input_tokens, completion_tokens = output_
 ALTER TABLE token_usage DROP COLUMN api_key_hash, DROP COLUMN input_tokens, DROP COLUMN output_tokens, DROP COLUMN cache_read_tokens, DROP COLUMN cache_creation_tokens, DROP COLUMN input_cost, DROP COLUMN output_cost, DROP COLUMN cache_read_cost, DROP COLUMN cache_creation_cost;
 "#;
 
+/// V3 UP（sqlite）：密钥保密柜（key-vault）；payload 为 cocoon self-contained 密文。
+const UP_V3_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS vault_keys (
+    id TEXT PRIMARY KEY,
+    vendor_id TEXT NOT NULL,
+    label TEXT,
+    payload BLOB NOT NULL,
+    mask TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vault_keys_vendor_fingerprint ON vault_keys (vendor_id, fingerprint);
+CREATE INDEX IF NOT EXISTS idx_vault_keys_vendor ON vault_keys (vendor_id);
+"#;
+
+/// V3 UP（postgres）：id 用 TEXT 主键（uuid 形态 hex），二进制密文走 BYTEA。
+const UP_V3_POSTGRES: &str = r#"
+CREATE TABLE IF NOT EXISTS vault_keys (
+    id TEXT PRIMARY KEY,
+    vendor_id TEXT NOT NULL,
+    label TEXT,
+    payload BYTEA NOT NULL,
+    mask TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vault_keys_vendor_fingerprint ON vault_keys (vendor_id, fingerprint);
+CREATE INDEX IF NOT EXISTS idx_vault_keys_vendor ON vault_keys (vendor_id);
+"#;
+
+/// V3 UP（mysql）：TEXT 不能作主键，id/vendor_id 走 VARCHAR；密文 VARBINARY(8192)
+/// 覆盖单条 blob 量级（数百字节，上限远大于实际）。
+const UP_V3_MYSQL: &str = r#"
+CREATE TABLE IF NOT EXISTS vault_keys (
+    id VARCHAR(64) PRIMARY KEY,
+    vendor_id VARCHAR(255) NOT NULL,
+    label VARCHAR(255),
+    payload VARBINARY(8192) NOT NULL,
+    mask VARCHAR(64) NOT NULL,
+    fingerprint VARCHAR(16) NOT NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+CREATE UNIQUE INDEX idx_vault_keys_vendor_fingerprint ON vault_keys (vendor_id, fingerprint);
+CREATE INDEX idx_vault_keys_vendor ON vault_keys (vendor_id);
+"#;
+
+/// V3 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
+const DOWN_V3: &str = r#"
+DROP TABLE IF EXISTS vault_keys;
+"#;
+
 /// V1 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
 const DOWN_COMMON: &str = r#"
 DROP TABLE IF EXISTS model_stats;
@@ -316,6 +371,9 @@ pub(crate) fn core_migration_file(
         (2, DatabaseBackend::Sqlite) => UP_V2_SQLITE,
         (2, DatabaseBackend::Postgres) => UP_V2_POSTGRES,
         (2, DatabaseBackend::MySql) => UP_V2_MYSQL,
+        (3, DatabaseBackend::Sqlite) => UP_V3_SQLITE,
+        (3, DatabaseBackend::Postgres) => UP_V3_POSTGRES,
+        (3, DatabaseBackend::MySql) => UP_V3_MYSQL,
         _ => {
             return Err(DbError::Config(format!(
                 "no core migration v{version} for {label}"
@@ -324,6 +382,7 @@ pub(crate) fn core_migration_file(
     };
     let down: &str = match version {
         1 => DOWN_COMMON,
+        3 => DOWN_V3,
         2 => match backend {
             DatabaseBackend::Sqlite => DOWN_V2_SQLITE,
             DatabaseBackend::Postgres => DOWN_V2_POSTGRES,
@@ -494,7 +553,7 @@ mod content_tests {
             (DatabaseBackend::MySql, false),
         ] {
             let file = core_migration_file(backend, 2).expect("三后端必有 V2");
-            assert_eq!(file.version(), CORE_SCHEMA_VERSION);
+            assert_eq!(file.version(), 2);
             let up = file.content();
             for col in [
                 "api_key_hash",
@@ -583,13 +642,20 @@ mod content_tests {
         }
 
         let doc_sql = include_str!("schema.sql");
-        let v1 = core_migration_file(DatabaseBackend::Sqlite, 1).expect("sqlite V1");
-        // UP 段（DOWN 标记之前）参与比对
-        let up = v1.content().split("-- DOWN").next().unwrap_or_default();
+        // schema.sql 与迁移全集（V1..=CORE_SCHEMA_VERSION）的表集合一致；
+        // 新版本追加表后此处随全集自动对齐，无需逐版维护
+        let mut expected = std::collections::HashSet::new();
+        for version in 1..=CORE_SCHEMA_VERSION {
+            let file =
+                core_migration_file(DatabaseBackend::Sqlite, version).expect("sqlite 全版本可取");
+            // UP 段（DOWN 标记之前）参与比对
+            let up = file.content().split("-- DOWN").next().unwrap_or_default();
+            expected.extend(table_set(up));
+        }
         assert_eq!(
-            table_set(up),
+            expected,
             table_set(doc_sql),
-            "FROZEN V1 与 schema.sql 表集合必须一致"
+            "迁移全集与 schema.sql 表集合必须一致"
         );
     }
 }
@@ -946,7 +1012,10 @@ mod live_tests {
     #[tokio::test]
     async fn down_migration_rolls_back() {
         let pool = memory_pool().await;
-        assert_eq!(apply_core_migrations(&pool).await.expect("apply"), 2);
+        assert_eq!(
+            apply_core_migrations(&pool).await.expect("apply"),
+            CORE_SCHEMA_VERSION
+        );
         assert_eq!(apply_core_migrations(&pool).await.expect("re-apply"), 0);
         rollback_core_all(&pool).await.expect("rollback");
 
@@ -956,6 +1025,7 @@ mod live_tests {
             "token_usage",
             "vendor_status",
             "model_stats",
+            "vault_keys",
         ] {
             assert!(!tables.contains(t), "回滚后 {t} 应消失");
         }

@@ -31,7 +31,7 @@ required-features = ["full"]
 # default 携带 db-sqlite：`cargo run` 默认仍为 sqlite 文件库；库嵌入方用 default-features = false 自选后端。
 # `--features full` 单独使用不含任何数据库后端——dbnexus 的「无数据库 feature」守卫会编译报错，full 必须搭配一个 db-*。
 default = ["full", "db-sqlite"]
-full = ["web-server", "database", "vendor-management", "router", "protocol", "infrastructure", "sdforge-integration", "logging", "resilience", "cost-tracking", "sdk"]
+full = ["web-server", "database", "vendor-management", "router", "protocol", "infrastructure", "sdforge-integration", "logging", "resilience", "cost-tracking", "sdk", "vault"]
 # 数据库后端三组互斥由 dbnexus 编译期守卫强制（embedded 与 server-side 不可混），驱动选择交给使用方/部署方。
 # `?` 语法：仅当 dep:dbnexus/dep:inklog 已被 database/logging 激活时生效，不反向引入；replica-routing 必须随任一后端透传——inklog 的 dbnexus 集成无条件引用 DbConfig.replica_config。
 db-sqlite = ["dbnexus?/sqlite", "dbnexus?/runtime-tokio-rustls", "dbnexus?/replica-routing", "inklog?/sqlite"]
@@ -52,6 +52,10 @@ cost-tracking = ["dep:dashmap"]
 database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "dep:url", "protocol", "logging"]
 # vendor 栈：reqwest 出站 + limiteron 限流/熔断原语 + 队列通道，rand 供加权采样；不携带存储。
 vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand", "dep:async-channel"]
+# 密钥保密柜（src/vault/）：cocoon AEAD 加密 + secrecy 内存包装；sha2/hex 指纹与 rand 主钥
+# 生成复用既有 optional entries。db 后端代码位于 #[cfg(feature = "database")] 门控内，
+# 无库构建（SDK 嵌入形态）回落 FileKeyStore。
+vault = ["dep:cocoon", "dep:secrecy", "dep:sha2", "dep:hex", "dep:rand"]
 # router 模块（含 vendor-management 联动）；dep:oxcache 供 response_cache/bootstrap 直用 CacheBackend。
 router = ["vendor-management", "dep:oxcache"]
 # 难度定档的 vecboost laya 进程内分类器（EngineFactory + InferenceEngine 直调）。
@@ -164,6 +168,12 @@ sys-locale = { version = "0.3", default-features = false }
 sha2 = { version = "0.11", default-features = false, features = ["alloc"], optional = true }
 hex = { version = "0.4", default-features = false, features = ["std"], optional = true }
 subtle = { version = "2.6", default-features = false, features = ["std"], optional = true }
+
+# 密钥保密柜（vault）：cocoon 0.5 AEAD 容器（MiniCocoon::from_key 逐条加密，跳过 KDF）；
+# secrecy 0.10 内存态 SecretString 包装（Debug 掩码 + drop 擦除）；rand 0.10 主钥生成与
+# sha2/hex 指纹复用既有 optional entries，不重复声明。
+cocoon = { version = "0.5", default-features = false, features = ["std", "getrandom", "thiserror"], optional = true }
+secrecy = { version = "0.10", default-features = false, optional = true }
 
 
 [dev-dependencies]

@@ -22,6 +22,7 @@ mod master_key;
 
 #[cfg(feature = "vendor-management")]
 pub use bootstrap::inject_vendor_keys;
+#[cfg(feature = "vendor-management")]
 pub(crate) use bootstrap::{absorb_env_keys, std_env_lookup};
 #[cfg(feature = "database")]
 pub use db_store::DbKeyStore;

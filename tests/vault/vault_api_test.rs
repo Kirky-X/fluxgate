@@ -262,6 +262,45 @@ async fn put_hot_injects_inline_pool() {
 }
 
 #[tokio::test]
+async fn delete_last_key_clears_inline_pool_back_to_env_fallback() {
+    let (store, vendor_manager, _, state) = setup(false).await;
+    vendor_manager.initialize().await.expect("initialize");
+
+    let record = put_key(
+        State(state.clone()),
+        Json(PutKeyRequest {
+            vendor_id: "openai".into(),
+            key: FIXTURE_KEY.into(),
+            label: None,
+        }),
+    )
+    .await
+    .expect("put ok");
+    assert_eq!(
+        vendor_manager
+            .key_pool_info("openai")
+            .map(|i| i.size)
+            .unwrap_or(0),
+        1
+    );
+
+    // 删掉唯一条目：柜清空 → 清池 → env 兜底（缺失 env，size 归零）
+    let removed = delete_key(State(state), Path(record.id.clone()))
+        .await
+        .expect("delete ok")
+        .0;
+    assert!(removed.removed);
+    assert_eq!(
+        vendor_manager
+            .key_pool_info("openai")
+            .map(|i| i.size)
+            .unwrap_or(0),
+        0
+    );
+    assert!(store.list(Some("openai")).await.expect("list").is_empty());
+}
+
+#[tokio::test]
 async fn unauthorized_request_is_rejected_401() {
     let (_, _, _, state) = setup(true).await;
     let router = create_router(state).await;

@@ -13,9 +13,13 @@ use secrecy::SecretString;
 use serde::Serialize;
 
 mod crypto;
+#[cfg(feature = "database")]
+mod db_store;
 mod file_store;
 mod master_key;
 
+#[cfg(feature = "database")]
+pub use db_store::DbKeyStore;
 pub use file_store::{home_vault_path, FileKeyStore};
 pub use master_key::load_or_create_master_key;
 
@@ -34,20 +38,22 @@ pub struct SecretKeyRecord {
 }
 
 /// 密钥柜后端抽象：db（默认，`database` feature）与文件（SDK 无库形态）双实现。
+/// async 签名：db 后端走 dbnexus 异步会话；`async_trait` 保 `Arc<dyn KeyStore>` dyn 安全。
+#[async_trait::async_trait]
 pub trait KeyStore: Send + Sync {
     /// 写入或更新（同 vendor_id + fingerprint 的 upsert）。
-    fn put(
+    async fn put(
         &self,
         vendor_id: &str,
         label: Option<&str>,
         plaintext: &SecretString,
     ) -> Result<SecretKeyRecord, VaultError>;
     /// 列表（`vendor_id` 为 None 时全量），按 created_at_ms 升序。
-    fn list(&self, vendor_id: Option<&str>) -> Result<Vec<SecretKeyRecord>, VaultError>;
+    async fn list(&self, vendor_id: Option<&str>) -> Result<Vec<SecretKeyRecord>, VaultError>;
     /// 删除；返回是否确有删除。
-    fn remove(&self, id: &str) -> Result<bool, VaultError>;
+    async fn remove(&self, id: &str) -> Result<bool, VaultError>;
     /// 唯一明文出口：注入 inline key pool 时消费，调用方即用即弃。
-    fn reveal(&self, id: &str) -> Result<SecretString, VaultError>;
+    async fn reveal(&self, id: &str) -> Result<SecretString, VaultError>;
 }
 
 /// 保密柜错误：Display 恒英文规范串（对齐 error 双轨惯例），HTTP 映射在 api 层。

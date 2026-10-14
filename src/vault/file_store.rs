@@ -127,8 +127,9 @@ impl FileKeyStore {
     }
 }
 
+#[async_trait::async_trait]
 impl KeyStore for FileKeyStore {
-    fn put(
+    async fn put(
         &self,
         vendor_id: &str,
         label: Option<&str>,
@@ -170,7 +171,7 @@ impl KeyStore for FileKeyStore {
         Ok(Self::record(&id, entry))
     }
 
-    fn list(&self, vendor_id: Option<&str>) -> Result<Vec<SecretKeyRecord>, VaultError> {
+    async fn list(&self, vendor_id: Option<&str>) -> Result<Vec<SecretKeyRecord>, VaultError> {
         let entries = self.entries.lock().expect("vault lock poisoned");
         let mut rows: Vec<(&String, &StoredEntry)> = entries
             .iter()
@@ -183,7 +184,7 @@ impl KeyStore for FileKeyStore {
             .collect())
     }
 
-    fn remove(&self, id: &str) -> Result<bool, VaultError> {
+    async fn remove(&self, id: &str) -> Result<bool, VaultError> {
         let mut entries = self.entries.lock().expect("vault lock poisoned");
         let removed = entries.remove(id).is_some();
         if removed {
@@ -192,7 +193,7 @@ impl KeyStore for FileKeyStore {
         Ok(removed)
     }
 
-    fn reveal(&self, id: &str) -> Result<SecretString, VaultError> {
+    async fn reveal(&self, id: &str) -> Result<SecretString, VaultError> {
         let entries = self.entries.lock().expect("vault lock poisoned");
         let entry = entries
             .get(id)
@@ -210,76 +211,71 @@ mod tests {
         FileKeyStore::open(vec![7u8; 32], dir.join("vault.bin")).expect("open store")
     }
 
-    #[test]
-    fn put_list_remove_reveal_roundtrip() {
+    async fn put_key(
+        store: &FileKeyStore,
+        vendor: &str,
+        label: Option<&str>,
+        key: &str,
+    ) -> SecretKeyRecord {
+        store
+            .put(vendor, label, &SecretString::new(key.into()))
+            .await
+            .expect("put")
+    }
+
+    #[tokio::test]
+    async fn put_list_remove_reveal_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        let record = store
-            .put(
-                "openai",
-                Some("prod"),
-                &SecretString::new("sk-live-abcdef123".into()),
-            )
-            .expect("put");
+        let record = put_key(&store, "openai", Some("prod"), "sk-live-abcdef123").await;
         assert_eq!(record.mask, "sk-***f123");
         assert_eq!(record.vendor_id, "openai");
-        let listed = store.list(Some("openai")).expect("list");
+        let listed = store.list(Some("openai")).await.expect("list");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, record.id);
         assert_eq!(listed[0].mask, "sk-***f123");
-        let revealed = store.reveal(&record.id).expect("reveal");
+        let revealed = store.reveal(&record.id).await.expect("reveal");
         assert_eq!(revealed.expose_secret(), "sk-live-abcdef123");
-        assert!(store.remove(&record.id).expect("remove"));
+        assert!(store.remove(&record.id).await.expect("remove"));
         assert!(matches!(
-            store.reveal(&record.id),
+            store.reveal(&record.id).await,
             Err(VaultError::NotFound(_))
         ));
-        assert!(!store.remove(&record.id).expect("remove again"));
+        assert!(!store.remove(&record.id).await.expect("remove again"));
     }
 
-    #[test]
-    fn entries_survive_reopen() {
+    #[tokio::test]
+    async fn entries_survive_reopen() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("vault.bin");
         let record = {
             let store = FileKeyStore::open(vec![7u8; 32], &path).expect("open");
-            store
-                .put(
-                    "anthropic",
-                    None,
-                    &SecretString::new("sk-ant-xyz98765432".into()),
-                )
-                .expect("put")
+            put_key(&store, "anthropic", None, "sk-ant-xyz98765432").await
         };
         let reopened = FileKeyStore::open(vec![7u8; 32], &path).expect("reopen");
-        assert_eq!(reopened.list(Some("anthropic")).expect("list").len(), 1);
         assert_eq!(
-            reopened.reveal(&record.id).expect("reveal").expose_secret(),
+            reopened.list(Some("anthropic")).await.expect("list").len(),
+            1
+        );
+        assert_eq!(
+            reopened
+                .reveal(&record.id)
+                .await
+                .expect("reveal")
+                .expose_secret(),
             "sk-ant-xyz98765432"
         );
     }
 
-    #[test]
-    fn same_fingerprint_upserts_instead_of_duplicating() {
+    #[tokio::test]
+    async fn same_fingerprint_upserts_instead_of_duplicating() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open_store(dir.path());
-        let first = store
-            .put(
-                "openai",
-                None,
-                &SecretString::new("sk-same-key-123456".into()),
-            )
-            .expect("put 1");
-        let second = store
-            .put(
-                "openai",
-                Some("renamed"),
-                &SecretString::new("sk-same-key-123456".into()),
-            )
-            .expect("put 2");
+        let first = put_key(&store, "openai", None, "sk-same-key-123456").await;
+        let second = put_key(&store, "openai", Some("renamed"), "sk-same-key-123456").await;
         assert_eq!(first.id, second.id);
         assert_eq!(second.label.as_deref(), Some("renamed"));
-        assert_eq!(store.list(Some("openai")).expect("list").len(), 1);
+        assert_eq!(store.list(Some("openai")).await.expect("list").len(), 1);
     }
 
     #[test]

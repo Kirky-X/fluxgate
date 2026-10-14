@@ -33,9 +33,15 @@
   - [PUT /admin/models/:id](#put-adminmodelsid)
   - [DELETE /admin/models/:id](#delete-adminmodelsid)
   - [POST /admin/models/:id](#post-adminmodelsid)
+  - [GET /admin/vault/keys](#get-adminvaultkeys)
+  - [POST /admin/vault/keys](#post-adminvaultkeys)
+  - [DELETE /admin/vault/keys/:id](#delete-adminvaultkeysid)
   - [POST /admin/route/explain](#post-adminrouteexplain)
+  - [POST /admin/route/difficulty-explain](#post-adminroutedifficulty-explain)
 - [健康检查](#健康检查)
   - [GET /api/v1/health](#get-apiv1health)
+  - [GET /readyz](#get-readyz)
+  - [GET /metrics](#get-metrics)
 - [附录：路由提示请求头](#附录路由提示请求头)
 
 ---
@@ -912,7 +918,7 @@ curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
 
 ### GET /admin/config
 
-返回当前运行时配置（完整 `Config` 结构，共 18 个顶层段：`server`、`database`、`vendors`、`global_model`、`pricing`、`model_catalog`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`、`health`、`quota`、`grpc`、`docs`；其中 `model_catalog` 为空目录、`grpc` 段缺省时在响应中省略 / 序列化为 `null`）。
+返回当前运行时配置（完整 `Config` 结构，共 19 个顶层段：`server`、`database`、`vendors`、`global_model`、`pricing`、`model_catalog`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`、`health`、`quota`、`grpc`、`docs`、`lexcompress`；其中 `model_catalog` 为空目录、`grpc` 段缺省时在响应中省略 / 序列化为 `null`）。
 
 **认证**: 需要 Bearer Token
 
@@ -1081,7 +1087,7 @@ curl http://localhost:8080/admin/config \
 
 **认证**: 需要 Bearer Token
 
-**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，18 个顶层段）
+**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，19 个顶层段）
 
 **响应**:
 
@@ -1287,6 +1293,130 @@ curl -X POST http://localhost:8080/admin/models/global \
 
 ---
 
+### GET /admin/vault/keys
+
+密钥保密柜列表（key-vault，`vault` feature 门控）：按 `created_at` 升序返回柜内条目掩码面（零明文——响应与日志均不含明文，`mask` 仅用于人工核对）。
+
+> **Feature 门控**：vault 端点族仅在编译启用 `vault` feature 时挂载；未启用时路由不存在（404）。
+
+**认证**: 需要 Bearer Token
+
+**Query 参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `vendor_id` | string | 否 | 按厂商过滤；缺省返回全量 |
+
+**响应**:
+
+```json
+{
+  "keys": [
+    {
+      "id": "vk_01H...",
+      "vendor_id": "openai",
+      "label": "primary",
+      "mask": "sk-...abcd",
+      "fingerprint": "a1b2c3d4e5f60718",
+      "created_at_ms": 1754092800000,
+      "updated_at_ms": 1754092800000
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 条目 ID |
+| `vendor_id` | string | 所属厂商（`(vendor_id, fingerprint)` 唯一约束） |
+| `label` | string \| null | 人工标签 |
+| `mask` | string | 掩码形态（人工核对用，非明文） |
+| `fingerprint` | string | 明文 SHA256 hex 前 16 字符 |
+| `created_at_ms` / `updated_at_ms` | i64 | 创建/更新时间（Unix ms） |
+
+**错误码**: 无业务错误（vault 未接线时返回 5xx `vendor_unavailable` 形态错误）
+
+**curl 示例**:
+
+```bash
+curl "http://localhost:8080/admin/vault/keys?vendor_id=openai" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
+### POST /admin/vault/keys
+
+录入密钥（同 `vendor_id` + fingerprint upsert），写柜后**即时重注**该 vendor 的 inline key pool（热生效；柜清空时清池回退 env 兜底）。
+
+**认证**: 需要 Bearer Token
+
+**请求体**:
+
+```json
+{
+  "vendor_id": "openai",
+  "key": "sk-proj-...",
+  "label": "primary"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `vendor_id` | string | 是 | 目标厂商（必须已登记于 `[[vendors]]`，否则 `validation_error`） |
+| `key` | string | 是 | 明文密钥（只进不出；空白字符串拒绝） |
+| `label` | string | 否 | 人工标签 |
+
+**响应**: `SecretKeyRecord`（掩码面，同 [GET /admin/vault/keys](#get-adminvaultkeys) 条目形状）
+
+**错误码**: `validation_error`(400，`key` 空白 / `vendor_id` 未登记) · vault 后端错误（5xx）
+
+**curl 示例**:
+
+```bash
+curl -X POST http://localhost:8080/admin/vault/keys \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"vendor_id": "openai", "key": "sk-proj-...", "label": "primary"}'
+```
+
+---
+
+### DELETE /admin/vault/keys/:id
+
+删除柜内条目，并即时同步 inline key pool（该 vendor 柜非空则按剩余条目重注；清空则清池回退 env 兜底）。
+
+**认证**: 需要 Bearer Token
+
+**Path 参数**:
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 条目 ID |
+
+**响应**:
+
+```json
+{
+  "removed": true
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `removed` | bool | 是否确有删除（幂等——不存在时返回 `false`） |
+
+**错误码**: vault 后端错误（5xx）
+
+**curl 示例**:
+
+```bash
+curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
 ### POST /admin/route/explain
 
 路由可解释性：对指定模型逐候选给出路由评估（纯只读——不发上游请求，不改变亲和/熔断/队列任何状态）。候选池 = 全部 vendor × 请求模型（按 `model_id`/`abstract_id` 大小写不敏感匹配）。
@@ -1340,6 +1470,70 @@ curl -X POST http://localhost:8080/admin/route/explain \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4", "session_id": "user-session-1"}'
+```
+
+---
+
+### POST /admin/route/difficulty-explain
+
+难度定档解释：对指定模型名（`[routing.difficulty].groups` 命中判定）与请求体（特征提取输入）给出融合定档结果（纯只读——不写决策缓存外任何状态、不改变熔断/亲和/队列，分类推理仅熔断放行时咨询且失败不记账）。未接线（`[routing.difficulty]` 未启用）或 `groups` 未命中返回 404 语义的 Validation 错误（与 [POST /admin/route/explain](#post-adminrouteexplain) 的未知模型同口径）。
+
+**认证**: 需要 Bearer Token
+
+**请求体** (`Json<Value>`):
+
+```json
+{
+  "model": "auto",
+  "body": {"messages": [{"role": "user", "content": "hello"}]}
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `model` | string | 是 | 请求模型名（缺失/非 string 或未命中 `groups` 返回 `validation_error` 400） |
+| `body` | object | 否 | 完整请求体，作特征提取输入；缺省按 `null` 处理 |
+
+**响应**: 融合定档分解（`score_breakdown.formula` = `S = (w_clf·p + w_rule·r) / (w_clf + w_rule)`）：
+
+```json
+{
+  "model_input": "auto",
+  "tier": "high",
+  "rewritten_model": "claude-opus-4-20250514",
+  "score": 0.82,
+  "score_breakdown": {
+    "w_clf": 0.5, "w_rule": 0.5, "p_clf": 0.9, "r_rule": 0.74,
+    "formula": "S = (w_clf·p + w_rule·r) / (w_clf + w_rule)"
+  },
+  "thresholds": {"score_low": 0.3, "score_high": 0.7, "mid_band_policy": "strong", "mid_configured": true},
+  "cached": false,
+  "cached_decision": null,
+  "classifier": {"wired": true, "breaker": "closed", "error": null},
+  "explain_latency_ms": 3
+}
+```
+
+| 响应字段 | 说明 |
+|---|---|
+| `model_input` | 回显的请求模型名 |
+| `tier` / `rewritten_model` | 命中档位（`low`/`mid`/`high`）与改写后的抽象模型名 |
+| `score` | 融合分 S |
+| `score_breakdown` | 权重与分项分解（`p_clf` = 分类器概率，`r_rule` = 规则分） |
+| `thresholds` | 档位阈值与中档策略（`mid_band_policy`、`mid_configured`） |
+| `cached` / `cached_decision` | 决策缓存命中情况（只读观测，不写缓存） |
+| `classifier` | 分类器接线态、熔断态（`closed`/`half_open`/`open`）与错误说明 |
+| `explain_latency_ms` | 解释耗时（ms） |
+
+**错误码**: `validation_error`(400，`model` 缺失/非 string；未接线或 `groups` 未命中同码返回，语义同 404）
+
+**curl 示例**:
+
+```bash
+curl -X POST http://localhost:8080/admin/route/difficulty-explain \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "body": {"messages": [{"role": "user", "content": "hello"}]}}'
 ```
 
 ---

@@ -313,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 Strategy
 
-Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by functional domain under `tests/` subdirectories (api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard, 49 `.rs` files in total — 48 test binaries plus the `tests/common/mod.rs` helper), each binary explicitly registered via `[[test]]` in the root `Cargo.toml` (one binary per file, process-exclusive semantics preserved; the grpc_smoke / grpc_coverage pair carries `required-features` and compiles only under the `grpc` caliber — default builds no empty binaries). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
+Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by functional domain under `tests/` subdirectories (api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard, 52 `.rs` files in total — 51 test binaries plus the `tests/common/mod.rs` helper), each binary explicitly registered via `[[test]]` in the root `Cargo.toml` (one binary per file, process-exclusive semantics preserved; the grpc_smoke / grpc_coverage pair carries `required-features` and compiles only under the `grpc` caliber — default builds no empty binaries). Mocks use mockall / mockito; time-sensitive tests inject the limiteron MockClock fake clock.
 
 ### ▶️ Commands (CI-consistent)
 
@@ -331,7 +331,7 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): **1379 tests pass, 0 failures** — 490 unit tests (inline in `src/`) plus 889 integration tests (48 test binaries under `tests/`, 46 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1419 tests pass, 0 failures** — 518 unit tests (inline in `src/`) plus 901 integration tests (51 test binaries under `tests/`, 49 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
@@ -344,7 +344,7 @@ As of the current version (measured with `cargo test --workspace`): **1379 tests
 | retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | retry classes & delay policy / loader·manager branches |
 | quota / fallback / admission | 20 / 17 / 16 | tests/resilience/ | quota window / fallback chain / admission |
 | bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit routing / model catalog admin |
-| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (138) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin / dead-code guard |
+| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (150) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin / dead-code guard |
 
 ---
 

@@ -105,17 +105,25 @@ flowchart TB
 
 | 文件 | 职责 |
 |---|---|
-| `api/mod.rs` | 业务路由组装与请求处理主循环：换路重试循环、亲和 bind/clear 编排（`src/api/mod.rs:42-94`、`src/api/mod.rs:282-460`） |
-| `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:695-731`）；admission 准入判定挂载（`src/api/router_builder.rs:474-560`） |
+| `api/mod.rs` | 业务路由组装与请求处理主循环：换路重试循环、亲和 bind/clear 编排（`src/api/mod.rs:48-98`、`src/api/mod.rs:526-730`） |
+| `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:724-776`）；admission 准入判定挂载（`src/api/router_builder.rs:478-554`） |
 | `api/openai.rs` | `POST /v1/chat/completions`、`POST /v1/embeddings` 端点 |
 | `api/anthropic.rs` | `POST /v1/messages` 端点 |
 | `api/health.rs` | `/health` 健康检查端点 |
 | `api/admin.rs` | `/admin/*` 运维端点 handler（日志查询、指标、厂商状态、配置热更新、模型管理） |
-| `api/state.rs` | `ApiState` 应用状态聚合；LinUCB 奖励回传（`src/api/state.rs:77-102`） |
+| `api/state.rs` | `ApiState` 应用状态聚合；LinUCB 奖励回传（`src/api/state.rs:75-100`） |
 | `api/global_state.rs` | sdforge 宏 handler 的全局状态持有（`OnceCell` 持有 `ApiState`，弥补宏不支持 axum State 提取器） |
 | `api/routing_hints.rs` | 从请求头提取四个路由提示（X-Vendor / X-Model / X-Session-Id / X-Weight）；会话键缺失时兜底哈希 |
 | `api/response_cache.rs` | recId=12 精确响应缓存，存储落地 oxcache（见[响应缓存](#-响应缓存)） |
 | `api/sse.rs` | SSE 编码器与增量分帧器门面（实源 `src/protocol/sse_frame.rs`，此处 re-export 保持引用路径） |
+| `api/models.rs` | `GET /v1/models` OpenAI 兼容模型列表（模型目录 ∪ vendor 模型去重，不进缓存） |
+| `api/count_tokens.rs` | `POST /v1/messages/count_tokens` Anthropic 兼容 token 计数（近似估算，不引 tokenizer） |
+| `api/readiness.rs` | 就绪探针：真实组件检查经 sdforge `AsyncReadinessCheck` 注册，`/readyz` 聚合（200/503） |
+| `api/openapi_docs.rs` | OpenAPI 文档面：主 REST 端点经 sdforge inventory 注册进全局 spec；文档路由由 `[docs].enabled` 开关挂载（默认 false = 404） |
+| `api/route_explain.rs` | `POST /admin/route/explain` 路由可解释性：逐候选 decision / reason_code（纯只读） |
+| `api/route_difficulty_explain.rs` | `POST /admin/route/difficulty-explain` 难度定档解释端点（只读，零计量副作用） |
+| `api/semantic_cache.rs` | 语义响应缓存（O4，`semantic-cache` feature 门控）：精确 miss 后按 api_key_hash 租户隔离的嵌入相似检索层 |
+| `api/vault.rs` | 密钥保密柜管理面（key-vault）：`/admin/vault/keys*` 录入/掩码列表/删除，put/remove 后即时重注 inline key pool |
 
 ### src/router/
 
@@ -145,7 +153,7 @@ flowchart TB
 | 文件 | 职责 |
 |---|---|
 | `database/database.rs` | `Database`：连接建立（path + pool_size）与 repository 句柄 |
-| `database/migration.rs` | 版本化迁移：V1 FROZEN + V2 迁移（sqlite/postgres/mysql 三方言，当前 `CORE_SCHEMA_VERSION = 2`）经 dbnexus `MigrationExecutor` 执行（UP 建表 + DOWN 回滚）；`schema.*.sql` 退为可读文档，一致性由守卫测试锁定 |
+| `database/migration.rs` | 版本化迁移：V1 FROZEN + V2/V3 迁移（sqlite/postgres/mysql 三方言，当前 `CORE_SCHEMA_VERSION = 3`）经 dbnexus `MigrationExecutor` 执行（UP 建表 + DOWN 回滚）；`schema.*.sql` 退为可读文档，一致性由守卫测试锁定 |
 | `database/repository.rs` | 仓储：dbnexus 会话防御链上的参数化批量 INSERT（`execute_with_params` + 单事务批量） |
 | `database/async_logger.rs` | recId=9 背压语义异步日志写入器：`try_send` 满即丢弃计数，绝不阻塞响应路径；落库前经 inklog secret gate 脱敏 |
 | `database/pre_aggregator.rs` | Token 使用预聚合器：按小时聚合，减少数据库查询压力 |
@@ -154,8 +162,8 @@ flowchart TB
 
 | 目录 | 文件与职责 |
 |---|---|
-| `src/config/` | `mod.rs`：`Config` 结构体（18 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
-| `src/middleware/` | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`mod.rs`：中间件组织 |
+| `src/config/` | `mod.rs`：`Config` 结构体（19 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
+| `src/middleware/` | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`lexcompress.rs`：词法压缩（N2，`X-Compress: 1` 触发的确定性剪枝）；`mod.rs`：中间件组织 |
 | `src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3） |
 | `src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器 |
 | `src/i18n/` | `catalog.rs`：Fluent 双束编译期内嵌（`OnceLock` 静态缓存）；`locale.rs`：语言检测链与全局 locale 上下文；`mod.rs`：`t()`/`t_args()` 查找门面 |
@@ -219,7 +227,7 @@ sequenceDiagram
 
 ### 三级决策顺序
 
-`route_inner` 按以下顺序尝试（`src/router/router.rs:153`）。注意顺序是**先抽象模型、再直连**，最后才是全局池：
+`route_inner` 按以下顺序尝试（`src/router/router.rs:157`）。注意顺序是**先抽象模型、再直连**，最后才是全局池：
 
 ```mermaid
 flowchart TB
@@ -245,7 +253,7 @@ flowchart TB
 
 ### 加权打分公式
 
-`compute_weight`（`src/router/router.rs:1660-1743`）：
+`compute_weight`（`src/router/router.rs:1828-1836`）：
 
 ```text
 weight = w_model·model.weight + w_queue·queue_factor
@@ -310,12 +318,12 @@ weight = w_model·model.weight + w_queue·queue_factor
 - 键 `affinity:{session_key}`；`tenant_scoped` 开启时带 `api_key_hash` 前缀，与响应缓存的 `resp:` 命名空间隔离；
 - TTL 默认 1 小时，命中即续期；
 - **hard（默认）在合格集合内排他**：命中即选绑定 vendor；仅当绑定 vendor 不在本次合格集合中才回落加权选择（`soft` 模式全程为 boost）；
-- 只记录"上次成功服务的 vendor"——bind/clear 由 API 层在执行成功后调用（`src/api/mod.rs:44-84`）；
+- 只记录"上次成功服务的 vendor"——bind/clear 由 API 层在执行成功后调用（`src/api/mod.rs:48-98`）；
 - 命中率计入 `GlobalMetrics`。
 
 ### 路由提示
 
-`src/api/routing_hints.rs` 提取四个请求头：`X-Vendor` / `X-Model` / `X-Session-Id` / `X-Weight`。`route_with_hints` 的优先级（`src/router/router.rs:281`）：
+`src/api/routing_hints.rs` 提取四个请求头：`X-Vendor` / `X-Model` / `X-Session-Id` / `X-Weight`。`route_with_hints` 的优先级（`src/router/router.rs:529`）：
 
 ```text
 preferred_vendor 定点直连  >  preferred_model 抽象模型  >  默认加权决策
@@ -330,7 +338,7 @@ preferred_vendor 定点直连  >  preferred_model 抽象模型  >  默认加权�
 - **臂**：`(abstract_model, vendor_id)` 组合，每臂一个独立线性模型；
 - **打分**：闭式最小二乘 `θ̂ = A⁻¹b` + UCB 置信上界 `⟨x,θ̂⟩ + α√(xᵀA⁻¹x)`，argmax 选择，置信上界自动编码冷启动探索；
 - **特征**：5 维 `[1, ln(1+消息数), ln(1+body 字符数), 有 tools, 流式]`（`src/router/bandit.rs` 的特征构造）；
-- **奖励**：成功 1 / 失败 0（代理奖励），由 API 层执行后回传（`src/api/state.rs:77-102`），更新只动被选臂；
+- **奖励**：成功 1 / 失败 0（代理奖励），由 API 层执行后回传（`src/api/state.rs:75-100`），更新只动被选臂；
 - **已知边界**：状态在内存，重启归零，不持久化。
 
 ---
@@ -341,7 +349,7 @@ preferred_vendor 定点直连  >  preferred_model 抽象模型  >  默认加权�
 
 ### 回退链与换路循环
 
-- `FallbackChain`（`src/vendor/resilience/fallback.rs`）：`FallbackTarget = vendor + model + priority`（数值越小优先级越高）。`Router::build_fallback_chain` 按配置中 vendors 的 priority 建链，trigger = All（`src/router/router.rs:252`）。
+- `FallbackChain`（`src/vendor/resilience/fallback.rs`）：`FallbackTarget = vendor + model + priority`（数值越小优先级越高）。`Router::build_fallback_chain` 按配置中 vendors 的 priority 建链，trigger = All（`src/router/router.rs:243`）。
 - 换路循环消费在 API 层（`src/api/mod.rs` 的 `execute_request_with_fallback` / `execute_dispatch_with_fallback`）：
 
 ```mermaid
@@ -360,7 +368,7 @@ flowchart TB
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`src/vendor/manager.rs:135-147`）：
+`limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`src/vendor/manager.rs:135-145`）：
 
 | 参数 | 值 | 设计理由 |
 |---|---|---|
@@ -380,7 +388,7 @@ stateDiagram-v2
 
 ### 重试策略
 
-延迟计算委托 `limiteron::retry::delay_for_attempt`，按错误类别分类（`src/utils/retry.rs:179` 的延迟选择函数、`src/vendor/manager.rs` 的错误分类消费）：
+延迟计算委托 `limiteron::retry::delay_for_attempt`，按错误类别分类（`src/utils/retry.rs:146` 的延迟选择函数、`src/vendor/manager.rs` 的错误分类消费）：
 
 | 错误类别 | 延迟策略 |
 |---|---|
@@ -417,7 +425,7 @@ stateDiagram-v2
 
 ### 存储模型
 
-SQLite，4 张表（迁移 V1↔V2 定义于 `src/database/migration.rs`（当前 `CORE_SCHEMA_VERSION = 2`），`schema.*.sql` 为同源可读文档）：
+SQLite，5 张表（迁移 V1↔V3 定义于 `src/database/migration.rs`（当前 `CORE_SCHEMA_VERSION = 3`），`schema.*.sql` 为同源可读文档）：
 
 | 表 | 用途 | 状态 |
 |---|---|---|
@@ -425,8 +433,9 @@ SQLite，4 张表（迁移 V1↔V2 定义于 `src/database/migration.rs`（当�
 | `token_usage` | Token 用量小时聚合 | 读写 |
 | `vendor_status` | 厂商状态持久化 | 仅有 schema，无读写路径 |
 | `model_stats` | 模型统计 | 仅有 schema，无读写路径 |
+| `vault_keys` | 密钥保密柜（cocoon 密文 + 掩码/指纹列，V3 迁移建表） | 读写 |
 
-表结构经 dbnexus `MigrationExecutor` 版本化管理：启动装配链执行 V1/V2 迁移（UP 建表 + 索引，DOWN 对应回滚），迁移历史记录于 dbnexus 默认历史表；存量库（表已存在、历史为空）由基线化检查兼容，不重复建表。三方言（sqlite/postgres/mysql）各有 FROZEN V1，与对应 `schema.*.sql` 文档的一致性由守卫测试锁定。
+表结构经 dbnexus `MigrationExecutor` 版本化管理：启动装配链执行 V1/V2/V3 迁移（UP 建表 + 索引，DOWN 对应回滚），迁移历史记录于 dbnexus 默认历史表；存量库（表已存在、历史为空）由基线化检查兼容，不重复建表。三方言（sqlite/postgres/mysql）各有 FROZEN V1，与对应 `schema.*.sql` 文档的一致性由守卫测试锁定。
 
 ### 异步写入管线
 
@@ -440,7 +449,7 @@ flowchart LR
     H -.异步.-> PA["TokenPreAggregator<br/>(vendor, model, date, hour) 小时粒度<br/>内存 buffer 60s 定期 drain UPSERT"]
 ```
 
-- 队列容量 1024、flush_interval 1s 在启动装配时构造，预聚合器同期启动（`src/server/bootstrap.rs:152-156`，装配链自原 main.rs 平移，顺序逐位一致）。
+- 队列容量 1024、flush_interval 1s 在启动装配时构造，预聚合器同期启动（`src/server/bootstrap.rs:170-173`，装配链自原 main.rs 平移，顺序逐位一致）。
 - 背压语义（recId=9）：`log()` 永不阻塞响应路径，丢弃量显式计数并暴露，而非静默吞掉。
 - 预聚合将小时级 Token 统计先行内存缓冲，定期 UPSERT，压平写放大。
 
@@ -450,7 +459,7 @@ flowchart LR
 
 ### 配置结构
 
-`Config` 顶层 18 段（`src/config/mod.rs:933-991`）：
+`Config` 顶层 19 段（`src/config/mod.rs:1065-1126`）：
 
 | 段 | 说明 | 段 | 说明 |
 |---|---|---|---|
@@ -463,6 +472,7 @@ flowchart LR
 | `cors`（Option） | 跨域 | `model_catalog` | `[[model_catalog]]` 模型能力/定价目录（空目录时序列化省略） |
 | `health` | 主动健康探针（默认 off） | `quota` | 成本/token 维度配额（默认关） |
 | `grpc`（Option） | gRPC 服务器（缺段/禁用 = 不监听） | `docs` | OpenAPI 文档面开关（默认关 = 路由不存在） |
+| `lexcompress` | 词法压缩（X-Compress 触发，默认 off） | | |
 
 **硬约束**：所有配置段必须进 `Config` 结构体——persist 是全量写回磁盘，结构体里没有的段会在写回时从文件中消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。
 
@@ -497,7 +507,7 @@ flowchart LR
 
 ## 🚦 中间件管线
 
-管线顺序（`src/api/router_builder.rs:748-771`）：
+管线顺序（`src/api/router_builder.rs:793-822`）：
 
 ```mermaid
 flowchart LR
@@ -506,7 +516,7 @@ flowchart LR
     T --> AUTH["auth_middleware<br/>SHA256 摘要存储 + 常量时间比较"]
     AUTH --> Q["quota_middleware<br/>成本/token 配额（enabled 时）"]
     Q --> RL["入站限流<br/>端点表 + tower 全局层<br/>（空 rules 时共享令牌桶兜底）"]
-    RL --> ADM["admission 准入判定<br/>router_builder.rs:474-503"]
+    RL --> ADM["admission 准入判定<br/>router_builder.rs:478-554"]
     ADM --> H["路由 handler"]
 ```
 

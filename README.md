@@ -142,7 +142,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 
 ## ⚙️ 配置概览
 
-运行时配置为单个 `config.toml`（**不入库**——`.gitignore` 已列（承载 API Key 摘要与上游地址等部署私有物），干净检出先 `cp config.example.toml config.toml` 起步，每段每字段带默认值），共 18 个顶层段（`model_catalog` 逐条字段见 [📖 用户指南](docs/USER_GUIDE.md)）：
+运行时配置为单个 `config.toml`（**不入库**——`.gitignore` 已列（承载 API Key 摘要与上游地址等部署私有物），干净检出先 `cp config.example.toml config.toml` 起步，每段每字段带默认值），共 19 个顶层段（`model_catalog` 逐条字段见 [📖 用户指南](docs/USER_GUIDE.md)）：
 
 | 段 | 作用 | 热更新 |
 |----|------|--------|
@@ -310,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 测试策略
 
-单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard，共 49 个 `.rs` 文件——48 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变；grpc_smoke / grpc_coverage 两个按 `required-features` 随 `grpc` 特性编译，default 口径不产出空壳二进制），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
+单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard，共 52 个 `.rs` 文件——51 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变；grpc_smoke / grpc_coverage 两个按 `required-features` 随 `grpc` 特性编译，default 口径不产出空壳二进制），Mock 使用 mockall / mockito，时间敏感测试注入 limiteron MockClock 假时钟。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -327,7 +327,7 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1379 个用例通过、0 失败**——单元测试 490 个（`src/` 内联）+ 集成测试 889 个（`tests/` 48 个测试二进制，default 口径实际编译 46 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：**1419 个用例通过、0 失败**——单元测试 518 个（`src/` 内联）+ 集成测试 901 个（`tests/` 51 个测试二进制，default 口径实际编译 49 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
@@ -341,7 +341,7 @@ cargo check -p nexusflow --no-default-features --features "full,db-mysql"
 | retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | 重试分类与延迟策略 / loader·manager 分支 |
 | quota / fallback / admission | 20 / 17 / 16 | tests/resilience/ | 配额窗 / 换路链 / 准入 |
 | bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit 路由 / 模型目录 admin |
-| server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池等 | 其余 138 | tests/server/ 等 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
+| server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池等 | 其余 150 | tests/server/ 等 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
 
 ---
 

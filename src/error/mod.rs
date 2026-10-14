@@ -83,9 +83,16 @@ impl NexusFlowError {
                 t_args("error-database", &[("message", message.clone())])
             }
             NexusFlowError::Gate(e) => e.user_message(),
-            // FTL 键随 key-vault T010 接入；先走英文规范串（错误双轨的 Display 轨）
             #[cfg(feature = "vault")]
-            NexusFlowError::Vault(e) => e.to_string(),
+            NexusFlowError::Vault(e) => match e {
+                crate::vault::VaultError::NotFound(id) => {
+                    t_args("error-vault-not-found", &[("id", id.clone())])
+                }
+                crate::vault::VaultError::UnknownVendor(vendor) => {
+                    t_args("error-vault-unknown-vendor", &[("vendor", vendor.clone())])
+                }
+                other => t_args("error-vault", &[("message", other.to_string())]),
+            },
         }
     }
 

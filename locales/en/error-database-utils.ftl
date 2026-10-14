@@ -35,3 +35,8 @@ database-repo-column-migrated = migrated: added missing column { $column } to ta
 # storage.rs 契约默认实现：数据面写前沿不承担 admin 查询，显式拒绝。
 storage-log-query-unsupported = this RequestLogSink implementation is a data-plane write front and does not support queries (admin reads go through the storage backend implementation)
 storage-usage-stats-unsupported = this UsageSink implementation does not provide stats queries (admin reads go through the storage backend implementation)
+
+# vault (key-vault)：保密柜用户可见消息（Display 轨恒英文规范串，此处为展示轨）。
+error-vault = Vault error: { $message }
+error-vault-not-found = Vault key not found: { $id }
+error-vault-unknown-vendor = Unknown vendor: { $vendor }

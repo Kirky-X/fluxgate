@@ -35,3 +35,8 @@ database-repo-column-migrated = 迁移：已为表 { $table } 补齐缺失列 { 
 # storage.rs 契约默认实现：数据面写前沿不承担 admin 查询，显式拒绝。
 storage-log-query-unsupported = 此 RequestLogSink 实现为数据面写入前沿，不支持查询（admin 读取经存储后端实现）
 storage-usage-stats-unsupported = 此 UsageSink 实现不提供统计查询（admin 读取经存储后端实现）
+
+# vault (key-vault)：保密柜用户可见消息（Display 轨恒英文规范串，此处为展示轨）。
+error-vault = 保密柜错误：{ $message }
+error-vault-not-found = 保密柜密钥不存在：{ $id }
+error-vault-unknown-vendor = 未知厂商：{ $vendor }

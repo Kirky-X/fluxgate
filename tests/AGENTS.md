@@ -90,5 +90,5 @@ tests/
 - 测试文件按功能域位于 `tests/<domain>/`（集成测试），单元测试在源码内 `src/` 文件内 `#[cfg(test)]`；`autotests = false`，**新增集成测试文件必须同步在根 `Cargo.toml` 登记 `[[test]]`**（name 取文件 stem、path 指向实际位置），否则 cargo 静默不编译不运行；**禁止给 [[test]] 加 `required-features`**（特性门控留在文件顶 `#![cfg(feature = ...)]`）
 - 共享 helper 在 `common/mod.rs`：域内文件以 `#[path = "../common/mod.rs"] mod common;` 显式引入（内容同一份，各测试二进制独立编译）；`gate_*` 与其余消费方同款，不得拷袭基座字面量
 - 进程独占语义：`server_run_*` / `grpc_smoke` / `server_coverage` 依赖 OnceCell 全局态同进程仅消费一次，**禁止合并二进制**（域目录仅物理分组，一文件一二进制不变）
-- Mock 依赖使用 `mockall` / `mockito`
+- Mock 依赖使用 `mockito`（HTTP 线级桩）；进程内替身用手写 fake（参照 `MockDifficultyClassifier`）
 - 时间敏感测试注入 limiteron `MockClock`（需 dev-dependencies 的 `test-clock` feature）

@@ -33,6 +33,9 @@ impl Database {
                 ..Default::default()
             },
             admin_role: "admin".to_string(),
+            // retry 特性已随 inklog 在依赖图内，但 DbConfig 默认 None 不生效；
+            // 显式激活后仅幂等语句（SELECT/SHOW/EXPLAIN）自动重试，INSERT 不受影响
+            retry_policy: Some(dbnexus::RetryPolicy::default()),
             ..Default::default()
         };
 

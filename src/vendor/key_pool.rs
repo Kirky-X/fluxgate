@@ -989,6 +989,194 @@ mod inline_tests {
             "空内联池等价 env 池耗尽 → legacy 回退"
         );
     }
+
+    // ======== 同名单热更新（名单不变现读 env，值变化才落快照） ========
+
+    use super::tests::{lookup_map, vendor_config};
+
+    #[test]
+    fn select_same_names_rereads_env_and_selects_new_values() {
+        let pool = KeyPool::default_for_test();
+        let config = vendor_config("ENV_A,ENV_B", &[]);
+        let first = pool.select_with(
+            &config,
+            "gate-0",
+            &lookup_map(&[("ENV_A", "k-a1"), ("ENV_B", "k-b1")]),
+        );
+        assert!(
+            matches!(&first, RequestCredential::Pool { key, .. } if key == "k-a1"),
+            "首发取游标 0"
+        );
+        let second = pool.select_with(
+            &config,
+            "gate-0",
+            &lookup_map(&[("ENV_A", "k-a2"), ("ENV_B", "k-b2")]),
+        );
+        assert!(
+            matches!(&second, RequestCredential::Pool { key, .. } if key == "k-a2"),
+            "同名单换值必须选中新值（热更新立即生效）"
+        );
+    }
+
+    #[test]
+    fn select_same_names_shrunk_pool_keeps_surviving_key() {
+        let pool = KeyPool::default_for_test();
+        let config = vendor_config("ENV_A,ENV_B,ENV_C", &[]);
+        let full = pool.select_with(
+            &config,
+            "gate-0",
+            &lookup_map(&[("ENV_A", "k-a"), ("ENV_B", "k-b"), ("ENV_C", "k-c")]),
+        );
+        assert!(matches!(&full, RequestCredential::Pool { key, .. } if key == "k-a"));
+        let shrunk = pool.select_with(&config, "gate-0", &lookup_map(&[("ENV_A", "k-a")]));
+        assert!(
+            matches!(&shrunk, RequestCredential::Pool { key, .. } if key == "k-a"),
+            "收缩后只剩存留 key 可选"
+        );
+        assert_eq!(pool.info().size, 1, "快照收缩为存留 key 数");
+    }
+
+    #[test]
+    fn select_same_names_all_missing_falls_back_to_legacy() {
+        let pool = KeyPool::default_for_test();
+        let config = vendor_config("ENV_A,ENV_B", &[]);
+        let initial = pool.select_with(
+            &config,
+            "gate-0",
+            &lookup_map(&[("ENV_A", "k-a"), ("ENV_B", "k-b")]),
+        );
+        assert!(matches!(initial, RequestCredential::Pool { .. }));
+        let drained = pool.select_with(&config, "gate-0", &lookup_map(&[]));
+        assert!(
+            matches!(drained, RequestCredential::LegacyEnv),
+            "同名单全缺回退 legacy 凭证"
+        );
+    }
+
+    // ======== 首次解析的告警输入（缺失 / 截断 / 全缺） ========
+
+    #[test]
+    fn select_first_resolution_with_missing_and_over_cap_names_records_snapshot() {
+        let pool = KeyPool::default_for_test();
+        // 10 名单：K1..K9（显式列表在前）+ K0（legacy 兜底）；K9 缺失，9 命中超上限 8
+        let config = vendor_config(
+            "K0",
+            &["K1", "K2", "K3", "K4", "K5", "K6", "K7", "K8", "K9"],
+        );
+        let lookup = lookup_map(&[
+            ("K0", "k0"),
+            ("K1", "k1"),
+            ("K2", "k2"),
+            ("K3", "k3"),
+            ("K4", "k4"),
+            ("K5", "k5"),
+            ("K6", "k6"),
+            ("K7", "k7"),
+            ("K8", "k8"),
+        ]);
+        let credential = pool.select_with(&config, "gate-0", &lookup);
+        assert!(matches!(credential, RequestCredential::Pool { .. }));
+        assert_eq!(
+            pool.keys_snapshot().len(),
+            MAX_KEY_POOL,
+            "缺失显性化后按上限截断，快照如实记录"
+        );
+    }
+
+    #[test]
+    fn select_first_resolution_all_missing_falls_back_to_legacy() {
+        let pool = KeyPool::default_for_test();
+        let config = vendor_config("MISSING_A,MISSING_B", &[]);
+        let credential = pool.select_with(&config, "gate-0", &lookup_map(&[]));
+        assert!(
+            matches!(credential, RequestCredential::LegacyEnv),
+            "首次解析全缺 → legacy 回退"
+        );
+    }
+
+    // ======== 探针/观测辅助面 ========
+
+    #[test]
+    fn pool_snapshot_keys_observer_lists_key_texts() {
+        let snapshot = PoolSnapshot::from_keys(["k-1", "k-2"]);
+        assert_eq!(snapshot.keys(), &["k-1".to_string(), "k-2".to_string()]);
+    }
+
+    #[test]
+    fn all_blacklisted_tri_state_on_inline_pool() {
+        let pool = KeyPool::default_for_test();
+        assert!(!pool.all_blacklisted(), "空池（legacy 形态）恒 false");
+        pool.set_inline(PoolSnapshot::from_keys(["k-a", "k-b"]));
+        pool.mark_blacklisted(&fingerprint_of("k-a"));
+        assert!(!pool.all_blacklisted(), "半黑不算全黑");
+        pool.mark_blacklisted(&fingerprint_of("k-b"));
+        assert!(pool.all_blacklisted(), "全黑 → true");
+    }
+
+    #[test]
+    fn keys_snapshot_prefers_inline_pool_over_env_snapshot() {
+        let pool = KeyPool::default_for_test();
+        let config = vendor_config("ENV_A", &[]);
+        pool.select_with(&config, "gate-0", &lookup_map(&[("ENV_A", "k-env")]));
+        assert_eq!(pool.keys_snapshot(), vec!["k-env".to_string()]);
+        pool.set_inline(PoolSnapshot::from_keys(["k-inline"]));
+        assert_eq!(
+            pool.keys_snapshot(),
+            vec!["k-inline".to_string()],
+            "内联池优先于 env 快照"
+        );
+    }
+
+    #[test]
+    fn current_key_empty_pool_none_and_inline_returns_fingerprinted_key() {
+        let pool = KeyPool::default_for_test();
+        assert!(pool.current_key().is_none(), "空池无当前 key");
+        pool.set_inline(PoolSnapshot::from_keys(["k-only"]));
+        let (key, fingerprint) = pool.current_key().expect("非空池必有当前 key");
+        assert_eq!(key, "k-only");
+        assert_eq!(fingerprint, fingerprint_of("k-only"), "指纹与明文同源");
+    }
+
+    #[test]
+    fn peek_current_fingerprint_inline_branch_follows_cursor() {
+        let pool = KeyPool::default_for_test();
+        pool.set_inline(PoolSnapshot::from_keys(["k-a", "k-b"]));
+        assert_eq!(
+            pool.peek_current_fingerprint(),
+            Some(fingerprint_of("k-a")),
+            "内联池游标 0 起读"
+        );
+        assert!(pool.advance("gate-0", 429), "多 key 池推进返回 true");
+        assert_eq!(
+            pool.peek_current_fingerprint(),
+            Some(fingerprint_of("k-b")),
+            "推进后游标指向下一 key"
+        );
+    }
+
+    #[test]
+    fn note_request_error_permanent_blacklists_and_transient_does_not() {
+        let pool = KeyPool::default_for_test();
+        pool.set_inline(PoolSnapshot::from_keys(["k-a", "k-b"]));
+        let fp_a = fingerprint_of("k-a");
+        pool.note_request_error("gate-0", Some(&fp_a), 401, "invalid api key");
+        assert!(
+            pool.blacklisted_fingerprints().contains(&fp_a),
+            "401 永久错误必须入黑名单"
+        );
+        let fp_b = fingerprint_of("k-b");
+        pool.note_request_error("gate-0", Some(&fp_b), 429, "rate limited");
+        assert!(
+            !pool.blacklisted_fingerprints().contains(&fp_b),
+            "429 瞬时错误不得入黑名单"
+        );
+        // 全黑内联池 → select 回退 legacy；撤黑后 k-b 恢复可选
+        pool.mark_blacklisted(&fp_b);
+        assert!(matches!(
+            pool.select_with(&inline_vendor_config("X"), "gate-0", &|_| None),
+            RequestCredential::LegacyEnv
+        ));
+    }
 }
 
 #[cfg(test)]

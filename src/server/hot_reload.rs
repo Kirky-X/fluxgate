@@ -570,4 +570,179 @@ concurrency = { requests_per_second = 1 }
         );
         assert_eq!(manager.read().retry.max_retries, 20, "写回已生效");
     }
+
+    // ---- changed_sections 全段名覆盖（retry 臂由既有热更用例覆盖）----
+
+    #[test]
+    fn changed_sections_lists_each_changed_segment() {
+        let base = minimal_config();
+        assert!(
+            changed_sections(&base, &minimal_config()).is_empty(),
+            "全同 → 空列表"
+        );
+
+        type SectionMutation = (&'static str, Box<dyn Fn(&mut Config)>);
+        let mutations: Vec<SectionMutation> = vec![
+            (
+                "routing",
+                Box::new(|c: &mut Config| c.routing.difficulty.enabled = true),
+            ),
+            ("cache", Box::new(|c: &mut Config| c.cache.ttl_secs += 1)),
+            (
+                "resilience",
+                Box::new(|c: &mut Config| c.resilience.cover_all_paths = true),
+            ),
+            (
+                "admission",
+                Box::new(|c: &mut Config| c.admission.enabled = true),
+            ),
+            (
+                "auth",
+                Box::new(|c: &mut Config| {
+                    c.auth = Some(crate::config::AuthSection {
+                        enabled: false,
+                        api_keys: vec![],
+                        header: Default::default(),
+                        keys: vec![],
+                    });
+                }),
+            ),
+            (
+                "pricing",
+                Box::new(|c: &mut Config| {
+                    c.pricing.push(crate::config::PricingConfig {
+                        vendor_id: "v".into(),
+                        model_id: "m".into(),
+                        input_per_1k_tokens: 1.0,
+                        output_per_1k_tokens: 2.0,
+                    });
+                }),
+            ),
+            (
+                "model_catalog",
+                Box::new(|c: &mut Config| {
+                    c.model_catalog.push(crate::config::ModelCatalogEntry {
+                        model_id: "m".into(),
+                        ..Default::default()
+                    });
+                }),
+            ),
+            ("quota", Box::new(|c: &mut Config| c.quota.enabled = true)),
+            (
+                "health",
+                Box::new(|c: &mut Config| c.health.mode = "all".into()),
+            ),
+            ("server", Box::new(|c: &mut Config| c.server.port = 9999)),
+            (
+                "database",
+                Box::new(|c: &mut Config| c.database.pool_size = 2),
+            ),
+            (
+                "grpc",
+                Box::new(|c: &mut Config| c.grpc = Some(Default::default())),
+            ),
+            (
+                "cors",
+                Box::new(|c: &mut Config| {
+                    c.cors = Some(crate::config::CorsSection {
+                        allowed_origins: vec!["https://x".into()],
+                        ..Default::default()
+                    });
+                }),
+            ),
+            (
+                "rate_limit",
+                Box::new(|c: &mut Config| {
+                    c.rate_limit.rules.push(crate::config::RateLimitRule {
+                        id: "r".into(),
+                        path: None,
+                        per_tenant: true,
+                        window_secs: 60,
+                        max_requests: 1,
+                    });
+                }),
+            ),
+            ("docs", Box::new(|c: &mut Config| c.docs.enabled = true)),
+            (
+                "global_model",
+                Box::new(|c: &mut Config| {
+                    c.global_model = Some(crate::config::GlobalModelConfig {
+                        enabled: true,
+                        strategy: "other".into(),
+                    });
+                }),
+            ),
+        ];
+        for (name, mutate) in mutations {
+            let mut changed = minimal_config();
+            mutate(&mut changed);
+            assert_eq!(
+                changed_sections(&base, &changed),
+                vec![name],
+                "单段差异必须只报该段名"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_provider_serves_no_entries() {
+        let provider = EmptyProvider;
+        assert!(ConfigProvider::get_raw(&provider, "any").is_none());
+        assert!(ConfigProvider::keys(&provider).is_empty());
+    }
+
+    // ---- maybe_start_hot_reload 启动门控与失败重载 ----
+
+    fn reload_toml(max_retries: u32) -> String {
+        format!(
+            "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 8080\n\n\
+             [database]\npath = \":memory:\"\n\n[retry]\nmax_retries = {max_retries}\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn maybe_start_hot_reload_needs_existing_file() {
+        let manager = Arc::new(ConfigManager::new(minimal_config()));
+        assert!(
+            maybe_start_hot_reload(&manager).await.is_none(),
+            "无路径不启动"
+        );
+        manager.set_path(std::path::PathBuf::from("/nonexistent/cfg/nexusflow.toml"));
+        assert!(
+            maybe_start_hot_reload(&manager).await.is_none(),
+            "文件不存在不启动"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_rewrite_records_reload_failure_and_keeps_memory() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, reload_toml(2)).expect("write initial config");
+        let content = std::fs::read_to_string(&path).expect("read initial config");
+        let config =
+            crate::config::loader::parse_config_content(&path, &content).expect("初始配置必须合法");
+        let manager = Arc::new(ConfigManager::new(config));
+        manager.set_path(path.clone());
+        let reloader = maybe_start_hot_reload(&manager)
+            .await
+            .expect("有文件必须启动");
+        // 等待监听线程就绪，否则首写事件可能早于 watch 生效
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        std::fs::write(&path, "not [ valid toml").expect("rewrite invalid config");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while reloader.reload_failures() == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "5s 内非法改写未被记为重载失败"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            manager.read().retry.max_retries,
+            2,
+            "重载失败时内存态保持旧值"
+        );
+    }
 }

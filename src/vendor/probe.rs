@@ -328,3 +328,392 @@ async fn probe_minimal_call(
     }
     recovered
 }
+
+#[cfg(test)]
+mod tests {
+    //! 探针单元测试：归一化/构造纯函数直测；HTTP 探测经 mockito 本地桩；
+    //! Manager 空实例装配（恢复动作对未知 vendor 为 no-op，断言聚焦报告值）。
+
+    use super::*;
+    use crate::vendor::manager::ProbeTarget;
+    use std::path::Path;
+
+    fn probe_config(api_base: &str, type_: &str) -> VendorConfig {
+        VendorConfig {
+            id: "v-probe".into(),
+            name: "Probe".into(),
+            type_: type_.into(),
+            api_key_env: "PROBE_UNUSED_ENV".into(),
+            api_key_envs: vec![],
+            extra_headers: Default::default(),
+            api_base: api_base.into(),
+            enabled: true,
+            priority: 1,
+            models: vec![],
+            rate_limit: crate::config::RateLimitConfig::Token {
+                max_tokens: 1000,
+                window_hours: None,
+                sliding: false,
+            },
+            concurrency: crate::config::ConcurrencyConfig::default(),
+            timeout_ms: 60_000,
+            stream_ttft_ms: 60_000,
+            stream_idle_ms: 30_000,
+            supports_batch: false,
+            chat_path: None,
+        }
+    }
+
+    fn model(model_id: &str, enabled: bool) -> crate::config::ModelConfig {
+        crate::config::ModelConfig {
+            model_id: model_id.into(),
+            abstract_id: None,
+            weight: 1.0,
+            enabled,
+        }
+    }
+
+    fn target(config: VendorConfig, current: Option<(String, String)>) -> ProbeTarget {
+        ProbeTarget {
+            vendor_id: "v-probe".into(),
+            config,
+            status: VendorStatus::Unavailable,
+            keys: Vec::new(),
+            blacklist: Vec::new(),
+            current,
+        }
+    }
+
+    fn empty_manager() -> Arc<VendorManager> {
+        let toml = "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 0\n\n\
+                    [database]\npath = \":memory:\"\n";
+        let config = crate::config::loader::parse_config_content(Path::new("config.toml"), toml)
+            .expect("探针测试基线配置必须合法");
+        Arc::new(VendorManager::new(Arc::new(ConfigManager::new(config))))
+    }
+
+    fn cycle_manager(mode: &str) -> Arc<ConfigManager> {
+        let toml = format!(
+            "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 0\n\n\
+             [database]\npath = \":memory:\"\n\n[health]\nmode = \"{mode}\"\n"
+        );
+        let config = crate::config::loader::parse_config_content(Path::new("config.toml"), &toml)
+            .expect("探针周期测试配置必须合法");
+        Arc::new(ConfigManager::new(config))
+    }
+
+    // ---- 归一化与构造纯函数 ----
+
+    #[test]
+    fn normalize_mode_and_strategy_fall_back_on_unknown_values() {
+        assert_eq!(normalize_mode("suspect_only"), ProbeMode::SuspectOnly);
+        assert_eq!(normalize_mode(" all "), ProbeMode::All);
+        assert_eq!(normalize_mode("off"), ProbeMode::Off);
+        assert_eq!(normalize_mode("yolo"), ProbeMode::Off, "未知 mode 回退 Off");
+        assert_eq!(
+            normalize_strategy("minimal_call"),
+            ProbeStrategy::MinimalCall
+        );
+        assert_eq!(normalize_strategy(" free "), ProbeStrategy::Free);
+        assert_eq!(
+            normalize_strategy("bogus"),
+            ProbeStrategy::Free,
+            "未知 strategy 回退 Free"
+        );
+    }
+
+    #[test]
+    fn auth_headers_follow_vendor_type() {
+        let anthropic = probe_config("", "anthropic");
+        assert_eq!(
+            auth_headers(&anthropic, "k-1"),
+            vec![
+                ("x-api-key".to_string(), "k-1".to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ]
+        );
+        let openai = probe_config("", "openai");
+        assert_eq!(
+            auth_headers(&openai, "k-1"),
+            vec![("authorization".to_string(), "Bearer k-1".to_string())]
+        );
+    }
+
+    #[test]
+    fn minimal_body_uses_enabled_model_or_probe_placeholder() {
+        let mut config = probe_config("", "openai");
+        config.models = vec![model("m-disabled", false), model("m-live", true)];
+        let body = minimal_body(&config);
+        assert_eq!(body["model"], "m-live", "取首个 enabled 模型");
+        assert_eq!(body["max_tokens"], 1, "minimal_call 计费下限");
+        config.models = vec![model("m-off", false)];
+        assert_eq!(
+            minimal_body(&config)["model"],
+            "probe",
+            "无 enabled 模型回退占位名"
+        );
+    }
+
+    // ---- probe_free：2xx / 非 2xx / 连接失败 / URL 构建失败 / env 凭证回退 ----
+
+    #[tokio::test]
+    async fn probe_free_2xx_with_current_key_header_succeeds() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer k-current")
+            .with_status(200)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let config = probe_config(&server.url(), "openai");
+        let t = target(config, Some(("k-current".into(), "fp-x".into())));
+        assert!(
+            probe_free(&client, &t, Some(Duration::from_millis(2000))).await,
+            "2xx 即成功"
+        );
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn probe_free_env_credential_fallback_when_current_missing() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer probe-fake-credential-1")
+            .with_status(200)
+            .create();
+        std::env::set_var("PROBE_TEST_FREE_ENV_XYZ", "probe-fake-credential-1");
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut config = probe_config(&server.url(), "openai");
+        config.api_key_env = "PROBE_TEST_FREE_ENV_XYZ".into();
+        let t = target(config, None);
+        assert!(
+            probe_free(&client, &t, None).await,
+            "current 缺失现读 env 凭证"
+        );
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn probe_free_non_2xx_fails() {
+        let mut server = mockito::Server::new_async().await;
+        server.mock("GET", "/v1/models").with_status(401).create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let t = target(
+            probe_config(&server.url(), "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert!(!probe_free(&client, &t, None).await, "非 2xx 失败");
+    }
+
+    #[tokio::test]
+    async fn probe_free_connection_failure_fails() {
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        // 127.0.0.1:1 连接拒绝（RST 快速失败，不依赖外部网络）
+        let t = target(
+            probe_config("http://127.0.0.1:1", "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert!(!probe_free(&client, &t, None).await, "连接失败失败");
+    }
+
+    #[test]
+    fn probe_free_url_build_failure_fails() {
+        // 空链 unknown type：官方端点回退表无此类型 → URL 构建失败
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let manager = empty_manager();
+            let client = manager.outbound_client();
+            let t = target(probe_config("", "weird-type"), None);
+            assert!(!probe_free(&client, &t, None).await, "URL 构建失败失败");
+        });
+    }
+
+    // ---- probe_minimal_call：候选装配 / 恢复 / 非 2xx / 失败 ----
+
+    #[tokio::test]
+    async fn probe_minimal_call_recovers_blacklisted_and_current_keys_on_2xx() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .expect(2)
+            .with_status(200)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut t = target(
+            probe_config(&server.url(), "openai"),
+            Some((
+                "k-good".into(),
+                crate::vendor::key_pool::fingerprint_of("k-good"),
+            )),
+        );
+        t.keys = vec![(
+            "k-bad".into(),
+            crate::vendor::key_pool::fingerprint_of("k-bad"),
+        )];
+        t.blacklist = vec![crate::vendor::key_pool::fingerprint_of("k-bad")];
+        let recovered = probe_minimal_call(
+            &manager,
+            &client,
+            &t,
+            Some(Duration::from_millis(2000)),
+            true,
+        )
+        .await;
+        assert_eq!(
+            recovered, 2,
+            "黑名单 key + 当前 key 全部 2xx → 逐 key 计恢复"
+        );
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn probe_minimal_call_non_2xx_does_not_recover() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let t = target(
+            probe_config(&server.url(), "openai"),
+            Some(("k".into(), crate::vendor::key_pool::fingerprint_of("k"))),
+        );
+        let recovered = probe_minimal_call(&manager, &client, &t, None, true).await;
+        assert_eq!(recovered, 0, "非 2xx 不恢复");
+    }
+
+    #[tokio::test]
+    async fn probe_minimal_call_connection_failure_yields_zero() {
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let t = target(
+            probe_config("http://127.0.0.1:1", "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert_eq!(
+            probe_minimal_call(&manager, &client, &t, None, true).await,
+            0,
+            "连接失败不恢复"
+        );
+    }
+
+    #[test]
+    fn probe_minimal_call_url_build_failure_yields_zero() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let manager = empty_manager();
+            let client = manager.outbound_client();
+            let t = target(probe_config("", "weird-type"), None);
+            assert_eq!(
+                probe_minimal_call(&manager, &client, &t, None, true).await,
+                0,
+                "URL 构建失败不恢复"
+            );
+        });
+    }
+
+    // ---- probe_one：suspect 判定与恢复门槛 ----
+
+    #[tokio::test]
+    async fn probe_one_free_recovers_only_suspect_targets() {
+        let mut server = mockito::Server::new_async().await;
+        server.mock("GET", "/v1/models").with_status(200).create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let suspect = target(
+            probe_config(&server.url(), "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert_eq!(
+            probe_one(&manager, &client, &suspect, ProbeStrategy::Free, None).await,
+            (1, 1),
+            "suspect 且探测成功 → 恢复计数 1"
+        );
+        let mut healthy = target(
+            probe_config(&server.url(), "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        healthy.status = VendorStatus::Available;
+        assert_eq!(
+            probe_one(&manager, &client, &healthy, ProbeStrategy::Free, None).await,
+            (1, 0),
+            "非 suspect 无状态可恢复"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_one_minimal_call_on_healthy_target_skips_recovery() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut healthy = target(
+            probe_config(&server.url(), "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        healthy.status = VendorStatus::Available;
+        assert_eq!(
+            probe_one(
+                &manager,
+                &client,
+                &healthy,
+                ProbeStrategy::MinimalCall,
+                None
+            )
+            .await,
+            (1, 0),
+            "健康目标 minimal_call 仅验证连通性，不做恢复动作"
+        );
+    }
+
+    // ---- run_probe_cycle：mode 门控与目标采集 ----
+
+    #[tokio::test]
+    async fn run_probe_cycle_off_mode_is_noop() {
+        let manager = empty_manager();
+        let config = cycle_manager("off");
+        assert_eq!(
+            run_probe_cycle(&manager, &config).await,
+            ProbeReport::default(),
+            "off 模式整周期 no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_probe_cycle_unknown_mode_falls_back_to_off() {
+        let manager = empty_manager();
+        let config = cycle_manager("yolo");
+        assert_eq!(
+            run_probe_cycle(&manager, &config).await,
+            ProbeReport::default(),
+            "未知 mode 归一化为 Off → no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_probe_cycle_all_mode_without_instances_reports_zero() {
+        let manager = empty_manager();
+        let config = cycle_manager("all");
+        assert_eq!(
+            run_probe_cycle(&manager, &config).await,
+            ProbeReport::default(),
+            "无实例无目标 → 零报告"
+        );
+    }
+}

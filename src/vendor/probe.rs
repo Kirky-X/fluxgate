@@ -716,4 +716,53 @@ mod tests {
             "无实例无目标 → 零报告"
         );
     }
+
+    #[tokio::test]
+    async fn run_probe_cycle_suspect_only_targets_suspects_and_recovers() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server.mock("GET", "/v1/models").with_status(200).create();
+        // v-a 将被标记 Throttled（suspect），v-b 保持 Available（健康，不采集）
+        std::env::set_var("PROBE_TEST_POOL_ENV_XYZ", "probe-fake-pool-credential-1");
+        let toml = format!(
+            "[server]\nhost = \"127.0.0.1\"\nport = 0\n\n\
+             [database]\npath = \":memory:\"\n\n\
+             [[vendors]]\nid = \"v-a\"\nname = \"VA\"\ntype_ = \"openai\"\n\
+             api_key_env = \"PROBE_TEST_POOL_ENV_XYZ\"\napi_base = \"{url}\"\n\
+             rate_limit = {{ type = \"time_window\", start = \"00:00\", end = \"24:00\" }}\n\
+             concurrency = {{ requests_per_second = 1 }}\n\
+             [[vendors]]\nid = \"v-b\"\nname = \"VB\"\ntype_ = \"openai\"\n\
+             api_key_env = \"PROBE_TEST_POOL_ENV_XYZ\"\napi_base = \"http://127.0.0.1:1\"\n\
+             rate_limit = {{ type = \"time_window\", start = \"00:00\", end = \"24:00\" }}\n\
+             concurrency = {{ requests_per_second = 1 }}\n\n\
+             [health]\nmode = \"suspect_only\"\n",
+            url = server.url()
+        );
+        let config = crate::config::loader::parse_config_content(Path::new("config.toml"), &toml)
+            .expect("suspect_only 测试配置必须合法");
+        let cm = Arc::new(ConfigManager::new(config));
+        let manager = Arc::new(VendorManager::new(cm.clone()));
+        manager.initialize().await.expect("实例初始化必须成功");
+        // 60s 退避：覆盖整个测试窗口（0ms 退避即刻过期回 Available）
+        manager.mark_throttled("v-a", Duration::from_secs(60));
+        assert_eq!(
+            manager.get_status("v-a").await,
+            VendorStatus::Throttled,
+            "前置：v-a 为 suspect（Throttled）"
+        );
+
+        let report = run_probe_cycle(&manager, &cm).await;
+        assert_eq!(
+            report,
+            ProbeReport {
+                probed: 1,
+                recovered: 1
+            },
+            "suspect_only 只采集 suspect 目标，且探测成功即恢复"
+        );
+        assert_eq!(
+            manager.get_status("v-a").await,
+            VendorStatus::Available,
+            "恢复动作把目标翻回 Available"
+        );
+    }
 }

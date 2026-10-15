@@ -1044,4 +1044,249 @@ concurrency = { requests_per_second = 1 }
             "错误必须点名 feature: {error}"
         );
     }
+
+    // ---- parse_config_content 错误分支 ----
+
+    fn minimal_ok_toml() -> String {
+        "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 8080\n\n\
+         [database]\npath = \":memory:\"\n"
+            .to_string()
+    }
+
+    #[test]
+    fn parse_rejects_unknown_extension() {
+        let error = parse_config_content(Path::new("config.txt"), &minimal_ok_toml())
+            .expect_err("未知扩展名必须拒绝");
+        assert!(
+            error.to_string().contains("unknown extension"),
+            "错误必须说明扩展名不可识别: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_malformed_toml() {
+        assert!(
+            parse_config_content(Path::new("config.toml"), "not [ valid").is_err(),
+            "TOML 语法错必须拒绝"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_type_mismatched_field() {
+        let toml = "vendors = \"not-a-list\"\n[server]\nhost = \"127.0.0.1\"\nport = 8080\n\n\
+                    [database]\npath = \":memory:\"\n";
+        assert!(
+            parse_config_content(Path::new("config.toml"), toml).is_err(),
+            "类型不匹配必须拒绝"
+        );
+    }
+
+    // ---- locate_data_error 回退分支 ----
+
+    #[test]
+    fn locate_data_error_keeps_original_when_file_unreadable() {
+        let original = "native error".to_string();
+        let located = locate_data_error(&original, Path::new("/nonexistent/dir/cfg.toml"));
+        assert_eq!(located, original, "文件不可读必须原样返回原生消息");
+    }
+
+    #[test]
+    fn locate_data_error_keeps_original_when_toml_parses_clean() {
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, minimal_ok_toml()).expect("write valid config");
+        let original = "native error".to_string();
+        let located = locate_data_error(&original, &path);
+        assert_eq!(
+            located, original,
+            "能完整解析的文件与 data error 无关，必须原样返回"
+        );
+    }
+
+    #[test]
+    fn line_column_maps_offset_and_rejects_invalid_boundaries() {
+        // 字节布局：a(0) \n(1) b(2) b(3) \n(4) c(5) 中(6..9) c(9)
+        let raw = "a\nbb\nc中c";
+        assert_eq!(line_column(raw, 0), Some((1, 1)));
+        assert_eq!(line_column(raw, 2), Some((2, 1)));
+        assert_eq!(line_column(raw, 5), Some((3, 1)));
+        // offset 7 落在 '中' 的多字节序列内部 → 非字符边界
+        assert_eq!(line_column(raw, 7), None);
+        // 末尾越界 clamp 到 len（行 3，行内 5 字节 + 1）
+        assert_eq!(line_column(raw, raw.len()), Some((3, 6)));
+    }
+
+    // ---- V9 分数越界的直构路径（confers 解析层先拦 TOML 同类值）----
+
+    /// enabled=true 的合法基线（双 vendor 供 low/high 候选），供直构变异用
+    fn enabled_ok_config() -> Config {
+        let vendors = difficulty_vendor("v1", &model_entry("m1", "fast"))
+            + &difficulty_vendor("v2", &model_entry("m2", "reasoning"));
+        parse_difficulty_toml(
+            &vendors,
+            "enabled = true\nw_clf = 0.0\nw_rule = 0.6\nscore_low = 0.35\nscore_high = 0.65\n\
+             [routing.difficulty.tiers]\nlow = \"fast\"\nhigh = \"reasoning\"\n",
+        )
+        .expect("基线配置必须合法")
+    }
+
+    #[test]
+    fn difficulty_score_range_rejected_on_direct_validate_path() {
+        let mut config = enabled_ok_config();
+        config.routing.difficulty.score_high = 1.5;
+        let error = validate_difficulty(&config).expect_err("越界阈值直构路径必须拒绝");
+        assert!(
+            error.to_string().contains("score_high"),
+            "错误必须点名 score_high: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_classifier_failure_threshold_zero_rejected() {
+        let mut config = enabled_ok_config();
+        config.routing.difficulty.classifier.failure_threshold = 0;
+        let error = validate_difficulty(&config).expect_err("failure_threshold=0 必须拒绝");
+        assert!(
+            error.to_string().contains("failure_threshold"),
+            "错误必须点名 failure_threshold: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_classifier_timeout_bounds_and_engine_case_insensitive_pass() {
+        let vendors = difficulty_vendor("v1", &model_entry("m1", "fast"))
+            + &difficulty_vendor("v2", &model_entry("m2", "reasoning"));
+        for classifier in [
+            "timeout_ms = 1",
+            "timeout_ms = 60000",
+            "engine = \"CANDLE\"",
+        ] {
+            parse_difficulty_toml(
+                &vendors,
+                &format!(
+                    "enabled = true\nw_clf = 0.0\nw_rule = 0.6\nscore_low = 0.35\nscore_high = 0.65\n\
+                     [routing.difficulty.tiers]\nlow = \"fast\"\nhigh = \"reasoning\"\n\
+                     [routing.difficulty.classifier]\n{classifier}\n"
+                ),
+            )
+            .unwrap_or_else(|_| panic!("合法 classifier 值必须放行: {classifier}"));
+        }
+    }
+
+    // ---- 告警路径（warn-only，断言不拒不 panic）----
+
+    #[test]
+    fn quota_window_zero_rejected() {
+        let mut config = config_with(true, None);
+        config.quota.window_secs = 0;
+        let error = validate_config(&config).expect_err("window_secs=0 必须拒绝");
+        assert!(
+            matches!(error, GateError::Config { .. }),
+            "必须是配置类错误: {error}"
+        );
+    }
+
+    #[test]
+    fn quota_without_auth_warning_path_executes() {
+        // warn-only 旁路：谓词为真只发告警不拒绝，行为面 = 不 panic 不改配置
+        warn_quota_without_auth(&config_with(true, None));
+    }
+
+    #[test]
+    fn missing_api_key_env_warning_covers_primary_and_pool_lists() {
+        let vendors = "[[vendors]]\nid = \"v1\"\nname = \"v1\"\ntype_ = \"openai\"\n\
+             api_key_env = \"UNSET_POOL_PRIMARY_XYZ\"\n\
+             api_key_envs = [\"UNSET_POOL_A_XYZ\", \"UNSET_POOL_B_XYZ\"]\n\
+             rate_limit = { type = \"time_window\", start = \"00:00\", end = \"24:00\" }\n\
+             concurrency = { requests_per_second = 1 }\n";
+        let config = parse_difficulty_toml(vendors, "").expect("含池名单的 vendor 配置必须合法");
+        // warn-only：主 env 与池 env 均缺失只告警不拒绝
+        warn_missing_api_key_envs(&config);
+    }
+
+    #[test]
+    fn identical_tier_warning_with_mid_tier_executes() {
+        // 单 vendor 服务全部三档 → 三档候选集相同 → identical 告警分支触发
+        let vendors = difficulty_vendor(
+            "v1",
+            &format!(
+                "{}\n{}\n{}",
+                model_entry("m1", "fast"),
+                model_entry("m2", "balanced"),
+                model_entry("m3", "reasoning")
+            ),
+        );
+        let config = parse_difficulty_toml(
+            &vendors,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
+             [routing.difficulty.tiers]\nlow = \"fast\"\nmid = \"balanced\"\nhigh = \"reasoning\"\n",
+        )
+        .expect("三档各有候选必须合法（同集仅告警不拒绝）");
+        warn_identical_difficulty_tiers(&config);
+    }
+
+    // ---- admin secret 校验分支 ----
+
+    fn auth_section(api_keys: Vec<String>, hashes: Vec<String>) -> crate::config::AuthSection {
+        use crate::config::{AuthKeyEntry, AuthTier};
+        crate::config::AuthSection {
+            enabled: true,
+            api_keys,
+            header: Default::default(),
+            keys: hashes
+                .into_iter()
+                .map(|hash| AuthKeyEntry {
+                    hash,
+                    tier: AuthTier::Elastic,
+                    token_quota: 0,
+                    cost_quota_millicents: 0,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn admin_secret_shape_rejections_and_digest_acceptance() {
+        // 非 64 长度
+        let mut config = config_with(true, Some(auth_section(vec!["SHORT".into()], vec![])));
+        assert!(
+            validate_admin_secrets(&config).is_err(),
+            "非 64 长度摘要必须拒绝"
+        );
+        // 大写 hex（认证侧恒无法匹配）
+        *config.auth.as_mut().expect("auth 已设置") = auth_section(vec!["A".repeat(64)], vec![]);
+        assert!(
+            validate_admin_secrets(&config).is_err(),
+            "大写 hex 摘要必须拒绝"
+        );
+        // 合法 64 小写 hex 放行；[auth] 缺段放行
+        let digest = "0123456789abcdef".repeat(4);
+        *config.auth.as_mut().expect("auth 已设置") =
+            auth_section(vec![digest.clone()], vec![digest]);
+        validate_admin_secrets(&config).expect("合法摘要必须放行");
+        config.auth = None;
+        validate_admin_secrets(&config).expect("缺 [auth] 段必须放行");
+    }
+
+    #[test]
+    fn admin_secret_provider_keys_lists_inserted_entries() {
+        let mut provider = AdminSecretProvider {
+            entries: std::collections::HashMap::new(),
+        };
+        provider.insert("auth.api_keys[0]".to_string(), &"a".repeat(64));
+        let keys = provider.keys();
+        assert_eq!(
+            keys,
+            vec!["auth.api_keys[0]".to_string()],
+            "keys 必须列出全部条目"
+        );
+    }
+
+    #[test]
+    fn admin_secret_digest_shape_passes_weak_secret_scan() {
+        // 形态门放行的 64 位小写 hex 不是 WEAK_SECRETS 命中项，且长度恒达标：
+        // 校验器循环对合法摘要必须零违规（防止弱词表误伤摘要形态）
+        let config = config_with(true, Some(auth_section(vec!["0".repeat(64)], vec![])));
+        validate_admin_secrets(&config).expect("全零 64 位 hex 形态合法，不得被弱词表误拒");
+    }
 }

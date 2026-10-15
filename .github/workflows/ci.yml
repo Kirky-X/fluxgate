@@ -253,8 +253,9 @@ jobs:
           tool: cargo-llvm-cov
       - name: Generate coverage
         # --all-features 因 db-* 互斥不可用（同 check 注释）；覆盖率按 default
-        # 口径采集，与 test job 一致
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        # 口径采集，与 test job 一致。基线 2026-10-15 实测 94.70%，本变更补测后
+        # ≥95%，以 --fail-under-lines 95 锁定（低于即 job 失败）
+        run: cargo llvm-cov --workspace --lcov --fail-under-lines 95 --output-path lcov.info
       - name: Upload coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:

@@ -30,16 +30,16 @@ curl http://127.0.0.1:8080/api/v1/health
 
 ### ❓ 如何指定某个厂商或模型？
 
-用请求头（两个推理端点 `/v1/chat/completions` 与 `/v1/messages` 均支持）：
+用请求头（`X-Vendor` / `X-Model` 仅 OpenAI 兼容端点 `/v1/chat/completions` 消费——`/v1/messages` 保持无 hints 路由语义，忽略这两个头；`X-Session-Id` / `X-Weight` 两端点均支持）：
 
 | 请求头 | 行为 |
 |:-------|:-----|
-| `X-Vendor: <vendor_id>` | 直达指定厂商；**找不到该厂商直接报 Validation 错误**，不静默回退默认路由 |
-| `X-Model: <abstract_id>` | 优先按抽象模型路由（大小写不敏感）；本请求为显式指定，不接会话亲和 |
-| `X-Session-Id: <key>` | 会话亲和键；缺失时兜底 `sha256(messages[0] 前 2KB)` 截断 hex |
-| `X-Weight: <正数>` | 请求级权重，需 `[routing].allow_request_weight = true` 才生效（默认忽略） |
+| `X-Vendor: <vendor_id>` | 仅 `/v1/chat/completions`：直达指定厂商；**找不到该厂商直接报 Validation 错误**，不静默回退默认路由 |
+| `X-Model: <abstract_id>` | 仅 `/v1/chat/completions`：优先按抽象模型路由（大小写不敏感）；本请求为显式指定，不接会话亲和 |
+| `X-Session-Id: <key>` | 会话亲和键（两端点均支持）；缺失时兜底 `sha256(messages[0] 前 2KB)` 截断 hex |
+| `X-Weight: <正数>` | 请求级权重（两端点均支持），需 `[routing].allow_request_weight = true` 才生效（默认忽略） |
 
-**代码位置**：`src/api/routing_hints.rs`（头提取）、`src/router/router.rs:529`（`route_with_hints`，X-Vendor 未命中即报错）
+**代码位置**：`src/api/routing_hints.rs`（头提取）、`src/api/openai.rs:692-698`（`hints.has_hints()` 时走 `route_with_hints`，X-Vendor 未命中即报错）、`src/api/anthropic.rs:64`、`:702`（保持无 hints 语义，走 `route_weighted`）
 
 ---
 
@@ -47,9 +47,9 @@ curl http://127.0.0.1:8080/api/v1/health
 
 ### ❓ `POST /admin/config` 后为什么有的配置没生效？
 
-因为各段生效方式不同。`server` / `cors` 在建站期被 sdforge 固化进 axum Router，`rate_limit` 在 Router 构造期消费，vendor `concurrency` 在 vendor 实例构造期消费，`database` 启动期建池——这些段**必须重启进程**才生效；其余段（`auth` / `retry` / `routing` / `cache` / `resilience` / `admission` / `pricing` / `global_model`）每请求热读，下一请求即生效。
+因为各段生效方式不同。`server` / `cors` 在建站期被 sdforge 固化进 axum Router，`rate_limit` 在 Router 构造期消费，vendor `concurrency` 在 vendor 实例构造期消费，`database` 启动期建池，`cache.semantic` 的语义层在 bootstrap 装配一次——这些段**必须重启进程**才生效；其余段（`auth` / `retry` / `routing` / `cache`（精确缓存）/ `resilience` / `admission` / `quota` / `health` / `pricing` / `global_model` / `lexcompress`）每请求热读，下一请求即生效。
 
-响应里的 `restart_required` 数组会列出需重启的段，但**当前只检测 `server` 与 `cors` 两段**——改了 `rate_limit` / `concurrency` / `database` 后不会出现在数组里，请自行安排重启。
+响应里的 `restart_required` 数组会列出需重启的段，但覆盖面有限——**当前检测 `server` 与 `cors` 两段，外加 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键**（分类器 bootstrap 装配一次）；改了 `rate_limit` / `concurrency` / `database` / `cache.semantic` 后不会出现在数组里，请自行安排重启。
 
 **代码位置**：`src/api/admin.rs:276-316`（update_config 的 restart_required 组装）
 
@@ -61,11 +61,13 @@ curl http://127.0.0.1:8080/api/v1/health
 
 **代码位置**：`src/config/mod.rs`（`Config` 结构体字段文档注释中的「persist 全量写回」硬约束说明）
 
-### ❓ `/admin/logs` 传了 `end_time` 为什么没过滤？
+### ❓ `/admin/logs` 的 `end_time` 过滤是什么语义？
 
-已知限制。`LogFilter` 结构体有 `end_time` 字段，`/admin/logs` 也能接收该查询参数，但 `query_logs` 的 SQL 动态拼接**只实现了 `start_time` / `vendor` / `model` / `limit` 四个分支**，没有 `end_time` 对应的 `AND timestamp <= ?` 分支——参数被接收后未参与过滤。
+已修复。`/admin/logs?end_time=...` 的参数链路四个环节全部生效：API 层接收并透传（`src/api/admin.rs`）→ `LogFilter.end_time`（`src/storage.rs`）→ `Repository::query_logs` 的 SQL 分支（`AND timestamp <= ?`，经绑定参数传入）→ 数据库层过滤。时间单位为秒级 i64（与 `request_logs.timestamp` 存储一致）。
 
-**代码位置**：`src/database/repository.rs:271-304`（`query_logs`，可见无 end_time 分支）
+过滤语义为**闭区间** `[start_time, end_time]`，两端含边界——`timestamp = end_time` 的行会返回，与既有的 `start_time >=` 分支对称。
+
+**代码位置**：`src/database/repository.rs`（`query_logs`，`end_time` 分支紧随 `start_time` 分支）
 
 ### ❓ `/admin/logs/search` 的 `vendor` 参数为什么是搜索关键词？
 

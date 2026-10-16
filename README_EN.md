@@ -75,7 +75,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 <td width="50%" style="vertical-align:top; padding: 12px">💰 <b>Cost tracking</b><br><span style="color:#64748B">the four-tier unit prices in <code>[[model_catalog]]</code> are the costing source of truth (micro-USD atomic accumulation per vendor/model, hot-reloadable); <code>[[pricing]]</code> feeds only the routing SLA factor and the quota fallback tier for uncataloged models</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); <code>server</code>/<code>cors</code> changes are reported explicitly in the <code>restart_required</code> response field (other restart-required sections such as <code>rate_limit</code> carry no such signal — restart manually)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); <code>server</code>/<code>cors</code> and the <code>routing.difficulty.classifier</code> keys <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> are reported explicitly in the <code>restart_required</code> response field (other restart-required sections such as <code>rate_limit</code> carry no such signal — restart manually)</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">16 admin/health method endpoints: log query/search, token stats, cost breakdown query, global metrics (affinity hit rate, drop counts), vendor status & key-pool reset, route explain, config & model management, health check</span></td>
 </tr>
 <tr>
@@ -92,7 +92,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 
 - Rust 1.97.1+ (the MSRV declared by `rust-version` in `Cargo.toml`; edition 2021)
 - SQLite: **statically embedded in every build** — `libsqlite3-sys` compiles the bundled C source and links it statically (`cargo tree` shows bundled; `ldd` on the artifact shows no dynamic sqlite dependency; identical for glibc and musl), so neither a system sqlite library nor `libsqlite3-dev` is required. TLS is pure rustls — no OpenSSL
-- The 7 self-developed libraries (`confers`, `dbnexus`, `inklog`, `limiteron`, `oxcache`, `sdforge`, `trait-kit`) come from crates.io registry — cargo fetches them automatically, no sibling directory needed
+- The 7 self-developed libraries (`confers`, `dbnexus`, `inklog`, `limiteron`, `oxcache`, `sdforge`, `trait-kit`) come from crates.io registry — cargo fetches them automatically, no sibling directory needed. The exception is the optional `difficulty-classifier` / `semantic-cache` features: they rely on the path dependency `vecboost = { path = "../vecboost" }` (`Cargo.toml`, following a local checkout while that library's surface is still evolving), so enabling them requires a vecboost checkout next to this repository; the default `full` does not include either feature, so default-caliber builds are unaffected
 
 ### 🔨 Build & run
 
@@ -143,7 +143,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 
 ## ⚙️ Configuration Overview
 
-Runtime configuration is a single `config.toml` (**not committed** — `.gitignore` lists it since it carries deployment-private material such as API key digests and upstream endpoints; start from `cp config.example.toml config.toml`, which carries every section and field with its default value), with 18 top-level sections (per-field details of `model_catalog` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
+Runtime configuration is a single `config.toml` (**not committed** — `.gitignore` lists it since it carries deployment-private material such as API key digests and upstream endpoints; start from `cp config.example.toml config.toml`, which carries every section and field with its default value), with 19 top-level sections (per-field details of `model_catalog` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
 
 | Section | Purpose | Hot reload |
 |---------|---------|------------|
@@ -154,6 +154,7 @@ Runtime configuration is a single `config.toml` (**not committed** — `.gitigno
 | `cache` / `rate_limit` / `admission` | Response cache, inbound rate limiting, congestion admission | cache/admission ✅ / rate_limit ❌ |
 | `model_catalog` / `pricing` | Model capability catalog (its four-tier prices are the costing source of truth) / SLA factor and quota fallback tier | ✅ |
 | `health` / `quota` | Active health probes (default off), cost/token quota (default off) | ✅ both hot-read |
+| `lexcompress` | Lexical compression (applies on `X-Compress: 1` when a message exceeds the threshold, default off) | ✅ hot-read |
 | `grpc` / `docs` | gRPC facade, OpenAPI/Swagger UI surface (both opt-in) | ❌ restart required |
 
 ```toml
@@ -350,7 +351,7 @@ As of the current version (measured with `cargo test --workspace`): **1470 tests
 
 ## ⚡ Performance Design
 
-No official benchmarks have been published yet (tracked on the roadmap). Verified design points: zero-copy passthrough for same-protocol requests, lock-free O(1) config reads via arc-swap, fully asynchronous logging and pre-aggregation (batched transactions; backpressure drops are counted, never blocking), a single pooled reqwest client with a semaphore concurrency cap, and oxcache in-memory backends for session affinity and the response cache. Design details: [🏗️ Architecture · Performance design](docs/ARCHITECTURE.md).
+First-round Criterion component baselines are published (conversion / SSE frame parsing / routing decision paths, with mean and throughput figures): see [⚡ Performance Baselines](docs/PERFORMANCE.md). Verified design points: zero-copy passthrough for same-protocol requests, lock-free O(1) config reads via arc-swap, fully asynchronous logging and pre-aggregation (batched transactions; backpressure drops are counted, never blocking), a single pooled reqwest client with a semaphore concurrency cap, and oxcache in-memory backends for session affinity and the response cache. Design details: [🏗️ Architecture · Performance design](docs/ARCHITECTURE.md).
 
 ---
 
@@ -371,15 +372,15 @@ Please do not report security vulnerabilities through public issues. Use the Git
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
 <tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 21 method endpoints (5 data-plane + 15 admin + 1 health)</td></tr>
-<tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers; difficulty-tiered routing (rule + in-process decision-engine fusion behind the <code>difficulty-classifier</code> feature)<; cache-cost suite (prefix-affinity PoTC / semantic cache / cache-aware pricing, all off by default)</td></tr>
+<tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers; difficulty-tiered routing (rule + in-process decision-engine fusion behind the <code>difficulty-classifier</code> feature); cache-cost suite (prefix-affinity PoTC / semantic cache off by default, cache-aware price factor on by default)</td></tr>
 <tr><td align="center">✅</td><td>Resilience</td><td>limiteron circuit / retry / fallback chain, congestion-aware admission, key tiers</td></tr>
 <tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, four-tier `[[model_catalog]]` costing and cost breakdown</td></tr>
 <tr><td align="center">✅</td><td>Hot reload</td><td>confers DynamicField lock-free reads, transactional writes, snapshots with restart_required reporting</td></tr>
 <tr><td align="center">✅</td><td>Internationalization</td><td>Fluent en/zh bundles covering all business messages</td></tr>
 <tr><td align="center">✅</td><td>Cost query API</td><td>Cost breakdown persisted (<code>token_usage</code> four-way cost columns, V2 migration) + <code>/admin/cost</code> aggregation endpoint (pre-aggregated table grouped by vendor/model); the in-process CostTracker still accumulates in memory and resets on restart (see known boundaries)</td></tr>
 <tr><td align="center">✅</td><td>Rust SDK</td><td>Merged into <code>src/sdk</code> (<code>sdk</code> feature gate; the broken workspace inheritance is gone): chat / stream / embed / admin</td></tr>
-<tr><td align="center">🔜</td><td>Performance baselines</td><td>Establish Criterion baselines (passthrough / conversion / routing decision paths)</td></tr>
-<tr><td align="center">🔜</td><td>Log query completion</td><td>Push <code>/admin/logs</code> end_time filtering into SQL (known gap, see the <a href="docs/FAQ.md">FAQ</a>)</td></tr>
+<tr><td align="center">✅</td><td>Performance baselines</td><td>Criterion component baselines (conversion / SSE frame parsing / routing decision paths) established; first-round figures in <a href="docs/PERFORMANCE.md">PERFORMANCE.md</a></td></tr>
+<tr><td align="center">✅</td><td>Log query completion</td><td><code>/admin/logs</code> end_time filtering pushed into SQL (closed interval <code>[start_time, end_time]</code>, both boundaries inclusive)</td></tr>
 </table>
 
 ---

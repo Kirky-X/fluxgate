@@ -75,7 +75,7 @@
 <td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[model_catalog]]</code> 的四档单价为计价正源（微美元原子累积按厂商/模型分账，热更新立即生效）；<code>[[pricing]]</code> 仅用于路由 SLA 因子与未登记目录模型的配额回退档</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；<code>server</code>/<code>cors</code> 变更会在响应 <code>restart_required</code> 中显式提示（<code>rate_limit</code> 等其他需重启段无此字段，需自行重启）</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；<code>server</code>/<code>cors</code> 及 <code>routing.difficulty.classifier</code> 的 <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> 变更会在响应 <code>restart_required</code> 中显式提示（<code>rate_limit</code> 等其他需重启段无此字段，需自行重启）</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">16 个管理/健康方法端点：日志查询/搜索、Token 统计、成本分账查询、全局指标（含亲和命中率、丢弃计数）、厂商状态与密钥池重置、路由解释、配置与模型管理、健康检查</span></td>
 </tr>
 <tr>
@@ -92,7 +92,7 @@
 
 - Rust 1.97.1+（MSRV，由 `Cargo.toml` 的 `rust-version` 声明；edition 2021）
 - SQLite：**全构建静态内嵌**——`libsqlite3-sys` 的 bundled 特性以 C 源现场编译并静态链接（`cargo tree` 显示 bundled、产物 `ldd` 无 sqlite 动态依赖；glibc 与 musl 同口径），无需系统 sqlite 库或 `libsqlite3-dev`；TLS 为纯 rustls，不依赖 OpenSSL
-- 自研 7 库经 crates.io registry 集成（`confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit`），由 cargo 自动拉取，无需置于同级目录
+- 自研 7 库经 crates.io registry 集成（`confers`、`dbnexus`、`inklog`、`limiteron`、`oxcache`、`sdforge`、`trait-kit`），由 cargo 自动拉取，无需置于同级目录。例外是可选 feature `difficulty-classifier` / `semantic-cache`：二者依赖 path 依赖 `vecboost = { path = "../vecboost" }`（`Cargo.toml`，库面快速演进期跟随本地 checkout），启用时需先把 vecboost 检出到仓库同级目录；默认 `full` 不含这两个 feature，按默认口径构建不受影响
 
 ### 🔨 编译运行
 
@@ -153,6 +153,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 | `cache` / `rate_limit` / `admission` | 响应缓存、入站限流、拥塞准入 | cache/admission ✅ / rate_limit ❌ |
 | `model_catalog` / `pricing` | 模型能力目录（四档单价为计价正源）/ SLA 因子与未登记模型的配额回退档 | ✅ |
 | `health` / `quota` | 主动健康探针（默认 off）、成本/token 维度配额（默认关） | ✅ 均热读 |
+| `lexcompress` | 词法压缩（`X-Compress: 1` 且单条消息超阈值时生效，默认关） | ✅ 热读 |
 | `grpc` / `docs` | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用） | ❌ 需重启 |
 
 ```toml
@@ -347,7 +348,7 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 
 ## ⚡ 性能设计
 
-当前未发布官方基准数据（路线图已列入），以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 arc-swap 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载（响应缓存的并发 single-flight 亦由 oxcache `get_or` 注册表/watch 唤醒承载，派发经 30s 超时钳制、leader 失败 follower 自愈回源）。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
+首轮 Criterion 组件级基线已发布（转换 / SSE 帧解析 / 路由决策路径，含 mean 与吞吐数据）：见 [⚡ 性能基线](docs/PERFORMANCE.md)。以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 arc-swap 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载（响应缓存的并发 single-flight 亦由 oxcache `get_or` 注册表/watch 唤醒承载，派发经 30s 超时钳制、leader 失败 follower 自愈回源）。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
 
 ---
 
@@ -368,15 +369,15 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
 <tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、21 个方法端点（数据面 5 + 管理 15 + 健康 1）</td></tr>
-<tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层；难度定档三档路由（规则 + 进程内决策引擎融合，<code>difficulty-classifier</code> feature 门控）<；缓存成本套件（前缀亲和 PoTC / 语义缓存 / 缓存价因子，默认全关）</td></tr>
+<tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层；难度定档三档路由（规则 + 进程内决策引擎融合，<code>difficulty-classifier</code> feature 门控）；缓存成本套件（前缀亲和 PoTC / 语义缓存默认关，缓存价因子默认开）</td></tr>
 <tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
 <tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、`[[model_catalog]]` 四档计价与成本分账</td></tr>
 <tr><td align="center">✅</td><td>配置热更新</td><td>confers DynamicField 无锁热读、事务写路径、快照备份与 restart_required 提示</td></tr>
 <tr><td align="center">✅</td><td>国际化</td><td>Fluent en/zh 双语束覆盖全部业务消息</td></tr>
 <tr><td align="center">✅</td><td>成本查询 API</td><td>成本分账落库（<code>token_usage</code> 四档成本列，V2 迁移）+ <code>/admin/cost</code> 聚合查询端点（预聚合表按 vendor/model 分组）；进程内 <code>CostTracker</code> 内存累积仍重启清零（见已知边界）</td></tr>
 <tr><td align="center">✅</td><td>Rust SDK</td><td>sdk 并入 <code>src/sdk</code>（<code>sdk</code> feature 门控，原 workspace 继承断裂已消除）：chat / stream / embed / admin</td></tr>
-<tr><td align="center">🔜</td><td>性能基准</td><td>建立 Criterion 基线（透传 / 转换 / 路由决策路径）</td></tr>
-<tr><td align="center">🔜</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤落 SQL（当前已知未生效，见 <a href="docs/FAQ.md">FAQ</a>）</td></tr>
+<tr><td align="center">✅</td><td>性能基准</td><td>Criterion 组件级基线（转换 / SSE 帧解析 / 路由决策路径）已建立，首轮数据见 <a href="docs/PERFORMANCE.md">PERFORMANCE.md</a></td></tr>
+<tr><td align="center">✅</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤已落 SQL（闭区间 <code>[start_time, end_time]</code>，两端含边界）</td></tr>
 </table>
 
 ---

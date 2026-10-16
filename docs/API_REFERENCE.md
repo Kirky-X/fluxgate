@@ -491,7 +491,7 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |---|---|---|---|---|
 | `start_time` | integer (Unix 秒) | 否 | - | 起始时间戳 |
-| `end_time` | integer (Unix 秒) | 否 | - | 结束时间戳（注：当前实现未在 SQL 中应用此过滤） |
+| `end_time` | integer (Unix 秒) | 否 | - | 结束时间戳（闭区间上界，含边界——`timestamp = end_time` 的行返回） |
 | `vendor` | string | 否 | - | 实际厂商 ID 精确匹配 |
 | `model` | string | 否 | - | 实际模型 ID 精确匹配 |
 | `limit` | integer | 否 | `100` | 返回条数上限；`0` 表示不限 |
@@ -1108,7 +1108,7 @@ curl http://localhost:8080/admin/config \
 | `restart_required` | array | 需重启才能生效的段名列表 |
 | `applies_to_new_instances` | array | 仅对新建 vendor 实例生效的配置键列表（当前仅 `resilience.circuit_open_timeout_ms`——vendor 实例按 id 惰性创建后进程级缓存，熔断窗口变更不对既有实例生效） |
 
-> 生效语义：`server` 或 `cors` 段变更时，`restart_required` 包含对应段名（`"server"` / `"cors"`），`message` 会提示这些段需重启后生效——两段在建站期被固化（axum Router 的 layer 在构造时编译），运行期不可热换；`resilience.circuit_open_timeout_ms` 变更时列入 `applies_to_new_instances`（对新建 vendor 实例生效）；其余段（vendors/pricing/auth 等）热生效。`[rate_limit]` 段在 Router 构造期消费，热更新不生效（当前实现未列入 `restart_required` 提示，重启后生效）。
+> 生效语义：`server` 或 `cors` 段变更时，`restart_required` 包含对应段名（`"server"` / `"cors"`），`message` 会提示这些段需重启后生效——两段在建站期被固化（axum Router 的 layer 在构造时编译），运行期不可热换；`routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 键变更时分别列入 `"routing.difficulty.classifier.model_path"` / `"routing.difficulty.classifier.engine"` / `"routing.difficulty.classifier.cache_ttl_secs"`（分类器 bootstrap 装配一次，热更后惰性直到重启）；`resilience.circuit_open_timeout_ms` 变更时列入 `applies_to_new_instances`（对新建 vendor 实例生效）；其余段（vendors/pricing/auth 等）热生效。`[rate_limit]` 段在 Router 构造期消费、`[cache.semantic]` 语义层在 bootstrap 装配，热更新不生效（当前实现未列入 `restart_required` 提示，重启后生效）。
 
 **错误码**: `config_error`(500，更新失败 / 反序列化失败 / 磁盘配置被进程外修改拒绝覆盖写回——`config-disk-modified-refusing-write`，先热重载或重启应用外部编辑后重试)
 

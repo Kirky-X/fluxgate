@@ -220,6 +220,7 @@ flowchart TB
 | `w_latency` | `0.0` | EWMA 延迟因子系数（`0` = 关闭） |
 | `w_error` | `0.0` | EWMA 错误率因子系数（`0` = 关闭） |
 | `price_factor_enabled` | `true` | 价格因子开关：开启时对合格集中每个候选按「最低单价 / 该候选单价」乘性修正权重（weight ×= min_p/p，压低高价候选），默认开启 |
+| `price_factor_mode` | `"nominal"` | 价格因子单价口径：`nominal`（(input+output)/2，与历史一致）/ `cache_expected`（`cache_read_price > 0` 的条目改用 (cache_read+output)/2，配合前缀亲和表达缓存友好偏好）；未知值按 `nominal` |
 | `latency_ref_ms` | `1000.0` | 延迟因子参考值：厂商 EWMA 等于该值时因子 0.5 |
 | `temperature` | `1.0` | 温度平滑指数；`>1` 压平差距，`<1` 放大差距，必须 `>0` |
 | `selection` | `"weighted"` | 选择算法：`weighted`（轮盘赌）/ `power_of_two`（Po2C 实验）/ `linucb`（bandit 档，未接线时回退 weighted）；未知值按 `weighted` |
@@ -238,6 +239,8 @@ flowchart TB
 | `lps_deadline_gate` | `false` | LPS 硬约束门控（按 `x-deadline-ms` 头筛可行集） |
 | `default_deadline_ms` | `10000.0` | 未携带 deadline 头时的默认截止（毫秒） |
 | `ucb_alpha` | `1.0` | LinUCB 探索参数（仅 `selection = "linucb"` 时被咨询） |
+| `prefix_affinity` | 子段 `[routing.prefix_affinity]`：`enabled = false`、`prefix_chars = 512` | 前缀亲和 PoTC（默认关）：开启后稳定前缀哈希出 2 个带内候选、按平滑权重择优；`prefix_chars` 为前缀键截取的首条 user content 头部字符数 |
+| `difficulty` | 子段 `[routing.difficulty]`：`enabled = false` 完全旁路（其余默认 `w_clf = 0.6`、`w_rule = 0.4`、`score_low = 0.35`、`score_high = 0.65`、`mid_band_policy = "strong"`） | 难度定档（默认关）：`groups` 命中的请求按规则计分 + 分类概率融合切 low/mid/high 三档并改写目标抽象模型名；`w_clf > 0` 需 `difficulty-classifier` feature；`classifier` 子段为 vecboost laya 运行参数 |
 
 ### 会话亲和
 
@@ -498,15 +501,15 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 
 | 类别 | 段 | 生效方式 |
 |:-----|:---|:---------|
-| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读） | `POST /admin/config` 后下一请求即用新值 |
-| 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑） | 修改后须重启进程 |
+| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读） | `POST /admin/config` 后下一请求即用新值 |
+| 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑）、`cache.semantic`（语义层 bootstrap 装配一次） | 修改后须重启进程 |
 
-> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组当前**只检测 `server` 与 `cors` 两段**（`src/api/admin.rs:276-316`）。`rate_limit` / `concurrency` / `database` 的重启要求在代码注释中声明，不会出现在数组里——改这些段后请自行安排重启。
+> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组检测 `server` 与 `cors` 两段（`src/api/admin.rs:276-316`），另在 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键变更时加入对应键名（分类器 bootstrap 装配一次，热更后惰性直到重启）。`rate_limit` / `concurrency` / `database` / `cache.semantic` 等其余需重启面不会出现在数组里——改这些段后请自行安排重启。
 
 ```mermaid
 flowchart TB
     A["POST /admin/config<br/>完整配置体"] --> B["与旧配置逐段对比"]
-    B --> C{"server / cors<br/>有变更？"}
+    B --> C{"server / cors 或<br/>难度分类器键有变更？"}
     C -->|是| D["restart_required 数组<br/>列出需重启段"]
     C -->|否| E["message 提示立即生效"]
     B --> F["落盘前快照当前配置<br/>到 config-backups/"]
@@ -591,7 +594,7 @@ healthcheck:
 
 | 端点 | 说明 |
 |:-----|:-----|
-| `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断）。⚠️ **`end_time` 已知不生效**：`LogFilter` 有该字段但查询 SQL 未实现对应分支（`src/database/repository.rs:271-304`） |
+| `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断）。时间过滤为闭区间 `[start_time, end_time]`，两端含边界（Unix 秒，`src/database/repository.rs`） |
 | `GET /admin/logs/search?vendor=<关键词>&limit=` | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs:54`） |
 | `GET /admin/stats/tokens?vendor=` | 小时级 Token 用量统计（`token_usage` 预聚合表） |
 | `GET /admin/metrics` | 全局指标快照：请求计数、错误率、平均延迟、各厂商细分，含 `dropped_logs`（日志通道背压丢弃计数） |

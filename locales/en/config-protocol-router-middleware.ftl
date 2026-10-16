@@ -81,3 +81,22 @@ config-difficulty-tier-no-candidate = [routing.difficulty.tiers] tier { $tier } 
 config-difficulty-group-collision = [routing.difficulty] group name "{ $name }" collides with a real model_id
 config-difficulty-tiers-identical = [routing.difficulty] all tiers resolve to the identical candidate set; difficulty routing has no vendor-selection effect (advisory)
 config-difficulty-field-invalid = [routing.difficulty] field { $field } has invalid value { $value } (weights must be finite non-negative, thresholds within [0,1], timeout_ms within [1,60000], failure_threshold >= 1, engine must be candle or onnx)
+
+# ---- router/difficulty/orchestrator.rs 熔断内分类降级运维日志 ----
+# F5/F6 降级留痕：全部为 tracing DEBUG，仅熔断关闭恢复时升 INFO。
+difficulty-classifier-recovered = difficulty classifier recovered (breaker closed)
+difficulty-classifier-failed = difficulty classifier failed
+difficulty-classifier-task-panicked = difficulty classifier task panicked
+difficulty-classifier-timeout = difficulty classifier timeout
+# ---- POST /admin/route/difficulty-explain 的 classifier.error 诊断串 ----
+# $p 为分类器返回的越界概率原值；$error / $join_error 为 Debug 透传。
+difficulty-explain-invalid-probability = invalid probability: { $p }
+difficulty-explain-task-panicked = task panicked: { $join_error }
+difficulty-explain-timeout = timeout
+difficulty-explain-not-wired = classifier not wired
+difficulty-explain-breaker-open = breaker open
+difficulty-explain-not-consulted = not consulted
+# ---- router/difficulty/vecboost_engine.rs 引擎载荷（经 explain 的 error 字段透出）----
+difficulty-laya-engine-load-failed = laya engine load failed: { $error }
+difficulty-laya-decide-failed = laya decide failed: { $error }
+difficulty-laya-request-rejected = decision request rejected: { $error }

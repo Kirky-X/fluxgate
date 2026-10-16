@@ -40,3 +40,28 @@ storage-usage-stats-unsupported = 此 UsageSink 实现不提供统计查询（ad
 error-vault = 保密柜错误：{ $message }
 error-vault-not-found = 保密柜密钥不存在：{ $id }
 error-vault-unknown-vendor = 未知厂商：{ $vendor }
+# vault 载荷键：经 error-vault = 保密柜错误：{ $message } 插值展示，展示轨本地化。
+# file_store.rs
+vault-home-not-found = 未找到主目录
+vault-read-file-failed = 读取保密柜文件失败：{ $error }
+vault-file-magic-mismatch = 保密柜文件魔数不匹配
+vault-decode-entries-failed = 解析保密柜条目失败：{ $error }
+vault-encode-entries-failed = 序列化保密柜条目失败：{ $error }
+vault-seal-file-failed = 密封保密柜文件失败：{ $error }
+vault-create-dir-failed = 创建保密柜目录失败：{ $error }
+vault-create-tmp-failed = 创建保密柜临时文件失败：{ $error }
+vault-write-file-failed = 写入保密柜文件失败：{ $error }
+vault-sync-file-failed = 同步保密柜文件失败：{ $error }
+vault-replace-file-failed = 替换保密柜文件失败：{ $error }
+# crypto.rs
+vault-seal-blob-failed = 密封失败：{ $error }
+vault-open-blob-failed = 解密失败：{ $error }
+vault-decrypted-not-utf8 = 解密结果不是 UTF-8：{ $error }
+# db_store.rs
+vault-db-access-failed = 访问保密柜数据库失败：{ $error }
+# master_key.rs
+vault-master-key-hex-len = { $env } 必须恰好为 { $expected } 个十六进制字符（32 字节），实际 { $actual } 个
+vault-master-key-hex-decode-failed = 十六进制解码失败：{ $error }
+vault-master-key-create-dir-failed = 创建密钥目录失败：{ $error }
+vault-master-key-write-failed = 写入密钥文件失败：{ $error }
+vault-master-key-restrict-failed = 收紧密钥文件权限失败：{ $error }

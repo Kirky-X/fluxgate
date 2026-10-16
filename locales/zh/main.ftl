@@ -49,3 +49,11 @@ main-log-bridge-already-installed = 日志门面桥已安装：{ $error }
 # $phase 为固定序收尾阶段名（ShutdownPhase 变体），不本地化。
 main-teardown-hook-timeout = 收尾 { $phase } 钩子超时
 main-teardown-hook-registration-failed = 收尾钩子登记失败：{ $error }
+# vault（key-vault）：env 吸收计数（有吸收才 INFO，零吸收不打印）。
+main-vault-absorbed-keys = 保密柜：已从环境变量吸收 { $absorbed } 个密钥
+# 语义缓存（[cache.semantic]）：embedder 加载失败 → 旁路 + ERROR（精确缓存不受影响）。
+main-semantic-cache-disabled = 语义缓存已停用：嵌入器加载失败
+# 同样旁路，但成因是构建特性缺失（无 $error 字段）。
+main-semantic-cache-feature-missing = [cache.semantic].enabled 需要 semantic-cache feature；已旁路该层
+# 难度定档分类器（[routing.difficulty]）：laya 加载失败 → F3 常驻纯规则降级。
+main-difficulty-classifier-disabled = 定档分类器已停用：laya 加载失败；已进入纯规则模式

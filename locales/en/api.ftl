@@ -50,6 +50,10 @@ api-embeddings-openai-only = Embeddings only supported for OpenAI vendors
 api-response-cache-leader-not-cached = response cache: leader-not-cached, follower self-heals from upstream
 api-response-cache-library-fault = response cache: library fault, dispatching directly
 
+# ---- api/semantic_cache.rs ----
+# BgeEmbedder::load 的失败载荷：经 bootstrap 的 %error 字段落到日志面。
+api-semantic-cache-embedder-load-failed = semantic cache embedder load failed: { $error }
+
 # ---- api/count_tokens.rs / api/route_explain.rs ----
 api-count-tokens-model-invalid = model (missing or not a string)
 api-count-tokens-messages-invalid = messages (missing or not an array)

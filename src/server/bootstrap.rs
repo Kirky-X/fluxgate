@@ -155,7 +155,13 @@ pub(crate) async fn assemble(
         let lookup = crate::vault::std_env_lookup;
         let absorbed = crate::vault::absorb_env_keys(store.as_ref(), &vendors, &lookup).await?;
         if absorbed > 0 {
-            tracing::info!("vault: absorbed {absorbed} key(s) from env");
+            tracing::info!(
+                "{}",
+                t_args(
+                    "main-vault-absorbed-keys",
+                    &[("absorbed", absorbed.to_string())],
+                )
+            );
         }
         for vendor in &vendors {
             if vendor.enabled {
@@ -241,16 +247,14 @@ pub(crate) async fn assemble(
                         ),
                     )),
                     Err(error) => {
-                        tracing::error!(%error, "semantic cache disabled: embedder load failed");
+                        tracing::error!(%error, "{}", t("main-semantic-cache-disabled"));
                         None
                     }
                 }
             }
             #[cfg(not(feature = "semantic-cache"))]
             {
-                tracing::error!(
-                    "[cache.semantic].enabled requires the semantic-cache feature; layer bypassed"
-                );
+                tracing::error!("{}", t("main-semantic-cache-feature-missing"));
                 None
             }
         }
@@ -305,7 +309,8 @@ pub(crate) async fn assemble(
                     Err(error) => {
                         tracing::error!(
                             %error,
-                            "difficulty classifier disabled: laya load failed; rule-only mode engaged"
+                            "{}",
+                            t("main-difficulty-classifier-disabled")
                         );
                         (None, crate::router::difficulty::Guard::always_open())
                     }

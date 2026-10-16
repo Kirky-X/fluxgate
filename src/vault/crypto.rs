@@ -13,6 +13,7 @@ use rand::RngExt;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 
+use crate::i18n::t_args;
 use crate::vault::VaultError;
 
 /// 32 字节 master key 的长度约定（hex 编码后 64 字符）。
@@ -32,16 +33,28 @@ pub(crate) fn cipher(master_key: &[u8]) -> MiniCocoon {
 pub(crate) fn seal(master_key: &[u8], plaintext: &SecretString) -> Result<Vec<u8>, VaultError> {
     cipher(master_key)
         .wrap(plaintext.expose_secret().as_bytes())
-        .map_err(|e| VaultError::Crypto(format!("seal failed: {e}")))
+        .map_err(|e| {
+            VaultError::Crypto(t_args(
+                "vault-seal-blob-failed",
+                &[("error", e.to_string())],
+            ))
+        })
 }
 
 /// 密文 blob → 明文（SecretString 包装，drop 即擦除）。
 pub(crate) fn open(master_key: &[u8], blob: &[u8]) -> Result<SecretString, VaultError> {
-    let bytes = cipher(master_key)
-        .unwrap(blob)
-        .map_err(|e| VaultError::Crypto(format!("open failed: {e}")))?;
-    let text = String::from_utf8(bytes)
-        .map_err(|e| VaultError::Crypto(format!("decrypted bytes are not utf-8: {e}")))?;
+    let bytes = cipher(master_key).unwrap(blob).map_err(|e| {
+        VaultError::Crypto(t_args(
+            "vault-open-blob-failed",
+            &[("error", e.to_string())],
+        ))
+    })?;
+    let text = String::from_utf8(bytes).map_err(|e| {
+        VaultError::Crypto(t_args(
+            "vault-decrypted-not-utf8",
+            &[("error", e.to_string())],
+        ))
+    })?;
     Ok(SecretString::new(text.into()))
 }
 

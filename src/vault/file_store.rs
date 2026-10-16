@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::{t, t_args};
 use crate::vault::crypto;
 use crate::vault::{KeyStore, SecretKeyRecord, VaultError};
 
@@ -26,7 +27,7 @@ const VAULT_FILE_MAGIC: &[u8] = b"NEXUSFLOW-VAULT1\n";
 /// 默认柜文件：`~/.nexusflow/vault.bin`。
 pub fn home_vault_path() -> Result<PathBuf, VaultError> {
     let home = std::env::home_dir().ok_or_else(|| VaultError::Storage {
-        message: "home directory not found".to_string(),
+        message: t("vault-home-not-found"),
     })?;
     Ok(home.join(".nexusflow").join("vault.bin"))
 }
@@ -56,17 +57,17 @@ impl FileKeyStore {
         let path = path.into();
         let entries = if path.exists() {
             let raw = std::fs::read(&path).map_err(|e| VaultError::Storage {
-                message: format!("read vault file failed: {e}"),
+                message: t_args("vault-read-file-failed", &[("error", e.to_string())]),
             })?;
             let payload =
                 raw.strip_prefix(VAULT_FILE_MAGIC)
                     .ok_or_else(|| VaultError::Storage {
-                        message: "vault file magic mismatch".to_string(),
+                        message: t("vault-file-magic-mismatch"),
                     })?;
             let bytes = crypto::open(&master_key, payload)?;
             serde_json::from_str::<BTreeMap<String, StoredEntry>>(bytes.expose_secret()).map_err(
                 |e| VaultError::Storage {
-                    message: format!("decode vault entries failed: {e}"),
+                    message: t_args("vault-decode-entries-failed", &[("error", e.to_string())]),
                 },
             )?
         } else {
@@ -81,35 +82,35 @@ impl FileKeyStore {
 
     fn persist(&self, entries: &BTreeMap<String, StoredEntry>) -> Result<(), VaultError> {
         let json = serde_json::to_vec(entries).map_err(|e| VaultError::Storage {
-            message: format!("encode vault entries failed: {e}"),
+            message: t_args("vault-encode-entries-failed", &[("error", e.to_string())]),
         })?;
         let container =
             crypto::cipher(&self.master_key)
                 .wrap(&json)
                 .map_err(|e| VaultError::Storage {
-                    message: format!("seal vault file failed: {e}"),
+                    message: t_args("vault-seal-file-failed", &[("error", e.to_string())]),
                 })?;
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| VaultError::Storage {
-                message: format!("create vault dir failed: {e}"),
+                message: t_args("vault-create-dir-failed", &[("error", e.to_string())]),
             })?;
         }
         let tmp = self.path.with_extension("bin.tmp");
         {
             let mut file = std::fs::File::create(&tmp).map_err(|e| VaultError::Storage {
-                message: format!("create vault temp file failed: {e}"),
+                message: t_args("vault-create-tmp-failed", &[("error", e.to_string())]),
             })?;
             file.write_all(VAULT_FILE_MAGIC)
                 .and_then(|_| file.write_all(&container))
                 .map_err(|e| VaultError::Storage {
-                    message: format!("write vault file failed: {e}"),
+                    message: t_args("vault-write-file-failed", &[("error", e.to_string())]),
                 })?;
             file.sync_all().map_err(|e| VaultError::Storage {
-                message: format!("sync vault file failed: {e}"),
+                message: t_args("vault-sync-file-failed", &[("error", e.to_string())]),
             })?;
         }
         std::fs::rename(&tmp, &self.path).map_err(|e| VaultError::Storage {
-            message: format!("replace vault file failed: {e}"),
+            message: t_args("vault-replace-file-failed", &[("error", e.to_string())]),
         })?;
         Ok(())
     }

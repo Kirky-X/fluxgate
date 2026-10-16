@@ -168,7 +168,10 @@ mod tests {
             explanation["classifier"]["breaker"], "open",
             "F3 常驻降级形态：breaker 恒 open"
         );
-        assert_eq!(explanation["classifier"]["error"], "classifier not wired");
+        assert_eq!(
+            explanation["classifier"]["error"],
+            nexusflow::i18n::t("difficulty-explain-not-wired")
+        );
         assert_eq!(
             explanation["score_breakdown"]["p_clf"],
             serde_json::Value::Null

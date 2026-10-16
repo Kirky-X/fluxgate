@@ -49,3 +49,11 @@ main-log-bridge-already-installed = log facade bridge already installed: { $erro
 # $phase 为固定序收尾阶段名（ShutdownPhase 变体），不本地化。
 main-teardown-hook-timeout = teardown { $phase } hook timed out
 main-teardown-hook-registration-failed = teardown hook registration failed: { $error }
+# vault（key-vault）：env 吸收计数（有吸收才 INFO，零吸收不打印）。
+main-vault-absorbed-keys = vault: absorbed { $absorbed } key(s) from env
+# 语义缓存（[cache.semantic]）：embedder 加载失败 → 旁路 + ERROR（精确缓存不受影响）。
+main-semantic-cache-disabled = semantic cache disabled: embedder load failed
+# 同样旁路，但成因是构建特性缺失（无 $error 字段）。
+main-semantic-cache-feature-missing = [cache.semantic].enabled requires the semantic-cache feature; layer bypassed
+# 难度定档分类器（[routing.difficulty]）：laya 加载失败 → F3 常驻纯规则降级。
+main-difficulty-classifier-disabled = difficulty classifier disabled: laya load failed; rule-only mode engaged

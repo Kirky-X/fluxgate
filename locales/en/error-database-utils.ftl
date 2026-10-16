@@ -40,3 +40,28 @@ storage-usage-stats-unsupported = this UsageSink implementation does not provide
 error-vault = Vault error: { $message }
 error-vault-not-found = Vault key not found: { $id }
 error-vault-unknown-vendor = Unknown vendor: { $vendor }
+# vault 载荷键：经 error-vault = Vault error: { $message } 插值展示，展示轨本地化。
+# file_store.rs
+vault-home-not-found = home directory not found
+vault-read-file-failed = read vault file failed: { $error }
+vault-file-magic-mismatch = vault file magic mismatch
+vault-decode-entries-failed = decode vault entries failed: { $error }
+vault-encode-entries-failed = encode vault entries failed: { $error }
+vault-seal-file-failed = seal vault file failed: { $error }
+vault-create-dir-failed = create vault dir failed: { $error }
+vault-create-tmp-failed = create vault temp file failed: { $error }
+vault-write-file-failed = write vault file failed: { $error }
+vault-sync-file-failed = sync vault file failed: { $error }
+vault-replace-file-failed = replace vault file failed: { $error }
+# crypto.rs
+vault-seal-blob-failed = seal failed: { $error }
+vault-open-blob-failed = open failed: { $error }
+vault-decrypted-not-utf8 = decrypted bytes are not utf-8: { $error }
+# db_store.rs
+vault-db-access-failed = vault db access failed: { $error }
+# master_key.rs
+vault-master-key-hex-len = { $env } must be exactly { $expected } hex chars (32 bytes), got { $actual } chars
+vault-master-key-hex-decode-failed = hex decode failed: { $error }
+vault-master-key-create-dir-failed = create key dir failed: { $error }
+vault-master-key-write-failed = write key file failed: { $error }
+vault-master-key-restrict-failed = restrict key file permissions failed: { $error }

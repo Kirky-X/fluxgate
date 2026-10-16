@@ -9,6 +9,7 @@
 //! HTTP 错误——定档永不导致请求失败（spec difficulty-degradation 约束）。
 
 use crate::config::{ConfigManager, Tier};
+use crate::i18n::{t, t_args};
 use crate::utils::metrics::GlobalMetrics;
 use serde_json::Value;
 use std::sync::Arc;
@@ -244,7 +245,7 @@ impl DifficultyRouter {
                         let recovered = self.guard.record_success();
                         if recovered {
                             self.metrics.record_difficulty_breaker_recovered();
-                            tracing::info!("difficulty classifier recovered (breaker closed)");
+                            tracing::info!("{}", t("difficulty-classifier-recovered"));
                         }
                         if p.is_finite() && (0.0..=1.0).contains(&p) {
                             Some(p)
@@ -258,19 +259,23 @@ impl DifficultyRouter {
                     Ok(Ok(Err(error))) => {
                         self.record_failure_tracked(Instant::now());
                         self.metrics.record_difficulty_classifier_failed();
-                        tracing::debug!(?error, "difficulty classifier failed");
+                        tracing::debug!(?error, "{}", t("difficulty-classifier-failed"));
                         None
                     }
                     Ok(Err(join_error)) => {
                         self.record_failure_tracked(Instant::now());
                         self.metrics.record_difficulty_classifier_failed();
-                        tracing::debug!(?join_error, "difficulty classifier task panicked");
+                        tracing::debug!(
+                            ?join_error,
+                            "{}",
+                            t("difficulty-classifier-task-panicked")
+                        );
                         None
                     }
                     Err(_elapsed) => {
                         self.record_failure_tracked(Instant::now());
                         self.metrics.record_difficulty_classifier_failed();
-                        tracing::debug!("difficulty classifier timeout");
+                        tracing::debug!("{}", t("difficulty-classifier-timeout"));
                         None
                     }
                 }
@@ -344,17 +349,31 @@ impl DifficultyRouter {
                 .await
                 {
                     Ok(Ok(Ok(p))) if p.is_finite() && (0.0..=1.0).contains(&p) => (Some(p), None),
-                    Ok(Ok(Ok(p))) => (None, Some(format!("invalid probability: {p}"))),
+                    Ok(Ok(Ok(p))) => (
+                        None,
+                        Some(t_args(
+                            "difficulty-explain-invalid-probability",
+                            &[("p", p.to_string())],
+                        )),
+                    ),
+                    // $error 为 ClassifierError Debug 透传：Engine 载荷本身已本地化
+                    //（vecboost_engine.rs 各失败分支），此处保持裸透传不新增文案。
                     Ok(Ok(Err(error))) => (None, Some(format!("{error:?}"))),
-                    Ok(Err(join_error)) => (None, Some(format!("task panicked: {join_error}"))),
-                    Err(_) => (None, Some("timeout".to_string())),
+                    Ok(Err(join_error)) => (
+                        None,
+                        Some(t_args(
+                            "difficulty-explain-task-panicked",
+                            &[("join_error", join_error.to_string())],
+                        )),
+                    ),
+                    Err(_) => (None, Some(t("difficulty-explain-timeout"))),
                 }
             }
-            (None, _) => (None, Some("classifier not wired".to_string())),
-            (_, Availability::Unavailable) => (None, Some("breaker open".to_string())),
+            (None, _) => (None, Some(t("difficulty-explain-not-wired"))),
+            (_, Availability::Unavailable) => (None, Some(t("difficulty-explain-breaker-open"))),
             // 熔断 open 期不咨询（Available 已被上面带 guard 的臂消费；
             // 此兜底覆盖 w_clf=0 等剩余组合）
-            (_, _) => (None, Some("not consulted".to_string())),
+            (_, _) => (None, Some(t("difficulty-explain-not-consulted"))),
         };
 
         let score = match p_clf {

@@ -9,6 +9,7 @@
 
 use rand::RngExt;
 
+use crate::i18n::{t, t_args};
 use crate::vault::crypto::MASTER_KEY_BYTES;
 use crate::vault::VaultError;
 
@@ -27,8 +28,8 @@ pub fn load_or_create_master_key() -> Result<Vec<u8>, VaultError> {
 
 /// 默认主钥文件：`~/.nexusflow/vault_master.key`。
 pub fn home_master_key_path() -> Result<std::path::PathBuf, VaultError> {
-    let home = std::env::home_dir()
-        .ok_or_else(|| VaultError::MasterKey("home directory not found".to_string()))?;
+    let home =
+        std::env::home_dir().ok_or_else(|| VaultError::MasterKey(t("vault-home-not-found")))?;
     Ok(home.join(".nexusflow").join("vault_master.key"))
 }
 
@@ -53,28 +54,46 @@ pub fn load_or_create_at(
 fn parse_hex_key(value: &str) -> Result<Vec<u8>, VaultError> {
     let trimmed = value.trim();
     if trimmed.len() != MASTER_KEY_HEX_LEN || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(VaultError::MasterKey(format!(
-            "{} must be exactly {} hex chars (32 bytes), got {} chars",
-            MASTER_KEY_ENV,
-            MASTER_KEY_HEX_LEN,
-            trimmed.len()
+        return Err(VaultError::MasterKey(t_args(
+            "vault-master-key-hex-len",
+            &[
+                ("env", MASTER_KEY_ENV.to_string()),
+                ("expected", MASTER_KEY_HEX_LEN.to_string()),
+                ("actual", trimmed.len().to_string()),
+            ],
         )));
     }
-    hex::decode(trimmed).map_err(|e| VaultError::MasterKey(format!("hex decode failed: {e}")))
+    hex::decode(trimmed).map_err(|e| {
+        VaultError::MasterKey(t_args(
+            "vault-master-key-hex-decode-failed",
+            &[("error", e.to_string())],
+        ))
+    })
 }
 
 fn write_key_file(path: &std::path::Path, key: &[u8]) -> Result<(), VaultError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| VaultError::MasterKey(format!("create key dir failed: {e}")))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            VaultError::MasterKey(t_args(
+                "vault-master-key-create-dir-failed",
+                &[("error", e.to_string())],
+            ))
+        })?;
     }
-    std::fs::write(path, hex::encode(key))
-        .map_err(|e| VaultError::MasterKey(format!("write key file failed: {e}")))?;
+    std::fs::write(path, hex::encode(key)).map_err(|e| {
+        VaultError::MasterKey(t_args(
+            "vault-master-key-write-failed",
+            &[("error", e.to_string())],
+        ))
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            VaultError::MasterKey(format!("restrict key file permissions failed: {e}"))
+            VaultError::MasterKey(t_args(
+                "vault-master-key-restrict-failed",
+                &[("error", e.to_string())],
+            ))
         })?;
     }
     Ok(())

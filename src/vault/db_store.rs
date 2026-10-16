@@ -12,6 +12,7 @@
 use sea_orm::{ConnectionTrait, Statement, Value};
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::i18n::t_args;
 use crate::vault::crypto;
 use crate::vault::{KeyStore, SecretKeyRecord, VaultError};
 
@@ -41,7 +42,7 @@ impl DbKeyStore {
 
 fn db_err(e: impl std::fmt::Display) -> VaultError {
     VaultError::Storage {
-        message: format!("vault db access failed: {e}"),
+        message: t_args("vault-db-access-failed", &[("error", e.to_string())]),
     }
 }
 

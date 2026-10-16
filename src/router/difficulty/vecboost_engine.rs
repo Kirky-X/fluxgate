@@ -21,6 +21,7 @@ use vecboost::engine::{EngineFactory, InferenceEngine};
 
 use super::classifier::{ClassifierError, DifficultyClassifier};
 use super::features::RuleFeatures;
+use crate::i18n::t_args;
 use std::sync::Arc;
 
 /// choice 题名（答案按名回显，消费按下标取）
@@ -59,8 +60,12 @@ impl LayaClassifier {
             device: DeviceType::Cpu,
             ..ModelConfig::default()
         };
-        let any = EngineFactory::create(EngineType::Candle, &config)
-            .map_err(|e| format!("laya engine load failed: {e}"))?;
+        let any = EngineFactory::create(EngineType::Candle, &config).map_err(|e| {
+            t_args(
+                "difficulty-laya-engine-load-failed",
+                &[("error", e.to_string())],
+            )
+        })?;
         Ok(Self {
             engine: Arc::new(any),
         })
@@ -70,13 +75,18 @@ impl LayaClassifier {
 impl DifficultyClassifier for LayaClassifier {
     fn p_high(&self, features: &RuleFeatures) -> Result<f64, ClassifierError> {
         let request = build_request(features);
-        request
-            .validate()
-            .map_err(|e| ClassifierError::Engine(format!("decision request rejected: {e}")))?;
-        let response = self
-            .engine
-            .decide(&request)
-            .map_err(|e| ClassifierError::Engine(format!("laya decide failed: {e}")))?;
+        request.validate().map_err(|e| {
+            ClassifierError::Engine(t_args(
+                "difficulty-laya-request-rejected",
+                &[("error", e.to_string())],
+            ))
+        })?;
+        let response = self.engine.decide(&request).map_err(|e| {
+            ClassifierError::Engine(t_args(
+                "difficulty-laya-decide-failed",
+                &[("error", e.to_string())],
+            ))
+        })?;
         p_from_response(&response).ok_or(ClassifierError::InvalidOutput)
     }
 }

@@ -8,6 +8,8 @@
 //! 防 GPTCache 式键碰撞投毒 arXiv:2601.23088）；线性余弦检索（容量
 //! ≤max_entries，µs 级）；嵌入失败静默跳过并计数，不阻塞写路径。
 
+#[cfg(feature = "semantic-cache")]
+use crate::i18n::t_args;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -178,7 +180,12 @@ impl BgeEmbedder {
             vecboost::config::model::EngineType::Candle,
             &config,
         )
-        .map_err(|e| format!("semantic cache embedder load failed: {e}"))?;
+        .map_err(|e| {
+            t_args(
+                "api-semantic-cache-embedder-load-failed",
+                &[("error", e.to_string())],
+            )
+        })?;
         Ok(Self {
             engine: Arc::new(any),
         })

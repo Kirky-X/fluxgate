@@ -46,7 +46,9 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"], optional = true }
 # default-features=false：由 embedded/sdk 各自精确开启，避免 full 被无条件并入 sdk 构建
 fluxgate = { path = "..", default-features = false, optional = true }
-tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"], optional = true }
+# channel（非 transport）：本成员只消费客户端 stub——build.rs 以 build_server(false)
+# 生成，transport = [server, channel] 会白拉 h2/socket2/tokio-stream 服务端栈。
+tonic = { version = "0.14", default-features = false, features = ["channel", "codegen"], optional = true }
 tonic-prost = { version = "0.14", default-features = false, optional = true }
 prost = { version = "0.14", default-features = false, features = ["derive"], optional = true }
 

@@ -23,21 +23,7 @@ impl Database {
     pub async fn new(url: &str, pool_size: u32) -> Result<Self, NexusFlowError> {
         ensure_sqlite_parent_dir(url)?;
 
-        let config = DbConfig {
-            url: url.to_string(),
-            pool_config: dbnexus::PoolConfig {
-                max_connections: pool_size,
-                // rc.5 校验 min <= max；PoolConfig::default() 的 min=5 会
-                // 在 pool_size < 5 时失败，显式给 1 与旧行为等价
-                min_connections: 1,
-                ..Default::default()
-            },
-            admin_role: "admin".to_string(),
-            // retry 特性已随 inklog 在依赖图内，但 DbConfig 默认 None 不生效；
-            // 显式激活后仅幂等语句（SELECT/SHOW/EXPLAIN）自动重试，INSERT 不受影响
-            retry_policy: Some(dbnexus::RetryPolicy::default()),
-            ..Default::default()
-        };
+        let config = db_config(url, pool_size);
 
         let pool = DbPool::with_config(config)
             .await
@@ -64,6 +50,26 @@ impl Database {
 
     pub async fn close(&self) {
         // DbPool 在 Drop 时自动清理，无需显式关闭
+    }
+}
+
+/// 连接参数单一构造点（`Database::new` 消费；测试直接断言策略与池上下界）：
+/// - 池上下界：rc.5 校验 min <= max；`PoolConfig::default()` 的 min=5 会在
+///   pool_size < 5 时失败，显式给 1 与旧行为等价
+/// - retry：特性由本 manifest 显式声明（Cargo.toml dbnexus 条目），
+///   `DbConfig` 默认 None 不生效；激活后仅幂等语句（SELECT/SHOW/EXPLAIN）
+///   自动重试，INSERT 不受影响
+fn db_config(url: &str, pool_size: u32) -> DbConfig {
+    DbConfig {
+        url: url.to_string(),
+        pool_config: dbnexus::PoolConfig {
+            max_connections: pool_size,
+            min_connections: 1,
+            ..Default::default()
+        },
+        admin_role: "admin".to_string(),
+        retry_policy: Some(dbnexus::RetryPolicy::default()),
+        ..Default::default()
     }
 }
 
@@ -333,5 +339,25 @@ mod redact_db_url_tests {
     fn non_hierarchical_url_is_untouched() {
         assert_eq!(redact_db_url("sqlite::memory:"), "sqlite::memory:");
         assert_eq!(redact_db_url("./data/llm_proxy.db"), "./data/llm_proxy.db");
+    }
+}
+
+// 连接参数构造的回归防护：db_config 是 Database::new 的唯一构造点，
+// retry 激活被移除（DbConfig 默认 None）或池上下界改写会先在此红。
+// 幂等重试语义与默认退避参数见 dbnexus reliability/retry.rs。
+#[cfg(test)]
+mod db_config_tests {
+    use super::db_config;
+
+    #[test]
+    fn retry_activation_and_pool_bounds_are_pinned() {
+        let config = db_config("postgres://db.internal:5432/nexusflow", 3);
+        assert!(
+            config.retry_policy.is_some(),
+            "read 路径自动重试依赖显式激活的 retry_policy（DbConfig 默认 None）"
+        );
+        assert_eq!(config.pool_config.max_connections, 3);
+        assert_eq!(config.pool_config.min_connections, 1);
+        assert_eq!(config.admin_role, "admin");
     }
 }

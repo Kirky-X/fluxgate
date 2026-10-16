@@ -145,7 +145,7 @@ cargo build --release
 
 | 项 | 约定 |
 |:---|:-----|
-| Mock 框架 | `mockall`（trait mock）、`mockito`（HTTP 上游 mock，SDK 测试同款） |
+| Mock 框架 | `mockito`（HTTP 上游线级桩，SDK 测试同款）+ 手写 fake（进程内替身，如 `MockDifficultyClassifier`） |
 | 假时钟 | limiteron `MockClock` **需 `test-clock` feature**（已在 `[dev-dependencies]` 注明）——驱动熔断超时 / 限流窗口重置等时间相关测试 |
 | 异步测试 | `#[tokio::test]`；涉及连接池与多任务协调时使用 `flavor = "multi_thread"` |
 | 确定性 | 时间敏感断言优先注入时钟/时间戳（如 `admit(&self, tier, key_hash, now_ms)`），避免真实 `sleep` |

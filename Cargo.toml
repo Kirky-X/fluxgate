@@ -95,8 +95,9 @@ tower-http = { version = "0.7", default-features = false, features = ["cors", "t
 
 # 数据库 — crates.io rc.9（自研库全量走 registry）。kit feature 暴露 integrations::kit::DbNexusModule。
 # pool-warmup：启动期并行预热 min_connections 并 fail-fast 暴露连不上（postgres/mysql 部署把建连成本移出首请求）。
+# retry：database.rs 直用 dbnexus::RetryPolicy 的编译前提（inklog 亦透传同名特性，此处显式声明不蹭它的边）。
 # 后端（sqlite/postgres/mysql）与 runtime 不在此声明：Cargo feature 只加不减，写死会锁死单一后端，由 db-* 三组透传按构建选择。
-dbnexus = { version = "0.6.0-rc.9", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate", "pool-warmup"], optional = true }
+dbnexus = { version = "0.6.0-rc.9", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate", "pool-warmup", "retry"], optional = true }
 # sea-orm 零特性面（ConnectionTrait/Statement/DatabaseBackend/Value 直用，无 entity derive、无 sqlx 驱动）
 sea-orm = { version = "2.0", default-features = false, optional = true }
 

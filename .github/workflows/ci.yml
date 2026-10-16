@@ -142,7 +142,7 @@ jobs:
           cargo check -p nexusflow --no-default-features --features "logging,db-sqlite"
 
   #-----------------------------------------------------------------------------
-  # 测试（mockito/mockall 自包含，无外部服务依赖）
+  # 测试（mockito 自包含，无外部服务依赖）
   #-----------------------------------------------------------------------------
   test:
     name: Test
@@ -162,7 +162,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # --all-features 因 db-* 互斥不可用（同 check 注释）；测试跑 default
-      # 口径（full + db-sqlite，mockito/mockall 自包含）
+      # 口径（full + db-sqlite，mockito 自包含）
       - name: Run tests
         run: cargo test --workspace
 

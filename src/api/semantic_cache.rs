@@ -195,9 +195,12 @@ impl BgeEmbedder {
 #[cfg(feature = "semantic-cache")]
 impl SemanticEmbedder for BgeEmbedder {
     fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
-        self.engine
-            .embed(text)
-            .map_err(|e| format!("embed failed: {e}"))
+        self.engine.embed(text).map_err(|e| {
+            t_args(
+                "api-semantic-cache-embed-failed",
+                &[("error", e.to_string())],
+            )
+        })
     }
 }
 

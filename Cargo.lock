@@ -853,8 +853,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ecb245093b0f791b89d3420c3df9c6d49c60ab63ba54db896bf8a3baf486706"
+source = "git+https://github.com/Kirky-X/candle?branch=zip9-optional#3d0cc6bdd3fc36f797e9dff029c947bbc9b88c84"
 dependencies = [
  "byteorder",
  "float8",
@@ -873,14 +872,12 @@ dependencies = [
  "tokenizers 0.22.2",
  "yoke",
  "zerocopy",
- "zip",
 ]
 
 [[package]]
 name = "candle-nn"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaa10b6ccc365b33210ce404fbf45e60d3e0bdac1004463cf1052e6ee1c1739a"
+source = "git+https://github.com/Kirky-X/candle?branch=zip9-optional#3d0cc6bdd3fc36f797e9dff029c947bbc9b88c84"
 dependencies = [
  "candle-core",
  "half",
@@ -895,8 +892,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bcbbf7ff00ff6fe2af22b93600195917fe90e90ff48424a140d1a926c44b1c1"
+source = "git+https://github.com/Kirky-X/candle?branch=zip9-optional#3d0cc6bdd3fc36f797e9dff029c947bbc9b88c84"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -7433,7 +7429,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vecboost"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 dependencies = [
  "anyhow",
  "argon2",

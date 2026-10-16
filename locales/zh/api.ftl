@@ -53,6 +53,8 @@ api-response-cache-library-fault = 响应缓存：库侧故障，直接派发
 # ---- api/semantic_cache.rs ----
 # BgeEmbedder::load 的失败载荷：经 bootstrap 的 %error 字段落到日志面。
 api-semantic-cache-embedder-load-failed = 语义缓存嵌入器加载失败：{ $error }
+# BgeEmbedder::embed 的失败载荷：消费点（lookup/store）静默计数丢弃，无用户可见面。
+api-semantic-cache-embed-failed = 语义缓存嵌入失败：{ $error }
 
 # ---- api/count_tokens.rs / api/route_explain.rs ----
 api-count-tokens-model-invalid = model（缺失或非字符串）

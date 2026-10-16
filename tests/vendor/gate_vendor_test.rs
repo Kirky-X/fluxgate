@@ -1697,16 +1697,26 @@ mod advanced_rate_limiter {
         assert!(limiter.check().await, "Interval variant should still allow");
     }
 
+    /// TimeWindow 预检在窗口内放行。端点语义为左闭右开
+    /// （`rate_limiter::time_window_active`：`now == end` 在窗口外），故固定写
+    /// 00:00-23:59 并断言"任意时刻放行"在每天 23:59 那一分钟必红——改为按当前
+    /// 小时构造窗口（23 点的 end 回绕到 00:00，走跨午夜分支），任意运行时刻都在窗内。
     #[tokio::test]
     async fn test_time_window_variant_still_allows_in_hours() {
+        use chrono::Timelike;
+
+        let hour = chrono::Local::now().time().hour();
+        let start = chrono::NaiveTime::from_hms_opt(hour, 0, 0).expect("hour ∈ 0..=23");
         let config = RateLimitConfig::TimeWindow {
-            start: "00:00".to_string(),
-            end: "23:59".to_string(),
+            start: start.format("%H:%M").to_string(),
+            end: (start + chrono::Duration::hours(1))
+                .format("%H:%M")
+                .to_string(),
         };
         let limiter = AdvancedRateLimiter::new(&config);
         assert!(
             limiter.check().await,
-            "TimeWindow 00:00-23:59 should allow at any time"
+            "当前小时窗口应放行（窗口 [{start}, end) 覆盖当前时刻）"
         );
     }
 }

@@ -53,14 +53,14 @@ cd examples/assets/rest-http && npm install openai && FLUXGATE_API_KEY=你的key
 
 **前置条件**：
 
-1. **启动网关**：仓库根 `cargo run --release`（默认监听 `127.0.0.1:8080`，取 `[server]` 段）。
+1. **启动网关**：仓库根 `cargo run --release`（`[server]` 段缺省监听 `0.0.0.0:8080`；本机访问用 `http://127.0.0.1:8080`——`src/rest_http.rs` 的 `DEFAULT_BASE_URL` 亦取该值）。
 2. **配置 API key**：dev 配置 `[auth]` 开启且 `api_keys` 为空——不配 key 则所有 `/v1` 与 `/admin` 请求一律 401。先 `echo -n '你的key' | sha256sum`，把摘要填进 `config.toml` 的 `[auth].api_keys`，再 `export FLUXGATE_API_KEY=明文key`。
-3. **上游就绪**：仓库自带 `config.toml` 的 mock 厂商（`mock-openai` / `mock-anthropic`）上游指向 `http://127.0.0.1:8001/v1`，需该地址有 OpenAI/Anthropic 兼容服务；换真实厂商时，同步修改 `src/rest_http.rs` 顶部的 `CHAT_MODEL` / `HINT_VENDOR` / `ANTHROPIC_MODEL` 常量。
+3. **上游就绪**：`config.toml` 不入库（`.gitignore` 已列）——开发者本地配置里的 mock 厂商（`mock-openai` / `mock-anthropic`）上游指向 `http://127.0.0.1:8001/v1`，需该地址有 OpenAI/Anthropic 兼容服务；仓库随带的 `config.example.toml` 不含 mock 厂商（示例为 openai / anthropic 真实地址），干净检出按它起步时请换真实厂商并同步修改 `src/rest_http.rs` 顶部的 `CHAT_MODEL` / `HINT_VENDOR` / `ANTHROPIC_MODEL` 常量。
 
 **协议事实与勘误**（编写时以源码核实）：
 
 - `GET /v1/models` 已在网关注册（`src/api/router_builder.rs:703`）：OpenAI list 格式，返回「模型目录 ∪ vendor 配置模型」去重排序、需鉴权、始终现算不缓存。`GET /admin/models` 是另一个端点——`[[model_catalog]]` 能力目录（含定价/能力位），管理员鉴权，二者用途不同。SDK 的 `FluxgateClient::models`（`src/sdk/admin.rs:140-143`）打的是 `GET /admin/models`（旧版误打未注册的 `/v1/models` 恒 404 的失配已修复），已无 SDK 偏差。
-- `X-Vendor`/`X-Model` 等提示头两个推理端点均读取（`RoutingHints::from_headers`：`src/api/openai.rs:56`、`src/api/anthropic.rs:57`）——`/v1/chat/completions` 与 `/v1/messages` 都支持 `X-Vendor` / `X-Model` / `X-Session-Id` / `X-Weight`。
+- 路由提示头按端点区分：`X-Vendor`/`X-Model` **仅 OpenAI 兼容端点消费**（`hints.has_hints()` 时走 `route_with_hints`，`src/api/openai.rs:692-698`），`/v1/messages` 保持无 hints 语义、忽略这两个头（`src/api/anthropic.rs:64`、`:702` 走 `route_weighted`）；`X-Session-Id` / `X-Weight` 两个推理端点均生效（头提取统一在 `RoutingHints::from_headers`，`src/api/routing_hints.rs`）。
 - SSE 错误帧 `event: error` 之后网关不补 `[DONE]`（`src/api/openai.rs:592-624`、`src/protocol/sse_frame.rs:25-46`），客户端解析器按失败终止，不要等待 `[DONE]`。
 
 ---
@@ -76,7 +76,7 @@ cd examples/assets/rest-http && npm install openai && FLUXGATE_API_KEY=你的key
 1. 已启动 Fluxgate 网关，并 `export FLUXGATE_BASE_URL`（如 `http://127.0.0.1:8080`）与 `FLUXGATE_API_KEY`（网关签发的 key）。
 2. 两个关键点：
    - SDK 类型的导入路径是 `fluxgate::sdk::{ChatRequest, FluxgateClientBuilder, FluxgateSdkError, RequestConfig, ...}`，**不在 crate 根**——crate 根的 `FluxgateError` 是网关自身错误类型，勿混用。
-   - 示例模型名 `gpt-4` / `text-embedding-3-small` 与 `vendor_hint = "mock-openai"` 取自仓库 `config.example.toml` 与 SDK 集成测试样例值，运行时按自己网关实际配置的 vendor/model 名称调整。
+   - 示例模型名 `gpt-4`（见 `config.example.toml`）、`text-embedding-3-small`（见 SDK 集成测试样例）与 `vendor_hint = "mock-openai"`（开发者本地 `config.toml` 的 mock 厂商名——该文件不入库）均为样例值，运行时按自己网关实际配置的 vendor/model 名称调整。
 
 ---
 

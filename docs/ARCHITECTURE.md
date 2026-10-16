@@ -500,8 +500,8 @@ flowchart LR
 
 | 类别 | 段 |
 |---|---|
-| 热生效 | `routing`、`retry`、`resilience`、`admission`、`auth`、`cache`、`quota`、`health`、`pricing`、`vendors`（enabled 与权重） |
-| 需重启 | `server`、`cors`（POST 响应以 `restart_required` 数组显式提示）、`rate_limit`（tower 层构造期构建）、vendor concurrency、`database` |
+| 热生效 | `routing`、`retry`、`resilience`、`admission`、`auth`、`cache`（精确缓存）、`quota`、`health`、`pricing`、`lexcompress`、`global_model`（经 admin 写入路径）、`vendors`（enabled 与权重） |
+| 需重启 | `server`、`cors`、`routing.difficulty.classifier` 的 `model_path`/`engine`/`cache_ttl_secs`（以上经 POST 响应 `restart_required` 数组显式提示）、`rate_limit`（tower 层构造期构建）、vendor concurrency、`database`、`docs`（路由建站期挂载）、`cache.semantic`（语义层 bootstrap 装配） |
 
 ---
 
@@ -603,7 +603,7 @@ flowchart LR
 
 ### Feature 门控
 
-`default = ["full", "db-sqlite"]`，`full` 预设含 11 个 feature：`web-server` / `database` / `vendor-management` / `router` / `protocol` / `infrastructure` / `sdforge-integration` / `logging` / `resilience` / `cost-tracking` / `sdk`；另有隐藏宏门控 `http` 与独立门控（不进 `full`）的 `grpc`。主要依赖方向：
+`default = ["full", "db-sqlite"]`，`full` 预设含 12 个 feature：`web-server` / `database` / `vendor-management` / `router` / `protocol` / `infrastructure` / `sdforge-integration` / `logging` / `resilience` / `cost-tracking` / `sdk` / `vault`；另有隐藏宏门控 `http`、独立门控（不进 `full`）的 `grpc`，以及同样不进 `full` 的 `difficulty-classifier` / `semantic-cache`（两者经 path 依赖 vecboost，需同级 checkout）。主要依赖方向：
 
 ```text
 web-server → router → vendor-management
@@ -627,7 +627,7 @@ database → logging：async_logger（DB sink）无条件消费 inklog；inklog 
 3. **异步批量落库**：请求日志经有界 channel `try_send` 入队，攒批单事务 INSERT；预聚合内存缓冲 60s 定期 drain，响应路径零磁盘 I/O。
 4. **信号量连接池**：单 `reqwest::Client` 复用底层连接，Semaphore 只控制并发上限，permit drop 即释放。
 5. **oxcache 承载缓存与亲和**：响应缓存与会话亲和表共用内存缓存后端的 TTL/续期语义，避免自研缓存的淘汰与过期 bug。
-6. **特性门控裁剪**：11 个 feature 精确门控，未启用的代码不参与编译，按部署形态控制二进制体积。
+6. **特性门控裁剪**：12 个 feature 精确门控，未启用的代码不参与编译，按部署形态控制二进制体积。
 
 ---
 

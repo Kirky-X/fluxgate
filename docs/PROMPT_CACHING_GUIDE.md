@@ -26,4 +26,4 @@
 - **Zhipu 直连（glm-4.5-flash，免费档）**：同前缀重复请求 1340 token 中命中 1330（**99.3%**），延迟 1136ms → 568-883ms；实测到一次缓存逐出后自动重建（命中归零再恢复）。回包 `usage.prompt_tokens_details.cached_tokens` 逐请求可观测——O2 观测链路对它有效。
 - **Agnes 模型实测补充（2026-10-15）**：`agnes-2.5-flash` 命中恒 17%；`agnes-3.0-flash`（512K 档）计价表列 Cached input 但回包 usage **无任何缓存字段**（实测 8 次）——命中不可观测，等效于不可控。
 - **聚合器类厂商（如 Agnes apihub）**：回包带 `cached_tokens` 但**重复前缀命中恒为 256/1497（17%）不增长**——聚合器内部二次负载均衡把请求散射到它自己的上游实例，网关层亲和控制不到。**缓存敏感流量应优先直连厂商官方端点**，聚合器只作溢出/备用。
-- 接入 Zhipu 类 `/v4` 路径厂商：`[[vendor]]` 配 `chat_path = "/chat/completions"`（跳过网关 `/v1` 自动拼接），无需本地转发垫片。
+- 接入 Zhipu 类 `/v4` 路径厂商：`[[vendors]]` 配 `chat_path = "/chat/completions"`（跳过网关 `/v1` 自动拼接；字段默认缺省 = 走历史规则，见 `config.example.toml` `[[vendors]]` 段注释），无需本地转发垫片。

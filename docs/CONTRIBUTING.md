@@ -78,7 +78,7 @@ Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 
 ## 🏗️ 项目结构
 
-`src/` 共 92 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），按目录职责划分：
+`src/` 共 110 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），按目录职责划分：
 
 | 目录 | 职责 | 关键文件 |
 |:-----|:-----|:---------|
@@ -164,7 +164,7 @@ cargo test --test gate_router_test             # 单个集成测试二进制（�
 
 ## 🚩 Feature 纪律
 
-`Cargo.toml` 定义 **18 条 feature 声明**（含 `default`，即 17 个非 default；其中 `full` 预设内含下表 11 个 feature），`default = ["full", "db-sqlite"]`（全启用 + sqlite 后端）：
+`Cargo.toml` 定义 **21 条 feature 声明**（含 `default`，即 20 个非 default；其中 `full` 预设内含下表 12 个 feature），`default = ["full", "db-sqlite"]`（全启用 + sqlite 后端）：
 
 | Feature | 门控内容 |
 |:--------|:---------|
@@ -179,6 +179,7 @@ cargo test --test gate_router_test             # 单个集成测试二进制（�
 | `resilience` | FallbackChain + 错误映射层（熔断/重试已迁 limiteron） |
 | `cost-tracking` | dashmap + CostTracker 成本追踪 |
 | `sdk` | Rust 客户端 SDK（reqwest + eventsource-stream + url） |
+| `vault` | 密钥保密柜（cocoon AEAD 加密 + secrecy 内存包装，db 构建存 `vault_keys` 表、无库构建回落文件柜） |
 
 纪律要求：
 

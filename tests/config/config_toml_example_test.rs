@@ -4,7 +4,10 @@
 // `config.toml` 是部署私有物、已进 .gitignore，CI 干净检出拿不到它）。
 // 本测试对示例做两类锁定：① 默认值结构锁定（复制即用 = 默认行为）；
 // ② 键存在性锁定（serde `#[serde(default)]` 会让缺席键静默过解析，只有
-// 显式键清单能测出示例过期）。新增配置项必须同步本文件与示例。
+// 键名清单能测出示例过期）——键名清单分两层：`config_toml_example_parses`
+// 里的显式锚点（键级 + 值级），与 `config_toml_example_covers_full_key_surface`
+// 对 Config 序列化面做的全量键名扫描（新键缺席即红，不再依赖人工补清单）。
+// 新增配置项必须同步示例；新 `skip_serializing_if` 字段须同步序列化面探针。
 #[test]
 fn config_toml_example_parses() {
     let content = std::fs::read_to_string("config.example.toml").unwrap();
@@ -261,6 +264,18 @@ fn config_toml_example_parses() {
     );
     // ---- 全量参考面：Config 结构体的每个段与可选字段都必须在示例出现 ----
     // 示例是随仓唯一参考，缺席即示例过期
+    // 显式锚点（键级清单此前漏项；全量兜底见
+    // config_toml_example_covers_full_key_surface）：词法压缩 / 难度定档 /
+    // 前缀亲和三段 + 价格因子口径 + chat 端点路径覆盖
+    for key in [
+        "[lexcompress]",
+        "[routing.difficulty]",
+        "[routing.prefix_affinity]",
+        "price_factor_mode",
+        "chat_path",
+    ] {
+        assert!(content.contains(key), "config.example.toml 示例缺 {key}");
+    }
     // [docs] 段：默认关闭（/api-docs 与 Swagger UI 路由不存在）
     assert!(
         !config.docs.enabled,
@@ -279,6 +294,16 @@ fn config_toml_example_parses() {
     assert!(
         content.contains("model_catalog"),
         "config.example.toml 缺 model_catalog 注释示例"
+    );
+    // 目录条目的长上下文价两面（cache_expected 模式下超阈值长 prompt 的输入价
+    // 替代 + 触发阈值；0 = 不启用）——示例此前整块缺席
+    assert!(
+        content.contains("long_context_input_price"),
+        "config.example.toml 缺 long_context_input_price 键"
+    );
+    assert!(
+        content.contains("long_context_threshold_tokens"),
+        "config.example.toml 缺 long_context_threshold_tokens 键"
     );
     // vendor 侧可选面：多 key 池 / 抽象模型名 / 并发上限 / 配额三形态
     assert!(
@@ -347,4 +372,149 @@ fn config_toml_example_parses() {
     // admin 摘要形态在此验证，不只看 serde 能解析
     fluxgate::config::validate_config(&config)
         .expect("config.example.toml 必须通过 validate_config");
+}
+
+/// 序列化面探针 TOML：显式置值 `skip_serializing_if` 字段（空 vec/空表/None
+/// 时被跳过、示例解析面看不到）与空表/空 vec 段（auth.keys、rate_limit.rules、
+/// cache.categories、model_catalog、pricing、routing.difficulty.tiers.mid、
+/// 三种配额形态与全部 Option 段），使这些键名进入序列化面。
+/// 新增此类「默认不进序列化面」的字段必须同步本探针——探针即该类的显式清单。
+const SURFACE_PROBE_TOML: &str = r#"
+[server]
+host = "127.0.0.1"
+
+[database]
+
+[[vendors]]
+id = "surface-probe-token"
+name = "Surface Probe (token)"
+type_ = "openai"
+api_key_env = "SURFACE_PROBE_KEY"
+api_key_envs = ["SURFACE_PROBE_KEY_2"]
+extra_headers = { "x-surface-probe" = "1" }
+rate_limit = { type = "token", max_tokens = 1 }
+concurrency = {}
+
+[[vendors.models]]
+model_id = "surface-probe-model"
+
+[[vendors]]
+id = "surface-probe-interval"
+name = "Surface Probe (interval)"
+type_ = "openai"
+api_key_env = "SURFACE_PROBE_KEY"
+rate_limit = { type = "interval", hours = 1 }
+concurrency = {}
+
+[[vendors]]
+id = "surface-probe-time-window"
+name = "Surface Probe (time_window)"
+type_ = "openai"
+api_key_env = "SURFACE_PROBE_KEY"
+rate_limit = { type = "time_window", start = "00:00", end = "23:59" }
+concurrency = {}
+
+[auth]
+api_keys = []
+
+[[auth.keys]]
+hash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[cors]
+
+[global_model]
+
+[grpc]
+
+[[rate_limit.rules]]
+id = "surface-probe-rule"
+window_secs = 1
+max_requests = 1
+
+[[cache.categories]]
+model_id_prefix = "surface-probe"
+multiplier = 1.0
+
+[[pricing]]
+vendor_id = "surface-probe-token"
+model_id = "surface-probe-model"
+input_per_1k_tokens = 0.0
+output_per_1k_tokens = 0.0
+
+[[model_catalog]]
+model_id = "surface-probe-catalog"
+context_window = 1
+
+[[model_catalog]]
+model_id = "surface-probe-catalog-breakpoints"
+context_window = 1
+
+[model_catalog.cache_breakpoints]
+enabled = true
+
+[routing.difficulty.tiers]
+low = "surface-probe-low"
+mid = "surface-probe-mid"
+high = "surface-probe-high"
+"#;
+
+/// 键名为「用户数据」而非配置字段的映射（`extra_headers` 的键是部署自定义头名，
+/// 与本仓字段清单无关）：只登记字段名本身，不下钻其数据键。
+const DATA_MAP_FIELDS: [&str; 1] = ["extra_headers"];
+
+/// 递归采集序列化面键名：对象逐键登记后下钻，数组逐元素下钻（标量无键）。
+fn collect_key_names(value: &serde_json::Value, keys: &mut std::collections::BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                keys.insert(key.clone());
+                if !DATA_MAP_FIELDS.contains(&key.as_str()) {
+                    collect_key_names(child, keys);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            items.iter().for_each(|item| collect_key_names(item, keys));
+        }
+        _ => {}
+    }
+}
+
+/// 「全量参考面」的机械化执行：Config 序列化面的每个键名都必须在示例文本
+/// 出现（含注释示例），缺席即示例过期——一次列出全部缺席键，而非首个。
+/// 序列化面取「示例解析面 ∪ 探针面」：前者覆盖示例已带出的段（新段落进示例
+/// 即自动纳入），后者补齐 skip_serializing_if 字段与空段（示例整段缺席也能测出）。
+#[test]
+fn config_toml_example_covers_full_key_surface() {
+    let content = std::fs::read_to_string("config.example.toml").unwrap();
+    let example: fluxgate::config::Config = toml::from_str(&content).unwrap();
+    let probe: fluxgate::config::Config =
+        toml::from_str(SURFACE_PROBE_TOML).expect("序列化面探针必须是可解析的配置");
+    let mut keys = std::collections::BTreeSet::new();
+    for config in [&example, &probe] {
+        collect_key_names(&serde_json::to_value(config).unwrap(), &mut keys);
+    }
+    // 反向断言：探针自身的键必须都落在结构体序列化面——拼错/错位的键会被
+    // serde 静默忽略、静默缩小探针覆盖，反向断言使这种漂移变红
+    let probe_toml: toml::Value = toml::from_str(SURFACE_PROBE_TOML).unwrap();
+    let mut probe_keys = std::collections::BTreeSet::new();
+    collect_key_names(&serde_json::to_value(&probe_toml).unwrap(), &mut probe_keys);
+    let unknown: Vec<&str> = probe_keys
+        .iter()
+        .map(String::as_str)
+        .filter(|key| !keys.contains(*key))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "序列化面探针含结构体未知键（拼写/错位即探针覆盖失效）：{unknown:?}"
+    );
+    let missing: Vec<&str> = keys
+        .iter()
+        .map(String::as_str)
+        .filter(|key| !content.contains(key))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "config.example.toml 缺 Config 序列化面键名（示例过期，须同步示例）：{missing:?}"
+    );
 }

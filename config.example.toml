@@ -12,8 +12,9 @@
 # 显式值与 serde default 逐位一致，「复制即用 = 默认行为」。
 #
 # 维护纪律：新增/删除配置项必须同步本文件与 tests/config/config_toml_example_test.rs
-#（该测试对这里做结构性断言：默认值锁定 + 新键不得缺席，serde default 会让
-# 缺席键静默过解析，只有显式键清单能测出示例过期）。
+#（该测试对这里做结构性断言：默认值锁定 + 新键不得缺席——后者由测试对 Config
+# 序列化面做全量键名扫描（新键缺席即红），serde default 会让缺席键静默过解析，
+# 只有键名清单能测出示例过期）。
 #
 # 热更新标注：✅ = POST /admin/config 或文件监听改后下一请求即生效；
 #             ❌ = restart-required（建站期消费，须重启进程）。
@@ -59,6 +60,11 @@ pool_size = 5
 # output_price = 15.0
 # cache_read_price = 0.3
 # cache_creation_price = 3.75
+# # 可选：长上下文价（仅 price_factor_mode = "cache_expected" 时生效）——
+# # 估 prompt tokens（body 字符数/4）超阈值且本价 > 0 时，改用本价替代
+# # 输入价参与价格因子；阈值或本价任一为 0 即不启用。
+# long_context_input_price = 0.0
+# long_context_threshold_tokens = 0
 # currency = "usd"          # usd | cny，未知币种使加载失败
 # max_output_tokens = 8192
 # supports_tools = true
@@ -120,17 +126,17 @@ max_age = 86400
 #
 # 规则形态（[[rate_limit.rules]]，滑动窗口）：
 # - id: 规则标识（观测/日志维度）
-# - path: 端点路径前缀（如 "/v1/chat/completions"）；缺省 = 全局规则，注入
-#   limiteron Governor。注意 Governor 决策链为规则级单例桶，per_tenant 在该
-#   层不生效（limiteron 能力边界）；需要按租户隔离的配额请配置 path 前缀
+# - path: 端点路径前缀（如 "/v1/chat/completions"）；缺省 = 全局规则，走 tower
+#   全局层（GlobalRateLimitLayer + QuotaLimiter），由 TenantKeyExtractor 按
+#   per_tenant 决定分桶——默认 true 即按租户（API key SHA256 摘要）分桶，
+#   与 path 规则同语义
 # - per_tenant: 按调用方 API key（SHA256 摘要）分桶，默认 true。认证关闭或
 #   请求未携带 key 时统一归入单一 anonymous 桶（此时退化为全局桶）；配置为
-#   false 时为规则级单桶
+#   false 时为规则级单桶（全局层以固定空串键共享桶）
 # - window_secs / max_requests: 窗口时长（秒）与窗口内最大请求数；超限返回
 #   429 + Retry-After
 #
-# rules 为空（默认）= limiteron Governor 内置兜底规则（容量 100、补速 10/s 的
-# 令牌桶），与历史版本行为逐位一致。
+# rules 为空（默认）= 共享令牌桶兜底（容量 100、补速 10/s 的令牌桶），与历史版本行为逐位一致。
 [rate_limit]
 
 # 示例（按需取消注释）：
@@ -279,6 +285,11 @@ affinity_tenant_scoped = false
 # 候选全部未登记 / 单候选 / 未登记或 0 价候选。**关闭后路由行为与现状逐位
 # 一致**（开关 off 直接跳过整个因子路径）。
 price_factor_enabled = true
+# 价格因子单价口径：**默认 "nominal"**——单价 p = (input_price+output_price)/2
+#（每 1M tokens，与历史一致）。"cache_expected"：cache_read_price > 0 的条目改用
+# (cache_read_price+output_price)/2，配合前缀亲和表达缓存友好偏好。未知值按
+# "nominal" 处理（回滚阀）。
+price_factor_mode = "nominal"
 # SLA/满意度虚拟队列打分项强度 V（SLARouter 零模型版）：**默认 0.0 = 关闭**
 #（惩罚项不参与权重、虚拟队列 Q 不更新，路由行为与现状逐位一致）。>0 时每
 # 候选权重末尾乘惩罚因子
@@ -315,6 +326,47 @@ lps_deadline_gate = false
 # 使用。默认 10000 为示例值，按业务 P99 与 /admin/metrics 的 ewma_e2e_ms
 # 观察调整。
 default_deadline_ms = 10000
+
+# 前缀亲和 PoTC（`[routing.prefix_affinity]`，默认关）：开启后稳定前缀哈希出
+# 2 个带内候选、按平滑权重择优（双哈希网关形态）。✅ 热生效
+# - enabled: 前缀亲和开关。**默认 false**（选路路径与历史逐位一致）。
+# - prefix_chars: 前缀键截取的首条 user content 头部字符数，默认 512。
+[routing.prefix_affinity]
+enabled = false
+prefix_chars = 512
+
+# 难度定档（`[routing.difficulty]`，默认关——缺段 = enabled=false 完全旁路，
+# 行为与历史逐位一致）。✅ 热生效（字段热读）
+# 启用模板（按需取消注释；整段缺省即默认行为）：
+# - groups: 触发定档的请求模型名（归一化 trim+lowercase 后精确匹配；命中才
+#   改写，其余模型名原样直通）。不得与真实 model_id 撞名（validate_difficulty）
+# - w_clf / w_rule: 分类概率与规则计分权重，S = w_clf·p + w_rule·r；二者不可
+#   同时为 0。w_clf > 0 需 `difficulty-classifier` feature，缺失时配置校验拒绝
+# - score_low / score_high: S ≤ score_low → low、S ≥ score_high → high，
+#   区间内 → mid
+# - mid_band_policy: 仅 tiers.mid 缺省的两档退化形态消费——"strong"（默认，
+#   中带→high）/ "cheap"（→low）/ "nearest"（近阈值档，平局取 high）
+# - tiers: 档位 → 抽象模型名（enabled 时 low/high 必填；mid 缺省 = 两档退化）
+# - classifier: vecboost laya 决策引擎运行参数（difficulty-classifier feature 门控）
+# [routing.difficulty]
+# enabled = false
+# groups = ["chat-basic"]
+# w_clf = 0.6
+# w_rule = 0.4
+# score_low = 0.35
+# score_high = 0.65
+# mid_band_policy = "strong"
+# [routing.difficulty.tiers]
+# low = "chat-basic"
+# mid = "chat-mid"
+# high = "chat-pro"
+# [routing.difficulty.classifier]
+# timeout_ms = 150            # 单次推理超时；超时按分类失败降级纯规则
+# failure_threshold = 5       # 连续失败 N 次 → 熔断 open（纯规则），成功清零
+# probe_interval_secs = 30    # 熔断 open → 半开探测间隔
+# cache_ttl_secs = 300        # 定档结果缓存 TTL；0 = 不缓存
+# model_path = "models/laya"  # laya checkpoint 目录
+# engine = "candle"           # "candle"（默认）| "onnx"（需上游 vecboost onnx feature）
 
 # ✅ 热生效 —— 韧性覆盖面（执行路径每请求从热配置现读）
 #
@@ -455,6 +507,31 @@ null_cache_ttl_secs = 60
 # model_id_prefix = "gpt-4"
 # multiplier = 2.0
 
+# ❌ 需重启 —— 语义响应缓存 `[cache.semantic]`（`semantic-cache` feature 门控，
+# 默认关）：精确缓存 miss 后按 BGE 嵌入余弦相似检索（强制租户隔离，检索域限同
+# api_key_hash）。语义层在 bootstrap 装配一次（enabled 时加载 BGE 模型），热更新
+# 不重装配——启用/停用与参数变更均需重启；BGE 加载失败 → 语义层旁路 + ERROR
+# 日志限频，精确缓存不受影响。
+# - enabled: 语义缓存开关，**默认 false**（完全旁路，行为与历史逐位一致）。
+# - similarity: 余弦相似度命中阈值 ∈ (0,1]，默认 0.92。
+# - max_entries: 向量条目容量上限（FIFO 逐出），默认 1000。
+# - model_path: BGE embedding 模型目录名（vecboost models/ 下），默认 "BAAI-bge-small-zh-v1.5"。
+[cache.semantic]
+enabled = false
+similarity = 0.92
+max_entries = 1000
+model_path = "BAAI-bge-small-zh-v1.5"
+
+# ✅ 热生效 —— 词法压缩 `[lexcompress]`（training-free 确定性剪枝）：仅请求带
+# `X-Compress: 1` 且单条消息超阈值的请求生效（命中响应带 X-Compressed: 1）。
+# - enabled: 压缩开关。**默认 false = 完全旁路**（行为与历史逐位一致）。
+# - min_chars: 单条消息触发压缩的最小字符数，默认 4000。
+# - ratio_ceiling: 压缩比例上限（最多压掉的比例，0.5 = 结果至少保留一半），默认 0.5。
+[lexcompress]
+enabled = false
+min_chars = 4000
+ratio_ceiling = 0.5
+
 # ❌ 需重启 —— gRPC Server（feature = "grpc"）— sdforge grpc 门面
 #（sdforge.v1.SdForgeService）。GrpcServerConfig 固化于服务器构造，更新后需
 # 重启进程生效。本段缺席或 enabled = false 时 gRPC 服务器完全禁用（不监听
@@ -510,6 +587,13 @@ api_base = "https://api.openai.com/v1"
 enabled = true
 # fallback 优先级：数值越小越优先（1 = primary；换路 fallback 链按此构建）
 priority = 1
+# 支持 batch 端点标记（X-Batch: 1 路由的过滤标记）：**默认 false**——标记且
+# 候选集含本厂商时收缩候选集（空集则忽略标记）。
+supports_batch = false
+# chat 端点路径覆盖（如 Zhipu 类厂商用 "/chat/completions" 而非默认的
+# "/v1/chat/completions"）：设置后出站 URL = api_base + 该路径，跳过 /v1 自动
+# 拼接规则；None/缺省 = 走历史规则。示例（按需取消注释）：
+# chat_path = "/chat/completions"
 # 出站三层超时模型，**0 = 对应层不限时（逃生阀）**：
 # - timeout_ms: 非流式请求 per-attempt 总超时（从 send 发起起算至响应体读完，
 #   不含本地排队；每次重试独立计时）。默认 60000

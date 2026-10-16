@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
@@ -29,14 +29,14 @@ use axum::{
     Router,
 };
 use dbnexus::{DbConfig, DbPool};
-use nexusflow::api::create_router;
-use nexusflow::config::{AuthSection, Config, ConfigManager};
-use nexusflow::database::Database;
-use nexusflow::middleware::ApiAuthState;
-use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-use nexusflow::router::Router as ModelRouter;
-use nexusflow::vendor::VendorManager;
-use nexusflow::ApiState;
+use fluxgate::api::create_router;
+use fluxgate::config::{AuthSection, Config, ConfigManager};
+use fluxgate::database::Database;
+use fluxgate::middleware::ApiAuthState;
+use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+use fluxgate::router::Router as ModelRouter;
+use fluxgate::vendor::VendorManager;
+use fluxgate::ApiState;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -110,7 +110,7 @@ async fn build_state() -> Arc<ApiState> {
 
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(nexusflow::database::Repository::new(pool)),
+        repository: Arc::new(fluxgate::database::Repository::new(pool)),
     });
 
     let router = Arc::new(ModelRouter::new(

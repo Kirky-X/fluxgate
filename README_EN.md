@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/NexusFlow.png" alt="NexusFlow Logo" width="180">
+<img src="docs/assets/fluxgate.png" alt="Fluxgate Logo" width="180">
 
-[![CI Status](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/NexusFlow/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/NexusFlow)](https://github.com/Kirky-X/NexusFlow/releases) [![License](https://img.shields.io/github/license/Kirky-X/NexusFlow)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
+[![CI Status](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/fluxgate)](https://github.com/Kirky-X/fluxgate/releases) [![License](https://img.shields.io/github/license/Kirky-X/fluxgate)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 
 [Chinese](README.md) | **English**
 
@@ -67,7 +67,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 <td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>Inbound rate limiting & admission</b><br><span style="color:#64748B">limiteron tower-layer inbound rate limiting (endpoint table + global layer), plus <code>[[rate_limit.rules]]</code> path rules (with no global rules configured, a shared token bucket is the fallback); congestion-aware priority admission (per-key tiers dedicated/guaranteed/elastic/spot)</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>Secure auth &amp; key vault</b><br><span style="color:#64748B">API keys stored only as SHA256 digests with constant-time comparison; upstream credentials can persist in the encrypted vault (<code>POST/GET/DELETE /admin/vault/keys</code>, cocoon AEAD at-rest encryption, zero plaintext in responses/logs), seeded once from env and never re-entered — the master key comes from <code>NEXUSFLOW_MASTER_KEY</code> or an auto-generated file (<code>~/.nexusflow/vault_master.key</code>, 0600); <b>losing it is unrecoverable, back it up</b></span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>Secure auth &amp; key vault</b><br><span style="color:#64748B">API keys stored only as SHA256 digests with constant-time comparison; upstream credentials can persist in the encrypted vault (<code>POST/GET/DELETE /admin/vault/keys</code>, cocoon AEAD at-rest encryption, zero plaintext in responses/logs), seeded once from env and never re-entered — the master key comes from <code>FLUXGATE_MASTER_KEY</code> or an auto-generated file (<code>~/.fluxgate/vault_master.key</code>, 0600); <b>losing it is unrecoverable, back it up</b></span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>Response cache</b><br><span style="color:#64748B">Exact-match response cache (oxcache-backed) keyed by tenant + vendor + body fingerprint, tiered TTL multipliers with load linking, concurrent de-duplication (single-flight) carried by oxcache <code>get_or</code>, <code>X-No-Cache: 1</code> to force origin fetch</span></td>
 </tr>
 <tr>
@@ -79,7 +79,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 <td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">16 admin/health method endpoints: log query/search, token stats, cost breakdown query, global metrics (affinity hit rate, drop counts), vendor status & key-pool reset, route explain, config & model management, health check</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>NEXUSFLOW_LANG</code> → system locale → en fallback chain</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>FLUXGATE_LANG</code> → system locale → en fallback chain</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Production ready</b><br><span style="color:#64748B">Multi-stage Docker build with non-root runtime, image-level health check (<code>HEALTHCHECK</code>) plus docker-compose resource limits, GitHub Actions CI (fmt/clippy/test/coverage/audit) and automated release pipeline</span></td>
 </tr>
 </table>
@@ -195,13 +195,13 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 
 ## 🏗️ Architecture
 
-NexusFlow uses a layered pipeline: inbound requests pass through the middleware chain (auth → rate limit → admission), then the router picks a target from the eligible vendor set (three-level decision: abstract model → `vendor.model` direct → `auto` global pool), and the request is executed by the VendorManager with circuit breaking and retries, after protocol conversion (or zero-copy passthrough). On the response side, SSE framing and protocol back-conversion complete while logs, token aggregation, cost accumulation, affinity binding and LinUCB rewards are recorded asynchronously.
+Fluxgate uses a layered pipeline: inbound requests pass through the middleware chain (auth → rate limit → admission), then the router picks a target from the eligible vendor set (three-level decision: abstract model → `vendor.model` direct → `auto` global pool), and the request is executed by the VendorManager with circuit breaking and retries, after protocol conversion (or zero-copy passthrough). On the response side, SSE framing and protocol back-conversion complete while logs, token aggregation, cost accumulation, affinity binding and LinUCB rewards are recorded asynchronously.
 
 ```mermaid
 flowchart TB
     Client["Client (OpenAI / Anthropic format)"]
 
-    subgraph GW["NexusFlow Gateway (Axum 0.8 + sdforge)"]
+    subgraph GW["Fluxgate Gateway (Axum 0.8 + sdforge)"]
         direction LR
         MW["Middleware chain<br/>auth (SHA256) · sliding-window limiter (token-bucket fallback) · admission"]
         Handler["API handlers<br/>routing hints · response cache"]
@@ -228,35 +228,35 @@ flowchart TB
 
 The full routing decision system, resilience state machines, hot-reload transaction semantics, DI assembly and i18n design are documented in the [🏗️ Architecture guide](docs/ARCHITECTURE.md).
 
-NexusFlow is also a **library-first** component set: the server assembly chain lives in `nexusflow::server` (an independently deployable HTTP server) and the Rust client lives in `nexusflow::sdk` (gated behind the `sdk` feature) — the binary `main.rs` is only a thin bootstrap. The `grpc` feature (independently gated, not part of `full`) additionally provides a gRPC server: the sdforge `sdforge.v1.SdForgeService` facade (GetInfo / Call / CallStream, JSON over gRPC) coexists with HTTP in the same process via `take_grpc_server`, authentication reuses the `[auth]` section SHA256 digests, and graceful shutdown shares the same signal as HTTP.
+Fluxgate is also a **library-first** component set: the server assembly chain lives in `fluxgate::server` (an independently deployable HTTP server) and the Rust client lives in `fluxgate::sdk` (gated behind the `sdk` feature) — the binary `main.rs` is only a thin bootstrap. The `grpc` feature (independently gated, not part of `full`) additionally provides a gRPC server: the sdforge `sdforge.v1.SdForgeService` facade (GetInfo / Call / CallStream, JSON over gRPC) coexists with HTTP in the same process via `take_grpc_server`, authentication reuses the `[auth]` section SHA256 digests, and graceful shutdown shares the same signal as HTTP.
 
 ---
 
 ## 📚 As a Library Dependency
 
-`nexusflow` is both an executable gateway and a Rust library (`src/lib.rs` exports the public API). The default `full` feature includes the server components; the client SDK is provided by the `sdk` feature (included in `full`, also independently enableable).
+`fluxgate` is both an executable gateway and a Rust library (`src/lib.rs` exports the public API). The default `full` feature includes the server components; the client SDK is provided by the `sdk` feature (included in `full`, also independently enableable).
 
 **Embedded startup** (hosting the gateway inside your own app):
 
 ```rust
 #[tokio::main]
-async fn main() -> Result<(), nexusflow::error::NexusFlowError> {
+async fn main() -> Result<(), fluxgate::error::FluxgateError> {
     // Assembly (config/database/vendors/routing) + serving + graceful-shutdown
     // flush are all handled by the library
-    nexusflow::server::run(Some("config.toml".into())).await
+    fluxgate::server::run(Some("config.toml".into())).await
 }
 ```
 
 **HTTP client SDK** (talking to a deployed gateway, requires the `sdk` feature):
 
 ```rust
-use nexusflow::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, NexusFlowClientBuilder};
+use fluxgate::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, FluxgateClientBuilder};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = NexusFlowClientBuilder::new()
+    let client = FluxgateClientBuilder::new()
         .base_url("http://127.0.0.1:8080")
-        .api_key(std::env::var("NEXUSFLOW_API_KEY")?)
+        .api_key(std::env::var("FLUXGATE_API_KEY")?)
         .build()?;
 
     // Convenience constructor + request-level config
@@ -299,13 +299,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Standalone (default, sqlite) | `cargo run` |
 | Standalone (PostgreSQL) | `cargo build --no-default-features --features "full,db-postgres"` |
 | Standalone (MySQL) | `cargo build --no-default-features --features "full,db-mysql"` |
-| Embedded library (own backend) | `nexusflow = { default-features = false, features = ["full", "db-postgres"] }` |
+| Embedded library (own backend) | `fluxgate = { default-features = false, features = ["full", "db-postgres"] }` |
 
 - The three groups are mutually exclusive, enforced by dbnexus's compile-time guard (embedded and server-side backends cannot mix). `--all-features` therefore fails to compile — this is expected; CI and pre-commit use explicit feature matrices instead.
 - On the config side, `[database] url` (a full connection URL) takes precedence when set; when empty, `path` falls back to the sqlite file store (without the db-sqlite feature the startup fails with `database-backend-missing` and a rebuild hint).
 - Schema and column migrations dispatch on the connected backend (`schema.postgres.sql` / `schema.mysql.sql` are dialect projections of `schema.sql`; keep all three in sync when adding tables/columns).
 
-> The SDK is an "HTTP client" (calling the gateway REST API, including SSE streaming), not an in-process route-core binding; for embedding use `nexusflow::server` and `nexusflow::api` directly.
+> The SDK is an "HTTP client" (calling the gateway REST API, including SSE streaming), not an in-process route-core binding; for embedding use `fluxgate::server` and `fluxgate::api` directly.
 
 ---
 
@@ -321,10 +321,10 @@ Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organiz
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-# Non-default backend matrix (must scope to this package with `-p nexusflow`,
+# Non-default backend matrix (must scope to this package with `-p fluxgate`,
 # otherwise workspace members pull in db-sqlite and the backends collide)
-cargo check -p nexusflow --no-default-features --features "full,db-postgres"
-cargo check -p nexusflow --no-default-features --features "full,db-mysql"
+cargo check -p fluxgate --no-default-features --features "full,db-postgres"
+cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 ```
 
 Caliber note: default already carries `full + db-sqlite`; `--all-features` opens all three mutually exclusive backends and cannot compile (see the section above), so clippy / test / coverage run on the default caliber while non-default backends are checked per package — literally matching `ci.yml`.
@@ -362,7 +362,7 @@ API keys stored as SHA256 digests with constant-time comparison, upstream creden
 
 ### 🚨 Reporting a vulnerability
 
-Please do not report security vulnerabilities through public issues. Use the GitHub [Security Advisories](https://github.com/Kirky-X/NexusFlow/security/advisories/new) private disclosure channel instead. The project commits to acknowledging within 48 hours and providing an initial assessment within 7 days.
+Please do not report security vulnerabilities through public issues. Use the GitHub [Security Advisories](https://github.com/Kirky-X/fluxgate/security/advisories/new) private disclosure channel instead. The project commits to acknowledging within 48 hours and providing an initial assessment within 7 days.
 
 ---
 
@@ -393,12 +393,12 @@ Please do not report security vulnerabilities through public issues. Use the Git
 # dynamic dependency resolves before the image is published
 # Note: -f points at the Dockerfile while the build context stays at the repo
 # root (bind mounts and .dockerignore resolve against the context root)
-docker build -t nexusflow:0.1.0 -f docker/Dockerfile .
+docker build -t fluxgate:0.1.0 -f docker/Dockerfile .
 
 # Run (read-only config mount + SQLite data persists under /app/data)
 docker run -d -p 8080:8080 \
   -v $(pwd)/config.toml:/app/config.toml:ro \
-  -v $(pwd)/data:/app/data nexusflow:0.1.0
+  -v $(pwd)/data:/app/data fluxgate:0.1.0
 
 # Or one-command deployment with resource limits
 # (the compose file lives under docker/)
@@ -408,8 +408,8 @@ docker compose -f docker/docker-compose.yml up -d
 > Health check: provided solely by the **image-level HEALTHCHECK** (compose no
 > longer duplicates it), probing the registered path `/api/v1/health`;
 > docker-compose ships with resource limits (2 CPUs / 512M) and a non-root
-> runtime. The image tag defaults to `nexusflow:0.1.0`, overridable via
-> `NEXUSFLOW_IMAGE_TAG` (see [📖 User Guide · Docker](docs/USER_GUIDE.md)).
+> runtime. The image tag defaults to `fluxgate:0.1.0`, overridable via
+> `FLUXGATE_IMAGE_TAG` (see [📖 User Guide · Docker](docs/USER_GUIDE.md)).
 
 ---
 
@@ -430,7 +430,7 @@ Toolchain baseline: MSRV floor **1.97.1** (declared in `Cargo.toml` via `rust-ve
 ### 🐛 Report a bug
 
 Found an issue?<br>
-<a href="https://github.com/Kirky-X/NexusFlow/issues/new">Open an issue</a>
+<a href="https://github.com/Kirky-X/fluxgate/issues/new">Open an issue</a>
 
 </td>
 <td width="33%" align="center" style="padding: 16px">
@@ -438,7 +438,7 @@ Found an issue?<br>
 ### 💡 Suggest a feature
 
 Have an idea?<br>
-<a href="https://github.com/Kirky-X/NexusFlow/discussions">Start a discussion</a>
+<a href="https://github.com/Kirky-X/fluxgate/discussions">Start a discussion</a>
 
 </td>
 <td width="33%" align="center" style="padding: 16px">
@@ -446,7 +446,7 @@ Have an idea?<br>
 ### 🔧 Submit a PR
 
 Want to contribute code?<br>
-<a href="https://github.com/Kirky-X/NexusFlow/pulls">Fork and open a PR</a>
+<a href="https://github.com/Kirky-X/fluxgate/pulls">Fork and open a PR</a>
 
 </td>
 </tr>
@@ -474,7 +474,7 @@ This project is licensed under the [MIT License](LICENSE).
 
 ### 🌟 Core dependencies (sibling libraries)
 
-NexusFlow integrates the following self-developed libraries through the crates.io registry (versions declared in the root `Cargo.toml`, checksums locked in `Cargo.lock`):
+Fluxgate integrates the following self-developed libraries through the crates.io registry (versions declared in the root `Cargo.toml`, checksums locked in `Cargo.lock`):
 
 | Library | Purpose |
 |---------|---------|
@@ -488,7 +488,7 @@ NexusFlow integrates the following self-developed libraries through the crates.i
 
 ### 💝 Special thanks
 
-Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/NexusFlow/graphs/contributors).
+Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/fluxgate/graphs/contributors).
 
 ---
 
@@ -497,15 +497,15 @@ Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/N
 <table style="width:100%; max-width: 600px">
 <tr>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/NexusFlow/issues"><b style="color:#991B1B">Issues</b></a><br>
+<a href="https://github.com/Kirky-X/fluxgate/issues"><b style="color:#991B1B">Issues</b></a><br>
 <span style="color:#64748B">Report problems and bugs</span>
 </td>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/NexusFlow/discussions"><b style="color:#1E40AF">Discussions</b></a><br>
+<a href="https://github.com/Kirky-X/fluxgate/discussions"><b style="color:#1E40AF">Discussions</b></a><br>
 <span style="color:#64748B">Ask questions and share ideas</span>
 </td>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/NexusFlow"><b style="color:#1E293B">GitHub</b></a><br>
+<a href="https://github.com/Kirky-X/fluxgate"><b style="color:#1E293B">GitHub</b></a><br>
 <span style="color:#64748B">Browse the source</span>
 </td>
 </tr>
@@ -515,7 +515,7 @@ Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/N
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/NexusFlow&type=Date)](https://star-history.com/#Kirky-X/NexusFlow&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/fluxgate&type=Date)](https://star-history.com/#Kirky-X/fluxgate&Date)
 
 If this project helps you, please consider giving it a ⭐️!
 

@@ -13,7 +13,7 @@
 #     mysql，撞 dbnexus 的「embedded 与 server-side 不可混」守卫（实测必失败）。
 #     三后端的逐一覆盖在 ci.yml 的 check 作业，此处不重复；
 #   - 两个 workspace 成员串行两 step（非 matrix 分腿）：examples 的 embedded
-#     特性拉 nexusflow full+db-sqlite，两腿依赖树大面积重叠——分腿是两个缓存
+#     特性拉 fluxgate full+db-sqlite，两腿依赖树大面积重叠——分腿是两个缓存
 #     桶，Cargo.lock 一变（dependabot 每周）同时冷编两遍；串行共用 target 与
 #     缓存桶。ci.yml 对 examples 只覆盖 default 与 grpc 两口径，rest / sdk /
 #     embedded 单开的裂缝由本矩阵捕获。
@@ -64,23 +64,23 @@ jobs:
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-hack
-      - name: Check each feature alone (nexusflow)
-        id: nexusflow-leg
+      - name: Check each feature alone (fluxgate)
+        id: fluxgate-leg
         continue-on-error: true
         # db-sqlite 打底 + 排除 all-features（理由见文件头差异说明）；
         # difficulty-classifier 需 sibling checkout 的 path dep（../vecboost），
         # runner 上不存在——单开必红，显式排除（启用条件：vecboost 改 git
         # source / 发 crates.io，或本作业补第二仓库 checkout）
-        run: cargo hack check -p nexusflow --each-feature --features db-sqlite --exclude-all-features --exclude-features difficulty-classifier
-      - name: Check each feature alone (nexusflow-examples)
+        run: cargo hack check -p fluxgate --each-feature --features db-sqlite --exclude-all-features --exclude-features difficulty-classifier
+      - name: Check each feature alone (fluxgate-examples)
         id: examples-leg
         continue-on-error: true
         # 本成员无后端互斥，all-features（rest+sdk+embedded+grpc）组合保留
-        run: cargo hack check -p nexusflow-examples --each-feature
+        run: cargo hack check -p fluxgate-examples --each-feature
       # continue-on-error 只为「一腿失败不跳另一腿」（诊断面）；本步把任一脚
       # 失败还原成红作业，避免失败被吞
       - name: Assert both legs passed
-        if: steps.nexusflow-leg.outcome != 'success' || steps.examples-leg.outcome != 'success'
+        if: steps.fluxgate-leg.outcome != 'success' || steps.examples-leg.outcome != 'success'
         run: |
-          echo "::error::特性矩阵存在失败腿（nexusflow=${{ steps.nexusflow-leg.outcome }}, examples=${{ steps.examples-leg.outcome }}）"
+          echo "::error::特性矩阵存在失败腿（fluxgate=${{ steps.fluxgate-leg.outcome }}, examples=${{ steps.examples-leg.outcome }}）"
           exit 1

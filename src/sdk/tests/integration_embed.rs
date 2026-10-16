@@ -1,10 +1,10 @@
-use crate::sdk::client::NexusFlowClientBuilder;
+use crate::sdk::client::FluxgateClientBuilder;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::error::FluxgateSdkError;
 use crate::sdk::EmbedRequest;
 
-fn build_client(base_url: &str) -> crate::sdk::NexusFlowClient {
-    NexusFlowClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
+    FluxgateClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -81,7 +81,7 @@ async fn embed_500_returns_server_error() {
     let err = client.embed(&req).await.unwrap_err();
 
     match err {
-        NexusFlowSdkError::Server { status, .. } => assert_eq!(status, 500),
+        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 500),
         other => panic!("expected Server error, got {other:?}"),
     }
 }

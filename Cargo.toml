@@ -1,11 +1,11 @@
 [package]
-name = "nexusflow"
+name = "fluxgate"
 version = "0.1.0"
 edition = "2021"
 # MSRV 单一事实来源：与 7 个兄弟库声明一致（dbnexus/limiteron/sdforge 均 1.97.1），
 # 在此声明使 cargo 在依赖解析期硬拒更低工具链；CI 按此下限跑，Docker/release 用当前 stable。
 rust-version = "1.97.1"
-# examples/ 是独立 workspace 成员（nexusflow-examples），不作本包示例目录：
+# examples/ 是独立 workspace 成员（fluxgate-examples），不作本包示例目录：
 # 否则 examples/build.rs 等顶层 .rs 会被误认作本包 example target 而在 --all-targets 下编译失败。
 autoexamples = false
 # tests/ 已按功能域目录化，Cargo 自动发现不递归——改用下方 [[test]] 注册表逐个声明。
@@ -15,7 +15,7 @@ autoexamples = false
 autotests = false
 description = "智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度 | Intelligent multi-provider LLM routing gateway"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
-repository = "https://github.com/Kirky-X/NexusFlow"
+repository = "https://github.com/Kirky-X/fluxgate"
 keywords = ["llm", "gateway", "proxy", "openai", "anthropic", "routing"]
 categories = ["network-programming", "web-programming::http-server", "api-bindings"]
 
@@ -23,7 +23,7 @@ categories = ["network-programming", "web-programming::http-server", "api-bindin
 path = "src/lib.rs"
 
 [[bin]]
-name = "nexusflow"
+name = "fluxgate"
 path = "src/main.rs"
 required-features = ["full"]
 

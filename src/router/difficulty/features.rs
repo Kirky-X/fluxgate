@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 难度定档特征提取（纯函数，零 IO）：结构特征 + 中英双语文本规则特征。

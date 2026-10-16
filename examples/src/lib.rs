@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! NexusFlow 示例集单 crate：把裸 HTTP 直连、Rust SDK 客户端、库形态嵌入、
+//! Fluxgate 示例集单 crate：把裸 HTTP 直连、Rust SDK 客户端、库形态嵌入、
 //! gRPC 门面四种接入形态收拢到一个 crate，按功能划分为模块隔离示例逻辑，
 //! `src/bin/` 下的极薄入口负责启动 tokio 运行时并转发到对应模块的 `run`。
 //!

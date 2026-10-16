@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 韧性栈模块 — FallbackChain + 错误映射层。

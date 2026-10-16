@@ -1,9 +1,9 @@
-# NexusFlow REST API 文档
+# Fluxgate REST API 文档
 
 **文档基线**: v0.1.0（以 Cargo.toml 为准）
 **Base URL**: `http://0.0.0.0:8080`（默认配置，实际以 `[server]` 段 host/port 为准）
 **内容类型**: `application/json`（流式响应为 `text/event-stream`）
-**内容协商**: 错误消息文案支持中英文（服务端 i18n，跟随 `NEXUSFLOW_LANG`/`LANG` 环境变量，检测链为 `NEXUSFLOW_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG`）
+**内容协商**: 错误消息文案支持中英文（服务端 i18n，跟随 `FLUXGATE_LANG`/`LANG` 环境变量，检测链为 `FLUXGATE_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG`）
 
 ---
 
@@ -71,13 +71,13 @@
 
 HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API key"`）。
 
-> 认证中间件的放行路径为代码事实（`src/middleware/auth.rs:159-168`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。`/healthz` 与 `/readyz` 由 sdforge 在**全部中间件之后**挂载（`build_with_config`；NexusFlow 的认证/限流/超时层只包业务路由，故探针不经过它们），**免认证免限流**（实测无 key 返回 200）；`/readyz` 每请求真跑 DB 与缓存探针，仅建议内网暴露；`/ready` 未注册（404），仅在限流豁免表里留存。
+> 认证中间件的放行路径为代码事实（`src/middleware/auth.rs:159-168`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。`/healthz` 与 `/readyz` 由 sdforge 在**全部中间件之后**挂载（`build_with_config`；Fluxgate 的认证/限流/超时层只包业务路由，故探针不经过它们），**免认证免限流**（实测无 key 返回 200）；`/readyz` 每请求真跑 DB 与缓存探针，仅建议内网暴露；`/ready` 未注册（404），仅在限流豁免表里留存。
 
 ---
 
 ## 通用错误响应
 
-NexusFlow 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/mod.rs` 中的 `IntoResponse` 实现）；未注册路径的 404 由 sdforge 兜底，形状为 `{"code":"NOT_FOUND","message":"Route not found","trace_id":…}`。
+Fluxgate 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/mod.rs` 中的 `IntoResponse` 实现）；未注册路径的 404 由 sdforge 兜底，形状为 `{"code":"NOT_FOUND","message":"Route not found","trace_id":…}`。
 
 ```json
 {
@@ -99,7 +99,7 @@ NexusFlow 处理器返回的非 2xx 响应均使用以下结构（见 `src/error
 
 ## 错误码映射
 
-以下映射来源于 `src/error/mod.rs` 中 `NexusFlowError::into_response` 的实际实现（代码为准）。
+以下映射来源于 `src/error/mod.rs` 中 `FluxgateError::into_response` 的实际实现（代码为准）。
 
 | 错误类型 (`error.type`) | HTTP 状态码 | 触发场景 |
 |---|---|---|
@@ -120,6 +120,7 @@ NexusFlow 处理器返回的非 2xx 响应均使用以下结构（见 `src/error
 > - 全局规则超速 → `429 Too Many Requests` + `Retry-After` 头（窗口剩余秒），文案同上；旧 `Governor` 路径的无头 429 与 `403` 封禁分支已删除（规则 ban 恒为 None）。
 > - 限流白名单路径（不进入限流检查，`is_quota_exempt_path` 共十条）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`。
 > - 每次响应（含 429）均回传 **`X-Request-Id`** 响应头：透传客户端所带 ID，未带时网关生成（`req-` 前缀）；同请求 tracing span 携带该 ID。
+> - **换路观测响应头**（`[resilience].expose_fallback_headers`，默认 `false`、✅热更；关闭时响应逐字节与现状一致）：开启后成功响应附 `x-fluxgate-vendor`（最终命中厂商 id）、`x-fluxgate-model`（成交模型 id）、`x-fluxgate-attempts`（总尝试次数）、`x-fluxgate-fallbacks`（逗号分隔尝试链，含最终命中者；流式在响应头阶段写入）。缓存命中早退不附头（无实际尝试）。
 > - **配额层**（按 key 的 token/成本固定窗口，`src/middleware/quota.rs`）：`[quota].enabled`（默认 `false`）
 >   开启且 `[[auth.keys]]` 的 `token_quota`/`cost_quota_millicents` 任一 > 0 时生效；仅作用于
 >   `/v1/chat/completions` 与 `/v1/messages`。入口预扣（预估输入 token×输入单价 + `max_tokens`×输出单价，
@@ -412,7 +413,7 @@ OpenAI 模型列表兼容端点。模型集合 = `[[model_catalog]]` 目录 ∪ 
   "object": "list",
   "data": [
     {"id": "gpt-4", "object": "model", "owned_by": "openai"},
-    {"id": "my-catalog-model", "object": "model", "owned_by": "nexusflow"}
+    {"id": "my-catalog-model", "object": "model", "owned_by": "fluxgate"}
   ]
 }
 ```
@@ -421,7 +422,7 @@ OpenAI 模型列表兼容端点。模型集合 = `[[model_catalog]]` 目录 ∪ 
 |---|---|
 | `data[].id` | 模型 ID |
 | `data[].object` | 恒为 `"model"` |
-| `data[].owned_by` | 认领 vendor 的 ID；目录独有条目为 `"nexusflow"` |
+| `data[].owned_by` | 认领 vendor 的 ID；目录独有条目为 `"fluxgate"` |
 
 **curl 示例**:
 
@@ -631,7 +632,7 @@ curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
 
 | 头 | 说明 |
 |---|---|
-| `x-nexusflow-cost-key` | 请求方 key 原文（服务端哈希后过滤该 key 的分账；空值/缺省 = 不过滤）。不用 query 参数传递，避免 key 进访问日志 |
+| `x-fluxgate-cost-key` | 请求方 key 原文（服务端哈希后过滤该 key 的分账；空值/缺省 = 不过滤）。不用 query 参数传递，避免 key 进访问日志 |
 
 **响应**:
 
@@ -664,7 +665,7 @@ curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
 ```bash
 curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-10-09" \
   -H "Authorization: Bearer $API_KEY" \
-  -H "x-nexusflow-cost-key: $FILTER_KEY"
+  -H "x-fluxgate-cost-key: $FILTER_KEY"
 ```
 
 ---

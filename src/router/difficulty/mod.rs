@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 难度定档路由：规则计分 + 进程内分类概率加权融合 → 三档切分 → 改写

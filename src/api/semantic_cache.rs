@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 语义响应缓存（O4，`semantic-cache` feature 门控）：精确 miss 后的
@@ -169,7 +169,7 @@ impl BgeEmbedder {
     /// 加载 BGE embedding checkpoint（阻塞，bootstrap 一次性）
     pub fn load(model_path: &str) -> Result<Self, String> {
         let config = vecboost::config::model::ModelConfig {
-            name: "nexusflow-semantic-cache".to_string(),
+            name: "fluxgate-semantic-cache".to_string(),
             engine_type: vecboost::config::model::EngineType::Candle,
             model_path: model_path.into(),
             task: vecboost::config::model::ModelTask::Embedding,

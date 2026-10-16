@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "web-server", feature = "logging"))]
 
@@ -115,7 +115,7 @@ async fn run_serves_http_until_sigterm_then_flushes() {
     std::fs::write(&config_path, run_config_toml(http_port, grpc_port)).expect("write run config");
 
     let config = config_path.to_string_lossy().to_string();
-    let run_task = tokio::spawn(async move { nexusflow::server::run(Some(config)).await });
+    let run_task = tokio::spawn(async move { fluxgate::server::run(Some(config)).await });
 
     wait_http_ready(format!("127.0.0.1:{http_port}").parse().unwrap()).await;
 

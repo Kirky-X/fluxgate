@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! Integration tests for `nexusflow::utils::retry` module。
+//! Integration tests for `fluxgate::utils::retry` module。
 //!
 //! 测试覆盖：
 //! - `ErrorCategory`、`extract_status_code`（无 feature 门控）
@@ -15,7 +15,7 @@
 //! 换 vendor fallback E2E 留 tests/retry_test.rs（全栈驱动，应用面）
 
 mod tests {
-    use nexusflow::utils::{extract_status_code, ErrorCategory};
+    use fluxgate::utils::{extract_status_code, ErrorCategory};
     #[cfg(feature = "vendor-management")]
     use std::time::Duration;
 
@@ -137,8 +137,8 @@ mod tests {
     #[cfg(feature = "vendor-management")]
     mod retry_delay_for_fn {
         use super::*;
-        use nexusflow::config::RetrySection;
-        use nexusflow::utils::retry::{retry_delay_for, spread_delay, RetryDelayPolicy};
+        use fluxgate::config::RetrySection;
+        use fluxgate::utils::retry::{retry_delay_for, spread_delay, RetryDelayPolicy};
         use rand::SeedableRng;
 
         /// spread_jitter=0 的存量断言不消耗 RNG；种子任意（固定以满足可复现）。
@@ -333,8 +333,8 @@ mod tests {
 
 #[cfg(test)]
 mod coverage {
-    use nexusflow::utils::extract_status_code;
-    use nexusflow::utils::retry::{ErrorCategory, RetryDelayPolicy};
+    use fluxgate::utils::extract_status_code;
+    use fluxgate::utils::retry::{ErrorCategory, RetryDelayPolicy};
     use std::time::Duration;
 
     // -------- ErrorCategory 边界 --------

@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! embedding 入口：启动 tokio 运行时并转发到 sdk_usage::embed::run。
 
 #[tokio::main]
-async fn main() -> Result<(), nexusflow::sdk::NexusFlowSdkError> {
-    nexusflow_examples::sdk_usage::embed::run().await
+async fn main() -> Result<(), fluxgate::sdk::FluxgateSdkError> {
+    fluxgate_examples::sdk_usage::embed::run().await
 }

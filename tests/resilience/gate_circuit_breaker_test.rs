@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 熔断器测试— 直接驱动 `limiteron::circuit::CircuitBreaker<GateError>` +
@@ -14,14 +14,12 @@
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
+use fluxgate::error::GateError;
+use fluxgate::vendor::resilience::{from_circuit_call, is_circuit_open_error, GateErrorClassifier};
 use limiteron::circuit::{
     CircuitBreaker, CircuitBreakerConfig, CircuitCallError, FailureClassifier,
 };
 use limiteron::error::CircuitState;
-use nexusflow::error::GateError;
-use nexusflow::vendor::resilience::{
-    from_circuit_call, is_circuit_open_error, GateErrorClassifier,
-};
 use std::sync::Arc;
 use std::time::Duration;
 

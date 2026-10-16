@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 // Smart LLM Proxy - Core Library
@@ -8,7 +8,7 @@
 // config 单 struct 承载全部段：拆段会分裂 POST /admin/config 热更新语义
 pub mod config;
 pub mod error;
-// i18n 引擎：crate 内外统一经 nexusflow::i18n 访问
+// i18n 引擎：crate 内外统一经 fluxgate::i18n 访问
 pub mod i18n;
 // utils：metrics / retry / cost_tracker
 pub mod utils;
@@ -48,7 +48,7 @@ pub use config::{
     Config, ConfigManager, DatabaseConfig, DocsSection, ModelConfig, PricingConfig, ServerConfig,
     VendorConfig,
 };
-pub use error::{GateError, NexusFlowError};
+pub use error::{FluxgateError, GateError};
 
 #[cfg(feature = "web-server")]
 pub use api::ApiState;

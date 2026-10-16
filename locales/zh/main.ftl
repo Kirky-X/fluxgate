@@ -1,6 +1,6 @@
 # zh/main: src/main.rs 用户可见消息(CLI 启动输出 / 运维日志 / HTTP 错误文本 / 启动期 panic)
 
-main-starting = 正在使用 sdforge 启动 NexusFlow……
+main-starting = 正在使用 sdforge 启动 Fluxgate……
 main-logger-init-failed = 日志系统初始化失败：{ $error }
 main-loading-config = 正在从 { $path } 加载配置
 main-config-loaded = 配置加载成功

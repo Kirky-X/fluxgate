@@ -1,25 +1,25 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! Embedding：一次请求两条文本，打印每条向量维度与 token 用量。
 
-use nexusflow::sdk::{EmbedRequest, NexusFlowClientBuilder, NexusFlowSdkError, RequestConfig};
+use fluxgate::sdk::{EmbedRequest, FluxgateClientBuilder, FluxgateSdkError, RequestConfig};
 
 use super::require_env;
 
-pub async fn run() -> Result<(), NexusFlowSdkError> {
-    let client = NexusFlowClientBuilder::new()
-        .base_url(require_env("NEXUSFLOW_BASE_URL"))
-        .api_key(require_env("NEXUSFLOW_API_KEY"))
+pub async fn run() -> Result<(), FluxgateSdkError> {
+    let client = FluxgateClientBuilder::new()
+        .base_url(require_env("FLUXGATE_BASE_URL"))
+        .api_key(require_env("FLUXGATE_API_KEY"))
         .build()?;
 
     let req = EmbedRequest {
         // 须为网关侧配置了 embedding 能力的模型（样例值取自 SDK 集成测试）
         model: "text-embedding-3-small".into(),
         input: vec![
-            "NexusFlow 是智能 LLM 路由网关。".into(),
+            "Fluxgate 是智能 LLM 路由网关。".into(),
             "流式响应经 SSE 分帧后逐块送达。".into(),
         ],
         config: RequestConfig::default(),

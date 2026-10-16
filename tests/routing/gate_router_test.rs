@@ -2,7 +2,7 @@
 
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 #[path = "../common/mod.rs"]
@@ -11,11 +11,11 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, DatabaseConfig, ModelConfig, RateLimitConfig, ServerConfig,
     };
-    use nexusflow::router::{Router, RoutingStrategy};
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::router::{Router, RoutingStrategy};
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
 
     fn create_router_test_config() -> Config {
@@ -271,14 +271,14 @@ mod tests {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
+            retry: fluxgate::config::RetrySection::default(),
+            routing: fluxgate::config::RoutingSection::default(),
+            cache: fluxgate::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            resilience: fluxgate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
         };
@@ -308,14 +308,14 @@ mod tests {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
+            retry: fluxgate::config::RetrySection::default(),
+            routing: fluxgate::config::RoutingSection::default(),
+            cache: fluxgate::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            resilience: fluxgate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
         };
@@ -372,9 +372,9 @@ mod tests {
 #[cfg(test)]
 mod scheduling_weight {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig};
-    use nexusflow::router::{compute_weight, Router, RoutingStrategy};
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::config::{Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig};
+    use fluxgate::router::{compute_weight, Router, RoutingStrategy};
+    use fluxgate::vendor::VendorManager;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -439,7 +439,7 @@ mod scheduling_weight {
         let router = Router::new(config_manager.clone(), vendor_manager.clone());
 
         let request =
-            serde_json::from_value::<nexusflow::protocol::UnifiedRequest>(serde_json::json!({
+            serde_json::from_value::<fluxgate::protocol::UnifiedRequest>(serde_json::json!({
                 "model": "shared-model",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 8
@@ -565,7 +565,7 @@ mod scheduling_weight {
         }
 
         let request =
-            serde_json::from_value::<nexusflow::protocol::UnifiedRequest>(serde_json::json!({
+            serde_json::from_value::<fluxgate::protocol::UnifiedRequest>(serde_json::json!({
                 "model": "shared-model",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 8
@@ -719,7 +719,7 @@ mod scheduling_weight {
             w_window: 0.0,
             ..RoutingSection::default()
         };
-        let exhausted = nexusflow::vendor::WindowInfo {
+        let exhausted = fluxgate::vendor::WindowInfo {
             max_tokens: Some(100),
             used_tokens: 100,
             window_end: None,
@@ -1196,10 +1196,10 @@ mod scheduling_weight {
 #[cfg(test)]
 mod session_affinity {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, ModelConfig, ServerConfig};
-    use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::{VendorManager, VendorStatus};
+    use fluxgate::config::{Config, ConfigManager, ModelConfig, ServerConfig};
+    use fluxgate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use fluxgate::router::Router;
+    use fluxgate::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1399,9 +1399,9 @@ mod session_affinity {
 #[cfg(test)]
 mod failure_rate_gate {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, ModelConfig, ResilienceSection, ServerConfig};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::config::{Config, ConfigManager, ModelConfig, ResilienceSection, ServerConfig};
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -1520,13 +1520,13 @@ mod failure_rate_gate {
 #[cfg(test)]
 mod cooldown_improvements {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, ModelConfig, RateLimitConfig, RoutingSection, ServerConfig,
         VendorConfig,
     };
-    use nexusflow::error::GateError;
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::error::GateError;
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
 
     fn make_vendor(id: &str, weight: f64, max_tokens: u64) -> VendorConfig {
@@ -1808,12 +1808,12 @@ mod cooldown_improvements {
 #[cfg(test)]
 mod soft_affinity {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use nexusflow::router::{apply_affinity_boost, Router, RoutingStrategy};
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use fluxgate::router::{apply_affinity_boost, Router, RoutingStrategy};
+    use fluxgate::vendor::VendorManager;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -2012,12 +2012,12 @@ mod soft_affinity {
 #[cfg(test)]
 mod sla_virtual_queue {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, ModelConfig, PricingConfig, RoutingSection, ServerConfig,
         VendorConfig,
     };
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -2378,12 +2378,12 @@ mod sla_virtual_queue {
 #[cfg(test)]
 mod linucb_selection {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use nexusflow::router::bandit::{linucb_features, BanditState};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::router::bandit::{linucb_features, BanditState};
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
 
     /// 单位特征（截距 1、其余 0）——选择与奖励灌账共用。
@@ -2723,11 +2723,11 @@ mod linucb_selection {
 #[cfg(test)]
 mod lps_lookahead {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -2942,15 +2942,15 @@ mod lps_lookahead {
 #[cfg(test)]
 mod route_gap_coverage {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, GlobalModelConfig, ModelConfig, PricingConfig, ResilienceSection,
         RoutingSection, ServerConfig, VendorConfig,
     };
-    use nexusflow::error::GateError;
-    use nexusflow::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use nexusflow::router::bandit::{linucb_features, BanditState};
-    use nexusflow::router::{compute_weight, Router, RoutingStrategy};
-    use nexusflow::vendor::{VendorManager, VendorStatus};
+    use fluxgate::error::GateError;
+    use fluxgate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use fluxgate::router::bandit::{linucb_features, BanditState};
+    use fluxgate::router::{compute_weight, Router, RoutingStrategy};
+    use fluxgate::vendor::{VendorManager, VendorStatus};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -3728,7 +3728,7 @@ mod route_gap_coverage {
                 ..Default::default()
             },
             vec![single_shared("gx-a")],
-            vec![nexusflow::config::PricingConfig {
+            vec![fluxgate::config::PricingConfig {
                 vendor_id: "gx-a".into(),
                 model_id: "shared-model".into(),
                 input_per_1k_tokens: 0.05,

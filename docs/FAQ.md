@@ -1,6 +1,6 @@
-# NexusFlow FAQ
+# Fluxgate FAQ
 
-本页汇总 NexusFlow（Rust LLM 路由网关）使用中的常见问题与真实怪癖，每条答案末尾附代码位置。系统性操作说明见 [用户指南](./USER_GUIDE.md)，项目总览见 [README](../README.md)。
+本页汇总 Fluxgate（Rust LLM 路由网关）使用中的常见问题与真实怪癖，每条答案末尾附代码位置。系统性操作说明见 [用户指南](./USER_GUIDE.md)，项目总览见 [README](../README.md)。
 
 ## 📋 目录
 
@@ -57,7 +57,7 @@ curl http://127.0.0.1:8080/api/v1/health
 
 `persist` 采用**全量写回语义**：每次 `POST /admin/config` 落盘时以 `toml::to_string_pretty` 把整个 `Config` 结构体写回 config.toml。所有段必须定义在 `Config` 结构体里（`[resilience]` 等段的落地正是为此），**未进结构体的未知段在 TOML 反序列化时被静默丢弃**，首次热更写回后即从磁盘消失。
 
-不要在 config.toml 里放 NexusFlow 不认识的自定义段；如需扩展，须先在 `src/config/mod.rs` 的 `Config` 结构体中加字段。
+不要在 config.toml 里放 Fluxgate 不认识的自定义段；如需扩展，须先在 `src/config/mod.rs` 的 `Config` 结构体中加字段。
 
 **代码位置**：`src/config/mod.rs`（`Config` 结构体字段文档注释中的「persist 全量写回」硬约束说明）
 
@@ -80,7 +80,7 @@ curl "http://127.0.0.1:8080/admin/logs/search?vendor=timeout"
 
 ### ❓ 如何切换消息语言？
 
-设置环境变量 **`NEXUSFLOW_LANG=en|zh`**（项目级覆盖，优先级最高）。未设置时按检测链回退：`LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置（sys-locale），全部无法识别回退 `en`。`zh_CN` / `zh_TW` 等 zh 系均映射到 `zh`。
+设置环境变量 **`FLUXGATE_LANG=en|zh`**（项目级覆盖，优先级最高）。未设置时按检测链回退：`LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置（sys-locale），全部无法识别回退 `en`。`zh_CN` / `zh_TW` 等 zh 系均映射到 `zh`。
 
 **代码位置**：`src/i18n/locale.rs`（`detect_from` 检测链）
 

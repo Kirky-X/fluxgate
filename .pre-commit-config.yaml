@@ -49,7 +49,7 @@ repos:
         name: Format Rust code
         description: Run rustfmt on Rust files
         # 不带 --all：门禁只管辖本 crate（lib+bin 两 target 均覆盖），workspace
-        # 成员 nexusflow-examples 与全量口径由 ci.yml 的 `cargo fmt --all -- --check` 把关。
+        # 成员 fluxgate-examples 与全量口径由 ci.yml 的 `cargo fmt --all -- --check` 把关。
         entry: cargo fmt -- --check
         language: system
         types: [rust]

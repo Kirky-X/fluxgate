@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试共享装配基座（tests/ 各文件是独立编译单元，经 `mod common;`
@@ -14,14 +14,14 @@
 
 #![allow(dead_code)]
 
-use nexusflow::config::{
+use fluxgate::config::{
     ConcurrencyConfig, Config, DatabaseConfig, GlobalModelConfig, ModelConfig, RateLimitConfig,
     ServerConfig, VendorConfig,
 };
 use std::sync::Once;
 
 /// mock 厂商凭证的环境变量名（各测试装配统一走它，值恒定）
-pub const TEST_API_KEY_ENV: &str = "NEXUSFLOW_TEST_KEY";
+pub const TEST_API_KEY_ENV: &str = "FLUXGATE_TEST_KEY";
 
 /// 进程内一次性注入 mock 厂商凭证。
 ///

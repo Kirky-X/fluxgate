@@ -1,4 +1,4 @@
-//! NexusFlow SDK 客户端 — HTTP 调用 /v1/chat/completions。
+//! Fluxgate SDK 客户端 — HTTP 调用 /v1/chat/completions。
 
 use std::time::Duration;
 
@@ -6,11 +6,11 @@ use url::Url;
 
 use crate::sdk::chat::{ChatRequest, ChatResponse};
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::error::FluxgateSdkError;
 use crate::sdk::stream::ChatStream;
 
 /// 非流式请求（chat / embed）的默认总超时。reqwest 默认无总超时，
-/// 挂起的网关会让调用方任务无限悬挂。不作用于 [`NexusFlowClient::chat_stream`]：
+/// 挂起的网关会让调用方任务无限悬挂。不作用于 [`FluxgateClient::chat_stream`]：
 /// 流式不设总超时（reqwest 总超时按整个 body 计且不按 chunk 重置，
 /// SSE 长流会被中途切断），由 [`DEFAULT_READ_TIMEOUT`] 看护。
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -29,8 +29,8 @@ fn effective_read_timeout(explicit: Option<Duration>) -> Duration {
     explicit.unwrap_or(DEFAULT_READ_TIMEOUT)
 }
 
-/// NexusFlow 网关客户端。
-pub struct NexusFlowClient {
+/// Fluxgate 网关客户端。
+pub struct FluxgateClient {
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: Url,
     pub(crate) api_key: String,
@@ -42,9 +42,9 @@ pub struct NexusFlowClient {
 }
 
 // api_key 是 Bearer 凭证：手写 Debug 脱敏，不用 derive（会打印明文）
-impl std::fmt::Debug for NexusFlowClient {
+impl std::fmt::Debug for FluxgateClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NexusFlowClient")
+        f.debug_struct("FluxgateClient")
             .field("http", &self.http)
             .field("base_url", &self.base_url)
             .field("api_key", &"[REDACTED]")
@@ -80,7 +80,7 @@ mod tests {
     /// 显式 timeout() → 该值（客户端存储的生效超时可审计）。
     #[test]
     fn builder_applies_effective_timeout_to_client() {
-        let default_client = NexusFlowClientBuilder::new()
+        let default_client = FluxgateClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .api_key("k")
             .build()
@@ -88,7 +88,7 @@ mod tests {
         assert_eq!(default_client.effective_timeout, DEFAULT_REQUEST_TIMEOUT);
         assert_eq!(default_client.read_timeout, DEFAULT_READ_TIMEOUT);
 
-        let tuned = NexusFlowClientBuilder::new()
+        let tuned = FluxgateClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .api_key("k")
             .read_timeout(Duration::from_millis(400))
@@ -97,7 +97,7 @@ mod tests {
         assert_eq!(tuned.read_timeout, Duration::from_millis(400));
 
         let explicit = Duration::from_millis(250);
-        let tuned_client = NexusFlowClientBuilder::new()
+        let tuned_client = FluxgateClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .api_key("k")
             .timeout(explicit)
@@ -143,7 +143,7 @@ mod tests {
     /// （日志/调试）不得泄露明文 key。
     #[test]
     fn debug_output_redacts_api_key() {
-        let client = NexusFlowClientBuilder::new()
+        let client = FluxgateClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .api_key("super-secret-bearer-key")
             .build()
@@ -162,7 +162,7 @@ mod tests {
 
 /// 客户端构建器。
 #[derive(Default)]
-pub struct NexusFlowClientBuilder {
+pub struct FluxgateClientBuilder {
     base_url: Option<String>,
     api_key: Option<String>,
     default_config: RequestConfig,
@@ -170,7 +170,7 @@ pub struct NexusFlowClientBuilder {
     read_timeout: Option<Duration>,
 }
 
-impl NexusFlowClientBuilder {
+impl FluxgateClientBuilder {
     pub fn new() -> Self {
         Self::default()
     }
@@ -202,14 +202,14 @@ impl NexusFlowClientBuilder {
         self
     }
 
-    pub fn build(self) -> Result<NexusFlowClient, NexusFlowSdkError> {
-        let url_str = self.base_url.ok_or_else(|| NexusFlowSdkError::Config {
+    pub fn build(self) -> Result<FluxgateClient, FluxgateSdkError> {
+        let url_str = self.base_url.ok_or_else(|| FluxgateSdkError::Config {
             message: "base_url is required".into(),
         })?;
-        let base_url = Url::parse(&url_str).map_err(|e| NexusFlowSdkError::Config {
+        let base_url = Url::parse(&url_str).map_err(|e| FluxgateSdkError::Config {
             message: format!("invalid base_url: {e}"),
         })?;
-        let api_key = self.api_key.ok_or_else(|| NexusFlowSdkError::Config {
+        let api_key = self.api_key.ok_or_else(|| FluxgateSdkError::Config {
             message: "api_key is required".into(),
         })?;
 
@@ -222,7 +222,7 @@ impl NexusFlowClientBuilder {
         let http = builder.build()?;
         let effective = effective_timeout(self.timeout);
 
-        Ok(NexusFlowClient {
+        Ok(FluxgateClient {
             http,
             base_url,
             api_key,
@@ -258,9 +258,9 @@ struct WireExtras<'a> {
     vendor_extensions: &'a std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-impl NexusFlowClient {
+impl FluxgateClient {
     /// 发送 chat 请求。合并 `default_config` 与 `req.config`，POST /v1/chat/completions。
-    pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, NexusFlowSdkError> {
+    pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, FluxgateSdkError> {
         let merged = self.default_config.merge(&req.config);
 
         let payload = ChatPayload {
@@ -277,7 +277,7 @@ impl NexusFlowClient {
         let url =
             self.base_url
                 .join("v1/chat/completions")
-                .map_err(|e| NexusFlowSdkError::Config {
+                .map_err(|e| FluxgateSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
 
@@ -300,14 +300,14 @@ impl NexusFlowClient {
         let status = resp.status();
 
         if status.as_u16() == 401 {
-            return Err(NexusFlowSdkError::Auth {
+            return Err(FluxgateSdkError::Auth {
                 message: "unauthorized".into(),
             });
         }
 
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(NexusFlowSdkError::Server {
+            return Err(FluxgateSdkError::Server {
                 status: status.as_u16(),
                 message: text,
             });
@@ -318,7 +318,7 @@ impl NexusFlowClient {
     }
 
     /// 发送流式 chat 请求。强制 `stream = true`，POST /v1/chat/completions，返回 ChatStream。
-    pub async fn chat_stream(&self, req: &ChatRequest) -> Result<ChatStream, NexusFlowSdkError> {
+    pub async fn chat_stream(&self, req: &ChatRequest) -> Result<ChatStream, FluxgateSdkError> {
         let mut merged = self.default_config.merge(&req.config);
         merged.stream = true;
 
@@ -336,7 +336,7 @@ impl NexusFlowClient {
         let url =
             self.base_url
                 .join("v1/chat/completions")
-                .map_err(|e| NexusFlowSdkError::Config {
+                .map_err(|e| FluxgateSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
 
@@ -360,14 +360,14 @@ impl NexusFlowClient {
         let status = resp.status();
 
         if status.as_u16() == 401 {
-            return Err(NexusFlowSdkError::Auth {
+            return Err(FluxgateSdkError::Auth {
                 message: "unauthorized".into(),
             });
         }
 
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(NexusFlowSdkError::Server {
+            return Err(FluxgateSdkError::Server {
                 status: status.as_u16(),
                 message: text,
             });

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! LinUCB bandit 纯函数与状态的集成侧单测——求逆防御、部分主元、特征边界、argmax 兜底与平局决断。
@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 mod bandit_units {
-    use nexusflow::router::bandit::{
+    use fluxgate::router::bandit::{
         linucb_diag_inverse, linucb_features, linucb_features_from_body, linucb_invert,
         linucb_ucb_from_arm, BanditState, LINUCB_DIM,
     };

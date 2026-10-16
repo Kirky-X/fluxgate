@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 use crate::api::RoutingHints;
@@ -8,7 +8,7 @@ use crate::database::RequestLog;
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use crate::protocol::embedding_request_to_openai;
-use crate::{error::NexusFlowError, router::RoutingDecision, ApiState};
+use crate::{error::FluxgateError, router::RoutingDecision, ApiState};
 use axum::{extract::State, http::HeaderMap, response::IntoResponse, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -43,7 +43,7 @@ pub async fn chat_completions(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     Json(mut body): Json<Value>,
-) -> Result<impl IntoResponse, NexusFlowError> {
+) -> Result<impl IntoResponse, FluxgateError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
 
@@ -52,7 +52,7 @@ pub async fn chat_completions(
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .ok_or_else(|| {
-            NexusFlowError::from(GateError::Validation {
+            FluxgateError::from(GateError::Validation {
                 field: "model".into(),
             })
         })?;
@@ -144,7 +144,7 @@ async fn chat_passthrough_stream(
     model: &str,
     body: &Value,
     decision: RoutingDecision,
-) -> Result<axum::response::Response, NexusFlowError> {
+) -> Result<axum::response::Response, FluxgateError> {
     // cover_all_paths 开启时「首字节前换路」——Err（均发生在响应头前，
     // manager check_stream_status 早退）排除重派；Ok（流已建立）即交出 body，
     // 流中错误仍以 SSE error 事件终止不再换路。关闭时单发直连。
@@ -239,7 +239,7 @@ async fn chat_passthrough_json(
     model: &str,
     body: &Value,
     decision: RoutingDecision,
-) -> Result<axum::response::Response, NexusFlowError> {
+) -> Result<axum::response::Response, FluxgateError> {
     // leader 闭包 = 上游派发：resilience 换路循环 + finish_dispatch 失败
     // 收尾 + 亲和重绑定 + 观测头。闭包成功返回的 FinalDispatch 即
     // **最终成功者**（回写键/日志/结算以其为准，初始候选仅入去重键）。
@@ -429,7 +429,7 @@ async fn chat_convert_stream(
     body: &Value,
     decision: RoutingDecision,
     unified_request: crate::protocol::UnifiedRequest,
-) -> Result<axum::response::Response, NexusFlowError> {
+) -> Result<axum::response::Response, FluxgateError> {
     // manager 返回分帧 + 反向解析后的 IR chunk 流；cover_all_paths 开启时
     // 「首字节前换路」（转换路径 UnifiedRequest 任意 vendor type 均合法，
     // 不按协议过滤）；关闭时单发直连。尝试链经 fallback_trail 出站
@@ -531,7 +531,7 @@ async fn chat_convert_json(
     body: &Value,
     decision: RoutingDecision,
     unified_request: crate::protocol::UnifiedRequest,
-) -> Result<axum::response::Response, NexusFlowError> {
+) -> Result<axum::response::Response, FluxgateError> {
     // leader 闭包 = 派发 + 回转：resilience 恒走换路 fallback 循环
     // （Throttled 原因追踪 + Retry-After 提示语义）+ 失败收尾（dispatch_
     // unified_request 内单点）+ 亲和重绑定；最终成功者随闭包返回。
@@ -657,7 +657,7 @@ async fn resolve_route(
     session_key: Option<&str>,
     api_key_hash: &str,
     body: &Value,
-) -> Result<(RoutingDecision, Option<String>), NexusFlowError> {
+) -> Result<(RoutingDecision, Option<String>), FluxgateError> {
     // X-Weight 请求级权重随 hints 传入——是否生效由 [routing].allow_request_weight
     // 门控（Router 侧热读判定，关闭时忽略）
     let request_weight = hints.preferred_weight;
@@ -728,8 +728,8 @@ async fn on_dispatch_failure(
     ctx: &ChatDispatchCtx,
     body: &Value,
     decision: &RoutingDecision,
-    error: NexusFlowError,
-) -> NexusFlowError {
+    error: FluxgateError,
+) -> FluxgateError {
     let duration_ms = ctx.start_time.elapsed().as_millis() as i64;
     crate::api::clear_session_affinity(state, &ctx.api_key_hash, ctx.session_key.as_deref()).await;
     log_chat_failure(
@@ -764,12 +764,12 @@ async fn finish_dispatch<T>(
     ctx: &ChatDispatchCtx,
     body: &Value,
     outcome: Result<(T, RoutingDecision), Box<(GateError, RoutingDecision)>>,
-) -> Result<(T, RoutingDecision), NexusFlowError> {
+) -> Result<(T, RoutingDecision), FluxgateError> {
     match outcome {
         Ok(pair) => Ok(pair),
         Err(boxed) => {
             let (e, decision) = *boxed;
-            Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
+            Err(on_dispatch_failure(state, ctx, body, &decision, FluxgateError::from(e)).await)
         }
     }
 }
@@ -791,7 +791,7 @@ async fn dispatch_unified_request(
         RoutingDecision,
         axum::http::HeaderMap,
     ),
-    NexusFlowError,
+    FluxgateError,
 > {
     #[cfg(feature = "resilience")]
     {
@@ -812,7 +812,7 @@ async fn dispatch_unified_request(
                 Ok((response, decision, obs))
             }
             Err(e) => {
-                Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
+                Err(on_dispatch_failure(state, ctx, body, &decision, FluxgateError::from(e)).await)
             }
         };
     }
@@ -824,7 +824,7 @@ async fn dispatch_unified_request(
     {
         Ok(r) => Ok((r, decision, axum::http::HeaderMap::new())),
         Err(e) => {
-            Err(on_dispatch_failure(state, ctx, body, &decision, NexusFlowError::from(e)).await)
+            Err(on_dispatch_failure(state, ctx, body, &decision, FluxgateError::from(e)).await)
         }
     }
 }
@@ -1081,7 +1081,7 @@ async fn log_chat_failure(
     decision: &RoutingDecision,
     request: &Value,
     duration_ms: i64,
-    error: &NexusFlowError,
+    error: &FluxgateError,
     // 奖励臂键（None = 直连路径跳过奖励）
     linucb_arm_key: Option<&str>,
 ) {
@@ -1107,7 +1107,7 @@ pub async fn embeddings(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, NexusFlowError> {
+) -> Result<impl IntoResponse, FluxgateError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
     // WP9：请求方 key 摘要透传分账（与响应缓存同源）。
@@ -1115,7 +1115,7 @@ pub async fn embeddings(
 
     // 路由决策 - embedding 使用特殊路由
     let model = body.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
-        NexusFlowError::from(GateError::Validation {
+        FluxgateError::from(GateError::Validation {
             field: "model".into(),
         })
     })?;
@@ -1127,7 +1127,7 @@ pub async fn embeddings(
 
     // 只支持 OpenAI vendor
     if decision.vendor.type_ != "openai" {
-        return Err(NexusFlowError::from(GateError::Protocol {
+        return Err(FluxgateError::from(GateError::Protocol {
             source: t("api-embeddings-openai-only"),
             inner: None,
         }));
@@ -1144,7 +1144,7 @@ pub async fn embeddings(
     {
         Ok(r) => r,
         Err(e) => {
-            let e = NexusFlowError::from(e);
+            let e = FluxgateError::from(e);
             // 失败落库：status_code/error_message 真实值
             let duration_ms = start_time.elapsed().as_millis() as i64;
             let input_str = body

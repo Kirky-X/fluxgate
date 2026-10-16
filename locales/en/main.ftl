@@ -1,6 +1,6 @@
 # en/main: src/main.rs 用户可见消息(CLI 启动输出 / 运维日志 / HTTP 错误文本 / 启动期 panic)
 
-main-starting = Starting NexusFlow with sdforge...
+main-starting = Starting Fluxgate with sdforge...
 main-logger-init-failed = Logger init failed: { $error }
 main-loading-config = Loading config from: { $path }
 main-config-loaded = Config loaded successfully

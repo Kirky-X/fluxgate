@@ -1,5 +1,5 @@
 # =============================================================================
-# NexusFlow 运行时配置示例 —— 随仓唯一的全量参考
+# Fluxgate 运行时配置示例 —— 随仓唯一的全量参考
 # =============================================================================
 # 用法：`cp config.example.toml config.toml` 后按需修改。网关二进制缺省读取
 # 工作目录的 config.toml，也可把配置路径作为唯一命令行参数传入：
@@ -39,8 +39,8 @@ port = 8080
 # 注意：切换后端不做数据迁移——新后端从空库起步（schema 自动建表）。
 [database]
 path = "./data/llm_proxy.db"
-# url = "postgres://127.0.0.1:5432/nexusflow"
-# url = "mysql://127.0.0.1:3306/nexusflow"
+# url = "postgres://127.0.0.1:5432/fluxgate"
+# url = "mysql://127.0.0.1:3306/fluxgate"
 pool_size = 5
 
 # ✅ 热生效 —— per-model 能力/定价目录（字段对齐 agentstem ModelEntry）。
@@ -248,7 +248,7 @@ latency_buffer = 0.0
 allow_request_weight = false
 # 全冷却 fail-open 安全网：**默认 false = 全候选被剔除时保持 Validation 错误
 #（现状）**。开启时全部候选因 CB Open / Throttled 被路由层剔除的情况下，回落
-# 「忽略状态但 enabled」的候选集加权选择。现实约束：NexusFlow 无主动健康检查
+# 「忽略状态但 enabled」的候选集加权选择。现实约束：Fluxgate 无主动健康检查
 # 驱动的冷却，全部为真实失败冷却——本开关覆盖的是 CB Open 超时未过窗口 /
 # 限流窗口未重置，语义弱于 LiteLLM 的 health-check 限定；把已冷却 vendor
 # 重新纳入流量是有意冒险，仅建议有兜底容量的部署开启。
@@ -347,9 +347,9 @@ default_deadline_ms = 10000
 #  （已热建的实例沿用创建时窗口）。
 #
 # - expose_fallback_headers: 回退链可观测响应头。**默认 false**（成功响应与
-#   现状逐字节一致）：开启时成功响应附 x-nexusflow-vendor（最终命中）、
-#   x-nexusflow-model、x-nexusflow-attempts（总尝试次数）、
-#   x-nexusflow-fallbacks（逗号分隔尝试链，含最终命中者；流式在响应头阶段
+#   现状逐字节一致）：开启时成功响应附 x-fluxgate-vendor（最终命中）、
+#   x-fluxgate-model、x-fluxgate-attempts（总尝试次数）、
+#   x-fluxgate-fallbacks（逗号分隔尝试链，含最终命中者；流式在响应头阶段
 #   写入）。✅ 热生效（执行路径每请求现读）。
 [resilience]
 cover_all_paths = false
@@ -486,8 +486,8 @@ enabled = false
 # ✅ enabled / 权重 / 配额即时热生效（vendor 实例拓扑增删需重启）
 # 上游密钥持久化（key-vault）：除 env 外，密钥可经 POST /admin/vault/keys 录入保密柜
 # （cocoon AEAD 加密入库，首装时 env 值自动吸收、之后免二次输入）。主钥来源：
-#   1. env NEXUSFLOW_MASTER_KEY（64 位 hex = 32 字节；服务器/容器推荐）
-#   2. 缺失时自动生成 ~/.nexusflow/vault_master.key（Unix 0600）
+#   1. env FLUXGATE_MASTER_KEY（64 位 hex = 32 字节；服务器/容器推荐）
+#   2. 缺失时自动生成 ~/.fluxgate/vault_master.key（Unix 0600）
 # ⚠ 主钥丢失则柜内密钥不可恢复，请备份主钥文件或妥善保管 env 值。
 # 上游密钥只从环境变量读取（api_key_env / api_key_envs 存的是 env 名，
 # 绝不存 key 原文）。

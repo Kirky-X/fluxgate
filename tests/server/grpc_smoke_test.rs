@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "grpc", feature = "web-server", feature = "logging"))]
 
@@ -19,8 +19,8 @@ mod common;
 
 use std::time::Duration;
 
-use nexusflow::config::{AuthSection, Config, ConfigManager, GrpcConfig, ServerConfig};
-use nexusflow::server::build_app;
+use fluxgate::config::{AuthSection, Config, ConfigManager, GrpcConfig, ServerConfig};
+use fluxgate::server::build_app;
 use sdforge::grpc::sdforge_v1::{
     sd_forge_service_client::SdForgeServiceClient, CallRequest, InfoRequest,
 };
@@ -32,12 +32,12 @@ use std::sync::Arc;
 const SMOKE_KEY_HASH: &str = "e9547242bd6a03bfab1da509ab0da8b70381955dbb0f3a36d0fe292e58a9b9e9";
 const SMOKE_KEY: &str = "smoke-test-key";
 
-/// 门面 handler：`nexusflow.health`（#[forge] 经 inventory 注册到
+/// 门面 handler：`fluxgate.health`（#[forge] 经 inventory 注册到
 /// SdForgeService 调度表；测试 crate 的注册项与 lib 服务器同进程可见）。
 #[sdforge::forge(
     name = "grpc_health",
     version = "v1",
-    grpc_method = "nexusflow.health",
+    grpc_method = "fluxgate.health",
     description = "gRPC smoke health handler"
 )]
 async fn grpc_health() -> Result<serde_json::Value, sdforge::core::ApiError> {
@@ -145,7 +145,7 @@ async fn grpc_facade_serves_auth_and_shuts_down() {
         let mut client = connect_client(addr).await;
         let err = client
             .call(Request::new(CallRequest {
-                method: "nexusflow.health".into(),
+                method: "fluxgate.health".into(),
                 parameters: Default::default(),
                 data: String::new(),
             }))
@@ -158,7 +158,7 @@ async fn grpc_facade_serves_auth_and_shuts_down() {
     {
         let mut client = connect_client(addr).await;
         let mut request = Request::new(CallRequest {
-            method: "nexusflow.health".into(),
+            method: "fluxgate.health".into(),
             parameters: Default::default(),
             data: String::new(),
         });
@@ -176,7 +176,7 @@ async fn grpc_facade_serves_auth_and_shuts_down() {
     {
         let mut client = connect_client(addr).await;
         let mut request = Request::new(CallRequest {
-            method: "nexusflow.health".into(),
+            method: "fluxgate.health".into(),
             parameters: Default::default(),
             data: String::new(),
         });
@@ -186,7 +186,7 @@ async fn grpc_facade_serves_auth_and_shuts_down() {
         let response = client
             .call(request)
             .await
-            .expect("对 key 的 nexusflow.health Call 应到达 handler");
+            .expect("对 key 的 fluxgate.health Call 应到达 handler");
         let body: serde_json::Value =
             serde_json::from_str(&response.into_inner().data).expect("handler 返回 JSON");
         assert_eq!(body["status"], "ok", "handler 响应内容必须直达调用方");
@@ -207,7 +207,7 @@ async fn grpc_facade_serves_auth_and_shuts_down() {
     handle.shutdown().await;
 }
 
-/// GrpcServerConfig 仅用于类型导入校验（NexusFlow 侧不直接构造 sdforge
+/// GrpcServerConfig 仅用于类型导入校验（Fluxgate 侧不直接构造 sdforge
 /// 配置——sdforge_grpc_config 为私有装配函数，此处锁定其公共依赖可达）。
 #[test]
 fn grpc_config_type_reachable() {

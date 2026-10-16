@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! FallbackChain — 按优先级链式回退策略。
@@ -100,7 +100,7 @@ impl FallbackChain {
 
 /// 回退尝试链（WP4 可观测性）：按尝试顺序记录 vendor id（含最终命中者）。
 /// 由 API 层换路循环填充（初始候选先记， 每次重派前记新候选），成功响应经
-/// `x-nexusflow-attempts`（总数）/`x-nexusflow-fallbacks`（逗号分隔链）出站。
+/// `x-fluxgate-attempts`（总数）/`x-fluxgate-fallbacks`（逗号分隔链）出站。
 /// **分配门控（审查 L4）**：构造期注入 `[resilience].expose_fallback_headers`
 /// 开关——关闭时 `record` 短路，热路径零分配（修复「注释宣称零额外分配但
 /// record 仍 to_string」的不实）。

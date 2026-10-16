@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试 — 主动健康检查探针（WP7）：三模式（off/suspect_only/all）
@@ -12,9 +12,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use nexusflow::config::{Config, ConfigManager, HealthSection, VendorConfig};
-use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use nexusflow::vendor::{probe, VendorManager, VendorStatus};
+use fluxgate::config::{Config, ConfigManager, HealthSection, VendorConfig};
+use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use fluxgate::vendor::{probe, VendorManager, VendorStatus};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -191,8 +191,8 @@ async fn all_mode_probes_healthy_and_failure_keeps_state() {
 /// 其余 key 全程继续服务。
 #[tokio::test]
 async fn minimal_call_recovers_blacklisted_key() {
-    const ENV_A: &str = "NEXUSFLOW_HP_KEY_A";
-    const ENV_B: &str = "NEXUSFLOW_HP_KEY_B";
+    const ENV_A: &str = "FLUXGATE_HP_KEY_A";
+    const ENV_B: &str = "FLUXGATE_HP_KEY_B";
     const KEY_A: &str = "hp-key-a";
     const KEY_B: &str = "hp-key-b";
     std::env::set_var(ENV_A, KEY_A);

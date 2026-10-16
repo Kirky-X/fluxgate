@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 密钥保密柜管理面（key-vault）：录入/列表/删除，明文只进不出。
@@ -16,18 +16,18 @@ use axum::Json;
 use secrecy::SecretString;
 use serde::Deserialize;
 
-use crate::error::{GateError, NexusFlowError};
+use crate::error::{FluxgateError, GateError};
 use crate::vault::{SecretKeyRecord, VaultError};
 use crate::ApiState;
 
 /// vault 未接线（feature 关闭或装配失败）时的统一错误。
-fn vault_unavailable() -> NexusFlowError {
-    NexusFlowError::Gate(GateError::VendorUnavailable {
+fn vault_unavailable() -> FluxgateError {
+    FluxgateError::Gate(GateError::VendorUnavailable {
         vendor: "vault".to_string(),
     })
 }
 
-fn store_of(state: &ApiState) -> Result<Arc<dyn crate::vault::KeyStore>, NexusFlowError> {
+fn store_of(state: &ApiState) -> Result<Arc<dyn crate::vault::KeyStore>, FluxgateError> {
     state.vendor_manager.vault().ok_or_else(vault_unavailable)
 }
 
@@ -43,10 +43,10 @@ pub struct PutKeyRequest {
 pub async fn put_key(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<PutKeyRequest>,
-) -> Result<Json<SecretKeyRecord>, NexusFlowError> {
+) -> Result<Json<SecretKeyRecord>, FluxgateError> {
     let store = store_of(&state)?;
     if body.key.trim().is_empty() {
-        return Err(NexusFlowError::Gate(GateError::Validation {
+        return Err(FluxgateError::Gate(GateError::Validation {
             field: "key".to_string(),
         }));
     }
@@ -57,7 +57,7 @@ pub async fn put_key(
         .iter()
         .any(|v| v.id == body.vendor_id);
     if !known {
-        return Err(NexusFlowError::Vault(VaultError::UnknownVendor(
+        return Err(FluxgateError::Vault(VaultError::UnknownVendor(
             body.vendor_id.clone(),
         )));
     }
@@ -74,7 +74,7 @@ pub async fn put_key(
 pub async fn list_keys(
     State(state): State<Arc<ApiState>>,
     axum::extract::Query(query): axum::extract::Query<ListKeysQuery>,
-) -> Result<Json<ListKeysResponse>, NexusFlowError> {
+) -> Result<Json<ListKeysResponse>, FluxgateError> {
     let store = store_of(&state)?;
     let keys = store.list(query.vendor_id.as_deref()).await?;
     Ok(Json(ListKeysResponse { keys }))
@@ -96,7 +96,7 @@ pub struct ListKeysResponse {
 pub async fn delete_key(
     State(state): State<Arc<ApiState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<Json<DeleteKeyResponse>, NexusFlowError> {
+) -> Result<Json<DeleteKeyResponse>, FluxgateError> {
     let store = store_of(&state)?;
     // 删除前定位 vendor（remove 后条目不可查）
     let target_vendor = store

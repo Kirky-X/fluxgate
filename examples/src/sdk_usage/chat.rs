@@ -1,23 +1,23 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 非流式 chat：完整 `ChatRequest` + `RequestConfig` 路由提示头，打印用量与实际 vendor。
 
 use std::time::Duration;
 
-use nexusflow::sdk::{
-    ChatMessage, ChatRequest, NexusFlowClientBuilder, NexusFlowSdkError, RequestConfig,
+use fluxgate::sdk::{
+    ChatMessage, ChatRequest, FluxgateClientBuilder, FluxgateSdkError, RequestConfig,
 };
 
 use super::require_env;
 
-pub async fn run() -> Result<(), NexusFlowSdkError> {
+pub async fn run() -> Result<(), FluxgateSdkError> {
     // timeout() 只约束非流式请求的总时长；流式行为见 stream_chat 的 read_timeout
-    let client = NexusFlowClientBuilder::new()
-        .base_url(require_env("NEXUSFLOW_BASE_URL"))
-        .api_key(require_env("NEXUSFLOW_API_KEY"))
+    let client = FluxgateClientBuilder::new()
+        .base_url(require_env("FLUXGATE_BASE_URL"))
+        .api_key(require_env("FLUXGATE_API_KEY"))
         .timeout(Duration::from_secs(60))
         .build()?;
 
@@ -47,8 +47,8 @@ pub async fn run() -> Result<(), NexusFlowSdkError> {
     // 认证失败单列提示（最常见故障是 key 配错），其余错误原样上抛
     let resp = match client.chat(&req).await {
         Ok(resp) => resp,
-        Err(NexusFlowSdkError::Auth { message }) => {
-            eprintln!("认证失败（{message}）：检查 NEXUSFLOW_API_KEY 是否为网关签发的 key");
+        Err(FluxgateSdkError::Auth { message }) => {
+            eprintln!("认证失败（{message}）：检查 FLUXGATE_API_KEY 是否为网关签发的 key");
             std::process::exit(1);
         }
         Err(err) => return Err(err),

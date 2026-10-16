@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! `GET /v1/models` — OpenAI 兼容模型列表：模型目录 ∪ 各 vendor 配置
 //! 模型去重（仅 enabled，按 id 排序确定性输出）。走既有鉴权与统一错误
 //! 体系；响应不进缓存（模型列表始终现算）
 
-use crate::error::NexusFlowError;
+use crate::error::FluxgateError;
 use crate::ApiState;
 use axum::{extract::State, Json};
 use serde_json::{json, Value};
@@ -15,12 +15,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// 目录独有条目的 `owned_by` 归属标记（无 vendor 认领时）。
-const CATALOG_OWNER: &str = "nexusflow";
+const CATALOG_OWNER: &str = "fluxgate";
 
 #[axum::debug_handler]
-pub async fn list_models(
-    State(state): State<Arc<ApiState>>,
-) -> Result<Json<Value>, NexusFlowError> {
+pub async fn list_models(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, FluxgateError> {
     let config = state.config.read();
 
     // vendor 模型先占（owned_by = vendor id），目录条目补缺（不覆盖 vendor

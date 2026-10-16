@@ -3,8 +3,8 @@
 
 use serde::Deserialize;
 
-use crate::sdk::client::NexusFlowClient;
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::client::FluxgateClient;
+use crate::sdk::error::FluxgateSdkError;
 
 /// 模型能力目录条目 — 对齐网关 `GET /admin/models`（目录）。
 /// 定价单位 =「currency 计价，每 1M tokens」。
@@ -119,10 +119,10 @@ struct AdminActionResponse {
 /// 目录条目模型 URL — `model_id` 经 `path_segments_mut().push` 自动
 /// 百分号编码（审查 MEDIUM：字符串 join 对 `../` 类输入产生路径穿越，
 /// `push` 将段内 `/` 编码为 `%2F`，穿越Neutral 化）。
-fn admin_model_url(base_url: &url::Url, model_id: &str) -> Result<url::Url, NexusFlowSdkError> {
+fn admin_model_url(base_url: &url::Url, model_id: &str) -> Result<url::Url, FluxgateSdkError> {
     let mut url = base_url.clone();
     url.path_segments_mut()
-        .map_err(|_| NexusFlowSdkError::Config {
+        .map_err(|_| FluxgateSdkError::Config {
             message: "base_url cannot be a base".into(),
         })?
         .push("admin")
@@ -131,17 +131,17 @@ fn admin_model_url(base_url: &url::Url, model_id: &str) -> Result<url::Url, Nexu
     Ok(url)
 }
 
-impl NexusFlowClient {
+impl FluxgateClient {
     /// GET /admin/models — 模型能力目录列表（目录，含定价/能力位）。
     ///
     /// 失配修复：旧实现打 `GET /v1/models`——网关**未注册**该
     /// 路由（恒 404），且 `{data:[{id,vendor}]}` 形状无对应实现；现对齐
     /// 目录路由语义。
-    pub async fn models(&self) -> Result<Vec<ModelCatalogInfo>, NexusFlowSdkError> {
+    pub async fn models(&self) -> Result<Vec<ModelCatalogInfo>, FluxgateSdkError> {
         let url = self
             .base_url
             .join("admin/models")
-            .map_err(|e| NexusFlowSdkError::Config {
+            .map_err(|e| FluxgateSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 
@@ -158,7 +158,7 @@ impl NexusFlowClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(NexusFlowSdkError::Server {
+            return Err(FluxgateSdkError::Server {
                 status: status.as_u16(),
                 message: text,
             });
@@ -173,7 +173,7 @@ impl NexusFlowClient {
         &self,
         model_id: &str,
         entry: &ModelCatalogUpsert,
-    ) -> Result<(), NexusFlowSdkError> {
+    ) -> Result<(), FluxgateSdkError> {
         let url = admin_model_url(&self.base_url, model_id)?;
 
         let resp = self
@@ -189,8 +189,8 @@ impl NexusFlowClient {
     }
 
     /// DELETE /admin/models/{model_id} — 目录下条（缺失条目网关返回
-    /// validation_error 400，映射 [`NexusFlowSdkError::Server`]）。
-    pub async fn delete_model(&self, model_id: &str) -> Result<(), NexusFlowSdkError> {
+    /// validation_error 400，映射 [`FluxgateSdkError::Server`]）。
+    pub async fn delete_model(&self, model_id: &str) -> Result<(), FluxgateSdkError> {
         let url = admin_model_url(&self.base_url, model_id)?;
 
         let resp = self
@@ -206,11 +206,11 @@ impl NexusFlowClient {
 
     /// GET /admin/vendors — vendor 运行时状态列表（真实形状：状态机词 +
     /// 队列深度 + key 池观测；**非**配置面 {name,enabled}）。
-    pub async fn vendors(&self) -> Result<Vec<VendorStatusInfo>, NexusFlowSdkError> {
+    pub async fn vendors(&self) -> Result<Vec<VendorStatusInfo>, FluxgateSdkError> {
         let url = self
             .base_url
             .join("admin/vendors")
-            .map_err(|e| NexusFlowSdkError::Config {
+            .map_err(|e| FluxgateSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 
@@ -225,7 +225,7 @@ impl NexusFlowClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(NexusFlowSdkError::Server {
+            return Err(FluxgateSdkError::Server {
                 status: status.as_u16(),
                 message: text,
             });
@@ -236,11 +236,11 @@ impl NexusFlowClient {
 
     /// GET /api/v1/health — 服务健康状态（JSON 健康面在 /api/v1/health，
     /// 非 /admin/health）
-    pub async fn health(&self) -> Result<HealthStatus, NexusFlowSdkError> {
+    pub async fn health(&self) -> Result<HealthStatus, FluxgateSdkError> {
         let url = self
             .base_url
             .join("api/v1/health")
-            .map_err(|e| NexusFlowSdkError::Config {
+            .map_err(|e| FluxgateSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 
@@ -255,7 +255,7 @@ impl NexusFlowClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(NexusFlowSdkError::Server {
+            return Err(FluxgateSdkError::Server {
                 status: status.as_u16(),
                 message: text,
             });
@@ -266,18 +266,18 @@ impl NexusFlowClient {
 
     /// admin 写路径的 success 断言（非 2xx → Server 错误；2xx 但
     /// success=false → Protocol 错误显性）。
-    async fn assert_admin_ok(resp: reqwest::Response) -> Result<(), NexusFlowSdkError> {
+    async fn assert_admin_ok(resp: reqwest::Response) -> Result<(), FluxgateSdkError> {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(NexusFlowSdkError::Server {
+            return Err(FluxgateSdkError::Server {
                 status: status.as_u16(),
                 message: text,
             });
         }
         let body: AdminActionResponse = resp.json().await?;
         if !body.success {
-            return Err(NexusFlowSdkError::Protocol {
+            return Err(FluxgateSdkError::Protocol {
                 message: format!("admin action failed: {}", body.message),
             });
         }

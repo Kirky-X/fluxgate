@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
@@ -14,7 +14,7 @@
 
 use axum::{body::Body, http::Request, http::StatusCode, Router};
 use dbnexus::{DbConfig, DbPool};
-use nexusflow::{
+use fluxgate::{
     api::create_router,
     config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, RateLimitRule, RateLimitSection,
@@ -117,14 +117,14 @@ fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Co
         // 请求携带的 Bearer key 摘要分桶，无 key 归入 anonymous）
         auth: None,
         cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
+        retry: fluxgate::config::RetrySection::default(),
+        routing: fluxgate::config::RoutingSection::default(),
+        cache: fluxgate::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),
         grpc: None,
-        resilience: nexusflow::config::ResilienceSection::default(),
+        resilience: fluxgate::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
         rate_limit: RateLimitSection { rules },
@@ -155,10 +155,10 @@ async fn build_app_with_vendors(rules: Vec<RateLimitRule>, vendors: Vec<VendorCo
 
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(nexusflow::database::Repository::new(pool)),
+        repository: Arc::new(fluxgate::database::Repository::new(pool)),
     });
 
-    let router = Arc::new(nexusflow::router::Router::new(
+    let router = Arc::new(fluxgate::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
@@ -427,7 +427,7 @@ async fn global_rule_rejection_carries_retry_after_and_standard_body() {
         .unwrap();
     assert_eq!(
         body,
-        nexusflow::i18n::t("router-rate-limit-exceeded"),
+        fluxgate::i18n::t("router-rate-limit-exceeded"),
         "global 429 body must match the standard rate-limit body"
     );
 }
@@ -523,7 +523,7 @@ async fn stream_request_is_adjudicated_at_entry_only() {
 /// 得到 429）。
 #[tokio::test]
 async fn auth_runs_before_rate_limit_layers() {
-    use nexusflow::config::AuthSection;
+    use fluxgate::config::AuthSection;
     let mut config = make_config(vec![rate_rule("global-cap", None, 1)]);
     config.auth = Some(AuthSection {
         enabled: true,
@@ -550,9 +550,9 @@ async fn auth_runs_before_rate_limit_layers() {
     .unwrap();
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(nexusflow::database::Repository::new(pool)),
+        repository: Arc::new(fluxgate::database::Repository::new(pool)),
     });
-    let router = Arc::new(nexusflow::router::Router::new(
+    let router = Arc::new(fluxgate::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));

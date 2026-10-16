@@ -1,5 +1,5 @@
 {
-  "name": "nexusflow-rest-http-node-demo",
+  "name": "fluxgate-rest-http-node-demo",
   "private": true,
   "type": "module"
 }

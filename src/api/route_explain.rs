@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! `POST /admin/route/explain` — 路由可解释性：入参 `{model, session_id?}`，
 //! 响应逐候选 `{vendor, model, decision, reason_code, detail}`。纯只读；
 //! reason_code 为稳定机器码（不做 i18n）；未知模型 → 400
 
-use crate::error::{GateError, NexusFlowError};
+use crate::error::{FluxgateError, GateError};
 use crate::i18n::{t, t_args};
 use crate::ApiState;
 use axum::{extract::State, Json};
@@ -18,9 +18,9 @@ use std::sync::Arc;
 pub async fn route_explain(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, NexusFlowError> {
+) -> Result<Json<Value>, FluxgateError> {
     let model = body.get("model").and_then(Value::as_str).ok_or_else(|| {
-        NexusFlowError::from(GateError::Validation {
+        FluxgateError::from(GateError::Validation {
             field: t("api-route-explain-model-invalid"),
         })
     })?;
@@ -28,7 +28,7 @@ pub async fn route_explain(
 
     let assessments = state.router.explain_route(model, session_id).await;
     if assessments.is_empty() {
-        return Err(NexusFlowError::from(GateError::Validation {
+        return Err(FluxgateError::from(GateError::Validation {
             field: t_args(
                 "api-route-explain-model-unknown",
                 &[("model", model.to_string())],

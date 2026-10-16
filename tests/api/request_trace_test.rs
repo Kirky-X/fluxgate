@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
@@ -8,7 +8,7 @@
 
 use axum::{body::Body, http::Request, http::StatusCode, Router};
 use dbnexus::{DbConfig, DbPool};
-use nexusflow::{
+use fluxgate::{
     api::create_router,
     config::{Config, ConfigManager, DatabaseConfig},
     database::Database,
@@ -70,7 +70,7 @@ fn collector() -> &'static SpanCollector {
 
 fn make_config() -> Config {
     Config {
-        server: nexusflow::config::ServerConfig {
+        server: fluxgate::config::ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
         },
@@ -85,17 +85,17 @@ fn make_config() -> Config {
         model_catalog: Vec::new(),
         auth: None,
         cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
+        retry: fluxgate::config::RetrySection::default(),
+        routing: fluxgate::config::RoutingSection::default(),
+        cache: fluxgate::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),
         grpc: None,
-        resilience: nexusflow::config::ResilienceSection::default(),
+        resilience: fluxgate::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
-        rate_limit: nexusflow::config::RateLimitSection { rules: vec![] },
+        rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
     }
 }
 
@@ -116,9 +116,9 @@ async fn build_app() -> Router {
     .unwrap();
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(nexusflow::database::Repository::new(pool)),
+        repository: Arc::new(fluxgate::database::Repository::new(pool)),
     });
-    let router = Arc::new(nexusflow::router::Router::new(
+    let router = Arc::new(fluxgate::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));

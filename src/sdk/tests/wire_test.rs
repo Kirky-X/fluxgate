@@ -8,7 +8,7 @@
 //! - 请求面 = OpenAI wire（tools/tool_choice/vendor_extensions flatten）。
 
 use crate::sdk::chat::*;
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::error::FluxgateSdkError;
 use crate::sdk::stream::ChatStream;
 use bytes::Bytes;
 use futures::StreamExt;
@@ -236,7 +236,7 @@ fn vendor_extension_reserved_keys_rejected_and_free_keys_allowed() {
             .with_vendor_extension(reserved, json!("injected"))
             .unwrap_err();
         assert!(
-            matches!(err, NexusFlowSdkError::Protocol { .. }),
+            matches!(err, FluxgateSdkError::Protocol { .. }),
             "保留键 {reserved} 必须拒绝"
         );
     }

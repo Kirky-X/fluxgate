@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "web-server", feature = "logging"))]
 
@@ -14,7 +14,7 @@
 
 #![recursion_limit = "256"]
 
-use nexusflow::error::NexusFlowError;
+use fluxgate::error::FluxgateError;
 
 #[tokio::test]
 async fn run_maps_occupied_server_port_to_error() {
@@ -55,10 +55,10 @@ allowed_headers = ["*"]
     .expect("write run config");
 
     let config = config_path.to_string_lossy().to_string();
-    let result = nexusflow::server::run(Some(config)).await;
+    let result = fluxgate::server::run(Some(config)).await;
 
     match result {
-        Err(NexusFlowError::Database { message }) => {
+        Err(FluxgateError::Database { message }) => {
             assert_ne!(
                 message, "error-io-source",
                 "io 错误键必须注册进 FTL 目录（缺键回退返回键名）"

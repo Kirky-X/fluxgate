@@ -2,7 +2,7 @@
 
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 #[path = "../common/mod.rs"]
@@ -16,7 +16,7 @@ mod endpoints {
         routing::{get, post},
         Router,
     };
-    use nexusflow::{
+    use fluxgate::{
         api::{chat_completions, messages},
         config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig},
         database::Database,
@@ -35,7 +35,7 @@ mod endpoints {
         let mut openai_main = common::base_vendor("openai_main", "");
         openai_main.name = "OpenAI Main".into();
         openai_main.api_key_env = "OPENAI_API_KEY".into();
-        openai_main.rate_limit = nexusflow::config::RateLimitConfig::Interval {
+        openai_main.rate_limit = fluxgate::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         };
@@ -51,7 +51,7 @@ mod endpoints {
             weight: 1.0,
             enabled: true,
         }];
-        anthropic_main.rate_limit = nexusflow::config::RateLimitConfig::Interval {
+        anthropic_main.rate_limit = fluxgate::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         };
@@ -92,10 +92,10 @@ mod endpoints {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
 
-        let router = Arc::new(nexusflow::router::Router::new(
+        let router = Arc::new(fluxgate::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -260,16 +260,16 @@ mod endpoints {
     async fn test_unified_to_openai_response() {
         let state = create_api_state().await;
 
-        let unified_response = nexusflow::protocol::unified::UnifiedResponse {
+        let unified_response = fluxgate::protocol::unified::UnifiedResponse {
             id: "test-123".to_string(),
             object: "chat.completion".to_string(),
             created: 1234567890,
             model: "gpt-4".to_string(),
-            choices: vec![nexusflow::protocol::unified::Choice {
+            choices: vec![fluxgate::protocol::unified::Choice {
                 index: 0,
-                message: Some(nexusflow::protocol::unified::Message {
-                    role: nexusflow::protocol::unified::Role::Assistant,
-                    content: nexusflow::protocol::unified::MessageContent::Text(
+                message: Some(fluxgate::protocol::unified::Message {
+                    role: fluxgate::protocol::unified::Role::Assistant,
+                    content: fluxgate::protocol::unified::MessageContent::Text(
                         "Hello!".to_string(),
                     ),
                 }),
@@ -277,7 +277,7 @@ mod endpoints {
                 finish: None,
                 logprobs: None,
             }],
-            usage: nexusflow::protocol::unified::TokenUsage {
+            usage: fluxgate::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
@@ -334,7 +334,7 @@ mod endpoints {
 
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
-        let router = Arc::new(nexusflow::router::Router::new(
+        let router = Arc::new(fluxgate::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -351,7 +351,7 @@ mod endpoints {
 
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
-        let router = Arc::new(nexusflow::router::Router::new(
+        let router = Arc::new(fluxgate::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -364,12 +364,12 @@ mod endpoints {
 
 mod integration {
     use crate::common;
-    use nexusflow::api::ApiState;
-    use nexusflow::config::{Config, ConfigManager, DatabaseConfig, ServerConfig};
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::api::ApiState;
+    use fluxgate::config::{Config, ConfigManager, DatabaseConfig, ServerConfig};
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -380,7 +380,7 @@ mod integration {
         let mut v = common::base_vendor("openai_main", "");
         v.name = "OpenAI Main".into();
         v.api_key_env = "OPENAI_API_KEY".into();
-        v.rate_limit = nexusflow::config::RateLimitConfig::Interval {
+        v.rate_limit = fluxgate::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         };
@@ -422,7 +422,7 @@ mod integration {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
 
         Arc::new(ApiState {
@@ -556,16 +556,16 @@ mod integration {
     async fn test_unified_response_to_openai_format() {
         let converter = OpenAIConverter::new();
 
-        let unified_response = nexusflow::protocol::unified::UnifiedResponse {
+        let unified_response = fluxgate::protocol::unified::UnifiedResponse {
             id: "test-123".to_string(),
             object: "chat.completion".to_string(),
             created: 1234567890,
             model: "gpt-4".to_string(),
-            choices: vec![nexusflow::protocol::unified::Choice {
+            choices: vec![fluxgate::protocol::unified::Choice {
                 index: 0,
-                message: Some(nexusflow::protocol::unified::Message {
-                    role: nexusflow::protocol::unified::Role::Assistant,
-                    content: nexusflow::protocol::unified::MessageContent::Text(
+                message: Some(fluxgate::protocol::unified::Message {
+                    role: fluxgate::protocol::unified::Role::Assistant,
+                    content: fluxgate::protocol::unified::MessageContent::Text(
                         "Hello!".to_string(),
                     ),
                 }),
@@ -573,7 +573,7 @@ mod integration {
                 finish: None,
                 logprobs: None,
             }],
-            usage: nexusflow::protocol::unified::TokenUsage {
+            usage: fluxgate::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
@@ -663,8 +663,8 @@ mod auth {
         routing::get,
         Router,
     };
-    use nexusflow::middleware::auth::api_auth_middleware;
-    use nexusflow::middleware::ApiAuthState;
+    use fluxgate::middleware::auth::api_auth_middleware;
+    use fluxgate::middleware::ApiAuthState;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -839,16 +839,16 @@ mod admin {
     use axum::extract::{Path, State};
     use axum::response::IntoResponse;
     use axum::Json;
-    use nexusflow::api::admin;
-    use nexusflow::api::ApiState;
-    use nexusflow::config::{
+    use fluxgate::api::admin;
+    use fluxgate::api::ApiState;
+    use fluxgate::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ServerConfig, VendorConfig,
     };
-    use nexusflow::database::Database;
-    use nexusflow::error::{GateError, NexusFlowError};
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::database::Database;
+    use fluxgate::error::{FluxgateError, GateError};
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
 
     /// 差异覆盖（其余字段继承 common 基座）：server 0.0.0.0:8080、
@@ -858,7 +858,7 @@ mod admin {
         let mut v = common::base_vendor("openai_main", "");
         v.name = "OpenAI Main".into();
         v.api_key_env = "OPENAI_API_KEY".into();
-        v.rate_limit = nexusflow::config::RateLimitConfig::Interval {
+        v.rate_limit = fluxgate::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         };
@@ -899,7 +899,7 @@ mod admin {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
 
         let router = Arc::new(Router::new(config_manager.clone(), vendor_manager.clone()));
@@ -1032,11 +1032,11 @@ mod admin {
             enabled: true,
             priority: 1,
             models: vec![],
-            rate_limit: nexusflow::config::RateLimitConfig::Interval {
+            rate_limit: fluxgate::config::RateLimitConfig::Interval {
                 hours: 1,
                 sliding: false,
             },
-            concurrency: nexusflow::config::ConcurrencyConfig {
+            concurrency: fluxgate::config::ConcurrencyConfig {
                 requests_per_second: 10,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -1049,7 +1049,7 @@ mod admin {
         let result =
             admin::update_vendor(State(state), Path("nonexistent".to_string()), Json(vendor)).await;
         match result {
-            Err(NexusFlowError::Gate(GateError::Config { message })) => {
+            Err(FluxgateError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("not found"),
                     "message should mention 'not found': {}",
@@ -1071,7 +1071,7 @@ mod admin {
         let result =
             admin::update_model(State(state), Path("non-global".to_string()), Json(model)).await;
         match result {
-            Err(NexusFlowError::Gate(GateError::Config { message })) => {
+            Err(FluxgateError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("global"),
                     "message should mention 'global': {}",
@@ -1130,7 +1130,7 @@ mod admin {
     async fn test_admin_update_config_reports_restart_required_for_cors() {
         // update_config 返回 impl IntoResponse（Ok 分支为 Json<Value>），
         // 经 into_response 读 body 解析 JSON
-        async fn body_json<R: IntoResponse>(resp: Result<R, NexusFlowError>) -> serde_json::Value {
+        async fn body_json<R: IntoResponse>(resp: Result<R, FluxgateError>) -> serde_json::Value {
             let bytes =
                 axum::body::to_bytes(resp.unwrap().into_response().into_body(), 1024 * 1024)
                     .await
@@ -1200,7 +1200,7 @@ mod admin {
         let mut next = state.config.get_config();
         next.vendors[0].name = "renamed-after-external-edit".to_string();
         match admin::update_config(State(state.clone()), Json(next)).await {
-            Err(NexusFlowError::Gate(GateError::Config { message })) => {
+            Err(FluxgateError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("config.toml"),
                     "错误必须点名被外部修改的文件: {message}"
@@ -1266,13 +1266,13 @@ mod admin {
 mod streaming_error_propagation {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use nexusflow::api::{chat_completions, messages};
-    use nexusflow::config::{Config, ConfigManager, ModelConfig, ServerConfig, VendorConfig};
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router as NexusRouter;
-    use nexusflow::vendor::VendorManager;
-    use nexusflow::ApiState;
+    use fluxgate::api::{chat_completions, messages};
+    use fluxgate::config::{Config, ConfigManager, ModelConfig, ServerConfig, VendorConfig};
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router as NexusRouter;
+    use fluxgate::vendor::VendorManager;
+    use fluxgate::ApiState;
     use serde_json::json;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -1325,7 +1325,7 @@ mod streaming_error_propagation {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
 
         let router = Arc::new(NexusRouter::new(
@@ -1653,14 +1653,14 @@ mod streaming_error_propagation {
 mod logging_pipeline {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use nexusflow::api::{chat_completions, ApiState};
-    use nexusflow::config::{CacheSection, Config, ConfigManager, ServerConfig};
-    use nexusflow::database::{
+    use fluxgate::api::{chat_completions, ApiState};
+    use fluxgate::config::{CacheSection, Config, ConfigManager, ServerConfig};
+    use fluxgate::database::{
         AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, TokenPreAggregator,
     };
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router as NexusRouter;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router as NexusRouter;
+    use fluxgate::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1727,7 +1727,7 @@ mod logging_pipeline {
             Duration::from_secs(60),
         ));
 
-        let database = Arc::new(nexusflow::database::Database {
+        let database = Arc::new(fluxgate::database::Database {
             pool,
             repository: repository.clone(),
         });
@@ -1877,7 +1877,7 @@ mod logging_pipeline {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn anthropic_usage_keys_are_mapped_end_to_end() {
         use axum::routing::post as post_route;
-        use nexusflow::api::messages;
+        use fluxgate::api::messages;
 
         let mut server = mockito::Server::new_async().await;
         server
@@ -1929,7 +1929,7 @@ mod logging_pipeline {
             router: Arc::new(NexusRouter::new(config_manager, vendor_manager)),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database: Arc::new(nexusflow::database::Database {
+            database: Arc::new(fluxgate::database::Database {
                 pool,
                 repository: repository.clone(),
             }),
@@ -2034,15 +2034,15 @@ mod logging_pipeline {
 mod embeddings_governance {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use nexusflow::api::{embeddings, ApiState};
-    use nexusflow::config::{
+    use fluxgate::api::{embeddings, ApiState};
+    use fluxgate::config::{
         CacheSection, Config, ConfigManager, ModelConfig, RateLimitConfig, ServerConfig,
         VendorConfig,
     };
-    use nexusflow::database::{AsyncLogger, AsyncLoggerHandle, Repository, TokenPreAggregator};
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router as NexusRouter;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::database::{AsyncLogger, AsyncLoggerHandle, Repository, TokenPreAggregator};
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router as NexusRouter;
+    use fluxgate::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -2107,7 +2107,7 @@ mod embeddings_governance {
             router: Arc::new(NexusRouter::new(config_manager, vendor_manager)),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database: Arc::new(nexusflow::database::Database {
+            database: Arc::new(fluxgate::database::Database {
                 pool,
                 repository: repository.clone(),
             }),
@@ -2298,15 +2298,15 @@ mod embeddings_governance {
 mod response_cache_tests {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use nexusflow::api::{chat_completions, response_cache::ResponseCache};
-    use nexusflow::config::{
+    use fluxgate::api::{chat_completions, response_cache::ResponseCache};
+    use fluxgate::config::{
         CacheSection, Config, ConfigManager, ModelConfig, ServerConfig, VendorConfig,
     };
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router as NexusRouter;
-    use nexusflow::vendor::VendorManager;
-    use nexusflow::ApiState;
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router as NexusRouter;
+    use fluxgate::vendor::VendorManager;
+    use fluxgate::ApiState;
     use serde_json::json;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -2364,7 +2364,7 @@ mod response_cache_tests {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
 
         let router = Arc::new(NexusRouter::new(
@@ -2385,7 +2385,7 @@ mod response_cache_tests {
             response_cache: Some(Arc::new(ResponseCache::new(
                 Arc::new(oxcache::backend::default_memory_backend()),
                 config_manager.clone(),
-                Arc::new(nexusflow::utils::metrics::GlobalMetrics::new()),
+                Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
             ))),
             bandit: None,
             quota: None,
@@ -2693,12 +2693,12 @@ mod linucb_reward_chain {
     //! 无 record_linucb_reward 调用、handler→奖励链路零覆盖。
 
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, RoutingSection, ServerConfig};
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::bandit::BanditState;
-    use nexusflow::vendor::VendorManager;
-    use nexusflow::ApiState;
+    use fluxgate::config::{Config, ConfigManager, RoutingSection, ServerConfig};
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::bandit::BanditState;
+    use fluxgate::vendor::VendorManager;
+    use fluxgate::ApiState;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -2746,11 +2746,11 @@ mod linucb_reward_chain {
         .unwrap();
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
         let bandit = Arc::new(BanditState::new(1.0));
         let router = Arc::new(
-            nexusflow::router::Router::new(config_manager.clone(), vendor_manager.clone())
+            fluxgate::router::Router::new(config_manager.clone(), vendor_manager.clone())
                 .with_bandit(bandit.clone()),
         );
         let state = Arc::new(ApiState {
@@ -2776,7 +2776,7 @@ mod linucb_reward_chain {
         axum::Router::new()
             .route(
                 "/v1/chat/completions",
-                post(nexusflow::api::openai::chat_completions),
+                post(fluxgate::api::openai::chat_completions),
             )
             .with_state(state)
     }
@@ -2853,12 +2853,12 @@ mod global_model_switch {
     //! 端口，路由成功后执行失败 → 非 4xx 客户端错误）。
 
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, GlobalModelConfig, ServerConfig};
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
-    use nexusflow::ApiState;
+    use fluxgate::config::{Config, ConfigManager, GlobalModelConfig, ServerConfig};
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
+    use fluxgate::ApiState;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -2897,7 +2897,7 @@ mod global_model_switch {
         .unwrap();
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
         Arc::new(ApiState {
             config: config_manager.clone(),
@@ -2921,7 +2921,7 @@ mod global_model_switch {
         let app = axum::Router::new()
             .route(
                 "/v1/chat/completions",
-                post(nexusflow::api::openai::chat_completions),
+                post(fluxgate::api::openai::chat_completions),
             )
             .with_state(state);
         app.oneshot(
@@ -2986,22 +2986,22 @@ mod api_handler_coverage {
     use axum::extract::{Query, State};
     use axum::response::IntoResponse;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use nexusflow::api::admin::{self, LogQuery};
-    use nexusflow::api::response_cache::{cache_api_key_hash, ResponseCache};
-    use nexusflow::api::{
+    use fluxgate::api::admin::{self, LogQuery};
+    use fluxgate::api::response_cache::{cache_api_key_hash, ResponseCache};
+    use fluxgate::api::{
         chat_completions, embeddings, get_global_state, init_global_state, messages, ApiState,
     };
-    use nexusflow::config::{
+    use fluxgate::config::{
         CacheSection, Config, ConfigManager, GlobalModelConfig, ModelConfig, RateLimitConfig,
         ServerConfig, VendorConfig,
     };
-    use nexusflow::database::{
+    use fluxgate::database::{
         AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, TokenPreAggregator,
     };
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::bandit::BanditState;
-    use nexusflow::router::{AffinityTable, Router as NexusRouter};
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::bandit::BanditState;
+    use fluxgate::router::{AffinityTable, Router as NexusRouter};
+    use fluxgate::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::Duration;
@@ -3086,7 +3086,7 @@ mod api_handler_coverage {
         repository.initialize().await.expect("schema init");
 
         let logger = wire.logger.then(|| {
-            let sink: Arc<dyn nexusflow::storage::RequestLogSink> =
+            let sink: Arc<dyn fluxgate::storage::RequestLogSink> =
                 Arc::new(AsyncLoggerHandle::new(AsyncLogger::new(
                     repository.clone(),
                     1024,
@@ -3095,7 +3095,7 @@ mod api_handler_coverage {
             sink
         });
         let pre_aggregator = wire.pre_aggregator.then(|| {
-            let sink: Arc<dyn nexusflow::storage::UsageSink> = Arc::new(TokenPreAggregator::new(
+            let sink: Arc<dyn fluxgate::storage::UsageSink> = Arc::new(TokenPreAggregator::new(
                 repository.clone(),
                 Duration::from_secs(60),
             ));
@@ -3110,7 +3110,7 @@ mod api_handler_coverage {
             Arc::new(ResponseCache::new(
                 Arc::new(oxcache::backend::default_memory_backend()),
                 config_manager.clone(),
-                Arc::new(nexusflow::utils::metrics::GlobalMetrics::new()),
+                Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
             ))
         });
         let bandit = wire.bandit.then(|| Arc::new(BanditState::new(1.0)));
@@ -3130,7 +3130,7 @@ mod api_handler_coverage {
             router: Arc::new(router),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database: Arc::new(nexusflow::database::Database { pool, repository }),
+            database: Arc::new(fluxgate::database::Database { pool, repository }),
             logger,
             pre_aggregator,
             affinity,
@@ -4741,7 +4741,7 @@ mod api_handler_coverage {
 
         // 最终失败必须解除亲和绑定（messages 兜底会话键）
         let session_key =
-            nexusflow::api::routing_hints::fallback_session_key(&chat_body("gpt-4", false))
+            fluxgate::api::routing_hints::fallback_session_key(&chat_body("gpt-4", false))
                 .expect("messages 兜底键");
         let affinity = state.affinity.as_ref().unwrap();
         assert!(
@@ -5454,16 +5454,16 @@ mod api_handler_coverage {
 mod data_plane_endpoints {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode};
-    use nexusflow::api::{create_router, response_cache::ResponseCache};
-    use nexusflow::config::{
+    use fluxgate::api::{create_router, response_cache::ResponseCache};
+    use fluxgate::config::{
         AuthSection, CacheSection, Config, ConfigManager, ModelCatalogEntry, ModelConfig,
         VendorConfig,
     };
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router as NexusRouter;
-    use nexusflow::vendor::VendorManager;
-    use nexusflow::ApiState;
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router as NexusRouter;
+    use fluxgate::vendor::VendorManager;
+    use fluxgate::ApiState;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -5513,7 +5513,7 @@ mod data_plane_endpoints {
         })
         .await
         .unwrap();
-        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let router = Arc::new(NexusRouter::new(
@@ -5524,7 +5524,7 @@ mod data_plane_endpoints {
             Arc::new(ResponseCache::new(
                 Arc::new(oxcache::backend::default_memory_backend()),
                 config_manager.clone(),
-                Arc::new(nexusflow::utils::metrics::GlobalMetrics::new()),
+                Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
             ))
         });
 
@@ -5634,7 +5634,7 @@ mod data_plane_endpoints {
             .collect();
         assert_eq!(ids, vec!["aaa-catalog", "mmm-shared", "zzz-vendor"]);
         assert_eq!(body["data"][1]["owned_by"], "vendor-a");
-        assert_eq!(body["data"][0]["owned_by"], "nexusflow");
+        assert_eq!(body["data"][0]["owned_by"], "fluxgate");
     }
 
     /// 真机回归：声明 abstract_id 的 vendor 模型，目录必须列路由可解析的
@@ -5859,15 +5859,15 @@ mod data_plane_endpoints {
 mod fallback_observation_headers {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, routing::post, Router};
-    use nexusflow::api::{chat_completions, ApiState};
-    use nexusflow::config::{
+    use fluxgate::api::{chat_completions, ApiState};
+    use fluxgate::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
         ServerConfig, VendorConfig,
     };
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router as NexusRouter;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router as NexusRouter;
+    use fluxgate::vendor::VendorManager;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -5882,7 +5882,7 @@ mod fallback_observation_headers {
             id: id.into(),
             name: format!("Test {id}"),
             type_: "openai".into(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+            api_key_env: "FLUXGATE_TEST_KEY".into(),
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base: api_base.into(),
@@ -5894,12 +5894,12 @@ mod fallback_observation_headers {
                 weight: 1.0,
                 enabled: true,
             }],
-            rate_limit: nexusflow::config::RateLimitConfig::Token {
+            rate_limit: fluxgate::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
                 window_hours: None,
                 sliding: false,
             },
-            concurrency: nexusflow::config::ConcurrencyConfig {
+            concurrency: fluxgate::config::ConcurrencyConfig {
                 requests_per_second: 1000,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -5951,7 +5951,7 @@ mod fallback_observation_headers {
         })
         .await
         .unwrap();
-        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let router = Arc::new(NexusRouter::new(
@@ -6019,10 +6019,10 @@ mod fallback_observation_headers {
 
     fn assert_no_obs_headers(response: &axum::response::Response) {
         for name in [
-            "x-nexusflow-vendor",
-            "x-nexusflow-model",
-            "x-nexusflow-attempts",
-            "x-nexusflow-fallbacks",
+            "x-fluxgate-vendor",
+            "x-fluxgate-model",
+            "x-fluxgate-attempts",
+            "x-fluxgate-fallbacks",
         ] {
             assert!(
                 header(response, name).is_none(),
@@ -6047,10 +6047,10 @@ mod fallback_observation_headers {
         let state = make_state(make_config(vec![make_vendor("solo-a", server.url())], true)).await;
         let response = post_chat(state, None, chat_body(false)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("solo-a"));
-        assert_eq!(header(&response, "x-nexusflow-model"), Some("gpt-4"));
-        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("1"));
-        assert_eq!(header(&response, "x-nexusflow-fallbacks"), Some("solo-a"));
+        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("solo-a"));
+        assert_eq!(header(&response, "x-fluxgate-model"), Some("gpt-4"));
+        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("solo-a"));
 
         mock.assert_async().await;
     }
@@ -6071,9 +6071,9 @@ mod fallback_observation_headers {
         let state = make_state(make_config(vec![make_vendor("solo-a", server.url())], true)).await;
         let response = post_chat(state, None, chat_body(true)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("solo-a"));
-        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("1"));
-        assert_eq!(header(&response, "x-nexusflow-fallbacks"), Some("solo-a"));
+        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("solo-a"));
+        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("solo-a"));
 
         mock.assert_async().await;
     }
@@ -6109,12 +6109,9 @@ mod fallback_observation_headers {
         .await;
         let response = post_chat(state, Some("fb-a"), chat_body(false)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("fb-b"));
-        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("2"));
-        assert_eq!(
-            header(&response, "x-nexusflow-fallbacks"),
-            Some("fb-a,fb-b")
-        );
+        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("fb-b"));
+        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("2"));
+        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("fb-a,fb-b"));
 
         mock_a.assert_async().await;
         mock_b.assert_async().await;
@@ -6151,12 +6148,9 @@ mod fallback_observation_headers {
         .await;
         let response = post_chat(state, Some("fb-a"), chat_body(true)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("fb-b"));
-        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("2"));
-        assert_eq!(
-            header(&response, "x-nexusflow-fallbacks"),
-            Some("fb-a,fb-b")
-        );
+        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("fb-b"));
+        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("2"));
+        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("fb-a,fb-b"));
 
         mock_a.assert_async().await;
         mock_b.assert_async().await;
@@ -6196,15 +6190,13 @@ mod fallback_observation_headers {
 mod route_explain {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode};
-    use nexusflow::api::create_router;
-    use nexusflow::config::{
-        AuthSection, ConfigManager, ModelConfig, RoutingSection, VendorConfig,
-    };
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::{AffinityTable, Router as NexusRouter};
-    use nexusflow::vendor::VendorManager;
-    use nexusflow::ApiState;
+    use fluxgate::api::create_router;
+    use fluxgate::config::{AuthSection, ConfigManager, ModelConfig, RoutingSection, VendorConfig};
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::{AffinityTable, Router as NexusRouter};
+    use fluxgate::vendor::VendorManager;
+    use fluxgate::ApiState;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::Duration;
@@ -6264,7 +6256,7 @@ mod route_explain {
         })
         .await
         .unwrap();
-        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let affinity = wire.affinity.clone();
@@ -6526,7 +6518,7 @@ mod route_explain {
             weight: 1.0,
             enabled: true,
         }];
-        v.rate_limit = nexusflow::config::RateLimitConfig::Token {
+        v.rate_limit = fluxgate::config::RateLimitConfig::Token {
             max_tokens: 0,
             window_hours: None,
             sliding: false,
@@ -6734,15 +6726,15 @@ mod route_explain {
 mod fallback_observation_headers_anthropic {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, routing::post, Router};
-    use nexusflow::api::{messages, ApiState};
-    use nexusflow::config::{
+    use fluxgate::api::{messages, ApiState};
+    use fluxgate::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
         ServerConfig, VendorConfig,
     };
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::{AffinityTable, Router as NexusRouter};
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::{AffinityTable, Router as NexusRouter};
+    use fluxgate::vendor::VendorManager;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::Duration;
@@ -6804,7 +6796,7 @@ mod fallback_observation_headers_anthropic {
         })
         .await
         .unwrap();
-        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let affinity = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
@@ -6890,10 +6882,10 @@ mod fallback_observation_headers_anthropic {
         let state = make_state(make_config(vec![make_vendor("ax-a", server.url())], true)).await;
         let response = post_messages(state, None, messages_body(false)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("ax-a"));
-        assert_eq!(header(&response, "x-nexusflow-model"), Some("claude-x"));
-        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("1"));
-        assert_eq!(header(&response, "x-nexusflow-fallbacks"), Some("ax-a"));
+        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("ax-a"));
+        assert_eq!(header(&response, "x-fluxgate-model"), Some("claude-x"));
+        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("ax-a"));
 
         mock.assert_async().await;
     }
@@ -6938,13 +6930,10 @@ mod fallback_observation_headers_anthropic {
             .await;
         let response = post_messages(state, Some("obs-sess"), messages_body(true)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-nexusflow-vendor"), Some("ax-b"));
-        assert_eq!(header(&response, "x-nexusflow-model"), Some("claude-x"));
-        assert_eq!(header(&response, "x-nexusflow-attempts"), Some("2"));
-        assert_eq!(
-            header(&response, "x-nexusflow-fallbacks"),
-            Some("ax-a,ax-b")
-        );
+        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("ax-b"));
+        assert_eq!(header(&response, "x-fluxgate-model"), Some("claude-x"));
+        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("2"));
+        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("ax-a,ax-b"));
 
         mock_a.assert_async().await;
         mock_b.assert_async().await;
@@ -6967,10 +6956,10 @@ mod fallback_observation_headers_anthropic {
         let response = post_messages(state, None, messages_body(false)).await;
         assert_eq!(response.status(), StatusCode::OK);
         for name in [
-            "x-nexusflow-vendor",
-            "x-nexusflow-model",
-            "x-nexusflow-attempts",
-            "x-nexusflow-fallbacks",
+            "x-fluxgate-vendor",
+            "x-fluxgate-model",
+            "x-fluxgate-attempts",
+            "x-fluxgate-fallbacks",
         ] {
             assert!(header(&response, name).is_none(), "关闭时 {name} 不得存在");
         }

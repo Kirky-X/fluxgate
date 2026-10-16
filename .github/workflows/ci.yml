@@ -1,5 +1,5 @@
 #===============================================================================
-# NexusFlow CI 质量门禁（对齐 confers 7 仓库统一基线）
+# Fluxgate CI 质量门禁（对齐 confers 7 仓库统一基线）
 # fmt / clippy / check / test / build / doc / coverage / security
 # （特性全量矩阵见 feature-matrix.yml，CodeQL 见 codeql.yml.disabled）
 #
@@ -97,7 +97,7 @@ jobs:
       # 隔离），--all-targets 的 default 口径会跳过 grpc bin——显式补一条 grpc
       # feature 的 clippy，覆盖代码生成与 grpc_client 模块 lint（此作业已装 protoc）
       - name: Run clippy (examples grpc feature)
-        run: cargo clippy -p nexusflow-examples --no-default-features --features grpc --all-targets -- -D warnings
+        run: cargo clippy -p fluxgate-examples --no-default-features --features grpc --all-targets -- -D warnings
 
   #-----------------------------------------------------------------------------
   # 编译检查（默认特性 / 三后端特性矩阵）
@@ -124,22 +124,22 @@ jobs:
       # 示例 grpc 模块非 default（protoc 隔离），显式补一条编译校验
       # （此作业已装 protoc）
       - name: Check examples grpc feature
-        run: cargo check -p nexusflow-examples --no-default-features --features grpc
+        run: cargo check -p fluxgate-examples --no-default-features --features grpc
       # --all-features 会同时启用互斥的 db-* 三组（dbnexus 守卫必触发），
       # 改为按后端逐一检查；db-sqlite 已由 default 覆盖
       - name: Check db-postgres features
         # -p 限定到本包：workspace 形态会把示例成员的 default db-sqlite 拉入
         # 特性联合，dbnexus 互斥守卫必触发（与 README 本地校验口径逐字一致）
-        run: cargo check -p nexusflow --no-default-features --features "full,db-postgres"
+        run: cargo check -p fluxgate --no-default-features --features "full,db-postgres"
       - name: Check db-mysql features
-        run: cargo check -p nexusflow --no-default-features --features "full,db-mysql"
+        run: cargo check -p fluxgate --no-default-features --features "full,db-mysql"
       # 单特性组合回归网：database/web-server 的隐式前提（logging/infrastructure）
       # 若被拆掉，这两条立即编译失败（矩阵口径见 tests/matrix/feature_matrix.rs）
       - name: Check single-feature combos
         run: |
-          cargo check -p nexusflow --no-default-features --features "database,db-sqlite"
-          cargo check -p nexusflow --no-default-features --features "web-server,db-sqlite"
-          cargo check -p nexusflow --no-default-features --features "logging,db-sqlite"
+          cargo check -p fluxgate --no-default-features --features "database,db-sqlite"
+          cargo check -p fluxgate --no-default-features --features "web-server,db-sqlite"
+          cargo check -p fluxgate --no-default-features --features "logging,db-sqlite"
 
   #-----------------------------------------------------------------------------
   # 测试（mockito 自包含，无外部服务依赖）

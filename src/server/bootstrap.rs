@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 装配链：logger → config → db → vendor → 日志管道 → DI kit →
@@ -14,8 +14,8 @@ use crate::config::loader::ConfigLoader;
 use crate::config::ConfigManager;
 use crate::database::AsyncLoggerHandle;
 use crate::database::TokenPreAggregator;
+use crate::error::FluxgateError;
 use crate::error::GateError;
-use crate::error::NexusFlowError;
 use crate::i18n::{t, t_args};
 use crate::storage::{RequestLogSink, UsageSink};
 use crate::ApiState;
@@ -37,7 +37,7 @@ pub(crate) struct Assembly {
 /// 返回的句柄须由调用方持有到进程结束——提前丢弃会使 worker 断连、事件静默丢失。
 /// 出站脱敏：关内置 console 通道，经 add_sink 挂自建 GateSink（fail-closed）。
 /// log 门面（reqwest/sea-orm 等）经 LogTracer 转 tracing 事件统一走 gate sink。
-pub(crate) async fn init_logger() -> Result<inklog::LoggerManager, NexusFlowError> {
+pub(crate) async fn init_logger() -> Result<inklog::LoggerManager, FluxgateError> {
     install_log_facade_bridge();
     let console_sink = crate::database::async_logger::GateSink::new(
         Arc::new(inklog::sink::ConsoleSink::new(
@@ -53,7 +53,7 @@ pub(crate) async fn init_logger() -> Result<inklog::LoggerManager, NexusFlowErro
         .build()
         .await
         .map_err(|e| {
-            NexusFlowError::from(GateError::Config {
+            FluxgateError::from(GateError::Config {
                 message: t_args("main-logger-init-failed", &[("error", e.to_string())]),
             })
         })
@@ -83,7 +83,7 @@ pub(crate) fn log_bridge_touched() -> bool {
 
 pub(crate) fn load_config(
     config_path: Option<String>,
-) -> Result<Arc<ConfigManager>, NexusFlowError> {
+) -> Result<Arc<ConfigManager>, FluxgateError> {
     let config_path = config_path.unwrap_or("config.toml".to_string());
     tracing::info!(
         "{}",
@@ -97,7 +97,7 @@ pub(crate) fn load_config(
 /// 装配 db → vendor → 日志管道 → DI kit → 路由栈 → ApiState。
 pub(crate) async fn assemble(
     config_manager: Arc<ConfigManager>,
-) -> Result<Assembly, NexusFlowError> {
+) -> Result<Assembly, FluxgateError> {
     use crate::database::redact_db_url;
     use crate::database::resolve_database_url;
     use crate::database::Database;
@@ -493,7 +493,7 @@ mod tests {
         let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
         let subscriber = tracing_subscriber::registry().with(BridgeCaptureLayer(gate_sink));
         tracing::subscriber::with_default(subscriber, || {
-            log::info!(target: "nexusflow::bridge_test", "gateway boot token {secret}");
+            log::info!(target: "fluxgate::bridge_test", "gateway boot token {secret}");
         });
 
         let written = inner.0.lock().expect("not poisoned");
@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(written[0].target, "log", "桥转发事件的特征 target");
         assert_eq!(
             written[0].fields["log.target"],
-            serde_json::json!("nexusflow::bridge_test"),
+            serde_json::json!("fluxgate::bridge_test"),
             "原始 log target 必须保留在 log.target 字段"
         );
         assert!(

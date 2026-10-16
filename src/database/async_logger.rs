@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 异步日志写入器
@@ -12,7 +12,7 @@
 //! flush（见 `Repository::log_requests_batch`），停机时补最终 flush。
 
 use crate::database::{Repository, RequestLog};
-use crate::error::NexusFlowError;
+use crate::error::FluxgateError;
 use crate::i18n::{t, t_args};
 use async_channel::{bounded, Receiver, Sender};
 use inklog::{DataMasker, EntropyScanner, InklogError, SecretPatternRegistry, SecretScanGate};
@@ -208,9 +208,9 @@ impl AsyncLogger {
 
     /// 写入日志（非阻塞 push：channel 满即丢弃并计数，绝不等待）；
     /// 返回 Err 仅表示 logger 已 shutdown
-    pub fn log(&self, log: RequestLog) -> Result<(), NexusFlowError> {
+    pub fn log(&self, log: RequestLog) -> Result<(), FluxgateError> {
         if self.closed.load(Ordering::Relaxed) {
-            return Err(NexusFlowError::Database {
+            return Err(FluxgateError::Database {
                 message: t("database-logger-shutdown"),
             });
         }
@@ -220,7 +220,7 @@ impl AsyncLogger {
                 self.dropped_logs.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            Err(async_channel::TrySendError::Closed(_)) => Err(NexusFlowError::Database {
+            Err(async_channel::TrySendError::Closed(_)) => Err(FluxgateError::Database {
                 message: t("database-logger-channel-closed"),
             }),
         }
@@ -240,17 +240,17 @@ impl AsyncLogger {
     /// 优雅关闭：置 closed 标志（后续 log() 拒绝）→ 发 Shutdown 命令 →
     /// 等待 writer_loop flush 剩余缓冲并退出——返回即最终 flush 已落库，
     /// 停机拆除顺序不依赖调用方自行估算宽限时长。
-    pub async fn shutdown(&self) -> Result<(), NexusFlowError> {
+    pub async fn shutdown(&self) -> Result<(), FluxgateError> {
         self.closed.store(true, Ordering::Relaxed);
         self.sender
             .send(LogCommand::Shutdown)
             .await
-            .map_err(|_| NexusFlowError::Database {
+            .map_err(|_| FluxgateError::Database {
                 message: t("database-logger-channel-closed"),
             })?;
         let handle = self.writer.lock().await.take();
         if let Some(handle) = handle {
-            handle.await.map_err(|e| NexusFlowError::Database {
+            handle.await.map_err(|e| FluxgateError::Database {
                 message: t_args("database-logger-join-failed", &[("error", e.to_string())]),
             })?;
         }
@@ -392,7 +392,7 @@ impl AsyncLoggerHandle {
     }
 
     /// 写入日志（非阻塞，同 [`AsyncLogger::log`]）
-    pub fn log(&self, log: RequestLog) -> Result<(), NexusFlowError> {
+    pub fn log(&self, log: RequestLog) -> Result<(), FluxgateError> {
         self.inner.log(log)
     }
 
@@ -408,7 +408,7 @@ impl AsyncLoggerHandle {
 
     /// 关闭日志写入器（幂等：重复 shutdown 第二次返回 Err channel closed ——
     /// 与 shutdown 语义一致，调用方以 Ok/Err 判断首闭）
-    pub async fn shutdown(&self) -> Result<(), NexusFlowError> {
+    pub async fn shutdown(&self) -> Result<(), FluxgateError> {
         self.inner.shutdown().await
     }
 }
@@ -665,7 +665,7 @@ mod tests {
         let result = handle.log(sample_log());
         assert!(result.is_err());
         match result.unwrap_err() {
-            NexusFlowError::Database { message } => {
+            FluxgateError::Database { message } => {
                 // message 经 FTL（随 locale），与直接查表结果一致
                 assert_eq!(message, t("database-logger-shutdown"));
             }

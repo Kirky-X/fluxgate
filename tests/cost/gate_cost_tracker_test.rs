@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! CostTracker 单元测试。
@@ -15,7 +15,7 @@
 
 #![cfg(feature = "cost-tracking")]
 
-use nexusflow::utils::cost_tracker::CostTracker;
+use fluxgate::utils::cost_tracker::CostTracker;
 use std::sync::Arc;
 
 #[tokio::test]

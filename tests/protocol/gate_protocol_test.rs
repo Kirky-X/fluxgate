@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 mod converter {
-    use nexusflow::protocol::{
+    use fluxgate::protocol::{
         AnthropicConverter, AnthropicStreamEncoder, OpenAIConverter, Protocol, ProtocolConverter,
         StreamChunk,
     };
@@ -226,7 +226,7 @@ mod converter {
         });
         let err = converter.to_unified(request).unwrap_err();
         assert_eq!(err.status_code(), 400, "超限 schema 请求级 400 拒绝");
-        assert!(matches!(err, nexusflow::GateError::Validation { .. }));
+        assert!(matches!(err, fluxgate::GateError::Validation { .. }));
     }
 
     #[tokio::test]
@@ -263,7 +263,7 @@ mod converter {
         });
         let err = converter.to_unified(request).unwrap_err();
         assert_eq!(err.status_code(), 400, "超深 schema 请求级 400 拒绝");
-        assert!(matches!(err, nexusflow::GateError::Validation { .. }));
+        assert!(matches!(err, fluxgate::GateError::Validation { .. }));
     }
 
     #[tokio::test]
@@ -296,7 +296,7 @@ mod converter {
 
         assert_eq!(unified.messages.len(), 3);
         let tool_msg = &unified.messages[2];
-        assert_eq!(tool_msg.role, nexusflow::protocol::Role::Tool);
+        assert_eq!(tool_msg.role, fluxgate::protocol::Role::Tool);
     }
 
     #[tokio::test]
@@ -400,7 +400,7 @@ mod converter {
         assert_eq!(parsed.choices.len(), 1);
         let msg = parsed.choices[0].message.as_ref().unwrap();
         match &msg.content {
-            nexusflow::protocol::MessageContent::ToolCalls(calls) => {
+            fluxgate::protocol::MessageContent::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].function.name, "get_weather");
             }
@@ -464,7 +464,7 @@ mod converter {
         let unified = converter.to_unified(request).unwrap();
 
         match &unified.tool_choice {
-            Some(nexusflow::protocol::ToolChoice::Specific { function, .. }) => {
+            Some(fluxgate::protocol::ToolChoice::Specific { function, .. }) => {
                 assert_eq!(function.name, "get_weather");
             }
             _ => panic!("Expected Specific tool_choice"),
@@ -473,7 +473,7 @@ mod converter {
 
     // ==================== 流式转换与 SSE 增量分帧====================
 
-    use nexusflow::protocol::sse_frame::SseFrameParser;
+    use fluxgate::protocol::sse_frame::SseFrameParser;
 
     /// 把上游 SSE 原文（可劈块）经分帧器取出的 data 负载串。
     fn parse_frames_to_data(payload: &str, split_at: Option<usize>) -> Vec<String> {
@@ -636,7 +636,7 @@ mod converter {
         assert!(matches!(
             text,
             StreamChunk::Content { ref delta, .. }
-                if matches!(delta, nexusflow::protocol::MessageContent::Text(t) if t == "hi")
+                if matches!(delta, fluxgate::protocol::MessageContent::Text(t) if t == "hi")
         ));
 
         let usage = converter
@@ -709,7 +709,7 @@ mod converter {
                     finish_reason: fr2, ..
                 },
             ) => {
-                assert!(matches!(d1, nexusflow::protocol::MessageContent::Text(t) if t == "Hel"));
+                assert!(matches!(d1, fluxgate::protocol::MessageContent::Text(t) if t == "Hel"));
                 assert_eq!(fr2.as_deref(), Some("stop"));
             }
             _ => panic!("expected two Content chunks"),
@@ -718,7 +718,7 @@ mod converter {
 
     // ==================== 协议断点修复====================
 
-    use nexusflow::protocol::Role;
+    use fluxgate::protocol::Role;
 
     /// Anthropic 多轮 tool_use+tool_result 历史往返保留工具调用。
     #[tokio::test]
@@ -749,7 +749,7 @@ mod converter {
         let assistant = &unified.messages[1];
         assert_eq!(assistant.role, Role::Assistant);
         match &assistant.content {
-            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            fluxgate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
                 assert_eq!(text, "Let me check.");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "toolu_1");
@@ -762,7 +762,7 @@ mod converter {
         let tool_msg = &unified.messages[2];
         assert_eq!(tool_msg.role, Role::Tool);
         match &tool_msg.content {
-            nexusflow::protocol::MessageContent::ToolResult(result) => {
+            fluxgate::protocol::MessageContent::ToolResult(result) => {
                 assert_eq!(result.tool_call_id, "toolu_1");
                 assert_eq!(result.content, "Sunny, 25C");
             }
@@ -808,7 +808,7 @@ mod converter {
 
         let unified = converter.to_unified(request).expect("to_unified");
         match &unified.messages[0].content {
-            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            fluxgate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
                 assert_eq!(text, "Let me check the weather.");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "call_9");
@@ -841,7 +841,7 @@ mod converter {
         let parsed = converter.parse_response(response).expect("parse_response");
         let msg = parsed.choices[0].message.as_ref().unwrap();
         match &msg.content {
-            nexusflow::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            fluxgate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
                 assert_eq!(text, "Checking...");
                 assert_eq!(tool_calls[0].id, "call_r1");
                 assert_eq!(tool_calls[0].function.name, "lookup");
@@ -868,7 +868,7 @@ mod converter {
         assert_eq!(unified.messages[0].role, Role::System);
         assert!(matches!(
             &unified.messages[0].content,
-            nexusflow::protocol::MessageContent::Text(s) if s == "You are a helpful assistant."
+            fluxgate::protocol::MessageContent::Text(s) if s == "You are a helpful assistant."
         ));
 
         // 出站 OpenAI：system 保持为 messages[0]
@@ -884,16 +884,16 @@ mod converter {
     #[tokio::test]
     async fn test_openai_system_message_lifted_to_anthropic_top_level() {
         let converter = AnthropicConverter::new();
-        let request = nexusflow::protocol::UnifiedRequest {
+        let request = fluxgate::protocol::UnifiedRequest {
             model: "claude-3-5-sonnet-20241022".into(),
             messages: vec![
-                nexusflow::protocol::Message {
+                fluxgate::protocol::Message {
                     role: Role::System,
-                    content: nexusflow::protocol::MessageContent::Text("Be terse.".into()),
+                    content: fluxgate::protocol::MessageContent::Text("Be terse.".into()),
                 },
-                nexusflow::protocol::Message {
+                fluxgate::protocol::Message {
                     role: Role::User,
-                    content: nexusflow::protocol::MessageContent::Text("Hi".into()),
+                    content: fluxgate::protocol::MessageContent::Text("Hi".into()),
                 },
             ],
             max_tokens: Some(10),
@@ -953,22 +953,22 @@ mod converter {
         assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
 
         // IR → Anthropic（反向）
-        let make_response = |finish: Option<&str>| nexusflow::protocol::UnifiedResponse {
+        let make_response = |finish: Option<&str>| fluxgate::protocol::UnifiedResponse {
             id: "m".into(),
             object: "message".into(),
             created: 0,
             model: "claude-x".into(),
-            choices: vec![nexusflow::protocol::Choice {
+            choices: vec![fluxgate::protocol::Choice {
                 index: 0,
-                message: Some(nexusflow::protocol::Message {
+                message: Some(fluxgate::protocol::Message {
                     role: Role::Assistant,
-                    content: nexusflow::protocol::MessageContent::Text("ok".into()),
+                    content: fluxgate::protocol::MessageContent::Text("ok".into()),
                 }),
                 finish_reason: finish.map(|s| s.to_string()),
                 finish: None,
                 logprobs: None,
             }],
-            usage: nexusflow::protocol::TokenUsage::default(),
+            usage: fluxgate::protocol::TokenUsage::default(),
         };
 
         let out = anthropic
@@ -1048,12 +1048,12 @@ mod converter {
 
     // ==================== 覆盖缺口补测：AnthropicConverter 边角分支 ====================
 
-    use nexusflow::protocol::{
+    use fluxgate::protocol::{
         Choice, ContentBlock, ImageSource, Message, MessageContent, TokenUsage, Tool, ToolCall,
         ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolResult, UnifiedRequest,
         UnifiedResponse,
     };
-    use nexusflow::GateError;
+    use fluxgate::GateError;
 
     /// 构造仅含 model + 单条 user 文本消息的最小 UnifiedRequest（其余字段缺省）。
     fn minimal_unified_request(model: &str, text: &str) -> UnifiedRequest {
@@ -2466,7 +2466,7 @@ mod converter {
 
     // ==================== IR 一次补全 ====================
 
-    use nexusflow::protocol::{EffortLevel, FinishReason, SamplingParams, ThinkingConfig};
+    use fluxgate::protocol::{EffortLevel, FinishReason, SamplingParams, ThinkingConfig};
 
     /// UnifiedRequest 全字段字面量构造（覆盖 IR serde default 之外的显式路径）。
     fn full_unified_request() -> UnifiedRequest {
@@ -4322,7 +4322,7 @@ mod converter {
 
 mod embedding {
     // embedding_response_from_openai 已删除，用例退役；embedding_request_to_openai 仍在使用。
-    use nexusflow::protocol::embedding_request_to_openai;
+    use fluxgate::protocol::embedding_request_to_openai;
     use serde_json::json;
 
     #[test]
@@ -4410,7 +4410,7 @@ mod embedding {
 }
 
 mod unified {
-    use nexusflow::protocol::*;
+    use fluxgate::protocol::*;
     use serde_json::json;
 
     // ==================== Role Tests ====================

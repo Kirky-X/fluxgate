@@ -1,5 +1,5 @@
 #===============================================================================
-# NexusFlow 发布流水线（对齐 confers 基线：推 v* tag 触发）
+# Fluxgate 发布流水线（对齐 confers 基线：推 v* tag 触发）
 #
 # 产物：Release 只带 GitHub 自动生成的源码压缩包（zip / tar.gz），不附二进制
 # 产物、不发 crates.io。二进制部署走两条路：docker 镜像（docker/Dockerfile

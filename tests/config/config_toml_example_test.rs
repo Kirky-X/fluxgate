@@ -1,4 +1,4 @@
-// 快速验证：config.example.toml 可被 nexusflow::config::Config 反序列化
+// 快速验证：config.example.toml 可被 fluxgate::config::Config 反序列化
 //
 // 事实源声明：随仓唯一的全量参考是 `config.example.toml`（运行时的
 // `config.toml` 是部署私有物、已进 .gitignore，CI 干净检出拿不到它）。
@@ -8,7 +8,7 @@
 #[test]
 fn config_toml_example_parses() {
     let content = std::fs::read_to_string("config.example.toml").unwrap();
-    let config: nexusflow::config::Config = toml::from_str(&content).unwrap();
+    let config: fluxgate::config::Config = toml::from_str(&content).unwrap();
     assert_eq!(config.retry.max_retries, 3);
     assert_eq!(config.retry.max_total_attempts, 8);
     // 同步惊群展宽默认全开；回滚阀 = 0（见 config.example.toml 注释）
@@ -194,7 +194,7 @@ fn config_toml_example_parses() {
     // 内置默认兜底 + 无端点表，行为与历史版本逐位一致）
     assert!(config.rate_limit.rules.is_empty());
     match &config.vendors[0].rate_limit {
-        nexusflow::config::RateLimitConfig::Token {
+        fluxgate::config::RateLimitConfig::Token {
             max_tokens,
             window_hours,
             sliding,
@@ -209,7 +209,7 @@ fn config_toml_example_parses() {
     }
     // Interval 变体（若随仓出现）同样锁定 fixed 缺省
     for v in &config.vendors {
-        if let nexusflow::config::RateLimitConfig::Interval { sliding, .. } = &v.rate_limit {
+        if let fluxgate::config::RateLimitConfig::Interval { sliding, .. } = &v.rate_limit {
             assert!(!sliding, "随仓 Interval 配置必须保持 fixed 窗口");
         }
     }
@@ -345,6 +345,6 @@ fn config_toml_example_parses() {
     // 示例本身必须是可加载的配置：validate_config（加载与 POST /admin/config
     // 两路共用的校验面）必须放行——vendor/model/catalog id 去重、CB 窗口下限、
     // admin 摘要形态在此验证，不只看 serde 能解析
-    nexusflow::config::validate_config(&config)
+    fluxgate::config::validate_config(&config)
         .expect("config.example.toml 必须通过 validate_config");
 }

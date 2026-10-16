@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 流式失败语义边界测试。边界 =「尚未向客户端写出任何字节」：
@@ -22,15 +22,15 @@ mod common;
 
 use axum::{body::Body, http::Request, routing::post, Router};
 use dbnexus::{DbConfig, DbPool};
-use nexusflow::api::{chat_completions, messages, ApiState};
-use nexusflow::config::{
+use fluxgate::api::{chat_completions, messages, ApiState};
+use fluxgate::config::{
     Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
     ServerConfig, VendorConfig,
 };
-use nexusflow::database::{Database, Repository};
-use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-use nexusflow::router::Router as NexusRouter;
-use nexusflow::vendor::{VendorManager, VendorStatus};
+use fluxgate::database::{Database, Repository};
+use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+use fluxgate::router::Router as NexusRouter;
+use fluxgate::vendor::{VendorManager, VendorStatus};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -50,7 +50,7 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         chat_path: None,
         name: format!("Test {id}"),
         type_: "openai".into(),
-        api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+        api_key_env: "FLUXGATE_TEST_KEY".into(),
         api_key_envs: Vec::new(),
         extra_headers: Default::default(),
         api_base: api_base.into(),
@@ -62,12 +62,12 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
             weight: 1.0,
             enabled: true,
         }],
-        rate_limit: nexusflow::config::RateLimitConfig::Token {
+        rate_limit: fluxgate::config::RateLimitConfig::Token {
             max_tokens: 1_000_000,
             window_hours: None,
             sliding: false,
         },
-        concurrency: nexusflow::config::ConcurrencyConfig {
+        concurrency: fluxgate::config::ConcurrencyConfig {
             requests_per_second: 1000,
             max_concurrent_requests: None,
             token_weighted: false,
@@ -110,9 +110,9 @@ fn make_config(vendors: Vec<VendorConfig>, circuit_open_timeout_ms: u64) -> Conf
         model_catalog: Vec::new(),
         auth: None,
         cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
+        retry: fluxgate::config::RetrySection::default(),
+        routing: fluxgate::config::RoutingSection::default(),
+        cache: fluxgate::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),

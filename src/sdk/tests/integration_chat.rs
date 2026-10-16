@@ -1,10 +1,10 @@
-use crate::sdk::client::NexusFlowClientBuilder;
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::client::FluxgateClientBuilder;
+use crate::sdk::error::FluxgateSdkError;
 use crate::sdk::ChatRequest;
 use std::time::Duration;
 
-fn build_client(base_url: &str) -> crate::sdk::NexusFlowClient {
-    NexusFlowClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
+    FluxgateClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -211,7 +211,7 @@ async fn chat_401_returns_auth_error() {
         .await
         .unwrap_err();
 
-    assert!(matches!(err, NexusFlowSdkError::Auth { .. }));
+    assert!(matches!(err, FluxgateSdkError::Auth { .. }));
 }
 
 #[tokio::test]
@@ -231,7 +231,7 @@ async fn chat_500_returns_server_error() {
         .unwrap_err();
 
     match err {
-        NexusFlowSdkError::Server { status, .. } => assert_eq!(status, 500),
+        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 500),
         other => panic!("expected Server error, got {other:?}"),
     }
 }
@@ -257,20 +257,20 @@ async fn chat_sends_authorization_header() {
 
 #[tokio::test]
 async fn builder_missing_base_url_fails() {
-    let err = NexusFlowClientBuilder::new()
+    let err = FluxgateClientBuilder::new()
         .api_key("key")
         .build()
         .unwrap_err();
-    assert!(matches!(err, NexusFlowSdkError::Config { .. }));
+    assert!(matches!(err, FluxgateSdkError::Config { .. }));
 }
 
 #[tokio::test]
 async fn builder_missing_api_key_fails() {
-    let err = NexusFlowClientBuilder::new()
+    let err = FluxgateClientBuilder::new()
         .base_url("http://localhost:8080")
         .build()
         .unwrap_err();
-    assert!(matches!(err, NexusFlowSdkError::Config { .. }));
+    assert!(matches!(err, FluxgateSdkError::Config { .. }));
 }
 
 /// 裸 TCP HTTP 服务器：延迟 `delay` 后回单条 JSON 响应（mockito 1.7.2
@@ -308,7 +308,7 @@ async fn spawn_delayed_json_server(delay: Duration) -> String {
 #[tokio::test]
 async fn request_config_timeout_overrides_client_default() {
     let base_url = spawn_delayed_json_server(Duration::from_millis(600)).await;
-    let client = NexusFlowClientBuilder::new()
+    let client = FluxgateClientBuilder::new()
         .base_url(&base_url)
         .api_key("test-key")
         .timeout(Duration::from_millis(300))
@@ -328,7 +328,7 @@ async fn request_config_timeout_overrides_client_default() {
 #[tokio::test]
 async fn request_config_timeout_tightens_window() {
     let base_url = spawn_delayed_json_server(Duration::from_millis(250)).await;
-    let client = NexusFlowClientBuilder::new()
+    let client = FluxgateClientBuilder::new()
         .base_url(&base_url)
         .api_key("test-key")
         .timeout(Duration::from_secs(1))

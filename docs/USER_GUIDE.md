@@ -1,6 +1,6 @@
-# NexusFlow 用户指南
+# Fluxgate 用户指南
 
-**NexusFlow** 是一个智能 LLM 路由代理系统：多厂商统一管理、格式转换、智能调度。基于 Rust + Axum 0.8 + sdforge 构建，把多个上游 LLM 供应商抽象为单一接入点，提供加权路由、限流熔断、请求日志、Token 统计等生产级能力。本指南覆盖从编译启动到部署运维的完整操作路径。
+**Fluxgate** 是一个智能 LLM 路由代理系统：多厂商统一管理、格式转换、智能调度。基于 Rust + Axum 0.8 + sdforge 构建，把多个上游 LLM 供应商抽象为单一接入点，提供加权路由、限流熔断、请求日志、Token 统计等生产级能力。本指南覆盖从编译启动到部署运维的完整操作路径。
 
 > 相关文档：[FAQ](./FAQ.md) · [API 参考](./API_REFERENCE.md) · [README](../README.md)
 
@@ -423,7 +423,7 @@ curl "http://127.0.0.1:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 # 不进 URL：查询串会落入反代/访问日志）
 curl "http://127.0.0.1:8080/admin/cost?group_by=vendor" \
   -H "Authorization: Bearer $API_KEY" \
-  -H "x-nexusflow-cost-key: <调用方 key 原文>"
+  -H "x-fluxgate-cost-key: <调用方 key 原文>"
 ```
 
 ### [quota] 成本与 token 配额（预扣-回补）
@@ -521,7 +521,7 @@ flowchart TB
 
 ### 全量写回语义（重要）
 
-`persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。不要在 config.toml 里放 NexusFlow 不认识的自定义段。
+`persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。不要在 config.toml 里放 Fluxgate 不认识的自定义段。
 
 ### 文件监听热重载
 
@@ -561,7 +561,7 @@ flowchart TB
 
 | 项 | 值 |
 |:---|:---|
-| 服务名 / 镜像 | `app` / `nexusflow:${NEXUSFLOW_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签） |
+| 服务名 / 镜像 | `app` / `fluxgate:${FLUXGATE_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签） |
 | 端口 | `8080:8080` |
 | 数据挂载 | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 不入库（`.gitignore` 已列），compose 启动前必须先 `cp config.example.toml config.toml`，否则挂载缺文件） |
 | 资源限制 | `cpus: '2.00'` / `memory: 512M`（预留 `0.50` / `128M`） |
@@ -601,7 +601,7 @@ healthcheck:
 
 ### 日志语言
 
-管理端点与错误消息支持中英双语，由环境变量 **`NEXUSFLOW_LANG=en|zh`** 控制；未设置时按 `LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置检测，无法识别回退 `en`（`src/i18n/locale.rs`）。
+管理端点与错误消息支持中英双语，由环境变量 **`FLUXGATE_LANG=en|zh`** 控制；未设置时按 `LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置检测，无法识别回退 `en`（`src/i18n/locale.rs`）。
 
 ### 故障排查速查
 
@@ -646,7 +646,7 @@ use sdforge::grpc::sdforge_v1::{CallRequest, sd_forge_service_client::SdForgeSer
 
 let mut client = SdForgeServiceClient::connect("http://127.0.0.1:50051").await?;
 let mut request = tonic::Request::new(CallRequest {
-    method: "nexusflow.health".into(),   // 任意 #[forge(grpc_method)] 注册的方法名
+    method: "fluxgate.health".into(),   // 任意 #[forge(grpc_method)] 注册的方法名
     parameters: Default::default(),
     data: r#"{"prompt":"hi"}"#.into(),   // JSON 载荷经门面分发到 handler
 });
@@ -664,8 +664,8 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 
 | 项 | 内容 |
 |:---|:-----|
-| 启用方式 | `nexusflow = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` + `url` 随该 feature 引入） |
-| 模块 | `chat` / `embed` / `stream` / `client`（`NexusFlowClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error` |
+| 启用方式 | `fluxgate = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` + `url` 随该 feature 引入） |
+| 模块 | `chat` / `embed` / `stream` / `client`（`FluxgateClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error` |
 | 类型导出 | `ChatMessage`（多模态 `ChatContent::Parts` / tool_calls）/ `ChatRequest`（tools / tool_choice / vendor_extensions / penalties）/ `ChatResponse`（结构化 finish_reason + 含 cache_read 的 usage + tool_calls）/ `EmbedRequest` / `EmbedResponse` / `ChatStream`（tool_calls 增量片段 + usage 尾帧）/ 目录 CRUD（`ModelCatalogInfo` / `ModelCatalogUpsert`）等 |
 | 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |
 
@@ -678,7 +678,7 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 > vendor 字段**（网关不注入，已移除恒空字段）；`finish_reason` 为结构化
 > 四变体枚举 + 自定义词透传。
 
-> `NexusFlowSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。超时模型：非流式请求（chat / embed）总超时缺省 30s（`NexusFlowClientBuilder::timeout`），可被 `RequestConfig.timeout` 逐请求覆盖；`chat_stream` 流式**不设总超时**（SSE 长流不被切断），连接停滞由 read_timeout（缺省 30s，按读重置）看护。
+> `FluxgateSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。超时模型：非流式请求（chat / embed）总超时缺省 30s（`FluxgateClientBuilder::timeout`），可被 `RequestConfig.timeout` 逐请求覆盖；`chat_stream` 流式**不设总超时**（SSE 长流不被切断），连接停滞由 read_timeout（缺省 30s，按读重置）看护。
 
 ---
 

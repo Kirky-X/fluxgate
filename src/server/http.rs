@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! HTTP 服务器：SdForgeConfig 构建、sdforge 站点 + 业务路由合并、
@@ -12,8 +12,8 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::config::ConfigManager;
+use crate::error::FluxgateError;
 use crate::error::GateError;
-use crate::error::NexusFlowError;
 use crate::i18n::{t, t_args};
 use crate::server::bootstrap;
 use crate::server::handle::ServerHandle;
@@ -29,7 +29,7 @@ use crate::server::handle::ServerHandle;
 /// 同进程二次调用即 panic（重复装配是调用方 bug）。
 pub async fn build_app(
     config_manager: Arc<ConfigManager>,
-) -> Result<(Router, ServerHandle), NexusFlowError> {
+) -> Result<(Router, ServerHandle), FluxgateError> {
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
     let app = assemble_router(&config_manager, &assembly).await?;
     // gRPC 装配（grpc feature）：禁用/缺段为 None；登记入句柄，由调用方 take 后启动
@@ -46,7 +46,7 @@ pub async fn build_app(
 /// # Panics
 ///
 /// 同 [`build_app`]：经 `init_global_state`，同进程二次调用 panic。
-pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
+pub async fn run(config_path: Option<String>) -> Result<(), FluxgateError> {
     // 进程级日志句柄：活到 run 返回
     let _logger = bootstrap::init_logger().await?;
     let config_manager = bootstrap::load_config(config_path)?;
@@ -73,7 +73,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
             .host
             .parse()
             .map_err(|e: std::net::AddrParseError| {
-                NexusFlowError::from(GateError::Config {
+                FluxgateError::from(GateError::Config {
                     message: t_args(
                         "main-invalid-server-host",
                         &[
@@ -140,7 +140,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
                     &[("error", e.to_string())]
                 )
             );
-            return Err(NexusFlowError::from(GateError::Config {
+            return Err(FluxgateError::from(GateError::Config {
                 message: t_args("main-server-error", &[("error", e.to_string())]),
             }));
         }
@@ -154,7 +154,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), NexusFlowError> {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(e))) => return Err(e),
             Ok(Err(join_err)) => {
-                return Err(NexusFlowError::from(GateError::Config {
+                return Err(FluxgateError::from(GateError::Config {
                     message: t_args("main-grpc-server-error", &[("error", join_err.to_string())]),
                 }));
             }
@@ -210,7 +210,7 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
             request_timeout_secs: 300,
             max_body_size: 10 * 1024 * 1024,
             cors,
-            // NexusFlow 不经 sdforge 终结 TLS（明文监听，TLS 由外部反代承担）
+            // Fluxgate 不经 sdforge 终结 TLS（明文监听，TLS 由外部反代承担）
             tls: None,
         },
         // 认证由自建 api_auth_middleware 承担（[auth] SHA256 摘要制）；
@@ -227,7 +227,7 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
 async fn assemble_router(
     config_manager: &Arc<ConfigManager>,
     assembly: &bootstrap::Assembly,
-) -> Result<Router, NexusFlowError> {
+) -> Result<Router, FluxgateError> {
     let sdforge_config = sdforge_config(config_manager);
     let mut app = sdforge::http::build_with_config(&sdforge_config)?;
     app = app.merge(crate::api::create_router(assembly.api_state.clone()).await);

@@ -1,8 +1,8 @@
 [package]
-name = "nexusflow-examples"
+name = "fluxgate-examples"
 edition = "2021"
 publish = false
-# MSRV 与根 `nexusflow` 包同值（事实源见根 Cargo.toml 的 `rust-version` 注释）。
+# MSRV 与根 `fluxgate` 包同值（事实源见根 Cargo.toml 的 `rust-version` 注释）。
 # 必须显式声明：clippy.toml 不再重复 `msrv` 键，clippy 只读包自己的
 # `rust-version`——缺它则该 crate 的 MSRV 门控 lint 回落到「运行时工具链版本」，
 # lint 集合随 stable 漂移（与 ci.yml 按 1.97 下限固定 lint 集合的口径不符）。
@@ -12,19 +12,19 @@ autobins = false
 
 [features]
 # default 覆盖 rest + embedded + sdk：与拆分前 `cargo check --workspace` 的编译面
-# 等价（embedded 拉 nexusflow full+db-sqlite、rest/sdk 各自依赖），grpc 刻意不入
+# 等价（embedded 拉 fluxgate full+db-sqlite、rest/sdk 各自依赖），grpc 刻意不入
 # default 以保留「普通构建不需 protoc」的隔离（见根 Cargo.toml grpc feature 注释）。
 default = ["rest", "embedded", "sdk"]
-# rest：裸 HTTP 直连，不依赖 nexusflow 本体
+# rest：裸 HTTP 直连，不依赖 fluxgate 本体
 rest = ["dep:anyhow", "dep:futures-util", "dep:reqwest"]
-# embedded：库形态嵌入，需 nexusflow 完整装配（full）+ 一个后端（与拆分前 embedded-server
+# embedded：库形态嵌入，需 fluxgate 完整装配（full）+ 一个后端（与拆分前 embedded-server
 # 继承 default 的 full+db-sqlite 逐位一致）
-embedded = ["dep:nexusflow", "dep:axum", "nexusflow/full", "nexusflow/db-sqlite"]
-# sdk：HTTP 客户端门面，只开 nexusflow sdk feature——default-features=false 保证
+embedded = ["dep:fluxgate", "dep:axum", "fluxgate/full", "fluxgate/db-sqlite"]
+# sdk：HTTP 客户端门面，只开 fluxgate sdk feature——default-features=false 保证
 # `--no-default-features --features sdk` 的轻量构建不把网关服务器拖进来（对齐拆分前
 # sdk-usage 的 default-features=false, features=["sdk"]）
-sdk = ["dep:nexusflow", "nexusflow/sdk"]
-# grpc：tonic 客户端，不依赖 nexusflow 本体；仅拉客户端运行时依赖，代码生成见 build.rs
+sdk = ["dep:fluxgate", "fluxgate/sdk"]
+# grpc：tonic 客户端，不依赖 fluxgate 本体；仅拉客户端运行时依赖，代码生成见 build.rs
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost"]
 
 [dependencies]
@@ -33,7 +33,7 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 serde_json = { version = "1", default-features = false, features = ["std"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 
-# 按示例门控：保住「轻 sdk 构建 / rest 不拖网关 / grpc 不引 nexusflow」的既有依赖足迹
+# 按示例门控：保住「轻 sdk 构建 / rest 不拖网关 / grpc 不引 fluxgate」的既有依赖足迹
 anyhow = { version = "1", default-features = false, features = ["std"], optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
 # default-tls 必留：rest 示例直连部署网关，缺 TLS 特性时 -p 单成员构建（--features rest）
@@ -45,7 +45,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 # 但单成员构建下应自洽，不抄根包集）。
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"], optional = true }
 # default-features=false：由 embedded/sdk 各自精确开启，避免 full 被无条件并入 sdk 构建
-nexusflow = { path = "..", default-features = false, optional = true }
+fluxgate = { path = "..", default-features = false, optional = true }
 tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"], optional = true }
 tonic-prost = { version = "0.14", default-features = false, optional = true }
 prost = { version = "0.14", default-features = false, features = ["derive"], optional = true }

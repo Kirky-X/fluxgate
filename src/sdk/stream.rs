@@ -17,7 +17,7 @@ use futures::Stream;
 use serde::Deserialize;
 
 use crate::sdk::chat::{ChatFinishReason, ChatRole, ChatUsage};
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::error::FluxgateSdkError;
 
 /// 流式工具调用片段 — 对齐网关出站 `delta.tool_calls[]` 元素
 ///（index 为多片段交错聚合的槽位；id/name 仅首片段携带）。
@@ -68,7 +68,7 @@ pub struct ChatChunk {
 
 /// Chat 流式响应。包装 SSE 事件流，解码为 ChatChunk。
 pub struct ChatStream {
-    inner: BoxStream<'static, Result<ChatChunk, NexusFlowSdkError>>,
+    inner: BoxStream<'static, Result<ChatChunk, FluxgateSdkError>>,
 }
 
 /// 网关出站流式帧 JSON 解析辅助结构（choices 可空——usage 尾帧）。
@@ -132,12 +132,12 @@ impl ChatStream {
                                 usage: parsed.usage,
                             }))
                         }
-                        Err(e) => Some(Err(NexusFlowSdkError::Stream {
+                        Err(e) => Some(Err(FluxgateSdkError::Stream {
                             message: format!("JSON parse error: {e}"),
                         })),
                     }
                 }
-                Err(e) => Some(Err(NexusFlowSdkError::Stream {
+                Err(e) => Some(Err(FluxgateSdkError::Stream {
                     message: format!("SSE decode error: {e}"),
                 })),
             }
@@ -150,7 +150,7 @@ impl ChatStream {
 }
 
 impl Stream for ChatStream {
-    type Item = Result<ChatChunk, NexusFlowSdkError>;
+    type Item = Result<ChatChunk, FluxgateSdkError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)

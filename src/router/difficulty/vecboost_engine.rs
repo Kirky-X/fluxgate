@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! vecboost laya 决策引擎适配（`difficulty-classifier` feature 门控）：
@@ -53,7 +53,7 @@ impl LayaClassifier {
             );
         }
         let config = ModelConfig {
-            name: "nexusflow-difficulty".to_string(),
+            name: "fluxgate-difficulty".to_string(),
             engine_type: EngineType::Candle,
             model_path: model_path.into(),
             task: ModelTask::Decision,

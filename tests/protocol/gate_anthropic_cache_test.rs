@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! Anthropic 自动缓存断点注入：位置/数量与超限回退（保留锚序尾部）。
 
-use nexusflow::config::model_catalog::{cache_policy_for, CacheBreakpointPolicy};
-use nexusflow::config::{ModelCatalogEntry, PricingCurrency};
-use nexusflow::protocol::{
+use fluxgate::config::model_catalog::{cache_policy_for, CacheBreakpointPolicy};
+use fluxgate::config::{ModelCatalogEntry, PricingCurrency};
+use fluxgate::protocol::{
     AnthropicConverter, Message, MessageContent, ProtocolConverter, Role, UnifiedRequest,
 };
 use serde_json::{json, Value};

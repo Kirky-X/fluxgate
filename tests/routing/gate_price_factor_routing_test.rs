@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 验收 — 价格因子路由：等价条件下低价候选胜出；开关关闭行为与
@@ -15,11 +15,11 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use nexusflow::config::{
+use fluxgate::config::{
     ConfigManager, ModelCatalogEntry, ModelConfig, PricingCurrency, VendorConfig,
 };
-use nexusflow::router::Router;
-use nexusflow::vendor::VendorManager;
+use fluxgate::router::Router;
+use fluxgate::vendor::VendorManager;
 use std::sync::Arc;
 
 fn vendor_with_model(id: &str, model_id: &str) -> VendorConfig {

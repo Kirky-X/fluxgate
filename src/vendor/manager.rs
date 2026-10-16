@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 use super::{
@@ -2884,7 +2884,7 @@ mod tests {
 
     /// 带 model_catalog 的 Config 基座（单 vendor，type 可调）
     fn catalog_test_config(vendor_type: &str, catalog: Vec<ModelCatalogEntry>) -> Config {
-        let mut vendor = pool_vendor_config("NEXUSFLOW_T006_CAP", "NEXUSFLOW_T006_CAP");
+        let mut vendor = pool_vendor_config("FLUXGATE_T006_CAP", "FLUXGATE_T006_CAP");
         vendor.type_ = vendor_type.into();
         vendor.enabled = true;
         Config {
@@ -3051,7 +3051,7 @@ mod tests {
     /// 请求大小写变体产生分裂熔断键）。
     #[test]
     fn cb_model_normalizes_case_variant_prefix_and_model() {
-        let mut config = pool_vendor_config("NEXUSFLOW_MGR_CI_A", "NEXUSFLOW_MGR_CI_B");
+        let mut config = pool_vendor_config("FLUXGATE_MGR_CI_A", "FLUXGATE_MGR_CI_B");
         config.models = vec![crate::config::ModelConfig {
             model_id: "GPT-4O".into(),
             abstract_id: Some("gpt-4o".into()),
@@ -3078,7 +3078,7 @@ mod tests {
     /// 无匹配回落剥离后原串；前缀不匹配/越界回落原串（不 panic）。
     #[test]
     fn cb_model_falls_back_to_stripped_or_original() {
-        let config = pool_vendor_config("NEXUSFLOW_MGR_CI_A", "NEXUSFLOW_MGR_CI_B");
+        let config = pool_vendor_config("FLUXGATE_MGR_CI_A", "FLUXGATE_MGR_CI_B");
         assert_eq!(
             VendorManager::cb_model("v-pool-test", &config, "v-pool-test.ghost"),
             "ghost"
@@ -3099,8 +3099,8 @@ mod tests {
     #[cfg(feature = "resilience")]
     #[tokio::test]
     async fn per_key_circuit_breaker_shared_for_same_key_isolated_across_keys() {
-        const ENV_A: &str = "NEXUSFLOW_MGR_POOL_A";
-        const ENV_B: &str = "NEXUSFLOW_MGR_POOL_B";
+        const ENV_A: &str = "FLUXGATE_MGR_POOL_A";
+        const ENV_B: &str = "FLUXGATE_MGR_POOL_B";
         std::env::set_var(ENV_A, "mgr-key-a");
         std::env::set_var(ENV_B, "mgr-key-b");
 
@@ -3176,7 +3176,7 @@ mod tests {
     #[cfg(feature = "resilience")]
     #[tokio::test]
     async fn per_key_circuit_breaker_isolated_across_models() {
-        const ENV_A: &str = "NEXUSFLOW_MGR_POOL_MODELA";
+        const ENV_A: &str = "FLUXGATE_MGR_POOL_MODELA";
         std::env::set_var(ENV_A, "mgr-key-models");
         let config = pool_vendor_config(ENV_A, ENV_A);
         let instance = VendorInstance::new(
@@ -3241,7 +3241,7 @@ mod tests {
     #[cfg(feature = "resilience")]
     #[tokio::test]
     async fn legacy_env_fallback_uses_vendor_level_breaker() {
-        const MISSING: &str = "NEXUSFLOW_MGR_POOL_MISSING_Q7";
+        const MISSING: &str = "FLUXGATE_MGR_POOL_MISSING_Q7";
         std::env::remove_var(MISSING);
         let config = pool_vendor_config(MISSING, MISSING);
         let instance = VendorInstance::new(
@@ -3299,7 +3299,7 @@ mod tests {
     // ======== 出站自定义头（单测） ========
 
     fn extra_headers_config(pairs: &[(&str, &str)]) -> VendorConfig {
-        let mut c = pool_vendor_config("NEXUSFLOW_MGR_POOL_A", "NEXUSFLOW_MGR_POOL_B");
+        let mut c = pool_vendor_config("FLUXGATE_MGR_POOL_A", "FLUXGATE_MGR_POOL_B");
         c.extra_headers = pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))

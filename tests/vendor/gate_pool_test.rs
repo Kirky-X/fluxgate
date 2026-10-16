@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "vendor-management")]
 
@@ -13,7 +13,7 @@
 
 #![cfg(feature = "vendor-management")]
 
-use nexusflow::vendor::pool::ConnectionPool;
+use fluxgate::vendor::pool::ConnectionPool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

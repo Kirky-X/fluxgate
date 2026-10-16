@@ -1,25 +1,25 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 /**
  * 官方 openai npm 包直连网关：baseURL 指向网关即可复用认证与路由语义。
  * 依赖：npm install openai（Node ≥ 18）；本目录 package.json 已声明 type: module。
- * 运行：NEXUSFLOW_API_KEY=<明文key> node node_client.js
+ * 运行：FLUXGATE_API_KEY=<明文key> node node_client.js
  */
 import OpenAI from "openai";
 
-const baseUrl = process.env.NEXUSFLOW_BASE_URL ?? "http://127.0.0.1:8080";
+const baseUrl = process.env.FLUXGATE_BASE_URL ?? "http://127.0.0.1:8080";
 // 演示值须与网关 [vendors] 配置对齐（本地运行配置 config.toml 的 mock 厂商；
 // 该文件不入库，随仓全量参考见 config.example.toml）
 const MODEL = "gpt-4";
 const VENDOR = "mock-openai";
 
 // key 无默认值：缺凭据显性退出，不做静默降级
-const apiKey = process.env.NEXUSFLOW_API_KEY;
+const apiKey = process.env.FLUXGATE_API_KEY;
 if (!apiKey) {
-  console.error("错误: 缺少环境变量 NEXUSFLOW_API_KEY");
+  console.error("错误: 缺少环境变量 FLUXGATE_API_KEY");
   process.exit(1);
 }
 

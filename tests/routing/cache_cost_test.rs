@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 缓存成本优化套件集成测试：前缀亲和黏性（同前缀落点 ≤2 厂商）、
@@ -14,9 +14,9 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig};
-    use nexusflow::router::{RouteCtx, Router};
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig};
+    use fluxgate::router::{RouteCtx, Router};
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
 
     fn model(id: &str, weight: f64) -> ModelConfig {
@@ -32,7 +32,7 @@ mod tests {
         id: &str,
         models: Vec<ModelConfig>,
         supports_batch: bool,
-    ) -> nexusflow::config::VendorConfig {
+    ) -> fluxgate::config::VendorConfig {
         let mut v = common::base_vendor(id, String::new());
         v.models = models;
         v.supports_batch = supports_batch;
@@ -42,7 +42,7 @@ mod tests {
     fn make_config(
         prefix_affinity: bool,
         price_factor_mode: &str,
-        vendors: Vec<nexusflow::config::VendorConfig>,
+        vendors: Vec<fluxgate::config::VendorConfig>,
     ) -> Config {
         let mut config = Config {
             server: ServerConfig {
@@ -191,7 +191,7 @@ mod tests {
         ];
         let mut config = make_config(false, "nominal", vendors);
         config.model_catalog = vec![
-            nexusflow::config::ModelCatalogEntry {
+            fluxgate::config::ModelCatalogEntry {
                 model_id: "m-full".into(),
                 context_window: 128_000,
                 input_price: 1.0,
@@ -206,7 +206,7 @@ mod tests {
                 supports_thinking: false,
                 cache_breakpoints: None,
             },
-            nexusflow::config::ModelCatalogEntry {
+            fluxgate::config::ModelCatalogEntry {
                 model_id: "m-cache".into(),
                 context_window: 128_000,
                 input_price: 1.0,

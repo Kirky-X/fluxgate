@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 库形态嵌入：build_app 取网关 Router 与停机句柄，merge 宿主自有路由后
@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use axum::routing::get;
 use axum::{Json, Router};
-use nexusflow::config::loader::ConfigLoader;
-use nexusflow::server::build_app;
+use fluxgate::config::loader::ConfigLoader;
+use fluxgate::server::build_app;
 use serde_json::json;
 
 /// 运行目录（CWD）须有 config.toml，可从仓库根 config.example.toml 复制为起点；
@@ -29,7 +29,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         get(|| async {
             Json(json!({
                 "example": "embedded-server/mount_router",
-                "gateway": "nexusflow",
+                "gateway": "fluxgate",
             }))
         }),
     ));

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::error::FluxgateSdkError;
 
 /// 消息角色。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,10 +416,10 @@ impl ChatRequest {
         mut self,
         key: impl Into<String>,
         value: serde_json::Value,
-    ) -> Result<Self, NexusFlowSdkError> {
+    ) -> Result<Self, FluxgateSdkError> {
         let key = key.into();
         if RESERVED_KEYS.contains(&key.as_str()) {
-            return Err(NexusFlowSdkError::Protocol {
+            return Err(FluxgateSdkError::Protocol {
                 message: format!(
                     "vendor extension key `{key}` conflicts with a typed request field"
                 ),
@@ -449,15 +449,15 @@ impl ChatResponse {
     /// 从网关非流式响应 wire JSON 解析（真实形状——choices[0]
     /// message{content,tool_calls?} + finish_reason + usage 可选携带
     /// prompt_tokens_details.cached_tokens）。
-    pub(crate) fn from_wire(v: &serde_json::Value) -> Result<Self, NexusFlowSdkError> {
-        use crate::sdk::error::NexusFlowSdkError;
+    pub(crate) fn from_wire(v: &serde_json::Value) -> Result<Self, FluxgateSdkError> {
+        use crate::sdk::error::FluxgateSdkError;
 
         let choices = v.get("choices").and_then(|c| c.as_array()).ok_or_else(|| {
-            NexusFlowSdkError::Protocol {
+            FluxgateSdkError::Protocol {
                 message: "missing choices array".into(),
             }
         })?;
-        let choice = choices.first().ok_or_else(|| NexusFlowSdkError::Protocol {
+        let choice = choices.first().ok_or_else(|| FluxgateSdkError::Protocol {
             message: "empty choices array".into(),
         })?;
 
@@ -471,7 +471,7 @@ impl ChatResponse {
                 a.iter()
                     .map(|tc| {
                         serde_json::from_value::<ChatToolCall>(tc.clone()).map_err(|e| {
-                            NexusFlowSdkError::Protocol {
+                            FluxgateSdkError::Protocol {
                                 message: format!("invalid tool_call: {e}"),
                             }
                         })

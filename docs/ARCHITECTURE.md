@@ -1,6 +1,6 @@
-# NexusFlow 架构文档
+# Fluxgate 架构文档
 
-NexusFlow 是一个用 Rust 编写的 LLM 路由网关：对外统一暴露 OpenAI 与 Anthropic 协议端点，对内在多个模型厂商之间做加权多因子路由决策，并通过熔断、重试、回退链与拥塞准入保证调用弹性；请求日志与 Token 用量经有界队列异步落库，全程不影响响应路径。本文档基于 `src/` 实际代码结构（原 `llm-gate` 纯路由核心库已并回单 crate，`nexusflow::config` 等公开路径不变），介绍 NexusFlow 的分层设计、模块划分、请求生命周期、路由决策算法以及配置、持久化与性能设计。
+Fluxgate 是一个用 Rust 编写的 LLM 路由网关：对外统一暴露 OpenAI 与 Anthropic 协议端点，对内在多个模型厂商之间做加权多因子路由决策，并通过熔断、重试、回退链与拥塞准入保证调用弹性；请求日志与 Token 用量经有界队列异步落库，全程不影响响应路径。本文档基于 `src/` 实际代码结构（原 `llm-gate` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），介绍 Fluxgate 的分层设计、模块划分、请求生命周期、路由决策算法以及配置、持久化与性能设计。
 
 ## 📋 目录
 
@@ -23,7 +23,7 @@ NexusFlow 是一个用 Rust 编写的 LLM 路由网关：对外统一暴露 Open
 
 ## 🎯 设计总览
 
-NexusFlow 按职责分为五层：接入层（axum 端点 + 中间件管线）→ 协议层（OpenAI/Anthropic 统一中间表示与转换）→ 路由层（加权多因子决策 + 会话亲和 + LinUCB）→ 厂商执行层（连接池、队列、限流、熔断重试回退）→ 持久化层（异步日志 + 预聚合 + SQLite 仓储）。配置热更新（`confers::dynamic::DynamicField`，arc-swap 无锁读）与国际化为全部层提供横切支撑。
+Fluxgate 按职责分为五层：接入层（axum 端点 + 中间件管线）→ 协议层（OpenAI/Anthropic 统一中间表示与转换）→ 路由层（加权多因子决策 + 会话亲和 + LinUCB）→ 厂商执行层（连接池、队列、限流、熔断重试回退）→ 持久化层（异步日志 + 预聚合 + SQLite 仓储）。配置热更新（`confers::dynamic::DynamicField`，arc-swap 无锁读）与国际化为全部层提供横切支撑。
 
 ```mermaid
 flowchart TB
@@ -97,7 +97,7 @@ flowchart TB
 | `src/router/` | 路由决策核心：加权打分、LinUCB、会话亲和 |
 | `src/utils/` | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器 |
 | `src/vendor/` | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价 |
-| `src/error/mod.rs` / `src/error/gate.rs` | `NexusFlowError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale） |
+| `src/error/mod.rs` / `src/error/gate.rs` | `FluxgateError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale） |
 | `src/lib.rs` | 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/storage/vendor/router 路由半边 + api/server/database 应用面） |
 | `src/main.rs` | 二进制薄入口：仅解析 CLI 配置路径参数；装配链在 `src/server/bootstrap.rs`，建站与路由合并、serve 在 `src/server/http.rs` |
 
@@ -223,7 +223,7 @@ sequenceDiagram
 
 ## 🧭 路由决策
 
-路由决策是 NexusFlow 的核心，全部位于 `src/router/`。
+路由决策是 Fluxgate 的核心，全部位于 `src/router/`。
 
 ### 三级决策顺序
 
@@ -402,7 +402,7 @@ stateDiagram-v2
 
 ### 错误映射层
 
-`src/vendor/resilience/error_map.rs`：limiteron 熔断器签名锁定 `LimiteronError`，而 NexusFlow 执行路径使用 `NexusFlowError`，映射层提供双向编码（`nexusflow:<variant>:<detail>` 前缀）；错误分类器（`FailureClassifier::is_counted_as_failure`）决定哪些错误计入熔断失败。
+`src/vendor/resilience/error_map.rs`：limiteron 熔断器签名锁定 `LimiteronError`，而 Fluxgate 执行路径使用 `FluxgateError`，映射层提供双向编码（`fluxgate:<variant>:<detail>` 前缀）；错误分类器（`FailureClassifier::is_counted_as_failure`）决定哪些错误计入熔断失败。
 
 ### 连接池
 
@@ -565,7 +565,7 @@ flowchart LR
 | 消息格式 | Fluent（`.ftl`），en/zh 双束共 10 个文件 |
 | 部署形态 | 编译期 `include_str!` 内嵌，产物无需携带磁盘 `locales/` 目录；新增 ftl 必须登记 `EMBEDDED_LOCALES`，守卫测试兜底 |
 | 运行时结构 | `fluent_bundle::concurrent::FluentBundle` 双束，`OnceLock` 静态缓存，Send+Sync |
-| 语言检测链 | `NEXUSFLOW_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → `sys-locale` → `"en"`（强制顺序，显式读取保证 Windows/边缘环境确定性） |
+| 语言检测链 | `FLUXGATE_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → `sys-locale` → `"en"`（强制顺序，显式读取保证 Windows/边缘环境确定性） |
 | 查找回退 | 当前语言 → en → 键名 |
 | 覆盖范围 | 全部业务消息（错误 `user_message()` 与日志文案） |
 
@@ -591,7 +591,7 @@ flowchart LR
 
 根 `Cargo.toml` 以 registry 版本集成 7 个兄弟库（版本号在 `[dependencies]`、校验和锁在 `Cargo.lock`）。迁移期曾以 path 依赖 + `[patch.crates-io]` 统一身份（保证传递依赖收敛到同一份源码），该形态随全量切 registry 移除：
 
-| 兄弟库 | 在 NexusFlow 中的角色 |
+| 兄弟库 | 在 Fluxgate 中的角色 |
 |---|---|
 | `confers` | 配置加载（loader）与热更新（`DynamicField`） |
 | `dbnexus` | 数据库基础层 |

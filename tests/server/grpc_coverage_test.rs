@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "grpc", feature = "web-server", feature = "logging"))]
 
@@ -16,12 +16,12 @@
 //! build_app 内部执行 init_global_state（OnceCell 二次 set 即 panic），
 //! 全部断言收敛在单一 #[tokio::test] 内。
 
-use nexusflow::config::{
+use fluxgate::config::{
     Config, ConfigManager, DatabaseConfig, GlobalModelConfig, GrpcConfig, ModelConfig,
     ServerConfig, VendorConfig,
 };
-use nexusflow::error::{GateError, NexusFlowError};
-use nexusflow::server::build_app;
+use fluxgate::error::{FluxgateError, GateError};
+use fluxgate::server::build_app;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,12 +56,12 @@ fn test_config(grpc_port: u16) -> Config {
                 weight: 1.0,
                 enabled: true,
             }],
-            rate_limit: nexusflow::config::RateLimitConfig::Token {
+            rate_limit: fluxgate::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
                 window_hours: None,
                 sliding: false,
             },
-            concurrency: nexusflow::config::ConcurrencyConfig {
+            concurrency: fluxgate::config::ConcurrencyConfig {
                 requests_per_second: 1000,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -78,9 +78,9 @@ fn test_config(grpc_port: u16) -> Config {
         model_catalog: Vec::new(),
         auth: None,
         cors: None,
-        retry: nexusflow::config::RetrySection::default(),
-        routing: nexusflow::config::RoutingSection::default(),
-        cache: nexusflow::config::CacheSection::default(),
+        retry: fluxgate::config::RetrySection::default(),
+        routing: fluxgate::config::RoutingSection::default(),
+        cache: fluxgate::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),
@@ -94,7 +94,7 @@ fn test_config(grpc_port: u16) -> Config {
             http2_keepalive_interval_secs: Some(15),
             http2_keepalive_timeout_secs: Some(5),
         }),
-        resilience: nexusflow::config::ResilienceSection::default(),
+        resilience: fluxgate::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
     }
@@ -154,7 +154,7 @@ async fn grpc_serve_maps_bind_failure_and_handle_semantics() {
     .await
     .expect("端口被占时 serve 必须快速失败而非挂起");
     match result {
-        Err(NexusFlowError::Gate(GateError::Config { message })) => {
+        Err(FluxgateError::Gate(GateError::Config { message })) => {
             assert_ne!(
                 message, "main-grpc-server-error",
                 "错误键必须注册进 FTL 目录（缺键回退返回键名）"

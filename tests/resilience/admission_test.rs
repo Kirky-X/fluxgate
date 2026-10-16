@@ -6,13 +6,13 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use nexusflow::config::{
+use fluxgate::config::{
     AdmissionSection, AuthKeyEntry, AuthSection, AuthTier, Config, ConfigManager, ServerConfig,
 };
-use nexusflow::middleware::admission::{
+use fluxgate::middleware::admission::{
     admission_priority, tier_for_request, tier_weight, AdmissionState, RETRY_AFTER_SECS,
 };
-use nexusflow::vendor::VendorManager;
+use fluxgate::vendor::VendorManager;
 use std::sync::Arc;
 
 fn section() -> AdmissionSection {
@@ -86,7 +86,7 @@ fn priority_debt_suppression_exact() {
 
 // ============ AdmissionState 行为 ============
 
-fn vendor_config(id: &str, max_concurrent: Option<usize>) -> nexusflow::config::VendorConfig {
+fn vendor_config(id: &str, max_concurrent: Option<usize>) -> fluxgate::config::VendorConfig {
     common::ensure_test_api_key();
     // 与共享基座的差异字段（显式保留原值）：max_concurrent 是拥塞 shed 的
     // 驱动值（测试语义主体，必须留在覆盖处）；空模型列表与 "Vendor {id}"
@@ -344,14 +344,14 @@ mod full_chain {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, Router};
     use dbnexus::{DbConfig, DbPool};
-    use nexusflow::api::create_router;
-    use nexusflow::config::{
+    use fluxgate::api::create_router;
+    use fluxgate::config::{
         AdmissionSection, AuthKeyEntry, AuthSection, AuthTier, Config, ConfigManager, ServerConfig,
     };
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::vendor::VendorManager;
-    use nexusflow::ApiState;
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::vendor::VendorManager;
+    use fluxgate::ApiState;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -374,7 +374,7 @@ mod full_chain {
         vendor.stream_idle_ms = 1_500;
         vendor.name = "V1".into();
         vendor.models = if with_model {
-            vec![nexusflow::config::ModelConfig {
+            vec![fluxgate::config::ModelConfig {
                 model_id: "gpt-4".to_string(),
                 abstract_id: Some("gpt-4".to_string()),
                 weight: 1.0,
@@ -442,9 +442,9 @@ mod full_chain {
         .unwrap();
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
-        let router = Arc::new(nexusflow::router::Router::new(
+        let router = Arc::new(fluxgate::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));

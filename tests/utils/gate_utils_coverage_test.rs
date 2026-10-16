@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 目的：为 src/utils/metrics.rs 与 src/vendor/rate_limiter.rs 补集成测试，
@@ -17,7 +17,7 @@
 
 #[cfg(all(test, feature = "vendor-management"))]
 mod metrics_coverage {
-    use nexusflow::utils::GlobalMetrics;
+    use fluxgate::utils::GlobalMetrics;
     use std::time::{Duration, Instant};
 
     /// 请求计数 / 成败分类 / 平均延迟 / 错误率与 vendor 维度字段的精确值。
@@ -330,7 +330,7 @@ mod metrics_coverage {
 
 #[cfg(all(test, feature = "vendor-management"))]
 mod rate_limiter_coverage {
-    use nexusflow::vendor::rate_limiter::{ConcurrencyLimiter, TokenBucket};
+    use fluxgate::vendor::rate_limiter::{ConcurrencyLimiter, TokenBucket};
     use std::time::{Duration, Instant};
 
     /// in_flight 记账：acquire 递增、Drop 递减、max_concurrency 透传构造值。

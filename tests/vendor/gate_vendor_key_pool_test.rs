@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试 — vendor 内 key 池（N5）：多 key 轮换顺序、耗尽回退、
@@ -17,10 +17,10 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use nexusflow::config::{Config, ConfigManager, RetrySection, VendorConfig};
-use nexusflow::error::GateError;
-use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use nexusflow::vendor::VendorManager;
+use fluxgate::config::{Config, ConfigManager, RetrySection, VendorConfig};
+use fluxgate::error::GateError;
+use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use fluxgate::vendor::VendorManager;
 use std::sync::Arc;
 
 const OPENAI_SUCCESS_BODY: &str = r#"{
@@ -32,9 +32,9 @@ const OPENAI_SUCCESS_BODY: &str = r#"{
 }"#;
 
 /// key 池 env 名（各测试唯一，避免并行 set_var 竞态）
-const ENV_KEY_FIRST: &str = "NEXUSFLOW_KP_KEY_FIRST";
-const ENV_KEY_SECOND: &str = "NEXUSFLOW_KP_KEY_SECOND";
-const ENV_KEY_THIRD: &str = "NEXUSFLOW_KP_KEY_THIRD";
+const ENV_KEY_FIRST: &str = "FLUXGATE_KP_KEY_FIRST";
+const ENV_KEY_SECOND: &str = "FLUXGATE_KP_KEY_SECOND";
+const ENV_KEY_THIRD: &str = "FLUXGATE_KP_KEY_THIRD";
 const KEY_FIRST: &str = "kp-key-first";
 const KEY_SECOND: &str = "kp-key-second";
 const KEY_THIRD: &str = "kp-key-third";
@@ -220,8 +220,8 @@ async fn forbidden_403_also_triggers_rotation() {
 #[cfg(feature = "resilience")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parity6_multi_key_rotation_env_pool_expansion_and_per_key_fingerprint_isolated_breaker() {
+    use fluxgate::vendor::VendorStatus;
     use limiteron::error::CircuitState;
-    use nexusflow::vendor::VendorStatus;
     use std::time::Duration;
 
     std::env::set_var(ENV_KEY_FIRST, KEY_FIRST);
@@ -341,9 +341,9 @@ async fn parity6_multi_key_rotation_env_pool_expansion_and_per_key_fingerprint_i
 /// 携带 env 名），池观测 size=0，绝不静默。
 #[tokio::test]
 async fn exhausted_pool_falls_back_to_legacy_single_key_behavior() {
-    const MISSING_A: &str = "NEXUSFLOW_KP_MISSING_A_Q7";
-    const MISSING_B: &str = "NEXUSFLOW_KP_MISSING_B_Q7";
-    const MISSING_LEGACY: &str = "NEXUSFLOW_KP_MISSING_LEGACY_Q7";
+    const MISSING_A: &str = "FLUXGATE_KP_MISSING_A_Q7";
+    const MISSING_B: &str = "FLUXGATE_KP_MISSING_B_Q7";
+    const MISSING_LEGACY: &str = "FLUXGATE_KP_MISSING_LEGACY_Q7";
     std::env::remove_var(MISSING_A);
     std::env::remove_var(MISSING_B);
     std::env::remove_var(MISSING_LEGACY);
@@ -435,8 +435,8 @@ async fn hot_update_swaps_key_pool_for_next_request() {
 /// mock 若在请求 1 内被命中即翻红（沿用本文件既有上界锁定惯例）。
 #[tokio::test]
 async fn permanent_error_blacklists_key_until_reset() {
-    const ENV_A: &str = "NEXUSFLOW_KP_BL_A";
-    const ENV_B: &str = "NEXUSFLOW_KP_BL_B";
+    const ENV_A: &str = "FLUXGATE_KP_BL_A";
+    const ENV_B: &str = "FLUXGATE_KP_BL_B";
     const KEY_A: &str = "kp-bl-key-a";
     const KEY_B: &str = "kp-bl-key-b";
     std::env::set_var(ENV_A, KEY_A);
@@ -498,8 +498,8 @@ async fn permanent_error_blacklists_key_until_reset() {
 /// 回归 —— 429 瞬时：同 key 复用（无轮换、无黑名单），行为与现状一致。
 #[tokio::test]
 async fn rate_limited_reuses_same_key_without_blacklist() {
-    const ENV_A: &str = "NEXUSFLOW_KP_RL_A";
-    const ENV_B: &str = "NEXUSFLOW_KP_RL_B";
+    const ENV_A: &str = "FLUXGATE_KP_RL_A";
+    const ENV_B: &str = "FLUXGATE_KP_RL_B";
     const KEY_A: &str = "kp-rl-key-a";
     const KEY_B: &str = "kp-rl-key-b";
     std::env::set_var(ENV_A, KEY_A);

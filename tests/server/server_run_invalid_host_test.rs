@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "web-server", feature = "logging"))]
 
@@ -14,7 +14,7 @@
 
 #![recursion_limit = "256"]
 
-use nexusflow::error::{GateError, NexusFlowError};
+use fluxgate::error::{FluxgateError, GateError};
 
 #[tokio::test]
 async fn run_rejects_non_ipv4_server_host_with_localized_message() {
@@ -47,10 +47,10 @@ enabled = false
     .expect("write run config");
 
     let config = config_path.to_string_lossy().to_string();
-    let result = nexusflow::server::run(Some(config)).await;
+    let result = fluxgate::server::run(Some(config)).await;
 
     match result {
-        Err(NexusFlowError::Gate(GateError::Config { message })) => {
+        Err(FluxgateError::Gate(GateError::Config { message })) => {
             assert!(
                 message.contains("not-an-ipv4-host"),
                 "错误消息必须插值携带非法 host: {message}"

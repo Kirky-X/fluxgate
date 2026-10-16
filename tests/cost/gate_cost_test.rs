@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "vendor-management")]
 
@@ -14,8 +14,8 @@
 
 #![cfg(feature = "vendor-management")]
 
-use nexusflow::config::PricingConfig;
-use nexusflow::vendor::cost::{CostCalculator, PricingEntry};
+use fluxgate::config::PricingConfig;
+use fluxgate::vendor::cost::{CostCalculator, PricingEntry};
 
 #[test]
 fn test_calculate_cost_with_known_pricing() {

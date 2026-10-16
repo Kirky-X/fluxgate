@@ -2,9 +2,9 @@
 
 use serde::Deserialize;
 
-use crate::sdk::client::NexusFlowClient;
+use crate::sdk::client::FluxgateClient;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::error::FluxgateSdkError;
 
 /// Embedding 请求。
 #[derive(Debug, Clone)]
@@ -45,9 +45,9 @@ struct EmbedPayload<'a> {
     params: crate::sdk::config::OpenAiParams,
 }
 
-impl NexusFlowClient {
+impl FluxgateClient {
     /// 发送 embedding 请求。POST /v1/embeddings。
-    pub async fn embed(&self, req: &EmbedRequest) -> Result<EmbedResponse, NexusFlowSdkError> {
+    pub async fn embed(&self, req: &EmbedRequest) -> Result<EmbedResponse, FluxgateSdkError> {
         let merged = self.default_config.merge(&req.config);
 
         let payload = EmbedPayload {
@@ -59,7 +59,7 @@ impl NexusFlowClient {
         let url = self
             .base_url
             .join("v1/embeddings")
-            .map_err(|e| NexusFlowSdkError::Config {
+            .map_err(|e| FluxgateSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 
@@ -76,7 +76,7 @@ impl NexusFlowClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(NexusFlowSdkError::Server {
+            return Err(FluxgateSdkError::Server {
                 status: status.as_u16(),
                 message: text,
             });

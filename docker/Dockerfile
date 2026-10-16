@@ -25,7 +25,7 @@
 FROM docker.io/library/rust:1.99-alpine3.24 AS build
 
 # 构建参数
-ARG APP_NAME=nexusflow
+ARG APP_NAME=fluxgate
 ARG APP_VERSION=0.1.0
 
 # 设置工作目录
@@ -60,7 +60,7 @@ RUN apk add --no-cache \
 # examples 必须挂载：根 Cargo.toml 把 examples 列为 [workspace] 成员，cargo
 # 加载 workspace 时要读每个成员的 manifest，漏挂即在解析期报
 # “failed to load manifest for workspace member /app/examples”（实测）。
-# 这里只需要 manifest 存在，不会编译示例（构建目标是 --bin nexusflow）。
+# 这里只需要 manifest 存在，不会编译示例（构建目标是 --bin fluxgate）。
 # 后续新增 workspace 成员时必须同步扩展这里的 bind mount 清单。
 RUN --mount=type=bind,source=src,target=src \
     --mount=type=bind,source=locales,target=locales \
@@ -71,8 +71,8 @@ RUN --mount=type=bind,source=src,target=src \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     --mount=type=cache,target=/root/.cache/ \
     cp /tmp/Cargo.lock.ro ./Cargo.lock && \
-    cargo build --locked --release --bin nexusflow && \
-    cp ./target/release/nexusflow /bin/server
+    cargo build --locked --release --bin fluxgate && \
+    cp ./target/release/fluxgate /bin/server
 
 #------------------------------------------------------------------------------
 # 阶段 2: 运行阶段 (Runtime Stage)
@@ -82,16 +82,16 @@ FROM docker.io/library/alpine:3.24 AS final
 
 # 标签信息
 # base.name 为元数据，必须跟随上面的 runtime FROM 同步修改
-ARG APP_NAME=nexusflow
+ARG APP_NAME=fluxgate
 ARG APP_VERSION=0.1.0
 ARG BUILD_DATE
 ARG VCS_REF
 
-LABEL maintainer="NexusFlow" \
+LABEL maintainer="Fluxgate" \
       name="${APP_NAME}" \
       version="${APP_VERSION}" \
       description="智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度" \
-      org.opencontainers.image.source="https://github.com/Kirky-X/NexusFlow" \
+      org.opencontainers.image.source="https://github.com/Kirky-X/fluxgate" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! SSE 事件完整性对账：单元级编码器 + 集成级全链路，断言失败输出
@@ -11,7 +11,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use nexusflow::protocol::{
+use fluxgate::protocol::{
     AnthropicStreamEncoder, MessageContent, OpenAIConverter, OpenAIStreamEncoder,
     ProtocolConverter, StreamChunk,
 };
@@ -353,14 +353,14 @@ fn openai_tool_call_fragments_assemble_by_index() {
 mod integration {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use nexusflow::api::{chat_completions, messages, ApiState};
-    use nexusflow::config::{
+    use fluxgate::api::{chat_completions, messages, ApiState};
+    use fluxgate::config::{
         ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig, VendorConfig,
     };
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router as NexusRouter;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router as NexusRouter;
+    use fluxgate::vendor::VendorManager;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -421,7 +421,7 @@ mod integration {
         })
         .await
         .unwrap();
-        let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let router = Arc::new(NexusRouter::new(

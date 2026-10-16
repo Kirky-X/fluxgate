@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 use serde::{Deserialize, Serialize};
@@ -899,7 +899,7 @@ pub struct ResilienceSection {
     #[serde(default = "default_circuit_open_timeout_ms")]
     pub circuit_open_timeout_ms: u64,
     /// 回退链可观测响应头：默认 false；开启时成功响应附
-    /// x-nexusflow-vendor / model / attempts / fallbacks。热更段
+    /// x-fluxgate-vendor / model / attempts / fallbacks。热更段
     #[serde(default)]
     pub expose_fallback_headers: bool,
 }

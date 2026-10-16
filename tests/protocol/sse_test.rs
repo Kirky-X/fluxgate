@@ -2,11 +2,11 @@
 
 // SSE 编码器与增量分帧器单元测试（阶段一）
 
-use futures::StreamExt;
-use nexusflow::api::sse::{
+use fluxgate::api::sse::{
     encode_sse_done, encode_sse_error, encode_sse_event, reframe_passthrough_stream, SseFrame,
     SseFrameParser,
 };
+use futures::StreamExt;
 use std::time::Duration;
 
 // ==================== 编码器 ====================
@@ -383,15 +383,15 @@ async fn reframe_passthrough_empty_stream_ends_promptly() {
 
 #[cfg(all(test, feature = "sdk"))]
 mod sdk_client_coverage {
-    use futures::StreamExt;
-    use nexusflow::sdk::{
-        ChatRequest, ChatRole, NexusFlowClient, NexusFlowClientBuilder, NexusFlowSdkError,
+    use fluxgate::sdk::{
+        ChatRequest, ChatRole, FluxgateClient, FluxgateClientBuilder, FluxgateSdkError,
         RequestConfig,
     };
+    use futures::StreamExt;
     use std::time::Duration;
 
-    fn build_client(base_url: &str) -> NexusFlowClient {
-        NexusFlowClientBuilder::new()
+    fn build_client(base_url: &str) -> FluxgateClient {
+        FluxgateClientBuilder::new()
             .base_url(base_url)
             .api_key("test-key")
             .build()
@@ -406,22 +406,22 @@ mod sdk_client_coverage {
     /// 缺 base_url / URL 非法 / 缺 api_key → Config 错误显性化，不 panic。
     #[test]
     fn builder_rejects_incomplete_or_invalid_configuration() {
-        let err = NexusFlowClientBuilder::new()
+        let err = FluxgateClientBuilder::new()
             .api_key("k")
             .build()
             .unwrap_err();
         assert!(
-            matches!(err, NexusFlowSdkError::Config { .. }),
+            matches!(err, FluxgateSdkError::Config { .. }),
             "缺 base_url"
         );
 
-        let err = NexusFlowClientBuilder::new()
+        let err = FluxgateClientBuilder::new()
             .base_url("::not a url::")
             .api_key("k")
             .build()
             .unwrap_err();
         match err {
-            NexusFlowSdkError::Config { message } => {
+            FluxgateSdkError::Config { message } => {
                 assert!(
                     message.contains("invalid base_url"),
                     "非法 URL 须指明: {message}"
@@ -430,14 +430,11 @@ mod sdk_client_coverage {
             other => panic!("expected Config error, got {other:?}"),
         }
 
-        let err = NexusFlowClientBuilder::new()
+        let err = FluxgateClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .build()
             .unwrap_err();
-        assert!(
-            matches!(err, NexusFlowSdkError::Config { .. }),
-            "缺 api_key"
-        );
+        assert!(matches!(err, FluxgateSdkError::Config { .. }), "缺 api_key");
     }
 
     /// api_key 是 Bearer 凭证：Debug 输出必须脱敏为 [REDACTED]。
@@ -455,8 +452,8 @@ mod sdk_client_coverage {
         );
     }
 
-    fn build_client_with(base_url: &str, key: &str) -> NexusFlowClient {
-        NexusFlowClientBuilder::new()
+    fn build_client_with(base_url: &str, key: &str) -> FluxgateClient {
+        FluxgateClientBuilder::new()
             .base_url(base_url)
             .api_key(key)
             .build()
@@ -489,7 +486,7 @@ mod sdk_client_coverage {
         // 网关响应无 vendor 键
         assert_eq!(
             resp.finish_reason,
-            nexusflow::sdk::ChatFinishReason::Standard(nexusflow::sdk::StandardFinishReason::Stop)
+            fluxgate::sdk::ChatFinishReason::Standard(fluxgate::sdk::StandardFinishReason::Stop)
         );
     }
 
@@ -514,7 +511,7 @@ mod sdk_client_coverage {
             .create_async()
             .await;
 
-        let client = NexusFlowClientBuilder::new()
+        let client = FluxgateClientBuilder::new()
             .base_url(server.url())
             .api_key("test-key")
             .default_config(RequestConfig {
@@ -526,7 +523,7 @@ mod sdk_client_coverage {
             .unwrap();
         let req = ChatRequest {
             model: "gpt-4".into(),
-            messages: vec![nexusflow::sdk::ChatMessage {
+            messages: vec![fluxgate::sdk::ChatMessage {
                 role: ChatRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
@@ -560,7 +557,7 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, NexusFlowSdkError::Auth { .. }),
+            matches!(err, FluxgateSdkError::Auth { .. }),
             "401 必须映射 Auth"
         );
 
@@ -575,7 +572,7 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         match err {
-            NexusFlowSdkError::Server { status, message } => {
+            FluxgateSdkError::Server { status, message } => {
                 assert_eq!(status, 503);
                 assert_eq!(message, "upstream overloaded", "响应原文必须透传");
             }
@@ -600,7 +597,7 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         match err {
-            NexusFlowSdkError::Protocol { message } => {
+            FluxgateSdkError::Protocol { message } => {
                 assert_eq!(message, "missing choices array");
             }
             other => panic!("expected Protocol error, got {other:?}"),
@@ -618,7 +615,7 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         match err {
-            NexusFlowSdkError::Protocol { message } => {
+            FluxgateSdkError::Protocol { message } => {
                 assert_eq!(message, "empty choices array");
             }
             other => panic!("expected Protocol error, got {other:?}"),
@@ -632,7 +629,7 @@ mod sdk_client_coverage {
         let client = build_client("mailto:user@example.com");
         let err = client.chat(&ChatRequest::new("m", "hi")).await.unwrap_err();
         match err {
-            NexusFlowSdkError::Config { message } => {
+            FluxgateSdkError::Config { message } => {
                 assert!(
                     message.contains("invalid URL"),
                     "须指明 URL 拼接失败: {message}"
@@ -668,7 +665,7 @@ mod sdk_client_coverage {
         let client = build_client(&server.url());
         let req = ChatRequest {
             model: "gpt-4".into(),
-            messages: vec![nexusflow::sdk::ChatMessage {
+            messages: vec![fluxgate::sdk::ChatMessage {
                 role: ChatRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
@@ -698,8 +695,8 @@ mod sdk_client_coverage {
         );
         assert_eq!(
             second.finish_reason,
-            Some(nexusflow::sdk::ChatFinishReason::Standard(
-                nexusflow::sdk::StandardFinishReason::Stop
+            Some(fluxgate::sdk::ChatFinishReason::Standard(
+                fluxgate::sdk::StandardFinishReason::Stop
             ))
         );
 
@@ -720,7 +717,7 @@ mod sdk_client_coverage {
             .chat_stream(&ChatRequest::new("m", "hi"))
             .await
         {
-            Err(NexusFlowSdkError::Auth { .. }) => {}
+            Err(FluxgateSdkError::Auth { .. }) => {}
             Err(other) => panic!("expected Auth error, got {other:?}"),
             Ok(_) => panic!("401 必须报错而非返回流"),
         }
@@ -735,7 +732,7 @@ mod sdk_client_coverage {
             .chat_stream(&ChatRequest::new("m", "hi"))
             .await
         {
-            Err(NexusFlowSdkError::Server { status, message }) => {
+            Err(FluxgateSdkError::Server { status, message }) => {
                 assert_eq!(status, 500);
                 assert_eq!(message, "boom");
             }
@@ -747,7 +744,7 @@ mod sdk_client_coverage {
             .chat_stream(&ChatRequest::new("m", "hi"))
             .await
         {
-            Err(NexusFlowSdkError::Config { .. }) => {}
+            Err(FluxgateSdkError::Config { .. }) => {}
             Err(other) => panic!("expected Config error, got {other:?}"),
             Ok(_) => panic!("非法 base_url 必须报错而非返回流"),
         }
@@ -821,7 +818,7 @@ mod sdk_client_coverage {
             .await;
         let err = build_client(&server.url()).models().await.unwrap_err();
         match err {
-            NexusFlowSdkError::Server { status, message } => {
+            FluxgateSdkError::Server { status, message } => {
                 assert_eq!(status, 503);
                 assert_eq!(message, "unavailable");
             }
@@ -836,7 +833,7 @@ mod sdk_client_coverage {
             .await;
         let err = build_client(&server.url()).health().await.unwrap_err();
         match err {
-            NexusFlowSdkError::Server { status, message } => {
+            FluxgateSdkError::Server { status, message } => {
                 assert_eq!(status, 500);
                 assert_eq!(message, "db down");
             }
@@ -855,7 +852,7 @@ mod sdk_client_coverage {
             client.health().await.unwrap_err(),
         ] {
             match err {
-                NexusFlowSdkError::Config { message } => {
+                FluxgateSdkError::Config { message } => {
                     assert!(message.contains("invalid URL"), "{message}");
                 }
                 other => panic!("expected Config error, got {other:?}"),
@@ -886,7 +883,7 @@ mod sdk_client_coverage {
     #[tokio::test]
     async fn read_timeout_intercepts_stalled_connection() {
         let base = spawn_delayed_server(Duration::from_millis(1_500)).await;
-        let client = NexusFlowClientBuilder::new()
+        let client = FluxgateClientBuilder::new()
             .base_url(&base)
             .api_key("k")
             .read_timeout(Duration::from_millis(200))
@@ -896,7 +893,7 @@ mod sdk_client_coverage {
         let started = std::time::Instant::now();
         let err = client.chat(&ChatRequest::new("m", "hi")).await.unwrap_err();
         match err {
-            NexusFlowSdkError::Network { .. } => {}
+            FluxgateSdkError::Network { .. } => {}
             other => panic!("expected Network error, got {other:?}"),
         }
         assert!(

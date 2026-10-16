@@ -6,7 +6,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum NexusFlowSdkError {
+pub enum FluxgateSdkError {
     #[error("network error: {source}")]
     Network {
         #[from]

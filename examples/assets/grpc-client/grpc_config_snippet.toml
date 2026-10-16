@@ -1,4 +1,4 @@
-# NexusFlow gRPC 门面启用片段
+# Fluxgate gRPC 门面启用片段
 #
 # 并入网关侧运行配置 config.toml（该文件不入库，干净检出先执行
 # `cp config.example.toml config.toml`；二进制缺省读工作目录的 config.toml，

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 核心表版本化迁移（V1..=V3）——sqlite/postgres/mysql 启动建表唯一入口。
@@ -396,11 +396,11 @@ pub(crate) fn core_migration_file(
         }
     };
     let content = format!(
-        "-- UP nexusflow core v{version} ({label})\n{up}\n-- DOWN nexusflow core v{version} ({label})\n{down}\n"
+        "-- UP fluxgate core v{version} ({label})\n{up}\n-- DOWN fluxgate core v{version} ({label})\n{down}\n"
     );
     Ok(MigrationFile::new(
         version,
-        format!("nexusflow core tables v{version} ({label})"),
+        format!("fluxgate core tables v{version} ({label})"),
         PathBuf::from(format!("embedded:core_v{version}_{label}.sql")),
         content,
     ))

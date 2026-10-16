@@ -2153,6 +2153,78 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluxgate"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "bytes",
+ "chrono",
+ "cocoon",
+ "confers",
+ "dashmap",
+ "dbnexus",
+ "eventsource-stream",
+ "fluent-bundle",
+ "fluent-syntax",
+ "futures",
+ "futures-util",
+ "hex",
+ "http-body",
+ "inklog",
+ "limiteron",
+ "log",
+ "mockito",
+ "once_cell",
+ "oxcache",
+ "rand 0.10.3",
+ "reqwest",
+ "sdforge",
+ "sea-orm",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "sys-locale",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+ "trait-kit",
+ "unic-langid",
+ "url",
+ "uuid",
+ "vecboost",
+]
+
+[[package]]
+name = "fluxgate-examples"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "fluxgate",
+ "futures",
+ "futures-util",
+ "prost",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4070,78 +4142,6 @@ name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
-
-[[package]]
-name = "nexusflow"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "async-stream",
- "async-trait",
- "axum",
- "bytes",
- "chrono",
- "cocoon",
- "confers",
- "dashmap",
- "dbnexus",
- "eventsource-stream",
- "fluent-bundle",
- "fluent-syntax",
- "futures",
- "futures-util",
- "hex",
- "http-body",
- "inklog",
- "limiteron",
- "log",
- "mockito",
- "once_cell",
- "oxcache",
- "rand 0.10.3",
- "reqwest",
- "sdforge",
- "sea-orm",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "subtle",
- "sys-locale",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml",
- "tower",
- "tower-http 0.7.1",
- "tracing",
- "tracing-log",
- "tracing-subscriber",
- "trait-kit",
- "unic-langid",
- "url",
- "uuid",
- "vecboost",
-]
-
-[[package]]
-name = "nexusflow-examples"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "axum",
- "futures",
- "futures-util",
- "nexusflow",
- "prost",
- "reqwest",
- "serde_json",
- "tokio",
- "tonic",
- "tonic-build",
- "tonic-prost",
- "tonic-prost-build",
-]
 
 [[package]]
 name = "nix"

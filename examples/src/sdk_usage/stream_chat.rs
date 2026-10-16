@@ -1,21 +1,21 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 流式 chat：`chat_stream` 逐 chunk 消费 SSE 流。
 
 use std::time::Duration;
 
+use fluxgate::sdk::{ChatRequest, FluxgateClientBuilder, FluxgateSdkError};
 use futures::StreamExt;
-use nexusflow::sdk::{ChatRequest, NexusFlowClientBuilder, NexusFlowSdkError};
 
 use super::require_env;
 
-pub async fn run() -> Result<(), NexusFlowSdkError> {
-    let client = NexusFlowClientBuilder::new()
-        .base_url(require_env("NEXUSFLOW_BASE_URL"))
-        .api_key(require_env("NEXUSFLOW_API_KEY"))
+pub async fn run() -> Result<(), FluxgateSdkError> {
+    let client = FluxgateClientBuilder::new()
+        .base_url(require_env("FLUXGATE_BASE_URL"))
+        .api_key(require_env("FLUXGATE_API_KEY"))
         // 流式不设总超时：总超时按整个 body 计会把 SSE 长流中途截断；
         // read_timeout 只拦截连续无字节的连接停滞，成功读取即重置
         .read_timeout(Duration::from_secs(60))

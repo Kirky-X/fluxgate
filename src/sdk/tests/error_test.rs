@@ -1,8 +1,8 @@
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::error::FluxgateSdkError;
 
 #[test]
 fn auth_display_contains_message() {
-    let err = NexusFlowSdkError::Auth {
+    let err = FluxgateSdkError::Auth {
         message: "bad key".into(),
     };
     assert!(err.to_string().contains("bad key"));
@@ -10,7 +10,7 @@ fn auth_display_contains_message() {
 
 #[test]
 fn server_display_contains_status_and_message() {
-    let err = NexusFlowSdkError::Server {
+    let err = FluxgateSdkError::Server {
         status: 500,
         message: "boom".into(),
     };
@@ -27,5 +27,5 @@ fn from_reqwest_error_implemented() {
         U: From<T>,
     {
     }
-    assert_from_impl::<reqwest::Error, NexusFlowSdkError>();
+    assert_from_impl::<reqwest::Error, FluxgateSdkError>();
 }

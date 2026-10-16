@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 难度定档 → 路由链集成测试：DifficultyRouter 改写档位抽象名后，
@@ -15,15 +15,15 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, DatabaseConfig, DifficultySection, DifficultyTiers, ModelConfig,
         ServerConfig,
     };
-    use nexusflow::router::difficulty::{
+    use fluxgate::router::difficulty::{
         DecisionCache, DifficultyRouter, Guard, MockDifficultyClassifier,
     };
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -35,7 +35,7 @@ mod tests {
         id: &str,
         model_id: &str,
         abstract_id: &str,
-    ) -> nexusflow::config::VendorConfig {
+    ) -> fluxgate::config::VendorConfig {
         let mut vendor = common::base_vendor(id, String::new());
         vendor.models = vec![ModelConfig {
             model_id: model_id.to_string(),
@@ -170,7 +170,7 @@ mod tests {
         );
         assert_eq!(
             explanation["classifier"]["error"],
-            nexusflow::i18n::t("difficulty-explain-not-wired")
+            fluxgate::i18n::t("difficulty-explain-not-wired")
         );
         assert_eq!(
             explanation["score_breakdown"]["p_clf"],

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试 — CircuitBreaker（limiteron::circuit）接入 VendorManager。
@@ -23,13 +23,13 @@ mod common;
 const OPEN_WINDOW_MS: u64 = 300;
 const WINDOW_SLEEP_MS: u64 = 400;
 
+use fluxgate::config::{Config, ConfigManager, RetrySection, VendorConfig};
+use fluxgate::error::GateError;
+use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use fluxgate::router::Router;
+use fluxgate::vendor::VendorManager;
+use fluxgate::vendor::VendorStatus;
 use limiteron::error::CircuitState;
-use nexusflow::config::{Config, ConfigManager, RetrySection, VendorConfig};
-use nexusflow::error::GateError;
-use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use nexusflow::router::Router;
-use nexusflow::vendor::VendorManager;
-use nexusflow::vendor::VendorStatus;
 use std::sync::Arc;
 use std::time::Duration;
 

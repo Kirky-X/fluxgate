@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "vendor-management")]
 
@@ -8,7 +8,7 @@
 mod common;
 
 mod status {
-    use nexusflow::vendor::{VendorState, VendorStatus};
+    use fluxgate::vendor::{VendorState, VendorStatus};
 
     #[test]
     fn test_vendor_state_new() {
@@ -128,7 +128,7 @@ mod status {
 }
 
 mod rate_limiter {
-    use nexusflow::vendor::{ConcurrencyLimiter, TokenBucket};
+    use fluxgate::vendor::{ConcurrencyLimiter, TokenBucket};
     use std::time::Duration;
 
     #[tokio::test]
@@ -198,10 +198,10 @@ mod manager {
     //! 执行完整 HTTP 流程）。
 
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
-    use nexusflow::error::GateError;
-    use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
-    use nexusflow::vendor::{VendorManager, VendorStatus};
+    use fluxgate::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
+    use fluxgate::error::GateError;
+    use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
+    use fluxgate::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1019,10 +1019,10 @@ mod manager {
 
     mod metrics_paths {
         use crate::common;
-        use nexusflow::config::{Config, ConfigManager, ServerConfig, VendorConfig};
-        use nexusflow::error::GateError;
-        use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
-        use nexusflow::vendor::VendorManager;
+        use fluxgate::config::{Config, ConfigManager, ServerConfig, VendorConfig};
+        use fluxgate::error::GateError;
+        use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
+        use fluxgate::vendor::VendorManager;
         use std::sync::Arc;
         use std::time::Duration;
 
@@ -1427,8 +1427,8 @@ mod manager {
 }
 
 mod queue {
-    use nexusflow::protocol::{UnifiedRequest, UnifiedResponse};
-    use nexusflow::vendor::{PendingRequest, VendorQueue};
+    use fluxgate::protocol::{UnifiedRequest, UnifiedResponse};
+    use fluxgate::vendor::{PendingRequest, VendorQueue};
     use serde_json::json;
 
     fn sample_request() -> UnifiedRequest {
@@ -1437,7 +1437,7 @@ mod queue {
 
     fn sample_pending() -> PendingRequest {
         let (tx, _rx) =
-            tokio::sync::oneshot::channel::<Result<UnifiedResponse, nexusflow::error::GateError>>();
+            tokio::sync::oneshot::channel::<Result<UnifiedResponse, fluxgate::error::GateError>>();
         PendingRequest {
             request: sample_request(),
             response_tx: tx,
@@ -1502,8 +1502,8 @@ mod advanced_rate_limiter {
     //! - should_reset/reset 已删除：窗口由 limiteron FixedWindowLimiter
     //!   check_and_reset_window 惰性重置（用例①回归"永久 Throttled"缺陷）
 
-    use nexusflow::config::RateLimitConfig;
-    use nexusflow::vendor::AdvancedRateLimiter;
+    use fluxgate::config::RateLimitConfig;
+    use fluxgate::vendor::AdvancedRateLimiter;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -1715,7 +1715,7 @@ mod advanced_rate_limiter {
 
 mod time_window {
     use chrono::NaiveTime;
-    use nexusflow::vendor::rate_limiter::time_window_active;
+    use fluxgate::vendor::rate_limiter::time_window_active;
 
     fn t(h: u32, m: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -1769,8 +1769,8 @@ mod sliding_window {
     //! 滑动窗口消除双花的行为锁定。MockClock::with_instant 固定初始
     //! UNIX 锚（10_0000s）保证 fixed 翻越点与滑动窗覆盖的确定性。
 
-    use nexusflow::config::RateLimitConfig;
-    use nexusflow::vendor::AdvancedRateLimiter;
+    use fluxgate::config::RateLimitConfig;
+    use fluxgate::vendor::AdvancedRateLimiter;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -1892,8 +1892,8 @@ mod token_weighted_tickets {
     //! 第三张）、全链路挤压（32k 长会话独占容量）。
 
     use crate::common;
-    use nexusflow::vendor::manager::{estimate_cost_json, estimate_cost_unified, TicketPolicy};
-    use nexusflow::vendor::{ConcurrencyLimiter, VendorManager};
+    use fluxgate::vendor::manager::{estimate_cost_json, estimate_cost_unified, TicketPolicy};
+    use fluxgate::vendor::{ConcurrencyLimiter, VendorManager};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1911,19 +1911,19 @@ mod token_weighted_tickets {
     fn estimate_unified_clamp_edges() {
         let p = policy();
         // 缺 max_tokens（None）→ default(200) 兜底（messages 空 → 0 字节）
-        let bare = serde_json::from_str::<nexusflow::protocol::UnifiedRequest>(
+        let bare = serde_json::from_str::<fluxgate::protocol::UnifiedRequest>(
             r#"{"model":"m","messages":[]}"#,
         )
         .unwrap();
         assert_eq!(estimate_cost_unified(&bare, &p), 200, "缺省兜底 default");
         // 超长：max_tokens 巨大 → max 封顶
-        let huge = serde_json::from_str::<nexusflow::protocol::UnifiedRequest>(
+        let huge = serde_json::from_str::<fluxgate::protocol::UnifiedRequest>(
             r#"{"model":"m","messages":[],"max_tokens":999999}"#,
         )
         .unwrap();
         assert_eq!(estimate_cost_unified(&huge, &p), 1000, "max 封顶");
         // 零成本：显式 max_tokens=0 → min 托底
-        let zero = serde_json::from_str::<nexusflow::protocol::UnifiedRequest>(
+        let zero = serde_json::from_str::<fluxgate::protocol::UnifiedRequest>(
             r#"{"model":"m","messages":[],"max_tokens":0}"#,
         )
         .unwrap();
@@ -1935,7 +1935,7 @@ mod token_weighted_tickets {
     #[test]
     fn estimate_two_forms_same_magnitude() {
         let p = policy();
-        let unified: nexusflow::protocol::UnifiedRequest = serde_json::from_str(
+        let unified: fluxgate::protocol::UnifiedRequest = serde_json::from_str(
             r#"{"model":"m","messages":[{"role":"user","content":"hello world"}],"max_tokens":100}"#,
         )
         .unwrap();
@@ -2059,18 +2059,18 @@ mod token_weighted_tickets {
 
     async fn make_weighted_manager(api_base: String, weighted: bool) -> Arc<VendorManager> {
         common::ensure_test_api_key();
-        let config = nexusflow::config::Config {
+        let config = fluxgate::config::Config {
             rate_limit: Default::default(),
-            server: nexusflow::config::ServerConfig {
+            server: fluxgate::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: nexusflow::config::DatabaseConfig {
+            database: fluxgate::config::DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
                 url: String::new(),
             },
-            vendors: vec![nexusflow::config::VendorConfig {
+            vendors: vec![fluxgate::config::VendorConfig {
                 timeout_ms: 2_000,
                 stream_ttft_ms: 2_000,
                 stream_idle_ms: 2_000,
@@ -2079,19 +2079,19 @@ mod token_weighted_tickets {
                 supports_batch: false,
                 name: "V1".into(),
                 type_: "openai".into(),
-                api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+                api_key_env: "FLUXGATE_TEST_KEY".into(),
                 api_key_envs: Vec::new(),
                 extra_headers: Default::default(),
                 api_base,
                 enabled: true,
                 priority: 1,
                 models: vec![],
-                rate_limit: nexusflow::config::RateLimitConfig::Token {
+                rate_limit: fluxgate::config::RateLimitConfig::Token {
                     max_tokens: 1_000_000,
                     window_hours: None,
                     sliding: false,
                 },
-                concurrency: nexusflow::config::ConcurrencyConfig {
+                concurrency: fluxgate::config::ConcurrencyConfig {
                     requests_per_second: 1000,
                     max_concurrent_requests: Some(100),
                     token_weighted: weighted,
@@ -2105,18 +2105,18 @@ mod token_weighted_tickets {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            retry: nexusflow::config::RetrySection::default(),
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
+            retry: fluxgate::config::RetrySection::default(),
+            routing: fluxgate::config::RoutingSection::default(),
+            cache: fluxgate::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            resilience: fluxgate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
         };
-        let cm = Arc::new(nexusflow::config::ConfigManager::new(config));
+        let cm = Arc::new(fluxgate::config::ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm));
         vm.initialize().await.expect("init vendors");
         vm
@@ -2129,8 +2129,8 @@ mod token_weighted_tickets {
 #[tokio::test]
 async fn sliding_empty_window_not_ending_soon_in_window_info() {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig};
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::config::{Config, ConfigManager, RateLimitConfig, ServerConfig};
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
     let mut v = common::base_vendor("v-slide", "");
     // 本文件语义差异，显式覆盖：展示名 V、空模型表、空窗 sliding 小额度窗口、
@@ -2175,10 +2175,10 @@ async fn sliding_empty_window_not_ending_soon_in_window_info() {
 
 mod manager_paths {
     use crate::common;
-    use nexusflow::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
-    use nexusflow::error::GateError;
-    use nexusflow::protocol::{Message, MessageContent, Role, StreamChunk, UnifiedRequest};
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
+    use fluxgate::error::GateError;
+    use fluxgate::protocol::{Message, MessageContent, Role, StreamChunk, UnifiedRequest};
+    use fluxgate::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -2526,8 +2526,8 @@ mod manager_paths {
     /// api key 环境变量缺失处失败——全程无网络请求。
     #[tokio::test]
     async fn default_api_base_resolution_then_missing_api_key_fails() {
-        const MISSING_ANTHROPIC: &str = "NEXUSFLOW_UNSET_KEY_ANTHROPIC_Q7";
-        const MISSING_OPENAI: &str = "NEXUSFLOW_UNSET_KEY_OPENAI_Q7";
+        const MISSING_ANTHROPIC: &str = "FLUXGATE_UNSET_KEY_ANTHROPIC_Q7";
+        const MISSING_OPENAI: &str = "FLUXGATE_UNSET_KEY_OPENAI_Q7";
         std::env::remove_var(MISSING_ANTHROPIC);
         std::env::remove_var(MISSING_OPENAI);
 

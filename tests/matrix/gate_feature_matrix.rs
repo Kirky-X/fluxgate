@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 路由半边特性组合矩阵测试：验证不同 feature 组合下路由核心模块的
@@ -34,7 +34,7 @@
 /// 验证 GateError 在所有组合下都可用（核心错误类型，常开）
 #[test]
 fn test_core_error_always_available() {
-    let err = nexusflow::GateError::Config {
+    let err = fluxgate::GateError::Config {
         message: "test".to_string(),
     };
     // 双轨约定：Display 恒英文规范串，本地化文案走 user_message()（llm-gate error 模块）
@@ -44,7 +44,7 @@ fn test_core_error_always_available() {
 /// 验证 config 模块在所有组合下都可用（常开）
 #[test]
 fn test_config_always_available() {
-    let server_config = nexusflow::config::ServerConfig {
+    let server_config = fluxgate::config::ServerConfig {
         host: "0.0.0.0".to_string(),
         port: 8080,
     };
@@ -56,7 +56,7 @@ fn test_config_always_available() {
 #[cfg(feature = "protocol")]
 #[test]
 fn test_protocol_module_available() {
-    use nexusflow::protocol::UnifiedRequest;
+    use fluxgate::protocol::UnifiedRequest;
     let _ = std::marker::PhantomData::<UnifiedRequest>;
 }
 
@@ -64,7 +64,7 @@ fn test_protocol_module_available() {
 #[cfg(feature = "vendor-management")]
 #[test]
 fn test_vendor_module_available() {
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::vendor::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
@@ -72,7 +72,7 @@ fn test_vendor_module_available() {
 #[cfg(feature = "router")]
 #[test]
 fn test_router_module_available() {
-    use nexusflow::router::Router;
+    use fluxgate::router::Router;
     let _ = std::marker::PhantomData::<Router>;
 }
 
@@ -80,7 +80,7 @@ fn test_router_module_available() {
 #[cfg(feature = "router")]
 #[test]
 fn test_router_dependency_chain() {
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::vendor::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
@@ -90,7 +90,7 @@ fn test_router_dependency_chain() {
 #[cfg(not(feature = "vendor-management"))]
 #[test]
 fn test_core_types_without_vendor_stack() {
-    use nexusflow::{Config, GateError};
+    use fluxgate::{Config, GateError};
     let err = GateError::Config {
         message: "core".to_string(),
     };

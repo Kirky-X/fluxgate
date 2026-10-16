@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "vendor-management")]
 
@@ -23,9 +23,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use nexusflow::config::{Config, ConfigManager, ModelCatalogEntry, ServerConfig};
-use nexusflow::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use nexusflow::vendor::VendorManager;
+use fluxgate::config::{Config, ConfigManager, ModelCatalogEntry, ServerConfig};
+use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use fluxgate::vendor::VendorManager;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -84,7 +84,7 @@ async fn setup_cost_test(
             context_window: 128_000,
             input_price: 30.0,
             output_price: 60.0,
-            currency: nexusflow::config::PricingCurrency::Usd,
+            currency: fluxgate::config::PricingCurrency::Usd,
             ..Default::default()
         }],
         ..common::test_config(vec![v])
@@ -252,7 +252,7 @@ async fn claude_cache_token_usage_priced_with_cache_tiers() {
             cache_creation_price: 3.75,
             long_context_input_price: 0.0,
             long_context_threshold_tokens: 0,
-            currency: nexusflow::config::PricingCurrency::Usd,
+            currency: fluxgate::config::PricingCurrency::Usd,
             max_output_tokens: Some(8192),
             supports_tools: true,
             supports_thinking: true,

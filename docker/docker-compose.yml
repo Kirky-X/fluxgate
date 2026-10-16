@@ -7,15 +7,15 @@ services:
   app:
     # 镜像带版本：:latest 无法回滚也无法追溯构建了哪份代码，tag 与
     # Dockerfile 的 APP_VERSION 标签由同一个变量驱动，保持单一事实来源
-    image: nexusflow:${NEXUSFLOW_IMAGE_TAG:-0.1.0}
-    container_name: nexusflow-app
+    image: fluxgate:${FLUXGATE_IMAGE_TAG:-0.1.0}
+    container_name: fluxgate-app
     build:
       # 构建上下文必须是仓库根：Dockerfile 以 bind mount 绑定 src / Cargo.toml，
       # .dockerignore 也按上下文根解析（保持根目录不动）
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        APP_VERSION: ${NEXUSFLOW_IMAGE_TAG:-0.1.0}
+        APP_VERSION: ${FLUXGATE_IMAGE_TAG:-0.1.0}
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -50,13 +50,13 @@ services:
           memory: 128M
     # 网络配置
     networks:
-      - nexusflow_network
+      - fluxgate_network
 
 #------------------------------------------------------------------------------
 # 网络配置
 #------------------------------------------------------------------------------
 networks:
-  nexusflow_network:
+  fluxgate_network:
     driver: bridge
     # 不写死子网：固定 172.28.0.0/16 与宿主机已有 docker0/其他项目网络重叠时
     # 直接报 "Pool overlap" 启动失败；交给 Docker 自动分配，本地需要固定段时

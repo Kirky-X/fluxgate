@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! cocoon AEAD 封装：逐条 blob 加解密、掩码、指纹与条目 id 生成。
@@ -19,8 +19,9 @@ use crate::vault::VaultError;
 /// 32 字节 master key 的长度约定（hex 编码后 64 字符）。
 pub(crate) const MASTER_KEY_BYTES: usize = 32;
 
-/// 域分隔 seed：固定常量，非口令 KDF 盐。
-const KDF_SEED: &[u8] = b"nexusflow.vault.kdf.seed.v1.0000";
+/// 域分隔 seed：固定常量，非口令 KDF 盐。cocoon `from_key` 要求恰好 32 字节，
+/// 长度不符运行时 panic——常量文本必须维持 32 字节（改名等文本编辑不得缩短）。
+const KDF_SEED: &[u8] = b"fluxgate.vault.kdf.seed.v1.00000";
 
 /// fingerprint / id 共用的 hex 截断长度。
 const FINGERPRINT_LEN: usize = 16;
@@ -95,6 +96,13 @@ mod tests {
 
     fn test_key() -> Vec<u8> {
         vec![7u8; MASTER_KEY_BYTES]
+    }
+
+    /// cocoon 对 seed 长度不符是运行时 panic（非编译错误）：任何文本编辑
+    /// 缩短 KDF_SEED 都会先在此红。
+    #[test]
+    fn kdf_seed_is_32_bytes() {
+        assert_eq!(KDF_SEED.len(), MASTER_KEY_BYTES);
     }
 
     #[test]

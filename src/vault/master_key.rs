@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! master key 分层解析：env `NEXUSFLOW_MASTER_KEY` 优先，缺失时自动生成
-//! `~/.nexusflow/vault_master.key`（0600）。master key 丢失 = 柜内密钥全部
+//! master key 分层解析：env `FLUXGATE_MASTER_KEY` 优先，缺失时自动生成
+//! `~/.fluxgate/vault_master.key`（0600）。master key 丢失 = 柜内密钥全部
 //! 不可恢复（无找回路径，设计使然）；部署方负责文件备份。
 
 use rand::RngExt;
@@ -14,7 +14,7 @@ use crate::vault::crypto::MASTER_KEY_BYTES;
 use crate::vault::VaultError;
 
 /// 主钥环境变量名。
-pub const MASTER_KEY_ENV: &str = "NEXUSFLOW_MASTER_KEY";
+pub const MASTER_KEY_ENV: &str = "FLUXGATE_MASTER_KEY";
 
 /// hex 编码后 64 字符（32 字节）。
 const MASTER_KEY_HEX_LEN: usize = MASTER_KEY_BYTES * 2;
@@ -26,11 +26,11 @@ pub fn load_or_create_master_key() -> Result<Vec<u8>, VaultError> {
     load_or_create_at(env_value.as_deref(), &path)
 }
 
-/// 默认主钥文件：`~/.nexusflow/vault_master.key`。
+/// 默认主钥文件：`~/.fluxgate/vault_master.key`。
 pub fn home_master_key_path() -> Result<std::path::PathBuf, VaultError> {
     let home =
         std::env::home_dir().ok_or_else(|| VaultError::MasterKey(t("vault-home-not-found")))?;
-    Ok(home.join(".nexusflow").join("vault_master.key"))
+    Ok(home.join(".fluxgate").join("vault_master.key"))
 }
 
 /// 分层解析核心（路径与 env 值注入，便于测试隔离）：

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 配置热重载：监听文件变更，桥接进 `ConfigManager` 内存态（不落盘）。
@@ -707,7 +707,7 @@ concurrency = { requests_per_second = 1 }
             maybe_start_hot_reload(&manager).await.is_none(),
             "无路径不启动"
         );
-        manager.set_path(std::path::PathBuf::from("/nonexistent/cfg/nexusflow.toml"));
+        manager.set_path(std::path::PathBuf::from("/nonexistent/cfg/fluxgate.toml"));
         assert!(
             maybe_start_hot_reload(&manager).await.is_none(),
             "文件不存在不启动"

@@ -1,5 +1,5 @@
 # Tag 删除时清理对应的 GitHub Release（对齐 confers 基线）。
-# NexusFlow 以源码形态发布（Release 只带 tag 的自动生成源码包，不附二进制、
+# Fluxgate 以源码形态发布（Release 只带 tag 的自动生成源码包，不附二进制、
 # 不发 crates.io），故无 yank 提示环节：删除 tag 时只需删除 Release。
 
 name: Tag Deleted

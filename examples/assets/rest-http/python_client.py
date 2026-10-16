@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Kirky.X🌠
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2026 NexusFlow Contributors
+# Copyright (c) 2026 Fluxgate Contributors
 # Licensed under the MIT License. See LICENSE file for details.
 
 """官方 openai 库直连网关：base_url 指向网关即可复用认证与路由语义。
 
 依赖：pip install openai（v1.x）
-运行：NEXUSFLOW_API_KEY=<明文key> python3 python_client.py
+运行：FLUXGATE_API_KEY=<明文key> python3 python_client.py
 """
 
 import os
@@ -16,16 +16,16 @@ import sys
 import openai
 from openai import OpenAI
 
-BASE_URL = os.environ.get("NEXUSFLOW_BASE_URL", "http://127.0.0.1:8080")
+BASE_URL = os.environ.get("FLUXGATE_BASE_URL", "http://127.0.0.1:8080")
 # 演示值须与网关 [vendors] 配置对齐（本地运行配置 config.toml 的 mock 厂商；
 # 该文件不入库，随仓全量参考见 config.example.toml）
 MODEL = "gpt-4"
 VENDOR = "mock-openai"
 
 # key 无默认值：缺凭据显性退出，不做静默降级
-API_KEY = os.environ.get("NEXUSFLOW_API_KEY")
+API_KEY = os.environ.get("FLUXGATE_API_KEY")
 if not API_KEY:
-    sys.exit("错误: 缺少环境变量 NEXUSFLOW_API_KEY")
+    sys.exit("错误: 缺少环境变量 FLUXGATE_API_KEY")
 
 # 网关的 OpenAI 兼容面挂在 /v1 前缀下
 client = OpenAI(base_url=f"{BASE_URL}/v1", api_key=API_KEY)

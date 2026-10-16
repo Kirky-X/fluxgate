@@ -1,8 +1,8 @@
-# NexusFlow 贡献指南
+# Fluxgate 贡献指南
 
 [🔒 安全文档](./SECURITY.md) · [📜 更新日志](./CHANGELOG.md) · [📖 用户指南](./USER_GUIDE.md) · [🏗️ 架构文档](./ARCHITECTURE.md) · [📖 README](../README.md)
 
-感谢您关注 **NexusFlow**！无论您是在修复缺陷、添加新特性、改进文档还是帮助他人，您的贡献都弥足珍贵。
+感谢您关注 **Fluxgate**！无论您是在修复缺陷、添加新特性、改进文档还是帮助他人，您的贡献都弥足珍贵。
 
 ## 📋 目录
 
@@ -24,7 +24,7 @@
 
 | 依赖 | 版本要求 | 说明 |
 |:-----|:---------|:-----|
-| Rust | **1.97.1+**（MSRV） | 下限声明在根 `Cargo.toml` 的 `rust-version`（与 7 个兄弟库一致）。ci.yml 按 MSRV 安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1` + `toolchain: 1.97`），既守住下限也让 clippy lint 集合可复现；`docker/Dockerfile` 用当前受支持 stable（1.99）。**clippy 的 MSRV 只取各包自己的 `rust-version`**：`clippy.toml` 不重复 `msrv` 键（曾写 1.75，与下限冲突——clippy 告警令 `-D warnings` 必红，且 MSRV 门控 lint 按旧基线静默抑制），成员 crate `examples` 也显式声明同值 `rust-version`，否则其 lint 基线会回落到运行时 stable 而漂移。改 MSRV 后验证 clippy 需先 `cargo clean -p nexusflow -p nexusflow-examples`：cargo 不把 `clippy.toml` 纳入 fingerprint，不清理则复用缓存诊断 |
+| Rust | **1.97.1+**（MSRV） | 下限声明在根 `Cargo.toml` 的 `rust-version`（与 7 个兄弟库一致）。ci.yml 按 MSRV 安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1` + `toolchain: 1.97`），既守住下限也让 clippy lint 集合可复现；`docker/Dockerfile` 用当前受支持 stable（1.99）。**clippy 的 MSRV 只取各包自己的 `rust-version`**：`clippy.toml` 不重复 `msrv` 键（曾写 1.75，与下限冲突——clippy 告警令 `-D warnings` 必红，且 MSRV 门控 lint 按旧基线静默抑制），成员 crate `examples` 也显式声明同值 `rust-version`，否则其 lint 基线会回落到运行时 stable 而漂移。改 MSRV 后验证 clippy 需先 `cargo clean -p fluxgate -p fluxgate-examples`：cargo 不把 `clippy.toml` 纳入 fingerprint，不清理则复用缓存诊断 |
 | Git | 任意近期版本 | 版本控制 |
 
 安装 Rust 工具链：
@@ -36,11 +36,11 @@ rustup component add rustfmt clippy
 
 ### 🧩 自研库依赖（crates.io registry）
 
-NexusFlow 深度依赖 7 个自研库，经 **crates.io registry** 集成——版本声明在根 `Cargo.toml` 的 `[dependencies]`、校验和锁定在 `Cargo.lock`，cargo 自动拉取。**克隆本仓库即可 `cargo build`，无需把 7 个库放到同级目录**；CI 各作业同理，无兄弟库克隆步骤。Docker 构建不在 CI 内，在本机执行 `docker build -f docker/Dockerfile .`（镜像同为纯 registry 依赖，不取兄弟库源码）。
+Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——版本声明在根 `Cargo.toml` 的 `[dependencies]`、校验和锁定在 `Cargo.lock`，cargo 自动拉取。**克隆本仓库即可 `cargo build`，无需把 7 个库放到同级目录**；CI 各作业同理，无兄弟库克隆步骤。Docker 构建不在 CI 内，在本机执行 `docker build -f docker/Dockerfile .`（镜像同为纯 registry 依赖，不取兄弟库源码）。
 
 （历史形态：迁移期以 `path = "../<lib>"` + `[patch.crates-io]` 统一身份以保证 trait 身份一致，该形态与配套的 CI 克隆步骤、Dockerfile `SIBLING_PINS` 机制已随全量切 registry 一并移除。）
 
-| 库 | 在 NexusFlow 中的职责 |
+| 库 | 在 Fluxgate 中的职责 |
 |:---|:----------------------|
 | [confers](https://github.com/Kirky-X/confers) | 配置解析（TOML）、`DynamicField` 热读、配置快照（SnapshotManager） |
 | [dbnexus](https://github.com/Kirky-X/dbnexus) | SQLite 数据库层（rustls + 连接池 + 权限） |
@@ -54,8 +54,8 @@ NexusFlow 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 
 | 步骤 | 操作 |
 |:----:|:-----|
-| **1. Fork 仓库** | 在 [github.com/Kirky-X/NexusFlow](https://github.com/Kirky-X/NexusFlow) 点击 "Fork" |
-| **2. Clone 本体** | 只需克隆 NexusFlow 本体；7 个自研库由 cargo 从 crates.io 拉取 |
+| **1. Fork 仓库** | 在 [github.com/Kirky-X/fluxgate](https://github.com/Kirky-X/fluxgate) 点击 "Fork" |
+| **2. Clone 本体** | 只需克隆 Fluxgate 本体；7 个自研库由 cargo 从 crates.io 拉取 |
 | **3. 安装 Git 钩子** | `pip install pre-commit && pre-commit install --install-hooks`（见下节） |
 | **4. 构建验证** | `cargo build`（default = full + db-sqlite；首次构建同时编译 7 个自研库依赖，耗时较长） |
 
@@ -78,7 +78,7 @@ NexusFlow 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 
 ## 🏗️ 项目结构
 
-`src/` 共 92 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`nexusflow::config` 等公开路径不变），按目录职责划分：
+`src/` 共 92 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），按目录职责划分：
 
 | 目录 | 职责 | 关键文件 |
 |:-----|:-----|:---------|
@@ -92,7 +92,7 @@ NexusFlow 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 | `src/router/` | 路由调度 | `router.rs`（5 因子加权）、`affinity.rs`、`bandit.rs` |
 | `src/vendor/` | 厂商管理 | `manager.rs`、`rate_limiter.rs`、`pool.rs`、`queue.rs`、`key_pool.rs`、`resilience/`（FallbackChain + 错误映射） |
 | `src/utils/` | 成本追踪 / 全局指标 / 重试工具 | `cost_tracker.rs`、`metrics.rs`、`retry.rs` |
-| `src/error/mod.rs` / `src/error/gate.rs` | `NexusFlowError` / `GateError` 统一错误（含 HTTP 映射） | — |
+| `src/error/mod.rs` / `src/error/gate.rs` | `FluxgateError` / `GateError` 统一错误（含 HTTP 映射） | — |
 | `src/lib.rs` / `src/main.rs` | lib 公共 API 与薄启动入口（装配链在 `src/server`） | — |
 
 两个辅助位置：
@@ -248,23 +248,23 @@ flowchart LR
 
 | 步骤 | 说明 |
 |:-----|:-----|
-| **1. Issue** | 先在 [Issues](https://github.com/Kirky-X/NexusFlow/issues) 描述问题或提案，重大改动先讨论达成一致（[Discussions](https://github.com/Kirky-X/NexusFlow/discussions) 适合开放性话题） |
+| **1. Issue** | 先在 [Issues](https://github.com/Kirky-X/fluxgate/issues) 描述问题或提案，重大改动先讨论达成一致（[Discussions](https://github.com/Kirky-X/fluxgate/discussions) 适合开放性话题） |
 | **2. Fork** | Fork 本仓库即可；7 个自研库由 cargo 从 crates.io 拉取，无需额外准备 |
 | **3. 开发** | 新分支开发，保持 commit 原子性；新能力记得 feature 门控与测试 |
-| **4. 本地验证** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` 全绿（非默认后端另跑 `cargo check -p nexusflow --no-default-features --features "full,db-postgres"`） |
+| **4. 本地验证** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` 全绿（非默认后端另跑 `cargo check -p fluxgate --no-default-features --features "full,db-postgres"`） |
 | **5. PR** | 描述变更动机与影响面，关联 Issue；等待 CI 全绿与评审 |
 | **6. 发布** | 维护者推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`：自动创建 GitHub Release（版本含 `-` 即标记预发布），**Release 只带 GitHub 自动生成的源码压缩包、不附二进制**；tag 已推送但流水线失败时，可在 Actions 手动触发同一 workflow 并填版本号（x.y.z，不带 v）重发（要求该 tag 已存在）；二进制部署走 docker 镜像（`docker build -f docker/Dockerfile .`）或本机构建 `cargo build --locked --release`；删除 tag 时 `tag-deleted.yml` 自动清理对应 Release |
 
-安全相关修复请勿通过公开 PR 披露细节，走 [Security Advisories](https://github.com/Kirky-X/NexusFlow/security/advisories/new)（见 [安全文档](./SECURITY.md#-漏洞报告流程)）。
+安全相关修复请勿通过公开 PR 披露细节，走 [Security Advisories](https://github.com/Kirky-X/fluxgate/security/advisories/new)（见 [安全文档](./SECURITY.md#-漏洞报告流程)）。
 
 ---
 
 ## 📄 License
 
-NexusFlow 以 **MIT License** 发布（见根目录 [LICENSE](../LICENSE)），版权所有 `Copyright (c) 2026 Kirky.X🌠`。提交贡献即表示您同意以同一许可授权您的贡献。
+Fluxgate 以 **MIT License** 发布（见根目录 [LICENSE](../LICENSE)），版权所有 `Copyright (c) 2026 Kirky.X🌠`。提交贡献即表示您同意以同一许可授权您的贡献。
 
 ---
 
-### 💝 感谢您为 NexusFlow 做出贡献！
+### 💝 感谢您为 Fluxgate 做出贡献！
 
-[🔒 安全文档](./SECURITY.md) • [📜 更新日志](./CHANGELOG.md) • [📖 用户指南](./USER_GUIDE.md) • [🏗️ 架构文档](./ARCHITECTURE.md) • [🐛 报告问题](https://github.com/Kirky-X/NexusFlow/issues)
+[🔒 安全文档](./SECURITY.md) • [📜 更新日志](./CHANGELOG.md) • [📖 用户指南](./USER_GUIDE.md) • [🏗️ 架构文档](./ARCHITECTURE.md) • [🐛 报告问题](https://github.com/Kirky-X/fluxgate/issues)

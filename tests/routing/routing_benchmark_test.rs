@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 难度定档路由 benchmark（纯仿真，零 API key / 零出站）：
@@ -20,13 +20,13 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use nexusflow::config::{
+    use fluxgate::config::{
         Config, ConfigManager, DatabaseConfig, DifficultySection, DifficultyTiers, ModelConfig,
         ServerConfig, Tier,
     };
-    use nexusflow::router::difficulty::{DecisionCache, DifficultyRouter, Guard};
-    use nexusflow::router::Router;
-    use nexusflow::vendor::VendorManager;
+    use fluxgate::router::difficulty::{DecisionCache, DifficultyRouter, Guard};
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
     use serde_json::json;
     use std::collections::{BTreeMap, HashSet};
     use std::sync::Arc;

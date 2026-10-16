@@ -2,11 +2,11 @@
 
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-use nexusflow::config::DatabaseConfig;
-use nexusflow::database::resolve_database_url;
+use fluxgate::config::DatabaseConfig;
+use fluxgate::database::resolve_database_url;
 
 /// 测试路径 → 解析后 URL（与 bootstrap 同一解析出口，sqlite 回退分支）。
 /// 文件作用域：batch_tx / database_gap 等兄弟模块经 `crate::resolve_sqlite_url` 复用。
@@ -22,7 +22,7 @@ fn resolve_sqlite_url(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use dbnexus::{DbConfig, DbPool};
-    use nexusflow::database::{Database, LogFilter, Repository, RequestLog};
+    use fluxgate::database::{Database, LogFilter, Repository, RequestLog};
     use std::sync::Arc;
 
     async fn create_test_pool() -> DbPool {
@@ -565,7 +565,7 @@ mod tests {
 mod batch_tx {
     use crate::resolve_sqlite_url;
     use dbnexus::{DbConfig, DbPool};
-    use nexusflow::database::{Database, LogFilter, Repository, RequestLog};
+    use fluxgate::database::{Database, LogFilter, Repository, RequestLog};
     use std::sync::Arc;
 
     async fn create_test_pool() -> DbPool {
@@ -662,8 +662,8 @@ mod batch_tx {
 #[cfg(test)]
 mod preagg {
     use dbnexus::{DbConfig, DbPool};
-    use nexusflow::database::{Repository, TokenPreAggregator, TokenPreAggregatorHandle};
-    use nexusflow::protocol::TokenUsage;
+    use fluxgate::database::{Repository, TokenPreAggregator, TokenPreAggregatorHandle};
+    use fluxgate::protocol::TokenUsage;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -855,7 +855,7 @@ mod preagg {
 #[cfg(test)]
 mod repository_gap {
     use dbnexus::{DbConfig, DbPool};
-    use nexusflow::database::{LogFilter, Repository, RequestLog};
+    use fluxgate::database::{LogFilter, Repository, RequestLog};
     use std::sync::Arc;
 
     async fn create_test_pool() -> DbPool {
@@ -1026,9 +1026,9 @@ mod repository_gap {
 #[cfg(test)]
 mod async_logger_gap {
     use dbnexus::{DbConfig, DbPool};
-    use nexusflow::database::{AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, RequestLog};
-    use nexusflow::error::NexusFlowError;
-    use nexusflow::i18n::t;
+    use fluxgate::database::{AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, RequestLog};
+    use fluxgate::error::FluxgateError;
+    use fluxgate::i18n::t;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1081,7 +1081,7 @@ mod async_logger_gap {
 
         let err = logger.log(sample_log("after-shutdown")).unwrap_err();
         match err {
-            NexusFlowError::Database { message } => {
+            FluxgateError::Database { message } => {
                 assert_eq!(message, t("database-logger-shutdown"));
             }
             other => panic!("Expected Database error, got {other:?}"),
@@ -1127,7 +1127,7 @@ mod async_logger_gap {
 
         let err = logger.shutdown().await.unwrap_err();
         match err {
-            NexusFlowError::Database { message } => {
+            FluxgateError::Database { message } => {
                 assert_eq!(message, t("database-logger-channel-closed"));
             }
             other => panic!("Expected Database error, got {other:?}"),
@@ -1209,8 +1209,8 @@ mod async_logger_gap {
 #[cfg(test)]
 mod database_gap {
     use crate::resolve_sqlite_url;
-    use nexusflow::database::{Database, LogFilter, RequestLog};
-    use nexusflow::error::NexusFlowError;
+    use fluxgate::database::{Database, LogFilter, RequestLog};
+    use fluxgate::error::FluxgateError;
 
     fn sample_log() -> RequestLog {
         RequestLog {
@@ -1268,7 +1268,7 @@ mod database_gap {
             Database::new(&resolve_sqlite_url(db_path.to_string_lossy().as_ref()), 1).await;
 
         match result {
-            Err(NexusFlowError::Database { .. }) => {}
+            Err(FluxgateError::Database { .. }) => {}
             Err(other) => panic!("Expected Database error, got {other:?}"),
             Ok(_) => panic!("父路径是文件时必须失败"),
         }
@@ -1286,7 +1286,7 @@ mod database_gap {
 
         let result = Database::new(&resolve_sqlite_url(dir.to_str().unwrap()), 1).await;
         match result {
-            Err(NexusFlowError::Database { .. }) => {}
+            Err(FluxgateError::Database { .. }) => {}
             Err(other) => panic!("Expected Database error, got {other:?}"),
             Ok(_) => panic!("库路径是目录时必须失败"),
         }
@@ -1300,7 +1300,7 @@ mod database_gap {
 #[cfg(test)]
 mod cost_ledger {
     use dbnexus::{DbConfig, DbPool};
-    use nexusflow::database::{CostGroupBy, KeyedUsage, Repository, TokenPreAggregator};
+    use fluxgate::database::{CostGroupBy, KeyedUsage, Repository, TokenPreAggregator};
     use std::sync::Arc;
     use std::time::Duration;
 

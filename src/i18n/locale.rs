@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 语言检测与全局 locale 上下文。
 //!
 //! 检测链（强制顺序，全仓一致）：
-//! 1. `NEXUSFLOW_LANG` 项目覆盖变量
+//! 1. `FLUXGATE_LANG` 项目覆盖变量
 //! 2. `LC_ALL` → `LC_MESSAGES` → `LANG`（显式读取，保证 Windows/边缘环境确定性）
 //! 3. `sys-locale` 系统探测
 //! 4. `"en"` 终极回退
@@ -23,7 +23,7 @@ use unic_langid::LanguageIdentifier;
 use super::I18nError;
 
 /// 项目级语言覆盖变量（检测链第一优先级，大写项目名约定）。
-const LANG_ENV_VAR: &str = "NEXUSFLOW_LANG";
+const LANG_ENV_VAR: &str = "FLUXGATE_LANG";
 
 /// POSIX 显式环境链，按序回退。
 const POSIX_ENV_KEYS: [&str; 3] = ["LC_ALL", "LC_MESSAGES", "LANG"];
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_unsupported_env_value_continues_chain() {
-        // NEXUSFLOW_LANG 不支持 → 不中断，继续走 LC_ALL
+        // FLUXGATE_LANG 不支持 → 不中断，继续走 LC_ALL
         let getenv = env_lookup(&[(LANG_ENV_VAR, "de_DE"), ("LC_ALL", "zh_CN")]);
         assert_eq!(detect_from(&getenv, None).language.as_str(), "zh");
     }

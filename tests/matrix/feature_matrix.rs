@@ -1,21 +1,21 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! nexusflow 应用面特性组合矩阵测试。
+//! fluxgate 应用面特性组合矩阵测试。
 //! 应用面 feature 只保留可见性断言；路由核心矩阵见 gate_feature_matrix.rs。
 //! vendor-management→database 联动已解除，database 由 web-server 显式携带
 //! 与 database feature 自身声明
 //!
-//! ## 已验证的特性组合矩阵（nexusflow 侧）
+//! ## 已验证的特性组合矩阵（fluxgate 侧）
 //!
 //! | Feature 组合                      | 编译 | 依赖链                                     |
 //! |----------------------------------|------|-------------------------------------------|
 //! | `--all-features`                 | ✗ 预期失败 | db-sqlite/postgres/mysql 三组互斥，dbnexus 编译期守卫必触发 `compile_error!` |
 //! | `--features full`（default = full + db-sqlite） | OK | 全面向 sqlite 后端        |
-//! | `-p nexusflow --no-default-features --features "full,db-postgres"` | OK | server-side 后端 |
-//! | `-p nexusflow --no-default-features --features "full,db-mysql"`    | OK | server-side 后端 |
+//! | `-p fluxgate --no-default-features --features "full,db-postgres"` | OK | server-side 后端 |
+//! | `-p fluxgate --no-default-features --features "full,db-mysql"`    | OK | server-side 后端 |
 //! | `--no-default-features --features "database,db-sqlite"` | OK | database → protocol + url + logging（inklog kit 需任一 db-* 组） |
 //! | `--features vendor-management`   | OK   | vendor-management 本模块直控               |
 //! | `--features router`              | OK   | router → vendor-management + oxcache       |
@@ -26,17 +26,17 @@
 //! | `--features "web-server logging grpc"` | OK | grpc → sdforge/grpc（需 protoc）      |
 //! | `--no-default-features`          | OK   | 门面 re-export（config/error/i18n/protocol/utils）|
 //!
-//! 【矩阵命令口径（重要）】非默认后端必须用 `-p nexusflow` 限定到本包：
+//! 【矩阵命令口径（重要）】非默认后端必须用 `-p fluxgate` 限定到本包：
 //! `cargo check --workspace --no-default-features --features "full,db-postgres"`
-//! 会失败——`nexusflow-examples` 成员（default 含 `embedded` feature）以
-//! `nexusflow = { path = ".." }` 拉入 `full` + `db-sqlite`，Cargo 特性联合把 sqlite 注入共享的
+//! 会失败——`fluxgate-examples` 成员（default 含 `embedded` feature）以
+//! `fluxgate = { path = ".." }` 拉入 `full` + `db-sqlite`，Cargo 特性联合把 sqlite 注入共享的
 //! dbnexus 依赖，与 db-postgres 同时置位即触发其互斥守卫。
 
 /// database feature：验证 Database 类型可访问
 #[cfg(feature = "database")]
 #[test]
 fn test_database_module_available() {
-    use nexusflow::Database;
+    use fluxgate::Database;
     let _ = std::marker::PhantomData::<Database>;
 }
 
@@ -44,7 +44,7 @@ fn test_database_module_available() {
 #[cfg(feature = "vendor-management")]
 #[test]
 fn test_vendor_module_available() {
-    use nexusflow::VendorManager;
+    use fluxgate::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
@@ -58,14 +58,14 @@ fn test_vendor_module_available() {
 #[test]
 fn test_infrastructure_module_available() {
     // di 模块路径存在即表示 infrastructure feature 可用
-    let _ = nexusflow::di::build_kit_with_config;
+    let _ = fluxgate::di::build_kit_with_config;
 }
 
 /// web-server feature：验证 ApiState 类型可访问
 #[cfg(feature = "web-server")]
 #[test]
 fn test_api_module_available() {
-    use nexusflow::ApiState;
+    use fluxgate::ApiState;
     let _ = std::marker::PhantomData::<ApiState>;
 }
 
@@ -73,7 +73,7 @@ fn test_api_module_available() {
 #[cfg(feature = "web-server")]
 #[test]
 fn test_middleware_module_available() {
-    use nexusflow::ApiAuthState;
+    use fluxgate::ApiAuthState;
     let _ = std::marker::PhantomData::<ApiAuthState>;
 }
 
@@ -82,7 +82,7 @@ fn test_middleware_module_available() {
 #[cfg(feature = "web-server")]
 #[test]
 fn test_web_server_dependency_chain() {
-    use nexusflow::{ApiState, Database, VendorManager};
+    use fluxgate::{ApiState, Database, VendorManager};
     let _ = std::marker::PhantomData::<ApiState>;
     let _ = std::marker::PhantomData::<Database>;
     let _ = std::marker::PhantomData::<VendorManager>;
@@ -92,7 +92,7 @@ fn test_web_server_dependency_chain() {
 #[cfg(feature = "router")]
 #[test]
 fn test_router_dependency_chain() {
-    use nexusflow::VendorManager;
+    use fluxgate::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
@@ -101,7 +101,7 @@ fn test_router_dependency_chain() {
 #[cfg(feature = "database")]
 #[test]
 fn test_database_logging_chain() {
-    let _ = std::marker::PhantomData::<nexusflow::database::Database>;
+    let _ = std::marker::PhantomData::<fluxgate::database::Database>;
     #[cfg(not(feature = "logging"))]
     compile_error!("database 开启必须携带 logging（async_logger 消费 inklog）");
 }
@@ -111,9 +111,9 @@ fn test_database_logging_chain() {
 #[cfg(feature = "web-server")]
 #[test]
 fn test_web_server_infrastructure_chain() {
-    // nexusflow::di 受 infrastructure+database+vendor-management+logging
+    // fluxgate::di 受 infrastructure+database+vendor-management+logging
     // 四联动门控，web-server 组合下全部在场
-    let _ = nexusflow::di::verify_kit;
+    let _ = fluxgate::di::verify_kit;
     #[cfg(not(feature = "infrastructure"))]
     compile_error!("web-server 开启必须携带 infrastructure（shutdown 用 trait-kit）");
 }
@@ -122,9 +122,9 @@ fn test_web_server_infrastructure_chain() {
 #[cfg(feature = "sdk")]
 #[test]
 fn test_sdk_module_available() {
-    use nexusflow::sdk::{NexusFlowClient, NexusFlowSdkError, RequestConfig};
-    let _ = std::marker::PhantomData::<NexusFlowClient>;
-    let _ = std::marker::PhantomData::<NexusFlowSdkError>;
+    use fluxgate::sdk::{FluxgateClient, FluxgateSdkError, RequestConfig};
+    let _ = std::marker::PhantomData::<FluxgateClient>;
+    let _ = std::marker::PhantomData::<FluxgateSdkError>;
     let _ = RequestConfig::default();
 }
 
@@ -132,8 +132,8 @@ fn test_sdk_module_available() {
 #[cfg(all(feature = "web-server", feature = "logging"))]
 #[test]
 fn test_server_module_available() {
-    let _ = nexusflow::server::run;
-    let _ = nexusflow::server::build_app;
+    let _ = fluxgate::server::run;
+    let _ = fluxgate::server::build_app;
 }
 
 /// grpc feature：gRPC 服务器模块可访问（server 子模块，另受
@@ -141,8 +141,8 @@ fn test_server_module_available() {
 #[cfg(feature = "grpc")]
 #[test]
 fn test_grpc_module_available() {
-    let _ = std::marker::PhantomData::<nexusflow::server::GrpcServer>;
-    let _ = nexusflow::config::GrpcConfig {
+    let _ = std::marker::PhantomData::<fluxgate::server::GrpcServer>;
+    let _ = fluxgate::config::GrpcConfig {
         enabled: true,
         ..Default::default()
     };
@@ -154,8 +154,8 @@ fn test_grpc_module_available() {
 #[cfg(not(feature = "sdk"))]
 #[test]
 fn test_core_types_without_sdk() {
-    use nexusflow::{Config, GateError, NexusFlowError};
-    let err = NexusFlowError::from(GateError::Config {
+    use fluxgate::{Config, FluxgateError, GateError};
+    let err = FluxgateError::from(GateError::Config {
         message: "core".to_string(),
     });
     // Gate 变体 transparent 透传 llm-gate 英文规范串

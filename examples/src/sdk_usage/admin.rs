@@ -1,18 +1,18 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 运维端点：health / vendors / models。
 
-use nexusflow::sdk::{NexusFlowClientBuilder, NexusFlowSdkError};
+use fluxgate::sdk::{FluxgateClientBuilder, FluxgateSdkError};
 
 use super::require_env;
 
-pub async fn run() -> Result<(), NexusFlowSdkError> {
-    let client = NexusFlowClientBuilder::new()
-        .base_url(require_env("NEXUSFLOW_BASE_URL"))
-        .api_key(require_env("NEXUSFLOW_API_KEY"))
+pub async fn run() -> Result<(), FluxgateSdkError> {
+    let client = FluxgateClientBuilder::new()
+        .base_url(require_env("FLUXGATE_BASE_URL"))
+        .api_key(require_env("FLUXGATE_API_KEY"))
         .build()?;
 
     let health = client.health().await?;

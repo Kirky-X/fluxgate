@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 use super::{Config, ConfigManager};
@@ -599,7 +599,7 @@ impl AdminSecretProvider {
     fn insert(&mut self, key: String, secret: &str) {
         let annotated = AnnotatedValue::new(
             ConfigValue::string(secret),
-            SourceId::new("nexusflow-config"),
+            SourceId::new("fluxgate-config"),
             key.clone(),
         );
         self.entries.insert(key, annotated);
@@ -676,7 +676,7 @@ fn validate_admin_secrets(config: &Config) -> Result<(), GateError> {
                     // 启动，但必须留痕：规则内核后续增强新增违规时不会被
                     // 零痕迹吞掉（错误显性化纪律）
                     tracing::debug!(
-                        target: "nexusflow::config",
+                        target: "fluxgate::config",
                         key = %key,
                         severity = ?violation.severity,
                         "{}",

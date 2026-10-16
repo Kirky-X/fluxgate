@@ -1,9 +1,9 @@
-use crate::sdk::client::NexusFlowClientBuilder;
-use crate::sdk::error::NexusFlowSdkError;
+use crate::sdk::client::FluxgateClientBuilder;
+use crate::sdk::error::FluxgateSdkError;
 use std::time::Duration;
 
-fn build_client(base_url: &str) -> crate::sdk::NexusFlowClient {
-    NexusFlowClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
+    FluxgateClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -170,7 +170,7 @@ async fn put_global_reserved_key_maps_to_server_error() {
         .await
         .unwrap_err();
     match err {
-        NexusFlowSdkError::Server { status, .. } => assert_eq!(status, 400),
+        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 400),
         other => panic!("expected Server error, got {other:?}"),
     }
 }
@@ -245,7 +245,7 @@ async fn models_500_returns_server_error() {
     let err = client.models().await.unwrap_err();
 
     match err {
-        NexusFlowSdkError::Server { status, .. } => assert_eq!(status, 500),
+        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 500),
         other => panic!("expected Server error, got {other:?}"),
     }
 }
@@ -264,7 +264,7 @@ async fn vendors_401_returns_server_error() {
 
     // admin 端点统一返回 Server 错误（status 字段区分）
     match err {
-        NexusFlowSdkError::Server { status, .. } => assert_eq!(status, 401),
+        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 401),
         other => panic!("expected Server error, got {other:?}"),
     }
 }
@@ -323,7 +323,7 @@ async fn spawn_slow_admin_server(delay: Duration) -> String {
 #[tokio::test]
 async fn admin_requests_bounded_by_total_timeout() {
     let base_url = spawn_slow_admin_server(Duration::from_millis(500)).await;
-    let client = NexusFlowClientBuilder::new()
+    let client = FluxgateClientBuilder::new()
         .base_url(&base_url)
         .api_key("test-key")
         .timeout(Duration::from_millis(100))
@@ -335,7 +335,7 @@ async fn admin_requests_bounded_by_total_timeout() {
         .expect("总超时必须切断 admin 停滞（不能拖到外层兜底）")
         .unwrap_err();
     match models_err {
-        NexusFlowSdkError::Network { source } => {
+        FluxgateSdkError::Network { source } => {
             assert!(source.is_timeout(), "models 应被总超时切断: {source}");
         }
         other => panic!("models 应报 Network 超时，实际: {other:?}"),
@@ -346,7 +346,7 @@ async fn admin_requests_bounded_by_total_timeout() {
         .expect("vendors 未被总超时切断")
         .unwrap_err();
     assert!(
-        matches!(vendors_err, NexusFlowSdkError::Network { .. }),
+        matches!(vendors_err, FluxgateSdkError::Network { .. }),
         "vendors 应报 Network 超时，实际: {vendors_err:?}"
     );
 
@@ -355,7 +355,7 @@ async fn admin_requests_bounded_by_total_timeout() {
         .expect("health 未被总超时切断")
         .unwrap_err();
     assert!(
-        matches!(health_err, NexusFlowSdkError::Network { .. }),
+        matches!(health_err, FluxgateSdkError::Network { .. }),
         "health 应报 Network 超时，实际: {health_err:?}"
     );
 }

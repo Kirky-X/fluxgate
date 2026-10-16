@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "vault", feature = "web-server"))]
 
@@ -23,7 +23,7 @@ use axum::{
     http::Request,
     Json,
 };
-use nexusflow::{
+use fluxgate::{
     api::{
         create_router,
         vault::{delete_key, list_keys, put_key, ListKeysQuery, PutKeyRequest},
@@ -74,7 +74,7 @@ async fn setup(
     let config = common::test_config(vec![common::base_vendor("openai", "http://127.0.0.1:1")]);
     let mut config = config;
     if auth_enabled {
-        config.auth = Some(nexusflow::config::AuthSection {
+        config.auth = Some(fluxgate::config::AuthSection {
             enabled: true,
             api_keys: vec![AUTH_KEY_HASH.to_string()],
             header: Default::default(),
@@ -98,7 +98,7 @@ async fn setup(
     let state = Arc::new(ApiState {
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
-        router: Arc::new(nexusflow::router::Router::new(
+        router: Arc::new(fluxgate::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         )),
@@ -109,11 +109,11 @@ async fn setup(
         bandit: None,
         quota: None,
         difficulty: None,
-        openai_converter: Arc::new(nexusflow::protocol::OpenAIConverter::new()),
-        anthropic_converter: Arc::new(nexusflow::protocol::AnthropicConverter::new()),
-        database: Arc::new(nexusflow::Database {
+        openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
+        anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
+        database: Arc::new(fluxgate::Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         }),
     });
     (store, vendor_manager, config_manager, state)
@@ -188,7 +188,7 @@ async fn unknown_vendor_conflicts_and_empty_key_validates() {
     .expect_err("unknown vendor must 409");
     assert!(matches!(
         err,
-        nexusflow::error::NexusFlowError::Vault(VaultError::UnknownVendor(_))
+        fluxgate::error::FluxgateError::Vault(VaultError::UnknownVendor(_))
     ));
 
     let err = put_key(
@@ -203,7 +203,7 @@ async fn unknown_vendor_conflicts_and_empty_key_validates() {
     .expect_err("empty key must 400");
     assert!(matches!(
         err,
-        nexusflow::error::NexusFlowError::Gate(nexusflow::error::GateError::Validation { .. })
+        fluxgate::error::FluxgateError::Gate(fluxgate::error::GateError::Validation { .. })
     ));
 }
 
@@ -211,7 +211,7 @@ async fn unknown_vendor_conflicts_and_empty_key_validates() {
 async fn restart_with_same_master_key_recovers_reveal() {
     // db 柜重启恢复：同库 + 同 master key 重建后 reveal 一致
     // Database::new 内建 V3 schema（init_schema 私有，经公开构造器走同一路径）
-    let db = nexusflow::Database::new("sqlite::memory:", 1)
+    let db = fluxgate::Database::new("sqlite::memory:", 1)
         .await
         .expect("memory db with V3 schema");
     let pool = db.pool;

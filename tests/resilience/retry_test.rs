@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "web-server", feature = "resilience"))]
 
-//! 换 vendor fallback E2E（HTTP 全链路，留在 nexusflow 应用面）。
+//! 换 vendor fallback E2E（HTTP 全链路，留在 fluxgate 应用面）。
 //!
 //! 自 retry_test 拆出（N1 workspace 化）：纯 utils/retry 单元与策略构造
 //! 测试随 llm-gate 走（tests/retry_test.rs），本文件只留经 api/ApiState
@@ -16,16 +16,16 @@ mod common;
 mod vendor_fallback_integration {
     use axum::{body::Body, http::Request, routing::post, Router};
     use dbnexus::{DbConfig, DbPool};
-    use nexusflow::api::{chat_completions, messages};
-    use nexusflow::config::{
+    use fluxgate::api::{chat_completions, messages};
+    use fluxgate::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, RetrySection,
         ServerConfig, VendorConfig,
     };
-    use nexusflow::database::Database;
-    use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-    use nexusflow::router::Router as NexusRouter;
-    use nexusflow::vendor::VendorManager;
-    use nexusflow::ApiState;
+    use fluxgate::database::Database;
+    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxgate::router::Router as NexusRouter;
+    use fluxgate::vendor::VendorManager;
+    use fluxgate::ApiState;
     use serde_json::json;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -43,7 +43,7 @@ mod vendor_fallback_integration {
             supports_batch: false,
             name: format!("Test {}", id),
             type_: "anthropic".into(),
-            api_key_env: "NEXUSFLOW_TEST_KEY".into(),
+            api_key_env: "FLUXGATE_TEST_KEY".into(),
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base,
@@ -55,12 +55,12 @@ mod vendor_fallback_integration {
                 weight: 1.0,
                 enabled: true,
             }],
-            rate_limit: nexusflow::config::RateLimitConfig::Token {
+            rate_limit: fluxgate::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
                 window_hours: None,
                 sliding: false,
             },
-            concurrency: nexusflow::config::ConcurrencyConfig {
+            concurrency: fluxgate::config::ConcurrencyConfig {
                 requests_per_second: 100,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -99,13 +99,13 @@ mod vendor_fallback_integration {
                 jitter: 0.0,
                 ..Default::default()
             },
-            routing: nexusflow::config::RoutingSection::default(),
-            cache: nexusflow::config::CacheSection::default(),
+            routing: fluxgate::config::RoutingSection::default(),
+            cache: fluxgate::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: nexusflow::config::ResilienceSection::default(),
+            resilience: fluxgate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
         }
@@ -130,7 +130,7 @@ mod vendor_fallback_integration {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(nexusflow::database::Repository::new(pool)),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
 
         let router = Arc::new(NexusRouter::new(

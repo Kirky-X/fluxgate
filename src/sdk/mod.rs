@@ -1,6 +1,6 @@
-//! NexusFlow Rust SDK
+//! Fluxgate Rust SDK
 //!
-//! 通过 Rust 接口与 NexusFlow 网关交互（HTTP 客户端 SDK），
+//! 通过 Rust 接口与 Fluxgate 网关交互（HTTP 客户端 SDK），
 //! 支持 chat / stream / embed / admin。
 
 pub mod admin;
@@ -19,10 +19,10 @@ pub use chat::{
     ChatRole, ChatTool, ChatToolCall, ChatToolChoice, ChatToolChoiceFunction, ChatToolDefinition,
     ChatToolFunction, ChatUsage, ImageUrlBody, StandardFinishReason,
 };
-pub use client::{NexusFlowClient, NexusFlowClientBuilder};
+pub use client::{FluxgateClient, FluxgateClientBuilder};
 pub use config::RequestConfig;
 pub use embed::{EmbedRequest, EmbedResponse};
-pub use error::NexusFlowSdkError;
+pub use error::FluxgateSdkError;
 pub use stream::{ChatChunk, ChatDelta, ChatStream, ChatToolCallDelta, ChatToolCallDeltaFunction};
 
 #[cfg(test)]

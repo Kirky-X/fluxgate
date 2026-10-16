@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 裸 HTTP 直连网关演示：不依赖 nexusflow SDK，直接对线级协议编程。
+//! 裸 HTTP 直连网关演示：不依赖 fluxgate SDK，直接对线级协议编程。
 //!
 //! 协议事实以本仓库源码为准：
 //! - `GET /api/v1/health` 免认证；裸 `/health` 未注册（认证与限流白名单
@@ -49,10 +49,10 @@ pub async fn run() -> ExitCode {
 }
 
 async fn execute() -> Result<()> {
-    let base_url = env::var("NEXUSFLOW_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
+    let base_url = env::var("FLUXGATE_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
     // API key 无默认值：网关 [auth].enabled 时强制校验，缺凭据必须显性失败
-    let api_key = env::var("NEXUSFLOW_API_KEY")
-        .map_err(|_| anyhow!("缺少环境变量 NEXUSFLOW_API_KEY（网关 [auth] 段启用的明文 key）"))?;
+    let api_key = env::var("FLUXGATE_API_KEY")
+        .map_err(|_| anyhow!("缺少环境变量 FLUXGATE_API_KEY（网关 [auth] 段启用的明文 key）"))?;
 
     let mut headers = HeaderMap::new();
     headers.insert(

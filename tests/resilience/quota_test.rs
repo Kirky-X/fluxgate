@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 NexusFlow Contributors
+// Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试 — 成本与 token 维度配额（预扣-回补）：预扣后超限 429、
@@ -15,21 +15,21 @@
 mod common;
 
 use axum::{body::Body, http::Request, http::StatusCode};
-use nexusflow::api::create_router;
-use nexusflow::config::{
+use fluxgate::api::create_router;
+use fluxgate::config::{
     AuthSection, AuthTier, Config, ConfigManager, ModelCatalogEntry, ModelConfig, PricingConfig,
     QuotaSection, RateLimitRule, RateLimitSection, VendorConfig,
 };
-use nexusflow::database::Database;
-use nexusflow::i18n::t;
-use nexusflow::middleware::quota::{
+use fluxgate::database::Database;
+use fluxgate::i18n::t;
+use fluxgate::middleware::quota::{
     actual_cost_millicents, precharge_for, UsageCostInput, MILLICENTS_PER_USD,
 };
-use nexusflow::protocol::{AnthropicConverter, OpenAIConverter};
-use nexusflow::router::Router as NexusRouter;
-use nexusflow::utils::estimate_messages_tokens;
-use nexusflow::vendor::VendorManager;
-use nexusflow::ApiState;
+use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
+use fluxgate::router::Router as NexusRouter;
+use fluxgate::utils::estimate_messages_tokens;
+use fluxgate::vendor::VendorManager;
+use fluxgate::ApiState;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -150,7 +150,7 @@ fn quota_config_full(
         enabled: true,
         api_keys: vec![GOOD_KEY_DIGEST.to_string()],
         header: Default::default(),
-        keys: vec![nexusflow::config::AuthKeyEntry {
+        keys: vec![fluxgate::config::AuthKeyEntry {
             hash: GOOD_KEY_DIGEST.to_string(),
             tier: AuthTier::Elastic,
             token_quota,
@@ -188,15 +188,15 @@ async fn make_state_with_cache(config: Config, with_quota: bool) -> Arc<ApiState
     })
     .await
     .unwrap();
-    let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+    let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
     repository.initialize().await.expect("schema init");
     let database = Arc::new(Database { pool, repository });
     let router = Arc::new(NexusRouter::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
-    let quota = with_quota.then(|| Arc::new(nexusflow::middleware::quota::QuotaState::new()));
-    let response_cache = Arc::new(nexusflow::api::response_cache::ResponseCache::new(
+    let quota = with_quota.then(|| Arc::new(fluxgate::middleware::quota::QuotaState::new()));
+    let response_cache = Arc::new(fluxgate::api::response_cache::ResponseCache::new(
         Arc::new(oxcache::backend::default_memory_backend()),
         config_manager.clone(),
         vendor_manager.metrics().clone(),
@@ -242,20 +242,20 @@ async fn make_state_inner(
     })
     .await
     .unwrap();
-    let repository = Arc::new(nexusflow::database::Repository::new(pool.clone()));
+    let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
     repository.initialize().await.expect("schema init");
     let database = Arc::new(Database { pool, repository });
     let pre_aggregator = with_usage_sink.then(|| {
-        Arc::new(nexusflow::database::TokenPreAggregator::new(
+        Arc::new(fluxgate::database::TokenPreAggregator::new(
             database.repository.clone(),
             Duration::from_secs(60),
-        )) as Arc<dyn nexusflow::storage::UsageSink>
+        )) as Arc<dyn fluxgate::storage::UsageSink>
     });
     let router = Arc::new(NexusRouter::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
-    let quota = with_quota.then(|| Arc::new(nexusflow::middleware::quota::QuotaState::new()));
+    let quota = with_quota.then(|| Arc::new(fluxgate::middleware::quota::QuotaState::new()));
 
     Arc::new(ApiState {
         config: config_manager,
@@ -1262,7 +1262,7 @@ fn admission_stacked_config(api_base: String, admission_enabled: bool, token_quo
         3600,
         Vec::new(),
     );
-    config.admission = nexusflow::config::AdmissionSection {
+    config.admission = fluxgate::config::AdmissionSection {
         enabled: admission_enabled,
         ..Default::default()
     };
@@ -1277,7 +1277,7 @@ fn admission_stacked_config(api_base: String, admission_enabled: bool, token_quo
     }
     if let Some(auth) = config.auth.as_mut() {
         auth.api_keys.push(dedicated.clone());
-        auth.keys.push(nexusflow::config::AuthKeyEntry {
+        auth.keys.push(fluxgate::config::AuthKeyEntry {
             hash: dedicated,
             tier: AuthTier::Dedicated,
             token_quota: 0,
@@ -1419,7 +1419,7 @@ async fn quota_windows_are_isolated_per_key() {
     let mut config = quota_config(vec![openai_vendor("iso-a", server.url())], tight, 3600);
     if let Some(auth) = config.auth.as_mut() {
         auth.api_keys.push(second_hash.clone());
-        auth.keys.push(nexusflow::config::AuthKeyEntry {
+        auth.keys.push(fluxgate::config::AuthKeyEntry {
             hash: second_hash,
             tier: AuthTier::Elastic,
             token_quota: ample,

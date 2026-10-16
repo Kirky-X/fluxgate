@@ -809,6 +809,56 @@ mod live_tests {
         assert!(table_names(&pool).await.contains("request_logs"));
     }
 
+    /// end_time 闭区间过滤：窗口 [t3, t7] 恰返回 5 行含两端边界；
+    /// 仅 end_time（无 start_time）返回上界内全部行。
+    #[tokio::test]
+    async fn query_logs_end_time_closed_interval_and_open_start() {
+        let pool = memory_pool().await;
+        init_schema(&pool).await.expect("init");
+        let repo = Repository::new(pool.clone());
+
+        // timestamp 覆盖 1_700_000_000..=1_700_000_010 的 11 行
+        let logs: Vec<RequestLog> = (0..=10).map(|i| sample_log(i, "range")).collect();
+        repo.log_requests_batch(&logs).await.expect("batch");
+
+        // 窗口 [t3, t7] 闭区间：恰 5 行，DESC 首行=end、末行=start（两端含边界）
+        let window = repo
+            .query_logs(&LogFilter {
+                start_time: Some(1_700_000_003),
+                end_time: Some(1_700_000_007),
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .expect("query");
+        assert_eq!(window.len(), 5, "闭区间 [t3, t7] 恰返回 5 行");
+        assert_eq!(
+            window.first().expect("首行").timestamp,
+            1_700_000_007,
+            "首行 = end 边界"
+        );
+        assert_eq!(
+            window.last().expect("末行").timestamp,
+            1_700_000_003,
+            "末行 = start 边界"
+        );
+
+        // 仅 end_time（无 start_time）：返回 t0..=t7 全部 8 行
+        let tail = repo
+            .query_logs(&LogFilter {
+                end_time: Some(1_700_000_007),
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .expect("query");
+        assert_eq!(tail.len(), 8, "仅 end_time 返回 <= end 的全部行");
+        assert!(
+            tail.iter().all(|r| r.timestamp <= 1_700_000_007),
+            "不得有行越过上界"
+        );
+    }
+
     /// 存量库（手工建表、历史为空，缺 cost 列模拟 V0.1 旧库）：启动不报错、
     /// 不重复建表、缺列回填、补记 v1+v2 历史、可正常写入。
     #[tokio::test]

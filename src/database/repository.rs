@@ -277,6 +277,11 @@ impl Repository {
             values.push(start.into());
         }
 
+        if let Some(end) = filter.end_time {
+            query.push_str(" AND timestamp <= ?");
+            values.push(end.into());
+        }
+
         if let Some(ref vendor) = filter.vendor {
             query.push_str(" AND actual_vendor = ?");
             values.push(vendor.as_str().into());

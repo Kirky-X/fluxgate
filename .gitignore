@@ -19,6 +19,7 @@
 .DS_Store
 Thumbs.db
 desktop.ini
+*:Zone.Identifier
 
 # Python
 __pycache__/
@@ -52,6 +53,10 @@ openspec/
 
 # 项目特定产物（已归档或被取代）
 prd.md
+add.md
+trd.md
+ddd.md
+HUB_PROTOCOL.md
 docs/superpowers/
 python_mock_client/
 

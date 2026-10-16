@@ -41,6 +41,8 @@ fn test_config(grpc_port: u16) -> Config {
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
+            supports_batch: false,
+            chat_path: None,
             id: "openai_main".into(),
             name: "OpenAI Main".into(),
             type_: "openai".into(),

@@ -16,13 +16,13 @@ pub enum ClassifierError {
     Timeout,
     /// 引擎错误（加载失败/推理失败，含 F3 的不可用态）
     Engine(String),
-    /// 输出非法：非有限/越界 [0,1]/选项缺失
+    /// 输出非法：非有限/越界 \[0,1\]/选项缺失
     InvalidOutput,
     /// 熔断 open 期未调用直接拒绝（Guard 语义，非引擎错误）
     Unavailable,
 }
 
-/// 难度分类器：输出 P(high) ∈ [0,1]。实现方为潜在阻塞推理
+/// 难度分类器：输出 P(high) ∈ \[0,1\]。实现方为潜在阻塞推理
 ///（laya），调用方以 `spawn_blocking` + 超时包裹（见 vecboost_engine）
 pub trait DifficultyClassifier: Send + Sync {
     fn p_high(&self, features: &RuleFeatures) -> Result<f64, ClassifierError>;

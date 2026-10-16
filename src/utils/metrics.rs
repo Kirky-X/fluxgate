@@ -851,7 +851,7 @@ impl VendorMetrics {
         self.cache_input_tokens_sum = self.cache_input_tokens_sum.saturating_add(input_total);
     }
 
-    /// 缓存命中率 ∈ [0,1]；无输入样本时 0（除零安全）
+    /// 缓存命中率 ∈ \[0,1\]；无输入样本时 0（除零安全）
     pub fn cache_hit_ratio(&self) -> f64 {
         if self.cache_input_tokens_sum == 0 {
             return 0.0;

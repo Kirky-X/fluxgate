@@ -331,7 +331,7 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): **1419 tests pass, 0 failures** — 518 unit tests (inline in `src/`) plus 901 integration tests (51 test binaries under `tests/`, 49 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1470 tests pass, 0 failures** — 569 unit tests (inline in `src/`) plus 901 integration tests (51 test binaries under `tests/`, 49 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|

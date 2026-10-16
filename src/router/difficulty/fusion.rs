@@ -36,7 +36,7 @@ const W_EASY_PENALTY: f64 = 0.30;
 const EASY_CAP: f64 = 3.0;
 
 /// 规则计分 `r ∈ [0,1]`：各信号项加权求和，easy 命中线性扣减，全项封顶
-/// 防单信号刷分。输出钳 [0,1]
+/// 防单信号刷分。输出钳 \[0,1\]
 pub fn rule_score(f: &RuleFeatures) -> f64 {
     let hard = (f.hard_hits as f64).min(HARD_CAP) / HARD_CAP * W_HARD;
     let code = if f.code_fence { W_CODE_FENCE } else { 0.0 };

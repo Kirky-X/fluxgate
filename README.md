@@ -327,7 +327,7 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1419 个用例通过、0 失败**——单元测试 518 个（`src/` 内联）+ 集成测试 901 个（`tests/` 51 个测试二进制，default 口径实际编译 49 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：**1470 个用例通过、0 失败**——单元测试 569 个（`src/` 内联）+ 集成测试 901 个（`tests/` 51 个测试二进制，default 口径实际编译 49 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|

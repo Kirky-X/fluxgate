@@ -11,9 +11,9 @@
 //! - [`fusion`]：规则计分 + 融合 + 三档切分（纯函数，确定性）
 //! - [`classifier`]：分类器 trait + Mock
 //! - [`guard`]：熔断降级状态机
-//! - [`cache`]：定档结果缓存
-//! - [`vecboost_engine`]：`difficulty-classifier` feature 门控的 laya 适配
-//! - [`orchestrator`]：[`DifficultyRouter`] 编排与旁路判定
+//! - `cache`：定档结果缓存
+//! - `vecboost_engine`：`difficulty-classifier` feature 门控的 laya 适配
+//! - `orchestrator`：[`DifficultyRouter`] 编排与旁路判定
 
 pub mod classifier;
 pub mod features;

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! 难度定档特征提取（纯函数，零 IO）：结构特征 + 中英双语文本规则特征。
+//! 难度定档特征提取（纯函数，零 IO）：结构特征 + 可配置文本词法特征。
 //!
 //! 输入为请求 body（openai/anthropic 两种 messages 形态兼容），输出
 //! [`RuleFeatures`]。文本面**有界**：引擎 token 预算超限即拒绝而非截断
@@ -11,90 +11,38 @@
 use serde_json::Value;
 use std::borrow::Cow;
 
-/// 文本摘录上限（字符）：2KB 量级，远小于 laya 引擎 token 预算拒绝线
+/// 文本摘录上限（字符）：vecboost 决策引擎 token 预算的安全边距。
+/// 超预算引擎显性拒绝而非截断，故这是技术契约、不是业务策略，不随配置变化。
 pub const MAX_TEXT_CHARS: usize = 2048;
 
-/// hard 词表（中英双语）：推理/数学/代码/工程信号。命中即加分
-const HARD_WORDS: &[&str] = &[
-    // 中文
-    "证明",
-    "推导",
-    "求解",
-    "为什么",
-    "原理",
-    "推理",
-    "数学",
-    "积分",
-    "方程",
-    "矩阵",
-    "算法",
-    "复杂度",
-    "递归",
-    "并发",
-    "竞态",
-    "死锁",
-    "架构设计",
-    "重构",
-    "调优",
-    "根因",
-    // 英文
-    "prove",
-    "proof",
-    "derive",
-    "theorem",
-    "lemma",
-    "step by step",
-    "why does",
-    "explain why",
-    "optimize",
-    "complexity",
-    "recursion",
-    "concurrency",
-    "race condition",
-    "deadlock",
-    "algorithm",
-    "architecture",
-    "refactor",
-    "root cause",
-    "debug",
-    "stack trace",
-    "integral",
-    "equation",
-    "matrix",
-    "calculus",
-];
+/// 特征词法表借视图：由 orchestrator 从 `[routing.difficulty.lexicon]` 注入，
+/// 零拷贝、零分配；生产路径不得使用内置默认。
+#[derive(Debug, Clone, Copy)]
+pub struct Lexicon<'a> {
+    pub hard: &'a [String],
+    pub easy: &'a [String],
+    pub math_symbols: &'a [String],
+    pub question_marks: &'a [String],
+    pub code_fence_markers: &'a [String],
+}
 
-/// easy 词表（中英双语）：寒暄/机械转换/罗列信号。命中即减分
-const EASY_WORDS: &[&str] = &[
-    // 中文
-    "你好",
-    "您好",
-    "谢谢",
-    "感谢",
-    "再见",
-    "在吗",
-    "总结一下",
-    "翻译",
-    "改写",
-    "润色",
-    "列出",
-    "帮我写个标题",
-    "缩写",
-    // 英文
-    "hello",
-    "hi there",
-    "thanks",
-    "thank you",
-    "goodbye",
-    "summarize",
-    "summarise",
-    "translate",
-    "rewrite",
-    "proofread",
-    "paraphrase",
-    "list all",
-    "make a title",
-];
+impl<'a> Lexicon<'a> {
+    pub fn new(
+        hard: &'a [String],
+        easy: &'a [String],
+        math_symbols: &'a [String],
+        question_marks: &'a [String],
+        code_fence_markers: &'a [String],
+    ) -> Self {
+        Self {
+            hard,
+            easy,
+            math_symbols,
+            question_marks,
+            code_fence_markers,
+        }
+    }
+}
 
 /// 规则特征快照：结构维（与 LinUCB 5 维同源）+ 文本规则维
 #[derive(Debug, Clone, PartialEq)]
@@ -137,8 +85,8 @@ impl RuleFeatures {
 
 /// 从请求 body 提取规则特征。兼容 openai（`messages[].content` 字符串/分块）
 /// 与 anthropic（`system` + 分块 `{type:"text",text:..}`）两种形态；
-/// 任何畸形输入回落中性特征，不 panic
-pub fn extract_features(body: &Value) -> RuleFeatures {
+/// 任何畸形输入回落中性特征，不 panic。词法表由配置注入。
+pub fn extract_features(body: &Value, lexicon: Lexicon<'_>) -> RuleFeatures {
     let mut f = RuleFeatures::neutral();
     let Some(obj) = body.as_object() else {
         return f;
@@ -157,11 +105,14 @@ pub fn extract_features(body: &Value) -> RuleFeatures {
     f.stream = obj.get("stream").and_then(Value::as_bool).unwrap_or(false);
 
     let text = extract_text(body);
-    f.hard_hits = HARD_WORDS.iter().map(|w| count_occurrences(&text, w)).sum();
-    f.easy_hits = EASY_WORDS.iter().map(|w| count_occurrences(&text, w)).sum();
-    f.question_marks = text.matches('?').count() as u32 + text.matches('？').count() as u32;
-    f.math_symbols = text.chars().filter(|&c| is_math_symbol(c)).count() as u32;
-    f.code_fence = text.contains("```");
+    f.hard_hits = count_hits(&text, lexicon.hard);
+    f.easy_hits = count_hits(&text, lexicon.easy);
+    f.math_symbols = count_hits(&text, lexicon.math_symbols);
+    f.question_marks = count_hits(&text, lexicon.question_marks);
+    f.code_fence = lexicon
+        .code_fence_markers
+        .iter()
+        .any(|marker| text.contains(marker.as_str()));
     f.text = text;
     f
 }
@@ -228,23 +179,28 @@ fn sanitize_char(c: char) -> char {
     }
 }
 
-/// body 结构长度估算（免分配、封顶 [`BODY_CHARS_CAP`] 即早停）：
-/// rule_score 只消费 min(body_chars, 8000) 的饱和语义，估算值只需在该
-/// 语义下单调够用，不追求与 serde 序列化逐字节相等
+/// body 结构长度估算（免分配、封顶 `CAP` 即早停）：`rule_score` 只消费
+/// `min(body_chars, scoring.length_cap)` 的饱和语义，估算值只需单调够用，
+/// 不追求与 serde 序列化逐字节相等。`CAP` 高于 `length_cap` 上限 8000，
+/// 留出结构/引号余量。
 fn estimate_body_chars(body: &Value) -> usize {
     const CAP: usize = 9000;
+    // 节点权重只服务单调估算，不追求字节相等
+    const NULL_CHARS: usize = 4;
+    const BOOL_CHARS: usize = 5;
+    const CONTAINER_CHARS: usize = 2;
     fn walk(v: &Value, acc: &mut usize) {
         if *acc >= CAP {
             return;
         }
         match v {
-            Value::Null => *acc += 4,
-            Value::Bool(_) => *acc += 5,
+            Value::Null => *acc += NULL_CHARS,
+            Value::Bool(_) => *acc += BOOL_CHARS,
             Value::Number(n) => *acc += n.to_string().len(),
             // 单节点即可超界：按剩余额度钳入（否则 1MB 单串一步击穿 CAP）
             Value::String(s) => *acc += (CAP - *acc).min(s.chars().count()),
             Value::Array(items) => {
-                *acc += 2;
+                *acc += CONTAINER_CHARS;
                 for item in items {
                     walk(item, acc);
                     if *acc >= CAP {
@@ -253,9 +209,9 @@ fn estimate_body_chars(body: &Value) -> usize {
                 }
             }
             Value::Object(fields) => {
-                *acc += 2;
+                *acc += CONTAINER_CHARS;
                 for (key, value) in fields {
-                    *acc += key.len() + 2;
+                    *acc += key.len() + CONTAINER_CHARS;
                     walk(value, acc);
                     if *acc >= CAP {
                         return;
@@ -289,11 +245,11 @@ fn message_text<'a>(content: Option<&'a Value>) -> Option<Cow<'a, str>> {
     }
 }
 
-fn is_math_symbol(c: char) -> bool {
-    matches!(
-        c,
-        '+' | '*' | '/' | '^' | '=' | '∫' | '∑' | '√' | 'π' | '≤' | '≥' | '≠' | '∞'
-    )
+fn count_hits(text: &str, tokens: &[String]) -> u32 {
+    tokens
+        .iter()
+        .map(|token| count_occurrences(text, token.as_str()))
+        .sum()
 }
 
 fn count_occurrences(haystack: &str, needle: &str) -> u32 {
@@ -306,13 +262,28 @@ fn count_occurrences(haystack: &str, needle: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DifficultyLexiconSection;
     use serde_json::json;
+
+    fn extract(body: &Value) -> RuleFeatures {
+        let lexicon = DifficultyLexiconSection::default();
+        extract_features(
+            body,
+            Lexicon::new(
+                lexicon.hard_words(),
+                lexicon.easy_words(),
+                lexicon.math_symbols(),
+                lexicon.question_marks(),
+                lexicon.code_fence_markers(),
+            ),
+        )
+    }
 
     #[test]
     fn empty_body_is_neutral() {
-        assert_eq!(extract_features(&Value::Null), RuleFeatures::neutral());
+        assert_eq!(extract(&Value::Null), RuleFeatures::neutral());
         // 空 object：body_chars = "{}"（2），其余维度中性
-        let f = extract_features(&json!({}));
+        let f = extract(&json!({}));
         assert_eq!(f.num_messages, 0);
         assert_eq!(f.hard_hits, 0);
         assert_eq!(f.easy_hits, 0);
@@ -321,7 +292,7 @@ mod tests {
 
     #[test]
     fn chinese_hard_word_hits() {
-        let f = extract_features(&json!({
+        let f = extract(&json!({
             "messages": [{"role": "user", "content": "请证明这个定理，并给出推导过程"}]
         }));
         assert!(f.hard_hits >= 2, "证明+推导至少各一命中: {f:?}");
@@ -330,7 +301,7 @@ mod tests {
 
     #[test]
     fn english_hard_word_and_code_fence_hit() {
-        let f = extract_features(&json!({
+        let f = extract(&json!({
             "messages": [{"role": "user", "content": "Prove the theorem step by step.\n```rust\nfn main() {}\n```"}]
         }));
         assert!(f.hard_hits >= 2);
@@ -339,7 +310,7 @@ mod tests {
 
     #[test]
     fn easy_word_hits() {
-        let f = extract_features(&json!({
+        let f = extract(&json!({
             "messages": [{"role": "user", "content": "hello, thanks! 请帮我翻译这句话"}]
         }));
         assert!(f.easy_hits >= 3, "hello+thanks+翻译: {f:?}");
@@ -347,7 +318,7 @@ mod tests {
 
     #[test]
     fn structure_flags_and_math_symbols() {
-        let f = extract_features(&json!({
+        let f = extract(&json!({
             "stream": true,
             "tools": [{"type": "function"}],
             "messages": [
@@ -367,7 +338,7 @@ mod tests {
     #[test]
     fn anthropic_block_content_and_truncation() {
         let long = "长".repeat(MAX_TEXT_CHARS + 500);
-        let f = extract_features(&json!({
+        let f = extract(&json!({
             "system": "sys",
             "messages": [{"role": "user", "content": [{"type": "text", "text": long}]}]
         }));
@@ -378,7 +349,7 @@ mod tests {
     fn control_chars_sanitized_before_text_use() {
         // \u001b（ESC/ANSI 色彩码）等控制字符必须消毒——vecboost 对 state
         // 字符串叶子的控制字符检查是显性拒绝
-        let f = extract_features(&json!({
+        let f = extract(&json!({
             "messages": [{"role": "user", "content": "a\u{1}b\u{1b}c\td\ne\rf"}]
         }));
         assert!(
@@ -396,18 +367,36 @@ mod tests {
         // 巨型 body：估算封顶（无全量序列化分配），小 body 有限值
         let huge = json!({"messages": [{"role": "user",
             "content": "x".repeat(1_000_000)}]});
-        let f = extract_features(&huge);
+        let f = extract(&huge);
         assert!(f.body_chars <= 9000, "估算必须封顶: {}", f.body_chars);
-        let small = extract_features(&json!({"messages": [{"role": "user", "content": "hi"}]}));
+        let small = extract(&json!({"messages": [{"role": "user", "content": "hi"}]}));
         assert!(small.body_chars > 0 && small.body_chars < 9000);
     }
 
     #[test]
     fn malformed_content_falls_back_neutral() {
-        let f = extract_features(&json!({
+        let f = extract(&json!({
             "messages": [{"role": "user", "content": {"unexpected": 1}}]
         }));
         assert_eq!(f.hard_hits, 0);
         assert!(f.text.is_empty(), "畸形 content 不产生文本");
+    }
+
+    #[test]
+    fn custom_lexicon_replaces_builtin_signals() {
+        let hard = vec!["量子".to_string()];
+        let easy: Vec<String> = Vec::new();
+        let math = vec!["§".to_string()];
+        let marks = vec!["！".to_string()];
+        let fences = vec!["~~~".to_string()];
+        let f = extract_features(
+            &json!({"messages": [{"role": "user", "content": "证明 量子 § ！ ~~~"}]}),
+            Lexicon::new(&hard, &easy, &math, &marks, &fences),
+        );
+        assert_eq!(f.hard_hits, 1, "内置 证明 不再命中，仅自定义 量子 命中");
+        assert_eq!(f.easy_hits, 0);
+        assert_eq!(f.math_symbols, 1);
+        assert_eq!(f.question_marks, 1);
+        assert!(f.code_fence);
     }
 }

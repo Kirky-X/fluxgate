@@ -14,11 +14,11 @@ mod common;
 mod tests {
     use crate::common;
     use fluxgate::config::{
-        Config, ConfigManager, DatabaseConfig, DifficultySection, DifficultyTiers, ModelConfig,
-        ServerConfig,
+        Config, ConfigManager, DatabaseConfig, DifficultyScoringSection, DifficultySection,
+        DifficultyTiers, ModelConfig, ServerConfig, Tier,
     };
     use fluxgate::router::difficulty::{
-        DecisionCache, DifficultyRouter, Guard, MockDifficultyClassifier,
+        DecisionCache, DifficultyRouter, Guard, MockDifficultyClassifier, TierPath,
     };
     use fluxgate::router::Router;
     use fluxgate::vendor::VendorManager;
@@ -77,6 +77,25 @@ mod tests {
                 high: "reasoning".to_string(),
             },
             classifier: Default::default(),
+            ..DifficultySection::default()
+        };
+        config
+    }
+
+    fn hot_reload_config() -> Config {
+        let mut config = difficulty_config();
+        config.routing.difficulty.w_clf = 0.0;
+        config.routing.difficulty.w_rule = 1.0;
+        config.routing.difficulty.scoring = DifficultyScoringSection {
+            w_hard: 1.0,
+            w_code_fence: 0.0,
+            w_math: 0.0,
+            w_questions: 0.0,
+            w_messages: 0.0,
+            w_tools: 0.0,
+            w_length: 0.0,
+            w_easy_penalty: 0.0,
+            ..Default::default()
         };
         config
     }
@@ -147,6 +166,48 @@ mod tests {
         // 只读：explain 不写缓存
         let cached = explanation["cached"].as_bool().unwrap();
         assert!(!cached);
+    }
+
+    #[tokio::test]
+    async fn lexicon_and_threshold_hot_reload_take_effect_immediately() {
+        let (manager, _router, difficulty) = router_with(hot_reload_config(), 0.0);
+
+        let high_payload = body("证明 推导 求解 算法");
+        let first = difficulty
+            .classify("auto", &high_payload)
+            .await
+            .expect("首次定档");
+        assert_eq!(first.tier, Tier::High);
+
+        // 词表热更：四个 hard 词被替换为不存在词 → 命中归零，立即降档
+        let mut next = manager.get_config();
+        next.routing.difficulty.lexicon.hard = Some(vec!["不存在的词".to_string()]);
+        manager.swap_memory(next).expect("词表热更");
+        let second = difficulty
+            .classify("auto", &high_payload)
+            .await
+            .expect("热更后定档");
+        assert_ne!(second.path, TierPath::CacheHit, "词表变化必须换特征键");
+        assert_eq!(second.tier, Tier::Low);
+
+        // 同一词表/同一文本/同一命中数，只改阈值：验证配置指纹换键
+        let one_hit = body("不存在的词");
+        let before = difficulty
+            .classify("auto", &one_hit)
+            .await
+            .expect("阈值前定档");
+        assert_eq!(before.tier, Tier::Low);
+
+        let mut next = manager.get_config();
+        next.routing.difficulty.score_low = 0.1;
+        next.routing.difficulty.score_high = 0.15;
+        manager.swap_memory(next).expect("阈值热更");
+        let after = difficulty
+            .classify("auto", &one_hit)
+            .await
+            .expect("阈值后定档");
+        assert_ne!(after.path, TierPath::CacheHit, "阈值变化必须换配置指纹");
+        assert_eq!(after.tier, Tier::High);
     }
 
     #[tokio::test]

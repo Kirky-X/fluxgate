@@ -3,49 +3,49 @@
 
 //! 定档纯函数：规则计分 `r`、融合 `S = (w_clf·p + w_rule·r)/(w_clf+w_rule)`、
 //! 三档切分与中带策略。全部确定性、无 IO 无锁（规则7：阈值与切分是
-//! 确定性逻辑，模型只产出概率）。契约：阈值已过 `validate_difficulty`
-//!（score_low < score_high、权重不全零），本层不重复校验、只做有限性防御。
+//! 确定性逻辑，模型只产出概率）。契约：阈值/权重已过 `validate_difficulty`
+//!（score_low < score_high、权重不全零、计分项数值域合法），本层不重复
+//! 校验、只做有限性防御。
 
-use crate::config::Tier;
+use crate::config::{DifficultyScoringSection, Tier};
 
 use super::features::RuleFeatures;
 
-// ---- 规则计分常量（v1 源码内置，不进 toml；调整走版本迭代）----
-/// hard 词命中项：上限 5 次封顶，占 0.40
-const W_HARD: f64 = 0.40;
-const HARD_CAP: f64 = 5.0;
-/// 代码围栏出现：固定 0.15
-const W_CODE_FENCE: f64 = 0.15;
-/// 数学符号密度：12 个封顶，占 0.15
-const W_MATH: f64 = 0.15;
-const MATH_CAP: f64 = 12.0;
-/// 多问拆解：3 问封顶，占 0.10
-const W_QUESTIONS: f64 = 0.10;
-const QUESTION_CAP: f64 = 3.0;
-/// 结构维（消息数 + tools）：合计 0.10
-const W_MESSAGES: f64 = 0.05;
-const MESSAGE_CAP: f64 = 10.0;
-const W_TOOLS: f64 = 0.05;
-/// 请求体长度：8000 字符封顶，占 0.10
-const W_LENGTH: f64 = 0.10;
-const LENGTH_CAP: f64 = 8000.0;
-/// easy 词惩罚：3 次封顶，最多扣 0.30
-const W_EASY_PENALTY: f64 = 0.30;
-const EASY_CAP: f64 = 3.0;
-
 /// 规则计分 `r ∈ [0,1]`：各信号项加权求和，easy 命中线性扣减，全项封顶
-/// 防单信号刷分。输出钳 \[0,1\]
-pub fn rule_score(f: &RuleFeatures) -> f64 {
-    let hard = (f.hard_hits as f64).min(HARD_CAP) / HARD_CAP * W_HARD;
-    let code = if f.code_fence { W_CODE_FENCE } else { 0.0 };
-    let math = (f.math_symbols as f64).min(MATH_CAP) / MATH_CAP * W_MATH;
-    let questions = (f.question_marks as f64).min(QUESTION_CAP) / QUESTION_CAP * W_QUESTIONS;
-    let messages = (f.num_messages as f64).min(MESSAGE_CAP) / MESSAGE_CAP * W_MESSAGES;
-    let tools = if f.has_tools { W_TOOLS } else { 0.0 };
-    let length = (f.body_chars as f64).min(LENGTH_CAP) / LENGTH_CAP * W_LENGTH;
-    let easy_penalty = (f.easy_hits as f64).min(EASY_CAP) / EASY_CAP * W_EASY_PENALTY;
+/// 防单信号刷分。权重/封顶来自 `[routing.difficulty.scoring]`（热读）。
+pub fn rule_score(f: &RuleFeatures, w: &DifficultyScoringSection) -> f64 {
+    let hard = normalized(f.hard_hits as f64, w.hard_cap) * weight(w.w_hard);
+    let code = if f.code_fence {
+        weight(w.w_code_fence)
+    } else {
+        0.0
+    };
+    let math = normalized(f.math_symbols as f64, w.math_cap) * weight(w.w_math);
+    let questions = normalized(f.question_marks as f64, w.question_cap) * weight(w.w_questions);
+    let messages = normalized(f.num_messages as f64, w.message_cap) * weight(w.w_messages);
+    let tools = if f.has_tools { weight(w.w_tools) } else { 0.0 };
+    let length = normalized(f.body_chars as f64, w.length_cap) * weight(w.w_length);
+    let easy_penalty = normalized(f.easy_hits as f64, w.easy_cap) * weight(w.w_easy_penalty);
 
     (hard + code + math + questions + messages + tools + length - easy_penalty).clamp(0.0, 1.0)
+}
+
+/// 归一化命中数：cap 非有限/非正时返回 0（绕过校验的直构配置也不得产生 NaN）
+fn normalized(value: f64, cap: f64) -> f64 {
+    if cap.is_finite() && cap > 0.0 {
+        value.min(cap) / cap
+    } else {
+        0.0
+    }
+}
+
+/// 非有限/负权重按 0 贡献
+fn weight(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        0.0
+    }
 }
 
 /// 融合分 `S = (w_clf·p + w_rule·r) / (w_clf + w_rule) ∈ [0,1]`。
@@ -149,15 +149,50 @@ mod tests {
         }
     }
 
+    fn scoring() -> DifficultyScoringSection {
+        DifficultyScoringSection::default()
+    }
+
     #[test]
     fn rule_score_bounds_and_easy_penalty() {
-        assert_eq!(rule_score(&features(0, 0)), 0.0, "零信号 → 0");
-        assert_eq!(rule_score(&features(0, 100)), 0.0, "纯 easy 扣到下限钳 0");
-        let hard_only = rule_score(&features(100, 0));
-        assert!(
-            (hard_only - W_HARD).abs() < 1e-12,
-            "hard 封顶单项 = 0.35: {hard_only}"
+        assert_eq!(rule_score(&features(0, 0), &scoring()), 0.0, "零信号 → 0");
+        assert_eq!(
+            rule_score(&features(0, 100), &scoring()),
+            0.0,
+            "纯 easy 扣到下限钳 0"
         );
+        let hard_only = rule_score(&features(100, 0), &scoring());
+        assert!(
+            (hard_only - scoring().w_hard).abs() < 1e-12,
+            "hard 封顶单项 = 0.40: {hard_only}"
+        );
+    }
+
+    #[test]
+    fn rule_score_uses_config_and_is_fail_safe() {
+        let no_positive = DifficultyScoringSection {
+            w_hard: 0.0,
+            w_code_fence: 0.0,
+            w_math: 0.0,
+            w_questions: 0.0,
+            w_messages: 0.0,
+            w_tools: 0.0,
+            w_length: 0.0,
+            w_easy_penalty: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            rule_score(&features(100, 0), &no_positive),
+            0.0,
+            "全权重归零 → r=0"
+        );
+
+        let bad_cap = DifficultyScoringSection {
+            hard_cap: f64::NAN,
+            ..Default::default()
+        };
+        let score = rule_score(&features(100, 0), &bad_cap);
+        assert!(score.is_finite(), "非法封顶不得把 r 变成 NaN: {score}");
     }
 
     #[test]
@@ -174,7 +209,7 @@ mod tests {
             stream: false,
             text: String::new(),
         };
-        assert_eq!(rule_score(&f), 1.0, "全维满信号钳上限");
+        assert_eq!(rule_score(&f, &scoring()), 1.0, "全维满信号钳上限");
     }
 
     #[test]

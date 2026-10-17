@@ -279,6 +279,10 @@ fn config_toml_example_parses() {
     ] {
         assert!(content.contains(key), "config.example.toml 示例缺 {key}");
     }
+    // 难度定档新增子段：缺省词法表 = 内置默认，计分 = 历史常量
+    assert!(config.routing.difficulty.lexicon.hard.is_none());
+    assert_eq!(config.routing.difficulty.scoring.w_hard, 0.40);
+    assert_eq!(config.routing.difficulty.scoring.length_cap, 8000.0);
     // [docs] 段：默认关闭（/api-docs 与 Swagger UI 路由不存在）
     assert!(
         !config.docs.enabled,
@@ -459,6 +463,13 @@ enabled = true
 low = "surface-probe-low"
 mid = "surface-probe-mid"
 high = "surface-probe-high"
+
+[routing.difficulty.lexicon]
+hard = ["surface-probe-hard"]
+easy = ["surface-probe-easy"]
+math_symbols = ["+"]
+question_marks = ["?"]
+code_fence_markers = ["```"]
 "#;
 
 /// 键名为「用户数据」而非配置字段的映射（`extra_headers` 的键是部署自定义头名，

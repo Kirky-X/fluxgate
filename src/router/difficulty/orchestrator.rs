@@ -16,7 +16,7 @@ use tokio::time::timeout;
 
 use super::cache::{CachedDecision, DecisionCache};
 use super::classifier::DifficultyClassifier;
-use super::features::{extract_features, RuleFeatures};
+use super::features::{extract_features, Lexicon, RuleFeatures};
 use super::fusion::{decide_band, fuse, parse_mid_band_policy, rule_score, MidBandPolicy};
 use super::guard::{Availability, Guard};
 
@@ -95,66 +95,50 @@ impl DifficultyRouter {
     /// 定档主入口。返回 None = 不定档（未启用 / groups 未命中），调用方
     /// 原样直通请求模型名；Some = 请求方 model 应改写为 `rewritten_model`
     pub async fn classify(&self, model: &str, body: &Value) -> Option<TierDecision> {
-        let (
-            w_clf,
-            w_rule,
-            score_low,
-            score_high,
-            mid,
-            policy,
-            failure_threshold,
-            probe_interval_secs,
-            timeout_ms,
-            config_snapshot,
-        ) = {
-            let config = self.config.read();
-            let d = &config.routing.difficulty;
-            if !d.enabled {
-                return None;
-            }
-            // F13：groups 在读锁作用域内借用匹配，未命中（多数流量）零克隆
-            let normalized = model.trim().to_ascii_lowercase();
-            if !d
-                .groups
-                .iter()
-                .any(|g| g.trim().to_ascii_lowercase() == normalized)
-            {
-                return None;
-            }
-            (
-                d.w_clf,
-                d.w_rule,
-                d.score_low,
-                d.score_high,
-                d.tiers.mid.clone(),
-                d.mid_band_policy.clone(),
-                d.classifier.failure_threshold,
-                d.classifier.probe_interval_secs,
-                d.classifier.timeout_ms,
-                self.config.read(), // 无锁 Arc 快照，tier_name 复用免二次读
-            )
-        };
+        // 单一配置快照：阈值/权重/词法表/档位名同代读取，热更换代不会撕裂
+        let config = self.config.read();
+        let d = &config.routing.difficulty;
+        if !d.enabled {
+            return None;
+        }
+        // F13：groups 在快照内借用匹配，未命中（多数流量）零克隆
+        let normalized = model.trim().to_ascii_lowercase();
+        if !d
+            .groups
+            .iter()
+            .any(|g| g.trim().to_ascii_lowercase() == normalized)
+        {
+            return None;
+        }
         // 熔断参数热读（spec difficulty-degradation Constraints）
-        self.guard
-            .update_params(failure_threshold, probe_interval_secs);
+        self.guard.update_params(
+            d.classifier.failure_threshold,
+            d.classifier.probe_interval_secs,
+        );
 
         let started = Instant::now();
-        let features = extract_features(body);
+        let features = extract_features(
+            body,
+            Lexicon::new(
+                d.lexicon.hard_words(),
+                d.lexicon.easy_words(),
+                d.lexicon.math_symbols(),
+                d.lexicon.question_marks(),
+                d.lexicon.code_fence_markers(),
+            ),
+        );
         if body.as_object().is_none() {
             // F7：畸形 body → 中性特征续算（显性计数）
             self.metrics.record_difficulty_features_degraded();
         }
-        let key = DecisionCache::key(&features);
+        let key = DecisionCache::key(&features, DecisionCache::decision_config_fingerprint(d));
 
         if let Some(cached) = self.cache.get(&key).await {
             self.metrics
                 .record_difficulty_decision(false, true, cached.tier, started.elapsed());
             return Some(TierDecision {
                 tier: cached.tier,
-                rewritten_model: Self::tier_name_of(
-                    &config_snapshot.routing.difficulty.tiers,
-                    cached.tier,
-                ),
+                rewritten_model: Self::tier_name_of(&d.tiers, cached.tier),
                 score: cached.score,
                 p_clf: None,
                 r_rule: cached.r_rule,
@@ -162,23 +146,25 @@ impl DifficultyRouter {
             });
         }
 
-        let r = rule_score(&features);
+        let r = rule_score(&features, &d.scoring);
 
         // 分类调用：熔断放行才调（F5/F6）；spawn_blocking 包住阻塞推理，
         // timeout 兜住挂死。失败/超时 → 本次退纯规则 + 计失败
-        let p_clf = self.classify_with_guard(&features, w_clf, timeout_ms).await;
+        let p_clf = self
+            .classify_with_guard(&features, d.w_clf, d.classifier.timeout_ms)
+            .await;
 
         // 无概率（未接线/降级）→ w_clf 记 0：S 退化为 r（纯规则）
         let score = match p_clf {
-            Some(p) => fuse(w_clf, p, w_rule, r),
-            None => fuse(0.0, 0.0, w_rule, r),
+            Some(p) => fuse(d.w_clf, p, d.w_rule, r),
+            None => fuse(0.0, 0.0, d.w_rule, r),
         };
         let tier = decide_band(
             score,
-            score_low,
-            score_high,
-            mid.is_some(),
-            parse_mid_band_policy(&policy).unwrap_or(MidBandPolicy::Strong),
+            d.score_low,
+            d.score_high,
+            d.tiers.mid.is_some(),
+            parse_mid_band_policy(&d.mid_band_policy).unwrap_or(MidBandPolicy::Strong),
         );
 
         self.cache
@@ -197,7 +183,7 @@ impl DifficultyRouter {
 
         Some(TierDecision {
             tier,
-            rewritten_model: Self::tier_name_of(&config_snapshot.routing.difficulty.tiers, tier),
+            rewritten_model: Self::tier_name_of(&d.tiers, tier),
             score,
             p_clf,
             r_rule: r,
@@ -281,14 +267,7 @@ impl DifficultyRouter {
         }
     }
 
-    /// 档位 → 抽象模型名。Mid 仅在 mid 配置时由 decide_band 产出；
-    /// 防御分支回退 high 名（不产生空改写）
-    fn tier_name(&self, tier: Tier) -> String {
-        let config = self.config.read();
-        Self::tier_name_of(&config.routing.difficulty.tiers, tier)
-    }
-
-    /// 借用版档位名（classify 热路径复用已持有的 config 快照，免二次读）
+    /// 档位 → 抽象模型名（热路径复用已持有的 config 快照，免二次读）
     fn tier_name_of(tiers: &crate::config::DifficultyTiers, tier: Tier) -> String {
         match tier {
             Tier::Low => tiers.low.clone(),
@@ -302,25 +281,14 @@ impl DifficultyRouter {
     /// groups 未命中 → None）。只读观测：不写缓存、不改熔断状态机、分类
     /// 推理为纯读（仅熔断放行时咨询，失败不记账仅报 error 字段）
     pub async fn explain(&self, model: &str, body: &Value) -> Option<serde_json::Value> {
-        let (groups, w_clf, w_rule, score_low, score_high, mid, policy, timeout_ms) = {
-            let config = self.config.read();
-            let d = &config.routing.difficulty;
-            if !d.enabled {
-                return None;
-            }
-            (
-                d.groups.clone(),
-                d.w_clf,
-                d.w_rule,
-                d.score_low,
-                d.score_high,
-                d.tiers.mid.clone(),
-                d.mid_band_policy.clone(),
-                d.classifier.timeout_ms,
-            )
-        };
+        let config = self.config.read();
+        let d = &config.routing.difficulty;
+        if !d.enabled {
+            return None;
+        }
         let normalized = model.trim().to_ascii_lowercase();
-        if !groups
+        if !d
+            .groups
             .iter()
             .any(|g| g.trim().to_ascii_lowercase() == normalized)
         {
@@ -328,20 +296,29 @@ impl DifficultyRouter {
         }
 
         let started = Instant::now();
-        let features = extract_features(body);
-        let key = DecisionCache::key(&features);
+        let features = extract_features(
+            body,
+            Lexicon::new(
+                d.lexicon.hard_words(),
+                d.lexicon.easy_words(),
+                d.lexicon.math_symbols(),
+                d.lexicon.question_marks(),
+                d.lexicon.code_fence_markers(),
+            ),
+        );
+        let key = DecisionCache::key(&features, DecisionCache::decision_config_fingerprint(d));
         let cached = self.cache.get(&key).await;
 
-        let r = rule_score(&features);
+        let r = rule_score(&features, &d.scoring);
         let availability = self.guard.check(Instant::now());
         let (p_clf, classifier_error) = match (&self.classifier, availability) {
             (Some(classifier), Availability::Available | Availability::Probe)
-                if w_clf > 0.0 && w_clf.is_finite() =>
+                if d.w_clf > 0.0 && d.w_clf.is_finite() =>
             {
                 let classifier = classifier.clone();
                 let features = features.clone();
                 match timeout(
-                    Duration::from_millis(timeout_ms.max(1)),
+                    Duration::from_millis(d.classifier.timeout_ms.max(1)),
                     tokio::task::spawn_blocking(move || classifier.p_high(&features)),
                 )
                 .await
@@ -375,34 +352,34 @@ impl DifficultyRouter {
         };
 
         let score = match p_clf {
-            Some(p) => fuse(w_clf, p, w_rule, r),
-            None => fuse(0.0, 0.0, w_rule, r),
+            Some(p) => fuse(d.w_clf, p, d.w_rule, r),
+            None => fuse(0.0, 0.0, d.w_rule, r),
         };
         let tier = decide_band(
             score,
-            score_low,
-            score_high,
-            mid.is_some(),
-            parse_mid_band_policy(&policy).unwrap_or(MidBandPolicy::Strong),
+            d.score_low,
+            d.score_high,
+            d.tiers.mid.is_some(),
+            parse_mid_band_policy(&d.mid_band_policy).unwrap_or(MidBandPolicy::Strong),
         );
 
         Some(serde_json::json!({
             "model_input": model,
             "tier": crate::router::difficulty::tier_label(tier),
-            "rewritten_model": self.tier_name(tier),
+            "rewritten_model": Self::tier_name_of(&d.tiers, tier),
             "score": score,
             "score_breakdown": {
-                "w_clf": w_clf,
-                "w_rule": w_rule,
+                "w_clf": d.w_clf,
+                "w_rule": d.w_rule,
                 "p_clf": p_clf,
                 "r_rule": r,
                 "formula": "S = (w_clf·p + w_rule·r) / (w_clf + w_rule)",
             },
             "thresholds": {
-                "score_low": score_low,
-                "score_high": score_high,
-                "mid_band_policy": policy,
-                "mid_configured": mid.is_some(),
+                "score_low": d.score_low,
+                "score_high": d.score_high,
+                "mid_band_policy": d.mid_band_policy.clone(),
+                "mid_configured": d.tiers.mid.is_some(),
             },
             "cached": cached.is_some(),
             "cached_decision": cached.as_ref().map(|c| serde_json::json!({
@@ -483,6 +460,7 @@ mod tests {
                 high: "reasoning".to_string(),
             },
             classifier: Default::default(),
+            ..DifficultySection::default()
         };
         config
     }

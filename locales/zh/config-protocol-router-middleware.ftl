@@ -86,6 +86,10 @@ config-difficulty-tier-no-candidate = [routing.difficulty.tiers] { $tier } 档�
 config-difficulty-group-collision = [routing.difficulty] 分组名「{ $name }」与真实 model_id 撞名
 config-difficulty-tiers-identical = [routing.difficulty] 各档候选集完全相同，定档对厂商选择无效果（仅提示）
 config-difficulty-field-invalid = [routing.difficulty] 字段 { $field } 的值 { $value } 非法（权重须非负有限、阈值须 ∈ [0,1]、timeout_ms ∈ [1,60000]、failure_threshold ≥ 1、engine 须为 candle 或 onnx）
+config-difficulty-lexicon-entry-invalid = [routing.difficulty.lexicon] { $field } 第 { $index } 项非法（须非空、无首尾空白/控制字符，且不超过 { $max } 字符）
+config-difficulty-lexicon-duplicate = [routing.difficulty.lexicon] { $field } 存在重复项「{ $entry }」
+config-difficulty-lexicon-too-many = [routing.difficulty.lexicon] { $field } 条目数 { $count } 超过上限 { $max }
+config-difficulty-scoring-invalid = [routing.difficulty.scoring] 字段 { $field } 的值 { $value } 非法（权重须为 [0,1] 内有限值；封顶须为正有限值；length_cap ∈ [1,8000]）
 
 # ---- router/difficulty/orchestrator.rs 熔断内分类降级运维日志 ----
 # F5/F6 降级留痕：全部为 tracing DEBUG，仅熔断关闭恢复时升 INFO。

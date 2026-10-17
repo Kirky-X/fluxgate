@@ -112,6 +112,7 @@ mod tests {
                 high: "reasoning".to_string(),
             },
             classifier: Default::default(),
+            ..DifficultySection::default()
         };
         config
     }

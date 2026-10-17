@@ -86,6 +86,10 @@ config-difficulty-tier-no-candidate = [routing.difficulty.tiers] tier { $tier } 
 config-difficulty-group-collision = [routing.difficulty] group name "{ $name }" collides with a real model_id
 config-difficulty-tiers-identical = [routing.difficulty] all tiers resolve to the identical candidate set; difficulty routing has no vendor-selection effect (advisory)
 config-difficulty-field-invalid = [routing.difficulty] field { $field } has invalid value { $value } (weights must be finite non-negative, thresholds within [0,1], timeout_ms within [1,60000], failure_threshold >= 1, engine must be candle or onnx)
+config-difficulty-lexicon-entry-invalid = [routing.difficulty.lexicon] { $field } entry #{ $index } is invalid (must be non-empty, without leading/trailing whitespace or control characters, and at most { $max } chars)
+config-difficulty-lexicon-duplicate = [routing.difficulty.lexicon] { $field } contains duplicate entry "{ $entry }"
+config-difficulty-lexicon-too-many = [routing.difficulty.lexicon] { $field } has { $count } entries (max { $max })
+config-difficulty-scoring-invalid = [routing.difficulty.scoring] field { $field } has invalid value { $value } (weights must be finite in [0,1]; caps must be finite and > 0; length_cap within [1,8000])
 
 # ---- router/difficulty/orchestrator.rs 熔断内分类降级运维日志 ----
 # F5/F6 降级留痕：全部为 tracing DEBUG，仅熔断关闭恢复时升 INFO。

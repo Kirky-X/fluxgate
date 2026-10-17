@@ -1,7 +1,10 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use super::{Config, ConfigManager};
+use super::{
+    Config, ConfigManager, DifficultySection, MAX_DIFFICULTY_LENGTH_CAP,
+    MAX_DIFFICULTY_LEXICON_ENTRIES, MAX_DIFFICULTY_LEXICON_ENTRY_CHARS,
+};
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use confers::interface::ConfigProvider;
@@ -252,6 +255,10 @@ fn validate_difficulty(config: &Config) -> Result<(), GateError> {
         });
     }
 
+    // V11/V12: 词法表与规则计分数值域
+    validate_difficulty_lexicon(d)?;
+    validate_difficulty_scoring(d)?;
+
     // 真实 model_id 集（CI 折叠）——档位/分组只能指向抽象名，撞名即配置歧义
     let model_ids: std::collections::HashSet<String> = config
         .vendors
@@ -277,6 +284,113 @@ fn validate_difficulty(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
+    }
+    Ok(())
+}
+
+/// V11：词法表条目校验（五个列表共用一套规则）——条目数上限、非空、
+/// 无首尾空白/控制字符、单条字符上限、无重复项。`None` = 内置默认，不校验。
+fn validate_difficulty_lexicon(d: &DifficultySection) -> Result<(), GateError> {
+    for (field, entries) in [
+        ("lexicon.hard", &d.lexicon.hard),
+        ("lexicon.easy", &d.lexicon.easy),
+        ("lexicon.math_symbols", &d.lexicon.math_symbols),
+        ("lexicon.question_marks", &d.lexicon.question_marks),
+        ("lexicon.code_fence_markers", &d.lexicon.code_fence_markers),
+    ] {
+        let Some(entries) = entries else { continue };
+        if entries.len() > MAX_DIFFICULTY_LEXICON_ENTRIES {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-difficulty-lexicon-too-many",
+                    &[
+                        ("field", field.to_string()),
+                        ("count", entries.len().to_string()),
+                        ("max", MAX_DIFFICULTY_LEXICON_ENTRIES.to_string()),
+                    ],
+                ),
+            });
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let invalid = entry.is_empty()
+                || entry.trim() != entry
+                || entry.chars().any(char::is_control)
+                || entry.chars().count() > MAX_DIFFICULTY_LEXICON_ENTRY_CHARS;
+            if invalid {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-difficulty-lexicon-entry-invalid",
+                        &[
+                            ("field", field.to_string()),
+                            ("index", (index + 1).to_string()),
+                            ("max", MAX_DIFFICULTY_LEXICON_ENTRY_CHARS.to_string()),
+                        ],
+                    ),
+                });
+            }
+            if !seen.insert(entry.as_str()) {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-difficulty-lexicon-duplicate",
+                        &[("field", field.to_string()), ("entry", entry.clone())],
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// V12：规则计分数值域——权重有限且 ∈ [0,1]，封顶有限且 > 0，
+/// `length_cap` ∈ [1, 8000]（估算器封顶 9000 必须覆盖该值）。
+fn validate_difficulty_scoring(d: &DifficultySection) -> Result<(), GateError> {
+    let s = &d.scoring;
+    for (name, value) in [
+        ("scoring.w_hard", s.w_hard),
+        ("scoring.w_code_fence", s.w_code_fence),
+        ("scoring.w_math", s.w_math),
+        ("scoring.w_questions", s.w_questions),
+        ("scoring.w_messages", s.w_messages),
+        ("scoring.w_tools", s.w_tools),
+        ("scoring.w_length", s.w_length),
+        ("scoring.w_easy_penalty", s.w_easy_penalty),
+    ] {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-difficulty-scoring-invalid",
+                    &[("field", name.to_string()), ("value", value.to_string())],
+                ),
+            });
+        }
+    }
+    for (name, value) in [
+        ("scoring.hard_cap", s.hard_cap),
+        ("scoring.math_cap", s.math_cap),
+        ("scoring.question_cap", s.question_cap),
+        ("scoring.message_cap", s.message_cap),
+        ("scoring.easy_cap", s.easy_cap),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-difficulty-scoring-invalid",
+                    &[("field", name.to_string()), ("value", value.to_string())],
+                ),
+            });
+        }
+    }
+    if !s.length_cap.is_finite() || !(1.0..=MAX_DIFFICULTY_LENGTH_CAP).contains(&s.length_cap) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-difficulty-scoring-invalid",
+                &[
+                    ("field", "scoring.length_cap".to_string()),
+                    ("value", s.length_cap.to_string()),
+                ],
+            ),
+        });
     }
     Ok(())
 }
@@ -1299,6 +1413,94 @@ concurrency = { requests_per_second = 1 }
             )
             .unwrap_or_else(|_| panic!("合法 classifier 值必须放行: {classifier}"));
         }
+    }
+
+    #[test]
+    fn difficulty_lexicon_rejections_name_the_field() {
+        let vendors = difficulty_vendor("v1", &model_entry("m1", "fast"))
+            + &difficulty_vendor("v2", &model_entry("m2", "reasoning"));
+        let base = "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
+                    [routing.difficulty.tiers]\nlow = \"fast\"\nhigh = \"reasoning\"\n";
+        let cases: Vec<(&str, String)> = vec![
+            ("empty", "hard = [\"\"]".to_string()),
+            ("whitespace", "hard = [\" proof \"]".to_string()),
+            ("control", "hard = [\"a\\nb\"]".to_string()),
+            ("too_long", format!("hard = [\"{}\"]", "x".repeat(65))),
+            ("duplicate", "hard = [\"证明\", \"证明\"]".to_string()),
+        ];
+        for (name, lexicon) in cases {
+            let difficulty = format!("{base}\n[routing.difficulty.lexicon]\n{lexicon}\n");
+            let error = parse_difficulty_toml(&vendors, &difficulty)
+                .expect_err(&format!("{name} 必须拒绝"));
+            assert!(
+                error.to_string().contains("lexicon.hard"),
+                "{name} 错误必须点名 lexicon.hard: {error}"
+            );
+        }
+
+        let too_many = (0..257)
+            .map(|i| format!("\"w{i}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let difficulty = format!("{base}\n[routing.difficulty.lexicon]\nhard = [{too_many}]\n");
+        let error = parse_difficulty_toml(&vendors, &difficulty).expect_err("超条目数必须拒绝");
+        assert!(
+            error.to_string().contains("lexicon.hard"),
+            "错误必须点名字段: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_scoring_rejections_name_the_field() {
+        let mut config = enabled_ok_config();
+        config.routing.difficulty.scoring.w_hard = -0.1;
+        let error = validate_difficulty(&config).expect_err("负权重必须拒绝");
+        assert!(
+            error.to_string().contains("scoring.w_hard"),
+            "错误必须点名 scoring.w_hard: {error}"
+        );
+
+        let mut config = enabled_ok_config();
+        config.routing.difficulty.scoring.hard_cap = 0.0;
+        let error = validate_difficulty(&config).expect_err("cap=0 必须拒绝");
+        assert!(
+            error.to_string().contains("scoring.hard_cap"),
+            "错误必须点名 scoring.hard_cap: {error}"
+        );
+
+        let mut config = enabled_ok_config();
+        config.routing.difficulty.scoring.length_cap = 9000.0;
+        let error = validate_difficulty(&config).expect_err("length_cap 超上限必须拒绝");
+        assert!(
+            error.to_string().contains("scoring.length_cap"),
+            "错误必须点名 scoring.length_cap: {error}"
+        );
+    }
+
+    #[test]
+    fn difficulty_custom_lexicon_and_scoring_pass() {
+        let vendors = difficulty_vendor("v1", &model_entry("m1", "fast"))
+            + &difficulty_vendor("v2", &model_entry("m2", "reasoning"));
+        let config = parse_difficulty_toml(
+            &vendors,
+            "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
+             [routing.difficulty.tiers]\nlow = \"fast\"\nhigh = \"reasoning\"\n\
+             [routing.difficulty.lexicon]\nhard = [\"量子\"]\nmath_symbols = [\"§\"]\n\
+             [routing.difficulty.scoring]\nw_hard = 0.5\nlength_cap = 1000.0\n",
+        )
+        .expect("合法自定义词法表与计分必须放行");
+        assert_eq!(config.routing.difficulty.lexicon.hard_words().len(), 1);
+        assert_eq!(config.routing.difficulty.lexicon.hard_words()[0], "量子");
+    }
+
+    #[test]
+    fn difficulty_disabled_bypasses_lexicon_and_scoring_validation() {
+        let config = parse_difficulty_toml(
+            DIFF_VENDORS_OK,
+            "enabled = false\nlexicon = { hard = [\"\"] }\nscoring = { hard_cap = 0.0 }\n",
+        )
+        .expect("disabled 段即使词法表/计分非法也必须旁路");
+        assert!(!config.routing.difficulty.enabled);
     }
 
     // ---- 告警路径（warn-only，断言不拒不 panic）----

@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 pub mod loader;
 pub mod manager;
@@ -1239,9 +1240,9 @@ pub enum Tier {
 }
 
 /// 难度定档 `[routing.difficulty]` 段：规则计分 + 进程内分类概率加权融合，
-/// 阈值切三档后改写目标抽象模型名。默认 enabled=false 完全旁路（零开销
-/// ）。字段热读；tiers/classifier 语义变更经
-/// validate_difficulty 在加载与热更两处校验
+/// 阈值切三档后改写目标抽象模型名。默认 enabled=false 完全旁路（零开销）。
+/// 字段热读；lexicon/scoring/tiers/classifier 语义变更经 validate_difficulty
+/// 在加载与热更两处校验
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct DifficultySection {
     /// 定档开关：默认 false，模块整体旁路
@@ -1274,6 +1275,12 @@ pub struct DifficultySection {
     /// 分类器（vecboost laya）运行参数
     #[serde(default)]
     pub classifier: DifficultyClassifierSection,
+    /// 特征词法表覆盖（缺省 = 内置默认：词/数学符号/问号/代码围栏）
+    #[serde(default)]
+    pub lexicon: DifficultyLexiconSection,
+    /// 规则计分权重与封顶（缺省 = 历史常量）
+    #[serde(default)]
+    pub scoring: DifficultyScoringSection,
 }
 
 impl Default for DifficultySection {
@@ -1288,6 +1295,278 @@ impl Default for DifficultySection {
             mid_band_policy: default_difficulty_mid_band_policy(),
             tiers: DifficultyTiers::default(),
             classifier: DifficultyClassifierSection::default(),
+            lexicon: DifficultyLexiconSection::default(),
+            scoring: DifficultyScoringSection::default(),
+        }
+    }
+}
+
+/// 词法表条目数上限（五个列表共用；防配置面被单请求逐项扫描拖垮）
+pub(crate) const MAX_DIFFICULTY_LEXICON_ENTRIES: usize = 256;
+/// 单条目字符数上限（五个列表共用）
+pub(crate) const MAX_DIFFICULTY_LEXICON_ENTRY_CHARS: usize = 64;
+/// `scoring.length_cap` 上限：估算器封顶 9000 需覆盖该值并留结构余量
+pub(crate) const MAX_DIFFICULTY_LENGTH_CAP: f64 = 8000.0;
+
+/// 内置 hard 词表：推理/数学/代码/工程信号（缺省回落，可被配置整体覆盖）
+const DEFAULT_HARD_WORDS: &[&str] = &[
+    // 中文
+    "证明",
+    "推导",
+    "求解",
+    "为什么",
+    "原理",
+    "推理",
+    "数学",
+    "积分",
+    "方程",
+    "矩阵",
+    "算法",
+    "复杂度",
+    "递归",
+    "并发",
+    "竞态",
+    "死锁",
+    "架构设计",
+    "重构",
+    "调优",
+    "根因",
+    // 英文
+    "prove",
+    "proof",
+    "derive",
+    "theorem",
+    "lemma",
+    "step by step",
+    "why does",
+    "explain why",
+    "optimize",
+    "complexity",
+    "recursion",
+    "concurrency",
+    "race condition",
+    "deadlock",
+    "algorithm",
+    "architecture",
+    "refactor",
+    "root cause",
+    "debug",
+    "stack trace",
+    "integral",
+    "equation",
+    "matrix",
+    "calculus",
+];
+
+/// 内置 easy 词表：寒暄/机械转换/罗列信号
+const DEFAULT_EASY_WORDS: &[&str] = &[
+    // 中文
+    "你好",
+    "您好",
+    "谢谢",
+    "感谢",
+    "再见",
+    "在吗",
+    "总结一下",
+    "翻译",
+    "改写",
+    "润色",
+    "列出",
+    "帮我写个标题",
+    "缩写",
+    // 英文
+    "hello",
+    "hi there",
+    "thanks",
+    "thank you",
+    "goodbye",
+    "summarize",
+    "summarise",
+    "translate",
+    "rewrite",
+    "proofread",
+    "paraphrase",
+    "list all",
+    "make a title",
+];
+
+/// 内置数学符号集：与原 `is_math_symbol` 逐项一致
+const DEFAULT_MATH_SYMBOLS: &[&str] = &[
+    "+", "*", "/", "^", "=", "∫", "∑", "√", "π", "≤", "≥", "≠", "∞",
+];
+
+/// 内置问号集：半角 + 全角
+const DEFAULT_QUESTION_MARKS: &[&str] = &["?", "？"];
+
+/// 内置代码围栏标记
+const DEFAULT_CODE_FENCE_MARKERS: &[&str] = &["```"];
+
+/// `[routing.difficulty.lexicon]`：特征词法表覆盖。缺省（None）= 内置默认；
+/// 显式数组 = 整体替换（不追加）。词/符号条目按字面匹配，词表区分大小写。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DifficultyLexiconSection {
+    /// hard 信号词表
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hard: Option<Vec<String>>,
+    /// easy 信号词表
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub easy: Option<Vec<String>>,
+    /// 数学符号集（每个字符独立计数）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub math_symbols: Option<Vec<String>>,
+    /// 问号集（半角/全角或其它语言问号）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question_marks: Option<Vec<String>>,
+    /// 代码围栏标记（任一出现即置位）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_fence_markers: Option<Vec<String>>,
+}
+
+impl DifficultyLexiconSection {
+    /// 解析后的 hard 词表：Some 原样借用，None 回落进程内一次初始化的内置默认
+    pub fn hard_words(&self) -> &[String] {
+        match &self.hard {
+            Some(words) => words.as_slice(),
+            None => builtin_hard_words(),
+        }
+    }
+
+    /// 解析后的 easy 词表
+    pub fn easy_words(&self) -> &[String] {
+        match &self.easy {
+            Some(words) => words.as_slice(),
+            None => builtin_easy_words(),
+        }
+    }
+
+    /// 解析后的数学符号集
+    pub fn math_symbols(&self) -> &[String] {
+        match &self.math_symbols {
+            Some(symbols) => symbols.as_slice(),
+            None => builtin_math_symbols(),
+        }
+    }
+
+    /// 解析后的问号集
+    pub fn question_marks(&self) -> &[String] {
+        match &self.question_marks {
+            Some(marks) => marks.as_slice(),
+            None => builtin_question_marks(),
+        }
+    }
+
+    /// 解析后的围栏标记
+    pub fn code_fence_markers(&self) -> &[String] {
+        match &self.code_fence_markers {
+            Some(markers) => markers.as_slice(),
+            None => builtin_code_fence_markers(),
+        }
+    }
+}
+
+fn builtin_hard_words() -> &'static [String] {
+    static WORDS: OnceLock<Vec<String>> = OnceLock::new();
+    WORDS.get_or_init(|| {
+        DEFAULT_HARD_WORDS
+            .iter()
+            .map(|w| (*w).to_string())
+            .collect()
+    })
+}
+
+fn builtin_easy_words() -> &'static [String] {
+    static WORDS: OnceLock<Vec<String>> = OnceLock::new();
+    WORDS.get_or_init(|| {
+        DEFAULT_EASY_WORDS
+            .iter()
+            .map(|w| (*w).to_string())
+            .collect()
+    })
+}
+
+fn builtin_math_symbols() -> &'static [String] {
+    static SYMBOLS: OnceLock<Vec<String>> = OnceLock::new();
+    SYMBOLS.get_or_init(|| {
+        DEFAULT_MATH_SYMBOLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    })
+}
+
+fn builtin_question_marks() -> &'static [String] {
+    static MARKS: OnceLock<Vec<String>> = OnceLock::new();
+    MARKS.get_or_init(|| {
+        DEFAULT_QUESTION_MARKS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    })
+}
+
+fn builtin_code_fence_markers() -> &'static [String] {
+    static MARKERS: OnceLock<Vec<String>> = OnceLock::new();
+    MARKERS.get_or_init(|| {
+        DEFAULT_CODE_FENCE_MARKERS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    })
+}
+
+/// `[routing.difficulty.scoring]`：规则计分权重与封顶；缺省值等于历史常量。
+/// 权重项独立相加（不做归一），因此每项须 ∈ `[0,1]`，总和通常为 1.0。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DifficultyScoringSection {
+    /// hard 词命中项权重（命中数 / hard_cap 封顶）
+    pub w_hard: f64,
+    /// hard 命中数封顶
+    pub hard_cap: f64,
+    /// 代码围栏出现项权重
+    pub w_code_fence: f64,
+    /// 数学符号密度项权重
+    pub w_math: f64,
+    /// 数学符号数封顶
+    pub math_cap: f64,
+    /// 多问拆解项权重
+    pub w_questions: f64,
+    /// 问号数封顶
+    pub question_cap: f64,
+    /// 消息数项权重
+    pub w_messages: f64,
+    /// 消息数封顶
+    pub message_cap: f64,
+    /// tools 出现项权重
+    pub w_tools: f64,
+    /// 请求体长度项权重
+    pub w_length: f64,
+    /// 请求体长度封顶（字符）
+    pub length_cap: f64,
+    /// easy 词惩罚权重（命中数 / easy_cap 封顶）
+    pub w_easy_penalty: f64,
+    /// easy 命中数封顶
+    pub easy_cap: f64,
+}
+
+impl Default for DifficultyScoringSection {
+    fn default() -> Self {
+        Self {
+            w_hard: 0.40,
+            hard_cap: 5.0,
+            w_code_fence: 0.15,
+            w_math: 0.15,
+            math_cap: 12.0,
+            w_questions: 0.10,
+            question_cap: 3.0,
+            w_messages: 0.05,
+            message_cap: 10.0,
+            w_tools: 0.05,
+            w_length: 0.10,
+            length_cap: 8000.0,
+            w_easy_penalty: 0.30,
+            easy_cap: 3.0,
         }
     }
 }
@@ -1386,7 +1665,7 @@ fn default_difficulty_engine() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ModelConfig;
+    use super::{DifficultySection, ModelConfig};
 
     /// 两嵌入字段的解析：声明后值原样读出，未声明为空。
     #[test]
@@ -1437,5 +1716,58 @@ enabled = true
             toml::from_str("model_id = \"m\"\ndimensions = 1024").expect("解析");
         assert_eq!(model.dimensions, Some(1024));
         assert_eq!(model.compat_group, None);
+    }
+
+    /// 难度段缺省：词法表回落内置默认，计分等于历史常量。
+    #[test]
+    fn difficulty_defaults_fall_back_to_builtin_lexicon() {
+        let d = DifficultySection::default();
+        assert!(d.lexicon.hard.is_none());
+        assert!(d.lexicon.hard_words().iter().any(|w| w == "证明"));
+        assert!(d.lexicon.hard_words().iter().any(|w| w == "step by step"));
+        assert!(d.lexicon.easy_words().iter().any(|w| w == "你好"));
+        assert!(d.lexicon.math_symbols().iter().any(|s| s == "∫"));
+        assert!(d.lexicon.question_marks().iter().any(|s| s == "？"));
+        assert!(d.lexicon.code_fence_markers().iter().any(|s| s == "```"));
+        assert!((d.scoring.w_hard - 0.40).abs() < 1e-12);
+        assert!((d.scoring.length_cap - 8000.0).abs() < 1e-12);
+    }
+
+    /// 部分子段覆盖：未声明字段回落默认，声明列表整体替换（不追加）。
+    #[test]
+    fn difficulty_partial_config_fills_defaults() {
+        let d: DifficultySection = toml::from_str(
+            "enabled = true\n[lexicon]\nhard = [\"量子\"]\nmath_symbols = [\"§\"]\n\
+             [scoring]\nw_hard = 0.5\n",
+        )
+        .expect("partial difficulty config");
+        assert_eq!(d.lexicon.hard_words().len(), 1);
+        assert_eq!(d.lexicon.hard_words()[0], "量子");
+        assert!(
+            d.lexicon.easy_words().iter().any(|w| w == "你好"),
+            "未覆盖列表回落默认"
+        );
+        assert!((d.scoring.w_hard - 0.5).abs() < 1e-12);
+        assert!(
+            (d.scoring.hard_cap - 5.0).abs() < 1e-12,
+            "未覆盖计分字段回落默认"
+        );
+    }
+
+    /// `skip_serializing_if` 往返：None 不写键，Some 原样回读。
+    #[test]
+    fn difficulty_lexicon_serialization_roundtrip() {
+        let d = DifficultySection::default();
+        let text = toml::to_string(&d).expect("serialize defaults");
+        assert!(!text.contains("math_symbols"), "None 不应序列化");
+        let back: DifficultySection = toml::from_str(&text).expect("roundtrip defaults");
+        assert_eq!(back, d);
+
+        let mut custom = DifficultySection::default();
+        custom.lexicon.hard = Some(vec!["量子".to_string()]);
+        let text = toml::to_string(&custom).expect("serialize custom");
+        assert!(text.contains("hard"), "Some 必须序列化");
+        let back: DifficultySection = toml::from_str(&text).expect("roundtrip custom");
+        assert_eq!(back, custom);
     }
 }

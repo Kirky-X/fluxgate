@@ -250,7 +250,7 @@ flowchart TB
 | `default_deadline_ms` | `10000.0` | 未携带 deadline 头时的默认截止（毫秒） |
 | `ucb_alpha` | `1.0` | LinUCB 探索参数（仅 `selection = "linucb"` 时被咨询） |
 | `prefix_affinity` | 子段 `[routing.prefix_affinity]`：`enabled = false`、`prefix_chars = 512` | 前缀亲和 PoTC（默认关）：开启后稳定前缀哈希出 2 个带内候选、按平滑权重择优；`prefix_chars` 为前缀键截取的首条 user content 头部字符数 |
-| `difficulty` | 子段 `[routing.difficulty]`：`enabled = false` 完全旁路（其余默认 `w_clf = 0.6`、`w_rule = 0.4`、`score_low = 0.35`、`score_high = 0.65`、`mid_band_policy = "strong"`） | 难度定档（默认关）：`groups` 命中的请求按规则计分 + 分类概率融合切 low/mid/high 三档并改写目标抽象模型名；`w_clf > 0` 需 `difficulty-classifier` feature；`classifier` 子段为 vecboost laya 运行参数 |
+| `difficulty` | 子段 `[routing.difficulty]`：`enabled = false` 完全旁路（其余默认 `w_clf = 0.6`、`w_rule = 0.4`、`score_low = 0.35`、`score_high = 0.65`、`mid_band_policy = "strong"`） | 难度定档（默认关）：`groups` 命中的请求按规则计分 + 分类概率融合切 low/mid/high 三档并改写目标抽象模型名；`w_clf > 0` 需 `difficulty-classifier` feature；`lexicon` 子段可整体覆盖 hard/easy 词表、数学符号、问号与代码围栏标记（缺省 = 内置默认），`scoring` 子段为规则计分权重/封顶（缺省 = 历史常量）；`classifier` 子段为 vecboost laya 运行参数 |
 
 ### 会话亲和
 

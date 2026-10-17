@@ -347,6 +347,9 @@ prefix_chars = 512
 # - mid_band_policy: 仅 tiers.mid 缺省的两档退化形态消费——"strong"（默认，
 #   中带→high）/ "cheap"（→low）/ "nearest"（近阈值档，平局取 high）
 # - tiers: 档位 → 抽象模型名（enabled 时 low/high 必填；mid 缺省 = 两档退化）
+# - lexicon: 特征词法表覆盖（缺省 = 内置默认；显式数组 = 整体替换，不追加）。
+#   条目不得为空、不得含首尾空白/控制字符；英文词条区分大小写。
+# - scoring: 规则计分权重/封顶（缺省 = 历史常量；各项权重通常合计 1.0）
 # - classifier: vecboost laya 决策引擎运行参数（difficulty-classifier feature 门控）
 # [routing.difficulty]
 # enabled = false
@@ -360,6 +363,27 @@ prefix_chars = 512
 # low = "chat-basic"
 # mid = "chat-mid"
 # high = "chat-pro"
+# [routing.difficulty.lexicon]
+# hard = ["证明", "推导", "求解", "算法", "prove", "step by step"]
+# easy = ["你好", "谢谢", "翻译", "hello", "thanks", "translate"]
+# math_symbols = ["+", "*", "/", "^", "=", "∫", "∑", "√", "π", "≤", "≥", "≠", "∞"]
+# question_marks = ["?", "？"]
+# code_fence_markers = ["```"]
+# [routing.difficulty.scoring]
+# w_hard = 0.40              # hard 词命中项（命中数 / hard_cap 封顶）
+# hard_cap = 5.0             # hard 命中数封顶
+# w_code_fence = 0.15        # 代码围栏出现项
+# w_math = 0.15              # 数学符号密度项
+# math_cap = 12.0            # 数学符号数封顶
+# w_questions = 0.10         # 多问拆解项
+# question_cap = 3.0         # 问号数封顶
+# w_messages = 0.05          # 消息数项
+# message_cap = 10.0         # 消息数封顶
+# w_tools = 0.05             # tools 出现项
+# w_length = 0.10            # 请求体长度项
+# length_cap = 8000.0        # 请求体长度封顶（字符，≤ 8000）
+# w_easy_penalty = 0.30      # easy 词惩罚项
+# easy_cap = 3.0             # easy 命中数封顶
 # [routing.difficulty.classifier]
 # timeout_ms = 150            # 单次推理超时；超时按分类失败降级纯规则
 # failure_threshold = 5       # 连续失败 N 次 → 熔断 open（纯规则），成功清零

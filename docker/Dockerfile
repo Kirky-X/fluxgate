@@ -62,11 +62,18 @@ RUN apk add --no-cache \
 # “failed to load manifest for workspace member /app/examples”（实测）。
 # 这里只需要 manifest 存在，不会编译示例（构建目标是 --bin fluxgate）。
 # 后续新增 workspace 成员时必须同步扩展这里的 bind mount 清单。
+# vecboost 必须经附加上下文挂载到 /vecboost：根 manifest 的 optional path
+# 依赖 ../vecboost（WORKDIR /app 的上级），--locked 即使 default 口径不编译
+# 它也要读其 manifest，漏挂即 "failed to read /vecboost/Cargo.toml"（实测）。
+# 构建命令须带：docker build --build-context vecboost=../vecboost ...
+# （compose 侧对应 build.additional_contexts）。vecboost 迁回 registry 依赖后
+# 本挂载与附加上下文一并移除。
 RUN --mount=type=bind,source=src,target=src \
     --mount=type=bind,source=locales,target=locales \
     --mount=type=bind,source=examples,target=examples \
     --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
     --mount=type=bind,source=Cargo.lock,target=/tmp/Cargo.lock.ro \
+    --mount=from=vecboost,target=/vecboost \
     --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     --mount=type=cache,target=/root/.cache/ \
@@ -165,8 +172,11 @@ EXPOSE 8080
 # 健康检查（实际注册路径带 sdforge 版本前缀：/api/v1/health）
 # 镜像层为唯一健康检查定义：docker run 直接继承，compose 不重复声明以免两处
 # 参数漂移（原 Dockerfile start-period 5s / compose 10s 不一致）
+# 探活地址必须写 127.0.0.1 而非 localhost：busybox wget 将 localhost 解析到
+# ::1（IPv6 回环），而服务只绑 IPv4 0.0.0.0——写 localhost 会永久 unhealthy
+#（实测：容器外 curl 200 与容器内探针 refused 并存）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/v1/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/v1/health || exit 1
 
 # 启动应用
 CMD ["/bin/server"]

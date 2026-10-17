@@ -33,6 +33,7 @@
 
 ### Fixed
 
+- **docker 构建因 vecboost path 依赖损坏（自难度定档路由合入起）**：根 manifest 的 optional path 依赖 `../vecboost` 使 `cargo build --locked` 在容器内解析期即要求 `/vecboost` 在场（`failed to read /vecboost/Cargo.toml`），而构建上下文无法覆盖仓库外的兄弟目录；vecboost 自带 `.dockerignore` 又裁掉 examples/tests（其 manifest 的声明与自动发现 target 因此缺失，加载仍被拒）。修复：Dockerfile 以附加上下文挂载（`--mount=from=vecboost,target=/vecboost`，构建命令须带 `--build-context vecboost=../vecboost`，compose 侧 `build.additional_contexts`），vecboost 侧 `.dockerignore` 放宽 `examples/`、`tests/` 两段（其镜像层不受影响）；vecboost 迁回 registry 依赖后挂载与附加上下文一并移除。
 - **compose 部署面三处启动/运行缺陷**：①容器 `appuser` 无家目录（`adduser -H`），vault 主钥文件回退路径 `~/.fluxgate/` 启动期写盘 Permission denied，叠加 `restart: unless-stopped` 成重启循环——Dockerfile 补建 `/home/appuser/.fluxgate` 并授权，compose 透传 `FLUXGATE_MASTER_KEY`（持久部署必注入：容器内生成的主钥随容器层走、重建即丢）；②配置以单文件 `:ro` bind mount 挂载时，admin 配置写回（`persist_and_swap` 同目录 tmp+rename）越过挂载点必然 EBUSY、`/admin/config` 与模型条目写回全 500——配置改经数据卷承载（`cp config.example.toml data/config.toml`），compose 以 `command` CLI 参数指向 `/app/data/config.toml`；③容器内 `127.0.0.1` 指容器自身、宿主机上游桩不可达——compose 增 `extra_hosts: host.docker.internal:host-gateway`。
 - **config.example.toml 补本地示例 mock 厂商注释块**：examples/ 以 `vendor_hint = "mock-openai"` + `gpt-4` / `claude-3-opus` / `text-embedding-3-small` 硬编码寻址，但随仓示例配置无 mock 厂商、按随仓配置起服后示例必失败——补整段注释块（取消注释即用，含模型目录与限流配额；生产保持注释，mock 入池会参与 fallback 链），`examples/README.md` 运行前置同步指向该块。
 

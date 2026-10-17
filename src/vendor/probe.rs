@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 主动健康检查探针：周期探测 suspect/all vendor，成功被动恢复（清除
 //! 冷却/黑名单；失败保持现状仅记 debug）。

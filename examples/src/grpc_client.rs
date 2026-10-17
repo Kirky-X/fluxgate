@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
+// SPDX-License-Identifier: MIT
 
 //! Fluxgate gRPC 门面客户端样例。
 //!

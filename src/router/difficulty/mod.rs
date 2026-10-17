@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 难度定档路由：规则计分 + 进程内分类概率加权融合 → 三档切分 → 改写
 //! 目标抽象模型名。带内厂商选择不在本模块职责内（复用 `Router` 现有链）。

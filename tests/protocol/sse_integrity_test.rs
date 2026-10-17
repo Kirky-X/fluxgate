@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! SSE 事件完整性对账：单元级编码器 + 集成级全链路，断言失败输出
 //! 清晰的事件序列差异。

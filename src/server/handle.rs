@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 停机收尾句柄：flush 管道收尾暴露给嵌入式调用方（`build_app` 产物），
 //! 收尾顺序与 `run()` 共用同一实现。

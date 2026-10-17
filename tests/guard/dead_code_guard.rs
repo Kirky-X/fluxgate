@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 死代码标记守卫：把「`src/` 生产代码不得残留裸 `#[allow(dead_code)]` /
 //! `#[allow(unused…)]`」从人工审计变成每次 `cargo test` 自动拦截的门禁。

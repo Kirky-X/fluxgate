@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! `POST /admin/route/explain` — 路由可解释性：入参 `{model, session_id?}`，
 //! 响应逐候选 `{vendor, model, decision, reason_code, detail}`。纯只读；

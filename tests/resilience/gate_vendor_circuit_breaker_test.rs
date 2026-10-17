@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试 — CircuitBreaker（limiteron::circuit）接入 VendorManager。
 //! mockito 预置 5×500 + [retry] max_retries=0 自然驱动熔断

@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! DI 容器（infrastructure::di）集成测试——覆盖 build_kit_with_config 的
 //! 成功装配（含 minimal_flow_config 与 verify_kit 全能力解析）与 build

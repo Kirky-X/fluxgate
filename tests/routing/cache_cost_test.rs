@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 缓存成本优化套件集成测试：前缀亲和黏性（同前缀落点 ≤2 厂商）、
 //! cache_expected 价格因子偏向、batch 带内过滤。全部默认关回归另测。

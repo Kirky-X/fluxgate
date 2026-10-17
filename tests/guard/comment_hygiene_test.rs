@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 注释卫生守卫：防止流程戳记（工单编号、评审编号、外部设计文档引用）回流到
 //! 源码注释。按仓库约定，任务/评审的追踪信息只写 commit message，不写源码注释

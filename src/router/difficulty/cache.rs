@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 定档结果缓存 — oxcache 承载存储（亲和表同款后端）。键不含配置代际：
 //! 热更阈值/权重后旧配置算出的档位最长残留一个 TTL（默认 300s）自然过期，

@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
 //! OpenAPI 文档面——默认关闭（404），开关打开后可达，

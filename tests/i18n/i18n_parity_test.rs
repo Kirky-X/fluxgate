@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! i18n 键位守卫：把「en 默认 + zh 对齐」与「引用键必须存在」从人工审计
 //! 变成每次 `cargo test` 自动拦截的门禁。

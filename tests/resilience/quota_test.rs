@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试 — 成本与 token 维度配额（预扣-回补）：预扣后超限 429、
 //! 响应后回补恢复、流式结束回补、窗口边界翻转、已放行流中途不中断、

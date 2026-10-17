@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 就绪探针：真实组件检查经 sdforge
 //! `AsyncReadinessCheck` 注册，`/readyz` 聚合（200 ready / 503 unavailable）。

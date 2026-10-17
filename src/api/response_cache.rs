@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 精确响应缓存 — 存储与并发去重均落地 oxcache（缓存库已就位必须用它，
 //! 绝不手写 HashMap 缓存 / 在途表）。

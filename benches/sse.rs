@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! SSE 帧解析基线（sse）：两协议 `parse_sse_frame_to_chunk` 各一组基准——
 //! 透传路径的组件级代理（入站协议与上游一致时走零拷贝透传，流式内存热点在

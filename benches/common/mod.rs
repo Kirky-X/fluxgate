@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! Bench 共享 fixture 基座（benches/ 各文件为独立编译单元，经 `mod common;`
 //! 引入；未被某二进制消费的导出项以 `#![allow(dead_code)]` 放行——与

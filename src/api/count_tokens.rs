@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! `POST /v1/messages/count_tokens` — Anthropic 兼容 token 计数。
 //! 入参 `{model, messages, system?, tools?}`，返回 `{"input_tokens": u64}`；

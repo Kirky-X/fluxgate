@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! 请求级配置（temperature / top_p / top_k / max_tokens / stream / timeout / hints）。
 
 use std::time::Duration;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! Admin / health 端点客户端方法 — 路径与形状对齐网关真实路由表（
 //! 失配修复；防回归钉见 `tests/integration_admin.rs` 的路由 diff 测试）。
 

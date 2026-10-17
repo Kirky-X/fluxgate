@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 难度定档路由 benchmark（纯仿真，零 API key / 零出站）：
 //! 六家主流厂商 × 17 个大小模型配成 fast/balanced/reasoning 三档，

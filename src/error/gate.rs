@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 路由核心错误：从原 `FluxgateError` 拆出的核心变体集（冻结）。
 //! `Database` 等应用面变体留应用面（受孤儿规则约束）；应用错误经 `From<GateError>` 包装。

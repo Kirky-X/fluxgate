@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! `GET /v1/models` — OpenAI 兼容模型列表：模型目录 ∪ 各 vendor 配置
 //! 模型去重（仅 enabled，按 id 排序确定性输出）。走既有鉴权与统一错误

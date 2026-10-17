@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! Fluxgate Rust SDK
 //!
 //! 通过 Rust 接口与 Fluxgate 网关交互（HTTP 客户端 SDK），

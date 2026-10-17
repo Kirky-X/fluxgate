@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 目的：为 src/utils/metrics.rs 与 src/vendor/rate_limiter.rs 补集成测试，
 //! 把公开 API 面的行为覆盖率提到接近 100%（数据库 / SDK / router_builder

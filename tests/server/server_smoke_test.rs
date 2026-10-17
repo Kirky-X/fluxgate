@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "web-server", feature = "logging"))]
 
 //! server 模块冒烟 — 库化装配链 `fluxgate::server::build_app` 的最小行为

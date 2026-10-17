@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "grpc", feature = "web-server", feature = "logging"))]
 
 //! gRPC 服务器冒烟 — `build_app` 装配 → `take_grpc_server` → sdforge 门面

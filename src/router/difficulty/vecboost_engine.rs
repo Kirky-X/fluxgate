@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! vecboost laya 决策引擎适配（`difficulty-classifier` feature 门控）：
 //! 进程内直调 `EngineFactory::create`（task=Decision）+ `InferenceEngine::

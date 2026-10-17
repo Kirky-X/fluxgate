@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 库形态嵌入：build_app 取网关 Router 与停机句柄，merge 宿主自有路由后
 //! 自行 bind/serve。一行起服形态见 standalone。

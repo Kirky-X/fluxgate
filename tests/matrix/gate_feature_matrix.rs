@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 路由半边特性组合矩阵测试：验证不同 feature 组合下路由核心模块的
 //! 可见性。随 cargo test --workspace 全部断言运行；特定组合下只编译

@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(all(feature = "vault", feature = "web-server"))]
 
 //! 集成测试 — /admin/vault/keys 密钥保密柜管理面（key-vault）。

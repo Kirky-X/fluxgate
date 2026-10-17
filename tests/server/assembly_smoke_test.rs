@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
 //! 装配链冒烟测试 — 验证生产装配（sdforge 站点 + create_router 合并）

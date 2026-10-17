@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 难度定档 → 路由链集成测试：DifficultyRouter 改写档位抽象名后，
 //! 既有 Router 链（resolve_model → 候选过滤 → 加权选择）必须能按改写名

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! Chat 请求/响应类型 — wire 契约对齐网关真实形状（D2/D7.11 口径）。
 //!
 //! SDK 零 crate 内依赖（独立客户端契约面）：类型自有、serde 对齐

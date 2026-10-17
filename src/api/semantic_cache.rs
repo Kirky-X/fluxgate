@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 语义响应缓存（`semantic-cache` feature 门控）：精确 miss 后的
 //! 嵌入相似检索层。租户强制隔离（检索域限同 api_key_hash，无共享开关，

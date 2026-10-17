@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 use crate::sdk::config::RequestConfig;
 use serde_json::json;
 

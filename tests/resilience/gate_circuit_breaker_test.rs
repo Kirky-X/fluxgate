@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 熔断器测试— 直接驱动 `limiteron::circuit::CircuitBreaker<GateError>` +
 //! 注入假 Clock（手写三态机已删除：其 HalfOpen 死锁一次熔断即永久拒绝）。

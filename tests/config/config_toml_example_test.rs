@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 // 快速验证：config.example.toml 可被 fluxgate::config::Config 反序列化
 //
 // 事实源声明：随仓唯一的全量参考是 `config.example.toml`（运行时的

@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 流式失败语义边界测试。边界 =「尚未向客户端写出任何字节」：
 //! - 首字节前上游失败（429 / 连接错误 / 5xx）→ 走换路链重派，客户端无感

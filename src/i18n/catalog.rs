@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 消息目录：`locales/{en,zh}/*.ftl` 经 `include_str!` 编译期内嵌，
 //! 构建为 `fluent_bundle::concurrent::FluentBundle` 双束（EN/ZH，`OnceLock`

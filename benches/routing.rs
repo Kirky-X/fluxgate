@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 路由决策基线（routing）：固定 5 vendor 加权表上 `Router::route_weighted` 的
 //! 决策核心路径（可选层全关，fixture 不依赖网络与外部服务）。async 执行按仓库

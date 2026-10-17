@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试 — vendor 内 key 池（N5）：多 key 轮换顺序、耗尽回退、
 //! 401/403 认证类失败触发的轮换、配置热更新换池，以及 parity 矩阵第 6 项。

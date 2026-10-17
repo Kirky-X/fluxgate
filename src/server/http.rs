@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! HTTP 服务器：SdForgeConfig 构建、sdforge 站点 + 业务路由合并、
 //! bind/serve、serve 结果映射与优雅停机 flush 管道收尾。

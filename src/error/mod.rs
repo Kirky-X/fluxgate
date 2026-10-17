@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 // 应用层错误处理：Database 等应用面变体定义在本模块，路由核心变体集（GateError）
 // 在子模块 gate 并经 `Gate` 包装携带（`From<dbnexus::DbError>` 受孤儿规则约束须同 crate）。

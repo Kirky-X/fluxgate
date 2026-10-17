@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 use crate::sdk::client::FluxgateClientBuilder;
 use crate::sdk::error::FluxgateSdkError;
 use crate::sdk::stream::ChatStream;

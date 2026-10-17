@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! master key 分层解析：env `FLUXGATE_MASTER_KEY` 优先，缺失时自动生成
 //! `~/.fluxgate/vault_master.key`（0600）。master key 丢失 = 柜内密钥全部

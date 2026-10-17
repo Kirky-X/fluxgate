@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 配置热重载：监听文件变更，桥接进 `ConfigManager` 内存态（不落盘）。
 //! 内容一致时跳过，不形成写回环；解析或结构校验失败保旧快照。

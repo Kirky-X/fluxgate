@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! db 柜后端（默认）：逐条 cocoon 密文存 `vault_keys.payload`（V3 迁移建表），
 //! 与模型目录同库同事务语义；掩码/指纹为明文衍生列，列表页零解密。

@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! `POST /admin/route/difficulty-explain` — 定档解释端点（只读，零计量
 //! 副作用）。请求体 `{ model, body }`：model 为请求模型名（groups 判定），

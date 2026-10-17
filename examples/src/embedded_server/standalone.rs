@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 一行起服形态：装配、起服、信号停机与 flush 收尾全部由 run 承担，
 //! 阻塞至停机完成。需要挂载宿主自有路由时见 mount_router。

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! SDK 统一错误类型。
 //!
 //! 用 thiserror 派生，支持 `?` 操作符从 reqwest::Error 转换

@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 协议转换基线（conversion）：OpenAI 流式 chunk 归一化 / Anthropic 出站编码
 //! （含缓存断点注入）/ Anthropic 流式帧编码（tool_use 序列）/ 缓存断点纯函数

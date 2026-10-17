@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 存储边界缝：请求日志与 Token 用量的存储契约；契约类型与两 trait 同居于此，
 //! 路由半边零数据库依赖（dbnexus/sea-orm 实现全在 database 模块经 trait 注入）。

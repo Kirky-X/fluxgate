@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
+// SPDX-License-Identifier: MIT
 
 // proto/sdforge.v1.proto 是 sdforge 仓库同名文件的逐字节副本：Fluxgate 的
 // gRPC 门面即 sdforge 的 sdforge.v1.SdForgeService（无自有 proto），客户端只

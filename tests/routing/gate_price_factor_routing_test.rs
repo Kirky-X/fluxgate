@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 验收 — 价格因子路由：等价条件下低价候选胜出；开关关闭行为与
 //! 现状逐位一致（权重向量精确相等）。

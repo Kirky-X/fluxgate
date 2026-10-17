@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 定档纯函数：规则计分 `r`、融合 `S = (w_clf·p + w_rule·r)/(w_clf+w_rule)`、
 //! 三档切分与中带策略。全部确定性、无 IO 无锁（规则7：阈值与切分是

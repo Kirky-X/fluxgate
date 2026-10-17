@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! Embedding 请求/响应类型与客户端方法。
 
 use serde::Deserialize;

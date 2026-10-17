@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! LinUCB 打分项（零模型上下文 bandit，selection 第三档）— 每臂 =
 //! `(abstract_model, vendor_id)` 一个线性模型，选择按 UCB argmax（闭式

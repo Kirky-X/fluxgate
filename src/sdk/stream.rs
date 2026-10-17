@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! SSE 流式解码 — 使用 eventsource-stream 解析网关 SSE 事件。
 //!
 //! 解码面对齐网关出站真实事件形状（`stream_chunk_to_external` 产物，

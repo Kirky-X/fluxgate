@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 非流式 chat：完整 `ChatRequest` + `RequestConfig` 路由提示头，打印用量与实际 vendor。
 

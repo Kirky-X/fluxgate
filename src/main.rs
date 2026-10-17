@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 薄启动入口 — 装配链已下沉 `fluxgate::server`（库化承载）。此处仅解析
 //! config_path 参数，缺省 "config.toml" 的语义由 `server::run` 内部承担。

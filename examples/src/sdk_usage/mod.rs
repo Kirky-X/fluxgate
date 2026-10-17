@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! Rust SDK 客户端调用已部署网关：chat / stream_chat / embed / admin 四形态。
 //! 每个子模块暴露 `run`，由 `src/bin` 下的同名入口启动 tokio 运行时后转发进来。

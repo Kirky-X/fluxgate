@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 #![cfg(feature = "web-server")]
 
 //! 请求追踪——响应头 `X-Request-Id` 回传 + tracing span 关联。

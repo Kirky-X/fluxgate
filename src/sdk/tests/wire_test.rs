@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! SDK 类型层 serde 往返测试（对齐 unified.rs serde 测试口径
 //! 构造全字段 → 序列化 wire 断言 → 反序列化往返相等）。
 //!

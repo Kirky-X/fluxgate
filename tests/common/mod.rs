@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! 集成测试共享装配基座（tests/ 各文件是独立编译单元，经 `mod common;`
 //! 引入本模块；未被某二进制用到的导出项以 `#![allow(dead_code)]` 放行）。

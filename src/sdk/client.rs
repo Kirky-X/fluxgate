@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! Fluxgate SDK 客户端 — HTTP 调用 /v1/chat/completions。
 
 use std::time::Duration;

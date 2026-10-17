@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! gRPC 服务器：sdforge grpc 门面装配与优雅停机 serve（停接新连接、等
 //! in-flight 完成后返回）。服务面（v1）：`sdforge.v1.SdForgeService`

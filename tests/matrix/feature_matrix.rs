@@ -1,7 +1,5 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Fluxgate Contributors
-// Licensed under the MIT License. See LICENSE file for details.
 
 //! fluxgate 应用面特性组合矩阵测试。
 //! 应用面 feature 只保留可见性断言；路由核心矩阵见 gate_feature_matrix.rs。

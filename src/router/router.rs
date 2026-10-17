@@ -129,15 +129,20 @@ impl Router {
         .await
     }
 
-    /// 嵌入路由（`POST /v1/embeddings`）：在既有路由之上叠加兼容组 pin 粘着；
-    /// chat 主路径 `route` 零感知。
+    /// 嵌入路由（`POST /v1/embeddings`）：在既有路由之上叠加兼容组 pin 粘着
+    /// 与 openai 型厂商过滤；chat 主路径 `route` 零感知。
     ///
-    /// 无 pin：走既有全量路由（含 fail-open/价格因子/加权）选中后首写者胜记
-    /// pin；有 pin：`excluded = 组外厂商` 复用既有 `route_excluding` 路径
-    ///（组内迁移经 route_excluding 既有门禁/fail-open 完成；嵌入 handler
-    /// 单发透传，不走 chat 执行期 fallback 链）；pin 组无可用
-    /// 候选 → 显式 Validation（含声明 compat_group / admin 重置指引），禁止
-    /// 跨组回退。未接线 pin 表时行为与历史逐字节一致。
+    /// 候选过滤：embeddings handler 仅支持 openai 型厂商（非 openai 选中即
+    /// protocol_error 且不回馈熔断），故路由层把该 abstract 下非 openai 厂商
+    /// 排除在候选外——否则高权重非 openai 厂商被首写 pin 后会把概率性失败
+    /// 放大成该 abstract 的确定性失败（pin 投毒）。
+    ///
+    /// 无 pin：走既有路由（含 fail-open/价格因子/加权，非 openai 厂商已排除）
+    /// 选中后首写者胜记 pin；有 pin：`excluded = 组外厂商 ∪ 非 openai 厂商`
+    /// 复用既有 `route_excluding` 路径（组内迁移经 route_excluding 既有门禁
+    /// /fail-open 完成；嵌入 handler 单发透传，不走 chat 执行期 fallback 链）；
+    /// pin 组无可用候选 → 显式 Validation（含声明 compat_group / admin 重置
+    /// 指引），禁止跨组回退。未接线 pin 表时行为与历史逐字节一致。
     pub async fn route_embedding(
         &self,
         abstract_model: &str,
@@ -152,15 +157,28 @@ impl Router {
         }
     }
 
-    /// 无 pin 流程：既有全量路由选中 → 首写者胜记 pin；Direct/Global
-    ///（点名厂商/全局池）不参与 pin。并发首写竞态败者（胜出组与本次选中
-    /// 组不同）在胜出组内重路由
+    /// embeddings 候选的类型过滤：该 abstract 下非 openai 型厂商 id 集合
+    ///（重复 id 对排除语义无影响，不去重）
+    fn non_openai_exclusion(&self, normalized: &str) -> Vec<String> {
+        self.config
+            .resolve_model(normalized)
+            .iter()
+            .filter(|(vendor, _)| vendor.type_ != "openai")
+            .map(|(vendor, _)| vendor.id.clone())
+            .collect()
+    }
+
+    /// 无 pin 流程：既有路由（非 openai 厂商已排除）选中 → 首写者胜记 pin；
+    /// Direct/Global（点名厂商/全局池）不参与 pin。并发首写竞态败者（胜出组
+    /// 与本次选中组不同）在胜出组内重路由
     async fn route_embedding_unpinned(
         &self,
         normalized: &str,
         pin: &EmbeddingPin,
     ) -> Result<RoutingDecision, GateError> {
-        let decision = self.route(normalized).await?;
+        let decision = self
+            .route_excluding(normalized, &self.non_openai_exclusion(normalized))
+            .await?;
         if decision.strategy != RoutingStrategy::Abstract {
             return Ok(decision);
         }
@@ -190,13 +208,17 @@ impl Router {
         group: &str,
         pin: &EmbeddingPin,
     ) -> Result<RoutingDecision, GateError> {
-        // 组划分：厂商粒度成员标记（同厂商可有多条目，任一属于本组即保留该厂商）
+        // 组划分：厂商粒度成员标记（同厂商可有多条目，任一属于本组即保留该
+        // 厂商）；非 openai 型条目恒为非成员（与无 pin 流程的候选过滤同口径）
         let mut has_member: Vec<(String, bool)> = Vec::new();
         let mut group_members = 0usize;
         for (vendor, model) in self.config.resolve_model(normalized) {
-            let is_member =
-                EmbeddingPin::group_key(&vendor.id, &model.model_id, model.compat_group.as_deref())
-                    == group;
+            let is_member = vendor.type_ == "openai"
+                && EmbeddingPin::group_key(
+                    &vendor.id,
+                    &model.model_id,
+                    model.compat_group.as_deref(),
+                ) == group;
             if is_member {
                 group_members += 1;
             }

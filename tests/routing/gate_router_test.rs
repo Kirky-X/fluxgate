@@ -4486,4 +4486,66 @@ mod embedding_compat_group {
         );
         assert!(pin.list().is_empty(), "Direct 策略不得写 pin");
     }
+
+    /// pin 投毒防护：abstract 混有非 openai 型厂商（高权重）与 openai 型厂商
+    ///（低权重）时，嵌入路由只在 openai 型厂商间选择与粘着——否则首写 pin
+    /// 落在高权重非 openai 厂商上，protocol_error 不回馈熔断，概率性失败被
+    /// 放大成该 abstract 的永久失败
+    #[tokio::test]
+    async fn non_openai_vendors_never_pinned_or_selected() {
+        let mut chat_vendor = embedding_vendor("chat-a", "emb-shared", "shared-model", None, 100.0);
+        chat_vendor.type_ = "anthropic".to_string();
+        let (_vm, router, pin) = make_embedding_router(vec![
+            chat_vendor,
+            embedding_vendor("emb-o", "emb-shared", "shared-model", None, 0.001),
+        ]);
+
+        for i in 0..30 {
+            let decision = router
+                .route_embedding("emb-shared")
+                .await
+                .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
+            assert_eq!(
+                decision.vendor.id, "emb-o",
+                "嵌入路由必须落在 openai 型厂商（第 {i} 次，得到 {}）",
+                decision.vendor.id
+            );
+        }
+        assert_eq!(
+            pin.list(),
+            vec![("emb-shared".to_string(), "emb-o/::shared-model".to_string())],
+            "pin 必须粘着 openai 型厂商的单例组"
+        );
+    }
+
+    /// 组内类型过滤：声明组混入非 openai 厂商（同组名同模型——组校验不含
+    /// 类型维度）时，组内路由同样不得选中非 openai 成员
+    #[tokio::test]
+    async fn pinned_group_skips_non_openai_members() {
+        let mut chat_in_group =
+            embedding_vendor("chat-g", "emb-shared", "shared-model", Some("g1"), 100.0);
+        chat_in_group.type_ = "anthropic".to_string();
+        let (_vm, router, pin) = make_embedding_router(vec![
+            chat_in_group,
+            embedding_vendor("emb-g", "emb-shared", "shared-model", Some("g1"), 0.001),
+        ]);
+        pin.pin_or_get("emb-shared", "g1");
+
+        for i in 0..30 {
+            let decision = router
+                .route_embedding("emb-shared")
+                .await
+                .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
+            assert_eq!(
+                decision.vendor.id, "emb-g",
+                "组内路由必须跳过非 openai 成员（第 {i} 次，得到 {}）",
+                decision.vendor.id
+            );
+        }
+        assert_eq!(
+            pin.list(),
+            vec![("emb-shared".to_string(), "g1".to_string())],
+            "pin 不受组内类型过滤影响"
+        );
+    }
 }

@@ -567,9 +567,15 @@ flowchart LR
 | 运行时结构 | `fluent_bundle::concurrent::FluentBundle` 双束，`OnceLock` 静态缓存，Send+Sync |
 | 语言检测链 | `FLUXGATE_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → `sys-locale` → `"en"`（强制顺序，显式读取保证 Windows/边缘环境确定性） |
 | 查找回退 | 当前语言 → en → 键名 |
-| 覆盖范围 | 全部业务消息（错误 `user_message()` 与日志文案） |
+| 语言作用域 | 进程级：检测链启动定一次，`set_locale` 覆盖位仅供 SDK 嵌入式调用（服务端无 HTTP 入口、不进配置热更新，无 Accept-Language 请求级协商） |
+| 覆盖范围 | 全部业务消息（错误 `user_message()`、admin 响应与日志文案）；OpenAPI/健康描述等框架面串除外（见下） |
+| 本地化格式 | 刻意不用 Fluent `NUMBER()/DATETIME()` 与 ICU：API 输出数值/日期保持机器可读（ISO 8601、微美元整数），本地化渲染归客户端 |
 
 错误展示走双轨（`src/error/mod.rs`）：`#[error]` Display 恒英文规范串（供日志与错误链），HTTP 响应体用 `user_message()` 返回随 locale 的 FTL 文案。
+
+与框架层的双栈边界：OpenAPI 文档与 health 端点描述经 `sdforge::i18n::register_translation` 登记，走 sdforge 自己的检测链（`SDFORGE_LANG` 起步；本仓未启用 sdforge `i18n` feature，无 sys-locale 尾段与请求级 locale）。`src/server/http.rs` 的 `assemble_router` 在建站时把框架栈 locale 显式同步为业务栈 `current_locale()`，保证 `FLUXGATE_LANG` 是两栈一致的单一语言入口。
+
+守卫：`tests/i18n/i18n_parity_test.rs` 四条断言（en/zh 键位对齐、引用键存在性、零 Junk + en/zh 占位符对齐、调用点实参覆盖 FTL 占位符）另含扫描器自检用例；`src/i18n/catalog.rs` 单测钉住内嵌清单与磁盘目录双向一致。
 
 ---
 

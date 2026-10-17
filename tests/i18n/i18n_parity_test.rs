@@ -11,12 +11,15 @@
 //! 因此漏登记不会编译失败、也不会 panic，只把 `vendor-xxx` 这样的裸键吐给
 //! 用户——静默失效，必须由测试钉住。
 //!
-//! 三条断言：
+//! 四条断言：
 //! 1. 五个 `.ftl` 目录逐文件中 en 与 zh 的消息名集合相等（双向差集为空）；
 //! 2. 生产代码（`src/`）里 `t("…")`/`t_args("…")`
 //!    引用的每个键都在 en 目录登记（`zh` 由第 1 条保证同步存在）；
 //! 3. 每个目录经 fluent-syntax 解析零 Junk，且逐键 en/zh 占位符集合相等
-//!    （同样写坏的条目与占位符手误不再静默穿透）。
+//!    （同样写坏的条目与占位符手误不再静默穿透）；
+//! 4. 调用点实参完备：`t_args("key", …)` 字面形实参名必须覆盖该键 FTL
+//!    全部占位符，带占位符的键禁止以 `t("key")` 形调用——漏传会在运行时
+//!    把 `{$vendor}` 裸句柄吐给用户且 `catalog.rs` 静默吞掉格式错误。
 //!
 //! 扫描边界：按 `t("`/`t_args("` 字面形态识别——键必须是字面量，动态键
 //! 静默漏检；`examples/` 不在扫描域，引入 i18n 时须同步扩域。
@@ -297,6 +300,302 @@ fn catalogs_parse_without_junk_and_placeholders_align() {
             );
         }
     }
+}
+
+/// 跳过 `i` 处的字符串字面量（普通串与 `r#"…"#` raw 串），返回闭合引号后的下标。
+fn skip_string(chars: &[char], i: usize) -> Option<usize> {
+    // raw 形态判定：引号前是 `r` + n 个 `#`，闭合为 `"` + n 个 `#`
+    let mut hashes = 0usize;
+    let mut b = i;
+    while b >= 1 && chars[b - 1] == '#' {
+        hashes += 1;
+        b -= 1;
+    }
+    if b >= 1 && chars[b - 1] == 'r' {
+        let mut j = i + 1;
+        loop {
+            while j < chars.len() && chars[j] != '"' {
+                j += 1;
+            }
+            if j >= chars.len() {
+                return None;
+            }
+            let tail_ok = (j + 1..j + 1 + hashes).all(|h| chars.get(h) == Some(&'#'));
+            if tail_ok {
+                return Some(j + 1 + hashes);
+            }
+            j += 1;
+        }
+    }
+    let (_s, end) = read_string(chars, i)?;
+    Some(end)
+}
+
+/// 从 `open`（`(`/`[`/`{` 位置）扫描到配平的闭合符，返回闭合符后的下标；
+/// 串内括号经 [`skip_string`] 排除，嵌套调用天然计入深度。
+fn match_close(chars: &[char], open: usize) -> Option<usize> {
+    let (op, cl) = match chars.get(open)? {
+        '(' => ('(', ')'),
+        '[' => ('[', ']'),
+        '{' => ('{', '}'),
+        _ => return None,
+    };
+    let mut depth = 0usize;
+    let mut j = open;
+    while j < chars.len() {
+        if chars[j] == '"' {
+            j = skip_string(chars, j)?;
+            continue;
+        }
+        if chars[j] == op {
+            depth += 1;
+        } else if chars[j] == cl {
+            depth -= 1;
+            if depth == 0 {
+                return Some(j + 1);
+            }
+        }
+        j += 1;
+    }
+    None
+}
+
+/// 读取 `i` 处（必须为 `"`）的字符串字面量，返回（内容，闭合引号后的下标）。
+/// 转义按去转义后的字面字符收录（键名/实参名实际不含转义，保形式一致）。
+fn read_string(chars: &[char], i: usize) -> Option<(String, usize)> {
+    if chars.get(i) != Some(&'"') {
+        return None;
+    }
+    let mut s = String::new();
+    let mut j = i + 1;
+    while j < chars.len() {
+        match chars[j] {
+            '\\' => {
+                if j + 1 >= chars.len() {
+                    return None;
+                }
+                s.push(chars[j + 1]);
+                j += 2;
+            }
+            '"' => return Some((s, j + 1)),
+            c => {
+                s.push(c);
+                j += 1;
+            }
+        }
+    }
+    None
+}
+
+fn skip_ws(chars: &[char], i: &mut usize) {
+    while *i < chars.len() && chars[*i].is_whitespace() {
+        *i += 1;
+    }
+}
+
+/// 扫描调用点字面形态，返回 (键, Option<实参名集合>)：`t("…")` 形
+/// `Option` 为 `None`；`t_args("…", &[…])` 形为字面实参名集合。
+/// 边界判定与 [`referenced_keys`] 同规则（前导标识符字符排除）。
+/// 不可分析形态（动态键、非 `&[` 实参组、非字面实参名、括号不配平）
+/// 跳过该调用——存在性仍由第 2 条断言兜底，此处只钉字面形。
+fn call_site_shapes(file: &Path) -> Vec<(String, Option<BTreeSet<String>>)> {
+    let content =
+        fs::read_to_string(file).unwrap_or_else(|e| panic!("读取 {} 失败: {e}", file.display()));
+    let chars: Vec<char> = content.chars().collect();
+    let mut out = Vec::new();
+    for (needle, is_args_call) in [("t(", false), ("t_args(", true)] {
+        let pat: Vec<char> = needle.chars().collect();
+        if chars.len() < pat.len() {
+            continue;
+        }
+        for start in chars
+            .windows(pat.len())
+            .enumerate()
+            .filter(|(_, w)| *w == pat)
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>()
+        {
+            if start > 0 {
+                let prev = chars[start - 1];
+                if prev.is_ascii_alphanumeric() || prev == '_' {
+                    continue;
+                }
+            }
+            let mut j = start + pat.len();
+            skip_ws(&chars, &mut j);
+            let Some((key, mut j)) = read_string(&chars, j) else {
+                continue;
+            };
+            if !is_args_call {
+                out.push((key, None));
+                continue;
+            }
+            // `,` → `&` → `[` → 元组序列（跨行/缩进由 skip_ws 消化）
+            skip_ws(&chars, &mut j);
+            if chars.get(j) != Some(&',') {
+                continue;
+            }
+            j += 1;
+            skip_ws(&chars, &mut j);
+            if chars.get(j) != Some(&'&') {
+                continue;
+            }
+            j += 1;
+            skip_ws(&chars, &mut j);
+            if chars.get(j) != Some(&'[') {
+                continue;
+            }
+            j += 1;
+            let mut names = BTreeSet::new();
+            let mut analyzable = true;
+            loop {
+                skip_ws(&chars, &mut j);
+                match chars.get(j) {
+                    Some('(') => {
+                        let open = j;
+                        let mut m = open + 1;
+                        skip_ws(&chars, &mut m);
+                        let Some((name, _after)) = read_string(&chars, m) else {
+                            analyzable = false;
+                            break;
+                        };
+                        names.insert(name);
+                        match match_close(&chars, open) {
+                            Some(next) => j = next,
+                            None => {
+                                analyzable = false;
+                                break;
+                            }
+                        }
+                    }
+                    Some(']') => break,
+                    Some(',') => j += 1,
+                    _ => {
+                        analyzable = false;
+                        break;
+                    }
+                }
+            }
+            if analyzable {
+                out.push((key, Some(names)));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn call_site_arguments_cover_registered_placeholders() {
+    // 键 → en 目录占位符集合（zh 对齐由第 1/3 条断言保证，不重复取）
+    let mut registry: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for catalog in CATALOGS {
+        let path = locales_dir().join(format!("en/{catalog}.ftl"));
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("读取 {} 失败: {e}", path.display()));
+        let resource = fluent_syntax::parser::parse_runtime(source)
+            .unwrap_or_else(|e| panic!("{} 解析失败: {e:?}", path.display()));
+        for (name, vars) in message_placeholders(&resource) {
+            registry.insert(name, vars);
+        }
+    }
+
+    let mut sources = Vec::new();
+    collect_rs_files(&repo_root().join("src"), &mut sources);
+
+    let mut failures: Vec<String> = Vec::new();
+    for file in &sources {
+        for (key, shape) in call_site_shapes(file) {
+            if DECLARED_FIXTURES.contains(&key.as_str()) || !registry.contains_key(&key) {
+                continue; // 缺键由第 2 条断言报告，不重复
+            }
+            let placeholders = &registry[&key];
+            match shape {
+                // `t()` 形：键带占位符必漏参（运行时渲染裸 `{$名}` 句柄）
+                None => {
+                    if !placeholders.is_empty() {
+                        failures.push(format!(
+                            "{} -> t(\"{key}\") 调用了带占位符 {placeholders:?} 的键，须改用 t_args",
+                            file.display()
+                        ));
+                    }
+                }
+                // `t_args()` 字面形：FTL 占位符必须全部被实参覆盖（多余的实参
+                // Fluent 无害忽略，不判失败；漏传则静默渲染裸句柄）
+                Some(names) => {
+                    let missing: BTreeSet<String> =
+                        placeholders.difference(&names).cloned().collect();
+                    if !missing.is_empty() {
+                        failures.push(format!(
+                            "{} -> t_args(\"{key}\") 实参 {names:?} 未覆盖占位符 {missing:?}",
+                            file.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "调用点实参与 FTL 占位符失配（运行时会把花括号占位符裸句柄吐给用户且被静默吞掉）:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn call_site_shapes_parses_representative_forms() {
+    // 防守卫空转/误解析：用代表性形态钉死扫描器本身——单行、跨行、
+    // 嵌套 format!、raw 串实参、`emit(` 边界排除、动态键/非 `&[` 实参组跳过。
+    let sample = r##"
+        let _ = emit("not-a-call");
+        let k = "dynamic";
+        let _ = t(k);
+        crate::i18n::t("plain-key");
+        t_args("single-line", &[("id", id.clone())]);
+        t_args(
+            "multi-line",
+            &[("error", format!("{}: {}", code, detail))],
+        );
+        t_args("raw-value", &[("path", r#"{"depth": 1}"#)]);
+        t_args("var-args", args);
+    "##;
+    // 样本落集成测试专用 TMPDIR（构建期保证可写、随 cargo clean 清理），
+    // 不用 std::env::temp_dir——加固 CI 的 /tmp 可能只读。
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "fluxgate_i18n_shape_selfcheck_{}.rs",
+        std::process::id()
+    ));
+    fs::write(&path, sample).expect("写入自检样本失败");
+    let shapes = call_site_shapes(&path);
+    let _ = fs::remove_file(&path);
+    let mut got: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
+    for (key, names) in shapes {
+        got.insert(key, names);
+    }
+    assert_eq!(
+        got.get("plain-key"),
+        Some(&None),
+        "t() 形应解析为 None 且识别 crate::i18n:: 前缀"
+    );
+    assert_eq!(
+        got.get("single-line"),
+        Some(&Some(BTreeSet::from(["id".to_string()]))),
+        "单行 t_args 实参名解析"
+    );
+    assert_eq!(
+        got.get("multi-line"),
+        Some(&Some(BTreeSet::from(["error".to_string()]))),
+        "跨行 t_args 与嵌套 format! 实参（含花括号占位串）不得干扰解析"
+    );
+    assert_eq!(
+        got.get("raw-value"),
+        Some(&Some(BTreeSet::from(["path".to_string()]))),
+        "值内 raw 串（含引号与嵌套花括号）不得干扰括号配平"
+    );
+    assert!(!got.contains_key("not-a-call"), "emit( 边界必须排除");
+    assert!(
+        !got.contains_key("dynamic") && !got.contains_key("var-args"),
+        "动态键与非 `&[` 实参组属已知不可分析形态，必须静默跳过而非误报"
+    );
 }
 
 #[test]

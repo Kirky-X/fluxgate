@@ -228,6 +228,11 @@ async fn assemble_router(
     config_manager: &Arc<ConfigManager>,
     assembly: &bootstrap::Assembly,
 ) -> Result<Router, FluxgateError> {
+    // 双栈语言对齐：sdforge 框架栈（OpenAPI/health 描述串与框架 HTTP 响应）有
+    // 独立检测链（SDFORGE_LANG 起步），不自动继承 FLUXGATE_LANG——在此显式同步
+    // 为业务栈当前 locale，README 承诺的单一语言入口对两栈一致（set_locale
+    // 优先于其检测缓存，晚于首次 get_locale 也能覆盖）。
+    sdforge::i18n::set_locale(&crate::i18n::current_locale().to_string());
     let sdforge_config = sdforge_config(config_manager);
     let mut app = sdforge::http::build_with_config(&sdforge_config)?;
     app = app.merge(crate::api::create_router(assembly.api_state.clone()).await);

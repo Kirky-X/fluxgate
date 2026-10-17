@@ -29,12 +29,18 @@ pub async fn route_difficulty_explain(
 
     let difficulty = state.difficulty.as_ref().ok_or_else(|| {
         FluxgateError::from(GateError::Validation {
-            field: crate::i18n::t("api-route-explain-model-unknown").to_string(),
+            field: crate::i18n::t_args(
+                "api-route-explain-model-unknown",
+                &[("model", model.to_string())],
+            ),
         })
     })?;
     let explanation = difficulty.explain(model, &body).await.ok_or_else(|| {
         FluxgateError::from(GateError::Validation {
-            field: crate::i18n::t("api-route-explain-model-unknown").to_string(),
+            field: crate::i18n::t_args(
+                "api-route-explain-model-unknown",
+                &[("model", model.to_string())],
+            ),
         })
     })?;
     Ok(Json(explanation))

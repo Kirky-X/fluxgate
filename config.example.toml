@@ -669,6 +669,35 @@ model_id = "claude-3-opus-20240229"
 enabled = true
 weight = 1.0
 
+# ---- 本地示例/联调用 mock 厂商（按需整段取消注释，生产保持注释）----
+# examples/ 的请求以 vendor_hint = "mock-openai" 与模型名 gpt-4 /
+# claude-3-opus / text-embedding-3-small 指向本地上游桩（OpenAI/Anthropic
+# 兼容，缺省 http://127.0.0.1:8001/v1；容器部署把 api_base 的 127.0.0.1
+# 换成 host.docker.internal，compose 已映射）。生产部署保持注释：mock
+# 厂商入池会参与 fallback 链，可能接住生产流量。
+# [[vendors]]
+# id = "mock-openai"
+# name = "Mock OpenAI"
+# type_ = "openai"
+# api_key_env = "MOCK_OPENAI_API_KEY"
+# api_base = "http://127.0.0.1:8001/v1"
+# enabled = true
+# priority = 9
+# timeout_ms = 60000
+# stream_ttft_ms = 60000
+# stream_idle_ms = 30000
+# concurrency = { requests_per_second = 100, token_weighted = false, token_ticket_min = 1, token_ticket_max = 16384, token_ticket_default = 4096 }
+# rate_limit = { type = "token", max_tokens = 10000000, window_hours = 24, sliding = false }
+# [[vendors.models]]
+# model_id = "gpt-4"
+# enabled = true
+# [[vendors.models]]
+# model_id = "claude-3-opus"
+# enabled = true
+# [[vendors.models]]
+# model_id = "text-embedding-3-small"
+# enabled = true
+
 # 全局模型池：model = "auto" 的选路目标（抽象/直连两级都未命中时才尝试）。
 # enabled = false 时 auto 档以 validation_error(400) 拒绝（显式模型名不受影响）；
 # 缺本段 = 启用（沿用历史兜底）。strategy 为档位声明，当前选路由 [routing] 决定。

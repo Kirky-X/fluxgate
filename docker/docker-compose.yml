@@ -19,24 +19,36 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+    # 配置路径经 CLI 参数指向数据卷：镜像内不含配置文件（.dockerignore 安全
+    # 排除），main 以第一个 CLI 参数解析路径。配置放在数据卷目录内是刻意的——
+    # admin 配置写回走「同目录临时文件 + rename 原子覆盖」（config/manager.rs
+    # persist_and_swap），rename 越过单文件 bind mount 挂载点必然 EBUSY（原
+    # ../config.toml:/app/config.toml:ro 挂法下 /admin/config 与模型条目写回
+    # 全部 500）；写在数据卷目录内即普通文件系统语义，且随数据卷持久化。
+    # 宿主机侧准备（config.toml 不入库，部署私有物；从任意 cwd 启动都要先做）：
+    #   cp config.example.toml data/config.toml
+    command: ["/bin/server", "/app/data/config.toml"]
     environment:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
+      # vault 主钥（持久部署必注入）：64 位 hex = 32 字节。缺失时容器内在
+      # /home/appuser/.fluxgate/ 自动生成——随容器层走、重建即丢，柜内厂商
+      # 密钥随之不可解。空值等价未设置（启动回落文件生成）。
+      - FLUXGATE_MASTER_KEY=${FLUXGATE_MASTER_KEY:-}
       # 可选: API Keys (通过环境变量注入)
       # - OPENAI_API_KEY=${OPENAI_API_KEY}
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
-      # 配置挂载（只读）：镜像内不含配置文件（.dockerignore 安全排除，
-      # main 以第一个 CLI 参数或缺省 config.toml 解析路径）。
-      # 宿主机侧 config.toml 同样不入库（部署私有物）——干净检出先执行
-      #   cp config.example.toml config.toml
-      # 再按需修改（示例文件是随仓全量参考）
-      - ../config.toml:/app/config.toml:ro
-      # SQLite 数据持久化：compose 的短语法相对路径按 compose 文件所在目录
-      # 解析（docker/ → 仓库 data/），从任意 cwd 启动都一致。原写法用命名卷
-      # driver_opts + ${PWD}/data，${PWD} 取自调用 shell，在 docker/ 目录或 CI
-      # 下会指向错误路径
+      # SQLite 数据持久化 + 配置文件载体：compose 的短语法相对路径按 compose
+      # 文件所在目录解析（docker/ → 仓库 data/），从任意 cwd 启动都一致。原
+      # 写法用命名卷 driver_opts + ${PWD}/data，${PWD} 取自调用 shell，在
+      # docker/ 目录或 CI 下会指向错误路径
       - ../data:/app/data
+    # 容器内 127.0.0.1 指容器自身：本地联调的上游桩（如示例 mock 上游
+    # 127.0.0.1:8001）跑在宿主机时，把厂商 api_base 指到
+    # host.docker.internal 即可触达（Linux 经 host-gateway 映射）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # 健康检查由镜像 HEALTHCHECK 提供（Dockerfile 为唯一定义），不在这里
     # 重复声明：compose 覆盖会与镜像层参数漂移（原 5s/10s start-period 不一致）
     # 资源限制 (生产环境推荐；limits 由 compose v2 强制，reservations 仅作调度提示)

@@ -112,11 +112,18 @@ RUN apk add --no-cache \
 # 注意：busybox adduser 不支持 shadow 长选项（--disabled-password 等在 3.21
 # 实测打印 usage 退出 1），统一用短选项：-D 禁密码 / -H 不建家目录 / -G 主组
 # / -s 登录 shell（短选项在 3.22~3.24 busybox 上行为一致，换 base 无需改）
+# -H 省掉的家目录必须手工补建：vault 主钥的文件回退路径是 ~/.fluxgate/
+# （HOME=/home/appuser 由运行时 HOME env 提供），目录缺失时启动期写主钥
+# Permission denied，叠加 restart: unless-stopped 即成重启循环（实测缺陷）。
+# 容器内生成的主钥随容器层走、重建即丢——持久部署应注入 FLUXGATE_MASTER_KEY
+#（compose 已透传），此处只是保证开箱可启动。
 ARG UID=10001
 ARG GID=10001
 
 RUN addgroup -g ${GID} appgroup && \
-    adduser -D -H -u "${UID}" -G appgroup -s /sbin/nologin appuser
+    adduser -D -H -u "${UID}" -G appgroup -s /sbin/nologin appuser && \
+    mkdir -p /home/appuser/.fluxgate && \
+    chown -R appuser:appgroup /home/appuser
 
 # 创建数据目录并设置权限
 RUN mkdir -p /app/data && \

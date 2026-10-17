@@ -55,7 +55,7 @@ cd examples/assets/rest-http && npm install openai && FLUXGATE_API_KEY=你的key
 
 1. **启动网关**：仓库根 `cargo run --release`（`[server]` 段缺省监听 `0.0.0.0:8080`；本机访问用 `http://127.0.0.1:8080`——`src/rest_http.rs` 的 `DEFAULT_BASE_URL` 亦取该值）。
 2. **配置 API key**：dev 配置 `[auth]` 开启且 `api_keys` 为空——不配 key 则所有 `/v1` 与 `/admin` 请求一律 401。先 `echo -n '你的key' | sha256sum`，把摘要填进 `config.toml` 的 `[auth].api_keys`，再 `export FLUXGATE_API_KEY=明文key`。
-3. **上游就绪**：`config.toml` 不入库（`.gitignore` 已列）——开发者本地配置里的 mock 厂商（`mock-openai` / `mock-anthropic`）上游指向 `http://127.0.0.1:8001/v1`，需该地址有 OpenAI/Anthropic 兼容服务；仓库随带的 `config.example.toml` 不含 mock 厂商（示例为 openai / anthropic 真实地址），干净检出按它起步时请换真实厂商并同步修改 `src/rest_http.rs` 顶部的 `CHAT_MODEL` / `HINT_VENDOR` / `ANTHROPIC_MODEL` 常量。
+3. **上游就绪**：`config.toml` 不入库（`.gitignore` 已列）——开发者本地配置里的 mock 厂商（`mock-openai` / `mock-anthropic`）上游指向 `http://127.0.0.1:8001/v1`，需该地址有 OpenAI/Anthropic 兼容服务。`config.example.toml` 随带**整段注释的 mock 厂商块**（`mock-openai`，模型目录含 `gpt-4` / `claude-3-opus` / `text-embedding-3-small`，与示例常量一致）：本地跑示例把该段取消注释即可，无需改 `src/rest_http.rs` 顶部的 `CHAT_MODEL` / `HINT_VENDOR` / `ANTHROPIC_MODEL` 常量；生产部署保持注释（mock 厂商入池会参与 fallback 链），换真实厂商并同步修改常量。
 
 **协议事实与勘误**（编写时以源码核实）：
 

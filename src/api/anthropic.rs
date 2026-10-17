@@ -147,7 +147,7 @@ async fn chat_passthrough_stream(
     // Err（均发生在响应头前，manager check_stream_status 早退）排除
     // 重派；Ok（流已建立）即交出 body，流中错误仍以 SSE error 事件
     // 终止不再换路。关闭时单发直连（decision 零克隆，历史语义）。
-    // WP4：尝试链经 fallback_trail 出站（开关关闭时为空表，零行为变化）。
+    // 尝试链经 fallback_trail 出站（开关关闭时为空表，零行为变化）。
     #[cfg(feature = "resilience")]
     let mut fallback_trail = crate::vendor::resilience::AttemptTrail::new(
         state.config.read().resilience.expose_fallback_headers,
@@ -203,9 +203,9 @@ async fn chat_passthrough_stream(
     )
     .await;
 
-    // 阶段一：透传流过分帧器逐帧原样转发 —— 此前原始字节
-    // 直转（连重帧都没有），上游网络中断会伪装成正常流结束。
-    // WP8：受配额约束的 key 才挂帧观测并在正常 EOF 回补，
+    // 阶段一：透传流过分帧器逐帧原样转发；经分帧后上游
+    // 网络中断以 SSE error 帧显性终止，不伪装成正常流结束。
+    // 受配额约束的 key 才挂帧观测并在正常 EOF 回补，
     // 其余形态零包装（透传字节逐字节不变）。三级早退判定在 quota 模块单点。
     let body_stream = crate::middleware::quota::passthrough_stream_body(
         &state.config,
@@ -218,7 +218,7 @@ async fn chat_passthrough_stream(
 
     log_stream_dispatch(state, ctx, &decision, body).await;
 
-    // WP4：流式在响应头阶段写入（派发已完成，链已知）；开关关闭为空表。
+    // 流式在响应头阶段写入（派发已完成，链已知）；开关关闭为空表。
     #[cfg(feature = "resilience")]
     let obs_headers = crate::api::fallback_observation_headers(&decision, &fallback_trail);
     #[cfg(not(feature = "resilience"))]
@@ -243,7 +243,7 @@ async fn chat_passthrough_json(
     decision: RoutingDecision,
 ) -> Result<axum::response::Response, FluxgateError> {
     // leader 闭包 = 上游派发：resilience 换路循环 + finish_dispatch 失败
-    // 收尾 + 亲和重绑定 + WP4 观测头。闭包成功返回的 FinalDispatch 即
+    // 收尾 + 亲和重绑定 + 观测头。闭包成功返回的 FinalDispatch 即
     // **最终成功者**（major#2：回写键/日志/结算以其为准，初始候选仅入
     // single-flight 去重键）。
     let dispatch = {
@@ -260,7 +260,7 @@ async fn chat_passthrough_json(
                 // cover_all_paths 开启时包换路 fallback 循环（resilience
                 // feature）——主 vendor 耗尽/429/5xx 时排除后重路由，
                 // actual_vendor 记最终成功者；关闭时单发直连。
-                // WP4：尝试链经 fallback_trail 出站（开关关闭时为空表，
+                // 尝试链经 fallback_trail 出站（开关关闭时为空表，
                 // 零行为变化）。
                 #[cfg(feature = "resilience")]
                 let outcome = {
@@ -377,7 +377,7 @@ async fn chat_passthrough_json(
     };
 
     // HIT（快速路径/follower 复用）：无上游往返，实际用量按 0 结算回补
-    // 入口预扣——否则同一请求的缓存重复命中会持续虚耗配额（WP8/M6）；
+    // 入口预扣——否则同一请求的缓存重复命中会持续虚耗配额；
     // 成功日志用初始路由决策（复用响应来源请求的维度）。
     if flow.participated && !flow.computed {
         crate::middleware::quota::settle_nonstream_cached(
@@ -404,7 +404,7 @@ async fn chat_passthrough_json(
         .unwrap_or_else(|| panic!("{}", crate::i18n::t("api-final-route-missing")));
     log_success_dispatch(state, ctx, &final_route.decision, body, &flow.value).await;
 
-    // WP8：非流式响应后回补（有 usage 才结算；无 usage 保持预扣）。
+    // 非流式响应后回补（有 usage 才结算；无 usage 保持预扣）。
     // vendor 协议透传：cache 包含语义与分账侧同一判定。
     crate::middleware::quota::settle_nonstream(
         &state.config,
@@ -418,7 +418,7 @@ async fn chat_passthrough_json(
     );
 
     // 缓存参与（Miss 回写完成）→ 响应带 X-Cache: MISS；
-    // WP4 回退观测头叠加（开关关闭为空表，零行为变化）。
+    // 回退观测头叠加（开关关闭为空表，零行为变化）。
     Ok(crate::api::with_fallback_headers(
         json_response_with_cache_flag_semantic(flow.value, flow.participated, flow.semantic),
         &crate::api::extend_obs_with_flags(
@@ -444,7 +444,7 @@ async fn chat_convert_stream(
     // cover_all_paths 开启时「首字节前换路」（转换路径
     // UnifiedRequest 任意 vendor type 均合法，不按协议过滤）；关闭时
     // 单发直连（unified_request move，历史零克隆语义）
-    // WP4：尝试链经 fallback_trail 出站（开关关闭时为空表，零行为变化）。
+    // 尝试链经 fallback_trail 出站（开关关闭时为空表，零行为变化）。
     #[cfg(feature = "resilience")]
     let mut fallback_trail = crate::vendor::resilience::AttemptTrail::new(
         state.config.read().resilience.expose_fallback_headers,
@@ -491,7 +491,7 @@ async fn chat_convert_stream(
     );
     let (chunk_stream, decision) = finish_dispatch(state, ctx, body, outcome).await?;
 
-    // WP8：转换流结束回补（捕获末个 Usage chunk 含 cache 两档；无 Usage 帧
+    // 转换流结束回补（捕获末个 Usage chunk 含 cache 两档；无 Usage 帧
     // 保持预扣）。三级早退（未接线/关闭/无限额租户）返回 None → 零包装
     // 直通，不克隆请求体与档源（H2：默认配置零开销）。
     let settle_ctx = crate::middleware::quota::SettlementCtx::for_request(
@@ -526,7 +526,7 @@ async fn chat_convert_stream(
 
     log_stream_dispatch(state, ctx, &decision, body).await;
 
-    // WP4：流式在响应头阶段写入（派发已完成，链已知）；开关关闭为空表。
+    // 流式在响应头阶段写入（派发已完成，链已知）；开关关闭为空表。
     #[cfg(feature = "resilience")]
     let obs_headers = crate::api::fallback_observation_headers(&decision, &fallback_trail);
     #[cfg(not(feature = "resilience"))]
@@ -642,7 +642,7 @@ async fn chat_convert_json(
         .unwrap_or_else(|| panic!("{}", crate::i18n::t("api-final-route-missing")));
     log_success_dispatch(state, ctx, &final_route.decision, body, &flow.value).await;
 
-    // WP8：非流式响应后回补（转换路径 usage 恒有，必结算）。
+    // 非流式响应后回补（转换路径 usage 恒有，必结算）。
     crate::middleware::quota::settle_nonstream(
         &state.config,
         state.quota.as_ref(),
@@ -654,7 +654,7 @@ async fn chat_convert_json(
         Some(state.vendor_manager.metrics()),
     );
 
-    // 缓存参与 → 响应带 X-Cache 头；WP4 回退观测头叠加（开关关闭为空表）。
+    // 缓存参与 → 响应带 X-Cache 头；回退观测头叠加（开关关闭为空表）。
     Ok(crate::api::with_fallback_headers(
         json_response_with_cache_flag_semantic(flow.value, flow.participated, flow.semantic),
         &crate::api::extend_obs_with_flags(
@@ -822,7 +822,7 @@ async fn dispatch_unified_request(
     }
 }
 
-/// 派发产物：最终成功路由 + WP4 观测头（换路循环在闭包内完成，链已知）。
+/// 派发产物：最终成功路由 + 观测头（换路循环在闭包内完成，链已知）。
 /// 实现 [`FinalRoute`] 供 get_or 闭包流以最终 vendor/model 组装回写键
 /// （评审修复 major#2）。
 struct FinalDispatch {
@@ -948,7 +948,7 @@ async fn log_success_dispatch(
         None,
     )
     .await;
-    // WP9：分账落库（hash 透传 + cache 两类 + 四档单价）。
+    // 分账落库（hash 透传 + cache 两类 + 四档单价）。
     crate::api::record_keyed_usage(
         state,
         &decision.vendor.id,
@@ -1001,11 +1001,11 @@ async fn log_request(
         .and_then(|r| serde_json::to_string(r).ok())
         .map(crate::api::truncate_payload);
 
-    // （评审修正）：tokens 从响应 usage 取——**双格式**。本端点的
+    // tokens 从响应 usage 取——**双格式**。本端点的
     // 响应既可能是 Anthropic 格式（透传路径的原始上游 JSON；转换路径经
     // anthropic_converter::response_to_external 产出 {"input_tokens",
-    // "output_tokens"}，见 anthropic_converter.rs），此前只读
-    // OpenAI 键名导致三个 token 字段恒 NULL、预聚合器永不记账。
+    // "output_tokens"}，见 anthropic_converter.rs）。
+    // 两套键名都做提取，避免 token 字段漏记。
     // prompt 缺失回退 input_tokens、completion 缺失回退 output_tokens；
     // Anthropic 无 total_tokens 键，缺省时以 prompt+completion 合成。
     let usage = response.and_then(|r| r.get("usage"));
@@ -1029,7 +1029,7 @@ async fn log_request(
             _ => None,
         });
 
-    // usage 进预聚合器已迁移至 WP9 分账路径（`log_success_dispatch` 经
+    // usage 进预聚合器已迁移至 分账路径（`log_success_dispatch` 经
     // `record_keyed_usage` 记账：hash 透传 + cache 两类 + 四档单价）。
     // 此处保留 usage 提取（RequestLog 落库仍需 prompt/completion/total）。
 

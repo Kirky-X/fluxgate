@@ -829,7 +829,7 @@ async fn dispatch_unified_request(
     }
 }
 
-/// 派发产物：最终成功路由 + WP4 观测头（换路循环在闭包内完成，链已知）。
+/// 派发产物：最终成功路由 + 观测头（换路循环在闭包内完成，链已知）。
 /// 实现 [`FinalRoute`] 供 get_or 闭包流以最终 vendor/model 组装回写键
 /// （评审修复 major#2）。
 struct FinalDispatch {
@@ -885,7 +885,7 @@ fn openai_sse_stream(
 ) -> axum::body::Body {
     let sse_stream = async_stream::stream! {
         let mut chunk_stream = Box::pin(chunk_stream);
-        // WP10：流级一致性归一化（首块 role + chunk 间 id/created 一致）。
+        // 流级一致性归一化（首块 role + chunk 间 id/created 一致）。
         let mut encoder = crate::protocol::OpenAIStreamEncoder::new();
         let mut errored = false;
         while let Some(item) = futures::StreamExt::next(&mut chunk_stream).await {
@@ -965,7 +965,7 @@ async fn log_success_dispatch(
         ctx.linucb_reward_key.as_deref(),
     )
     .await;
-    // WP9：分账落库（hash 透传 + cache 两类 + 四档单价）。
+    // 分账落库（hash 透传 + cache 两类 + 四档单价）。
     crate::api::record_keyed_usage(
         state,
         &decision.vendor.id,
@@ -1031,7 +1031,7 @@ async fn log_chat_request(
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
 
-    // usage 进预聚合器已迁移至 WP9 分账路径（`log_success_dispatch` 经
+    // usage 进预聚合器已迁移至 分账路径（`log_success_dispatch` 经
     // `record_keyed_usage` 记账：hash 透传 + cache 两类 + 四档单价）。
     // 此处保留 usage 提取（RequestLog 落库仍需 prompt/completion/total）。
 
@@ -1110,7 +1110,7 @@ pub async fn embeddings(
 ) -> Result<impl IntoResponse, FluxgateError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
-    // WP9：请求方 key 摘要透传分账（与响应缓存同源）。
+    // 请求方 key 摘要透传分账（与响应缓存同源）。
     let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
 
     // 路由决策 - embedding 使用特殊路由
@@ -1222,7 +1222,7 @@ async fn push_embeddings_log(
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
 
-    // embeddings usage 进预聚合器已迁移至 WP9 分账路径（本函数经
+    // embeddings usage 进预聚合器已迁移至 分账路径（本函数经
     // `record_keyed_usage` 记账：hash 由调用方透传 + 四档单价）。
     // 此处保留 usage 提取（RequestLog 落库仍需 prompt/completion/total）。
     if let Some(response) = response {

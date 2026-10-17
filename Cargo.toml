@@ -2,19 +2,14 @@
 name = "fluxgate"
 version = "0.1.0"
 edition = "2021"
-# MSRV 单一事实来源：与 7 个兄弟库声明一致（dbnexus/limiteron/sdforge 均 1.97.1），
-# 在此声明使 cargo 在依赖解析期硬拒更低工具链；CI 按此下限跑，Docker/release 用当前 stable。
+# MSRV 单一事实源：cargo 解析期据此硬拒更低工具链；CI 用此下限，Docker/release 用当前 stable。
 rust-version = "1.97.1"
-# examples/ 是独立 workspace 成员（fluxgate-examples），不作本包示例目录：
-# 否则 examples/build.rs 等顶层 .rs 会被误认作本包 example target 而在 --all-targets 下编译失败。
+# examples/ 是独立 workspace 成员、非本包示例目录：关闭自动发现，否则其顶层 .rs 会被误作 example target 编译失败。
 autoexamples = false
-# tests/ 已按功能域目录化，Cargo 自动发现不递归——改用下方 [[test]] 注册表逐个声明。
-# 纪律：新增集成测试必须登记 [[test]]；特性门控留在文件顶部 `#![cfg(feature = ...)]`；
-# 非 default 特性专用（default 口径下 0 用例）的测试必须加 required-features（与文件顶 cfg 同集）——
-# 避免 default 口径产出空壳二进制（0 用例也占编译位、污染测试报告与覆盖率报告）。
+# tests/ 按功能域目录化、Cargo 自动发现不递归，故关闭之、改用下方 [[test]] 显式注册（新增测试必须登记，特性门控留文件顶 `#![cfg(feature = ...)]`）。
+# 非 default 特性专用的测试须加 required-features（与文件顶 cfg 同集），避免 default 口径产出空壳二进制、污染测试与覆盖率报告。
 autotests = false
-# benches/ 同理走显式注册表（下方 [[bench]]）：默认自动发现会把 benches/ 顶层 .rs 隐式
-# 建成 bench target——显式关闭后新增基准必须登记（共享 fixture 模块 benches/common 不参与发现）。
+# benches/ 同理关闭自动发现、走下方 [[bench]] 显式注册（共享 fixture benches/common 不参与发现，新增基准必须登记）。
 autobenches = false
 description = "智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度 | Intelligent multi-provider LLM routing gateway"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
@@ -40,8 +35,7 @@ full = ["web-server", "database", "vendor-management", "router", "protocol", "in
 db-sqlite = ["dbnexus?/sqlite", "dbnexus?/runtime-tokio-rustls", "dbnexus?/replica-routing", "inklog?/sqlite"]
 db-postgres = ["dbnexus?/postgres", "dbnexus?/runtime-tokio-rustls", "dbnexus?/replica-routing", "inklog?/postgres"]
 db-mysql = ["dbnexus?/mysql", "dbnexus?/runtime-tokio-rustls", "dbnexus?/replica-routing", "inklog?/mysql"]
-# database 显式入链（服务器装配 bootstrap 需要 Database）；infrastructure 供 server/shutdown 的 trait-kit 协调器；
-# dep:limiteron 供 api/router_builder 入站限流；dep:hex/sha2/subtle/once_cell 为 api/middleware 面直用（web-server 关闭时不激活本 crate 这些直接依赖）。
+# 显式入链 database（bootstrap 需 Database）/infrastructure（server/shutdown 的 trait-kit 协调器）；dep:hex/sha2/subtle/once_cell 等为 api/middleware 直用（关闭时不激活）。
 web-server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:async-stream", "router", "sdforge-integration", "http", "database", "infrastructure", "dep:limiteron", "dep:hex", "dep:sha2", "dep:subtle", "dep:once_cell"]
 # 宏门控开关，无实现体：sdforge `#[forge]` 宏按**目标 crate** 的 feature 求值 `cfg(feature = "http")`——
 # 无同名 feature 时 RouteRegistration 整体被 cfg 掉，#[forge] 站点路由（/health）静默丢失。随 web-server 启用。
@@ -50,23 +44,18 @@ http = []
 resilience = []
 # cost-tracking：CostTracker 的分片锁并发 map
 cost-tracking = ["dep:dashmap"]
-# database 的 async_logger（DB sink）无条件消费 inklog 类型，logging 为编译前提。
-# 对 async_logger 做 cfg 门控需同步 server/shutdown 与多处测试消费点，属独立重构。
+# async_logger（DB sink）无条件消费 inklog 类型，故 logging 为编译前提。
 database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "dep:url", "protocol", "logging"]
 # vendor 栈：reqwest 出站 + limiteron 限流/熔断原语 + 队列通道，rand 供加权采样；不携带存储。
 vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand", "dep:async-channel"]
-# 密钥保密柜（src/vault/）：cocoon AEAD 加密 + secrecy 内存包装；sha2/hex 指纹与 rand 主钥
-# 生成复用既有 optional entries。db 后端代码位于 #[cfg(feature = "database")] 门控内，
-# 无库构建（SDK 嵌入形态）回落 FileKeyStore。
+# 密钥保密柜（src/vault/）：cocoon AEAD + secrecy 内存包装，sha2/hex/rand 复用既有 optional entries；db 后端在 `#[cfg(feature = "database")]` 内，无库构建（SDK 嵌入）回落 FileKeyStore。
 vault = ["dep:cocoon", "dep:secrecy", "dep:sha2", "dep:hex", "dep:rand"]
 # router 模块（含 vendor-management 联动）；dep:oxcache 供 response_cache/bootstrap 直用 CacheBackend。
 router = ["vendor-management", "dep:oxcache"]
-# 难度定档的 vecboost laya 进程内分类器（EngineFactory + InferenceEngine 直调）。
-# 关闭时 difficulty 模块以纯规则形态工作（w_clf>0 被配置校验 V4 拒绝）。
-# 依赖为 path dep（vecboost 库面处于快速演进期，git 发布面与内部 feature
-# 组合未稳定；升级跟随上游 tag 并跑全量测试——规则12）。
+# vecboost laya 进程内分类器（EngineFactory + InferenceEngine 直调）；关闭时 difficulty 模块走纯规则（w_clf>0 被配置校验 V4 拒绝）。
+# path dep：vecboost 库面快速演进期、feature 组合未稳，升级跟随上游 tag 并跑全量测试。
 difficulty-classifier = ["dep:vecboost"]
-# 语义响应缓存（O4）：vecboost BGE 嵌入 + 线性余弦检索（强制租户隔离）
+# 语义响应缓存：vecboost BGE 嵌入 + 线性余弦检索（强制租户隔离）
 semantic-cache = ["dep:vecboost"]
 # marker feature（当前无 cfg 消费点；保留组合位与单开关语义）
 protocol = []
@@ -88,32 +77,24 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi")
 # axum 显式特性（关默认）：default = form/http1/json/matched-path/original-uri/query/tokio/tower-log/tracing，
 # 本仓只用 macros+http1+json+query+tokio 与请求 span 日志面；form/multipart/ws/original-uri/matched-path 零调用，裁掉。
 axum = { version = "0.8", default-features = false, features = ["macros", "http1", "json", "query", "tokio", "tower-log", "tracing"], optional = true }
-# tokio 关默认后按直用面声明最小集：rt-multi-thread（蕴含 rt，供 #[tokio::main] 多线程运行时）、
-# macros、net（TcpListener/TcpStream）、time、sync、io-util（AsyncWriteExt）；
-# full 携带的 fs/process/signal/parking_lot/io-std 本仓零调用（examples 的 ctrl_c 由该 crate
-# 自己的 entries 补 signal）。
+# tokio 关默认，按直用面取最小集：rt-multi-thread/macros/net/time/sync/io-util；fs/process/parking_lot/io-std 零调用（examples 的 ctrl_c 由该 crate 自带 signal）。
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tower = { version = "0.5", default-features = false, optional = true }
 tower-http = { version = "0.7", default-features = false, features = ["cors", "trace", "request-id"], optional = true }
 
-# 数据库 — crates.io rc.9（自研库全量走 registry）。kit feature 暴露 integrations::kit::DbNexusModule。
-# pool-warmup：启动期并行预热 min_connections 并 fail-fast 暴露连不上（postgres/mysql 部署把建连成本移出首请求）。
-# retry：database.rs 直用 dbnexus::RetryPolicy 的编译前提（inklog 亦透传同名特性，此处显式声明不蹭它的边）。
-# 后端（sqlite/postgres/mysql）与 runtime 不在此声明：Cargo feature 只加不减，写死会锁死单一后端，由 db-* 三组透传按构建选择。
+# 数据库层。kit 暴露 integrations::kit::DbNexusModule；pool-warmup 启动期并行预热 min_connections 并 fail-fast；retry 为 database.rs 直用 RetryPolicy 的编译前提（显式声明，不蹭 inklog 透传）。
+# 后端与 runtime 不在此写死：Cargo feature 只加不减，写死会锁死单后端，由 db-* 三组透传按构建选择。
 dbnexus = { version = "0.6.0-rc.9", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate", "pool-warmup", "retry"], optional = true }
 # sea-orm 零特性面（ConnectionTrait/Statement/DatabaseBackend/Value 直用，无 entity derive、无 sqlx 驱动）
 sea-orm = { version = "2.0", default-features = false, optional = true }
 
-# 日志 — crates.io 版（自研库全量走 registry；本地对齐以同版本发布保证）。
-# 落库后端（sqlite/postgres）随 db-* 三组经 inklog?/<backend> 透传，不在此写死。
-# fast-masking（掩码 literal 走 Aho-Corasick 单趟）+ secret-scan（出站裸 secret 形态+熵扫描门）；http/cli 面本仓零调用，不声明。
+# 日志层。落库后端随 db-* 三组经 inklog?/<backend> 透传，不在此写死；fast-masking（Aho-Corasick 单趟）+ secret-scan（出站裸 secret 形态+熵扫描），http/cli 面零调用不声明。
 inklog = { version = "0.3.0-rc.9", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
 # 配置加载与热重载：dynamic/snapshot/loader 三面 + json 强类型投影 + security-rules 弱密钥校验 + hot-reload-kit；不启用 env（无 .env 自动加载）。
 confers = { version = "0.6.0-rc.10", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
 # tracing 显式集（关默认等价声明）：std + attributes（info!/span! 等事件宏的展开面）
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
-# log 门面 → tracing 事件桥：reqwest/sea-orm 等依赖经 log crate 输出，而 inklog LogAdapter 只投 console+主 async 通道，
-# 自定义 sink 收不到——先装 LogTracer 把这些记录并入统一 tracing 总线。
+# log→tracing 事件桥：reqwest/sea-orm 经 log crate 输出而 inklog LogAdapter 不投自定义 sink，装 LogTracer 并入统一总线。
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 # 主依赖只用 registry + 自定义 Layer（bootstrap.rs），不接 fmt/json/env-filter/ansi 面；
 # registry 蕴含 std，不再重复声明
@@ -125,17 +106,13 @@ limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["tow
 # 缓存
 oxcache = { version = "0.5.0-rc.8", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 
-# 难度定档分类器（difficulty-classifier feature）：vecboost laya 决策引擎
-# 进程内直调（EngineFactory + InferenceEngine）。path dep：库面快速演进期，
-# 跟随本地 checkout；default-features=false 避开 http/grpc 服务端栈。
+# 难度定档分类器（difficulty-classifier/semantic-cache）。path dep：库面快速演进期，跟随本地 checkout；default-features=false 避开 http/grpc 服务端栈。
 vecboost = { path = "../vecboost", default-features = false, optional = true }
 
 # DI（async + shutdown 面）
 trait-kit = { version = "0.5.0-rc.9", default-features = false, features = ["async", "shutdown"], optional = true }
 
-# 服务框架（http/security/health/metrics/context/graceful/openapi 门面）：
-# 不声明 sdforge/streaming——其流式分帧面（tokio-stream/futures-util/chrono）
-# 本仓零引用，SSE 分帧由 src/protocol 自实现。
+# 服务框架门面。不声明 streaming：其流式分帧面本仓零引用，SSE 分帧由 src/protocol 自实现。
 sdforge = { version = "0.5.0-rc.8", default-features = false, features = ["http", "security", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
 
 # 序列化与核心（全部显式特性 + 关默认）
@@ -147,10 +124,7 @@ async-trait = { version = "0.1", default-features = false }
 futures = { version = "0.3", default-features = false, features = ["executor"] }
 # chrono 关默认：clock（Utc::now/Local::now，蕴含 std）+ serde；default 里的 oldtime/wasmbind 本仓零消费。
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-# rand 0.10（三方最新稳定版）：根侧实例与图内 dbnexus/inklog/sdforge/sqlx-postgres 已拉的
-# 0.10 收敛（锁中残余 0.8/0.9 实例由 rust_decimal/mockito/tungstenite 上游持有，非本仓直依赖）。
-# 0.10 API 迁移：gen_range → random_range、gen::<T>() → random::<T>()、thread_rng() → rng()、
-# &mut dyn RngCore → &mut dyn Rng（用户面方法在 RngExt）。
+# rand 0.10：与图内 dbnexus/inklog/sdforge 已拉的 0.10 收敛（残余 0.8/0.9 由上游三方持有，非本仓直依赖）。
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"], optional = true }
 once_cell = { version = "1", default-features = false, features = ["std"], optional = true }
 uuid = { version = "1", default-features = false, features = ["v4", "serde", "std"] }
@@ -171,16 +145,13 @@ toml = { version = "1", default-features = false, features = ["std", "serde", "p
 fluent-bundle = { version = "0.16", default-features = false }
 unic-langid = { version = "0.9", default-features = false }
 sys-locale = { version = "0.3", default-features = false }
-# API Key SHA256 摘要存储与常量时间比较（api/middleware 面三处消费）。
-# sha2 0.11 对齐兄弟库；sqlx 侧的 0.10 锁定属上游，随其升级自然收敛。
-# 纯摘要面只需 alloc；default 的 oid（const-oid 对象标识）本仓零消费。
+# API Key SHA256 摘要与常量时间比较（api/middleware 消费）；纯摘要只需 alloc，default 的 oid 零消费。
+# 0.11 对齐兄弟库；sqlx 侧 0.10 锁定属上游，随其升级自然收敛。
 sha2 = { version = "0.11", default-features = false, features = ["alloc"], optional = true }
 hex = { version = "0.4", default-features = false, features = ["std"], optional = true }
 subtle = { version = "2.6", default-features = false, features = ["std"], optional = true }
 
-# 密钥保密柜（vault）：cocoon 0.5 AEAD 容器（MiniCocoon::from_key 逐条加密，跳过 KDF）；
-# secrecy 0.10 内存态 SecretString 包装（Debug 掩码 + drop 擦除）；rand 0.10 主钥生成与
-# sha2/hex 指纹复用既有 optional entries，不重复声明。
+# 保密柜（vault）：cocoon AEAD 容器（MiniCocoon::from_key 逐条加密、跳过 KDF）+ secrecy SecretString 内存包装；rand/sha2/hex 复用既有 optional entries。
 cocoon = { version = "0.5", default-features = false, features = ["std", "getrandom", "thiserror"], optional = true }
 secrecy = { version = "0.10", default-features = false, optional = true }
 
@@ -196,7 +167,6 @@ log = { version = "0.4", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
 # admin CRUD 测试的 ConfigManager 写路径：RAII 唯一临时目录（getrandom 供随机文件名）
 tempfile = { version = "3", default-features = false, features = ["getrandom"] }
-# mockall/mockall_double 已移除：全仓（src/tests/examples）零引用，属死开发依赖；测试替身走 mockito 线级桩与手写 fake
 http-body = { version = "1", default-features = false }
 # 测试里的 StreamExt/SinkExt 面；io/sink/channel/compat 等重型面零调用
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
@@ -204,9 +174,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 mockito = { version = "1", default-features = false }
 # 测试需注入 limiteron MockClock（假时钟驱动熔断超时 / 限流窗口重置）；MockClock 仅在 test-clock feature 下公开。
 limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["test-clock"] }
-# Criterion 组件级基准（透传 / 转换 / 路由决策路径）。default-features 关默认，仅保留
-# cargo_bench_support（cargo bench 运行语义）；plotters（HTML 图表）与 rayon（并行统计
-# 抽样，单机基线不需要）显式裁掉——统计单线程执行，数值等价。
+# Criterion 组件级基准（透传/转换/路由决策）。只留 cargo_bench_support；裁掉 plotters（HTML 图）与 rayon（单机基线，单线程统计数值等价）。
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 # ===============================================================================
@@ -391,6 +359,10 @@ name = "dead_code_guard"
 path = "tests/guard/dead_code_guard.rs"
 
 [[test]]
+name = "comment_hygiene_test"
+path = "tests/guard/comment_hygiene_test.rs"
+
+[[test]]
 name = "difficulty_tier_test"
 path = "tests/routing/difficulty_tier_test.rs"
 
@@ -427,10 +399,7 @@ opt-level = 3
 lto = true
 codegen-units = 1
 
-# 自研库全量走 crates.io registry（本地对齐以同版本发布保证）；
-# 原本地重定向（[patch.crates-io]）在全部库同版本发布后移除。
-# 若需临时回到本地开发态：给主依赖加回 path = "../<lib>"，并在本文件
-# 末尾恢复 [patch.crates-io] 段（否则 path 版与 registry 版并存会 trait 身份分裂）。
+# 回到本地开发态：给主依赖加回 path = "../<lib>" 并在末尾恢复 [patch.crates-io]——否则 path 版与 registry 版并存会 trait 身份分裂。
 
 [workspace]
 # 示例集合并为单一 crate（examples/），内部按 feature 划分模块与 bin。

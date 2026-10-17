@@ -507,7 +507,7 @@ concurrency = { requests_per_second = 1 }
     }
 
     /// 注释级外部编辑（语义等价）不得冻结管理面写回：桥接必须采纳基线
-    ///（真实文件监听 + 桥接全链路；修复前写回持续被拒到重启）。
+    ///（真实文件监听 + 桥接全链路）。
     #[tokio::test]
     async fn comment_only_external_edit_keeps_write_back_available() {
         let dir = tempfile::TempDir::new().expect("tempdir");

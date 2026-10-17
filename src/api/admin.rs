@@ -242,7 +242,7 @@ pub async fn reset_vendor(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, FluxgateError> {
-    // WP6 恢复通道：清空该 vendor 的 key 池黑名单（含游标）与冷却状态。
+    // 恢复通道：清空该 vendor 的 key 池黑名单（含游标）与冷却状态。
     // limiteron 限流状态仍自动管理（令牌桶 refill），此处不触限流器。
     if !state.vendor_manager.reset_key_pool_state(&id) {
         return Err(FluxgateError::from(crate::error::GateError::Validation {

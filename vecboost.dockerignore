@@ -1,0 +1,3 @@
+# fluxgate 容器构建专用：vecboost 附加上下文不裁剪（cargo --locked 解析
+# 其 manifest 需要 examples 等全部 target 文件在场；覆盖 vecboost 自带的
+# 面向其自身镜像构建的 .dockerignore）

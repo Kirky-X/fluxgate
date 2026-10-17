@@ -834,7 +834,7 @@ mod tests {
         assert!(!manager.adopt_disk_baseline(), "文件缺失必须拒绝采纳");
     }
 
-    /// 并发 update 一致性（评审 major-1 场景）：多线程并发 POST 等价的
+    /// 并发 update 一致性：多线程并发 POST 等价的
     /// update_config，写锁串行化后最终磁盘 == 最终内存态，且无 tmp 残留。
     /// 无锁交错会导致磁盘与内存分裂（磁盘=后者内容、内存=前者值）。
     #[test]
@@ -945,7 +945,7 @@ mod tests {
     fn test_grpc_section_serde() {
         use crate::config::GrpcConfig;
 
-        // 缺段 → None（不监听 gRPC 端口，行为与历史逐位一致）
+        // 缺段 → None（不监听 gRPC 端口）
         let config: Config = toml::from_str(
             r#"
             [server]

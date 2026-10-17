@@ -3,7 +3,7 @@
 // Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 集成测试 — 主动健康检查探针（WP7）：三模式（off/suspect_only/all）
+//! 集成测试 — 主动健康检查探针：三模式（off/suspect_only/all）
 //! 与被动恢复（成功清冷却/黑名单，失败保持现状）。经可测入口
 //! `run_probe_cycle` 直接驱动（无 timing，mock 上游断言行为）。
 

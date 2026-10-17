@@ -469,7 +469,7 @@ mod scheduling_weight {
         let queue_len = vendor_manager.get_queue_length("busy-vendor");
         assert!(
             queue_len > 0,
-            "滞留的 pending 必须反映在 get_queue_length（recId=4①：直读 instance.queue）"
+            "滞留的 pending 必须反映在 get_queue_length（直读 instance.queue）"
         );
         let idle_len = vendor_manager.get_queue_length("idle-vendor");
         assert_eq!(idle_len, 0);
@@ -489,7 +489,7 @@ mod scheduling_weight {
         let busy_w = weight_of("busy-vendor");
         assert!(
             busy_w < idle_w,
-            "队列非空必须降低权重（recId=4① queue_factor 生效）：busy={busy_w} idle={idle_w}"
+            "队列非空必须降低权重（queue_factor 生效）：busy={busy_w} idle={idle_w}"
         );
 
         // 收尾：放走全部 pending，避免任务泄漏告警
@@ -788,7 +788,7 @@ mod scheduling_weight {
 
     /// ④ temperature 平滑：T=2 压平差距，且**全链路恰好平滑一次**。
     ///
-    /// 评审修正回归：此前 compute_weight 与
+    /// 回归锁定：此前 compute_weight 与
     /// weighted_select_with 各平滑一次，等效 w^(1/T²)。本测试经生产链路
     /// calculate_weights→weighted_select_with（T=2）断言：
     /// - compute_weight 返回未平滑的因子加权和（1.0/4.0 → 0.85/2.05）；
@@ -808,7 +808,7 @@ mod scheduling_weight {
             Arc::new(VendorManager::new(flat_cm.clone())),
         );
 
-        // compute_weight 是纯因子加权：无平滑（评审修正的静态断言）
+        // compute_weight 是纯因子加权：无平滑
         let routing = flat_cm.read().routing.clone();
         let raw_light = compute_weight(1.0, 0, None, &routing, None);
         let raw_heavy = compute_weight(4.0, 0, None, &routing, None);
@@ -929,7 +929,7 @@ mod scheduling_weight {
         }
     }
 
-    // ============ 评审 major 回归：无 e2e 数据 ≠ 0ms 假延迟 ============
+    // ============ 回归：无 e2e 数据 ≠ 0ms 假延迟 ============
 
     /// 纯流式 vendor（生产只有 record_request + record_ttft 落账）不得以
     /// 0.0 初始 ewma_latency_ms 冒充「延迟数据」：w_latency>0 时其

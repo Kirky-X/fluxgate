@@ -292,7 +292,7 @@ fn classifier_counts_failures_by_variant_semantics() {
     );
 }
 
-// ============ ⑤ 业务错误无损穿透熔断器（G3 泛型收口） ============
+// ============ ⑤ 业务错误无损穿透熔断器（泛型收口） ============
 
 /// 断言两个 GateError 同 variant 且字段一致（GateError 未派生
 /// PartialEq；Protocol 的 inner 源链不参与比较）。

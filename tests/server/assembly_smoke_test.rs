@@ -319,7 +319,7 @@ async fn test_auth_state_from_config_hashes() {
     assert!(!state.validate_key("other"));
 }
 
-/// [auth] 热生效端到端（评审 major-2 回归）：同一 Router 上 POST /admin/config
+/// [auth] 热生效端到端：同一 Router 上 POST /admin/config
 /// 等价的 update_config 吊销旧 key、启用新 key，后续请求立即用新 key 集——
 /// 认证中间件每请求从 ConfigManager 热读 [auth] 段，无"返回 success 但
 /// 继续用旧 key 集直到重启"的静默失效。

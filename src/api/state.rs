@@ -40,7 +40,7 @@ pub struct ApiState {
     /// handler（奖励回传）共享同一实例。None = 未接线（该档回退 weighted、
     /// 奖励不记账，默认行为与历史一致）。
     pub bandit: Option<Arc<BanditState>>,
-    /// 成本与 token 配额账本（WP8 预扣-回补）— 中间件入口预扣与回补钩
+    /// 成本与 token 配额账本（预扣-回补）— 中间件入口预扣与回补钩
     /// 共享同一实例。None = 未接线（入口不预扣，行为与历史一致）。
     pub quota: Option<Arc<crate::middleware::quota::QuotaState>>,
     /// 难度定档路由（`[routing.difficulty]`）— groups 命中的请求在路由前

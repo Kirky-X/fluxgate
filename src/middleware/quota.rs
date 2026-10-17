@@ -3,7 +3,7 @@
 // Copyright (c) 2026 Fluxgate Contributors
 // Licensed under the MIT License. See LICENSE file for details.
 
-//! 成本与 token 维度配额（WP8 预扣-回补）。
+//! 成本与 token 维度配额（预扣-回补）。
 //!
 //! 入口按 `预估输入 token×输入单价 + max_tokens×输出单价` 预扣，响应后/流结束后按
 //! 实际 usage 回补（可负向返还、超预估追扣），超限 429 + Retry-After，与 rate_limit/
@@ -345,7 +345,7 @@ fn quota_applies(
     })
 }
 
-/// 配额中间件（WP8 入口裁决）：仅 `/v1/chat/completions` 与 `/v1/messages`；
+/// 配额中间件（入口裁决）：仅 `/v1/chat/completions` 与 `/v1/messages`；
 /// 关闭/无账本/双限额不限时零行为透传（限额判定先于体读取）。超限 429 +
 /// Retry-After + i18n 文案。
 pub async fn quota_middleware(

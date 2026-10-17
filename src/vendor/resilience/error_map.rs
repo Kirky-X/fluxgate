@@ -9,10 +9,10 @@
 //! （limiteron src/circuit/types.rs）与 `FailureClassifier<E>`
 //! （types.rs）均为泛型——本 crate 执行路径的错误 [`GateError`]
 //! 直接作为 `E`，业务错误经 `CircuitCallError::Inner` 原样透传，
-//! **无损、无编解码**（此前的 `llm-gate:` 前缀串双向编解码及其有损
-//! 降级路径已随之删除；CB Open 拒绝由 `CircuitCallError::Open` 独立承载）。
+//! **无损、无编解码**：`llm-gate:` 前缀串双向编解码是有损
+//! 降级，本层不用；CB Open 拒绝由 `CircuitCallError::Open` 独立承载。
 //!
-//! 变体集冻结（design.md D1.3）：分类器只覆盖 GateError 核心变体集；
+//! 变体集冻结：分类器只覆盖 GateError 核心变体集；
 //! `Database` 变体留 fluxgate、本层不引用。
 
 use limiteron::circuit::{CircuitCallError, FailureClassifier};
@@ -43,7 +43,7 @@ pub fn is_circuit_open_error(err: &GateError) -> bool {
         if vendor.contains("circuit open"))
 }
 
-/// key 错误分类（WP6 密钥池三态）：永久错误 → 黑名单（不参与轮换、
+/// key 错误分类（密钥池三态）：永久错误 → 黑名单（不参与轮换、
 /// 不随时间自动恢复）；瞬时错误 → 维持现状（冷却 TTL 自动恢复、429 退避）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyErrorClass {
@@ -64,7 +64,7 @@ const BILLING_MESSAGE_MARKERS: &[&str] = &[
     "delinquent",
 ];
 
-/// 按 HTTP 状态码 + 上游错误文本判定 key 错误分类（WP6）。
+/// 按 HTTP 状态码 + 上游错误文本判定 key 错误分类。
 /// 账务形态优先（显式形状胜出）：5xx 正文明确命中账务形态同样永久；
 /// 普通 5xx 文本不误伤（保持瞬时）。
 pub fn classify_key_error(status: u16, message: &str) -> KeyErrorClass {

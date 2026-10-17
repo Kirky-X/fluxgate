@@ -12,7 +12,7 @@
 //! resilience 模块现仅存：
 //! - [`FallbackChain`]（供 API 层换路 fallback）
 //! - [`error_map`]：GateError 直驱 `CircuitBreaker<GateError>` 的分类
-//!   与 Open 还原（G3 泛型收口后错误无损透传，无前缀串编解码）
+//!   与 Open 还原（泛型收口后错误无损透传，无前缀串编解码）
 //!
 //! ConnectionPool 位于 `crate::vendor::pool`（vendor 顶层模块），
 //! 不在 resilience 子模块内 — pool 不依赖 resilience feature。

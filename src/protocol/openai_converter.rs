@@ -114,8 +114,8 @@ impl ProtocolConverter for OpenAIConverter {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             stop: match body.get("stop") {
-                // OpenAI wire 允许 string 或 array（此前仅 array，string
-                // 形态静默丢弃）。
+                // OpenAI wire 允许 string 或 array 两种
+                // 形态（均予接受）。
                 Some(Value::Array(arr)) => arr
                     .iter()
                     .filter_map(|s| s.as_str().map(|s| s.to_string()))
@@ -345,8 +345,8 @@ impl ProtocolConverter for OpenAIConverter {
                             .and_then(|v| v.as_str())
                             .map(|s| MessageContent::Text(s.to_string()))
                             .unwrap_or(MessageContent::Text(String::new()));
-                        // message.tool_calls 解析（此前只读
-                        // content 字符串，工具调用响应在 IR 中静默降级为纯文本）
+                        // message.tool_calls 解析（同时读
+                        // content 与 tool_calls，避免工具调用响应在 IR 中降级为纯文本）
                         let content = match parse_tool_calls_field(&Value::Object(m.clone())) {
                             Some(tool_calls) => match content {
                                 MessageContent::Text(s) if !s.is_empty() => {
@@ -919,7 +919,7 @@ fn parse_message_role(json: &Value) -> Result<Role, GateError> {
 }
 
 /// String content：工具角色消息 → ToolResult；带顶层 tool_calls →
-/// TextWithToolCalls（此前 String 分支提前返回，tool_calls 丢失）；
+/// TextWithToolCalls（保留顶层 tool_calls）；
 /// 否则纯文本。
 fn parse_string_content(json: &Value, role: &Role, s: &str) -> MessageContent {
     // 检查是否有 tool_call_id（工具角色消息）
@@ -1066,7 +1066,7 @@ fn message_to_openai(msg: Message) -> Value {
         }
         MessageContent::ToolCalls(tool_calls) => {
             // OpenAI 出站规范 —— 工具调用在顶层 tool_calls 字段，
-            // content 为 null（此前塞进 content 数组，OpenAI 上游拒收）
+            // content 为 null（不可塞进 content 数组，OpenAI 上游会拒收）
             (Value::Null, None, Some(tool_calls))
         }
         MessageContent::ToolResult(result) => (
@@ -1245,8 +1245,8 @@ fn parse_tool_choice(json: &Value) -> ToolChoice {
                 }
             } else {
                 // Anthropic 形态兼容（跨协议客户端常带）：any → required，
-                // tool(+name) → 具名；none 保留；其余回落 auto（历史语义）。
-                // 此前 any/tool 一律降级 auto，静默改变工具调度语义。
+                // tool(+name) → 具名；none 保留；其余回落 auto。
+                // 显式映射 any/tool，避免静默改变工具调度语义。
                 match obj.get("type").and_then(|t| t.as_str()) {
                     Some("any") => ToolChoice::Strategy("required".to_string()),
                     Some("tool") => ToolChoice::Specific {

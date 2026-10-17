@@ -331,7 +331,7 @@ impl AsyncLogger {
                         }
                         Err(_) => {
                             // channel 断开（所有 sender 被 drop）时
-                            // 也必须补最终 flush —— 此前直接 break 丢缓冲
+                            // 退出前必须补最终 flush，避免丢缓冲
                             Self::flush_buffer(&repository, &mut buffer).await;
                             break;
                         }
@@ -633,7 +633,7 @@ mod tests {
             .query_logs(&LogFilter::default())
             .await
             .expect("Query failed");
-        assert_eq!(logs.len(), 1, "断开分支退出前必须补最终 flush（recId=9①）");
+        assert_eq!(logs.len(), 1, "断开分支退出前必须补最终 flush");
     }
 
     #[tokio::test]

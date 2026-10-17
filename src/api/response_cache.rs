@@ -230,7 +230,7 @@ impl ResponseCache {
         self.config.read().cache.enabled
     }
 
-    /// 后端可用性探针（G7 就绪检查用）：`health_check` 透传，错误转字符串。
+    /// 后端可用性探针（就绪检查用）：`health_check` 透传，错误转字符串。
     pub async fn probe_backend(&self) -> Result<(), String> {
         self.cache.health_check().await.map_err(|e| e.to_string())
     }

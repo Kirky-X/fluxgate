@@ -453,7 +453,7 @@ mod manager {
         // Token 窗口迁移 FixedWindowLimiter 后，peek 提供 reset_secs
         assert!(
             info.window_end.is_some(),
-            "Token window should report its reset time (recId=5)"
+            "Token window should report its reset time"
         );
         assert!(info.has_budget(), "should have budget at 0/500");
         assert!(
@@ -492,7 +492,7 @@ mod manager {
         assert_eq!(info.used_tokens, 0);
         assert!(
             info.window_end.is_some(),
-            "Interval window should report its reset time (recId=5)"
+            "Interval window should report its reset time"
         );
     }
 
@@ -1103,7 +1103,7 @@ mod manager {
                 .vendors
                 .into_iter()
                 .find(|v| v.vendor == "v-metrics-ok")
-                .expect("vendor metrics must exist after worker path (recId=4③)");
+                .expect("vendor metrics must exist after worker path");
             assert_eq!(vendor.requests, 1);
             assert_eq!(vendor.successes, 1);
             assert_eq!(vendor.failures, 0);
@@ -1141,7 +1141,7 @@ mod manager {
             assert_eq!(vendor.failures, 1);
             assert!(
                 vendor.last_error.is_some(),
-                "failure must record record_error (recId=4③)"
+                "failure must record record_error"
             );
         }
 
@@ -1216,7 +1216,7 @@ mod manager {
         assert_eq!(info.max_tokens, None, "TimeWindow has no token cap");
         assert_eq!(
             info.window_end, None,
-            "窗口外必须返回 window_end: None（既有语义，recId=13 回归锁定）"
+            "窗口外必须返回 window_end: None（既有语义）"
         );
     }
 
@@ -1660,7 +1660,7 @@ mod advanced_rate_limiter {
         assert_eq!(used, 30, "peek must report exact usage without consuming");
     }
 
-    /// 评审 major：非 Token 变体无配额语义，worker/passthrough 记账点以
+    /// 非 Token 变体无配额语义，worker/passthrough 记账点以
     /// accounts_tokens() 门控 —— Interval vendor 的每个成功请求不再触发
     /// 误导性 quota-underflow 告警。
     #[test]

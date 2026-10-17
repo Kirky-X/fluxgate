@@ -206,7 +206,7 @@ async fn forbidden_403_also_triggers_rotation() {
     mock_second.assert_async().await;
 }
 
-/// parity 矩阵第 6 项（design.md D6）：多 key 轮换 —— env 池展开、轮转
+/// parity 矩阵第 6 项：多 key 轮换 —— env 池展开、轮转
 /// 顺序、按 key 指纹隔离的熔断计数（语义源 provider_chain.rs）。
 ///
 /// 等价断言分两相：

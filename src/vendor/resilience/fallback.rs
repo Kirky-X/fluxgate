@@ -98,7 +98,7 @@ impl FallbackChain {
     }
 }
 
-/// 回退尝试链（WP4 可观测性）：按尝试顺序记录 vendor id（含最终命中者）。
+/// 回退尝试链（可观测性）：按尝试顺序记录 vendor id（含最终命中者）。
 /// 由 API 层换路循环填充（初始候选先记， 每次重派前记新候选），成功响应经
 /// `x-fluxgate-attempts`（总数）/`x-fluxgate-fallbacks`（逗号分隔链）出站。
 /// **分配门控（审查 L4）**：构造期注入 `[resilience].expose_fallback_headers`

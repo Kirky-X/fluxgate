@@ -1869,7 +1869,7 @@ mod logging_pipeline {
         );
     }
 
-    /// ⑦（评审修正回归）Anthropic 格式响应的 usage 键是 input_tokens/
+    /// ⑦Anthropic 格式响应的 usage 键是 input_tokens/
     /// output_tokens（透传路径原始上游 JSON；转换路径
     /// response_to_external 同格式）——落库必须双格式取值：prompt_tokens
     /// 回退 input_tokens、total 以 prompt+completion 合成，且预聚合器记账
@@ -2275,7 +2275,7 @@ mod embeddings_governance {
         assert_eq!(
             response.status(),
             503,
-            "上游 401 必须映射 503（VendorUnavailable，与 recId=14 同口径）"
+            "上游 401 必须映射 503（VendorUnavailable）"
         );
         let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
@@ -6722,7 +6722,7 @@ mod route_explain {
     }
 }
 
-/// WP4 Anthropic 路径回退头（/v1/messages 入站）。
+/// Anthropic 路径回退头（/v1/messages 入站）。
 mod fallback_observation_headers_anthropic {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, routing::post, Router};

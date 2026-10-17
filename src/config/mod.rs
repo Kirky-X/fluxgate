@@ -518,7 +518,7 @@ pub struct RoutingSection {
     #[serde(default = "default_ucb_alpha")]
     pub ucb_alpha: f64,
     /// `[routing.difficulty]` 子段 — 难度定档路由。缺省 enabled=false
-    ///（模块整体旁路，行为与历史逐位一致）。字段热读
+    ///（模块整体旁路）。字段热读
     #[serde(default)]
     pub difficulty: DifficultySection,
 }
@@ -532,8 +532,8 @@ fn default_price_factor_mode() -> String {
 }
 
 /// 前缀亲和 PoTC `[routing.prefix_affinity]`：稳定前缀哈希出 2 个带内候选、
-/// 按平滑权重择优（DualMap 双映射网关形态）。默认 enabled=false 选路路径
-/// 与历史逐位一致
+/// 按平滑权重择优（DualMap 双映射网关形态）。默认 enabled=false
+/// （不启用）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PrefixAffinitySection {
     /// 前缀亲和开关：默认 false
@@ -1023,7 +1023,7 @@ fn default_rate_limit_per_tenant() -> bool {
 /// 同语义），更新后需重启进程生效。
 #[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 pub struct GrpcConfig {
-    /// 显式启用（None 段或 false = 不监听 gRPC 端口，行为与历史逐位一致）
+    /// 显式启用（None 段或 false = 不监听 gRPC 端口）
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_grpc_host")]
@@ -1093,34 +1093,34 @@ pub struct Config {
     #[serde(default)]
     pub cache: CacheSection,
     /// `[rate_limit]` 段 — 入站限流。缺段/空 rules = limiteron
-    /// Governor 内置默认兜底（与历史行为逐位一致）。restart-required。
+    /// Governor 内置默认兜底。restart-required。
     #[serde(default)]
     pub rate_limit: RateLimitSection,
     /// `[resilience]` 段 — 韧性覆盖面。缺段时 cover_all_paths=false
-    ///（三条裸路径行为与历史逐位一致）。Section 字段落地防热更抹段。
+    ///（三条裸路径行为不变）。Section 字段落地防热更抹段。
     #[serde(default)]
     pub resilience: ResilienceSection,
     /// `[admission]` 段 — 拥塞感知优先级准入。缺段时 enabled=false
-    ///（完全旁路，行为与历史逐位一致）。
+    ///（完全旁路）。
     #[serde(default)]
     pub admission: AdmissionSection,
-    /// `[health]` 段 — 主动健康检查探针（WP7）。缺段时 mode=off（零后台
-    /// 任务、行为与历史逐位一致）。Section 字段落地防热更抹段。
+    /// `[health]` 段 — 主动健康检查探针。缺段时 mode=off（零后台
+    /// 任务）。Section 字段落地防热更抹段。
     #[serde(default)]
     pub health: HealthSection,
-    /// `[quota]` 段 — 成本与 token 维度配额（WP8）。缺段时 enabled=false
-    ///（零判限、行为与历史逐位一致）。Section 字段落地防热更抹段。
+    /// `[quota]` 段 — 成本与 token 维度配额。缺段时 enabled=false
+    ///（零判限）。Section 字段落地防热更抹段。
     #[serde(default)]
     pub quota: QuotaSection,
     /// `[grpc]` 段 — gRPC 服务器（`feature = "grpc"`）。None = 配置中无该段，
-    /// gRPC 服务器禁用（不监听 gRPC 端口，行为与历史逐位一致）
+    /// gRPC 服务器禁用（不监听 gRPC 端口）
     #[serde(default)]
     pub grpc: Option<GrpcConfig>,
-    /// `[docs]` 段 — OpenAPI/Swagger UI 出口（G11）。缺段时关闭。
+    /// `[docs]` 段 — OpenAPI/Swagger UI 出口。缺段时关闭。
     #[serde(default)]
     pub docs: DocsSection,
     /// `[lexcompress]` 段 — 词法压缩（X-Compress 触发）。缺段时 enabled=false
-    ///（完全旁路，行为与历史逐位一致）
+    ///（完全旁路）
     #[serde(default)]
     pub lexcompress: LexCompressSection,
 }
@@ -1231,8 +1231,8 @@ pub enum Tier {
 }
 
 /// 难度定档 `[routing.difficulty]` 段：规则计分 + 进程内分类概率加权融合，
-/// 阈值切三档后改写目标抽象模型名。默认 enabled=false 完全旁路（零开销，
-/// 行为与无此段逐位一致）。字段热读；tiers/classifier 语义变更经
+/// 阈值切三档后改写目标抽象模型名。默认 enabled=false 完全旁路（零开销
+/// ）。字段热读；tiers/classifier 语义变更经
 /// validate_difficulty 在加载与热更两处校验
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct DifficultySection {

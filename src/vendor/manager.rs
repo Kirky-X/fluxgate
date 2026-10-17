@@ -1684,7 +1684,7 @@ impl VendorManager {
 
     /// 流式启动状态码校验 + 错误记账。非 2xx 时错误 JSON 正文原样透传会伪装成伪 200 流；
     /// 此处对齐非流式路径：429 → `RateLimited`，其余非 2xx → `VendorUnavailable`，
-    /// 并补 metrics（此前流式路径零指标）。
+    /// 并补 metrics。
     async fn check_stream_status(
         &self,
         vendor_id: &str,
@@ -3264,7 +3264,7 @@ mod tests {
                 &instance.circuit_breaker_for(&credential, "gpt-4", "https://unit.test/v1"),
                 &instance.circuit_breaker
             ),
-            "legacy 回退使用 vendor 级熔断器（与历史逐位一致）"
+            "legacy 回退使用 vendor 级熔断器"
         );
         assert!(instance.key_pool_info().size == 0);
     }
@@ -3372,11 +3372,11 @@ mod tests {
         assert_eq!(
             config.slow_call_duration_threshold,
             Duration::from_secs(60),
-            "慢调用时长阈值必须抬至 60s（recId=1）"
+            "慢调用时长阈值必须为 60s"
         );
         assert!(
             (config.slow_call_rate_threshold - 1.0).abs() < f64::EPSILON,
-            "慢调用率阈值必须为 1.0（recId=1）：混合流量下慢调用路径失活"
+            "慢调用率阈值必须为 1.0：混合流量下慢调用路径失活"
         );
 
         let short = gate_circuit_config(Duration::from_millis(300));

@@ -159,7 +159,7 @@ pub struct GlobalMetrics {
     /// [`DEFAULT_EWMA_TAU_MS`]。
     ewma_tau_ms: AtomicU64,
     /// 重试放大的重试维度计数 — 重试 attempt 总数（manager
-    /// 重试循环 attempt+=1 时记）。此前全仓重试维度计数为 0（grep 实证）。
+    /// 重试循环 attempt+=1 时记）。
     retried_attempts: AtomicU64,
     /// 失败请求计数（失败率 f 与放大比 r 的分母来源之一）。
     /// 与 `failed_requests`（record_request 驱动、含透传/流式）独立：本计数
@@ -351,8 +351,8 @@ impl GlobalMetrics {
     }
 
     /// 记录非流式端到端延迟样本（口径 = enqueued_at → 完成含排队）。
-    /// 同时更新 `ewma_latency_ms` 兼容输出（后其语义收窄为 e2e
-    /// 别名——此前混流四路口径，/admin/metrics 外部消费方仍读该字段）。
+    /// 同时更新 `ewma_latency_ms` 兼容输出（该字段现为 e2e
+    /// 别名——/admin/metrics 外部消费方仍读该字段）。
     pub fn record_e2e(&self, vendor: &str, duration: std::time::Duration, now: Instant) {
         let tau_ms = self.ewma_tau_ms.load(Ordering::Relaxed);
         if let Ok(mut guard) = self.per_vendor.write() {
@@ -1089,7 +1089,7 @@ mod tests {
 
     /// 失败样本推高 ewma_error_rate，成功样本拉回 — α 平滑语义。
     ///
-    /// 评审 major 修复后错误率改经快照字段读取（vendor_ewma 现以 e2e
+    /// 错误率改经快照字段读取（vendor_ewma 现以 e2e
     /// 样本判定 Some/None，纯 record_request 历史不再返回元组）。
     #[test]
     fn test_ewma_error_rate_tracks_recent_failures() {
@@ -1127,7 +1127,7 @@ mod tests {
         assert!(m.vendor_ewma("cold-vendor").is_none());
     }
 
-    /// 评审 major 回归：vendor_ewma 以 e2e 样本判定 Some/None——纯流式
+    /// vendor_ewma 以 e2e 样本判定 Some/None——纯流式
     /// vendor（生产只有 record_request + record_ttft 落账，流式失败仅
     /// record_request）不得以 0.0 初始 ewma_latency_ms 冒充「延迟数据」，
     /// 否则 w_latency>0 时 latency_factor=ref/(ref+0)=1.0 恒满分、Po2C
@@ -1276,7 +1276,7 @@ mod tests {
     /// 分道锁定：record_request 不再喂延迟道（口径分道本体），错误率道
     /// 仍由它驱动；e2e 道样本数为 0 时 vendor_ewma_e2e 返回 None。
     ///
-    /// 评审 major 修复后错误率改经快照字段读取（vendor_ewma 的 Some/None
+    /// 错误率改经快照字段读取（vendor_ewma 的 Some/None
     /// 以 e2e 样本判定，纯 record_request 历史返回 None 而非 (0.0, err)）。
     #[test]
     fn record_request_no_longer_feeds_latency_lanes() {
@@ -1285,13 +1285,13 @@ mod tests {
         let v = &m.snapshot().vendors[0];
         assert_eq!(
             v.ewma_latency_ms, 0.0,
-            "record_request 的 duration 口径因路径而异，recId=8 后不再喂延迟 EWMA"
+            "record_request 的 duration 口径因路径而异，不喂延迟 EWMA"
         );
         assert_eq!(v.e2e_samples, 0);
         assert!(m.vendor_ewma_e2e("v").is_none(), "无 e2e 样本 → 无延迟数据");
         assert!(
             m.vendor_ewma("v").is_none(),
-            "vendor_ewma 同判定：无 e2e 样本返回 None（评审 major）"
+            "vendor_ewma 同判定：无 e2e 样本返回 None"
         );
         // 错误率道不受影响（快照字段照常更新）
         assert!((v.ewma_error_rate - 0.0).abs() < 1e-9);

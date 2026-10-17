@@ -1097,8 +1097,8 @@ fn parse_anthropic_message(json: &Value) -> Result<Message, GateError> {
     let content = match json.get("content") {
         Some(Value::String(s)) => MessageContent::Text(s.clone()),
         Some(Value::Array(arr)) => {
-            // tool_use / tool_result 块聚合（此前经
-            // parse_anthropic_block 静默丢弃，多轮工具对话历史断裂）。
+            // tool_use / tool_result 块聚合（经
+            // parse_anthropic_block 聚合，保留多轮工具对话历史）。
             // 不改 ContentBlock 枚举以控制爆炸半径 —— 聚合发生在本层。
             let has_tool_use = arr
                 .iter()

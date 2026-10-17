@@ -41,8 +41,8 @@ pub struct InboundLimitState {
     /// per-endpoint 限流表（path 前缀规则；在此挂载准入维度）
     endpoint_table: EndpointLimitTable,
     /// 拥塞感知优先级准入状态 — 判定在限流之后、handler 之前
-    ///（[admission].enabled 热读；默认 false 时判定旁路、行为与现状
-    /// 逐位一致）。健康检查白名单（函数头部）先于本判定，永不卸载。
+    ///（[admission].enabled 热读；默认 false 时判定旁路
+    ///）。健康检查白名单（函数头部）先于本判定，永不卸载。
     admission: Arc<AdmissionState>,
 }
 
@@ -98,7 +98,7 @@ impl<B> RequestKey<B> for TenantKeyExtractor {
 }
 
 /// 全局规则门 — per-tenant 配额（QuotaLimiter 固定窗口）或空规则
-/// 默认兜底（TokenBucket 100/10，与旧 `Governor::new()` 默认逐位一致，
+/// 默认兜底（TokenBucket 100/10，
 /// 共享桶）。拒绝时把窗口剩余秒记入 `last_retry_after_secs` 供响应器渲染。
 /// 内层限流器经 `Arc` 共享，使门整体 `Clone`（axum `Router::layer` 要求）。
 #[derive(Clone)]
@@ -318,7 +318,7 @@ fn global_rate_limit_layer(
 /// 实例化，复用 vendor/rate_limiter.rs 的 wrapper 模式）。
 /// 租户数受 auth.api_keys 枚举约束（有界），匿名租户单条；[auth] 缺失或
 /// enabled=false 时中间件放行任意伪造 key（auth.rs），租户键退化为
-/// sha256(任意串)——由 [`MAX_ENDPOINT_LIMITERS`] 容量守卫兜底（评审 major：
+/// sha256(任意串)——由 [`MAX_ENDPOINT_LIMITERS`] 容量守卫兜底（
 /// 条目只增不删会构成内存放大 DoS 向量，与同源 api_key_digest 的响应
 /// 缓存不同，本表无 TTL 驱逐，必须硬上限）。
 struct EndpointLimitTable {
@@ -378,7 +378,7 @@ impl EndpointLimitTable {
     /// window_secs=0 按 1s 兜底（ShardedSlidingWindowLimiter 内部同样
     /// `max(1)`，此处显式化避免零窗口语义歧义）。
     ///
-    /// 容量守卫（评审 major）：条目达到 `max_entries` 后不再为新租户建桶，
+    /// 容量守卫：条目达到 `max_entries` 后不再为新租户建桶，
     /// 退化到规则级 `__overflow__` 单桶（该键每规则至多一条，一旦存在恒
     /// 复用）。全同步无 await 点，临界区内构造（O(1) 轻量）。
     fn limiter_for(
@@ -419,7 +419,7 @@ impl EndpointLimitTable {
     }
 }
 
-/// 端点限流中间件（G5 拆分前半）：健康白名单 → per-endpoint 规则表。
+/// 端点限流中间件（拆分前半）：健康白名单 → per-endpoint 规则表。
 /// 全局规则与准入判定不在此（tower 层与 `admission_middleware` 在下游）。
 async fn endpoint_limit_middleware(
     State(state): State<Arc<InboundLimitState>>,
@@ -473,7 +473,7 @@ async fn endpoint_limit_middleware(
     next.run(request).await
 }
 
-/// 准入中间件（G5 拆分后半）：拥塞感知优先级准入，guard 生命周期包住
+/// 准入中间件（拆分后半）：拥塞感知优先级准入，guard 生命周期包住
 /// handler 执行至响应返回；流式 body 传输期不计。
 async fn admission_middleware(
     State(state): State<Arc<InboundLimitState>>,
@@ -492,7 +492,7 @@ async fn admission_middleware(
     };
 
     // 拥塞感知优先级准入（热读 [admission].enabled，
-    // 默认 false = 判定旁路、行为与现状逐位一致）。请求档位经
+    // 默认 false = 判定旁路）。请求档位经
     // [auth].keys 表（认证已在本中间件外层通过）。
     let tier = tier_for_request(admission_config.as_ref(), request.headers());
     // RED 记录（sdforge 全局 registry，供 /metrics 抓取；与内部
@@ -637,8 +637,8 @@ fn now_unix_ms() -> u64 {
 /// - path 缺省的全局规则 → 一规则一 tower 层（`GlobalRateLimitLayer`，
 ///   QuotaLimiter 按租户摘要分桶；旧 Governor 路径是全租户共享桶——G5 起
 ///   全局规则真正按租户维度生效，见模块注释）；
-/// - rules 为空 → 单层 TokenBucket(100, 10/s) 共享桶（与旧
-///   `Governor::new()` 默认兜底逐位一致）+ 空端点表；
+/// - rules 为空 → 单层 TokenBucket(100, 10/s) 共享桶
+///   + 空端点表；
 /// - 全部规则均带 path 时全局层退为默认兜底（limiteron FlowControl 校验
 ///   要求规则非空的同款约束）。
 ///
@@ -697,7 +697,7 @@ fn build_inbound_limits(
 /// 段缺失时 `enabled=false` 放行（旧配置兼容）。
 /// 限流判定件在 Router 构造期从 `[rate_limit]` 段构建
 ///（restart-required，热下发列二期）：端点表 + 准入进 from_fn state，
-/// 全局规则进 tower 层（G5，一规则一层）。
+/// 全局规则进 tower 层（一规则一层）。
 /// 注意：健康检查由 sdforge `#[forge(version="v1")]` 注册为 /api/v1/health
 ///（api/health.rs，宏加版本前缀），此处不重复注册，避免 merge 时
 /// axum duplicate-route panic。
@@ -706,8 +706,8 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
     health::register_forge_i18n();
     // OpenAPI 条目描述翻译注册进 sdforge（建站期一次性；见 openapi_docs.rs）
     openapi_docs::register_openapi_i18n();
-    // [rate_limit] 段消费点（此前该段被 serde 静默丢弃，中间件
-    // 恒跑 Governor 库内置默认兜底规则）
+    // [rate_limit] 段消费点：入站限流规则由配置注入，
+    // rules 为空时回落 Governor 库内置默认兜底
     let rate_limit = state.config.read().rate_limit.clone();
     let (global_layers, endpoint_table) = build_inbound_limits(&rate_limit);
     // 准入状态常驻构造（轻量；[admission].enabled 默认 false
@@ -725,7 +725,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route("/v1/chat/completions", post(openai::chat_completions))
         .route("/v1/embeddings", post(openai::embeddings))
         .route("/v1/messages", post(anthropic::messages))
-        // WP3 数据面端点（实现在独立 handler 文件，mod.rs 仅模块声明）：
+        // 数据面端点（实现在独立 handler 文件，mod.rs 仅模块声明）：
         // GET /v1/models（OpenAI list 格式，去重现算、不缓存），
         // POST /v1/messages/count_tokens（近似估算）。
         .route("/v1/models", get(models::list_models))
@@ -736,7 +736,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route("/admin/logs", get(admin::logs))
         .route("/admin/logs/search", get(admin::search_logs))
         .route("/admin/stats/tokens", get(admin::token_stats))
-        // WP9 成本分账查询（预聚合表聚合；空窗口返回空数组）。
+        // 成本分账查询（预聚合表聚合；空窗口返回空数组）。
         .route("/admin/cost", get(admin::cost_usage))
         .route("/admin/metrics", get(admin::metrics))
         .route("/admin/vendors", get(admin::vendors))
@@ -755,7 +755,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
                 .put(admin::upsert_model)
                 .delete(admin::delete_model),
         )
-        // WP5 路由可解释性（只读 admin 端点：不发上游请求，不改状态）
+        // 路由可解释性（只读 admin 端点：不发上游请求，不改状态）
         .route("/admin/route/explain", post(route_explain::route_explain))
         // 难度定档解释（只读：S 分解/命中档/熔断状态；[routing.difficulty]
         // 未接线或 groups 未命中返回 Validation 错误）
@@ -802,7 +802,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .fold(router, |r, layer| r.layer(layer));
     router
         .layer(from_fn_with_state(limit_state, endpoint_limit_middleware))
-        // WP8 配额入口裁决（认证之后、端点限流之前；与二者独立叠加，
+        // 配额入口裁决（认证之后、端点限流之前；与二者独立叠加，
         // 任一触发即拒；关闭/未接线时零行为）。注入面 QuotaGate（最小接口，
         // middleware 不依赖全量 ApiState——L5）。
         .layer(from_fn_with_state(
@@ -871,13 +871,13 @@ mod tests {
         }
     }
 
-    /// 健康检查白名单（评审 major 修复锁定，G5 保持）。
+    /// 健康检查白名单锁定。
     ///
     /// 断言空洞背景：axum 0.8 的 `layer` 只作用于已有路由
-    ///（axum-0.8.9 src/docs/routing/layer.md "the middleware is only
-    /// applied to existing routes"），评审探针实证 create_router 之后
-    /// 再 `.route()` 的路径不经过中间件——此前
-    /// tests/resilience/rate_limit_test.rs 的集成形态无论白名单代码存在与否都会过。
+    ///（"the middleware is only
+    /// applied to existing routes"）：create_router 之后
+    /// 再 `.route()` 的路径不经过中间件。
+    ///
     /// 本用例 route 先于 layer 构建：`/health` 白名单豁免断言 +
     /// `/limited` 对照组（第 2 次 429）共同证明中间件真实挂载且生效；
     /// 白名单由端点中间件与 tower 键提取器双重执行，此处锁定两者。
@@ -964,7 +964,7 @@ mod tests {
         );
     }
 
-    /// 评审 major 修复锁定：端点表条目硬上限——达到 max_entries 后新租户
+    /// 端点表条目硬上限——达到 max_entries 后新租户
     /// 退化到规则级 `__overflow__` 单桶（[auth] 缺失/enabled=false 时伪造
     /// Bearer key 不再无限建桶，内存有界）。
     #[tokio::test]

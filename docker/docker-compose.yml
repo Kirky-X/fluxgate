@@ -14,6 +14,10 @@ services:
       # .dockerignore 也按上下文根解析（保持根目录不动）
       context: ..
       dockerfile: docker/Dockerfile
+      # vecboost 附加上下文：根 manifest 的 optional path 依赖 ../vecboost（仓库
+      # 根的兄弟目录），--locked 解析 manifest 需要；路径相对 compose 文件目录
+      additional_contexts:
+        - vecboost=../../vecboost
       args:
         APP_VERSION: ${FLUXGATE_IMAGE_TAG:-0.1.0}
     restart: unless-stopped

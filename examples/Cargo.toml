@@ -11,18 +11,15 @@ rust-version = "1.97.1"
 autobins = false
 
 [features]
-# default 覆盖 rest + embedded + sdk：与拆分前 `cargo check --workspace` 的编译面
-# 等价（embedded 拉 fluxgate full+db-sqlite、rest/sdk 各自依赖），grpc 刻意不入
-# default 以保留「普通构建不需 protoc」的隔离（见根 Cargo.toml grpc feature 注释）。
+# default 覆盖 rest + embedded + sdk（embedded 拉 fluxgate full+db-sqlite、rest/sdk 各依赖）；
+# grpc 刻意不入 default，保留「普通构建不需 protoc」的隔离（见根 Cargo.toml grpc feature 注释）。
 default = ["rest", "embedded", "sdk"]
 # rest：裸 HTTP 直连，不依赖 fluxgate 本体
 rest = ["dep:anyhow", "dep:futures-util", "dep:reqwest"]
-# embedded：库形态嵌入，需 fluxgate 完整装配（full）+ 一个后端（与拆分前 embedded-server
-# 继承 default 的 full+db-sqlite 逐位一致）
+# embedded：库形态嵌入，需 fluxgate 完整装配（full）+ 一个后端（fluxgate/db-sqlite）
 embedded = ["dep:fluxgate", "dep:axum", "fluxgate/full", "fluxgate/db-sqlite"]
 # sdk：HTTP 客户端门面，只开 fluxgate sdk feature——default-features=false 保证
-# `--no-default-features --features sdk` 的轻量构建不把网关服务器拖进来（对齐拆分前
-# sdk-usage 的 default-features=false, features=["sdk"]）
+# `--no-default-features --features sdk` 的轻量构建不把网关服务器拖进来
 sdk = ["dep:fluxgate", "fluxgate/sdk"]
 # grpc：tonic 客户端，不依赖 fluxgate 本体；仅拉客户端运行时依赖，代码生成见 build.rs
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost"]

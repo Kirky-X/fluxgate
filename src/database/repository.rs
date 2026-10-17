@@ -81,7 +81,7 @@ async fn migrate_v0_1_columns(session: &Session, backend: DatabaseBackend) -> Re
 }
 
 /// MySQL 索引幂等创建：`information_schema.statistics` 查存在性，缺则建。
-/// 含 WP9 成本查询索引（idx_token_usage_date / idx_token_usage_key_date，
+/// 含 成本查询索引（idx_token_usage_date / idx_token_usage_key_date，
 /// 与 sqlite/postgres 的 V2 UP 内联索引同语义；MySQL 无
 /// `CREATE INDEX IF NOT EXISTS` 故统一走本探针）。
 async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> {
@@ -380,7 +380,7 @@ impl Repository {
         Ok(rows.iter().map(map_token_usage).collect())
     }
 
-    /// 成本分账聚合查询（WP9）：按 vendor 或 model 分组，对四类 token 与
+    /// 成本分账聚合查询：按 vendor 或 model 分组，对四类 token 与
     /// 分项成本求和。`from`/`to` 为 `YYYY-MM-DD` 日期闭区间（None = 不限）；
     /// `api_key_hash` 为请求方 key 摘要过滤（None = 不限）。空窗口返回空集。
     /// 分组列白名单枚举（调用方已校验，SQL 插值安全）。

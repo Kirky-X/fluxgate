@@ -275,7 +275,7 @@ OpenAI Embeddings 兼容端点。仅支持 `type_ = "openai"` 的厂商，否则
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `model` | string | 是 | 模型 ID |
-| `input` | string \| array | 是 | 待向量化的文本或文本数组 |
+| `input` | string \| array | 是 | 待向量化的文本或文本数组（数组必须全为字符串；缺失 / 空数组 / 含非字符串元素 → 400 `validation_error`） |
 | `dimensions` | number | 否 | 透传上游的维度裁剪参数；带此参数的请求不参与网关维度守门记录 |
 
 请求体先经 `embedding_request_to_openai` 转换后再转发给上游 OpenAI 兼容 API。

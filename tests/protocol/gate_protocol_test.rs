@@ -4384,28 +4384,42 @@ mod embedding {
         assert!(result.is_err());
     }
 
-    /// input 为非法类型（数字/对象）→ 静默归空数组不报错（语义校验归上游）。
+    /// input 为非法类型（数字/对象）→ 400 拒绝（静默归空数组会让客户端拿不到
+    /// 可诊断的错误；语义校验在网关显性化）。
     #[test]
-    fn test_embedding_request_to_openai_non_string_non_array_input_becomes_empty() {
+    fn test_embedding_request_to_openai_non_string_non_array_input_rejected() {
         for bad in [json!(42), json!({"text": "hi"})] {
-            let openai = embedding_request_to_openai(json!({
+            let error = embedding_request_to_openai(json!({
                 "model": "text-embedding-ada-002",
                 "input": bad
             }))
-            .expect("非法 input 类型应静默归空数组而非报错");
-            assert_eq!(openai["input"], json!([]));
+            .expect_err("非法 input 类型必须显式拒绝");
+            assert_eq!(error.error_code(), "validation_error");
         }
     }
 
-    /// input 缺失 → 空 input 数组（请求形状仍合法）。
+    /// input 数组含非字符串元素 → 拒绝（静默丢弃会让客户端无法按
+    /// data[].index 对齐返回的嵌入——元素数与返回条数错位）。
     #[test]
-    fn test_embedding_request_to_openai_missing_input_becomes_empty() {
-        let openai = embedding_request_to_openai(json!({
-            "model": "text-embedding-ada-002"
+    fn test_embedding_request_to_openai_array_with_non_string_element_rejected() {
+        let error = embedding_request_to_openai(json!({
+            "model": "text-embedding-ada-002",
+            "input": ["hello", 42, "world"]
         }))
-        .expect("缺 input 不报错");
-        assert_eq!(openai["input"], json!([]));
-        assert_eq!(openai["model"], "text-embedding-ada-002");
+        .expect_err("数组内非字符串元素必须显式拒绝");
+        assert_eq!(error.error_code(), "validation_error");
+    }
+
+    /// input 缺失 / 空数组 → 拒绝（空 input 发上游只会换来不可诊断的错误）。
+    #[test]
+    fn test_embedding_request_to_openai_missing_or_empty_input_rejected() {
+        for body in [
+            json!({"model": "text-embedding-ada-002"}),
+            json!({"model": "text-embedding-ada-002", "input": []}),
+        ] {
+            let error = embedding_request_to_openai(body).expect_err("空 input 必须显式拒绝");
+            assert_eq!(error.error_code(), "validation_error");
+        }
     }
 }
 

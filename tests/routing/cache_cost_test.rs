@@ -25,6 +25,9 @@ mod tests {
             abstract_id: Some("shared".to_string()),
             weight,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }
     }
 
@@ -175,6 +178,9 @@ mod tests {
                     abstract_id: Some("shared".to_string()),
                     weight: 1.0,
                     enabled: true,
+
+                    dimensions: None,
+                    compat_group: None,
                 }],
                 false,
             ),
@@ -185,6 +191,9 @@ mod tests {
                     abstract_id: Some("shared".to_string()),
                     weight: 1.0,
                     enabled: true,
+
+                    dimensions: None,
+                    compat_group: None,
                 }],
                 false,
             ),
@@ -244,7 +253,9 @@ mod tests {
         config_expected.routing.price_factor_mode = "cache_expected".to_string();
         let router = make_router(config_expected);
         let mut cache_wins = 0;
-        for _ in 0..60 {
+        // 300 样本：p≈0.645 对 p=0.5 的区分功效（阈值 170 → 误报 ~1.2%、
+        // 漏报 ~0.2%）；60 样本阈值 32 的原形态实测 flaky（31/60 误报）
+        for _ in 0..300 {
             let d = router
                 .route_weighted("shared", None, None, &[], None, None, None, None)
                 .await
@@ -254,11 +265,11 @@ mod tests {
             }
         }
         println!(
-            "[cache-cost] cache_expected 模式 60 次: v-cache 胜 {cache_wins} 次（期望 ~64.5%）"
+            "[cache-cost] cache_expected 模式 300 次: v-cache 胜 {cache_wins} 次（期望 ~64.5%）"
         );
         assert!(
-            cache_wins >= 32,
-            "cache_expected 必须让缓存友好厂商显著占优: {cache_wins}/60"
+            cache_wins >= 170,
+            "cache_expected 必须让缓存友好厂商显著占优: {cache_wins}/300"
         );
     }
 

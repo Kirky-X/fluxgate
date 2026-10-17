@@ -223,6 +223,8 @@ pub fn routing_config() -> Config {
                 abstract_id: Some("gpt-4".into()),
                 weight: *weight,
                 enabled: true,
+                dimensions: None,
+                compat_group: None,
             }],
             rate_limit: RateLimitConfig::Token {
                 max_tokens: 1_000_000,

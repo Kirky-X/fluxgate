@@ -239,6 +239,9 @@ mod build_fallback_chain {
                 abstract_id: Some("gpt-4".into()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }],
             rate_limit: RateLimitConfig::Token {
                 max_tokens: 1000,
@@ -395,6 +398,9 @@ mod cover_all_paths {
                 abstract_id: Some("gpt-4".into()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }],
             rate_limit: fluxgate::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,

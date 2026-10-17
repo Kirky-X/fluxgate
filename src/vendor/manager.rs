@@ -3057,6 +3057,9 @@ mod tests {
             abstract_id: Some("gpt-4o".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         // 前缀大小写变体 + 模型大小写变体 → canonical model_id
         assert_eq!(

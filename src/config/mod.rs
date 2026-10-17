@@ -132,6 +132,16 @@ pub struct ModelConfig {
     pub weight: f64,
     #[serde(default = "default_model_enabled")]
     pub enabled: bool,
+    /// 嵌入向量维度（声明该字段的条目 = 嵌入条目）。chat 路由无语义：
+    /// 网关仅用它做同 `compat_group` 内一致性校验与响应维度守门记录。
+    /// 缺省 None = 未声明（不参与同组维度一致性比较）
+    #[serde(default)]
+    pub dimensions: Option<u32>,
+    /// 嵌入兼容组名（声明任一嵌入字段的条目 = 嵌入条目），同组语义 =
+    /// 同一向量空间、可互相替换。缺省 None = 单例组（安全默认：不与
+    /// 任何其他厂商条目互换）
+    #[serde(default)]
+    pub compat_group: Option<String>,
 }
 
 fn default_weight() -> f64 {
@@ -1374,4 +1384,60 @@ fn default_difficulty_model_path() -> String {
 
 fn default_difficulty_engine() -> String {
     "candle".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModelConfig;
+
+    /// 两嵌入字段的解析：声明后值原样读出，未声明为空。
+    #[test]
+    fn model_config_parses_embedding_fields() {
+        let raw = r#"
+model_id = "text-embedding-3-small"
+abstract_id = "text-embedding-3-small"
+dimensions = 1536
+compat_group = " openai-embedding "
+"#;
+        let model: ModelConfig = toml::from_str(raw).expect("两嵌入字段解析");
+        assert_eq!(model.dimensions, Some(1536));
+        assert_eq!(model.compat_group.as_deref(), Some(" openai-embedding "));
+
+        // JSON 同源（confers 管线与 serde 字段名一致）
+        let model: ModelConfig =
+            serde_json::from_str(r#"{"model_id": "m", "compat_group": "g1"}"#).expect("json");
+        assert_eq!(model.compat_group.as_deref(), Some("g1"));
+        assert_eq!(model.dimensions, None, "仅声明组名时维度缺省 None");
+    }
+
+    /// 缺两字段的存量条目反序列化结果与变更前逐位一致（serde default）。
+    #[test]
+    fn model_config_missing_embedding_fields_backward_compatible() {
+        let model: ModelConfig = toml::from_str(
+            r#"
+model_id = "gpt-4"
+abstract_id = "gpt-4"
+weight = 2.5
+enabled = true
+"#,
+        )
+        .expect("存量条目零改动解析");
+        assert_eq!(model.dimensions, None);
+        assert_eq!(model.compat_group, None);
+        assert_eq!(model.weight, 2.5);
+        assert!(model.enabled);
+        // 序列化再解析往返保持一致（admin 配置面读写）
+        let roundtrip: ModelConfig =
+            toml::from_str(&toml::to_string(&model).expect("序列化")).expect("回读");
+        assert_eq!(roundtrip, model);
+    }
+
+    /// 仅声明 dimensions 的条目同样解析为嵌入条目形态（另一字段空）。
+    #[test]
+    fn model_config_dimensions_only_entry() {
+        let model: ModelConfig =
+            toml::from_str("model_id = \"m\"\ndimensions = 1024").expect("解析");
+        assert_eq!(model.dimensions, Some(1024));
+        assert_eq!(model.compat_group, None);
+    }
 }

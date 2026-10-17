@@ -135,6 +135,7 @@ fn line_column(raw: &str, offset: usize) -> Option<(usize, usize)> {
 pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_admin_secrets(config)?;
     validate_vendor_entries(config)?;
+    validate_embedding_groups(config)?;
     warn_missing_api_key_envs(config);
     validate_model_catalog(config)?;
     validate_resilience_circuit(config)?;
@@ -432,6 +433,135 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
                         ],
                     ),
                 });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 嵌入兼容组校验（R1-R3）：同一 `compat_group`（trim 后精确匹配）内
+/// upstream `model_id` 大小写不敏感一致（R1）、已声明 `dimensions` 全部
+/// 相等（R2）、组名不得跨 `abstract_id`（R3）；违反任一条 → 配置错误且
+/// 错误信息点名 vendor id 与冲突条目（R4）。两个新字段未声明的条目零
+/// 参与——存量配置行为逐字节不变；加载与热载共用本入口，两路同拒
+fn validate_embedding_groups(config: &Config) -> Result<(), GateError> {
+    /// 组内首个声明条目锚点（后续条目与之比对，错误信息取两侧原文）
+    struct GroupAnchor<'a> {
+        vendor: &'a str,
+        model_id: &'a str,
+        dims: Option<(&'a str, &'a str, u32)>,
+        abstract_id: Option<(&'a str, &'a str)>,
+    }
+
+    let mut groups: std::collections::HashMap<&str, GroupAnchor<'_>> =
+        std::collections::HashMap::new();
+    for vendor in &config.vendors {
+        for model in &vendor.models {
+            // trim 后为空 = 未声明（与路由侧组键解析同口径）
+            let Some(group) = model
+                .compat_group
+                .as_deref()
+                .map(str::trim)
+                .filter(|group| !group.is_empty())
+            else {
+                continue;
+            };
+            // 声明组名不得含单例组键分隔符 `/::`——否则可与「未声明条目的
+            // 单例键 {vendor}/::{model}」撞键，静默击穿安全默认（未声明 =
+            // 永不与任何厂商互换）
+            if group.contains("/::") {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-embedding-group-reserved-separator",
+                        &[("group", group.to_string())],
+                    ),
+                });
+            }
+            match groups.get_mut(group) {
+                None => {
+                    groups.insert(
+                        group,
+                        GroupAnchor {
+                            vendor: &vendor.id,
+                            model_id: &model.model_id,
+                            dims: model
+                                .dimensions
+                                .map(|dims| (vendor.id.as_str(), model.model_id.as_str(), dims)),
+                            abstract_id: model
+                                .abstract_id
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|abstract_id| !abstract_id.is_empty())
+                                .map(|abstract_id| (abstract_id, vendor.id.as_str())),
+                        },
+                    );
+                }
+                Some(anchor) => {
+                    // R1：同组 upstream model_id 必须一致（大小写不敏感）
+                    if !model.model_id.eq_ignore_ascii_case(anchor.model_id) {
+                        return Err(GateError::Config {
+                            message: t_args(
+                                "config-embedding-group-model-mismatch",
+                                &[
+                                    ("group", group.to_string()),
+                                    ("vendor_a", anchor.vendor.to_string()),
+                                    ("model_a", anchor.model_id.to_string()),
+                                    ("vendor_b", vendor.id.clone()),
+                                    ("model_b", model.model_id.clone()),
+                                ],
+                            ),
+                        });
+                    }
+                    // R2：同组已声明 dimensions 必须相等（未声明不参与比较）
+                    if let Some(dims) = model.dimensions {
+                        match anchor.dims {
+                            Some((old_vendor, old_model, old_dims)) if old_dims != dims => {
+                                return Err(GateError::Config {
+                                    message: t_args(
+                                        "config-embedding-group-dimension-conflict",
+                                        &[
+                                            ("group", group.to_string()),
+                                            ("vendor_a", old_vendor.to_string()),
+                                            ("model_a", old_model.to_string()),
+                                            ("dims_a", old_dims.to_string()),
+                                            ("vendor_b", vendor.id.clone()),
+                                            ("model_b", model.model_id.clone()),
+                                            ("dims_b", dims.to_string()),
+                                        ],
+                                    ),
+                                });
+                            }
+                            None => anchor.dims = Some((&vendor.id, &model.model_id, dims)),
+                            _ => {}
+                        }
+                    }
+                    // R3：组名不得跨 abstract_id（缺 abstract 的条目不参与）
+                    if let Some(abstract_id) = model
+                        .abstract_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|abstract_id| !abstract_id.is_empty())
+                    {
+                        match anchor.abstract_id {
+                            Some((old_abstract, old_vendor)) if old_abstract != abstract_id => {
+                                return Err(GateError::Config {
+                                    message: t_args(
+                                        "config-embedding-group-cross-abstract",
+                                        &[
+                                            ("group", group.to_string()),
+                                            ("abstract_a", old_abstract.to_string()),
+                                            ("vendor_a", old_vendor.to_string()),
+                                            ("abstract_b", abstract_id.to_string()),
+                                            ("vendor_b", vendor.id.clone()),
+                                        ],
+                                    ),
+                                });
+                            }
+                            None => anchor.abstract_id = Some((abstract_id, vendor.id.as_str())),
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
     }
@@ -1288,5 +1418,127 @@ concurrency = { requests_per_second = 1 }
         // 校验器循环对合法摘要必须零违规（防止弱词表误伤摘要形态）
         let config = config_with(true, Some(auth_section(vec!["0".repeat(64)], vec![])));
         validate_admin_secrets(&config).expect("全零 64 位 hex 形态合法，不得被弱词表误拒");
+    }
+
+    // ---- 嵌入兼容组校验（R1-R4）----
+
+    /// `[[vendors.models]]` 嵌入条目：compat_group / dimensions 均可选缺席
+    fn embedding_model(
+        model_id: &str,
+        abstract_id: &str,
+        group: Option<&str>,
+        dimensions: Option<u32>,
+    ) -> String {
+        let mut block = format!(
+            "[[vendors.models]]\nmodel_id = \"{model_id}\"\nabstract_id = \"{abstract_id}\"\n"
+        );
+        if let Some(group) = group {
+            block.push_str(&format!("compat_group = \"{group}\"\n"));
+        }
+        if let Some(dims) = dimensions {
+            block.push_str(&format!("dimensions = {dims}\n"));
+        }
+        block
+    }
+
+    /// 组装含 [[vendors]] 的完整配置并解析（难度段留空）：复用难度用例的
+    /// 装配器保持加载口径单一，本组用例只关心嵌入兼容组校验
+    fn parse_vendors_toml(vendors: &str) -> Result<Config, GateError> {
+        parse_difficulty_toml(vendors, "")
+    }
+
+    #[test]
+    fn embedding_group_model_id_mismatch_rejected() {
+        // R1 + R4：同组 upstream model_id 实质不同 → 拒绝，点名两厂商与各自 model_id
+        let vendors = difficulty_vendor(
+            "v1",
+            &embedding_model("text-embedding-3-large", "emb-a", Some("g1"), None),
+        ) + &difficulty_vendor(
+            "v2",
+            &embedding_model("text-embedding-3-small", "emb-a", Some("g1"), None),
+        );
+        let error = parse_vendors_toml(&vendors).expect_err("同组异构 model_id 必须拒绝");
+        let message = error.to_string();
+        assert!(
+            message.contains("v1") && message.contains("v2"),
+            "错误必须点名两个 vendor id: {message}"
+        );
+        assert!(
+            message.contains("text-embedding-3-large")
+                && message.contains("text-embedding-3-small"),
+            "错误必须点名两个 model_id: {message}"
+        );
+        assert!(message.contains("g1"), "错误必须点名组名: {message}");
+    }
+
+    #[test]
+    fn embedding_group_dimension_conflict_rejected() {
+        // R2 + R4：同组已声明 dimensions 冲突 → 拒绝，点名冲突条目与两维度值
+        let vendors =
+            difficulty_vendor("v1", &embedding_model("m", "emb-a", Some("g1"), Some(1024)))
+                + &difficulty_vendor("v2", &embedding_model("m", "emb-a", Some("g1"), Some(1536)));
+        let error = parse_vendors_toml(&vendors).expect_err("同组维度冲突必须拒绝");
+        let message = error.to_string();
+        assert!(
+            message.contains("1024") && message.contains("1536"),
+            "错误必须点名两个维度值: {message}"
+        );
+        assert!(
+            message.contains("v1") && message.contains("v2"),
+            "错误必须点名冲突条目所属厂商: {message}"
+        );
+    }
+
+    #[test]
+    fn embedding_group_name_cross_abstract_rejected() {
+        // R3 + R4：同组名挂两个不同 abstract_id → 拒绝，点名两 abstract
+        //（model_id 完全一致以隔离 R1，确保命中的是 R3 分支）
+        let vendors = difficulty_vendor(
+            "v1",
+            &embedding_model("text-embedding-3-large", "emb-a", Some("g1"), None),
+        ) + &difficulty_vendor(
+            "v2",
+            &embedding_model("text-embedding-3-large", "emb-b", Some("g1"), None),
+        );
+        let error = parse_vendors_toml(&vendors).expect_err("组名跨 abstract 必须拒绝");
+        let message = error.to_string();
+        assert!(
+            message.contains("emb-a") && message.contains("emb-b"),
+            "错误必须点名两个冲突 abstract: {message}"
+        );
+    }
+
+    #[test]
+    fn embedding_group_name_with_singleton_separator_rejected() {
+        // S1/F2：组名含单例键分隔符 "/::" → 拒绝（防与未声明条目的单例键
+        // {vendor}/::{model} 撞键击穿安全默认）；错误信息点名组名
+        let vendors =
+            difficulty_vendor("v1", &embedding_model("m", "emb-a", Some("v2/::m2"), None));
+        let error = parse_vendors_toml(&vendors).expect_err("组名含保留分隔符必须拒绝");
+        let message = error.to_string();
+        assert!(
+            message.contains("v2/::m2"),
+            "错误必须点名违规组名: {message}"
+        );
+    }
+
+    #[test]
+    fn embedding_group_valid_variants_pass() {
+        // R4 零破坏 + R1 trim/大小写语义：组名 trim 后精确匹配、model_id 比较
+        // 大小写不敏感、组内部分条目未声明 dimensions 不触发拒绝
+        let vendors = difficulty_vendor(
+            "v1",
+            &embedding_model("Text-Embedding-3-Large", "emb-a", Some(" g1 "), Some(1024)),
+        ) + &difficulty_vendor(
+            "v2",
+            &embedding_model("text-embedding-3-large", "emb-a", Some("g1"), None),
+        );
+        let config = parse_vendors_toml(&vendors).expect("大小写差异 + 部分维度声明必须通过");
+        assert_eq!(config.vendors.len(), 2);
+
+        // 不同组名各自服务不同 abstract（组名不跨 abstract 的合法对照）
+        let distinct = difficulty_vendor("v1", &embedding_model("m1", "emb-a", Some("ga"), None))
+            + &difficulty_vendor("v2", &embedding_model("m2", "emb-b", Some("gb"), None));
+        parse_vendors_toml(&distinct).expect("不同组名不同 abstract 必须通过");
     }
 }

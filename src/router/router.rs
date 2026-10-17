@@ -14,6 +14,7 @@ use std::sync::{Arc, RwLock};
 
 use super::affinity::AffinityTable;
 use super::bandit::{BanditState, LINUCB_DIM};
+use super::embedding_pin::EmbeddingPin;
 
 #[derive(Debug, Clone)]
 pub struct RoutingDecision {
@@ -42,6 +43,9 @@ pub struct Router {
     sla_no_pricing_warned: Arc<AtomicBool>,
     /// LinUCB 臂状态。None = 未接线，该档回退 weighted
     bandit: Option<Arc<BanditState>>,
+    /// 嵌入兼容组 pin 表。None = 未接线，`route_embedding` 回退历史
+    /// `route` 行为（chat 路径完全不读本字段）
+    embedding_pin: Option<Arc<EmbeddingPin>>,
 }
 
 impl Router {
@@ -53,6 +57,7 @@ impl Router {
             sla_queues: Arc::new(RwLock::new(HashMap::new())),
             sla_no_pricing_warned: Arc::new(AtomicBool::new(false)),
             bandit: None,
+            embedding_pin: None,
         }
     }
 
@@ -60,6 +65,18 @@ impl Router {
     pub fn with_bandit(mut self, bandit: Arc<BanditState>) -> Self {
         self.bandit = Some(bandit);
         self
+    }
+
+    /// 接线嵌入兼容组 pin 表（builder）。未接线时 `route_embedding` 回退
+    /// 历史 `route` 行为（admin 端点同样按未接线显式报错）
+    pub fn with_embedding_pin(mut self, pin: Arc<EmbeddingPin>) -> Self {
+        self.embedding_pin = Some(pin);
+        self
+    }
+
+    /// 嵌入 pin 表访问（admin 端点用）；未接线返回 None
+    pub fn embedding_pin(&self) -> Option<&Arc<EmbeddingPin>> {
+        self.embedding_pin.as_ref()
     }
 
     /// 接线会话亲和表（builder）：亲和命中者优先（hard 模式在合格集合内直接选中，soft 为权重 boost；集合外绝不强选）
@@ -110,6 +127,140 @@ impl Router {
             None,
         )
         .await
+    }
+
+    /// 嵌入路由（`POST /v1/embeddings`）：在既有路由之上叠加兼容组 pin 粘着；
+    /// chat 主路径 `route` 零感知。
+    ///
+    /// 无 pin：走既有全量路由（含 fail-open/价格因子/加权）选中后首写者胜记
+    /// pin；有 pin：`excluded = 组外厂商` 复用既有 `route_excluding` 路径
+    ///（组内迁移经 route_excluding 既有门禁/fail-open 完成；嵌入 handler
+    /// 单发透传，不走 chat 执行期 fallback 链）；pin 组无可用
+    /// 候选 → 显式 Validation（含声明 compat_group / admin 重置指引），禁止
+    /// 跨组回退。未接线 pin 表时行为与历史逐字节一致。
+    pub async fn route_embedding(
+        &self,
+        abstract_model: &str,
+    ) -> Result<RoutingDecision, GateError> {
+        let Some(pin) = self.embedding_pin.as_ref() else {
+            return self.route(abstract_model).await;
+        };
+        let normalized = crate::router::bandit::linucb_arm_key(abstract_model);
+        match pin.pin_for(&normalized) {
+            Some(group) => self.route_embedding_pinned(&normalized, &group, pin).await,
+            None => self.route_embedding_unpinned(&normalized, pin).await,
+        }
+    }
+
+    /// 无 pin 流程：既有全量路由选中 → 首写者胜记 pin；Direct/Global
+    ///（点名厂商/全局池）不参与 pin。并发首写竞态败者（胜出组与本次选中
+    /// 组不同）在胜出组内重路由
+    async fn route_embedding_unpinned(
+        &self,
+        normalized: &str,
+        pin: &EmbeddingPin,
+    ) -> Result<RoutingDecision, GateError> {
+        let decision = self.route(normalized).await?;
+        if decision.strategy != RoutingStrategy::Abstract {
+            return Ok(decision);
+        }
+        let group = EmbeddingPin::group_key(
+            &decision.vendor.id,
+            &decision.model.model_id,
+            decision.model.compat_group.as_deref(),
+        );
+        let (winner, newly_set) = pin.pin_or_get(normalized, &group);
+        if newly_set {
+            self.vendor_manager.metrics().record_embedding_pin_set();
+            Ok(decision)
+        } else if winner == group {
+            Ok(decision)
+        } else {
+            self.route_embedding_pinned(normalized, &winner, pin).await
+        }
+    }
+
+    /// 已 pin 流程：excluded = 服务本 abstract 但无任何条目属于本组的厂商；
+    /// 选中结果的组键复核兜底「同厂商多条目跨组」配置的越组模型（按厂商
+    /// 粒度安全收缩重试），不收敛或无候选 → 显式失败禁止跨组回退。
+    /// pin 指向的组已无成员（遗留 pin）→ 清单条走无 pin 流程
+    async fn route_embedding_pinned(
+        &self,
+        normalized: &str,
+        group: &str,
+        pin: &EmbeddingPin,
+    ) -> Result<RoutingDecision, GateError> {
+        // 组划分：厂商粒度成员标记（同厂商可有多条目，任一属于本组即保留该厂商）
+        let mut has_member: Vec<(String, bool)> = Vec::new();
+        let mut group_members = 0usize;
+        for (vendor, model) in self.config.resolve_model(normalized) {
+            let is_member =
+                EmbeddingPin::group_key(&vendor.id, &model.model_id, model.compat_group.as_deref())
+                    == group;
+            if is_member {
+                group_members += 1;
+            }
+            match has_member
+                .iter_mut()
+                .find(|(id, _)| id.eq_ignore_ascii_case(&vendor.id))
+            {
+                Some((_, flag)) => *flag |= is_member,
+                None => has_member.push((vendor.id, is_member)),
+            }
+        }
+        if group_members == 0 {
+            // 遗留 pin：组已无成员 → 清除后按无 pin 流程重新选择
+            //（box 打破 pinned ↔ unpinned 的 async 递归环，深度有界）
+            pin.clear_one(normalized);
+            return Box::pin(self.route_embedding_unpinned(normalized, pin)).await;
+        }
+
+        let mut excluded: Vec<String> = has_member
+            .iter()
+            .filter(|(_, has_group_model)| !has_group_model)
+            .map(|(id, _)| id.clone())
+            .collect();
+        loop {
+            match self.route_excluding(normalized, &excluded).await {
+                Ok(decision) => {
+                    let decision_group = EmbeddingPin::group_key(
+                        &decision.vendor.id,
+                        &decision.model.model_id,
+                        decision.model.compat_group.as_deref(),
+                    );
+                    if decision_group == group {
+                        return Ok(decision);
+                    }
+                    // 跨组条目厂商被选中：排除该厂商后重试；已在其排除列表
+                    // 中再次越组 = 无收敛路径（理论不可达）→ 显式失败
+                    if excluded
+                        .iter()
+                        .any(|e| e.eq_ignore_ascii_case(&decision.vendor.id))
+                    {
+                        return Err(self.embedding_group_exhausted_error(normalized, group));
+                    }
+                    excluded.push(decision.vendor.id.clone());
+                }
+                Err(_) => {
+                    // 组内候选全不可用（含 fail-open 关闭语义）→ 显式失败
+                    return Err(self.embedding_group_exhausted_error(normalized, group));
+                }
+            }
+        }
+    }
+
+    /// 组耗尽显式错误：含声明 compat_group 启用组内迁移与 admin 重置指引；
+    /// 计数单点收敛（两条失败路径都经此构造）
+    fn embedding_group_exhausted_error(&self, model: &str, group: &str) -> GateError {
+        self.vendor_manager
+            .metrics()
+            .record_embedding_group_exhausted();
+        GateError::Validation {
+            field: t_args(
+                "router-embedding-group-exhausted",
+                &[("model", model.to_string()), ("group", group.to_string())],
+            ),
+        }
     }
 
     /// 带请求级权重的路由：request_weight 经 `[routing]`.allow_request_weight

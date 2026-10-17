@@ -27,6 +27,8 @@
   - [GET /admin/vendors](#get-adminvendors)
   - [GET /admin/vendors/:id/status](#get-adminvendorsidstatus)
   - [POST /admin/vendors/:id/reset](#post-adminvendorsidreset)
+  - [GET /admin/embedding-pins](#get-adminembedding-pins)
+  - [POST /admin/embedding-pins/:id/reset](#post-adminembedding-pinsidreset)
   - [GET /admin/config](#get-adminconfig)
   - [POST /admin/config](#post-adminconfig)
   - [GET /admin/models](#get-adminmodels)
@@ -274,8 +276,11 @@ OpenAI Embeddings 兼容端点。仅支持 `type_ = "openai"` 的厂商，否则
 |---|---|---|---|
 | `model` | string | 是 | 模型 ID |
 | `input` | string \| array | 是 | 待向量化的文本或文本数组 |
+| `dimensions` | number | 否 | 透传上游的维度裁剪参数；带此参数的请求不参与网关维度守门记录 |
 
 请求体先经 `embedding_request_to_openai` 转换后再转发给上游 OpenAI 兼容 API。
+
+**兼容组粘着路由**：嵌入请求按「一个抽象嵌入模型 = 一个向量空间 = 一个兼容组」粘着路由——首次加权选中厂商所在组被 pin 表记住，后续请求仅在组内选择；未声明 `compat_group` 时组 = 单厂商（故障显式报错，不静默换厂商）。详见 [USER_GUIDE 嵌入兼容组路由](./USER_GUIDE.md#嵌入兼容组路由post-v1embeddings)。
 
 **响应**:
 
@@ -301,7 +306,7 @@ OpenAI Embeddings 兼容端点。仅支持 `type_ = "openai"` 的厂商，否则
 }
 ```
 
-**错误码**: `validation_error`(400) | `protocol_error`(502，含「Embeddings only supported for OpenAI vendors」) | `vendor_unavailable`(503) | `config_error`(500，API key env 未设置)
+**错误码**: `validation_error`(400) | `protocol_error`(502，含「Embeddings only supported for OpenAI vendors」；同 (vendor, model) 响应维度漂移亦为 502，错误体含 vendor/model/新旧维度与重置指引) | `vendor_unavailable`(503) | `config_error`(500，API key env 未设置)
 
 **curl 示例**:
 
@@ -912,6 +917,71 @@ curl http://localhost:8080/admin/vendors/mock-openai/status \
 
 ```bash
 curl -X POST http://localhost:8080/admin/vendors/mock-openai/reset \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
+### GET /admin/embedding-pins
+
+嵌入兼容组 pin 表快照（`abstract_id` 升序），观测 `POST /v1/embeddings` 兼容组粘着路由的当前状态。
+
+**认证**: 需要 Bearer Token
+
+**请求体**: 无
+
+**响应**:
+
+```json
+[
+  { "abstract_id": "text-embedding-small", "group_key": "openai-embedding-v1" },
+  { "abstract_id": "emb-other", "group_key": "vendor-b/::nomic-embed-text" }
+]
+```
+
+`group_key` 为条目声明的 `compat_group`（trim 后）；未声明组时为单例键 `{vendor_id}/::{model_id}`（安全默认：不与任何厂商互换）。嵌入 pin 表未接线（SDK 极简装配）返回 `config_error`。
+
+**curl 示例**:
+
+```bash
+curl http://localhost:8080/admin/embedding-pins \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
+### POST /admin/embedding-pins/:id/reset
+
+单条重置嵌入 pin（恢复通道）：清除该抽象模型的粘着记录，下一嵌入请求按权重重新选择厂商并重新粘着（可命中此前被 pin 排除的厂商）；同时**级联清除**该抽象模型当前解析到的全部 (vendor, model) 维度守门基准——上游模型确已变更时，仅清 pin 不清基准会让下一请求立刻再 502，本端点即错误信息指引的恢复出口。`id` 为抽象模型名（与路由侧同源归一：trim/小写），任意书写形态命中同一 pin；不存在的 abstract 幂等成功（`cleared: false`，不计数）。配置热更成功后全部 pin 自动重置（维度基准一并失效），无需手动调用。
+
+`embedding_pin_reset_total` 为双源计数：admin 单条重置（仅实际移除时 +1）与配置热载清空（按清除条数）共用。
+
+**认证**: 需要 Bearer Token
+
+**Path 参数**:
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 抽象模型名（pin 键；不存在时幂等成功） |
+
+**请求体**: 无
+
+**响应**:
+
+```json
+{
+  "success": true,
+  "message": "嵌入 pin 'text-embedding-small' 已清空；下一嵌入请求按权重重新粘着（可能换厂商）",
+  "cleared": true
+}
+```
+
+**错误码**: `config_error`(500，pin 表未接线)
+
+**curl 示例**:
+
+```bash
+curl -X POST http://localhost:8080/admin/embedding-pins/text-embedding-small/reset \
   -H "Authorization: Bearer $API_KEY"
 ```
 

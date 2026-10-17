@@ -1120,7 +1120,7 @@ pub async fn embeddings(
         })
     })?;
 
-    let decision = match state.router.route(model).await {
+    let decision = match state.router.route_embedding(model).await {
         Ok(d) => d,
         Err(e) => return Err(e.into()),
     };
@@ -1171,11 +1171,91 @@ pub async fn embeddings(
     };
 
     // 记录日志
-    let duration_ms = start_time.elapsed().as_millis() as i64;
     let input_str = body
         .get("input")
         .map(|v| serde_json::to_string(v).unwrap_or_default())
         .unwrap_or_default();
+
+    // 维度守门：无 dimensions 参数的请求参与记录/比对（首见放行；维度漂移 →
+    // 502 且向量不落给客户端，错误体含 vendor/model/新旧维度值）。带
+    // dimensions 参数的请求由上游按参数裁剪维度，不写记录也不比对。
+    // batch 响应逐元素校验（同批各元素与同一基准比对）；base64 编码形态
+    // （embedding 为字符串）不解码守门，debug 日志显性化跳过
+    if body.get("dimensions").map(|v| v.is_null()).unwrap_or(true) {
+        if let Some(pin) = state.router.embedding_pin() {
+            let data = response_json.get("data").and_then(|data| data.as_array());
+            if data.is_some_and(|data| {
+                data.iter()
+                    .any(|item| item.get("embedding").is_some_and(|e| e.is_string()))
+            }) {
+                tracing::debug!(
+                    vendor = %decision.vendor.id,
+                    model = %decision.model.model_id,
+                    "embedding dimension guard skipped: base64-encoded response"
+                );
+            } else if let Some(data) = data {
+                let mut mismatch = None;
+                for item in data {
+                    let Some(dims) = item
+                        .get("embedding")
+                        .and_then(|embedding| embedding.as_array())
+                        .map(|embedding| embedding.len() as u32)
+                    else {
+                        continue;
+                    };
+                    if let Err((old, now)) = pin.record_and_check(
+                        &decision.vendor.id,
+                        &decision.model.model_id,
+                        "-",
+                        dims,
+                    ) {
+                        mismatch = Some((old, now));
+                        break;
+                    }
+                }
+                if let Some((old, now)) = mismatch {
+                    state
+                        .vendor_manager
+                        .metrics()
+                        .record_embedding_dimension_mismatch();
+                    let error = FluxgateError::from(GateError::Protocol {
+                        source: t_args(
+                            "api-embeddings-dimension-mismatch",
+                            &[
+                                ("vendor", decision.vendor.id.clone()),
+                                ("model", decision.model.model_id.clone()),
+                                ("old", old.to_string()),
+                                ("new", now.to_string()),
+                                // pin 键是 abstract（路由归一后），重置指引必须
+                                // 指向同源键；model 仅用于定位漂移厂商条目
+                                ("abstract", crate::router::bandit::linucb_arm_key(model)),
+                            ],
+                        ),
+                        inner: None,
+                    });
+                    let duration_ms = start_time.elapsed().as_millis() as i64;
+                    let error_message = error.to_string();
+                    push_embeddings_log(
+                        &state,
+                        &request_id,
+                        model,
+                        &decision,
+                        &input_str,
+                        None,
+                        duration_ms,
+                        502,
+                        Some(error_message),
+                        &api_key_hash,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    // 记录日志
+    let duration_ms = start_time.elapsed().as_millis() as i64;
     push_embeddings_log(
         &state,
         &request_id,

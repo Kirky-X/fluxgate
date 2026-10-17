@@ -10,6 +10,10 @@ config-duplicate-model-id = 厂商 { $vendor } 内的模型 ID 重复: { $model 
 config-vendor-id-empty = 厂商 ID 为空（仅空白字符）——路由查找键不得为空白
 config-model-id-empty = 厂商 { $vendor } 内的模型 ID 为空（仅空白字符）
 config-abstract-id-empty = 厂商 { $vendor } 模型 { $model } 的 abstract_id 为空（仅空白字符）
+config-embedding-group-model-mismatch = [vendors] 兼容组 "{ $group }" 内 upstream model_id 不一致：厂商 { $vendor_a } 为 "{ $model_a }"，厂商 { $vendor_b } 为 "{ $model_b }"（同组 model_id 必须大小写不敏感一致）
+config-embedding-group-dimension-conflict = [vendors] 兼容组 "{ $group }" 内已声明 dimensions 冲突：厂商 { $vendor_a } 模型 "{ $model_a }" 声明 { $dims_a }，厂商 { $vendor_b } 模型 "{ $model_b }" 声明 { $dims_b }
+config-embedding-group-cross-abstract = [vendors] 兼容组 "{ $group }" 跨两个 abstract_id："{ $abstract_a }"（厂商 { $vendor_a }）与 "{ $abstract_b }"（厂商 { $vendor_b }）；一个兼容组只能服务一个抽象嵌入模型
+config-embedding-group-reserved-separator = [vendors] 兼容组 "{ $group }" 不得包含保留分隔符 "/::"——会与未声明条目的单例组键 "{vendor}/::{model}" 撞键，静默击穿「永不互换」安全默认
 config-api-key-env-missing = 厂商 { $vendor } 的 API Key 环境变量未设置（配置值长度 { $length }）——请核对是否误将 key 原文当作环境变量名
 config-api-key-pool-env-missing = 厂商 { $vendor } 的 API Key 池环境变量 #{ $index }（值长度 { $length }）未设置——请核对是否误将 key 原文当作环境变量名
 config-duplicate-catalog-model-id = 模型目录 id 重复：{ $model }
@@ -65,6 +69,7 @@ router-explain-affinity-bound-elsewhere = 会话亲和绑定于 '{ $bound }'（h
 router-explain-queue-over-limit = 队列深度 { $queue_len } ≥ 饱和点 { $saturation }
 router-explain-weight-zero = 合成权重为 0（生产轮盘赌全零时仍均匀回退可能选中，仅诊断提示）
 router-explain-eligible = 候选合格（selection={ $selection }）
+router-embedding-group-exhausted = 嵌入 pin 组 "{ $group }" 对模型 { $model } 已无可用厂商：给厂商声明 compat_group 可启用组内故障迁移，或 POST /admin/embedding-pins/{ $model }/reset 按权重重新粘着
 
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = 缺少 API Key

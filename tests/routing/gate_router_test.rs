@@ -30,12 +30,18 @@ mod tests {
                 abstract_id: Some("gpt-4".to_string()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             },
             ModelConfig {
                 model_id: "gpt-3.5-turbo".to_string(),
                 abstract_id: Some("gpt-3.5".to_string()),
                 weight: 2.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             },
         ];
         openai.rate_limit = RateLimitConfig::Interval {
@@ -52,6 +58,9 @@ mod tests {
             abstract_id: Some("claude-3.5-sonnet".to_string()),
             weight: 1.5,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         anthropic.rate_limit = RateLimitConfig::Interval {
             hours: 1,
@@ -184,6 +193,9 @@ mod tests {
             abstract_id: Some("GPT-4o-Latest".to_string()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         let config_manager = Arc::new(ConfigManager::new(Config {
             server: ServerConfig {
@@ -394,6 +406,9 @@ mod scheduling_weight {
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }];
             v.concurrency.requests_per_second = 100;
             v.concurrency.max_concurrent_requests = Some(1);
@@ -1216,6 +1231,9 @@ mod session_affinity {
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }];
             v.concurrency.requests_per_second = 100;
             v.concurrency.max_concurrent_requests = Some(1);
@@ -1417,6 +1435,9 @@ mod failure_rate_gate {
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }];
             v.concurrency.requests_per_second = 100;
             v
@@ -1540,6 +1561,9 @@ mod cooldown_improvements {
             abstract_id: Some("shared-model".to_string()),
             weight,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.rate_limit = RateLimitConfig::Token {
             max_tokens,
@@ -1829,6 +1853,9 @@ mod soft_affinity {
             abstract_id: Some("shared-model".to_string()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.concurrency.requests_per_second = 100;
         v.concurrency.max_concurrent_requests = Some(1);
@@ -2036,6 +2063,9 @@ mod sla_virtual_queue {
             abstract_id: Some("shared-model".to_string()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.concurrency.requests_per_second = 100;
         v
@@ -2402,6 +2432,9 @@ mod linucb_selection {
             abstract_id: Some("shared-model".to_string()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.concurrency.requests_per_second = 100;
         v
@@ -2745,6 +2778,9 @@ mod lps_lookahead {
             abstract_id: Some("shared-model".to_string()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.concurrency.requests_per_second = 100;
         v.concurrency.max_concurrent_requests = max_concurrent;
@@ -2977,6 +3013,9 @@ mod route_gap_coverage {
                     abstract_id: abstract_id.map(|a| a.to_string()),
                     weight,
                     enabled: model_enabled,
+
+                    dimensions: None,
+                    compat_group: None,
                 },
             )
             .collect();
@@ -4037,5 +4076,414 @@ mod route_gap_coverage {
             (w - 1.0).abs() < 1e-9,
             "非法 ref 必须走中性 0.5（权重 1.0 而非退化的 0.85）: {w}"
         );
+    }
+}
+
+// ---- 嵌入兼容组 pin 粘着路由（route_embedding）----
+
+#[cfg(test)]
+mod embedding_compat_group {
+    use crate::common;
+    use fluxgate::config::{Config, ConfigManager, ModelConfig, ServerConfig, VendorConfig};
+    use fluxgate::router::{EmbeddingPin, Router, RoutingStrategy};
+    use fluxgate::vendor::{VendorManager, VendorStatus};
+    use std::sync::Arc;
+
+    /// 单模型嵌入 vendor：指定 abstract / model_id / 组 / 权重
+    fn embedding_vendor(
+        id: &str,
+        abstract_id: &str,
+        model_id: &str,
+        group: Option<&str>,
+        weight: f64,
+    ) -> VendorConfig {
+        common::ensure_test_api_key();
+        let mut vendor = common::base_vendor(id, String::new());
+        vendor.name = format!("Vendor {id}");
+        vendor.models = vec![ModelConfig {
+            model_id: model_id.to_string(),
+            abstract_id: Some(abstract_id.to_string()),
+            weight,
+            enabled: true,
+            dimensions: None,
+            compat_group: group.map(str::to_string),
+        }];
+        vendor
+    }
+
+    fn make_embedding_router(
+        vendors: Vec<VendorConfig>,
+    ) -> (Arc<VendorManager>, Router, Arc<EmbeddingPin>) {
+        let config = Config {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            ..common::test_config(vendors)
+        };
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let pin = Arc::new(EmbeddingPin::new());
+        let router =
+            Router::new(config_manager, vendor_manager.clone()).with_embedding_pin(pin.clone());
+        (vendor_manager, router, pin)
+    }
+
+    /// 形态①：无组双厂商 → 粘着首次加权选中的厂商，恒不漂移；
+    /// pin 组键 = 单例键 `{vendor}/::{model}`（未声明组 = 不与任何厂商互换）
+    #[tokio::test]
+    async fn without_group_sticks_to_first_weighted_vendor() {
+        let (_vm, router, pin) = make_embedding_router(vec![
+            embedding_vendor("emb-a", "emb-shared", "shared-model", None, 1.0),
+            embedding_vendor("emb-b", "emb-shared", "shared-model", None, 1.0),
+        ]);
+
+        let first = router
+            .route_embedding("emb-shared")
+            .await
+            .expect("首次路由");
+        assert_eq!(first.strategy, RoutingStrategy::Abstract);
+
+        for i in 0..20 {
+            let decision = router
+                .route_embedding("emb-shared")
+                .await
+                .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
+            assert_eq!(
+                decision.vendor.id, first.vendor.id,
+                "无组配置必须粘着首厂商（第 {i} 次）"
+            );
+        }
+        assert_eq!(
+            pin.list(),
+            vec![(
+                "emb-shared".to_string(),
+                format!("{}/::shared-model", first.vendor.id)
+            )],
+            "pin 必须记录单例组键"
+        );
+        assert_eq!(
+            _vm.metrics().snapshot().embedding_pin_set_total,
+            1,
+            "首写建立 pin 必须计数一次"
+        );
+    }
+
+    /// 形态②：首厂商不可用 → 显式报错不回退（另一单例组可用也不得改投）
+    #[tokio::test]
+    async fn pinned_vendor_unavailable_reports_and_never_falls_back() {
+        let (vm, router, _pin) = make_embedding_router(vec![
+            embedding_vendor("emb-a", "emb-shared", "shared-model", None, 1.0),
+            embedding_vendor("emb-b", "emb-shared", "shared-model", None, 1.0),
+        ]);
+        vm.initialize()
+            .await
+            .expect("vendor init（update_status 需要 instance）");
+
+        let first = router
+            .route_embedding("emb-shared")
+            .await
+            .expect("首次路由");
+        vm.update_status(&first.vendor.id, VendorStatus::Unavailable);
+
+        let error = router
+            .route_embedding("emb-shared")
+            .await
+            .expect_err("pin 厂商不可用必须显式失败，禁止跨组回退");
+        let message = error.to_string();
+        assert!(
+            message.contains("compat_group"),
+            "错误必须含声明 compat_group 指引: {message}"
+        );
+        assert!(
+            message.contains("/admin/embedding-pins"),
+            "错误必须含 admin 重置指引: {message}"
+        );
+        assert!(
+            message.contains("emb-shared"),
+            "错误必须点名模型: {message}"
+        );
+        assert_eq!(
+            vm.metrics().snapshot().embedding_pin_set_total,
+            1,
+            "首写建立 pin 计数"
+        );
+        assert_eq!(
+            vm.metrics().snapshot().embedding_group_exhausted_total,
+            1,
+            "组耗尽显式失败必须计数"
+        );
+    }
+
+    /// 形态③：声明组 → 组内故障迁移续用；组全灭 → 显式失败，
+    /// 组外可用厂商永不补位。预置 pin=g1（首写选择已由形态①/④覆盖），
+    /// 聚焦「组过滤 + 组内迁移」语义
+    #[tokio::test]
+    async fn declared_group_migrates_inside_group_only() {
+        let (vm, router, pin) = make_embedding_router(vec![
+            embedding_vendor("g-a1", "emb-shared", "embed-same", Some("g1"), 1.0),
+            embedding_vendor("g-a2", "emb-shared", "embed-same", Some("g1"), 1.0),
+            embedding_vendor("outside", "emb-shared", "embed-other", None, 1.0),
+        ]);
+        vm.initialize()
+            .await
+            .expect("vendor init（update_status 需要 instance）");
+        pin.pin_or_get("emb-shared", "g1");
+
+        let first = router
+            .route_embedding("emb-shared")
+            .await
+            .expect("首次路由");
+        assert!(
+            matches!(first.vendor.id.as_str(), "g-a1" | "g-a2"),
+            "pin 组内路由不得越组: {}",
+            first.vendor.id
+        );
+        assert_eq!(
+            pin.list(),
+            vec![("emb-shared".to_string(), "g1".to_string())]
+        );
+
+        // 组内首厂商不可用 → 迁移到组内另一厂商（既有 fallback 路径）
+        vm.update_status(&first.vendor.id, VendorStatus::Unavailable);
+        let migrated = router
+            .route_embedding("emb-shared")
+            .await
+            .expect("组内迁移必须成功");
+        let expected = if first.vendor.id == "g-a1" {
+            "g-a2"
+        } else {
+            "g-a1"
+        };
+        assert_eq!(migrated.vendor.id, expected, "必须迁移到组内另一厂商");
+
+        // 组全灭：组外 outside 可用也不得改投 → 显式失败
+        vm.update_status(expected, VendorStatus::Unavailable);
+        let error = router
+            .route_embedding("emb-shared")
+            .await
+            .expect_err("组全灭必须显式失败（组外不得补位）");
+        assert!(
+            !error.to_string().contains("outside"),
+            "错误不得把请求改投组外厂商"
+        );
+        assert!(error.to_string().contains("compat_group"));
+    }
+
+    /// 形态④：同一 abstract 两组 → 首次选中钉住一组，另一组永不参与；
+    /// 不同 abstract 各自独立粘着（pin 表按 abstract 隔离）
+    #[tokio::test]
+    async fn two_groups_pin_independently_per_abstract() {
+        let (_vm, router, pin) = make_embedding_router(vec![
+            embedding_vendor("x1", "emb-shared", "model-x", Some("gx"), 1.0),
+            embedding_vendor("x2", "emb-shared", "model-x", Some("gx"), 1.0),
+            embedding_vendor("y1", "emb-shared", "model-y", Some("gy"), 1.0),
+            embedding_vendor("y2", "emb-shared", "model-y", Some("gy"), 1.0),
+            embedding_vendor("z1", "emb-other", "model-z", Some("gz"), 1.0),
+            embedding_vendor("z2", "emb-other", "model-z", Some("gz"), 1.0),
+        ]);
+
+        let first = router
+            .route_embedding("emb-shared")
+            .await
+            .expect("首次路由");
+        let (stuck_group, stuck_members): (&str, [&str; 2]) = if first.vendor.id.starts_with('x') {
+            ("gx", ["x1", "x2"])
+        } else {
+            ("gy", ["y1", "y2"])
+        };
+        for i in 0..30 {
+            let decision = router
+                .route_embedding("emb-shared")
+                .await
+                .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
+            assert!(
+                stuck_members.contains(&decision.vendor.id.as_str()),
+                "必须粘着首次选中的组（第 {i} 次，组外 {} 越界）",
+                decision.vendor.id
+            );
+        }
+
+        // 另一 abstract 独立粘着，pin 表两条记录互不影响
+        let other = router
+            .route_embedding("emb-other")
+            .await
+            .expect("另一 abstract 路由");
+        assert!(
+            matches!(other.vendor.id.as_str(), "z1" | "z2"),
+            "另一 abstract 必须落在自己的组内: {}",
+            other.vendor.id
+        );
+        assert_eq!(
+            pin.list(),
+            vec![
+                ("emb-other".to_string(), "gz".to_string()),
+                ("emb-shared".to_string(), stuck_group.to_string()),
+            ],
+            "两个 abstract 各自一条 pin 且彼此隔离"
+        );
+    }
+
+    /// T007 生命周期：配置应用成功（swap_memory，即热载桥接落点）→ 旧 pin
+    /// 失效；下一请求按新配置重新粘着（旧厂商已不在配置 → 重选新厂商并重建 pin）
+    #[tokio::test]
+    async fn config_apply_clears_pin_and_next_request_re_pins() {
+        let config = Config {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            ..common::test_config(vec![
+                embedding_vendor("emb-a", "emb-shared", "shared-model", None, 1.0),
+                embedding_vendor("emb-b", "emb-shared", "shared-model", None, 1.0),
+            ])
+        };
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let pin = Arc::new(EmbeddingPin::new());
+        // 与 bootstrap 同款接线：ConfigManager 应用成功钩子清空 pin 表
+        {
+            let pin = pin.clone();
+            config_manager.register_swap_hook(Arc::new(move || {
+                pin.clear_all();
+            }));
+        }
+        let router = Router::new(config_manager.clone(), vendor_manager.clone())
+            .with_embedding_pin(pin.clone());
+
+        // 首请求：无 pin → 既有加权路由选中并建立 pin
+        router
+            .route_embedding("emb-shared")
+            .await
+            .expect("首次路由");
+        assert_eq!(pin.list().len(), 1, "首请求必须建立 pin");
+
+        // 配置应用成功（与热载桥接同一落点）：旧 pin 全部失效
+        let next = Config {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            ..common::test_config(vec![embedding_vendor(
+                "emb-b",
+                "emb-shared",
+                "shared-model",
+                None,
+                1.0,
+            )])
+        };
+        config_manager.swap_memory(next).expect("配置应用成功");
+        assert_eq!(pin.pin_for("emb-shared"), None, "旧 pin 必须失效");
+        assert!(pin.list().is_empty(), "pin 表被清空");
+
+        // 下一请求：按新配置重新粘着（新配置只剩 emb-b，必落在其单例组）
+        let again = router
+            .route_embedding("emb-shared")
+            .await
+            .expect("重新路由");
+        assert_eq!(again.vendor.id, "emb-b", "重选必须落在新配置的可用厂商");
+        assert_eq!(
+            pin.list(),
+            vec![("emb-shared".to_string(), "emb-b/::shared-model".to_string())],
+            "新请求按新配置重新粘着（未声明组 = 单例组键）"
+        );
+        assert_eq!(
+            vendor_manager.metrics().snapshot().embedding_pin_set_total,
+            2,
+            "重新粘着必须再计一次 pin 建立"
+        );
+    }
+
+    /// T009 回归守卫：chat 主路径 `route` 零感知 pin——嵌入路径粘着某厂商后，
+    /// chat 路由仍可按权重轮换命中另一厂商，且 pin 表内容不被 chat 调用改写
+    #[tokio::test]
+    async fn chat_route_ignores_embedding_pin() {
+        let (_vm, router, pin) = make_embedding_router(vec![
+            embedding_vendor("emb-a", "emb-shared", "shared-model", None, 1.0),
+            embedding_vendor("emb-b", "emb-shared", "shared-model", None, 1.0),
+        ]);
+
+        // 嵌入路径先粘着（必落一厂商并建 pin）
+        let pinned = router
+            .route_embedding("emb-shared")
+            .await
+            .expect("嵌入首路由");
+        let snapshot = pin.list();
+        assert_eq!(snapshot.len(), 1, "嵌入路径已建立 pin");
+
+        // chat 路由不受 pin 约束：等权双厂商 50 次轮换，两厂商都必须可命中
+        //（若 chat 误读 pin 则恒落 pinned 厂商；50 次全同的自然概率 ~2^-50）
+        let mut hit_a = false;
+        let mut hit_b = false;
+        for _ in 0..50 {
+            let decision = router.route("emb-shared").await.expect("chat 路由");
+            match decision.vendor.id.as_str() {
+                "emb-a" => hit_a = true,
+                "emb-b" => hit_b = true,
+                other => panic!("意外厂商 {other}"),
+            }
+        }
+        assert!(
+            hit_a && hit_b,
+            "chat 路由必须仍可轮换双厂商（不得被嵌入 pin 限制）"
+        );
+
+        // chat 调用不读写 pin 表：内容与嵌入路径建立时逐位一致
+        assert_eq!(pin.list(), snapshot, "chat 路由不得改写嵌入 pin 表");
+        assert_eq!(
+            pin.pin_for("emb-shared"),
+            Some(format!("{}/::shared-model", pinned.vendor.id)),
+            "pin 仍指向嵌入路径粘着的厂商"
+        );
+    }
+
+    /// F3 自愈分支：遗留 pin（组键在当前配置下无任何成员）→ 路由清除该
+    /// pin 并按无 pin 流程重选成功、按当前配置重建
+    #[tokio::test]
+    async fn stale_pin_with_no_group_members_self_heals() {
+        let (_vm, router, pin) = make_embedding_router(vec![embedding_vendor(
+            "emb-a",
+            "emb-shared",
+            "shared-model",
+            None,
+            1.0,
+        )]);
+        // 手工写入遗留组键（配置中无成员——模拟「pin 写入后配置换了拓扑」竞态窗口）
+        pin.pin_or_get("emb-shared", "ghost-group");
+
+        let decision = router
+            .route_embedding("emb-shared")
+            .await
+            .expect("遗留 pin 必须自愈重选，不得显式失败");
+        assert_eq!(decision.vendor.id, "emb-a");
+        assert_eq!(
+            pin.list(),
+            vec![("emb-shared".to_string(), "emb-a/::shared-model".to_string())],
+            "遗留 pin 被清除并按当前配置重建单例键"
+        );
+    }
+
+    /// F3：Direct 策略（vendor.model 限定形式点名厂商）不参与 pin——
+    /// 直连请求零 pin 副作用
+    #[tokio::test]
+    async fn direct_strategy_bypasses_pin() {
+        let (_vm, router, pin) = make_embedding_router(vec![embedding_vendor(
+            "emb-a",
+            "emb-shared",
+            "shared-model",
+            None,
+            1.0,
+        )]);
+
+        let decision = router
+            .route_embedding("emb-a.shared-model")
+            .await
+            .expect("限定形式直连路由");
+        assert_eq!(
+            decision.strategy,
+            RoutingStrategy::Direct,
+            "vendor.model 限定形式 = Direct 策略"
+        );
+        assert!(pin.list().is_empty(), "Direct 策略不得写 pin");
     }
 }

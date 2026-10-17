@@ -50,6 +50,9 @@ mod endpoints {
             abstract_id: Some("claude-3.5-sonnet".to_string()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         anthropic_main.rate_limit = fluxgate::config::RateLimitConfig::Interval {
             hours: 1,
@@ -1290,6 +1293,9 @@ mod streaming_error_propagation {
             abstract_id: Some("gpt-4".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.concurrency.requests_per_second = 100;
         v
@@ -2033,8 +2039,15 @@ mod logging_pipeline {
 #[cfg(test)]
 mod embeddings_governance {
     use crate::common;
-    use axum::{body::Body, http::Request, routing::post, Router};
-    use fluxgate::api::{embeddings, ApiState};
+    use axum::{
+        body::Body,
+        extract::{Path, State},
+        http::Request,
+        response::IntoResponse,
+        routing::post,
+        Router,
+    };
+    use fluxgate::api::{admin, embeddings, ApiState};
     use fluxgate::config::{
         CacheSection, Config, ConfigManager, ModelConfig, RateLimitConfig, ServerConfig,
         VendorConfig,
@@ -2057,6 +2070,9 @@ mod embeddings_governance {
             abstract_id: Some("text-embedding-3-small".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.rate_limit = RateLimitConfig::Token {
             max_tokens,
@@ -2104,7 +2120,10 @@ mod embeddings_governance {
         Arc::new(ApiState {
             config: config_manager.clone(),
             vendor_manager: vendor_manager.clone(),
-            router: Arc::new(NexusRouter::new(config_manager, vendor_manager)),
+            router: Arc::new(
+                NexusRouter::new(config_manager, vendor_manager)
+                    .with_embedding_pin(Arc::new(fluxgate::router::EmbeddingPin::new())),
+            ),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database: Arc::new(fluxgate::database::Database {
@@ -2290,6 +2309,349 @@ mod embeddings_governance {
 
         mock.assert_async().await;
     }
+
+    /// mock 依请求 input 返回指定维度的嵌入响应（动态体：维度守门用例
+    /// 需要同一 vendor/model 键上先见维度与漂移维度）
+    fn dimension_aware_mock(
+        server: &mut mockito::ServerGuard,
+        expected_calls: usize,
+        dims_for_input: impl Fn(&str) -> u32 + Send + Sync + 'static,
+    ) -> mockito::Mock {
+        server
+            .mock("POST", "/v1/embeddings")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .expect(expected_calls)
+            .with_body_from_request(move |request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().expect("request body"))
+                        .expect("json body");
+                // 网关转换后 input 恒为数组（embedding_request_to_openai）
+                let input = body["input"]
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| body["input"].as_str().map(str::to_string))
+                    .unwrap_or_default();
+                let n = dims_for_input(&input);
+                let vector: Vec<f64> = (0..n).map(|i| 0.1 + i as f64).collect();
+                serde_json::to_vec(&json!({
+                    "object": "list",
+                    "data": [{"object": "embedding", "index": 0, "embedding": vector}],
+                    "model": "text-embedding-3-small",
+                    "usage": {"prompt_tokens": 1, "total_tokens": 1},
+                }))
+                .expect("serialize response")
+            })
+            .create()
+    }
+
+    /// ④ 维度守门：首见放行并记录；同键后续响应维度漂移 → 502，错误体含
+    /// vendor/model/新旧维度值，漂移向量不落给客户端。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embeddings_dimension_drift_rejected_with_502() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = dimension_aware_mock(&mut server, 3, |input| match input {
+            "drift" => 3,
+            _ => 2,
+        });
+
+        let state = make_state(vec![make_vendor(
+            "emb-dim",
+            format!("{}/v1", server.url()),
+            1_000_000,
+        )])
+        .await;
+
+        // 首见放行（2 维）
+        let first = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "first"}),
+        )
+        .await;
+        assert_eq!(first.status(), 200, "首见响应必须放行并记录");
+
+        // 同键一致放行（2 维）
+        let same = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "same"}),
+        )
+        .await;
+        assert_eq!(same.status(), 200, "维度一致的后续响应必须放行");
+
+        // 漂移（3 维）→ 502 + 错误体四要素
+        let drift = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "drift"}),
+        )
+        .await;
+        assert_eq!(drift.status(), 502, "维度漂移必须拒绝为 502");
+        let bytes = axum::body::to_bytes(drift.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("emb-dim"),
+            "错误体必须点名 vendor: {message}"
+        );
+        assert!(
+            message.contains("text-embedding-3-small"),
+            "错误体必须点名 model: {message}"
+        );
+        assert!(
+            message.contains(" 2 ") && message.contains(" 3 "),
+            "错误体必须含新旧维度值: {message}"
+        );
+        assert_eq!(
+            state
+                .vendor_manager
+                .metrics()
+                .snapshot()
+                .embedding_dimension_mismatch_total,
+            1,
+            "维度漂移必须计数一次"
+        );
+
+        mock.assert_async().await;
+    }
+
+    /// ⑤ 维度守门：带 dimensions 参数的请求不写入也不比对记录——
+    /// 参数请求的维度既不能污染无参请求的首见记录，也不受其约束。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn embeddings_dimensions_param_request_bypasses_recording() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = dimension_aware_mock(&mut server, 4, |input| match input {
+            "param" => 1,
+            "param2" => 5,
+            "drift" => 3,
+            _ => 2,
+        });
+
+        let state = make_state(vec![make_vendor(
+            "emb-param",
+            format!("{}/v1", server.url()),
+            1_000_000,
+        )])
+        .await;
+
+        // a. 带参数请求（1 维）→ 200 且不记录
+        let a = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "param", "dimensions": 1}),
+        )
+        .await;
+        assert_eq!(a.status(), 200, "带参数请求必须放行");
+
+        // b. 无参请求（2 维）→ 200 首见放行（若 a 写入了 1 维记录，此处必 502）
+        let b = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "plain"}),
+        )
+        .await;
+        assert_eq!(b.status(), 200, "带参数请求不得写入记录");
+
+        // c. 带参数请求（5 维）→ 200 不比对（若比对会与记录的 2 维冲突）
+        let c = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "param2", "dimensions": 5}),
+        )
+        .await;
+        assert_eq!(c.status(), 200, "带参数请求不得参与比对");
+
+        // d. 无参漂移（3 维）→ 502，证明 b 的首见记录仍生效
+        let d = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "drift"}),
+        )
+        .await;
+        assert_eq!(d.status(), 502, "无参请求的漂移仍必须被拦截");
+
+        mock.assert_async().await;
+    }
+
+    /// ⑥ T008 admin pin 管理：GET 列表反映嵌入请求建立的 pin；POST 单条重置
+    /// 幂等（存在→cleared=true 且计数，不存在→cleared=false 不计数）；重置后
+    /// 下一请求按权重重新粘着（等权双厂商有界轮询内必现换厂商）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn admin_embedding_pins_list_reset_and_reattach() {
+        let mut server = mockito::Server::new_async().await;
+        let embedding_upstream = r#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":1,"total_tokens":1}}"#;
+        for _ in 0..2 {
+            server
+                .mock("POST", "/v1/embeddings")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(embedding_upstream)
+                .create();
+        }
+
+        let state = make_state(vec![
+            make_vendor("pin-a", format!("{}/v1", server.url()), 1_000_000),
+            make_vendor("pin-b", format!("{}/v1", server.url()), 1_000_000),
+        ])
+        .await;
+
+        // 初始列表为空
+        let empty = admin::embedding_pins(State(state.clone())).await.unwrap();
+        assert!(empty.0.as_array().unwrap().is_empty(), "初始 pin 列表为空");
+
+        // 首请求建立 pin（等权二选一，单例组键）
+        let first = post_embeddings(state.clone(), embedding_body()).await;
+        assert_eq!(first.status(), 200);
+        let entries = admin::embedding_pins(State(state.clone())).await.unwrap().0;
+        let entries = entries.as_array().unwrap();
+        assert_eq!(entries.len(), 1, "首请求建立一条 pin");
+        assert_eq!(entries[0]["abstract_id"], "text-embedding-3-small");
+        let first_group = entries[0]["group_key"].as_str().unwrap().to_string();
+        assert!(
+            first_group == "pin-a/::text-embedding-3-small"
+                || first_group == "pin-b/::text-embedding-3-small",
+            "单例组键形态: {first_group}"
+        );
+
+        // 重置存在条目 → cleared=true；列表清空
+        let reset = admin::reset_embedding_pin(
+            State(state.clone()),
+            Path("text-embedding-3-small".to_string()),
+        )
+        .await
+        .unwrap();
+        let reset_json = reset_body(reset).await;
+        assert_eq!(reset_json["cleared"], json!(true), "存在的 pin 重置成功");
+        assert!(
+            admin::embedding_pins(State(state.clone()))
+                .await
+                .unwrap()
+                .0
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "重置后列表清空"
+        );
+
+        // 重复重置（已不存在）→ 幂等成功 cleared=false，不计数
+        let absent = admin::reset_embedding_pin(
+            State(state.clone()),
+            Path("text-embedding-3-small".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reset_body(absent).await["cleared"], json!(false));
+        let resets_before_loop = state
+            .vendor_manager
+            .metrics()
+            .snapshot()
+            .embedding_pin_reset_total;
+        assert_eq!(
+            resets_before_loop, 1,
+            "仅实际移除计入（首例 +1，幂等空重置不增）"
+        );
+
+        // 重置后按权重重新粘着：等权双厂商 20 轮内必现换厂商
+        //（全同概率 ~1e-6；若重置后仍被旧 pin 约束则恒不换，必失败）。
+        // 每轮先请求重建 pin 再重置，保证每次 reset 都落在存在的 pin 上
+        let mut switched = false;
+        let mut reset_count = 0u64;
+        for _ in 0..20 {
+            let response = post_embeddings(state.clone(), embedding_body()).await;
+            assert_eq!(response.status(), 200);
+            let group = admin::embedding_pins(State(state.clone())).await.unwrap().0;
+            let group = group.as_array().unwrap()[0]["group_key"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            if group != first_group {
+                switched = true;
+                break;
+            }
+            let r = admin::reset_embedding_pin(
+                State(state.clone()),
+                Path("text-embedding-3-small".to_string()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reset_body(r).await["cleared"], json!(true));
+            reset_count += 1;
+        }
+        assert!(switched, "重置后必须按权重重新粘着（20 轮内换厂商）");
+        assert_eq!(
+            state
+                .vendor_manager
+                .metrics()
+                .snapshot()
+                .embedding_pin_reset_total,
+            resets_before_loop + reset_count,
+            "每次对存在 pin 的重置都计数（+1/次）"
+        );
+    }
+
+    /// ⑦ F1 级联：维度漂移 502 后按错误文案指引调 reset 端点必须能恢复
+    ///（级联清除维度基准）——单厂商形态下 502 → reset → 同漂移维度放行为
+    /// 新基准
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn admin_reset_recovers_dimension_drift_single_vendor() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = dimension_aware_mock(&mut server, 3, |input| match input {
+            "drift" => 3,
+            _ => 2,
+        });
+
+        let state = make_state(vec![make_vendor(
+            "emb-drift",
+            format!("{}/v1", server.url()),
+            1_000_000,
+        )])
+        .await;
+
+        // 首见 2 维放行（建立基准）
+        let first = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "first"}),
+        )
+        .await;
+        assert_eq!(first.status(), 200);
+
+        // 漂移 3 维 → 502
+        let drift = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "drift"}),
+        )
+        .await;
+        assert_eq!(drift.status(), 502);
+
+        // 按指引 reset（pin 存在 → cleared=true；维度基准级联清除）
+        let reset = admin::reset_embedding_pin(
+            State(state.clone()),
+            Path("text-embedding-3-small".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reset_body(reset).await["cleared"], json!(true));
+
+        // 同漂移维度（上游模型已变更的新空间）放行并成为新基准
+        let recovered = post_embeddings(
+            state.clone(),
+            json!({"model": "text-embedding-3-small", "input": "drift"}),
+        )
+        .await;
+        assert_eq!(
+            recovered.status(),
+            200,
+            "reset 必须级联清除维度基准，否则此处永久 502（指引失效）"
+        );
+
+        mock.assert_async().await;
+    }
+
+    /// reset 端点返回 impl IntoResponse（Json<Value>），统一取体
+    async fn reset_body(response: impl IntoResponse) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_response().into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
 }
 
 // ============ 精确响应缓存（oxcache，租户隔离键 + 确定性门控） ============
@@ -2322,6 +2684,9 @@ mod response_cache_tests {
             abstract_id: Some("gpt-4".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.concurrency.requests_per_second = 100;
         v
@@ -3043,6 +3408,9 @@ mod api_handler_coverage {
             abstract_id: Some(model_id.into()),
             weight,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.rate_limit = RateLimitConfig::Token {
             max_tokens,
@@ -5483,6 +5851,9 @@ mod data_plane_endpoints {
                 abstract_id: None,
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             })
             .collect();
         v
@@ -5893,6 +6264,9 @@ mod fallback_observation_headers {
                 abstract_id: Some("gpt-4".into()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }],
             rate_limit: fluxgate::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
@@ -6216,6 +6590,9 @@ mod route_explain {
                 abstract_id: None,
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             })
             .collect();
         v
@@ -6467,6 +6844,9 @@ mod route_explain {
             abstract_id: None,
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         let state = make_state(vec![vendor], plain()).await;
         // 一次真实派发驱动 401 → 永久错误 → 唯一 key 进黑名单。
@@ -6517,6 +6897,9 @@ mod route_explain {
             abstract_id: Some("gpt-4".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v.rate_limit = fluxgate::config::RateLimitConfig::Token {
             max_tokens: 0,
@@ -6749,6 +7132,9 @@ mod fallback_observation_headers_anthropic {
             abstract_id: Some("claude-x".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v
     }

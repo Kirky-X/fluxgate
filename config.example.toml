@@ -635,6 +635,22 @@ rate_limit = { type = "token", max_tokens = 10000000, window_hours = 24, sliding
 # "vendor.model_id" 仍可路由），清单不会给出回投即 400 的 id。
 # 唯一性：vendor id 全局唯一、同 vendor 内 model_id 唯一，去重按 ASCII 大小写
 # 不敏感（仅差大小写的重复条目加载即拒）。
+# 嵌入条目：声明 dimensions 或 compat_group 任一的条目 = 嵌入条目，`POST
+# /v1/embeddings` 按「兼容组粘着」路由（chat 主路由不读这两个字段）：
+# - dimensions: 上游声明维度。仅用于同组内一致性校验与响应维度守门基准
+#   （首见响应记录，后续不一致 502 拦截），不影响路由选择。
+# - compat_group: 兼容组名（trim 后非空）。同组条目共享同一向量空间、故障时
+#   允许组内迁移；未声明 = 单例组（安全默认：不与其他厂商互换，故障显式报错
+#   而非静默换家）。组名不得跨 abstract_id（R3），同组 model_id 必须一致
+#   （R1，大小写不敏感），同组已声明的 dimensions 必须相等（R2）。
+# 示例（同组条目在各自 vendor 下声明相同的 model_id 与组名）：
+# [[vendors.models]]
+# model_id = "text-embedding-3-small"
+# abstract_id = "text-embedding-small"
+# enabled = true
+# weight = 1.0
+# dimensions = 1536
+# compat_group = "openai-embedding-v1"
 [[vendors.models]]
 model_id = "gpt-3.5-turbo"
 enabled = true

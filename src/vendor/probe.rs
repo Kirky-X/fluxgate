@@ -370,6 +370,9 @@ mod tests {
             abstract_id: None,
             weight: 1.0,
             enabled,
+
+            dimensions: None,
+            compat_group: None,
         }
     }
 

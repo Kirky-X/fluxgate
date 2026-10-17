@@ -61,6 +61,9 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
             abstract_id: Some("gpt-4".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }],
         rate_limit: fluxgate::config::RateLimitConfig::Token {
             max_tokens: 1_000_000,

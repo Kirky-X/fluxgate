@@ -29,6 +29,9 @@ fn vendor_with_model(id: &str, model_id: &str) -> VendorConfig {
         abstract_id: Some("assistant".into()),
         weight: 1.0,
         enabled: true,
+
+        dimensions: None,
+        compat_group: None,
     }];
     v
 }

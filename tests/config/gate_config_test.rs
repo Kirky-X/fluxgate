@@ -268,12 +268,18 @@ mod tests {
                             abstract_id: Some("gpt-4".to_string()),
                             weight: 1.0,
                             enabled: true,
+
+                            dimensions: None,
+                            compat_group: None,
                         },
                         ModelConfig {
                             model_id: "gpt-3.5-turbo".to_string(),
                             abstract_id: Some("gpt-3.5".to_string()),
                             weight: 2.0,
                             enabled: true,
+
+                            dimensions: None,
+                            compat_group: None,
                         },
                     ],
                     rate_limit: fluxgate::config::RateLimitConfig::Interval {
@@ -309,6 +315,9 @@ mod tests {
                         abstract_id: Some("claude-3.5-sonnet".to_string()),
                         weight: 1.0,
                         enabled: true,
+
+                        dimensions: None,
+                        compat_group: None,
                     }],
                     rate_limit: fluxgate::config::RateLimitConfig::Interval {
                         hours: 1,

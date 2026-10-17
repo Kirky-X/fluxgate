@@ -554,6 +554,31 @@ async fn admission_middleware(
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
     #[cfg(feature = "vault")]
+    const TEMPLATES: [&str; 22] = [
+        "/v1/chat/completions",
+        "/v1/embeddings",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1/models",
+        "/admin/route/explain",
+        "/admin/logs",
+        "/admin/logs/search",
+        "/admin/stats/tokens",
+        "/admin/cost",
+        "/admin/metrics",
+        "/admin/vendors",
+        "/admin/vendors/{id}/status",
+        "/admin/vendors/{id}/reset",
+        "/admin/embedding-pins",
+        "/admin/embedding-pins/{id}/reset",
+        "/admin/config",
+        "/admin/models",
+        "/admin/models/{id}",
+        "/admin/vault/keys",
+        "/admin/vault/keys/{id}",
+        "/api/v1/health",
+    ];
+    #[cfg(not(feature = "vault"))]
     const TEMPLATES: [&str; 20] = [
         "/v1/chat/completions",
         "/v1/embeddings",
@@ -569,29 +594,8 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/admin/vendors",
         "/admin/vendors/{id}/status",
         "/admin/vendors/{id}/reset",
-        "/admin/config",
-        "/admin/models",
-        "/admin/models/{id}",
-        "/admin/vault/keys",
-        "/admin/vault/keys/{id}",
-        "/api/v1/health",
-    ];
-    #[cfg(not(feature = "vault"))]
-    const TEMPLATES: [&str; 18] = [
-        "/v1/chat/completions",
-        "/v1/embeddings",
-        "/v1/messages",
-        "/v1/messages/count_tokens",
-        "/v1/models",
-        "/admin/route/explain",
-        "/admin/logs",
-        "/admin/logs/search",
-        "/admin/stats/tokens",
-        "/admin/cost",
-        "/admin/metrics",
-        "/admin/vendors",
-        "/admin/vendors/{id}/status",
-        "/admin/vendors/{id}/reset",
+        "/admin/embedding-pins",
+        "/admin/embedding-pins/{id}/reset",
         "/admin/config",
         "/admin/models",
         "/admin/models/{id}",
@@ -742,6 +746,12 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route("/admin/vendors", get(admin::vendors))
         .route("/admin/vendors/{id}/status", get(admin::vendor_status))
         .route("/admin/vendors/{id}/reset", post(admin::reset_vendor))
+        // 嵌入兼容组 pin 观察与管理：GET 列表 / POST 单条重置（幂等恢复通道）
+        .route("/admin/embedding-pins", get(admin::embedding_pins))
+        .route(
+            "/admin/embedding-pins/{abstract_id}/reset",
+            post(admin::reset_embedding_pin),
+        )
         .route(
             "/admin/config",
             get(admin::get_config).post(admin::update_config),

@@ -379,6 +379,9 @@ mod full_chain {
                 abstract_id: Some("gpt-4".to_string()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }]
         } else {
             vec![]

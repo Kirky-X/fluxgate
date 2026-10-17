@@ -34,6 +34,9 @@ mod web_server_hints {
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }];
             v.concurrency.requests_per_second = 100;
             v.concurrency.max_concurrent_requests = Some(1);

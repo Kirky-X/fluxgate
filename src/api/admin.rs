@@ -255,6 +255,71 @@ pub async fn reset_vendor(
     })))
 }
 
+/// 嵌入兼容组 pin 句柄（路由未装配 pin 时显式拒绝，参照 usage sink 未接线语义）
+fn require_embedding_pin(state: &ApiState) -> Result<&Arc<crate::router::EmbeddingPin>, GateError> {
+    state
+        .router
+        .embedding_pin()
+        .ok_or_else(|| GateError::Config {
+            message: t("admin-embedding-pins-unwired"),
+        })
+}
+
+/// GET /admin/embedding-pins — 嵌入 pin 表快照（abstract_id 升序）。
+/// 列表项 = `{abstract_id, group_key}`：group_key 为条目声明的 compat_group，
+/// 未声明组时为单例键 `"{vendor_id}/::{model_id}"`（不与任何厂商互换）
+#[axum::debug_handler]
+pub async fn embedding_pins(
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<Value>, FluxgateError> {
+    let pin = require_embedding_pin(&state)?;
+    let entries: Vec<Value> = pin
+        .list()
+        .into_iter()
+        .map(|(abstract_id, group_key)| {
+            serde_json::json!({
+                "abstract_id": abstract_id,
+                "group_key": group_key,
+            })
+        })
+        .collect();
+    Ok(Json(Value::Array(entries)))
+}
+
+/// POST /admin/embedding-pins/{abstract_id}/reset — 单条重置（恢复通道）：
+/// 清单条 pin 后下一嵌入请求按权重重新粘着（可命中此前被 pin 排除的厂商）。
+/// 级联清除该 abstract 当前解析到的全部 (vendor, model) 维度守门基准——
+/// 上游模型确已变更时，仅清 pin 不清基准会让下一请求立刻再 502。
+/// abstract_id 与路由侧同源归一（trim/小写/auto → `__global__`，任意书写
+/// 形态命中同一 pin）；不存在的 abstract_id 幂等成功，仅实际移除递增
+/// `embedding_pin_reset_total`
+#[axum::debug_handler]
+pub async fn reset_embedding_pin(
+    State(state): State<Arc<ApiState>>,
+    Path(abstract_id): Path<String>,
+) -> Result<impl IntoResponse, FluxgateError> {
+    let pin = require_embedding_pin(&state)?;
+    let normalized = crate::router::bandit::linucb_arm_key(&abstract_id);
+    let cleared = pin.clear_one(&normalized);
+    // 维度基准级联：按当前配置解析该 abstract 的候选条目逐一清基准
+    //（热载换配置后旧条目基准由 clear_all 兜底，此处覆盖未换配置的常见形态）
+    for (vendor, model) in state.config.resolve_model(&normalized) {
+        pin.clear_dims_for(&vendor.id, &model.model_id);
+    }
+    if cleared {
+        state.vendor_manager.metrics().record_embedding_pin_reset(1);
+    }
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": if cleared {
+            t_args("admin-embedding-pin-reset", &[("abstract", normalized)])
+        } else {
+            t_args("admin-embedding-pin-reset-absent", &[("abstract", normalized)])
+        },
+        "cleared": cleared,
+    })))
+}
+
 // Config Admin Functions
 #[axum::debug_handler]
 pub async fn get_config(State(state): State<Arc<ApiState>>) -> Result<Json<Config>, FluxgateError> {

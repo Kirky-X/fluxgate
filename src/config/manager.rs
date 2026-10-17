@@ -26,6 +26,11 @@ const SNAPSHOT_KEEP: usize = 10;
 /// confers Redacted 序列化时打码的路径（api_keys 存的已是 SHA256 摘要，双保险）
 const SNAPSHOT_REDACT_PATHS: &[&str] = &["auth.api_keys"];
 
+/// 配置应用成功钩子：[`ConfigManager::update_config`]（含 RMW 落盘路径）与
+/// [`ConfigManager::swap_memory`]（热载桥接）内存态切换后调用。钩子在写锁内
+/// 执行——必须轻量、不得 panic、不得回调本管理器（防自锁）。
+pub type SwapHook = Arc<dyn Fn() + Send + Sync>;
+
 /// 落盘前的旧配置快照（confers SnapshotManager：时间戳命名 + 超量自动清理）。
 /// 解析/写盘任一步失败都只记 warn，绝不阻塞更新主路径。
 fn snapshot_current_config(manager: &ConfigManager, config_path: &Path) {
@@ -84,6 +89,8 @@ pub struct ConfigManager {
     fingerprint_hash: RandomState,
     /// 写路径互斥（std Mutex：无 .await 穿越临界区，跨线程可用）
     write_lock: Arc<Mutex<()>>,
+    /// 应用成功钩子注册表（内存态切换后触发；Arc 共享使 Clone 视图同注册表）
+    swap_hooks: Arc<RwLock<Vec<SwapHook>>>,
 }
 
 impl ConfigManager {
@@ -94,6 +101,7 @@ impl ConfigManager {
             disk_fingerprint: Arc::new(RwLock::new(None)),
             fingerprint_hash: RandomState::new(),
             write_lock: Arc::new(Mutex::new(())),
+            swap_hooks: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -122,6 +130,29 @@ impl ConfigManager {
     /// 当前配置文件路径
     pub fn path(&self) -> Option<PathBuf> {
         self.path.read().unwrap().clone()
+    }
+
+    /// 注册「配置应用成功」钩子：`update_config`（含 RMW 落盘路径）与
+    /// `swap_memory`（热载桥接）在内存态切换后按注册序调用。钩子在写锁内
+    /// 执行——必须轻量、不得 panic、不得回调本管理器（防自锁）。
+    pub fn register_swap_hook(&self, hook: SwapHook) {
+        self.swap_hooks
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(hook);
+    }
+
+    /// 触发全部应用成功钩子：先快照注册表再执行，钩子体内注册/注销
+    /// 不影响本轮（也不与执行中的读锁互等）。
+    fn run_swap_hooks(&self) {
+        let hooks: Vec<SwapHook> = self
+            .swap_hooks
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        for hook in &hooks {
+            hook();
+        }
     }
 
     /// 热读当前配置 — DynamicField::get_ref 返回不可变 Arc 快照
@@ -155,6 +186,7 @@ impl ConfigManager {
         validate_config(&new_config)?;
         self.refresh_baseline_if_matches(&new_config);
         self.config.update(new_config);
+        self.run_swap_hooks();
         Ok(())
     }
 
@@ -314,6 +346,7 @@ impl ConfigManager {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(fingerprint);
         }
         self.config.update(new_config);
+        self.run_swap_hooks();
         Ok(())
     }
 
@@ -743,6 +776,55 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             external,
             "受保护的磁盘编辑不得被覆盖"
+        );
+    }
+
+    /// 应用成功钩子：update_config（落盘路径）与 swap_memory（热载路径）都在
+    /// 内存态切换后触发；校验失败的应用内存态未切换，钩子不得触发
+    ///（嵌入 pin 清空即挂在此钩子上——见 T007 接线）
+    #[test]
+    fn test_swap_hooks_fire_on_successful_apply_only() {
+        use std::sync::atomic::AtomicUsize;
+
+        let dir = tempfile::tempdir().expect("tempdir creatable");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+
+        let manager = ConfigManager::new(sample_config("v1"));
+        manager.set_path(path.clone());
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let hook_counter = fired.clone();
+        manager.register_swap_hook(Arc::new(move || {
+            hook_counter.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        // 落盘路径：update_config → persist_and_swap
+        manager
+            .update_config(sample_config("v2"))
+            .expect("落盘应用成功");
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "落盘应用成功必须触发钩子");
+
+        // 热载路径：swap_memory（仅内存切换）
+        manager
+            .swap_memory(sample_config("v3"))
+            .expect("热载应用成功");
+        assert_eq!(fired.load(Ordering::SeqCst), 2, "热载应用成功必须触发钩子");
+
+        // 校验失败：两条路径都不得触发（内存态未切换）
+        let mut bad = sample_config("v1");
+        bad.vendors.push(bad.vendors[0].clone());
+        assert!(
+            manager.update_config(bad).is_err(),
+            "重复 vendor id 必须被共享校验拒绝"
+        );
+        let mut bad = sample_config("v1");
+        bad.vendors.push(bad.vendors[0].clone());
+        assert!(manager.swap_memory(bad).is_err(), "热载同走共享校验");
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            2,
+            "失败应用内存态未切换，钩子不得触发"
         );
     }
 

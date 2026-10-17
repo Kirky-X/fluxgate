@@ -129,6 +129,16 @@ pub(crate) async fn assemble(
     vendor_manager.initialize().await?;
     tracing::info!("{}", t("main-vendor-manager-initialized"));
 
+    // 嵌入兼容组 pin 表（进程内存）：与 Router 共享；配置应用成功（落盘写回
+    // 或热载桥接）后清空重新粘着——旧配置时代的组划分/维度基准一并失效。
+    // 钩子经 ConfigManager 注册表在两处 apply 成功路径统一触发（manager.rs）。
+    let embedding_pin = Arc::new(crate::router::EmbeddingPin::new());
+    register_embedding_pin_hook(
+        &config_manager,
+        embedding_pin.clone(),
+        vendor_manager.metrics().clone(),
+    );
+
     // 密钥保密柜（key-vault）：master key 分层解析 → 按构建形态选后端（db 优先，
     // 无库回落文件柜）→ env 吸收（幂等不覆盖）→ 全量注入 inline key pool。
     #[cfg(feature = "vault")]
@@ -349,7 +359,8 @@ pub(crate) async fn assemble(
         router: Arc::new(
             router
                 .with_affinity(affinity_table.clone())
-                .with_bandit(bandit_state.clone()),
+                .with_bandit(bandit_state.clone())
+                .with_embedding_pin(embedding_pin),
         ),
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
@@ -388,6 +399,22 @@ pub(crate) async fn assemble(
     })
 }
 
+/// 注册「配置应用成功 → 清空嵌入 pin」钩子（提炼自 assemble 的接缝，
+/// 单测覆盖注册行为：热载/落盘两条 apply 成功路径经 ConfigManager 注册表
+/// 统一触发；校验失败的应用内存态未切换、不触发）
+pub(crate) fn register_embedding_pin_hook(
+    config_manager: &Arc<crate::config::ConfigManager>,
+    pin: Arc<crate::router::EmbeddingPin>,
+    metrics: Arc<crate::utils::metrics::GlobalMetrics>,
+) {
+    config_manager.register_swap_hook(Arc::new(move || {
+        let cleared = pin.clear_all();
+        if cleared > 0 {
+            metrics.record_embedding_pin_reset(cleared as u64);
+        }
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,6 +422,44 @@ mod tests {
     use inklog::LogSink;
     use std::sync::Mutex;
     use tracing_subscriber::layer::SubscriberExt;
+
+    /// F4：嵌入 pin 清空钩子注册（assemble 接缝函数）——配置应用成功后
+    /// pin 全清并按条数计数
+    #[test]
+    fn embedding_pin_swap_hook_clears_and_counts_on_successful_apply() {
+        use std::path::Path;
+
+        let toml_v = |port: u16| {
+            format!(
+                "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = {port}\n\n[database]\npath = \":memory:\"\n"
+            )
+        };
+        let config: crate::config::Config =
+            crate::config::parse_config_content(Path::new("memory.toml"), &toml_v(8080))
+                .expect("样例配置解析");
+        let manager = Arc::new(crate::config::ConfigManager::new(config));
+        let pin = Arc::new(crate::router::EmbeddingPin::new());
+        let metrics = Arc::new(crate::utils::metrics::GlobalMetrics::new());
+        pin.pin_or_get("emb-a", "g1");
+        pin.record_and_check("v", "m", "-", 1024).ok();
+        register_embedding_pin_hook(&manager, pin.clone(), metrics.clone());
+        assert_eq!(
+            metrics.snapshot().embedding_pin_reset_total,
+            0,
+            "注册本身不触发"
+        );
+
+        let next: crate::config::Config =
+            crate::config::parse_config_content(Path::new("memory.toml"), &toml_v(8081))
+                .expect("变体配置解析");
+        manager.swap_memory(next).expect("内存态应用成功");
+        assert!(pin.list().is_empty(), "应用成功后 pin 全清");
+        assert_eq!(
+            metrics.snapshot().embedding_pin_reset_total,
+            1,
+            "按清除条数计入 reset 计数"
+        );
+    }
 
     /// 装配运行时验证：通道拓扑错误只在构建期暴露。
     /// 断言 log 门面桥已生效（LogTracer::init 把全局 max_level 提到 Trace）。

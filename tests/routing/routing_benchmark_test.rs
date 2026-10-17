@@ -40,6 +40,9 @@ mod tests {
             abstract_id: Some(tier.to_string()),
             weight,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }
     }
 

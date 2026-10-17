@@ -373,6 +373,9 @@ mod integration {
             abstract_id: Some("gpt-4".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v
     }
@@ -386,6 +389,9 @@ mod integration {
             abstract_id: Some("gpt-4".into()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         v
     }

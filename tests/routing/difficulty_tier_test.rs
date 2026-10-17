@@ -42,6 +42,9 @@ mod tests {
             abstract_id: Some(abstract_id.to_string()),
             weight: 1.0,
             enabled: true,
+
+            dimensions: None,
+            compat_group: None,
         }];
         vendor
     }

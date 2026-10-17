@@ -714,6 +714,9 @@ mod fallback_guard_tests {
                 abstract_id: Some("shared-model".into()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }],
             rate_limit: RateLimitConfig::Token {
                 max_tokens: 1_000_000,
@@ -1022,6 +1025,9 @@ mod cooldown_retry_after {
                 abstract_id: Some("shared-model".to_string()),
                 weight: 1.0,
                 enabled: true,
+
+                dimensions: None,
+                compat_group: None,
             }],
             rate_limit: RateLimitConfig::Token {
                 max_tokens,

@@ -18,6 +18,10 @@ admin-cost-date-format-invalid = { $name } (must be YYYY-MM-DD)
 admin-cost-usage-sink-unwired = usage sink is not wired; cost usage unavailable
 admin-token-stats-usage-sink-unwired = usage sink is not wired; token stats unavailable
 admin-vendor-reset-unknown-vendor = vendor '{ $id }' (unknown vendor)
+# ---- admin.rs /admin/embedding-pins 嵌入 pin 管理 ----
+admin-embedding-pins-unwired = embedding pin table is not wired; endpoint unavailable
+admin-embedding-pin-reset = embedding pin for '{ $abstract }' cleared; the next embedding request re-pins by weight (may land on a different vendor)
+admin-embedding-pin-reset-absent = no embedding pin recorded for '{ $abstract }'; nothing to clear
 
 # ---- router_builder.rs ----
 router-rate-limit-exceeded = Rate limit exceeded
@@ -45,6 +49,7 @@ api-vendor-failed-rerouting-pre-stream = vendor failed before response/stream; r
 api-log-push-rejected = request log push rejected: { $error }
 api-usage-record-rejected = token usage record rejected: { $error }
 api-embeddings-openai-only = Embeddings only supported for OpenAI vendors
+api-embeddings-dimension-mismatch = Embedding dimension drift from { $vendor }/{ $model }: first response had { $old } dimensions, now { $new } — vectors from different spaces must not mix; reset the pin via POST /admin/embedding-pins/{ $abstract }/reset if the upstream model changed
 
 # ---- api/response_cache.rs ----
 api-response-cache-leader-not-cached = response cache: leader-not-cached, follower self-heals from upstream

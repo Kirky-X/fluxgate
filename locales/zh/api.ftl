@@ -18,6 +18,10 @@ admin-cost-date-format-invalid = { $name }（必须为 YYYY-MM-DD）
 admin-cost-usage-sink-unwired = usage sink 未接线；成本分账不可用
 admin-token-stats-usage-sink-unwired = usage sink 未接线；token 统计不可用
 admin-vendor-reset-unknown-vendor = 厂商 '{ $id }'（未知厂商）
+# ---- admin.rs /admin/embedding-pins 嵌入 pin 管理 ----
+admin-embedding-pins-unwired = 嵌入 pin 表未接线；端点不可用
+admin-embedding-pin-reset = 嵌入 pin '{ $abstract }' 已清空；下一嵌入请求按权重重新粘着（可能换厂商）
+admin-embedding-pin-reset-absent = 嵌入 pin '{ $abstract }' 无记录；无需清空
 
 # ---- router_builder.rs ----
 router-rate-limit-exceeded = 已超过速率限制
@@ -45,6 +49,7 @@ api-vendor-failed-rerouting-pre-stream = vendor 在响应/流建立前失败；�
 api-log-push-rejected = 请求日志推送被拒：{ $error }
 api-usage-record-rejected = Token 用量记账被拒：{ $error }
 api-embeddings-openai-only = embeddings 仅支持 OpenAI 类型厂商
+api-embeddings-dimension-mismatch = 厂商 { $vendor }/{ $model } 的嵌入维度漂移：首次响应 { $old } 维，本次 { $new } 维——不同向量空间的向量不得混用；若上游模型已变更，可 POST /admin/embedding-pins/{ $abstract }/reset 重置 pin
 
 # ---- api/response_cache.rs ----
 api-response-cache-leader-not-cached = 响应缓存：leader 未缓存，follower 自愈回源

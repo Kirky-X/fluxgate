@@ -6,11 +6,13 @@
 pub mod affinity;
 pub mod bandit;
 pub mod difficulty;
+pub mod embedding_pin;
 #[allow(clippy::module_inception)]
 pub mod router;
 
 pub use affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
 pub use difficulty::{CachedDecision, DecisionCache, DifficultyRouter, TierDecision, TierPath};
+pub use embedding_pin::EmbeddingPin;
 pub use router::{
     prefix_candidates, prefix_hash_key, RouteCtx, Router, RoutingDecision, RoutingStrategy,
 };

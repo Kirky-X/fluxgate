@@ -115,6 +115,9 @@ fn openai_vendor(id: &str, api_base: String) -> VendorConfig {
         abstract_id: Some("gpt-4".into()),
         weight: 1.0,
         enabled: true,
+
+        dimensions: None,
+        compat_group: None,
     }];
     v
 }
@@ -128,6 +131,9 @@ fn anthropic_vendor(id: &str, api_base: String) -> VendorConfig {
         abstract_id: Some("gpt-4".into()),
         weight: 1.0,
         enabled: true,
+
+        dimensions: None,
+        compat_group: None,
     }];
     v
 }
@@ -1007,6 +1013,9 @@ fn claude_vendor(id: &str, api_base: String) -> VendorConfig {
         abstract_id: Some("claude-x".into()),
         weight: 1.0,
         enabled: true,
+
+        dimensions: None,
+        compat_group: None,
     }];
     v
 }

@@ -181,6 +181,12 @@ pub struct GlobalMetrics {
     difficulty_tier_high: AtomicU64,
     difficulty_latency_ns_total: AtomicU64,
     difficulty_latency_count: AtomicU64,
+    /// 嵌入兼容组观测四计数（热载/未接线时恒 0）：
+    /// pin 首写建立 / admin 单条重置 / 组耗尽显式失败 / 维度漂移拦截
+    embedding_pin_set_total: AtomicU64,
+    embedding_pin_reset_total: AtomicU64,
+    embedding_group_exhausted_total: AtomicU64,
+    embedding_dimension_mismatch_total: AtomicU64,
 }
 
 impl GlobalMetrics {
@@ -210,7 +216,37 @@ impl GlobalMetrics {
             difficulty_tier_high: AtomicU64::new(0),
             difficulty_latency_ns_total: AtomicU64::new(0),
             difficulty_latency_count: AtomicU64::new(0),
+            embedding_pin_set_total: AtomicU64::new(0),
+            embedding_pin_reset_total: AtomicU64::new(0),
+            embedding_group_exhausted_total: AtomicU64::new(0),
+            embedding_dimension_mismatch_total: AtomicU64::new(0),
         }
+    }
+
+    // ---- 嵌入兼容组观测（router::route_embedding / admin / embeddings 处理器写）----
+
+    /// pin 首写建立（首次加权选中某组键并写入 pin 表）
+    pub fn record_embedding_pin_set(&self) {
+        self.embedding_pin_set_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// pin 实际移除计数（admin 单条重置传 1；热载整体清空传清除条数；
+    /// 幂等空重置不计）
+    pub fn record_embedding_pin_reset(&self, count: u64) {
+        self.embedding_pin_reset_total
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// pin 组耗尽显式失败（含无组配置 pin 厂商不可用）
+    pub fn record_embedding_group_exhausted(&self) {
+        self.embedding_group_exhausted_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 嵌入响应维度漂移拦截（502）
+    pub fn record_embedding_dimension_mismatch(&self) {
+        self.embedding_dimension_mismatch_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     // ---- 难度定档观测（difficulty 模块写、admin/快照读）----
@@ -719,6 +755,14 @@ impl GlobalMetrics {
                     .checked_div(difficulty_latency_count)
                     .map_or(0.0, |ns| ns as f64 / 1_000_000.0),
             },
+            embedding_pin_set_total: self.embedding_pin_set_total.load(Ordering::Relaxed),
+            embedding_pin_reset_total: self.embedding_pin_reset_total.load(Ordering::Relaxed),
+            embedding_group_exhausted_total: self
+                .embedding_group_exhausted_total
+                .load(Ordering::Relaxed),
+            embedding_dimension_mismatch_total: self
+                .embedding_dimension_mismatch_total
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -760,6 +804,12 @@ impl GlobalMetrics {
         self.difficulty_tier_high.store(0, Ordering::Relaxed);
         self.difficulty_latency_ns_total.store(0, Ordering::Relaxed);
         self.difficulty_latency_count.store(0, Ordering::Relaxed);
+        self.embedding_pin_set_total.store(0, Ordering::Relaxed);
+        self.embedding_pin_reset_total.store(0, Ordering::Relaxed);
+        self.embedding_group_exhausted_total
+            .store(0, Ordering::Relaxed);
+        self.embedding_dimension_mismatch_total
+            .store(0, Ordering::Relaxed);
     }
 }
 
@@ -892,6 +942,14 @@ pub struct MetricsSnapshot {
     pub top1_share: f64,
     /// 流量份额 Shannon 熵（归一 `[0,1]`；V≤1 为 0）
     pub share_entropy: f64,
+    /// 嵌入 pin 首写建立累计（兼容组粘着生效证明）
+    pub embedding_pin_set_total: u64,
+    /// 嵌入 pin admin 单条重置累计（幂等空重置不计）
+    pub embedding_pin_reset_total: u64,
+    /// 嵌入 pin 组耗尽显式失败累计
+    pub embedding_group_exhausted_total: u64,
+    /// 嵌入响应维度漂移拦截累计（502）
+    pub embedding_dimension_mismatch_total: u64,
 }
 
 /// 难度定档观测子块（/admin/metrics 快照字段）
@@ -1015,6 +1073,44 @@ mod tests {
         let snap = m.snapshot();
         assert_eq!(snap.total_requests, 0);
         assert!(snap.vendors.is_empty());
+    }
+
+    // ============ tests：嵌入兼容组四计数 ============
+
+    /// 四计数独立累计并经快照带出（/admin/metrics 序列化面）；
+    /// reset 同步清零
+    #[test]
+    fn embedding_counters_accumulate_snapshot_and_reset() {
+        let m = GlobalMetrics::new();
+        m.record_embedding_pin_set();
+        m.record_embedding_pin_set();
+        m.record_embedding_pin_reset(1);
+        m.record_embedding_pin_reset(2);
+        m.record_embedding_group_exhausted();
+        m.record_embedding_dimension_mismatch();
+
+        let snap = m.snapshot();
+        assert_eq!(snap.embedding_pin_set_total, 2);
+        assert_eq!(
+            snap.embedding_pin_reset_total, 3,
+            "传入条数累加（admin 单条=1；热载清空传清除条数）"
+        );
+        assert_eq!(snap.embedding_group_exhausted_total, 1);
+        assert_eq!(snap.embedding_dimension_mismatch_total, 1);
+
+        // 序列化面：/admin/metrics 直接透出快照字段名
+        let json = serde_json::to_value(&snap).expect("snapshot 可序列化");
+        assert_eq!(json["embedding_pin_set_total"], 2);
+        assert_eq!(json["embedding_pin_reset_total"], 3);
+        assert_eq!(json["embedding_group_exhausted_total"], 1);
+        assert_eq!(json["embedding_dimension_mismatch_total"], 1);
+
+        m.reset();
+        let snap = m.snapshot();
+        assert_eq!(snap.embedding_pin_set_total, 0);
+        assert_eq!(snap.embedding_pin_reset_total, 0);
+        assert_eq!(snap.embedding_group_exhausted_total, 0);
+        assert_eq!(snap.embedding_dimension_mismatch_total, 0);
     }
 
     #[test]

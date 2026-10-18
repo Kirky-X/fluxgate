@@ -228,6 +228,20 @@ async fn chat_passthrough_stream(
     // 网络中断以 SSE error 帧显性终止，不伪装成正常流结束。
     // 受配额约束的 key 才挂帧观测并在正常 EOF 回补，
     // 其余形态零包装（透传字节逐字节不变）。三级早退判定在 quota 模块单点。
+    // 观测回调同时服务流式用量记账（占位日志行终止补写 + keyed 分账）。
+    let recorder = crate::api::stream_usage::StreamUsageRecorder::new(
+        state.clone(),
+        ctx.request_id.clone(),
+        crate::api::stream_usage::StreamProtocol::Anthropic,
+        decision.vendor.id.clone(),
+        decision.vendor.type_.clone(),
+        body.get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        ctx.api_key_hash.clone(),
+    );
+    let observer = recorder.clone();
     let body_stream = crate::middleware::quota::passthrough_stream_body(
         &state.config,
         state.quota.as_ref(),
@@ -235,6 +249,13 @@ async fn chat_passthrough_stream(
         body,
         &decision.vendor.type_,
         stream_response,
+        move |observation| match observation {
+            crate::api::sse::ReframeObservation::Frame {
+                data: Some(data), ..
+            } => observer.observe_frame(data),
+            crate::api::sse::ReframeObservation::End { .. } => observer.finish(),
+            _ => {}
+        },
     );
 
     log_stream_dispatch(state, ctx, &decision, body).await;

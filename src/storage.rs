@@ -136,6 +136,20 @@ pub trait RequestLogSink: Send + Sync {
     async fn search_logs(&self, _keyword: &str, _limit: u32) -> Result<Vec<RequestLog>, GateError> {
         Err(unsupported_query())
     }
+
+    /// 流式占位行补写：按 request_id 回填 usage 响应体与 token 三列。
+    /// 管道实现（AsyncLogger）经通道保序（先 flush 占位 INSERT 再 UPDATE）；
+    /// 直写实现直接 UPDATE；纯内存 fake 默认无操作。
+    async fn update_stream_usage(
+        &self,
+        _request_id: &str,
+        _response: &str,
+        _prompt_tokens: i64,
+        _completion_tokens: i64,
+        _total_tokens: i64,
+    ) -> Result<(), GateError> {
+        Ok(())
+    }
 }
 
 /// Token 用量存储缝：数据面预聚合写入 + admin 统计查询。

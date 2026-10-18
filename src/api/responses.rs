@@ -500,6 +500,20 @@ async fn native_response(
                 persist_stream_response(&state, &tenant, &parsed, &response, &config).await;
             });
         });
+        // 观测回调同时服务流式用量记账（占位日志行终止补写 + keyed 分账）。
+        let recorder = crate::api::stream_usage::StreamUsageRecorder::new(
+            state.clone(),
+            ctx.request_id.clone(),
+            crate::api::stream_usage::StreamProtocol::Responses,
+            decision.vendor.id.clone(),
+            decision.vendor.type_.clone(),
+            body.get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            ctx.api_key_hash.clone(),
+        );
+        let observer = recorder.clone();
         let body_stream = crate::middleware::quota::passthrough_stream_body(
             &state.config,
             state.quota.as_ref(),
@@ -507,6 +521,13 @@ async fn native_response(
             body,
             &decision.vendor.type_,
             observed,
+            move |observation| match observation {
+                crate::api::sse::ReframeObservation::Frame {
+                    data: Some(data), ..
+                } => observer.observe_frame(data),
+                crate::api::sse::ReframeObservation::End { .. } => observer.finish(),
+                _ => {}
+            },
         );
         crate::api::bind_session_affinity(
             state,

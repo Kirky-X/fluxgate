@@ -322,6 +322,17 @@ async fn native_stream(
     )
     .await;
     let accounting = accounting_body(&body, &model);
+    // 观测回调同时服务流式用量记账（占位日志行终止补写 + keyed 分账）。
+    let recorder = crate::api::stream_usage::StreamUsageRecorder::new(
+        state.clone(),
+        ctx.request_id.clone(),
+        crate::api::stream_usage::StreamProtocol::Gemini,
+        decision.vendor.id.clone(),
+        "gemini".to_string(),
+        model.clone(),
+        ctx.api_key_hash.clone(),
+    );
+    let observer = recorder.clone();
     let body_stream = crate::middleware::quota::passthrough_stream_body(
         &state.config,
         state.quota.as_ref(),
@@ -329,6 +340,13 @@ async fn native_stream(
         &accounting,
         "gemini",
         upstream,
+        move |observation| match observation {
+            crate::api::sse::ReframeObservation::Frame {
+                data: Some(data), ..
+            } => observer.observe_frame(data),
+            crate::api::sse::ReframeObservation::End { .. } => observer.finish(),
+            _ => {}
+        },
     );
     Ok(with_route_headers(
         (STREAM_HEADERS, body_stream).into_response(),

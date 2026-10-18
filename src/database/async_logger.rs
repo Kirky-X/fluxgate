@@ -155,6 +155,15 @@ impl inklog::LogSink for GateSink {
 enum LogCommand {
     /// 写入日志
     Write(RequestLog),
+    /// 流式占位行补写：writer 侧先 flush 缓冲中的占位 INSERT 再 UPDATE
+    /// （通道 FIFO + 显式 flush，杜绝「更新先于占位落库」竞态）
+    UpdateStreamUsage {
+        request_id: String,
+        response: String,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        total_tokens: i64,
+    },
     /// 关闭日志写入器
     Shutdown,
 }
@@ -213,6 +222,39 @@ impl AsyncLogger {
             });
         }
         match self.sender.try_send(LogCommand::Write(log)) {
+            Ok(()) => Ok(()),
+            Err(async_channel::TrySendError::Full(_)) => {
+                self.dropped_logs.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(async_channel::TrySendError::Closed(_)) => Err(FluxgateError::Database {
+                message: t("database-logger-channel-closed"),
+            }),
+        }
+    }
+
+    /// 流式占位行补写（非阻塞 push，同 [`AsyncLogger::log`] 的背压/关闭
+    /// 姿态；通道满即丢弃并计数——与占位 INSERT 同一背压档位）
+    pub fn update_stream_usage(
+        &self,
+        request_id: &str,
+        response: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        total_tokens: i64,
+    ) -> Result<(), FluxgateError> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(FluxgateError::Database {
+                message: t("database-logger-shutdown"),
+            });
+        }
+        match self.sender.try_send(LogCommand::UpdateStreamUsage {
+            request_id: request_id.to_string(),
+            response: response.to_string(),
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+        }) {
             Ok(()) => Ok(()),
             Err(async_channel::TrySendError::Full(_)) => {
                 self.dropped_logs.fetch_add(1, Ordering::Relaxed);
@@ -322,6 +364,34 @@ impl AsyncLogger {
                                 }
                             }
                         }
+                        Ok(LogCommand::UpdateStreamUsage {
+                            request_id,
+                            response,
+                            prompt_tokens,
+                            completion_tokens,
+                            total_tokens,
+                        }) => {
+                            // 占位 INSERT 可能仍在缓冲未 flush——先刷再更
+                            Self::flush_buffer(&repository, &mut buffer).await;
+                            if let Err(e) = repository
+                                .update_stream_usage(
+                                    &request_id,
+                                    &response,
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    total_tokens,
+                                )
+                                .await
+                            {
+                                tracing::error!(
+                                    "{}",
+                                    t_args(
+                                        "database-logger-flush-failed",
+                                        &[("count", "1".to_string()), ("error", e.to_string())],
+                                    )
+                                );
+                            }
+                        }
                         Ok(LogCommand::Shutdown) => {
                             // 关闭前刷新剩余日志
                             Self::flush_buffer(&repository, &mut buffer).await;
@@ -394,6 +464,24 @@ impl AsyncLoggerHandle {
         self.inner.log(log)
     }
 
+    /// 流式占位行补写透传（同 [`AsyncLogger::update_stream_usage`]）
+    pub fn update_stream_usage(
+        &self,
+        request_id: &str,
+        response: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        total_tokens: i64,
+    ) -> Result<(), FluxgateError> {
+        self.inner.update_stream_usage(
+            request_id,
+            response,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+        )
+    }
+
     /// 丢弃计数透传
     pub fn dropped_logs(&self) -> u64 {
         self.inner.dropped_logs()
@@ -416,6 +504,27 @@ impl crate::storage::RequestLogSink for AsyncLoggerHandle {
     async fn log(&self, log: RequestLog) -> Result<(), crate::error::GateError> {
         AsyncLoggerHandle::log(self, log).map_err(|e| crate::error::GateError::Config {
             message: format!("async log push failed: {e}"),
+        })
+    }
+
+    async fn update_stream_usage(
+        &self,
+        request_id: &str,
+        response: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        total_tokens: i64,
+    ) -> Result<(), crate::error::GateError> {
+        AsyncLoggerHandle::update_stream_usage(
+            self,
+            request_id,
+            response,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+        )
+        .map_err(|e| crate::error::GateError::Config {
+            message: format!("async stream usage update failed: {e}"),
         })
     }
 

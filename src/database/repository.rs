@@ -219,6 +219,35 @@ impl Repository {
         Ok(())
     }
 
+    /// 流式占位行补写：按 request_id 回填 usage 响应体与 token 三列。
+    ///
+    /// 流式派发先落 `{"stream":true}` 占位行（usage 帧只在流中到达）；
+    /// 调用方（AsyncLogger 通道内保序，先 flush 缓冲中的占位 INSERT）在
+    /// 流终止点以本方法收尾。无匹配行（占位被 gate 拒发等）时静默成功——
+    /// 日志面失败不失败请求。
+    pub async fn update_stream_usage(
+        &self,
+        request_id: &str,
+        response: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        total_tokens: i64,
+    ) -> Result<(), DbError> {
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let sql = "UPDATE request_logs SET response = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ? WHERE request_id = ?";
+        let params: [sea_orm::Value; 5] = [
+            response.into(),
+            prompt_tokens.into(),
+            completion_tokens.into(),
+            total_tokens.into(),
+            request_id.into(),
+        ];
+        let stmt = raw_statement(conn.get_database_backend(), sql, params);
+        conn.execute_raw(stmt).await?;
+        Ok(())
+    }
+
     /// 单事务参数化批量写入：N 条 INSERT 包在一个事务里 commit（N 次 fsync
     /// 合为 1），参数绑定无手写转义（不用裸 SQL batch——用户内容拼接引入
     /// 注入面）；单条失败回滚整批。

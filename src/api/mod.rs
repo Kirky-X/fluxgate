@@ -25,6 +25,7 @@ pub mod routing_hints;
 pub mod semantic_cache;
 pub mod sse;
 pub mod state;
+pub(crate) mod stream_usage;
 #[cfg(feature = "vault")]
 pub mod vault;
 

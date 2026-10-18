@@ -22,9 +22,7 @@ use serde_json::Value;
 
 use crate::config::{Config, ConfigManager, ModelCatalogEntry, PricingConfig};
 use crate::i18n::t;
-use crate::protocol::sse_frame::{
-    reframe_passthrough_stream, reframe_passthrough_stream_with_usage, ReframeObservation,
-};
+use crate::protocol::sse_frame::{reframe_passthrough_stream_with_usage, ReframeObservation};
 use crate::utils::tenant::api_key_digest;
 use crate::utils::tokens::estimate_messages_tokens_with;
 
@@ -842,7 +840,7 @@ where
 
 /// 透传流帧内 usage 提取：Anthropic `message_start` 把 usage 嵌在 `message` 下，
 /// 其余在顶层；提数一律交给 `parse_usage_detailed`（包成 `{"usage": …}` 复用同一分支）。
-fn frame_usage(data: &str) -> Option<(u64, u64, u64, u64)> {
+pub(crate) fn frame_usage(data: &str) -> Option<(u64, u64, u64, u64)> {
     let trimmed = data.trim();
     if trimmed.is_empty() || trimmed == "[DONE]" {
         return None;
@@ -888,7 +886,10 @@ fn frame_usage(data: &str) -> Option<(u64, u64, u64, u64)> {
 
 /// 观测字段合并：各档取最大值。Anthropic 的 `message_start`（input/cache 两档）与
 /// `message_delta`（output）分帧上报且 output 单调递增——取最大即末值，无需按协议分支。
-fn merge_usage(prev: (u64, u64, u64, u64), next: (u64, u64, u64, u64)) -> (u64, u64, u64, u64) {
+pub(crate) fn merge_usage(
+    prev: (u64, u64, u64, u64),
+    next: (u64, u64, u64, u64),
+) -> (u64, u64, u64, u64) {
     (
         prev.0.max(next.0),
         prev.1.max(next.1),
@@ -957,26 +958,33 @@ impl PassthroughSettler {
 }
 
 /// 透传流响应体装配：仅当配额适用（已接线、`[quota].enabled` 且该 tenant
-/// 任一限额 > 0，判定单点 `quota_applies`）时挂帧观测包装；其余形态走无观测
-/// reframe（零额外分配）。
+/// 任一限额 > 0，判定单点 `quota_applies`）时挂配额结算；其余形态零结算。
+/// 两种形态都用带观测的 reframe（逐字节同输出）——调用方观测回调
+/// `observe` 在两种形态下都按帧收到事件（用量记账与配额结算共用同一趟分帧）。
 ///
 /// 上游错误类型仅需 `Display`（与 reframe 同一约束），输出统一为
 /// `Result<Bytes, std::io::Error>` 供 `Body::from_stream` 使用。
-pub fn passthrough_stream_body<S, E>(
+pub fn passthrough_stream_body<S, E, O>(
     config: &Arc<ConfigManager>,
     quota: Option<&Arc<QuotaState>>,
     tenant: &str,
     body: &Value,
     vendor_type: &str,
     stream: S,
+    observe: O,
 ) -> Body
 where
     S: futures::Stream<Item = Result<bytes::Bytes, E>> + Send + 'static,
     E: std::fmt::Display + Send + 'static,
+    O: FnMut(&ReframeObservation) + Send + 'static,
 {
-    // 三级早退单点：未接线 / 关闭 / 无限额 → 无观测直通。
+    let mut observe = observe;
+    // 三级早退单点：未接线 / 关闭 / 无限额 → 无配额结算，仅调用方观测。
     let Some(lease) = quota_applies(config, quota, tenant) else {
-        return Body::from_stream(reframe_passthrough_stream(stream));
+        return Body::from_stream(reframe_passthrough_stream_with_usage(
+            stream,
+            move |observation| observe(&observation),
+        ));
     };
     let quota = lease.quota;
     let snapshot = lease.config;
@@ -1003,6 +1011,8 @@ where
     Body::from_stream(reframe_passthrough_stream_with_usage(
         stream,
         move |observation| {
+            // 调用方观测先借看同一帧（用量记账），再 move 进配额结算
+            observe(&observation);
             settler
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())

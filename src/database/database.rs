@@ -174,6 +174,28 @@ impl crate::storage::RequestLogSink for Database {
             })
     }
 
+    async fn update_stream_usage(
+        &self,
+        request_id: &str,
+        response: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        total_tokens: i64,
+    ) -> Result<(), crate::error::GateError> {
+        self.repository()
+            .update_stream_usage(
+                request_id,
+                response,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            )
+            .await
+            .map_err(|e| crate::error::GateError::Config {
+                message: format!("stream usage update failed: {e}"),
+            })
+    }
+
     async fn query_logs(
         &self,
         filter: &crate::storage::LogFilter,

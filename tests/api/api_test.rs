@@ -1910,6 +1910,67 @@ mod logging_pipeline {
         assert!(log.duration_ms.is_some());
     }
 
+    /// ⑧ 流式请求的用量记账：上游 usage 尾帧必须补写 `request_logs` 三列并进
+    /// 预聚合分账表；此前流式整链漏计——日志只记 `{"stream": true}` 占位、
+    /// 分账表零写入（流式流量在 token/成本口径上整体消失）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_request_logs_usage_from_tail_frame() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_chunked_body(|w| {
+                let _ = w.write_all(
+                    b"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                );
+                // usage 尾帧（OpenAI stream_options.include_usage 形态）
+                let _ = w.write_all(
+                    b"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n",
+                );
+                let _ = w.write_all(b"data: [DONE]\n\n");
+                Ok::<(), std::io::Error>(())
+            })
+            .create_async()
+            .await;
+
+        let (state, logger, _pa, repository) =
+            make_wired_state(format!("{}/v1", server.url())).await;
+
+        let mut stream_body = chat_body();
+        stream_body["stream"] = json!(true);
+        let response = post_chat(state, stream_body).await;
+        assert_eq!(response.status(), 200);
+        // 收尾记账随流终止触发：客户端必须把流读完
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("consume stream");
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("[DONE]"),
+            "透传流必须原样转发到 [DONE]"
+        );
+
+        // 收尾在流终止处的异步任务里落库
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        logger.shutdown().await.expect("shutdown");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let logs = repository
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("query ok");
+        assert_eq!(logs.len(), 1, "流式请求必须落一条日志");
+        let log = &logs[0];
+        assert_eq!(log.prompt_tokens, Some(11), "usage 尾帧必须补写三列");
+        assert_eq!(log.completion_tokens, Some(7));
+        assert_eq!(log.total_tokens, Some(18));
+        let response = log.response.as_deref().unwrap_or("");
+        assert!(
+            response.contains("\"prompt_tokens\":11"),
+            "response 列必须补写 usage：{response}"
+        );
+    }
+
     /// ⑤ 上游 500 → 客户端 503（VendorUnavailable 固定映射），且失败路径
     /// 落库：error_message 非空、status_code==500（上游真实状态码）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

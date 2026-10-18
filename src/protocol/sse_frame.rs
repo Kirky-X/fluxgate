@@ -60,10 +60,14 @@ pub struct SseFrame {
 }
 
 impl SseFrame {
-    /// 帧是否携带上游错误信号：`event: error`，或 data 是含 `"error"`
-    /// 对象的 JSON（Anthropic 流中错误的规范形状）。
+    /// 帧是否携带上游错误信号：`event: error` / `event: response.failed`
+    ///（Responses 上游失败语义），或 data 是含 `"error"` 对象的 JSON
+    ///（Anthropic 流中错误的规范形状）。
     pub fn is_error(&self) -> bool {
-        if self.event.as_deref() == Some("error") {
+        if matches!(
+            self.event.as_deref(),
+            Some("error") | Some("response.failed")
+        ) {
             return true;
         }
         match &self.data {

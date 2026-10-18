@@ -193,6 +193,9 @@ impl ProtocolConverter for AnthropicConverter {
             turn_index: None,
             tools,
             tool_choice,
+            // Anthropic 无并行开关/结构化输出槽：IR 保持 None（跨协议已知降级）
+            parallel_tool_calls: None,
+            response_format: None,
             vendor_extensions: absorb_vendor_extensions(&body, ANTHROPIC_KNOWN_KEYS),
         })
     }
@@ -1479,6 +1482,8 @@ fn parse_anthropic_tool(json: &Value) -> Option<Tool> {
             name,
             description,
             parameters,
+            // Anthropic input_schema 无 strict 概念，保持 None
+            strict: None,
         },
     })
 }

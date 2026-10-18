@@ -7,6 +7,7 @@ pub mod anthropic_converter;
 pub mod embedding_converter;
 pub mod openai_converter;
 pub mod rerank_converter;
+pub mod responses;
 pub mod sse_frame;
 pub mod unified;
 // usage 提数单源：消费面仅 api/middleware（web-server），内部模块无跨特性复用，
@@ -21,6 +22,7 @@ pub use anthropic_converter::{AnthropicConverter, AnthropicStreamEncoder};
 pub use embedding_converter::embedding_request_to_openai;
 pub use openai_converter::{OpenAIConverter, OpenAIStreamEncoder};
 pub use rerank_converter::parse_rerank_request;
+pub use responses::ResponsesConverter;
 pub use sse_frame::{
     encode_sse_done, encode_sse_error, encode_sse_event, reframe_passthrough_stream_with_usage,
     ReframeObservation, SseFrame, SseFrameParser,
@@ -40,6 +42,8 @@ pub use unified::{
 pub enum Protocol {
     OpenAI,
     Anthropic,
+    /// OpenAI Responses API（`POST /v1/responses`，语义化 SSE）
+    Responses,
 }
 
 #[async_trait::async_trait]
@@ -159,6 +163,10 @@ mod default_impl_tests {
         let c = NoopConverter;
         assert!(!c.can_passthrough(Protocol::Anthropic));
         assert!(c.can_passthrough(Protocol::OpenAI));
+        assert!(
+            !c.can_passthrough(Protocol::Responses),
+            "Responses 与 chat 不可透传"
+        );
 
         let req = UnifiedRequest {
             model: "m".into(),

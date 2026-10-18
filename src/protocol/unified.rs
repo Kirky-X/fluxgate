@@ -55,6 +55,14 @@ pub struct UnifiedRequest {
     /// 工具选择策略
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// 并行工具调用开关（OpenAI chat / Responses 有；Anthropic 无对应槽，
+    /// 出站丢弃）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    /// 结构化输出配置（OpenAI `response_format` / Responses `text.format`）。
+    /// `Value` 原样保真；Anthropic 无对应槽，出站丢弃
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<Value>,
     /// 厂商扩展透传表：入站吸收未识别顶层字段（防丢），出站按原键名
     /// 透传回顶层；目标协议 known_keys（denylist）永不由扩展表补入/覆写。
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -224,6 +232,10 @@ pub struct ToolFunction {
     /// 升降级。`Null` = 未携带（出站按协议缺省形状补齐）。
     #[serde(default)]
     pub parameters: Value,
+    /// 严格 schema 模式（OpenAI chat `function.strict` / Responses 顶层
+    /// `strict`）；Anthropic 无对应槽，出站丢弃
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// 单个工具 `parameters` schema 的序列化字节上限（128 KiB），
@@ -937,6 +949,7 @@ mod tests {
                 name: name.to_string(),
                 description: String::new(),
                 parameters,
+                strict: None,
             },
         }
     }

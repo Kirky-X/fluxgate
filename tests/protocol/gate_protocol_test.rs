@@ -20,6 +20,80 @@ mod converter {
         assert_eq!(converter.output_protocol(), Protocol::OpenAI);
     }
 
+    /// `response_format` / `parallel_tool_calls` / `function.strict` 提为
+    /// 类型化 IR 字段后双向往返，且不再进 `vendor_extensions`。
+    #[tokio::test]
+    async fn test_openai_structured_output_and_parallel_tools_roundtrip() {
+        let converter = OpenAIConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "answer", "schema": {"type": "object"}}
+                },
+                "parallel_tool_calls": false,
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "f",
+                        "description": "d",
+                        "parameters": {"type": "object"},
+                        "strict": true
+                    }
+                }]
+            }))
+            .expect("to unified");
+        assert_eq!(unified.parallel_tool_calls, Some(false));
+        assert!(unified.response_format.is_some());
+        assert_eq!(unified.tools[0].function.strict, Some(true));
+        assert!(
+            !unified.vendor_extensions.contains_key("response_format"),
+            "协议键不得再进扩展表"
+        );
+        assert!(!unified
+            .vendor_extensions
+            .contains_key("parallel_tool_calls"));
+
+        let external = converter.request_to_external(unified).expect("to external");
+        assert_eq!(external["parallel_tool_calls"], json!(false));
+        assert_eq!(external["response_format"]["type"], "json_schema");
+        assert_eq!(external["tools"][0]["function"]["strict"], json!(true));
+    }
+
+    /// Anthropic 无对应槽：三项在出站静默丢弃（跨协议已知降级，不报错）。
+    #[tokio::test]
+    async fn test_anthropic_outbound_drops_responses_only_fields() {
+        use fluxgate::protocol::{
+            Message, MessageContent, Role, Tool, ToolFunction, UnifiedRequest,
+        };
+        let converter = AnthropicConverter::new();
+        let request = UnifiedRequest {
+            model: "claude-3-5-sonnet".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            response_format: Some(json!({"type": "json_object"})),
+            parallel_tool_calls: Some(true),
+            tools: vec![Tool {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "f".into(),
+                    description: "d".into(),
+                    parameters: json!({"type": "object"}),
+                    strict: Some(true),
+                },
+            }],
+            ..Default::default()
+        };
+        let body = converter.request_to_external(request).expect("to external");
+        assert!(body.get("response_format").is_none());
+        assert!(body.get("parallel_tool_calls").is_none());
+        assert!(body["tools"][0].get("strict").is_none());
+    }
+
     #[tokio::test]
     async fn test_anthropic_converter_input_protocol() {
         let converter = AnthropicConverter::new();
@@ -2344,6 +2418,7 @@ mod converter {
                     },
                     "required": ["city"],
                 }),
+                strict: None,
             },
         }];
         request.tool_choice = Some(ToolChoice::Specific {
@@ -4079,6 +4154,7 @@ mod converter {
                 name: "no_args".into(),
                 description: "No schema".into(),
                 parameters: serde_json::Value::Null,
+                strict: None,
             },
         }];
 
@@ -4838,6 +4914,7 @@ mod unified {
                 name: "get_weather".to_string(),
                 description: "Get weather".to_string(),
                 parameters: schema.clone(),
+                strict: None,
             },
         };
         let json_str = serde_json::to_string(&tool).unwrap();

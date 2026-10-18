@@ -28,6 +28,8 @@ const OPENAI_KNOWN_KEYS: &[&str] = &[
     "turn_index",
     "tools",
     "tool_choice",
+    "parallel_tool_calls",
+    "response_format",
     "vendor_extensions",
     "reasoning_effort",
 ];
@@ -143,6 +145,8 @@ impl ProtocolConverter for OpenAIConverter {
             turn_index: None,
             tools,
             tool_choice,
+            parallel_tool_calls: body.get("parallel_tool_calls").and_then(|v| v.as_bool()),
+            response_format: body.get("response_format").cloned(),
             // 未识别顶层字段（top_k/seed 等）吸收进扩展表，出站原样透传防丢
             vendor_extensions: absorb_vendor_extensions(&body, OPENAI_KNOWN_KEYS),
         })
@@ -167,6 +171,8 @@ impl ProtocolConverter for OpenAIConverter {
             user,
             effort,
             sampling,
+            parallel_tool_calls,
+            response_format,
             vendor_extensions,
             ..
         } = request;
@@ -190,6 +196,13 @@ impl ProtocolConverter for OpenAIConverter {
         // 添加工具选择策略
         if let Some(tool_choice) = tool_choice {
             body["tool_choice"] = tool_choice_to_openai(tool_choice);
+        }
+
+        if let Some(parallel) = parallel_tool_calls {
+            body["parallel_tool_calls"] = json!(parallel);
+        }
+        if let Some(response_format) = response_format {
+            body["response_format"] = response_format;
         }
 
         if let Some(temp) = temperature {
@@ -1201,6 +1214,7 @@ fn parse_openai_tool(json: &Value) -> Option<Tool> {
                 .unwrap_or("")
                 .to_string(),
             parameters,
+            strict: func.get("strict").and_then(|v| v.as_bool()),
         },
     })
 }
@@ -1214,6 +1228,9 @@ fn tool_to_openai(tool: &Tool) -> Value {
     });
     if tool.function.parameters.is_object() {
         function["parameters"] = tool.function.parameters.clone();
+    }
+    if let Some(strict) = tool.function.strict {
+        function["strict"] = json!(strict);
     }
     json!({
         "type": tool.tool_type,

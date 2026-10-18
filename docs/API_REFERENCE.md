@@ -51,6 +51,7 @@
   - [GET /api/v1/health](#get-apiv1health)
   - [GET /readyz](#get-readyz)
   - [GET /metrics](#get-metrics)
+- [Rust SDK 客户端](#rust-sdk-客户端)
 - [附录：路由提示请求头](#附录路由提示请求头)
 
 ---
@@ -1921,6 +1922,115 @@ OpenAPI 文档面：`GET /api-docs/openapi.json`（主 REST 端点 + 管理面 +
 [docs]
 enabled = true
 ```
+
+---
+
+## Rust SDK 客户端
+
+随仓 Rust SDK（`fluxgate::sdk`，`sdk` feature，含于 `full`；`src/sdk/`）覆盖 chat（含流式聚合）、embeddings、rerank、responses（含 cancel / input_tokens）、models 与 admin 端点。以下为对齐官方 SDK 后的参数面、错误体系、重试/超时与路由头映射。
+
+### 客户端构造
+
+```rust
+use std::collections::BTreeMap;
+use fluxgate::sdk::FluxgateClientBuilder;
+
+let client = FluxgateClientBuilder::new()
+    .base_url("http://localhost:8080")   // 必填
+    .api_key("网关签发的 key")            // 必填（Authorization: Bearer）
+    .default_headers(BTreeMap::new())    // 客户端级附加头（可选）
+    .max_retries(2)                      // 覆盖 RetryPolicy::max_retries（可选）
+    .build()?;
+```
+
+| 构造项 | 缺省 | 说明 |
+|---|---|---|
+| `base_url` / `api_key` | 必填 | 缺失即 `Config` 错误（`build()` 拒绝） |
+| `default_headers` | 空表 | 客户端级附加头；请求级 `extra_headers` 覆盖同名键（大小写不敏感） |
+| `default_config` | `RequestConfig::default()` | 客户端级默认参数；逐请求 `merge`（请求侧非 None 优先，`stream` 恒取请求侧） |
+| `timeout` | 600s | 非流式（chat/embed）总超时；对 `chat_stream` 不生效 |
+| `connect_timeout` | 5s | 连接建立 |
+| `read_timeout` | 600s | 读停滞看护（按读重置，保护长 SSE） |
+
+> 最坏时延口径（对齐官方 SDK 的取舍）：非流式最坏挂起 ≈ `timeout` × (1 + `max_retries`) + 退避 / `Retry-After`（单次上限 120s），默认参数下约 30 分钟；对时延敏感的调用方应显式调低 `timeout` / `max_retries`。
+
+> 受限头：`extra_headers` / `default_headers` 中的 `authorization` / `host` / `content-length` 被忽略并记 debug（不可覆盖鉴权与框架头）。
+
+### 错误体系
+
+`FluxgateSdkError` 六变体（旧 `Auth` / `Server` 变体已删除、统一收敛进 `Api`；BREAKING 见 CHANGELOG）：
+
+| 变体 | 触发 | 备注 |
+|---|---|---|
+| `Network { source }` | 连接/请求错误 | 可重试 |
+| `Timeout { source }` | 请求超时 | 可重试 |
+| `Api(ApiError)` | 上游非 2xx | 携带 `status` / `kind` / `message` / `code` / `param` / `request_id` / `retry_after` / `should_retry`；`is_retryable()` 判定 408/409/429/5xx 与 `x-should-retry` |
+| `Protocol { message }` | wire 形状不符或 SDK 侧参数拒绝 | 不重试 |
+| `Stream { message }` | 流内错误（SSE error 事件等） | 不重试 |
+| `Config { message }` | 构造/URL 错误 | 不重试 |
+
+```rust
+use fluxgate::sdk::{ApiError, FluxgateSdkError};
+
+match client.chat(&req).await {
+    Ok(resp) => println!("{}", resp.content),
+    Err(FluxgateSdkError::Api(ApiError { status: 401, message, .. })) => {
+        eprintln!("认证失败：{message}");
+    }
+    Err(err) => return Err(err),
+}
+```
+
+### 重试与超时
+
+- 默认 `RetryPolicy` 对齐官方 SDK：最多 2 次重试、初始退避 500ms、退避上限 8s、`Retry-After` 提示截断上限 120s；逐请求 `RequestConfig::max_retries` 覆盖次数（builder 与请求级均夹紧到 ≤16，超限值静默截断并记 debug）；
+- 重试判定：传输错误（timeout/connect/request）与 `ApiError::is_retryable()`（408/409/429/5xx；`x-should-retry` 显式否决/放行优先）；
+- 延迟：`retry-after` / `retry-after-ms` 提示优先（秒数或 HTTP-date，解析失败忽略），缺省指数退避 + 抖动；
+- 流式调用只在响应头阶段重试；body 流建立之后的 `Stream` 错误不重试。
+
+### 错误消息可信边界
+
+- `ApiError.message` 与流内 `Stream` 错误消息为**上游原文**（截断到 512 字符；错误体只读前 64 KiB），未清洗控制字符——落日志前调用方自行处理，勿直接拼接进结构化日志；
+- 路由头（`X-Vendor` / `X-Model` / `X-Session-Id` / `X-Batch` / `X-Weight`）只能经 typed 字段设置：`extra_headers` / `default_headers` 中的同名键被忽略并记 debug（防止多租户应用的用户输入走私路由头）。
+
+### 参数面（`RequestConfig`）
+
+- 采样：`temperature` / `top_p` / `top_k` / `max_tokens` / `max_completion_tokens` / `frequency_penalty` / `presence_penalty` / `n` / `seed` / `stop`；
+- 结构化与工具：`response_format` / `logit_bias` / `parallel_tool_calls` / `logprobs` / `top_logprobs`（工具定义在 `ChatRequest.tools`）；
+- 官方新参数：`reasoning_effort`（`ReasoningEffort`：none/minimal/low/medium/high/xhigh/max）、`verbosity`（`Verbosity`：low/medium/high）、`service_tier`、`store`、`metadata`（≤16 键）、`safety_identifier`、`prompt_cache_key` / `prompt_cache_retention`、`stream_options`（`StreamOptions`：`include_usage` / `include_obfuscation`）、`modalities` / `audio` / `prediction` / `web_search_options`；
+- 逃生口：`extra_body`（追加 body 键；与 `vendor_extensions` 合并、后者优先，`RESERVED_KEYS` 冲突拒绝）与 `extra_headers`（受限头除外）；
+- 逐请求覆盖：`max_retries` / `timeout`。
+
+### chat 与流式
+
+- `ChatResponse`：`choices: Vec<ChatChoice>` 全量多候选（`n>1`）；`content` / `reasoning_content` / `tool_calls` / `finish_reason` 为首 choice 便捷视图（`content` 与旧版语义一致）；
+- `ChatStream::finalize()`：聚合碎片为 `ChatResponse`（内容按到达序拼接；`tool_calls` 按 `index` 槽位累积，`id` / `name` 取首个非空、`arguments` 拼接；`finish_reason` / `usage` 取最后一个携带值）；
+- `ChatDelta` 新增 `reasoning_content`（思考增量）与 `logprobs`（原样透传）槽；
+- 工具面：`ChatTool` 为 untagged 枚举——`Function { function }` 与 `Raw`（`type:"custom"` / 未知类型原对象保真）；`ChatToolChoice::AllowedTools { mode, tools }` 对应 `{"type":"allowed_tools","allowed_tools":{...}}`（mode 词表 auto/required）。
+
+### embeddings
+
+- `EmbedInput` 四形态：`Text(String)` / `Strings(Vec<String>)` / `Tokens(Vec<u32>)` / `NestedTokens(Vec<Vec<u32>>)`；
+- 新增 `dimensions` / `encoding_format`（`EmbedEncodingFormat::Float` / `Base64`）；
+- `EmbedData.embedding` 为 `EmbeddingValue`：`Floats(Vec<f32>)` 或 `Base64(String)`（untagged；base64 原串不代解码）。
+
+### responses：cancel 与 input_tokens
+
+- `cancel_response(id)`（`POST /v1/responses/:id/cancel`）：取消后台响应并返回取消后的完整响应对象（非 background 响应返回 400）；
+- `input_tokens(&ResponsesInputTokensRequest { model, input })`（`POST /v1/responses/input_tokens`）：返回 `{"object":"response.input_tokens","input_tokens":N}`；`model` / `input` 为空时 SDK 侧直接返回 `Protocol` 错误，不发请求。
+
+### 路由提示头
+
+`RequestConfig` 头部字段映射（与 [附录](#附录路由提示请求头) 同源；`vendor_hint` / `model_hint` 仅 OpenAI 兼容端点消费）：
+
+| RequestConfig 字段 | 请求头 | 说明 |
+|---|---|---|
+| `vendor_hint` | `X-Vendor` | 指定厂商（须与网关配置一致） |
+| `model_hint` | `X-Model` | 指定模型 |
+| `session_id` | `X-Session-Id` | 会话亲和键 |
+| `batch` | `X-Batch` | `Some(true)` 时置 `1` |
+| `weight` | `X-Weight` | 请求级加权 |
+| `extra_headers` | 任意（受限头除外） | 请求级附加头 |
 
 ---
 

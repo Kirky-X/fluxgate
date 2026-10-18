@@ -199,7 +199,7 @@ model_type = "rerank"
 | 文档 | 说明 |
 |------|------|
 | [📖 用户指南](docs/USER_GUIDE.md) | 从配置、部署到运维的完整使用教程 |
-| [📘 API 参考](docs/API_REFERENCE.md) | 全部 30 个方法端点（数据面 14 + 管理 15 + 健康 1）的参数、响应与错误码 |
+| [📘 API 参考](docs/API_REFERENCE.md) | 全部 33 个方法端点（数据面 14 + 管理 18 + 健康 1）的参数、响应与错误码 |
 | [🏗️ 架构文档](docs/ARCHITECTURE.md) | 设计原则、路由决策体系、弹性与热更新机制 |
 | [🔒 安全文档](docs/SECURITY.md) | 安全设计、供应链门禁与漏洞处理流程 |
 | [❓ FAQ](docs/FAQ.md) | 常见问题与已知边界 |
@@ -326,7 +326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 测试策略
 
-单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard，共 52 个 `.rs` 文件——51 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变；grpc_smoke / grpc_coverage 两个按 `required-features` 随 `grpc` 特性编译，default 口径不产出空壳二进制），Mock 使用 mockito（HTTP 上游线级桩）+ 手写 fake（进程内替身，如 `MockDifficultyClassifier`），时间敏感测试注入 limiteron MockClock 假时钟。
+单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard / vault，共 57 个 `.rs` 文件——56 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变；grpc_smoke / grpc_coverage 两个按 `required-features` 随 `grpc` 特性编译，default 口径不产出空壳二进制），Mock 使用 mockito（HTTP 上游线级桩）+ 手写 fake（进程内替身，如 `MockDifficultyClassifier`），时间敏感测试注入 limiteron MockClock 假时钟。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -343,21 +343,21 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1470 个用例通过、0 失败**——单元测试 569 个（`src/` 内联）+ 集成测试 901 个（`tests/` 51 个测试二进制，default 口径实际编译 49 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：**1863 个用例通过、0 失败**——单元测试 868 个（`src/` 内联）+ 集成测试 995 个（`tests/` 56 个测试二进制，default 口径实际编译 54 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
-| protocol_test | 157 | tests/protocol/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
-| api_test | 131 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
-| vendor_test | 111 | tests/vendor/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
-| router_test | 97 | tests/routing/ | 加权选择 / 亲和 / 提示路由 / 边界 |
-| difficulty_tier_test | 5 | tests/routing/ | 难度定档改写 → 既有路由链集成 |
+| protocol_test | 160 | tests/protocol/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
+| api_test | 136 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
+| vendor_test | 116 | tests/vendor/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
+| router_test | 115 | tests/routing/ | 加权选择 / 亲和 / 提示路由 / 边界 |
+| difficulty_tier_test | 6 | tests/routing/ | 难度定档改写 → 既有路由链集成 |
 | database / sse | 41 / 40 | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK |
-| config / utils_coverage | 28 / 19 | tests/config/ · tests/utils/ | 配置加载 / 指标与限流边界 |
+| config / utils_coverage | 29 / 19 | tests/config/ · tests/utils/ | 配置加载 / 指标与限流边界 |
 | retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | 重试分类与延迟策略 / loader·manager 分支 |
-| quota / fallback / admission | 20 / 17 / 16 | tests/resilience/ | 配额窗 / 换路链 / 准入 |
+| quota / fallback / admission | 20 / 17 / 19 | tests/resilience/ | 配额窗 / 换路链 / 准入 |
 | bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit 路由 / 模型目录 admin |
-| server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池等 | 其余 150 | tests/server/ 等 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
+| server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点 / key 池等 | 其余 208 | tests/server/ 等 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点与厂商 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
 
 ---
 
@@ -383,7 +383,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
-<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic / Responses / Gemini 协议互转、SSE 流式、零拷贝透传、30 个方法端点（数据面 14 + 管理 15 + 健康 1）</td></tr>
+<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic / Responses / Gemini 协议互转、SSE 流式、零拷贝透传、33 个方法端点（数据面 14 + 管理 18 + 健康 1）</td></tr>
 <tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层；难度定档三档路由（规则 + 进程内决策引擎融合，<code>difficulty-classifier</code> feature 门控）；缓存成本套件（前缀亲和 PoTC / 语义缓存默认关，缓存价因子默认开）</td></tr>
 <tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
 <tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、`[[model_catalog]]` 四档计价与成本分账</td></tr>

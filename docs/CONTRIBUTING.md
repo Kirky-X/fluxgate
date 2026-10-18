@@ -78,7 +78,7 @@ Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 
 ## 🏗️ 项目结构
 
-`src/` 共 110 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），按目录职责划分：
+`src/` 共 138 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），按目录职责划分：
 
 | 目录 | 职责 | 关键文件 |
 |:-----|:-----|:---------|
@@ -101,7 +101,7 @@ Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 |:-----|:-----|
 | `src/server` | **服务器装配链**库模块（`all(web-server, logging)` 门控）：bootstrap / http / handle / shutdown，`run()` 起服、`build_app()` 返回 `(Router, ServerHandle)`（停机 flush 收尾，幂等；同进程二次装配 panic，见 `# Panics` 文档） |
 | `src/sdk` | **Rust 客户端 SDK** 模块（`sdk` feature 门控）：chat / embed / models / vendors / health，含 SSE 流式（原顶层 `sdk/` 独立 crate 已并入） |
-| `tests/` | **集成测试**（按功能域目录化，52 个 `.rs` 文件 = 51 个测试二进制 + `common/mod.rs` helper：HTTP 全链路 / 路由 / 协议转换 / 厂商 / 熔断 / 重试 / 成本 / 配置示例断言 / feature 组合矩阵 / 死代码守卫等；grpc_smoke / grpc_coverage 带 `required-features`，随 `grpc` 特性编译，default 口径无空壳二进制） |
+| `tests/` | **集成测试**（按功能域目录化，57 个 `.rs` 文件 = 56 个测试二进制 + `common/mod.rs` helper：HTTP 全链路 / 路由 / 协议转换 / 厂商 / 熔断 / 重试 / 成本 / 配置示例断言 / feature 组合矩阵 / 死代码守卫等；grpc_smoke / grpc_coverage 带 `required-features`，随 `grpc` 特性编译，default 口径无空壳二进制） |
 
 > 架构惯例：`mod.rs` 只保留接口与 re-export，具体实现放独立文件（如 `router/router.rs`、`config/manager.rs`）。新增代码请遵循同一惯例。
 
@@ -138,8 +138,8 @@ cargo build --release
 
 | 类型 | 数量 | 位置 | 写法 |
 |:-----|:-----|:-----|:-----|
-| 单元测试 | **569 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
-| 集成测试 | **901 个** | `tests/`（52 个 `.rs` 文件 = 51 个测试二进制 + `common/mod.rs`） | HTTP 全链路 / 跨模块行为 |
+| 单元测试 | **868 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
+| 集成测试 | **995 个** | `tests/`（57 个 `.rs` 文件 = 56 个测试二进制 + `common/mod.rs`） | HTTP 全链路 / 跨模块行为 |
 
 约定与工具：
 

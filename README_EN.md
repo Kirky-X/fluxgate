@@ -76,7 +76,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); <code>server</code>/<code>cors</code>/<code>rate_limit</code>/<code>database</code>/<code>grpc</code>/<code>global_model</code>/<code>cache.semantic</code>/<code>docs.enabled</code>/<code>routing.difficulty.enabled</code> and the <code>routing.difficulty.classifier</code> keys <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> are reported explicitly in the <code>restart_required</code> response field (remaining restart-required surfaces such as vendor <code>concurrency</code> carry no such signal — restart manually)</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">16 admin/health method endpoints: log query/search, token stats, cost breakdown query, global metrics (affinity hit rate, drop counts), vendor status & key-pool reset, route explain, config & model management, health check</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">19 admin/health method endpoints: log query/search, token stats, cost breakdown query, global metrics (affinity hit rate, drop counts), vendor status & key-pool reset, route explain, config & model management, health check</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>FLUXGATE_LANG</code> → system locale → en fallback chain</span></td>
@@ -185,7 +185,7 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 | Document | Description |
 |----------|-------------|
 | [📖 User Guide](docs/USER_GUIDE.md) | End-to-end tutorial: configuration, deployment, operations |
-| [📘 API Reference](docs/API_REFERENCE.md) | All 30 method endpoints (14 data-plane + 15 admin + 1 health): parameters, responses, error codes |
+| [📘 API Reference](docs/API_REFERENCE.md) | All 33 method endpoints (14 data-plane + 18 admin + 1 health): parameters, responses, error codes |
 | [🏗️ Architecture](docs/ARCHITECTURE.md) | Design principles, routing decision system, resilience & hot reload |
 | [🔒 Security](docs/SECURITY.md) | Security design, supply-chain gates, vulnerability handling |
 | [❓ FAQ](docs/FAQ.md) | Common questions and known limitations |
@@ -314,7 +314,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 Strategy
 
-Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by functional domain under `tests/` subdirectories (api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard, 52 `.rs` files in total — 51 test binaries plus the `tests/common/mod.rs` helper), each binary explicitly registered via `[[test]]` in the root `Cargo.toml` (one binary per file, process-exclusive semantics preserved; the grpc_smoke / grpc_coverage pair carries `required-features` and compiles only under the `grpc` caliber — default builds no empty binaries). Mocks use mockito (HTTP wire-level stubs) plus hand-written fakes for in-process doubles (e.g. `MockDifficultyClassifier`); time-sensitive tests inject the limiteron MockClock fake clock.
+Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organized by functional domain under `tests/` subdirectories (api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard / vault, 57 `.rs` files in total — 56 test binaries plus the `tests/common/mod.rs` helper), each binary explicitly registered via `[[test]]` in the root `Cargo.toml` (one binary per file, process-exclusive semantics preserved; the grpc_smoke / grpc_coverage pair carries `required-features` and compiles only under the `grpc` caliber — default builds no empty binaries). Mocks use mockito (HTTP wire-level stubs) plus hand-written fakes for in-process doubles (e.g. `MockDifficultyClassifier`); time-sensitive tests inject the limiteron MockClock fake clock.
 
 ### ▶️ Commands (CI-consistent)
 
@@ -332,20 +332,20 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): **1470 tests pass, 0 failures** — 569 unit tests (inline in `src/`) plus 901 integration tests (51 test binaries under `tests/`, 49 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1863 tests pass, 0 failures** — 868 unit tests (inline in `src/`) plus 995 integration tests (56 test binaries under `tests/`, 54 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
-| protocol_test | 157 | tests/protocol/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
-| api_test | 131 | tests/api/ | endpoint integration / caching / rerouting / affinity / admin |
-| vendor_test | 111 | tests/vendor/ | vendor management / rate limits / stream timeouts / health & metrics |
-| router_test | 97 | tests/routing/ | weighted selection / affinity / hint routing / edges |
+| protocol_test | 160 | tests/protocol/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
+| api_test | 136 | tests/api/ | endpoint integration / caching / rerouting / affinity / admin |
+| vendor_test | 116 | tests/vendor/ | vendor management / rate limits / stream timeouts / health & metrics |
+| router_test | 115 | tests/routing/ | weighted selection / affinity / hint routing / edges |
 | database / sse | 41 / 40 | tests/database/ · tests/protocol/ | persistence & pre-aggregation / stream framing & SDK |
-| config / utils_coverage | 28 / 19 | tests/config/ · tests/utils/ | config loading / metrics & limiter edges |
+| config / utils_coverage | 29 / 19 | tests/config/ · tests/utils/ | config loading / metrics & limiter edges |
 | retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | retry classes & delay policy / loader·manager branches |
-| quota / fallback / admission | 20 / 17 / 16 | tests/resilience/ | quota window / fallback chain / admission |
+| quota / fallback / admission | 20 / 17 / 19 | tests/resilience/ | quota window / fallback chain / admission |
 | bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit routing / model catalog admin |
-| server·grpc serving / assembly smoke / feature matrix / key pool etc. | remainder (150) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / key pool / price factors / model catalog admin / dead-code guard |
+| server·grpc serving / assembly smoke / feature matrix / Responses·Gemini endpoints / key pool etc. | remainder (214) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / Responses·Gemini endpoints & vendors / key pool / price factors / model catalog admin / dead-code guard |
 
 ---
 
@@ -371,7 +371,7 @@ Please do not report security vulnerabilities through public issues. Use the Git
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
-<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic / Responses / Gemini conversion, SSE streaming, zero-copy passthrough, 30 method endpoints (14 data-plane + 15 admin + 1 health)</td></tr>
+<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic / Responses / Gemini conversion, SSE streaming, zero-copy passthrough, 33 method endpoints (14 data-plane + 18 admin + 1 health)</td></tr>
 <tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers; difficulty-tiered routing (rule + in-process decision-engine fusion behind the <code>difficulty-classifier</code> feature); cache-cost suite (prefix-affinity PoTC / semantic cache off by default, cache-aware price factor on by default)</td></tr>
 <tr><td align="center">✅</td><td>Resilience</td><td>limiteron circuit / retry / fallback chain, congestion-aware admission, key tiers</td></tr>
 <tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, four-tier `[[model_catalog]]` costing and cost breakdown</td></tr>

@@ -4,7 +4,7 @@
 //! Responses 有状态表仓储实现（`response_store`，迁移 V4）。
 //!
 //! 所有查询强制携带 `tenant_hash` 与 `now`（过期行视为不存在）；
-//! 占位符统一书 `?`，postgres 方言化由 [`raw_statement`] 收口。
+//! 占位符统一书 `?`，postgres 方言化由 `raw_statement` 收口。
 
 use crate::database::{raw_statement, Repository};
 use crate::error::GateError;

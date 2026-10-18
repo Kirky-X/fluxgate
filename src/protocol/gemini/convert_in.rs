@@ -95,6 +95,11 @@ pub fn to_unified_request(
         tool_choice,
         parallel_tool_calls: None,
         response_format: parse_response_format(generation),
+        // 本变更仅 IR 形状适配：新槽入站解析不属 Gemini 功能面
+        metadata: None,
+        service_tier: None,
+        verbosity: None,
+        max_completion_tokens: None,
         vendor_extensions: absorb_vendor_extensions(body, super::types::GEMINI_KNOWN_KEYS),
     })
 }
@@ -155,6 +160,7 @@ fn parse_content(content: &Value) -> Result<Vec<Message>, GateError> {
             (false, true, false) => MessageContent::TextWithToolCalls {
                 text,
                 tool_calls: calls,
+                reasoning: None,
             },
             // 图片 + 工具调用同消息：IR 无该组合槽，显式拒绝防静默丢图
             _ => return Err(validation("api-gemini-part-unsupported")),
@@ -314,6 +320,7 @@ fn parse_tools(body: &Value) -> Result<Vec<Tool>, GateError> {
                         .unwrap_or_else(|| serde_json::json!({"type": "object"})),
                     strict: None,
                 },
+                ..Default::default()
             });
         }
     }
@@ -369,9 +376,10 @@ fn parse_thinking_config(generation: &Value) -> Option<ThinkingConfig> {
     } else if budget > 0 {
         Some(ThinkingConfig::Enabled {
             budget_tokens: budget as u64,
+            display: None,
         })
     } else {
-        Some(ThinkingConfig::Adaptive)
+        Some(ThinkingConfig::Adaptive { display: None })
     }
 }
 
@@ -541,7 +549,8 @@ mod tests {
         assert!(matches!(
             request.thinking_config,
             Some(ThinkingConfig::Enabled {
-                budget_tokens: 2048
+                budget_tokens: 2048,
+                ..
             })
         ));
         assert_eq!(request.thinking_include_thoughts, Some(true));

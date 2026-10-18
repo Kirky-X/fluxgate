@@ -100,11 +100,13 @@ pub enum PromptCacheSemantics {
 }
 
 /// vendor 协议 → cache 语义单源判定：openai/gemini 为 Inclusive，其余一律 Exclusive（基数不缩减，防少计）。
+/// 保持 `&str` 公共签名（调用方含序列化/测试面），协议归类单源 `VendorProtocol::parse`。
 pub fn prompt_cache_semantics(vendor_type: &str) -> PromptCacheSemantics {
-    if vendor_type == "openai" || vendor_type == "gemini" {
-        PromptCacheSemantics::Inclusive
-    } else {
-        PromptCacheSemantics::Exclusive
+    match crate::config::VendorProtocol::parse(vendor_type) {
+        crate::config::VendorProtocol::OpenAi | crate::config::VendorProtocol::Gemini => {
+            PromptCacheSemantics::Inclusive
+        }
+        _ => PromptCacheSemantics::Exclusive,
     }
 }
 
@@ -219,6 +221,7 @@ mod catalog_pricing_tests {
             cache_creation_tokens: cache_creation,
             cost_usd: None,
             cost_cny: None,
+            ..Default::default()
         }
     }
 

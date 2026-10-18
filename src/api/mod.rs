@@ -529,6 +529,7 @@ pub(crate) async fn execute_request_with_fallback(
     model: &str,
     initial: crate::router::RoutingDecision,
     request: crate::protocol::UnifiedRequest,
+    options: crate::vendor::manager::VendorCallOptions,
     trail: &mut crate::vendor::resilience::AttemptTrail,
 ) -> Result<
     (
@@ -551,7 +552,7 @@ pub(crate) async fn execute_request_with_fallback(
     loop {
         match state
             .vendor_manager
-            .execute_request(&decision.vendor.id, request.clone())
+            .execute_request_with_options(&decision.vendor.id, request.clone(), options.clone())
             .await
         {
             Ok(response) => return Ok((response, decision)),
@@ -735,6 +736,9 @@ mod fallback_guard_tests {
                 token_ticket_default: 4096,
             },
             supports_batch: false,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 
@@ -1050,6 +1054,9 @@ mod cooldown_retry_after {
                 token_ticket_default: 4096,
             },
             supports_batch: false,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 
@@ -1243,6 +1250,7 @@ mod cooldown_retry_after {
             "shared-model",
             direct_decision(&v_a),
             chat_request(),
+            crate::vendor::manager::VendorCallOptions::default(),
             &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
@@ -1288,6 +1296,7 @@ mod cooldown_retry_after {
             "shared-model",
             direct_decision(&v_a),
             chat_request(),
+            crate::vendor::manager::VendorCallOptions::default(),
             &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
@@ -1323,6 +1332,7 @@ mod cooldown_retry_after {
             "shared-model",
             direct_decision(&v_a),
             chat_request(),
+            crate::vendor::manager::VendorCallOptions::default(),
             &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
@@ -1354,6 +1364,7 @@ mod cooldown_retry_after {
             "shared-model",
             direct_decision(&v_a),
             chat_request(),
+            crate::vendor::manager::VendorCallOptions::default(),
             &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;

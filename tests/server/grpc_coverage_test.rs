@@ -74,6 +74,9 @@ fn test_config(grpc_port: u16) -> Config {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }],
         global_model: Some(GlobalModelConfig {
             enabled: true,

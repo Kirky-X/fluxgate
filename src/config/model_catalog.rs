@@ -152,14 +152,16 @@ pub struct ModelCapabilities {
 /// 价格不进默认表：未登记模型不计价（计价按目录命中与否显式
 /// 处理，0 价默认表会伪装成「免费」事实）。
 pub fn flavor_default_capabilities(vendor_type: &str) -> ModelCapabilities {
-    match vendor_type {
-        "openai" => ModelCapabilities {
+    // 保持 `&str` 签名（外部/测试调用方零改动），协议归类单源 `VendorProtocol`；
+    // openai/anthropic 专属档，gemini/rerank/未知一律回落 ollama 保守档
+    match super::VendorProtocol::parse(vendor_type) {
+        super::VendorProtocol::OpenAi => ModelCapabilities {
             max_context_tokens: 128_000,
             max_output_tokens: Some(16_384),
             supports_tools: true,
             supports_thinking: false,
         },
-        "anthropic" => ModelCapabilities {
+        super::VendorProtocol::Anthropic => ModelCapabilities {
             max_context_tokens: 200_000,
             max_output_tokens: Some(8_192),
             supports_tools: true,

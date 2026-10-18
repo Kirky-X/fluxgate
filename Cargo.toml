@@ -100,7 +100,8 @@ tracing-log = { version = "0.2", default-features = false, features = ["log-trac
 # registry 蕴含 std，不再重复声明
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"], optional = true }
 
-# 流控 — "retry" 提供重试原语（delay_for_attempt / RetryPolicy），是唯一的重试延迟实现。
+# 流控 — "retry" 提供重试原语（delay_for_attempt / RetryPolicy），是网关出站链路唯一的重试延迟实现；
+# src/sdk 另持一份最小对齐实现（sdk feature 不依赖 limiteron，见 absorb-official-sdk-parity D6）。
 limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "retry", "kit"], optional = true }
 
 # 缓存

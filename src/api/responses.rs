@@ -874,7 +874,12 @@ async fn dispatch_request(
         );
         if state.config.read().resilience.cover_all_paths {
             return crate::api::execute_request_with_fallback(
-                state, model, decision, request, &mut trail,
+                state,
+                model,
+                decision,
+                request,
+                crate::vendor::manager::VendorCallOptions::default(),
+                &mut trail,
             )
             .await
             .map_err(FluxgateError::from);

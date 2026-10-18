@@ -3,7 +3,7 @@
 
 use crate::sdk::client::FluxgateClientBuilder;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::{ApiError, FluxgateSdkError};
 use crate::sdk::RerankRequest;
 
 fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
@@ -63,11 +63,13 @@ async fn rerank_500_maps_to_server_error() {
     let client = build_client(&server.url());
     let err = client.rerank(&request()).await.unwrap_err();
     match err {
-        FluxgateSdkError::Server { status, message } => {
+        FluxgateSdkError::Api(ApiError {
+            status, message, ..
+        }) => {
             assert_eq!(status, 500);
             assert!(message.contains("upstream boom"));
         }
-        other => panic!("expected Server, got {other:?}"),
+        other => panic!("expected Api error, got {other:?}"),
     }
 }
 

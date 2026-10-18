@@ -57,6 +57,7 @@ fn anthropic_text_and_tool_stream_sequence_integrity() {
             index: 0,
             delta: MessageContent::Text("Hello ".into()),
             finish_reason: None,
+            logprobs: None,
         }),
     );
     push(
@@ -65,6 +66,7 @@ fn anthropic_text_and_tool_stream_sequence_integrity() {
             index: 0,
             delta: MessageContent::Text("world".into()),
             finish_reason: Some("end_turn".into()),
+            logprobs: None,
         }),
     );
     push(
@@ -163,11 +165,13 @@ fn openai_stream_sequence_integrity() {
             index: 0,
             delta: MessageContent::Text("Hi".into()),
             finish_reason: None,
+            logprobs: None,
         },
         StreamChunk::Content {
             index: 0,
             delta: MessageContent::Text(" there".into()),
             finish_reason: Some("stop".into()),
+            logprobs: None,
         },
         StreamChunk::Usage {
             prompt_tokens: 5,

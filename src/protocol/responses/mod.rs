@@ -101,7 +101,12 @@ impl ProtocolConverter for ResponsesConverter {
                         ));
                     }
                 }
-                (Role::Assistant, MessageContent::TextWithToolCalls { text, tool_calls }) => {
+                (
+                    Role::Assistant,
+                    MessageContent::TextWithToolCalls {
+                        text, tool_calls, ..
+                    },
+                ) => {
                     if !text.is_empty() {
                         input.push(json!({"role": "assistant", "content": text}));
                     }
@@ -229,7 +234,11 @@ impl ProtocolConverter for ResponsesConverter {
         let content = match (text.is_empty(), has_tools) {
             (false, false) => MessageContent::Text(text),
             (true, true) => MessageContent::ToolCalls(tool_calls),
-            (false, true) => MessageContent::TextWithToolCalls { text, tool_calls },
+            (false, true) => MessageContent::TextWithToolCalls {
+                text,
+                tool_calls,
+                reasoning: None,
+            },
             (true, false) => MessageContent::Text(String::new()),
         };
         let finish = match parsed.status.as_str() {
@@ -265,16 +274,31 @@ impl ProtocolConverter for ResponsesConverter {
                 prompt_tokens: parsed.usage.input_tokens,
                 completion_tokens: parsed.usage.output_tokens,
                 total_tokens: parsed.usage.total_tokens,
+                // details → IR 明细槽（D4）；cached 同时镜像进 legacy
+                // cache_read_tokens（跨协议载体，与 OpenAI 面策略一致）
                 cache_read_tokens: parsed
                     .usage
                     .input_tokens_details
                     .as_ref()
                     .map(|details| details.cached_tokens as u64)
                     .unwrap_or(0),
+                prompt_tokens_details: parsed.usage.input_tokens_details.as_ref().map(|details| {
+                    crate::protocol::unified::PromptTokensDetails {
+                        audio_tokens: 0,
+                        cached_tokens: details.cached_tokens as u64,
+                    }
+                }),
+                completion_tokens_details: parsed.usage.output_tokens_details.as_ref().map(
+                    |details| crate::protocol::unified::CompletionTokensDetails {
+                        reasoning_tokens: details.reasoning_tokens as u64,
+                        ..Default::default()
+                    },
+                ),
                 cache_creation_tokens: 0,
                 cost_usd: None,
                 cost_cny: None,
             },
+            stop_sequence: None,
         })
     }
 
@@ -340,6 +364,8 @@ fn message_text(content: &MessageContent) -> String {
         MessageContent::ToolResult(result) => result.content.clone(),
         MessageContent::ToolCalls(_) => String::new(),
         MessageContent::TextWithToolCalls { text, .. } => text.clone(),
+        // 思考内容无消息文本槽：不并入提取文本
+        MessageContent::Reasoning { .. } => String::new(),
     }
 }
 
@@ -436,6 +462,7 @@ mod tests {
                     parameters: json!({"type": "object"}),
                     strict: Some(true),
                 },
+                ..Default::default()
             }],
             response_format: Some(json!({
                 "type": "json_schema",
@@ -493,16 +520,38 @@ mod tests {
                  "arguments": "{}", "status": "completed"}
             ],
             "usage": {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10,
-                      "input_tokens_details": {"cached_tokens": 2}}
+                      "input_tokens_details": {"cached_tokens": 2},
+                      "output_tokens_details": {"reasoning_tokens": 3}}
         });
         let unified = converter.parse_response(response).expect("响应解析");
         assert_eq!(unified.id, "resp_1");
         assert_eq!(unified.usage.prompt_tokens, 4);
         assert_eq!(unified.usage.cache_read_tokens, 2);
+        assert_eq!(
+            unified
+                .usage
+                .prompt_tokens_details
+                .as_ref()
+                .expect("prompt details")
+                .cached_tokens,
+            2
+        );
+        assert_eq!(
+            unified
+                .usage
+                .completion_tokens_details
+                .as_ref()
+                .expect("completion details")
+                .reasoning_tokens,
+            3,
+            "output_tokens_details.reasoning_tokens → IR details"
+        );
         let choice = &unified.choices[0];
         assert_eq!(choice.finish, Some(FinishReason::ToolCalls));
         match &choice.message.as_ref().unwrap().content {
-            MessageContent::TextWithToolCalls { text, tool_calls } => {
+            MessageContent::TextWithToolCalls {
+                text, tool_calls, ..
+            } => {
                 assert_eq!(text, "hi there");
                 assert_eq!(tool_calls[0].id, "call_7");
             }

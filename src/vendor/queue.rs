@@ -7,6 +7,8 @@ use async_channel::{bounded, Receiver, Sender};
 
 pub struct PendingRequest {
     pub request: UnifiedRequest,
+    /// 调用级可选参数（beta 转发等；缺省零行为）
+    pub options: crate::vendor::manager::VendorCallOptions,
     pub response_tx: tokio::sync::oneshot::Sender<Result<UnifiedResponse, GateError>>,
     /// 入队时刻 — worker 完成分支据此计算排队+执行全程延迟。
     pub enqueued_at: std::time::Instant,
@@ -62,6 +64,7 @@ mod tests {
                 "messages": []
             }))
             .unwrap(),
+            options: Default::default(),
             response_tx: tx,
             enqueued_at: std::time::Instant::now(),
             dequeued_at: None,

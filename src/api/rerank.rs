@@ -9,6 +9,7 @@
 //! 原文不入库），成本按目录每千文档价计请求级金额。
 
 use crate::api::routing_hints::RoutingHints;
+use crate::config::{ModelTask, VendorProtocol};
 use crate::database::RequestLog;
 use crate::error::{FluxgateError, GateError};
 use crate::i18n::t;
@@ -41,7 +42,14 @@ pub async fn rerank(
         .await?;
 
     // 点名路径兜底：X-Vendor / X-Model / vendor.model 限定形式不得绕过能力过滤
-    if decision.vendor.type_ != "rerank" || decision.model.model_type.as_deref() != Some("rerank") {
+    if !matches!(decision.vendor.protocol(), VendorProtocol::Rerank)
+        || decision
+            .model
+            .model_type
+            .as_deref()
+            .and_then(ModelTask::parse)
+            != Some(ModelTask::Rerank)
+    {
         let error = FluxgateError::from(GateError::Protocol {
             source: t("api-rerank-capability-mismatch"),
             inner: None,
@@ -224,7 +232,9 @@ fn validate_rerank_hints(state: &Arc<ApiState>, headers: &HeaderMap) -> Result<(
     if let Some(vendor_id) = &hints.preferred_vendor {
         let config = state.config.read();
         let capable = config.vendors.iter().any(|vendor| {
-            vendor.enabled && vendor.id.eq_ignore_ascii_case(vendor_id) && vendor.type_ == "rerank"
+            vendor.enabled
+                && vendor.id.eq_ignore_ascii_case(vendor_id)
+                && matches!(vendor.protocol(), VendorProtocol::Rerank)
         });
         if !capable {
             return Err(mismatch());
@@ -236,7 +246,9 @@ fn validate_rerank_hints(state: &Arc<ApiState>, headers: &HeaderMap) -> Result<(
             .resolve_model(model_name)
             .iter()
             .any(|(vendor, model)| {
-                vendor.type_ == "rerank" && model.model_type.as_deref() == Some("rerank")
+                matches!(vendor.protocol(), VendorProtocol::Rerank)
+                    && model.model_type.as_deref().and_then(ModelTask::parse)
+                        == Some(ModelTask::Rerank)
             });
         if !capable {
             return Err(mismatch());

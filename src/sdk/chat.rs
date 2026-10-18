@@ -209,25 +209,71 @@ impl ChatMessage {
     }
 }
 
-/// 工具定义（function calling）。
+/// 工具定义：function 工具的 typed 视图，或 custom / 未知工具类型
+///（如 `{"type":"custom","custom":{…}}`）原对象原样保真——与网关
+/// `Tool.raw` 同源语义，同协议出站原样回写。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChatTool {
-    pub function: ChatToolDefinition,
+#[serde(untagged)]
+pub enum ChatTool {
+    /// function 工具（`type` 缺省按 "function" 解析，兼容无 type 键旧 wire）
+    Function {
+        #[serde(rename = "type", default = "default_tool_type")]
+        tool_type: String,
+        function: ChatToolDefinition,
+    },
+    /// custom / 未知类型：原对象保真（序列化即对象本身）
+    Raw(serde_json::Value),
+}
+
+/// 工具类型缺省词（旧 wire 无 `type` 键 → function）。
+fn default_tool_type() -> String {
+    "function".to_string()
+}
+
+impl ChatTool {
+    /// function 工具便捷构造（描述省略，parameters 原样透传）。
+    pub fn function(name: impl Into<String>, parameters: serde_json::Value) -> Self {
+        Self::Function {
+            tool_type: default_tool_type(),
+            function: ChatToolDefinition {
+                name: name.into(),
+                description: None,
+                parameters,
+            },
+        }
+    }
+
+    /// 链式设置描述（仅 function 工具生效）。
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        if let Self::Function { function, .. } = &mut self {
+            function.description = Some(description.into());
+        }
+        self
+    }
+
+    /// wire 类型词（`function` / `custom` / …；Raw 从对象 `type` 提取）。
+    pub fn tool_type(&self) -> &str {
+        match self {
+            Self::Function { tool_type, .. } => tool_type,
+            Self::Raw(value) => value.get("type").and_then(|t| t.as_str()).unwrap_or(""),
+        }
+    }
 }
 
 /// 工具函数定义 — `parameters` 为 JSON Schema，Value 原样无损透传；
-/// 网关不做 schema 校验（合法性与上游兼容性由调用方自担）
+/// 网关不做 schema 校验（合法性与上游兼容性由调用方自担）。`parameters`
+/// 为 null（未设）时省略键（严格模式上游拒绝显式 null）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatToolDefinition {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub parameters: serde_json::Value,
 }
 
-/// 工具选择 — 策略词（auto/none/required）或具名函数（对齐 IR
-/// `ToolChoice` 的线上形状）。
+/// 工具选择 — 策略词（auto/none/required）、具名函数或 allowed_tools
+/// 候选集（对齐官方 Chat Completions 的线上形状）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ChatToolChoice {
@@ -237,8 +283,31 @@ pub enum ChatToolChoice {
         choice_type: String,
         function: ChatToolChoiceFunction,
     },
+    /// allowed_tools 候选策略（`{"type":"allowed_tools","allowed_tools":{…}}`）
+    AllowedTools {
+        #[serde(rename = "type")]
+        choice_type: String,
+        allowed_tools: AllowedToolsBody,
+    },
     /// 策略词
     Strategy(String),
+}
+
+/// allowed_tools 载体：候选模式 + 工具列表。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AllowedToolsBody {
+    /// 候选模式（官方词表：auto / required）
+    pub mode: AllowedToolsMode,
+    /// 允许调用的工具（function 定义或 custom 原样对象）
+    pub tools: Vec<ChatTool>,
+}
+
+/// allowed_tools 模式词（官方词表）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AllowedToolsMode {
+    Auto,
+    Required,
 }
 
 /// 具名工具选择的函数体。
@@ -261,6 +330,14 @@ impl ChatToolChoice {
         Self::Specific {
             choice_type: "function".into(),
             function: ChatToolChoiceFunction { name: name.into() },
+        }
+    }
+
+    /// allowed_tools 候选策略（候选集 + auto/required 模式）。
+    pub fn allowed_tools(mode: AllowedToolsMode, tools: Vec<ChatTool>) -> Self {
+        Self::AllowedTools {
+            choice_type: "allowed_tools".into(),
+            allowed_tools: AllowedToolsBody { mode, tools },
         }
     }
 }
@@ -367,11 +444,32 @@ pub const RESERVED_KEYS: &[&str] = &[
     "tools",
     "tool_choice",
     "max_tokens",
+    "max_completion_tokens",
     "temperature",
     "top_p",
     "top_k",
     "frequency_penalty",
     "presence_penalty",
+    "n",
+    "logprobs",
+    "top_logprobs",
+    "seed",
+    "response_format",
+    "logit_bias",
+    "parallel_tool_calls",
+    "reasoning_effort",
+    "verbosity",
+    "service_tier",
+    "store",
+    "metadata",
+    "safety_identifier",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "stream_options",
+    "modalities",
+    "audio",
+    "prediction",
+    "web_search_options",
     "stop",
     "user",
     "vendor_extensions",
@@ -441,11 +539,28 @@ impl ChatRequest {
 pub struct ChatResponse {
     pub id: String,
     pub model: String,
+    /// 全量 choices（非流式多候选/n>1；流式
+    /// [`finalize`](crate::sdk::stream::ChatStream::finalize) 聚合产物为单 choice）
+    pub choices: Vec<ChatChoice>,
+    /// 首 choice 便捷视图（等价 `choices[0].content`）
     pub content: String,
+    /// assistant 思考内容（非标 `reasoning_content` 字段；无则空串）
+    pub reasoning_content: String,
     /// assistant 工具调用（模型发起工具环时非空）
     pub tool_calls: Vec<ChatToolCall>,
     pub finish_reason: ChatFinishReason,
     pub usage: ChatUsage,
+}
+
+/// 单个 choice（`index` 槽位 + 消息内容 + 终止词）。
+#[derive(Debug, Clone)]
+pub struct ChatChoice {
+    pub index: u32,
+    pub content: String,
+    /// 思考内容（非标 `reasoning_content`）
+    pub reasoning_content: String,
+    pub tool_calls: Vec<ChatToolCall>,
+    pub finish_reason: ChatFinishReason,
 }
 
 impl ChatResponse {
@@ -455,38 +570,56 @@ impl ChatResponse {
     pub(crate) fn from_wire(v: &serde_json::Value) -> Result<Self, FluxgateSdkError> {
         use crate::sdk::error::FluxgateSdkError;
 
-        let choices = v.get("choices").and_then(|c| c.as_array()).ok_or_else(|| {
+        let choices_wire = v.get("choices").and_then(|c| c.as_array()).ok_or_else(|| {
             FluxgateSdkError::Protocol {
                 message: "missing choices array".into(),
             }
         })?;
-        let choice = choices.first().ok_or_else(|| FluxgateSdkError::Protocol {
-            message: "empty choices array".into(),
-        })?;
 
-        let content = choice["message"]["content"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let tool_calls = choice["message"]["tool_calls"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .map(|tc| {
-                        serde_json::from_value::<ChatToolCall>(tc.clone()).map_err(|e| {
-                            FluxgateSdkError::Protocol {
-                                message: format!("invalid tool_call: {e}"),
-                            }
+        let mut choices = Vec::with_capacity(choices_wire.len());
+        for (fallback_index, choice) in choices_wire.iter().enumerate() {
+            let content = choice["message"]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let reasoning_content = choice["message"]["reasoning_content"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let tool_calls = choice["message"]["tool_calls"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|tc| {
+                            serde_json::from_value::<ChatToolCall>(tc.clone()).map_err(|e| {
+                                FluxgateSdkError::Protocol {
+                                    message: format!("invalid tool_call: {e}"),
+                                }
+                            })
                         })
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let finish_reason = choice["finish_reason"]
-            .as_str()
-            .map(ChatFinishReason::from_wire)
-            .unwrap_or(ChatFinishReason::Other(String::new()));
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let finish_reason = choice["finish_reason"]
+                .as_str()
+                .map(ChatFinishReason::from_wire)
+                .unwrap_or(ChatFinishReason::Other(String::new()));
+            choices.push(ChatChoice {
+                index: choice["index"].as_u64().unwrap_or(fallback_index as u64) as u32,
+                content,
+                reasoning_content,
+                tool_calls,
+                finish_reason,
+            });
+        }
+
+        let first = choices
+            .first()
+            .cloned()
+            .ok_or_else(|| FluxgateSdkError::Protocol {
+                message: "empty choices array".into(),
+            })?;
 
         let usage_json = v.get("usage");
         let cached = usage_json
@@ -504,9 +637,11 @@ impl ChatResponse {
         Ok(Self {
             id: v["id"].as_str().unwrap_or_default().to_string(),
             model: v["model"].as_str().unwrap_or_default().to_string(),
-            content,
-            tool_calls,
-            finish_reason,
+            choices,
+            content: first.content,
+            reasoning_content: first.reasoning_content,
+            tool_calls: first.tool_calls,
+            finish_reason: first.finish_reason,
             usage: ChatUsage {
                 prompt_tokens: u64_or("/prompt_tokens"),
                 completion_tokens: u64_or("/completion_tokens"),

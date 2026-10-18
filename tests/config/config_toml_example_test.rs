@@ -327,6 +327,25 @@ fn config_toml_example_parses() {
         content.contains("extra_headers"),
         "config.example.toml 缺 extra_headers 注释示例"
     );
+    // D8 厂商三新键：anthropic_version 缺省 None（出站注入 2023-06-01）、
+    // beta 转发与非标参数发送默认 false；示例注释带出键名与默认值
+    //（anthropic_version 为 skip_serializing_if 字段，全量键面扫描不可见，
+    // 须显式锚点）
+    let anth = config
+        .vendors
+        .iter()
+        .find(|v| v.type_ == "anthropic")
+        .expect("随仓示例必须带 anthropic 厂商");
+    assert_eq!(anth.anthropic_version, None, "示例缺省 None → 2023-06-01");
+    assert!(!anth.forward_beta_headers, "示例默认关闭 beta 转发");
+    assert!(!anth.send_nonstandard_params, "示例默认不发送非标参数");
+    for key in [
+        "anthropic_version",
+        "forward_beta_headers",
+        "send_nonstandard_params",
+    ] {
+        assert!(content.contains(key), "config.example.toml 缺 {key} 键");
+    }
     assert!(
         content.contains("abstract_id"),
         "config.example.toml 缺 models.abstract_id 注释示例"

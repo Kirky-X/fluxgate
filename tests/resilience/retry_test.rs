@@ -71,6 +71,9 @@ mod vendor_fallback_integration {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 

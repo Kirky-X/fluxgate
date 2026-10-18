@@ -74,6 +74,7 @@ pub fn parse_stream_frame(data: &str) -> Option<StreamChunk> {
                 index: candidate.index.unwrap_or(0),
                 delta: MessageContent::ToolCalls(calls),
                 finish_reason: finish_wire.map(str::to_string),
+                logprobs: None,
             });
         }
         return Some(StreamChunk::Content {
@@ -81,8 +82,10 @@ pub fn parse_stream_frame(data: &str) -> Option<StreamChunk> {
             delta: MessageContent::TextWithToolCalls {
                 text,
                 tool_calls: calls,
+                reasoning: None,
             },
             finish_reason: finish_wire.map(str::to_string),
+            logprobs: None,
         });
     }
 
@@ -93,6 +96,7 @@ pub fn parse_stream_frame(data: &str) -> Option<StreamChunk> {
         index: candidate.index.unwrap_or(0),
         delta: MessageContent::Text(text),
         finish_reason: finish_wire.map(str::to_string),
+        logprobs: None,
     })
 }
 
@@ -156,26 +160,10 @@ impl GeminiStreamEncoder {
                         }
                     }
                     MessageContent::MultiModal(blocks) => {
-                        let mut parts = Vec::new();
-                        for block in blocks {
-                            match block {
-                                crate::protocol::ContentBlock::Text { text } => {
-                                    parts.push(json!({"text": text}));
-                                }
-                                crate::protocol::ContentBlock::Image {
-                                    source:
-                                        crate::protocol::ImageSource::Base64 { media_type, data },
-                                    ..
-                                } => parts.push(json!({"inlineData": {
-                                    "mimeType": media_type, "data": data
-                                }})),
-                                crate::protocol::ContentBlock::Image {
-                                    source: crate::protocol::ImageSource::Url { url },
-                                    ..
-                                } => parts.push(json!({"fileData": {"fileUri": url}})),
-                                other => parts.push(json!({"text": format!("{other:?}")})),
-                            }
-                        }
+                        let parts: Vec<Value> = blocks
+                            .iter()
+                            .map(crate::protocol::gemini::convert_out::block_to_part)
+                            .collect();
                         if !parts.is_empty() {
                             frames.push(parts_frame(parts, None));
                         }
@@ -185,7 +173,9 @@ impl GeminiStreamEncoder {
                             self.push_call(index as u32, &call);
                         }
                     }
-                    MessageContent::TextWithToolCalls { text, tool_calls } => {
+                    MessageContent::TextWithToolCalls {
+                        text, tool_calls, ..
+                    } => {
                         if !text.is_empty() {
                             frames.push(text_frame(&text, None));
                         }
@@ -204,6 +194,14 @@ impl GeminiStreamEncoder {
                             }})],
                             None,
                         ));
+                    }
+                    // Gemini 无思考帧：丢弃并 debug 显性化（归 gemini-api 功能面）
+                    MessageContent::Reasoning { .. } => {
+                        crate::protocol::drop_unsupported(
+                            crate::protocol::Protocol::Gemini,
+                            "stream.reasoning",
+                            "no gemini reasoning frame",
+                        );
                     }
                 }
                 if self.finish.is_some() && !self.finish_sent {
@@ -458,6 +456,7 @@ mod tests {
             index: 0,
             delta: MessageContent::Text("he".into()),
             finish_reason: None,
+            logprobs: None,
         });
         assert_eq!(frames.len(), 1);
         assert_eq!(
@@ -481,6 +480,7 @@ mod tests {
             index: 0,
             delta: MessageContent::Text(String::new()),
             finish_reason: Some("tool_calls".into()),
+            logprobs: None,
         });
         assert_eq!(frames.len(), 1);
         let parts = frames[0]["candidates"][0]["content"]["parts"]
@@ -518,6 +518,7 @@ mod tests {
                 index: 0,
                 delta: MessageContent::Text(String::new()),
                 finish_reason: None,
+                logprobs: None,
             })
             .is_empty());
         assert_eq!(encoder.finish().len(), 1, "无 finish 时按 STOP 收尾");

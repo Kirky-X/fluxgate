@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::sdk::client::FluxgateClient;
 use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::transport::send_with_retry;
 
 /// 模型能力目录条目 — 对齐网关 `GET /admin/models`（目录）。
 /// 定价单位 =「currency 计价，每 1M tokens」。
@@ -148,24 +149,15 @@ impl FluxgateClient {
                 message: format!("invalid URL: {e}"),
             })?;
 
-        let resp = self
+        let request = self
             .http
             .get(url)
             .bearer_auth(&self.api_key)
             // client 级只有 read_timeout 停滞看护；admin 无请求级 config，
             // 总超时逐请求落到客户端默认，慢滴漏响应不能无上界
-            .timeout(self.effective_timeout)
-            .send()
-            .await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(FluxgateSdkError::Server {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
 
         Ok(resp.json().await?)
     }
@@ -179,30 +171,30 @@ impl FluxgateClient {
     ) -> Result<(), FluxgateSdkError> {
         let url = admin_model_url(&self.base_url, model_id)?;
 
-        let resp = self
+        let request = self
             .http
             .put(url)
             .bearer_auth(&self.api_key)
             .timeout(self.effective_timeout)
-            .json(entry)
-            .send()
-            .await?;
+            .json(entry);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
 
         Self::assert_admin_ok(resp).await
     }
 
     /// DELETE /admin/models/{model_id} — 目录下条（缺失条目网关返回
-    /// validation_error 400，映射 [`FluxgateSdkError::Server`]）。
+    /// validation_error 400，映射 [`FluxgateSdkError::Api`]）。
     pub async fn delete_model(&self, model_id: &str) -> Result<(), FluxgateSdkError> {
         let url = admin_model_url(&self.base_url, model_id)?;
 
-        let resp = self
+        let request = self
             .http
             .delete(url)
             .bearer_auth(&self.api_key)
-            .timeout(self.effective_timeout)
-            .send()
-            .await?;
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
 
         Self::assert_admin_ok(resp).await
     }
@@ -217,22 +209,13 @@ impl FluxgateClient {
                 message: format!("invalid URL: {e}"),
             })?;
 
-        let resp = self
+        let request = self
             .http
             .get(url)
             .bearer_auth(&self.api_key)
-            .timeout(self.effective_timeout)
-            .send()
-            .await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(FluxgateSdkError::Server {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
 
         Ok(resp.json().await?)
     }
@@ -247,37 +230,20 @@ impl FluxgateClient {
                 message: format!("invalid URL: {e}"),
             })?;
 
-        let resp = self
+        let request = self
             .http
             .get(url)
             .bearer_auth(&self.api_key)
-            .timeout(self.effective_timeout)
-            .send()
-            .await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(FluxgateSdkError::Server {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
 
         Ok(resp.json().await?)
     }
 
-    /// admin 写路径的 success 断言（非 2xx → Server 错误；2xx 但
-    /// success=false → Protocol 错误显性）。
+    /// admin 写路径的 success 断言（2xx 由重试层
+    /// [`send_with_retry`] 保证；`success=false` → Protocol 错误显性）。
     async fn assert_admin_ok(resp: reqwest::Response) -> Result<(), FluxgateSdkError> {
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(FluxgateSdkError::Server {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
         let body: AdminActionResponse = resp.json().await?;
         if !body.success {
             return Err(FluxgateSdkError::Protocol {

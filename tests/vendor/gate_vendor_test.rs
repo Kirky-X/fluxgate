@@ -595,6 +595,217 @@ mod manager {
         mock.assert_async().await;
     }
 
+    /// `anthropic-beta` 转发（R-vendor-management-007）：anthropic 型 +
+    /// `forward_beta_headers` 开启时，入站值原样注入出站（mockito 按头
+    /// 匹配锁定）；缺省无值零行为。
+    #[tokio::test]
+    async fn test_execute_passthrough_request_forwards_anthropic_beta_when_gated() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("anthropic-beta", "extended-thinking-2025-01-01")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"msg-beta","type":"message","content":[]}"#)
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "anthropic-beta",
+            "anthropic",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.forward_beta_headers = true;
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        // 有值：头原样出现在出站请求（mockito 头匹配）
+        let result = manager
+            .execute_passthrough_request_with_options(
+                "anthropic-beta",
+                serde_json::json!({"model": "claude", "messages": []}),
+                fluxgate::vendor::VendorCallOptions {
+                    anthropic_beta: Some("extended-thinking-2025-01-01".into()),
+                },
+            )
+            .await;
+        assert!(result.is_ok(), "expected success: {:?}", result.err());
+        mock.assert_async().await;
+    }
+
+    /// 开关关闭时 `anthropic-beta` 不注入（透传路径零行为）：
+    /// mockito 以 `Matcher::Missing` 头匹配锁定。
+    #[tokio::test]
+    async fn test_execute_passthrough_request_omits_anthropic_beta_when_disabled() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("anthropic-beta", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"msg-beta-off","type":"message","content":[]}"#)
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "anthropic-beta-off",
+            "anthropic",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        // forward_beta_headers 缺省 false；即使携带值也不注入
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init should succeed");
+
+        let result = manager
+            .execute_passthrough_request_with_options(
+                "anthropic-beta-off",
+                serde_json::json!({"model": "claude", "messages": []}),
+                fluxgate::vendor::VendorCallOptions {
+                    anthropic_beta: Some("extended-thinking-2025-01-01".into()),
+                },
+            )
+            .await;
+        assert!(result.is_ok(), "expected success: {:?}", result.err());
+        mock.assert_async().await;
+    }
+
+    /// 非标参数门控（R-vendor-management-008）：openai 型转换出站默认
+    /// 剥离 `top_k`——strict mock（要求 top_k=40）expect(0)，catch-all
+    /// 命中 1 次。mockito 取「最后一个匹配」，strict 后建保证上游若出现
+    /// `top_k` 必被 strict 捕获（catch-all 未被命中即断言失败）。
+    #[tokio::test]
+    async fn convert_outbound_strips_top_k_by_default() {
+        let mut server = mockito::Server::new_async().await;
+        let catch_all = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c-strip","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}"#,
+            )
+            .create_async()
+            .await;
+        let strict = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"top_k": 40}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c-topk","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}"#,
+            )
+            .create_async()
+            .await
+            .expect(0);
+
+        let v = make_vendor(
+            "v-strip-topk",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        // send_nonstandard_params 缺省 false
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let mut request = make_unified_request();
+        request.sampling = Some(fluxgate::protocol::SamplingParams {
+            top_k: Some(40),
+            ..Default::default()
+        });
+        let result = manager.execute_request("v-strip-topk", request).await;
+        assert!(result.is_ok(), "expected success: {:?}", result.err());
+        assert_eq!(result.unwrap().id, "c-strip", "必须是 catch-all 命中");
+
+        strict.assert_async().await;
+        catch_all.assert_async().await;
+    }
+
+    /// 开关开启：`top_k` 保留为 40（strict mock 必须命中，否则 501）。
+    #[tokio::test]
+    async fn convert_outbound_keeps_top_k_when_enabled() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"top_k": 40}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c-keep","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}"#,
+            )
+            .create_async()
+            .await;
+
+        let mut v = make_vendor(
+            "v-keep-topk",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        v.send_nonstandard_params = true;
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let mut request = make_unified_request();
+        request.sampling = Some(fluxgate::protocol::SamplingParams {
+            top_k: Some(40),
+            ..Default::default()
+        });
+        let result = manager.execute_request("v-keep-topk", request).await;
+        assert!(result.is_ok(), "expected success: {:?}", result.err());
+        mock.assert_async().await;
+    }
+
+    /// 透传路径不受开关影响：openai→openai `top_k` 原样保留
+    ///（开关缺省 false，字节保真）。
+    #[tokio::test]
+    async fn passthrough_keeps_top_k_regardless_of_switch() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(mockito::Matcher::Json(
+                serde_json::json!({"model": "gpt-4", "top_k": 40, "messages": []}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"c-raw","object":"chat.completion","choices":[]}"#)
+            .create_async()
+            .await;
+
+        let v = make_vendor(
+            "v-passthrough-topk",
+            "openai",
+            true,
+            format!("{}/v1", server.url()),
+            token_limit(1000),
+        );
+        let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+        let manager = VendorManager::new(cm);
+        manager.initialize().await.expect("init");
+
+        let result = manager
+            .execute_passthrough_request(
+                "v-passthrough-topk",
+                serde_json::json!({"model": "gpt-4", "top_k": 40, "messages": []}),
+            )
+            .await;
+        assert!(result.is_ok(), "expected success: {:?}", result.err());
+        mock.assert_async().await;
+    }
+
     #[tokio::test]
     async fn test_execute_passthrough_request_http_500_errors_with_status() {
         let mut server = mockito::Server::new_async().await;
@@ -1438,6 +1649,7 @@ mod queue {
             tokio::sync::oneshot::channel::<Result<UnifiedResponse, fluxgate::error::GateError>>();
         PendingRequest {
             request: sample_request(),
+            options: Default::default(),
             response_tx: tx,
             enqueued_at: std::time::Instant::now(),
             // 出队时刻由 VendorQueue::recv 盖戳，构造方恒 None
@@ -2108,6 +2320,9 @@ mod token_weighted_tickets {
                     token_ticket_max: 16384,
                     token_ticket_default: 4096,
                 },
+                anthropic_version: None,
+                forward_beta_headers: false,
+                send_nonstandard_params: false,
             }],
             global_model: None,
             pricing: vec![],

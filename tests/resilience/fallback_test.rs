@@ -256,6 +256,9 @@ mod build_fallback_chain {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 
@@ -418,6 +421,9 @@ mod cover_all_paths {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 

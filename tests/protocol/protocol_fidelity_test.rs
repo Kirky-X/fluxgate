@@ -263,3 +263,224 @@ fn image_blocks_map_both_directions() {
         );
     }
 }
+
+/// effort 七值双向：OpenAI `reasoning_effort` ↔ Anthropic `output_config.effort`
+///（Minimal→low 降级、None 省略字段；R-004/R-010）。
+#[test]
+fn effort_cross_protocol_roundtrip() {
+    // OpenAI high → IR → Anthropic output_config.effort=high
+    let mut request = base_openai_request();
+    request["reasoning_effort"] = json!("high");
+    let unified = openai().to_unified(request).expect("to unified");
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    assert_eq!(external["output_config"]["effort"], "high");
+    assert!(
+        external.get("reasoning_effort").is_none(),
+        "OpenAI 词不得直写 Anthropic 顶层: {external}"
+    );
+
+    // Anthropic xhigh → IR → OpenAI reasoning_effort=xhigh（顺路保真）
+    let mut request = base_anthropic_request();
+    request["output_config"] = json!({"effort": "xhigh"});
+    let unified = anthropic().to_unified(request).expect("to unified");
+    let external = openai().request_to_external(unified).expect("to external");
+    assert_eq!(external["reasoning_effort"], "xhigh");
+
+    // Minimal → Anthropic 降级 low；None → 不写 output_config
+    for (wire, expected) in [("minimal", Some("low")), ("none", None)] {
+        let mut request = base_openai_request();
+        request["reasoning_effort"] = json!(wire);
+        let unified = openai().to_unified(request).expect("to unified");
+        let external = anthropic()
+            .request_to_external(unified)
+            .expect("to external");
+        match expected {
+            Some(effort) => assert_eq!(
+                external["output_config"]["effort"], effort,
+                "{wire} 必须降级为 {effort}"
+            ),
+            None => assert!(
+                external.get("output_config").is_none(),
+                "none 不得写 output_config: {external}"
+            ),
+        }
+    }
+}
+
+/// thinking 全变体跨协议保真：Anthropic 入站（含 display）同协议往返逐字
+/// 相等；thinking 预算不透传到 OpenAI 时走显性丢弃（不 panic、不出字段）。
+#[test]
+fn thinking_cross_protocol_fidelity() {
+    for thinking in [
+        json!({"type": "enabled", "budget_tokens": 2048, "display": "omitted"}),
+        json!({"type": "adaptive", "display": "summarized"}),
+        json!({"type": "between_tools"}),
+    ] {
+        let mut request = base_anthropic_request();
+        request["thinking"] = thinking.clone();
+        let unified = anthropic().to_unified(request).expect("to unified");
+        assert!(
+            unified.thinking_config.is_some(),
+            "thinking 入 IR: {thinking}"
+        );
+        // 同协议往返逐字相等
+        let external = anthropic()
+            .request_to_external(unified)
+            .expect("to external");
+        assert_eq!(external["thinking"], thinking, "thinking 往返保真");
+
+        // 跨协议到 OpenAI：无等价槽 → 不出 thinking 字段（显性丢弃）
+        let mut request = base_anthropic_request();
+        request["thinking"] = thinking.clone();
+        let unified = anthropic().to_unified(request).expect("to unified");
+        let external = openai().request_to_external(unified).expect("to external");
+        assert!(
+            external.get("thinking").is_none(),
+            "OpenAI 无 thinking 槽: {external}"
+        );
+    }
+
+    // Disabled：Anthropic 缺省即关闭 → 出站省略字段
+    let mut request = base_anthropic_request();
+    request["thinking"] = json!({"type": "disabled"});
+    let unified = anthropic().to_unified(request).expect("to unified");
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    assert!(external.get("thinking").is_none(), "Disabled 不写字段");
+}
+
+/// tool_choice none 双向：Anthropic 原生 `{"type":"none"}` ↔ OpenAI 字符串
+/// "none"（R-006；不得降级为 auto 或省略）。
+#[test]
+fn tool_choice_none_cross_protocol() {
+    // Anthropic {"type":"none"} → IR → OpenAI "none"
+    let mut request = base_anthropic_request();
+    request["tool_choice"] = json!({"type": "none"});
+    let unified = anthropic().to_unified(request).expect("to unified");
+    let upgraded = unified.tool_choice.clone().expect("保留");
+    let rendered = serde_json::to_value(&upgraded).unwrap().to_string();
+    assert!(rendered.contains("none"), "none 入 IR: {rendered}");
+    let external = openai().request_to_external(unified).expect("to external");
+    assert_eq!(external["tool_choice"], "none");
+
+    // OpenAI "none" → IR → Anthropic 原生 {"type":"none"}
+    let mut request = base_openai_request();
+    request["tool_choice"] = json!("none");
+    let unified = openai().to_unified(request).expect("to unified");
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    assert_eq!(external["tool_choice"], json!({"type": "none"}));
+}
+
+/// metadata/user：Anthropic `metadata` 整体往返 + `user_id`↔IR user；
+/// OpenAI `user` 跨协议落 Anthropic `metadata.user_id`（R-011）。
+#[test]
+fn metadata_user_cross_protocol() {
+    // Anthropic 入站 → IR → Anthropic 出站：两键保留
+    let mut request = base_anthropic_request();
+    request["metadata"] = json!({"user_id": "u1", "trace": "t"});
+    let unified = anthropic().to_unified(request).expect("to unified");
+    assert_eq!(unified.user.as_deref(), Some("u1"), "user_id → IR user");
+    assert_eq!(
+        unified.metadata,
+        Some(json!({"user_id": "u1", "trace": "t"})),
+        "metadata 整体入 IR"
+    );
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    assert_eq!(external["metadata"], json!({"user_id": "u1", "trace": "t"}));
+
+    // OpenAI user → IR → Anthropic metadata.user_id（无 metadata 时补）
+    let mut request = base_openai_request();
+    request["user"] = json!("u2");
+    let unified = openai().to_unified(request).expect("to unified");
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    assert_eq!(external["metadata"], json!({"user_id": "u2"}));
+}
+
+/// 响应侧保真：usage details（cached/reasoning_tokens）与 logprobs 经
+/// OpenAI 往返；cached_tokens 跨协议落 Anthropic cache_read_input_tokens；
+/// Anthropic stop_sequence 实际值往返（R-011）。
+#[test]
+fn response_usage_details_logprobs_stop_sequence_roundtrip() {
+    let response = json!({
+        "id": "chatcmpl-1",
+        "model": "gpt-4",
+        "created": 1,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "hi"},
+            "finish_reason": "stop",
+            "logprobs": {"content": [{"token": "hi", "logprob": -0.1}]}
+        }],
+        "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 7,
+            "total_tokens": 12,
+            "prompt_tokens_details": {"cached_tokens": 3},
+            "completion_tokens_details": {"reasoning_tokens": 4}
+        }
+    });
+    let unified = openai().parse_response(response).expect("parse");
+    let external = openai().response_to_external(unified).expect("to external");
+    assert_eq!(
+        external["usage"]["prompt_tokens_details"]["cached_tokens"], 3,
+        "prompt_tokens_details 回写"
+    );
+    assert_eq!(
+        external["usage"]["completion_tokens_details"]["reasoning_tokens"], 4,
+        "completion_tokens_details 回写"
+    );
+    assert_eq!(
+        external["choices"][0]["logprobs"]["content"][0]["token"], "hi",
+        "choices[].logprobs 回写"
+    );
+
+    // OpenAI 响应 → IR → Anthropic 响应：cached_tokens 落
+    // cache_read_input_tokens（跨协议载体）
+    let unified = openai()
+        .parse_response(json!({
+            "id": "chatcmpl-2",
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 1,
+                "total_tokens": 6,
+                "prompt_tokens_details": {"cached_tokens": 3}
+            }
+        }))
+        .expect("parse");
+    let external = anthropic()
+        .response_to_external(unified)
+        .expect("to external");
+    assert_eq!(external["usage"]["cache_read_input_tokens"], 3);
+
+    // Anthropic 响应 stop_sequence 实际值往返
+    let unified = anthropic()
+        .parse_response(json!({
+            "id": "msg_1",
+            "model": "claude-x",
+            "content": [{"type": "text", "text": "par"}],
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "END",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        }))
+        .expect("parse");
+    let external = anthropic()
+        .response_to_external(unified)
+        .expect("to external");
+    assert_eq!(external["stop_sequence"], "END");
+    assert_eq!(external["stop_reason"], "stop_sequence");
+}

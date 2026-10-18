@@ -85,6 +85,7 @@ mod converter {
                     parameters: json!({"type": "object"}),
                     strict: Some(true),
                 },
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -821,7 +822,9 @@ mod converter {
         let assistant = &unified.messages[1];
         assert_eq!(assistant.role, Role::Assistant);
         match &assistant.content {
-            fluxgate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            fluxgate::protocol::MessageContent::TextWithToolCalls {
+                text, tool_calls, ..
+            } => {
                 assert_eq!(text, "Let me check.");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "toolu_1");
@@ -880,7 +883,9 @@ mod converter {
 
         let unified = converter.to_unified(request).expect("to_unified");
         match &unified.messages[0].content {
-            fluxgate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            fluxgate::protocol::MessageContent::TextWithToolCalls {
+                text, tool_calls, ..
+            } => {
                 assert_eq!(text, "Let me check the weather.");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "call_9");
@@ -913,7 +918,9 @@ mod converter {
         let parsed = converter.parse_response(response).expect("parse_response");
         let msg = parsed.choices[0].message.as_ref().unwrap();
         match &msg.content {
-            fluxgate::protocol::MessageContent::TextWithToolCalls { text, tool_calls } => {
+            fluxgate::protocol::MessageContent::TextWithToolCalls {
+                text, tool_calls, ..
+            } => {
                 assert_eq!(text, "Checking...");
                 assert_eq!(tool_calls[0].id, "call_r1");
                 assert_eq!(tool_calls[0].function.name, "lookup");
@@ -1041,6 +1048,7 @@ mod converter {
                 logprobs: None,
             }],
             usage: fluxgate::protocol::TokenUsage::default(),
+            stop_sequence: None,
         };
 
         let out = anthropic
@@ -1350,7 +1358,9 @@ mod converter {
             .expect("parse mixed content");
         let msg = parsed.choices[0].message.as_ref().unwrap();
         match &msg.content {
-            MessageContent::TextWithToolCalls { text, tool_calls } => {
+            MessageContent::TextWithToolCalls {
+                text, tool_calls, ..
+            } => {
                 assert_eq!(text, "Checking.");
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].function.name, "get_weather");
@@ -1418,6 +1428,7 @@ mod converter {
                 index: 0,
                 delta: MessageContent::Text("hello".into()),
                 finish_reason: Some("stop".into()),
+                logprobs: None,
             })
             .expect("text delta");
         assert_eq!(out["type"], "content_block_delta");
@@ -1442,6 +1453,7 @@ mod converter {
                     ContentBlock::Type("weird".into()),
                 ]),
                 finish_reason: None,
+                logprobs: None,
             })
             .expect("multimodal delta");
         assert_eq!(out["type"], "content_block_delta");
@@ -1459,6 +1471,7 @@ mod converter {
                     },
                 }]),
                 finish_reason: None,
+                logprobs: None,
             })
             .expect("tool calls delta");
         assert_eq!(out["delta"]["text"], "");
@@ -1473,6 +1486,7 @@ mod converter {
                     is_error: false,
                 }),
                 finish_reason: None,
+                logprobs: None,
             })
             .expect("tool result delta");
         assert_eq!(out["delta"]["text"], "");
@@ -1483,8 +1497,10 @@ mod converter {
                 delta: MessageContent::TextWithToolCalls {
                     text: "checking".into(),
                     tool_calls: vec![],
+                    reasoning: None,
                 },
                 finish_reason: None,
+                logprobs: None,
             })
             .expect("mixed delta");
         assert_eq!(out["delta"]["text"], "");
@@ -1528,6 +1544,7 @@ mod converter {
             index: 0,
             delta: MessageContent::Text("hi".into()),
             finish_reason: None,
+            logprobs: None,
         });
         events.extend(encoder.encode_chunk(StreamChunk::Usage {
             prompt_tokens: 2,
@@ -1592,6 +1609,7 @@ mod converter {
             index: 0,
             delta: MessageContent::Text("x".into()),
             finish_reason: None,
+            logprobs: None,
         });
         assert_eq!(
             types_of(&encoder.finish()),
@@ -1622,6 +1640,7 @@ mod converter {
                 ContentBlock::Text { text: "b".into() },
             ]),
             finish_reason: None,
+            logprobs: None,
         });
         assert_eq!(
             delta_texts_of(&events),
@@ -1635,8 +1654,10 @@ mod converter {
             delta: MessageContent::TextWithToolCalls {
                 text: "checking".into(),
                 tool_calls: vec![],
+                reasoning: None,
             },
             finish_reason: None,
+            logprobs: None,
         });
         assert_eq!(delta_texts_of(&events), vec!["checking".to_string()]);
 
@@ -1652,6 +1673,7 @@ mod converter {
                 },
             }]),
             finish_reason: None,
+            logprobs: None,
         });
         assert!(
             delta_texts_of(&events).is_empty(),
@@ -1817,6 +1839,7 @@ mod converter {
                 logprobs: None,
             }],
             usage: TokenUsage::default(),
+            stop_sequence: None,
         };
         let out = converter
             .response_to_external(response)
@@ -1920,6 +1943,7 @@ mod converter {
                                 arguments: "{\"city\":\"BJ\"}".into(),
                             },
                         }],
+                        reasoning: None,
                     },
                 }),
                 finish_reason: Some("tool_calls".into()),
@@ -1932,6 +1956,7 @@ mod converter {
                 total_tokens: 2,
                 ..Default::default()
             },
+            stop_sequence: None,
         };
 
         let out = converter
@@ -2076,6 +2101,7 @@ mod converter {
                 index: 2,
                 delta: MessageContent::Text("hi".into()),
                 finish_reason: Some("stop".into()),
+                logprobs: None,
             })
             .expect("content chunk");
         assert_eq!(out["id"], "chunk-2");
@@ -2123,6 +2149,7 @@ mod converter {
                 MessageContent::TextWithToolCalls {
                     text: "mixed".into(),
                     tool_calls: vec![],
+                    reasoning: None,
                 },
                 json!("mixed"),
             ),
@@ -2133,6 +2160,7 @@ mod converter {
                     index: 0,
                     delta,
                     finish_reason: None,
+                    logprobs: None,
                 })
                 .expect("delta chunk");
             assert_eq!(out["choices"][0]["delta"]["content"], expected);
@@ -2420,6 +2448,7 @@ mod converter {
                 }),
                 strict: None,
             },
+            ..Default::default()
         }];
         request.tool_choice = Some(ToolChoice::Specific {
             choice_type: "function".into(),
@@ -2631,10 +2660,16 @@ mod converter {
             "thinking 协议键不得由扩展表补入（跨协议计费行为键消灭）"
         );
         assert_eq!(out["x_allowed"], "pass", "非协议键仍透传（D2 语义）");
-        assert_eq!(
-            out["metadata"]["user_id"], "u",
-            "metadata 非 IR 建模键，同协议透传保留"
+        assert!(
+            out.get("metadata").is_none(),
+            "metadata 已类型化建模：扩展表不得补入（IR 字段才可达）"
         );
+
+        // IR 类型化 metadata 正常写出（R-011）
+        let mut request = minimal_unified_request("claude", "hi");
+        request.metadata = Some(json!({"user_id": "u"}));
+        let out = anthropic.request_to_external(request).expect("to external");
+        assert_eq!(out["metadata"]["user_id"], "u");
     }
 
     /// 出站 sampling 只补 flat 未设置的槽；sampling.top_k 直出 top_k。
@@ -2798,7 +2833,9 @@ mod converter {
                 cache_creation_tokens: 4,
                 cost_usd: None,
                 cost_cny: None,
+                ..Default::default()
             },
+            stop_sequence: None,
         };
         let out = openai.response_to_external(response).expect("to external");
         assert_eq!(out["usage"]["prompt_tokens_details"]["cached_tokens"], 8);
@@ -3101,7 +3138,9 @@ mod converter {
                 cache_creation_tokens: 4,
                 cost_usd: None,
                 cost_cny: None,
+                ..Default::default()
             },
+            stop_sequence: None,
         };
         let out = anthropic
             .response_to_external(response)
@@ -3117,6 +3156,7 @@ mod converter {
             model: "claude".into(),
             choices: vec![Choice::default()],
             usage: TokenUsage::default(),
+            stop_sequence: None,
         };
         let out = anthropic
             .response_to_external(response)
@@ -3294,13 +3334,14 @@ mod converter {
             "Specific 必须写 Anthropic tool 形状"
         );
 
-        // "none" → 省略 tool_choice 字段（Anthropic 无 none 形状）
+        // "none" → Anthropic 原生 {"type":"none"}（R-006）
         let mut request = minimal_unified_request("claude", "hi");
         request.tool_choice = Some(ToolChoice::Strategy("none".into()));
         let out = anthropic.request_to_external(request).expect("to external");
-        assert!(
-            out.get("tool_choice").is_none(),
-            "none 必须省略 tool_choice 字段而非写未知词"
+        assert_eq!(
+            out["tool_choice"],
+            json!({"type": "none"}),
+            "none 必须写 Anthropic 原生 none 形状"
         );
     }
 
@@ -3320,13 +3361,15 @@ mod converter {
         assert_eq!(
             unified.thinking_config,
             Some(ThinkingConfig::Enabled {
-                budget_tokens: 2048
+                budget_tokens: 2048,
+                display: None,
             })
         );
 
         let mut request = minimal_unified_request("claude", "hi");
         request.thinking_config = Some(ThinkingConfig::Enabled {
             budget_tokens: 2048,
+            display: None,
         });
         let out = anthropic.request_to_external(request).expect("to external");
         assert_eq!(
@@ -3334,11 +3377,11 @@ mod converter {
             json!({"type": "enabled", "budget_tokens": 2048})
         );
 
-        // Adaptive：Anthropic 无对应，保守省略（不出站）
+        // Adaptive → 原生 adaptive（D3）
         let mut request = minimal_unified_request("claude", "hi");
-        request.thinking_config = Some(ThinkingConfig::Adaptive);
+        request.thinking_config = Some(ThinkingConfig::Adaptive { display: None });
         let out = anthropic.request_to_external(request).expect("to external");
-        assert!(out.get("thinking").is_none(), "Adaptive 保守省略");
+        assert_eq!(out["thinking"], json!({"type": "adaptive"}));
 
         // Disabled：Anthropic 缺省即禁用，省略
         let mut request = minimal_unified_request("claude", "hi");
@@ -3897,6 +3940,7 @@ mod converter {
             index: 0,
             delta: MessageContent::Text("done".into()),
             finish_reason: Some("max_tokens".into()),
+            logprobs: None,
         });
         events.extend(encoder.finish());
         let stop_reason = events
@@ -4007,6 +4051,7 @@ mod converter {
                 },
             ]),
             finish_reason: Some("tool_calls".into()),
+            logprobs: None,
         });
         events.extend(encoder.encode_chunk(StreamChunk::Usage {
             prompt_tokens: 1,
@@ -4156,6 +4201,7 @@ mod converter {
                 parameters: serde_json::Value::Null,
                 strict: None,
             },
+            ..Default::default()
         }];
 
         let external = converter.request_to_external(request).expect("to external");
@@ -4210,6 +4256,7 @@ mod converter {
                     logprobs: None,
                 }],
                 usage: TokenUsage::default(),
+                stop_sequence: None,
             })
             .expect("to external");
         assert_eq!(
@@ -4231,6 +4278,7 @@ mod converter {
                     logprobs: None,
                 }],
                 usage: TokenUsage::default(),
+                stop_sequence: None,
             })
             .expect("to external");
         assert_eq!(
@@ -4292,7 +4340,10 @@ mod converter {
                 "thinking": {"type": "enabled"}
             }))
             .expect("to_unified");
-        assert_eq!(unified.thinking_config, Some(ThinkingConfig::Adaptive));
+        assert_eq!(
+            unified.thinking_config,
+            Some(ThinkingConfig::Adaptive { display: None })
+        );
     }
 
     /// max_tokens_to_sample 旧别名回退读取，max_tokens 优先。
@@ -4349,6 +4400,7 @@ mod converter {
             model: "claude".into(),
             choices: vec![],
             usage: TokenUsage::default(),
+            stop_sequence: None,
         };
         let err = converter.response_to_external(response).unwrap_err();
         match err {
@@ -4378,6 +4430,7 @@ mod converter {
                     logprobs: None,
                 }],
                 usage: TokenUsage::default(),
+                stop_sequence: None,
             })
             .expect("to external");
         assert_eq!(out["stop_reason"], "end_turn");
@@ -4616,6 +4669,7 @@ mod unified {
                     arguments: "{}".to_string(),
                 },
             }],
+            reasoning: None,
         };
         let json = serde_json::to_value(&content).unwrap();
         // camelCase: toolCalls (not tool_calls)
@@ -4820,6 +4874,7 @@ mod unified {
                 total_tokens: 15,
                 ..Default::default()
             },
+            stop_sequence: None,
         };
         let json_str = serde_json::to_string(&resp).unwrap();
         let deserialized: UnifiedResponse = serde_json::from_str(&json_str).unwrap();
@@ -4916,6 +4971,7 @@ mod unified {
                 parameters: schema.clone(),
                 strict: None,
             },
+            ..Default::default()
         };
         let json_str = serde_json::to_string(&tool).unwrap();
         let deserialized: Tool = serde_json::from_str(&json_str).unwrap();
@@ -5172,6 +5228,7 @@ mod unified {
             index: 0,
             delta: MessageContent::Text("Hello".to_string()),
             finish_reason: Some("stop".to_string()),
+            logprobs: None,
         };
         let json = serde_json::to_value(&chunk).unwrap();
         assert_eq!(json["type"], "content");

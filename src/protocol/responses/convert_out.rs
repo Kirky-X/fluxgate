@@ -7,8 +7,8 @@
 //! `status`/`incomplete_details`，usage 映射到 Responses 词汇。
 
 use crate::protocol::responses::types::{
-    IncompleteDetails, InputTokensDetails, OutputContent, OutputItem, ResponsesRequest,
-    ResponsesResponse, ResponsesUsage,
+    IncompleteDetails, InputTokensDetails, OutputContent, OutputItem, OutputTokensDetails,
+    ResponsesRequest, ResponsesResponse, ResponsesUsage,
 };
 use crate::protocol::unified::{FinishReason, MessageContent, UnifiedResponse};
 use uuid::Uuid;
@@ -107,7 +107,9 @@ fn append_message_output(output: &mut Vec<OutputItem>, content: &MessageContent)
                 ));
             }
         }
-        MessageContent::TextWithToolCalls { text, tool_calls } => {
+        MessageContent::TextWithToolCalls {
+            text, tool_calls, ..
+        } => {
             push_text_message(output, text);
             for call in tool_calls {
                 output.push(function_call_item(
@@ -118,6 +120,14 @@ fn append_message_output(output: &mut Vec<OutputItem>, content: &MessageContent)
             }
         }
         MessageContent::ToolResult(_) => {}
+        // Responses 无 reasoning item 建模：丢弃并 debug 显性化
+        MessageContent::Reasoning { .. } => {
+            crate::protocol::drop_unsupported(
+                crate::protocol::Protocol::Responses,
+                "message.reasoning",
+                "no responses reasoning item in scope",
+            );
+        }
     }
 }
 
@@ -144,15 +154,35 @@ fn function_call_item(call_id: &str, name: &str, arguments: &str) -> OutputItem 
 }
 
 fn map_usage(usage: &crate::protocol::unified::TokenUsage) -> ResponsesUsage {
-    let cached = usage.cache_read_tokens.min(u32::MAX as u64) as u32;
+    // details 明细优先回写；缺省时 legacy cache_read_tokens 并入
+    // cached_tokens（与 OpenAI 面策略一致）；reasoning_tokens 从 IR
+    // completion_tokens_details 回写（D4）
+    let input_tokens_details = match usage
+        .prompt_tokens_details
+        .as_ref()
+        .map(|details| details.cached_tokens)
+    {
+        Some(cached) => Some(InputTokensDetails {
+            cached_tokens: cached.min(u32::MAX as u64) as u32,
+        }),
+        None if usage.cache_read_tokens > 0 => Some(InputTokensDetails {
+            cached_tokens: usage.cache_read_tokens.min(u32::MAX as u64) as u32,
+        }),
+        None => None,
+    };
+    let output_tokens_details =
+        usage
+            .completion_tokens_details
+            .as_ref()
+            .map(|details| OutputTokensDetails {
+                reasoning_tokens: details.reasoning_tokens.min(u32::MAX as u64) as u32,
+            });
     ResponsesUsage {
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
         total_tokens: usage.total_tokens,
-        input_tokens_details: (cached > 0).then_some(InputTokensDetails {
-            cached_tokens: cached,
-        }),
-        output_tokens_details: None,
+        input_tokens_details,
+        output_tokens_details,
     }
 }
 
@@ -226,6 +256,7 @@ mod tests {
                 cache_read_tokens: 3,
                 ..Default::default()
             },
+            stop_sequence: None,
         }
     }
 
@@ -271,6 +302,48 @@ mod tests {
         );
         assert!(response.store);
         assert_eq!(response.metadata["trace"], "t1");
+    }
+
+    #[test]
+    fn usage_details_roundtrip_with_reasoning_tokens() {
+        use crate::protocol::unified::{CompletionTokensDetails, PromptTokensDetails};
+        let mut unified = response_with(MessageContent::Text("hi".into()), FinishReason::Stop);
+        unified.usage.prompt_tokens_details = Some(PromptTokensDetails {
+            audio_tokens: 1,
+            cached_tokens: 5,
+        });
+        unified.usage.completion_tokens_details = Some(CompletionTokensDetails {
+            reasoning_tokens: 4,
+            ..Default::default()
+        });
+        let response = to_responses_response("resp_3", &unified, &request(), true);
+        assert_eq!(
+            response
+                .usage
+                .input_tokens_details
+                .as_ref()
+                .expect("input details")
+                .cached_tokens,
+            5,
+            "details 优先于 legacy cache_read_tokens"
+        );
+        assert_eq!(
+            response
+                .usage
+                .output_tokens_details
+                .as_ref()
+                .expect("output details")
+                .reasoning_tokens,
+            4,
+            "completion_tokens_details.reasoning_tokens 回写"
+        );
+
+        // 无 details 且无 legacy cached → 不写 details 键
+        let mut unified = response_with(MessageContent::Text("hi".into()), FinishReason::Stop);
+        unified.usage.cache_read_tokens = 0;
+        let response = to_responses_response("resp_4", &unified, &request(), true);
+        assert!(response.usage.input_tokens_details.is_none());
+        assert!(response.usage.output_tokens_details.is_none());
     }
 
     #[test]

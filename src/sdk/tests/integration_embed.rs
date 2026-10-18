@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 use crate::sdk::client::FluxgateClientBuilder;
-use crate::sdk::config::RequestConfig;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::{ApiError, FluxgateSdkError};
 use crate::sdk::EmbedRequest;
+use crate::sdk::EmbeddingValue;
 
 fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
     FluxgateClientBuilder::new()
@@ -28,17 +28,16 @@ async fn embed_success() {
         .create();
 
     let client = build_client(&server.url());
-    let req = EmbedRequest {
-        model: "text-embedding-3-small".into(),
-        input: vec!["hello".into()],
-        config: RequestConfig::default(),
-    };
+    let req = EmbedRequest::new("text-embedding-3-small", vec!["hello".to_string()]);
     let resp = client.embed(&req).await.unwrap();
 
     assert_eq!(resp.model, "text-embedding-3-small");
     assert_eq!(resp.data.len(), 1);
     assert_eq!(resp.data[0].index, 0);
-    assert_eq!(resp.data[0].embedding, vec![0.1, 0.2]);
+    assert_eq!(
+        resp.data[0].embedding,
+        EmbeddingValue::Floats(vec![0.1, 0.2])
+    );
     assert_eq!(resp.usage.prompt_tokens, 3);
     assert_eq!(resp.usage.total_tokens, 3);
 }
@@ -53,14 +52,10 @@ async fn embed_401_returns_auth_error() {
         .create();
 
     let client = build_client(&server.url());
-    let req = EmbedRequest {
-        model: "m".into(),
-        input: vec!["x".into()],
-        config: RequestConfig::default(),
-    };
+    let req = EmbedRequest::new("m", "x");
     let err = client.embed(&req).await.unwrap_err();
 
-    // embed() 当前仅返回 Server 错误（与 chat 不同，未单独处理 401）。
+    // embed() 非 2xx 统一返回 Api 错误（kind 由 status 派生）。
     // 这里仅断言错误发生即可。
     let _ = err;
 }
@@ -76,16 +71,12 @@ async fn embed_500_returns_server_error() {
         .create();
 
     let client = build_client(&server.url());
-    let req = EmbedRequest {
-        model: "m".into(),
-        input: vec!["x".into()],
-        config: RequestConfig::default(),
-    };
+    let req = EmbedRequest::new("m", "x");
     let err = client.embed(&req).await.unwrap_err();
 
     match err {
-        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 500),
-        other => panic!("expected Server error, got {other:?}"),
+        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        other => panic!("expected Api error, got {other:?}"),
     }
 }
 
@@ -104,11 +95,7 @@ async fn embed_sends_authorization_header() {
         .create();
 
     let client = build_client(&server.url());
-    let req = EmbedRequest {
-        model: "m".into(),
-        input: vec!["x".into()],
-        config: RequestConfig::default(),
-    };
+    let req = EmbedRequest::new("m", "x");
     let _ = client.embed(&req).await.unwrap();
     mock.assert();
 }

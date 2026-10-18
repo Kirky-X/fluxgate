@@ -120,4 +120,5 @@ config-vendor-api-style-unknown = [vendors] api_style of vendor { $vendor } is i
 config-vendor-api-style-requires-openai = [vendors] vendor { $vendor } with api_style = "responses" must have type_ = "openai" (current: "{ $type }")
 config-vendor-api-style-chat-path-conflict = [vendors] vendor { $vendor } cannot declare both api_style = "responses" and chat_path (ambiguous path semantics)
 config-vendor-gemini-chat-path-conflict = [vendors] vendor { $vendor } with type_ = "gemini" cannot declare chat_path (path is built from model + action)
+config-vendor-anthropic-version-invalid = [vendors] anthropic_version of vendor { $vendor } is invalid: "{ $value }" (expected YYYY-MM-DD)
 router-responses-no-native-vendor = No native Responses vendor for model "{ $model }": declare type_ = "openai" and api_style = "responses" on the vendor, and make sure both vendor and model are enabled

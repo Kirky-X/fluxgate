@@ -104,10 +104,16 @@ pub async fn list_models(
 ///（`dimensions` / 非空 `compat_group`）推断 embedding，其余 chat。
 /// 仅用于 `/v1/models` 的增量字段，不改变 id 集合与排序。
 fn model_task(model: &crate::config::ModelConfig) -> &'static str {
+    use crate::config::ModelTask;
     match model.model_type.as_deref() {
-        Some("rerank") => "rerank",
-        Some("embedding") => "embedding",
-        Some(_) => "chat",
+        // 显式声明：合法集经 ModelTask::parse 映射对应标签；解析失败的非空
+        // 未知值（仅可能来自绕过 loader 的手构配置）宽松回落 chat，不报错
+        Some(raw) => match ModelTask::parse(raw) {
+            Some(ModelTask::Rerank) => ModelTask::Rerank.as_str(),
+            Some(ModelTask::Embedding) => ModelTask::Embedding.as_str(),
+            Some(ModelTask::Chat) | None => ModelTask::Chat.as_str(),
+        },
+        // 未声明：按嵌入字段推断 embedding，其余 chat
         None => {
             let embedding = model.dimensions.is_some()
                 || model
@@ -115,9 +121,9 @@ fn model_task(model: &crate::config::ModelConfig) -> &'static str {
                     .as_deref()
                     .is_some_and(|group| !group.trim().is_empty());
             if embedding {
-                "embedding"
+                ModelTask::Embedding.as_str()
             } else {
-                "chat"
+                ModelTask::Chat.as_str()
             }
         }
     }

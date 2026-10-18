@@ -5,7 +5,7 @@ use super::{
     AdvancedRateLimiter, ConcurrencyLimiter, ConcurrencyPermit, PendingRequest, TokenBucket,
     VendorQueue, VendorState, VendorStatus,
 };
-use crate::config::{ConfigManager, RetrySection, VendorConfig};
+use crate::config::{ConfigManager, RetrySection, VendorConfig, VendorProtocol};
 use crate::error::GateError;
 use crate::protocol::{
     AnthropicConverter, GeminiConverter, OpenAIConverter, ProtocolConverter, ResponsesConverter,
@@ -341,6 +341,15 @@ pub(crate) struct ProbeTarget {
     pub keys: Vec<(String, String)>,
     pub blacklist: Vec<String>,
     pub current: Option<(String, String)>,
+}
+
+/// 调用级厂商选项 — handler 从入站路由提示构造，随各执行入口透传到
+/// 出站请求构建点；缺省 [`Default`] = 旧行为零变化。
+#[derive(Debug, Clone, Default)]
+pub struct VendorCallOptions {
+    /// 入站 `anthropic-beta` 头值（已清理）。仅 anthropic 型厂商且
+    /// `forward_beta_headers=true` 时注入出站同名头。
+    pub anthropic_beta: Option<String>,
 }
 
 pub struct VendorManager {
@@ -763,7 +772,7 @@ impl VendorManager {
         );
 
         // anthropic 转换出站的缓存断点策略（openai 型 None 不注入；透传路径不注入）
-        let cache_policy = if config.type_ == "anthropic" {
+        let cache_policy = if matches!(config.protocol(), VendorProtocol::Anthropic) {
             Some(crate::config::model_catalog::cache_policy_for(
                 &config_manager.read().model_catalog,
                 &pending.request.model,
@@ -772,8 +781,9 @@ impl VendorManager {
             None
         };
 
-        // 拆出 request 局部绑定：perform 消费请求体后 pending 其余字段仍可整结构体借用
+        // 拆出 request/options 局部绑定：perform 消费请求体后 pending 其余字段仍可整结构体借用
         let request = pending.request;
+        let options = pending.options;
         let result = Self::perform_http_request(
             &client,
             &config,
@@ -789,6 +799,7 @@ impl VendorManager {
             &instance,
             &credential,
             cache_policy.as_ref(),
+            &options,
         )
         .await;
 
@@ -936,6 +947,7 @@ impl VendorManager {
         instance: &VendorInstance,
         credential: &RequestCredential,
         cache_policy: Option<&crate::config::model_catalog::CacheBreakpointPolicy>,
+        options: &VendorCallOptions,
     ) -> Result<UnifiedResponse, GateError> {
         let converter: &dyn ProtocolConverter =
             Self::converter_for(config, openai, anthropic, responses, gemini)?;
@@ -951,6 +963,16 @@ impl VendorManager {
             converter.request_to_external(request)?
         };
 
+        // OpenAI 型转换出站：非标参数（`top_k`）默认剥离，开关
+        // `send_nonstandard_params` 开启保留；透传路径不经过此处（字节保真）
+        let request_body = if matches!(config.protocol(), VendorProtocol::OpenAi)
+            && !config.send_nonstandard_params
+        {
+            Self::strip_nonstandard_params(request_body)
+        } else {
+            request_body
+        };
+
         // 执行带重试的请求（resilience feature 启用时由 CircuitBreaker 包装）
         Self::execute_http_with_retry(
             client,
@@ -964,8 +986,24 @@ impl VendorManager {
             metrics,
             instance,
             credential,
+            options,
         )
         .await
+    }
+
+    /// OpenAI 型转换出站的非标参数剥离：移除 `top_k` 并 debug（开关
+    /// `send_nonstandard_params` 开启时不调用；透传路径不经过）。
+    fn strip_nonstandard_params(mut body: Value) -> Value {
+        if let Some(map) = body.as_object_mut() {
+            if map.remove("top_k").is_some() {
+                crate::protocol::drop_unsupported(
+                    crate::protocol::Protocol::OpenAI,
+                    "top_k",
+                    "send_nonstandard_params disabled",
+                );
+            }
+        }
+        body
     }
 
     /// 解析上游 `Retry-After` 响应头：仅支持秒数形式（RFC 7231 delta-seconds），
@@ -984,12 +1022,14 @@ impl VendorManager {
         responses: &'a ResponsesConverter,
         gemini: &'a GeminiConverter,
     ) -> Result<&'a dyn ProtocolConverter, GateError> {
-        match config.type_.as_str() {
-            "anthropic" => Ok(anthropic),
-            "gemini" => Ok(gemini),
-            "openai" if config.is_responses_style() => Ok(responses),
-            "openai" => Ok(openai),
-            _ => Err(GateError::Config {
+        match config.protocol() {
+            VendorProtocol::Anthropic => Ok(anthropic),
+            VendorProtocol::Gemini => Ok(gemini),
+            VendorProtocol::OpenAi if config.is_responses_style() => Ok(responses),
+            VendorProtocol::OpenAi => Ok(openai),
+            // rerank 无 chat 转换器（走 execute_rerank 专用路径）；Custom 为
+            // 历史 `_` 通配臂的显式命名，配置期未校验的未知协议在此拒绝
+            VendorProtocol::Rerank | VendorProtocol::Custom(_) => Err(GateError::Config {
                 message: crate::i18n::t("vendor-unknown-type"),
             }),
         }
@@ -1004,7 +1044,7 @@ impl VendorManager {
         config: &VendorConfig,
         path: &str,
     ) -> Result<String, GateError> {
-        if config.type_ == "gemini" {
+        if matches!(config.protocol(), VendorProtocol::Gemini) {
             let base = Self::gemini_api_base(config);
             let path = path.trim_start_matches('/');
             return Ok(if base.ends_with("/v1beta") || base.ends_with("/v1") {
@@ -1015,7 +1055,7 @@ impl VendorManager {
         }
         // rerank 型：api_base 必须显式声明且视为完整前缀（不再自动补 /v1），
         // 出站固定 `{api_base}/{path}`；Cohere/Jina 配 .../v1，TEI 配裸 host
-        if config.type_ == "rerank" {
+        if matches!(config.protocol(), VendorProtocol::Rerank) {
             if config.api_base.trim().is_empty() {
                 return Err(GateError::Config {
                     message: crate::i18n::t_args(
@@ -1032,10 +1072,11 @@ impl VendorManager {
         }
 
         let api_base = if config.api_base.is_empty() {
-            match config.type_.as_str() {
-                "anthropic" => "https://api.anthropic.com",
-                "openai" => "https://api.openai.com/v1",
-                _ => {
+            match config.protocol() {
+                VendorProtocol::Anthropic => "https://api.anthropic.com",
+                VendorProtocol::OpenAi => "https://api.openai.com/v1",
+                // gemini/rerank 已在上方各自分支返回，不达此处；Custom 无默认端点
+                VendorProtocol::Gemini | VendorProtocol::Rerank | VendorProtocol::Custom(_) => {
                     return Err(GateError::Config {
                         message: crate::i18n::t("vendor-unknown-type"),
                     })
@@ -1088,7 +1129,7 @@ impl VendorManager {
         stream: bool,
         action: &str,
     ) -> Result<String, GateError> {
-        if config.type_ != "gemini" {
+        if !matches!(config.protocol(), VendorProtocol::Gemini) {
             return Self::build_vendor_url(config);
         }
         // 客户端可能用 abstract_id 请求：URL 必须带上游真实 model_id
@@ -1118,7 +1159,7 @@ impl VendorManager {
         if config.is_responses_style() {
             return Self::build_vendor_url_at(config, "responses");
         }
-        if config.type_ == "gemini" {
+        if matches!(config.protocol(), VendorProtocol::Gemini) {
             // Gemini 端点含 model + action，无法用静态默认路径；调用方须走
             // `build_vendor_url_for_model`
             return Err(GateError::Config {
@@ -1128,10 +1169,13 @@ impl VendorManager {
                 ),
             });
         }
-        let path = match config.type_.as_str() {
-            "anthropic" => "messages",
-            "rerank" => "rerank",
-            _ => "chat/completions",
+        let path = match config.protocol() {
+            VendorProtocol::Anthropic => "messages",
+            VendorProtocol::Rerank => "rerank",
+            // openai/Custom 走 chat/completions；gemini 已在上方返回
+            VendorProtocol::OpenAi | VendorProtocol::Gemini | VendorProtocol::Custom(_) => {
+                "chat/completions"
+            }
         };
         Self::build_vendor_url_at(config, path)
     }
@@ -1164,15 +1208,16 @@ impl VendorManager {
     ) -> Result<reqwest::RequestBuilder, GateError> {
         let mut builder = client.post(url);
 
-        if config.type_ == "gemini" {
+        if matches!(config.protocol(), VendorProtocol::Gemini) {
             builder = builder.header("x-goog-api-key", api_key);
             if include_content_type {
                 builder = builder.header("content-type", "application/json");
             }
-        } else if config.type_ == "anthropic" {
-            builder = builder
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01");
+        } else if matches!(config.protocol(), VendorProtocol::Anthropic) {
+            builder = builder.header("x-api-key", api_key).header(
+                "anthropic-version",
+                config.anthropic_version.as_deref().unwrap_or("2023-06-01"),
+            );
             if include_content_type {
                 builder = builder.header("content-type", "application/json");
             }
@@ -1331,6 +1376,7 @@ impl VendorManager {
         metrics: &GlobalMetrics,
         instance: &VendorInstance,
         credential: &RequestCredential,
+        options: &VendorCallOptions,
     ) -> Result<UnifiedResponse, GateError> {
         #[cfg(feature = "resilience")]
         {
@@ -1347,6 +1393,7 @@ impl VendorManager {
                         metrics,
                         instance,
                         credential,
+                        options,
                     )
                     .await
                 })
@@ -1366,6 +1413,7 @@ impl VendorManager {
                 metrics,
                 instance,
                 credential,
+                options,
             )
             .await
         }
@@ -1387,6 +1435,7 @@ impl VendorManager {
         metrics: &GlobalMetrics,
         instance: &VendorInstance,
         credential: &RequestCredential,
+        options: &VendorCallOptions,
     ) -> Result<UnifiedResponse, GateError> {
         let url = Self::build_vendor_url_for_model(config, target_model, false, "generateContent")?;
         let policy = RetryDelayPolicy::from_config(retry_cfg);
@@ -1413,8 +1462,9 @@ impl VendorManager {
         retry_policy
             .execute_with(
                 || async {
-                    let builder =
-                        Self::build_authed_attempt_builder(client, config, &url, credential)?;
+                    let builder = Self::build_authed_attempt_builder(
+                        client, config, &url, credential, options,
+                    )?;
                     let response =
                         Self::send_attempt(builder, &request_body, config, instance, credential)
                             .await?;
@@ -1424,7 +1474,9 @@ impl VendorManager {
                         .map_err(AttemptFailure::Fatal)?;
                     // Gemini 响应缺 modelVersion 时，转换器回退占位 "gemini"；
                     // 用本次目标 model 补齐（其它厂商响应自带 model，不动）
-                    if config.type_ == "gemini" && parsed.model == "gemini" {
+                    if matches!(config.protocol(), VendorProtocol::Gemini)
+                        && parsed.model == "gemini"
+                    {
                         parsed.model = target_model.to_string();
                     }
                     Ok(parsed)
@@ -1459,6 +1511,7 @@ impl VendorManager {
         config: &VendorConfig,
         url: &str,
         credential: &RequestCredential,
+        options: &VendorCallOptions,
     ) -> Result<reqwest::RequestBuilder, AttemptFailure> {
         let builder = match credential.api_key() {
             Some(api_key) => Self::apply_attempt_timeout(
@@ -1472,7 +1525,23 @@ impl VendorManager {
                 config,
             ),
         };
-        Ok(builder)
+        Ok(Self::inject_vendor_call_headers(builder, config, options))
+    }
+
+    /// 调用级头注入（当前仅 `anthropic-beta`）：仅 anthropic 型厂商且
+    /// `forward_beta_headers` 开启；其它类型/开关关闭恒零行为。
+    fn inject_vendor_call_headers(
+        builder: reqwest::RequestBuilder,
+        config: &VendorConfig,
+        options: &VendorCallOptions,
+    ) -> reqwest::RequestBuilder {
+        if !config.forward_beta_headers || !matches!(config.protocol(), VendorProtocol::Anthropic) {
+            return builder;
+        }
+        match &options.anthropic_beta {
+            Some(beta) => builder.header("anthropic-beta", beta),
+            None => builder,
+        }
     }
 
     /// 单次尝试的发送与非 2xx 处理：Retry-After 头须在消费 body 前读取；key 错误按三态
@@ -1782,6 +1851,18 @@ impl VendorManager {
         vendor_id: &str,
         request: UnifiedRequest,
     ) -> Result<UnifiedResponse, GateError> {
+        self.execute_request_with_options(vendor_id, request, VendorCallOptions::default())
+            .await
+    }
+
+    /// 带调用级选项的执行入口（`anthropic_beta` 经队列透传至出站构建
+    /// 点；缺省选项 = 旧行为）。
+    pub async fn execute_request_with_options(
+        &self,
+        vendor_id: &str,
+        request: UnifiedRequest,
+        options: VendorCallOptions,
+    ) -> Result<UnifiedResponse, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
@@ -1796,6 +1877,7 @@ impl VendorManager {
 
         let pending = PendingRequest {
             request,
+            options,
             response_tx,
             // 延迟口径含排队时间（worker 完成分支以此记账）
             enqueued_at: Instant::now(),
@@ -1966,6 +2048,17 @@ impl VendorManager {
         vendor_id: &str,
         request: UnifiedRequest,
     ) -> Result<impl futures::Stream<Item = Result<StreamChunk, GateError>>, GateError> {
+        self.execute_stream_request_with_options(vendor_id, request, VendorCallOptions::default())
+            .await
+    }
+
+    /// 带调用级选项的流式入口（beta 头转发等；缺省 = 旧行为）。
+    pub async fn execute_stream_request_with_options(
+        &self,
+        vendor_id: &str,
+        request: UnifiedRequest,
+        options: VendorCallOptions,
+    ) -> Result<impl futures::Stream<Item = Result<StreamChunk, GateError>>, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
@@ -2006,12 +2099,14 @@ impl VendorManager {
         let credential = instance.select_request_key(&config);
 
         // converter 以 Arc 进流（parse_stream_frame 按 vendor 协议分派）
-        let converter: Arc<dyn ProtocolConverter> = match config.type_.as_str() {
-            "anthropic" => self.anthropic_converter.clone(),
-            "gemini" => self.gemini_converter.clone(),
-            "openai" if config.is_responses_style() => self.responses_converter.clone(),
-            "openai" => self.openai_converter.clone(),
-            _ => {
+        let converter: Arc<dyn ProtocolConverter> = match config.protocol() {
+            VendorProtocol::Anthropic => self.anthropic_converter.clone(),
+            VendorProtocol::Gemini => self.gemini_converter.clone(),
+            VendorProtocol::OpenAi if config.is_responses_style() => {
+                self.responses_converter.clone()
+            }
+            VendorProtocol::OpenAi => self.openai_converter.clone(),
+            VendorProtocol::Rerank | VendorProtocol::Custom(_) => {
                 return Err(GateError::Config {
                     message: crate::i18n::t("vendor-unknown-type"),
                 })
@@ -2022,7 +2117,7 @@ impl VendorManager {
         let request_model = Self::cb_model(vendor_id, &config, &request.model).to_string();
 
         // anthropic 转换流式出站同样注入缓存断点（透传流式不注入）
-        let cache_policy = (config.type_ == "anthropic").then(|| {
+        let cache_policy = matches!(config.protocol(), VendorProtocol::Anthropic).then(|| {
             crate::config::model_catalog::cache_policy_for(
                 &self.config.read().model_catalog,
                 &request.model,
@@ -2041,6 +2136,7 @@ impl VendorManager {
             }
             None => Self::build_authed_request(&self.client, &config, &url, true)?,
         };
+        let request_builder = Self::inject_vendor_call_headers(request_builder, &config, &options);
 
         let start = Instant::now();
         // cover_all_paths 开启时 send + 状态校验段由 CB 包裹（时长只计到响应头）
@@ -2277,18 +2373,33 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
     ) -> Result<Value, GateError> {
+        self.execute_passthrough_request_with_options(
+            vendor_id,
+            request_body,
+            VendorCallOptions::default(),
+        )
+        .await
+    }
+
+    /// 带调用级选项的透传入口（缺省 = 旧行为）。
+    pub async fn execute_passthrough_request_with_options(
+        &self,
+        vendor_id: &str,
+        request_body: Value,
+        options: VendorCallOptions,
+    ) -> Result<Value, GateError> {
         let vendor_type = self
             .fresh_config(vendor_id)
             .map(|c| c.type_)
             .unwrap_or_default();
-        let path = Self::default_passthrough_path(&vendor_type);
-        self.execute_passthrough_request_at(vendor_id, request_body, path)
+        let path = Self::default_passthrough_path(VendorProtocol::parse(&vendor_type));
+        self.execute_passthrough_request_at_with_options(vendor_id, request_body, path, options)
             .await
     }
 
     /// 透传/chat 类请求的默认端点（按 vendor 协议分派）
-    fn default_passthrough_path(vendor_type: &str) -> &'static str {
-        if vendor_type == "anthropic" {
+    fn default_passthrough_path(protocol: VendorProtocol<'_>) -> &'static str {
+        if matches!(protocol, VendorProtocol::Anthropic) {
             "messages"
         } else {
             "chat/completions"
@@ -2303,9 +2414,26 @@ impl VendorManager {
         request_body: Value,
         path: &str,
     ) -> Result<Value, GateError> {
+        self.execute_passthrough_request_at_with_options(
+            vendor_id,
+            request_body,
+            path,
+            VendorCallOptions::default(),
+        )
+        .await
+    }
+
+    /// 带调用级选项的端点可指定透传入口（缺省 = 旧行为）。
+    pub async fn execute_passthrough_request_at_with_options(
+        &self,
+        vendor_id: &str,
+        request_body: Value,
+        path: &str,
+        options: VendorCallOptions,
+    ) -> Result<Value, GateError> {
         let start = Instant::now();
         let result = self
-            .execute_passthrough_request_covered(vendor_id, request_body, path)
+            .execute_passthrough_request_covered(vendor_id, request_body, path, &options)
             .await;
         let duration = start.elapsed();
         // 透传非流式为全程口径（含本地排队），落 e2e 道；成败都记
@@ -2347,6 +2475,7 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
         path: &str,
+        options: &VendorCallOptions,
     ) -> Result<Value, GateError> {
         // 请求级凭证选择（池空 → legacy 读 env）；实例不存在时不取配置，错误交由 inner。
         let instance = {
@@ -2381,6 +2510,7 @@ impl VendorManager {
                                 request_body.clone(),
                                 path,
                                 credential,
+                                options,
                             )
                             .await
                         })
@@ -2392,7 +2522,7 @@ impl VendorManager {
         let credential = resolved
             .map(|(credential, _config)| credential)
             .unwrap_or(RequestCredential::LegacyEnv);
-        self.execute_passthrough_request_inner(vendor_id, request_body, path, &credential)
+        self.execute_passthrough_request_inner(vendor_id, request_body, path, &credential, options)
             .await
     }
 
@@ -2402,6 +2532,7 @@ impl VendorManager {
         request_body: Value,
         path: &str,
         credential: &RequestCredential,
+        options: &VendorCallOptions,
     ) -> Result<Value, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
@@ -2442,6 +2573,7 @@ impl VendorManager {
             }
             None => Self::build_authed_request(&self.client, &config, &url, true)?,
         };
+        let builder = Self::inject_vendor_call_headers(builder, &config, options);
         // per-attempt 总超时（从 send 起算；0=不限时）
         let builder = Self::apply_attempt_timeout(builder, &config);
 
@@ -2550,7 +2682,22 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
     ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
-        self.execute_passthrough_stream_request_inner(vendor_id, request_body, None)
+        self.execute_passthrough_stream_request_with_options(
+            vendor_id,
+            request_body,
+            VendorCallOptions::default(),
+        )
+        .await
+    }
+
+    /// 带调用级选项的透传流入口（缺省 = 旧行为）。
+    pub async fn execute_passthrough_stream_request_with_options(
+        &self,
+        vendor_id: &str,
+        request_body: Value,
+        options: VendorCallOptions,
+    ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
+        self.execute_passthrough_stream_request_inner(vendor_id, request_body, None, options)
             .await
     }
 
@@ -2561,8 +2708,13 @@ impl VendorManager {
         request_body: Value,
         path: &str,
     ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
-        self.execute_passthrough_stream_request_inner(vendor_id, request_body, Some(path))
-            .await
+        self.execute_passthrough_stream_request_inner(
+            vendor_id,
+            request_body,
+            Some(path),
+            VendorCallOptions::default(),
+        )
+        .await
     }
 
     async fn execute_passthrough_stream_request_inner(
@@ -2570,6 +2722,7 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
         path: Option<&str>,
+        options: VendorCallOptions,
     ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
@@ -2614,6 +2767,7 @@ impl VendorManager {
             }
             None => Self::build_authed_request(&self.client, &config, &url, false)?,
         };
+        let builder = Self::inject_vendor_call_headers(builder, &config, &options);
         // per-key 熔断键的 model 段（透传 model 取自请求体，归一到配置模型身份）
         let raw_model = request_body
             .get("model")
@@ -3231,6 +3385,9 @@ mod tests {
             supports_batch: false,
             chat_path: None,
             api_style: None,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 
@@ -3567,6 +3724,91 @@ mod tests {
         let headers = built_headers(&config);
         assert_eq!(headers["authorization"], "Bearer test-key");
         assert!(headers.get("x-tenant-id").is_none());
+    }
+
+    /// Anthropic 出站版本头：配置值优先，缺省回落官方默认 "2023-06-01"。
+    #[test]
+    fn anthropic_version_header_follows_config_with_official_default() {
+        let mut config = extra_headers_config(&[]);
+        config.type_ = "anthropic".into();
+        let headers = built_headers(&config);
+        assert_eq!(headers["anthropic-version"], "2023-06-01", "缺省官方版本");
+        assert_eq!(headers["x-api-key"], "test-key");
+        assert!(
+            headers.get("authorization").is_none(),
+            "Anthropic 不得发送 Authorization"
+        );
+
+        config.anthropic_version = Some("2024-10-22".into());
+        let headers = built_headers(&config);
+        assert_eq!(headers["anthropic-version"], "2024-10-22", "配置值优先");
+    }
+
+    /// anthropic-beta 注入门控：仅 anthropic 型 + `forward_beta_headers`
+    /// 开启且值存在时注入；其余零行为（R-vendor-management-007）。
+    #[test]
+    fn anthropic_beta_injected_only_for_gated_anthropic() {
+        let client = reqwest::Client::new();
+        let build = |config: &VendorConfig, options: &VendorCallOptions| {
+            VendorManager::inject_vendor_call_headers(
+                client.post("http://127.0.0.1:9/v1/messages"),
+                config,
+                options,
+            )
+            .build()
+            .expect("Request 可构建")
+            .headers()
+            .clone()
+        };
+        let options = VendorCallOptions {
+            anthropic_beta: Some("extended-thinking-2025-01-01".into()),
+        };
+
+        // anthropic 型 + 开关开：原样注入
+        let mut config = pool_vendor_config("FLUXGATE_MGR_POOL_A", "FLUXGATE_MGR_POOL_B");
+        config.type_ = "anthropic".into();
+        config.forward_beta_headers = true;
+        assert_eq!(
+            build(&config, &options)["anthropic-beta"],
+            "extended-thinking-2025-01-01"
+        );
+
+        // 开关关：不注入
+        config.forward_beta_headers = false;
+        assert!(build(&config, &options).get("anthropic-beta").is_none());
+
+        // 非 anthropic 型 + 开关开：不注入
+        let mut openai = pool_vendor_config("FLUXGATE_MGR_POOL_A", "FLUXGATE_MGR_POOL_B");
+        openai.forward_beta_headers = true;
+        assert!(build(&openai, &options).get("anthropic-beta").is_none());
+
+        // 开关开 + 无值：不注入
+        config.forward_beta_headers = true;
+        assert!(build(&config, &VendorCallOptions::default())
+            .get("anthropic-beta")
+            .is_none());
+    }
+
+    /// 非标参数剥离：`top_k` 移除；其它字段与非对象 body 零行为
+    /// （R-vendor-management-008 开关关闭分支）。
+    #[test]
+    fn strip_nonstandard_params_removes_top_k_only() {
+        let body = serde_json::json!({"model": "gpt-4", "top_k": 40, "temperature": 0.5});
+        let stripped = VendorManager::strip_nonstandard_params(body);
+        assert!(stripped.get("top_k").is_none(), "top_k 必须剥离");
+        assert_eq!(stripped["temperature"], 0.5);
+        assert_eq!(stripped["model"], "gpt-4");
+
+        // 无 top_k：原样返回
+        let body = serde_json::json!({"model": "gpt-4"});
+        assert_eq!(VendorManager::strip_nonstandard_params(body.clone()), body);
+
+        // 非对象 body：零行为
+        let scalar = serde_json::json!("plain");
+        assert_eq!(
+            VendorManager::strip_nonstandard_params(scalar.clone()),
+            scalar
+        );
     }
 
     /// helper 参数值断言：默认 30s 窗口与 [resilience].circuit_open_timeout_ms 缺省一致；

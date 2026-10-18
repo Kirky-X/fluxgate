@@ -10,7 +10,9 @@
 //!   （id/name 仅首片段携带，arguments 为增量分片——对齐 IR
 //!   `StreamChunk::ToolCall` 片段语义）；
 //! - usage 尾帧：`{id:"usage",choices:[],usage:{prompt_tokens,...,
-//!   prompt_tokens_details:{cached_tokens}}}` → `ChatChunk.usage`。
+//!   prompt_tokens_details:{cached_tokens}}}` → `ChatChunk.usage`；
+//! - **错误帧**：`event: error` 或顶层 `{"error":…}` 负载 → `Err(Stream)`
+//!   （流内事件无 HTTP status，消息取 `error.message`；不得静默结束）。
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -19,7 +21,9 @@ use futures::stream::{BoxStream, StreamExt};
 use futures::Stream;
 use serde::Deserialize;
 
-use crate::sdk::chat::{ChatFinishReason, ChatRole, ChatUsage};
+use crate::sdk::chat::{
+    ChatChoice, ChatFinishReason, ChatResponse, ChatRole, ChatToolCall, ChatToolFunction, ChatUsage,
+};
 use crate::sdk::error::FluxgateSdkError;
 
 /// 流式工具调用片段 — 对齐网关出站 `delta.tool_calls[]` 元素
@@ -29,7 +33,7 @@ pub struct ChatToolCallDelta {
     /// 交错槽位（同一轮多工具调用按 index 区分）
     #[serde(default)]
     pub index: Option<u32>,
-    /// 恒 `"function"`（网关产出；审查 LOW：字段名与线上键 `type` 显式映射）
+    /// 恒 `"function"`（字段名为 Rust 侧命名，线上键经 `rename = "type"` 映射）
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub tool_call_type: Option<String>,
     /// 首片段携带（续片段缺省）
@@ -55,6 +59,12 @@ pub struct ChatDelta {
     pub role: Option<ChatRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// 思考内容增量（非标字段；Anthropic thinking 经网关流转）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    /// 采样 logprobs（网关原样透传的 `delta.logprobs`，不做二次结构化）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ChatToolCallDelta>>,
 }
@@ -83,6 +93,43 @@ pub(crate) struct StreamFrame {
     choices: Vec<StreamChoice>,
     #[serde(default)]
     usage: Option<ChatUsage>,
+    /// 顶层错误负载（错误帧）：非 null 即 `Err(Stream)`。
+    #[serde(default)]
+    error: Option<serde_json::Value>,
+}
+
+/// 从错误帧负载提取可读消息：`{"error":{message}}` / `{"error":"…"}` /
+/// `{"message":"…"}` → 文本；否则原始 data（截断 512 字符，防超长 HTML）。
+pub(crate) fn stream_error_message(data: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+        let error = value.get("error").unwrap_or(&value);
+        if let Some(message) = error.get("message").and_then(|v| v.as_str()) {
+            return message
+                .chars()
+                .take(crate::sdk::error::MAX_ERROR_MESSAGE_CHARS)
+                .collect();
+        }
+        if let Some(message) = error.as_str() {
+            return message
+                .chars()
+                .take(crate::sdk::error::MAX_ERROR_MESSAGE_CHARS)
+                .collect();
+        }
+        if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+            return message
+                .chars()
+                .take(crate::sdk::error::MAX_ERROR_MESSAGE_CHARS)
+                .collect();
+        }
+    }
+    let raw = data.trim();
+    if raw.is_empty() {
+        "stream error".to_string()
+    } else {
+        raw.chars()
+            .take(crate::sdk::error::MAX_ERROR_MESSAGE_CHARS)
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
@@ -112,9 +159,23 @@ impl ChatStream {
                     if event.data == "[DONE]" {
                         return None;
                     }
+                    // `event: error` 帧：不按流式内容解析，直接上抛（对齐
+                    // 官方 SDK `error` 事件语义）
+                    if event.event == "error" {
+                        return Some(Err(FluxgateSdkError::Stream {
+                            message: stream_error_message(&event.data),
+                        }));
+                    }
                     match serde_json::from_str::<StreamFrame>(&event.data) {
                         Ok(parsed) => {
-                            // 审查 LOW：网关心跳帧（StreamChunk::Heartbeat →
+                            // 顶层 `{"error":…}` 负载（部分上游不带
+                            // event 名）：不得静默结束，上抛 Stream 错误
+                            if parsed.error.as_ref().is_some_and(|value| !value.is_null()) {
+                                return Some(Err(FluxgateSdkError::Stream {
+                                    message: stream_error_message(&event.data),
+                                }));
+                            }
+                            // 网关心跳帧（StreamChunk::Heartbeat →
                             // `{":":""}` 注释帧，无 id/choices/usage）不产出
                             // 空 ChatChunk
                             if parsed.id.is_empty()
@@ -148,6 +209,113 @@ impl ChatStream {
 
         ChatStream {
             inner: chunk_stream.boxed(),
+        }
+    }
+
+    /// 聚合流式碎片为完整响应（对齐官方 SDK `finalChatCompletion()`）：
+    /// `content`/`reasoning_content` 按到达序拼接；`tool_calls` 按 `index`
+    /// 槽位累积（id/name 取首个非空，arguments 拼接）；`finish_reason`/
+    /// `usage` 取最后一个携带值；`id` 取首个非空。`model` 流式帧不携带
+    /// 有效值（网关产出 `"unknown"`），产物中留空。
+    pub async fn finalize(mut self) -> Result<ChatResponse, FluxgateSdkError> {
+        let mut id = String::new();
+        let mut content = String::new();
+        let mut reasoning_content = String::new();
+        let mut tool_calls: Vec<ChatToolCall> = Vec::new();
+        let mut finish_reason: Option<ChatFinishReason> = None;
+        let mut usage: Option<ChatUsage> = None;
+
+        while let Some(chunk) = self.next().await {
+            let chunk = chunk?;
+            if id.is_empty() && !chunk.id.is_empty() {
+                id = chunk.id;
+            }
+            if let Some(value) = chunk.usage {
+                usage = Some(value);
+            }
+            if let Some(value) = chunk.finish_reason {
+                finish_reason = Some(value);
+            }
+            if let Some(delta) = chunk.delta {
+                if let Some(part) = delta.content {
+                    content.push_str(&part);
+                }
+                if let Some(part) = delta.reasoning_content {
+                    reasoning_content.push_str(&part);
+                }
+                if let Some(fragments) = delta.tool_calls {
+                    for fragment in fragments {
+                        merge_tool_call_fragment(&mut tool_calls, fragment);
+                    }
+                }
+            }
+        }
+
+        let finish_reason = finish_reason.unwrap_or_else(|| ChatFinishReason::Other(String::new()));
+        let choice = ChatChoice {
+            index: 0,
+            content: content.clone(),
+            reasoning_content: reasoning_content.clone(),
+            tool_calls: tool_calls.clone(),
+            finish_reason: finish_reason.clone(),
+        };
+        Ok(ChatResponse {
+            id,
+            model: String::new(),
+            choices: vec![choice],
+            content,
+            reasoning_content,
+            tool_calls,
+            finish_reason,
+            usage: usage.unwrap_or(ChatUsage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+                cache_read_tokens: 0,
+            }),
+        })
+    }
+}
+
+/// wire 端 `index` 不可信（上游可为任意 u32），密集 Vec 槽位必须设上限——
+/// 单帧超大 index 否则会触发巨量分配；超限片段丢弃并 debug 记录。
+const MAX_TOOL_CALL_SLOTS: u32 = 128;
+
+/// 将流式工具片段按 `index` 槽位并入累积表：id/name 取首个非空，
+/// arguments 拼接（对齐官方 SDK 的 tool_call 分片合并语义）。
+fn merge_tool_call_fragment(calls: &mut Vec<ChatToolCall>, fragment: ChatToolCallDelta) {
+    let slot = fragment.index.unwrap_or(0);
+    if slot >= MAX_TOOL_CALL_SLOTS {
+        tracing::debug!(
+            index = slot,
+            "drop tool_call fragment: index exceeds slot cap"
+        );
+        return;
+    }
+    let slot = slot as usize;
+    if calls.len() <= slot {
+        calls.resize_with(slot + 1, || ChatToolCall {
+            id: String::new(),
+            function: ChatToolFunction {
+                name: String::new(),
+                arguments: String::new(),
+            },
+        });
+    }
+    let call = &mut calls[slot];
+    if call.id.is_empty() {
+        if let Some(id) = fragment.id.filter(|id| !id.is_empty()) {
+            call.id = id;
+        }
+    }
+    if let Some(function) = fragment.function {
+        if call.function.name.is_empty() {
+            if let Some(name) = function.name.filter(|name| !name.is_empty()) {
+                call.function.name = name;
+            }
+        }
+        if let Some(arguments) = function.arguments {
+            call.function.arguments.push_str(&arguments);
         }
     }
 }

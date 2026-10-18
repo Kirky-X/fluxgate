@@ -15,6 +15,7 @@ const OPENAI_KNOWN_KEYS: &[&str] = &[
     "system_prompt",
     "temperature",
     "max_tokens",
+    "max_completion_tokens",
     "stream",
     "stop",
     "top_p",
@@ -30,6 +31,9 @@ const OPENAI_KNOWN_KEYS: &[&str] = &[
     "tool_choice",
     "parallel_tool_calls",
     "response_format",
+    "metadata",
+    "service_tier",
+    "verbosity",
     "vendor_extensions",
     "reasoning_effort",
 ];
@@ -89,11 +93,21 @@ impl ProtocolConverter for OpenAIConverter {
         // 解析工具选择策略
         let tool_choice = body.get("tool_choice").map(parse_tool_choice);
 
-        // reasoning_effort → effort（OpenAI wire 词汇即 low/medium/high）
-        let effort = body
-            .get("reasoning_effort")
+        // reasoning_effort → effort（全词表 none/minimal/low/medium/high/
+        // xhigh/max）
+        let reasoning_effort_raw = body.get("reasoning_effort");
+        let effort = reasoning_effort_raw
             .and_then(|v| v.as_str())
             .and_then(EffortLevel::from_wire);
+
+        // 扩展表：未识别顶层字段防丢；reasoning_effort 词表外值原样保留
+        // （不猜映射、不静默丢弃）
+        let mut vendor_extensions = absorb_vendor_extensions(&body, OPENAI_KNOWN_KEYS);
+        if effort.is_none() {
+            if let Some(raw) = reasoning_effort_raw {
+                vendor_extensions.insert("reasoning_effort".to_string(), raw.clone());
+            }
+        }
 
         Ok(UnifiedRequest {
             model,
@@ -148,8 +162,22 @@ impl ProtocolConverter for OpenAIConverter {
             tool_choice,
             parallel_tool_calls: body.get("parallel_tool_calls").and_then(|v| v.as_bool()),
             response_format: body.get("response_format").cloned(),
+            metadata: body.get("metadata").filter(|v| v.is_object()).cloned(),
+            // OpenAI service_tier 词表开放（auto/flex/priority/…），原样入槽
+            service_tier: body
+                .get("service_tier")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            verbosity: body
+                .get("verbosity")
+                .and_then(|v| v.as_str())
+                .and_then(Verbosity::from_wire),
+            max_completion_tokens: body
+                .get("max_completion_tokens")
+                .and_then(|v| v.as_u64())
+                .map(|u| u as u32),
             // 未识别顶层字段（top_k/seed 等）吸收进扩展表，出站原样透传防丢
-            vendor_extensions: absorb_vendor_extensions(&body, OPENAI_KNOWN_KEYS),
+            vendor_extensions,
         })
     }
 
@@ -169,8 +197,15 @@ impl ProtocolConverter for OpenAIConverter {
             top_p,
             frequency_penalty,
             presence_penalty,
+            max_completion_tokens,
             user,
+            logit_bias,
+            metadata,
+            service_tier,
+            verbosity,
             effort,
+            thinking_config,
+            thinking_include_thoughts,
             sampling,
             parallel_tool_calls,
             response_format,
@@ -190,7 +225,11 @@ impl ProtocolConverter for OpenAIConverter {
 
         // 添加工具定义
         if !tools.is_empty() {
-            let tools: Vec<Value> = tools.iter().map(tool_to_openai).collect();
+            let tools: Vec<Value> = tools
+                .iter()
+                .enumerate()
+                .map(|(index, tool)| tool_to_openai(tool, index))
+                .collect::<Result<_, _>>()?;
             body["tools"] = json!(tools);
         }
 
@@ -212,6 +251,9 @@ impl ProtocolConverter for OpenAIConverter {
         if let Some(max) = max_tokens {
             body["max_tokens"] = json!(max);
         }
+        if let Some(max) = max_completion_tokens {
+            body["max_completion_tokens"] = json!(max);
+        }
         if stream {
             body["stream"] = json!(true);
         }
@@ -230,6 +272,18 @@ impl ProtocolConverter for OpenAIConverter {
         if let Some(user) = user {
             body["user"] = json!(user);
         }
+        if !logit_bias.is_empty() {
+            body["logit_bias"] = logit_bias_to_openai(&logit_bias);
+        }
+        if let Some(metadata) = metadata.filter(|m| m.is_object()) {
+            body["metadata"] = metadata;
+        }
+        if let Some(service_tier) = service_tier {
+            body["service_tier"] = json!(service_tier);
+        }
+        if let Some(verbosity) = verbosity {
+            body["verbosity"] = json!(verbosity.to_wire());
+        }
         // effort → reasoning_effort（OpenAI wire 词汇，小写）
         if let Some(effort) = effort {
             body["reasoning_effort"] = json!(effort.to_wire());
@@ -242,8 +296,15 @@ impl ProtocolConverter for OpenAIConverter {
             presence_penalty,
             sampling.as_ref(),
         );
-        // L1：thinking_config 无 OpenAI 等价槽，出站静默丢弃（跨厂商
-        // fallback 到 OpenAI 时思考预算不透传，属已知降级而非错误）
+        // thinking_config 无 OpenAI 等价槽：显性化丢弃（跨厂商 fallback 到
+        // OpenAI 时思考预算不透传，属已知降级而非错误；display 一并丢弃）
+        if thinking_config.is_some() || thinking_include_thoughts.is_some() {
+            drop_unsupported(
+                Protocol::OpenAI,
+                "thinking_config",
+                "no OpenAI slot (thoughts surface via reasoning_effort/reasoning_content)",
+            );
+        }
         // F1/：vendor_extensions 顶层透传，denylist = 本协议 known_keys
         // 反用——协议键（stream/reasoning_effort 等）永不由扩展表补入/覆写，
         // 非协议键仍透传（D2 语义；跨协议严格上游 400 风险为显式 opt-in，D7）
@@ -261,11 +322,16 @@ impl ProtocolConverter for OpenAIConverter {
                 if choice.finish_reason.is_none() {
                     choice.finish_reason = choice.finish.map(|f| f.to_wire().to_string());
                 }
-                json!({
+                let mut out = json!({
                     "index": choice.index,
                     "message": choice.message.map(message_to_openai),
                     "finish_reason": choice.finish_reason,
-                })
+                });
+                // logprobs 原样回写（缺省不写出，保持旧形状）
+                if let Some(logprobs) = choice.logprobs {
+                    out["logprobs"] = logprobs;
+                }
+                out
             })
             .collect::<Vec<_>>();
 
@@ -274,11 +340,21 @@ impl ProtocolConverter for OpenAIConverter {
             "completion_tokens": response.usage.completion_tokens,
             "total_tokens": response.usage.total_tokens,
         });
-        // cache_read_tokens → prompt_tokens_details.cached_tokens
-        //（非零才携带；cache_creation/cost 无 OpenAI 槽，不产出）
-        if response.usage.cache_read_tokens > 0 {
-            usage["prompt_tokens_details"] =
-                json!({"cached_tokens": response.usage.cache_read_tokens});
+        // details 明细优先回写；details 缺省时把 legacy cache_read_tokens
+        // 并入 cached_tokens（非零才携带；cache_creation/cost 无 OpenAI 槽，
+        // 不产出）
+        match response.usage.prompt_tokens_details.as_ref() {
+            Some(details) => {
+                usage["prompt_tokens_details"] = json!(details);
+            }
+            None if response.usage.cache_read_tokens > 0 => {
+                usage["prompt_tokens_details"] =
+                    json!({"cached_tokens": response.usage.cache_read_tokens});
+            }
+            None => {}
+        }
+        if let Some(details) = response.usage.completion_tokens_details.as_ref() {
+            usage["completion_tokens_details"] = json!(details);
         }
 
         Ok(json!({
@@ -352,24 +428,46 @@ impl ProtocolConverter for OpenAIConverter {
                             "assistant" => Role::Assistant,
                             _ => Role::User,
                         };
-                        let content = m
-                            .get("content")
-                            .and_then(|v| v.as_str())
-                            .map(|s| MessageContent::Text(s.to_string()))
-                            .unwrap_or(MessageContent::Text(String::new()));
+                        let text = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
                         // message.tool_calls 解析（同时读
                         // content 与 tool_calls，避免工具调用响应在 IR 中降级为纯文本）
-                        let content = match parse_tool_calls_field(&Value::Object(m.clone())) {
-                            Some(tool_calls) => match content {
-                                MessageContent::Text(s) if !s.is_empty() => {
+                        let tool_calls =
+                            parse_tool_calls_field(&Value::Object(m.clone())).unwrap_or_default();
+                        // reasoning_content（DeepSeek/兼容端点）→ Reasoning /
+                        // TextWithToolCalls.reasoning：文本或工具任一存在时组合
+                        // 进 TextWithToolCalls 保住 reasoning；仅思考时 Reasoning
+                        let reasoning = m
+                            .get("reasoning_content")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty());
+                        let content = match reasoning {
+                            Some(reasoning) => {
+                                if text.is_empty() && tool_calls.is_empty() {
+                                    MessageContent::Reasoning {
+                                        text: reasoning.to_string(),
+                                        signature: None,
+                                    }
+                                } else {
                                     MessageContent::TextWithToolCalls {
-                                        text: s,
+                                        text: text.to_string(),
                                         tool_calls,
+                                        reasoning: Some(reasoning.to_string()),
                                     }
                                 }
-                                _ => MessageContent::ToolCalls(tool_calls),
-                            },
-                            None => content,
+                            }
+                            None => {
+                                if tool_calls.is_empty() {
+                                    MessageContent::Text(text.to_string())
+                                } else if text.is_empty() {
+                                    MessageContent::ToolCalls(tool_calls)
+                                } else {
+                                    MessageContent::TextWithToolCalls {
+                                        text: text.to_string(),
+                                        tool_calls,
+                                        reasoning: None,
+                                    }
+                                }
+                            }
                         };
                         Message { role, content }
                     });
@@ -386,7 +484,8 @@ impl ProtocolConverter for OpenAIConverter {
                     message,
                     finish_reason,
                     finish,
-                    logprobs: None,
+                    // logprobs 原样进 IR（形状由 OpenAI wire 定义）
+                    logprobs: choice_obj.get("logprobs").filter(|v| !v.is_null()).cloned(),
                 })
             })
             .collect();
@@ -421,12 +520,15 @@ impl ProtocolConverter for OpenAIConverter {
             .map(|u| u as u32)
             .unwrap_or(prompt_tokens + completion_tokens);
 
-        // prompt_tokens_details.cached_tokens → cache_read_tokens
-        //（OpenAI 无 cache_creation 概念，恒 0；u64 对齐 core Usage 宽度）
-        let cache_read_tokens = usage
-            .get("prompt_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(|v| v.as_u64())
+        // prompt_tokens_details / completion_tokens_details → IR 明细槽；
+        // cached_tokens 同时镜像进 legacy cache_read_tokens 槽（跨协议载体；
+        // OpenAI 无 cache_creation 概念，恒 0）
+        let prompt_tokens_details = parse_prompt_tokens_details(usage.get("prompt_tokens_details"));
+        let completion_tokens_details =
+            parse_completion_tokens_details(usage.get("completion_tokens_details"));
+        let cache_read_tokens = prompt_tokens_details
+            .as_ref()
+            .map(|d| d.cached_tokens)
             .unwrap_or(0);
 
         Ok(UnifiedResponse {
@@ -443,7 +545,10 @@ impl ProtocolConverter for OpenAIConverter {
                 cache_creation_tokens: 0,
                 cost_usd: None,
                 cost_cny: None,
+                prompt_tokens_details,
+                completion_tokens_details,
             },
+            stop_sequence: None,
         })
     }
 
@@ -453,17 +558,25 @@ impl ProtocolConverter for OpenAIConverter {
                 index,
                 delta,
                 finish_reason,
-            } => Ok(json!({
-                "id": format!("chunk-{}", index),
-                "object": "chat.completion.chunk",
-                "created": chrono::Utc::now().timestamp() as u64,
-                "model": "unknown",
-                "choices": [{
-                    "index": index,
-                    "delta": delta_to_openai(delta),
-                    "finish_reason": finish_reason,
-                }],
-            })),
+                logprobs,
+            } => {
+                let mut delta_out = delta_to_openai(delta);
+                // delta.logprobs 原样回写（缺省不写出，保持旧形状）
+                if let Some(logprobs) = logprobs {
+                    delta_out["logprobs"] = logprobs;
+                }
+                Ok(json!({
+                    "id": format!("chunk-{}", index),
+                    "object": "chat.completion.chunk",
+                    "created": chrono::Utc::now().timestamp() as u64,
+                    "model": "unknown",
+                    "choices": [{
+                        "index": index,
+                        "delta": delta_out,
+                        "finish_reason": finish_reason,
+                    }],
+                }))
+            }
             // 流式工具调用片段 → delta.tool_calls（id/name 仅首片段携带）
             StreamChunk::ToolCall {
                 index,
@@ -549,8 +662,9 @@ impl ProtocolConverter for OpenAIConverter {
 
 /// OpenAI 出站流编码器：流级一致性归一化。无状态单块映射会导致各块
 /// id/created 发散、首块缺 role，本编码器持有流作用域状态：
-/// 首块固定流 id 与 created 复用到全流；首个内容 delta 补 "role":
-/// "assistant"；finish_reason 原样透传。每流一个实例
+/// 首块固定流 id 与 created 复用到全流；首个 delta 帧（content /
+/// tool_calls / reasoning_content 任一出现）补 "role": "assistant"；
+/// finish_reason 原样透传。每流一个实例
 #[derive(Debug)]
 pub struct OpenAIStreamEncoder {
     stream_id: Option<String>,
@@ -573,8 +687,9 @@ impl OpenAIStreamEncoder {
         }
     }
 
-    /// 归一化单个已映射 chunk：id/created 收敛到流固定值；首个内容
-    /// delta 补 role。非 chunk 帧（心跳等无 id 帧）原样返回。
+    /// 归一化单个已映射 chunk：id/created 收敛到流固定值；首个 delta 帧
+    /// （content / tool_calls / reasoning_content 任一出现）补 role。
+    /// 非 chunk 帧（心跳等无 id 帧）原样返回。
     pub fn normalize(&mut self, mut value: Value) -> Value {
         if value.get("id").and_then(|v| v.as_str()).is_none() || value.get("created").is_none() {
             return value;
@@ -595,8 +710,9 @@ impl OpenAIStreamEncoder {
                 .and_then(|a| a.first_mut())
                 .and_then(|c| c.get_mut("delta"))
             {
-                let has_content =
-                    delta.get("content").is_some() || delta.get("tool_calls").is_some();
+                let has_content = delta.get("content").is_some()
+                    || delta.get("tool_calls").is_some()
+                    || delta.get("reasoning_content").is_some();
                 if has_content && delta.get("role").is_none() {
                     delta["role"] = Value::String("assistant".to_string());
                     self.role_sent = true;
@@ -733,10 +849,28 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
         .and_then(|v| v.as_str())
         .map(|s| MessageContent::Text(s.to_string()));
 
-    let delta_content = tool_call_delta.or(text_delta);
+    // reasoning_content 增量 → Reasoning（DeepSeek/兼容端点形状）。
+    // 非空才产出：思考流帧通常带 content:""，不可让它遮蔽 reasoning；
+    // 同帧 text+reasoning 的非规范形状下 reasoning 优先（单 chunk 交付约束）
+    let reasoning_delta = delta
+        .and_then(|d| d.get("reasoning_content"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| MessageContent::Reasoning {
+            text: s.to_string(),
+            signature: None,
+        });
+
+    let delta_content = tool_call_delta.or(reasoning_delta).or(text_delta);
+
+    // delta.logprobs 原样进 IR（形状由 OpenAI wire 定义）
+    let logprobs = delta
+        .and_then(|d| d.get("logprobs"))
+        .filter(|v| !v.is_null())
+        .cloned();
 
     // role-only 首帧（无内容无终止）：跳过，不产出空事件
-    let has_payload = delta_content.is_some() || finish_reason.is_some();
+    let has_payload = delta_content.is_some() || finish_reason.is_some() || logprobs.is_some();
     if !has_payload {
         return None;
     }
@@ -745,6 +879,7 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
         index,
         delta: delta_content.unwrap_or(MessageContent::Text(String::new())),
         finish_reason,
+        logprobs,
     })
 }
 
@@ -955,6 +1090,7 @@ fn parse_string_content(json: &Value, role: &Role, s: &str) -> MessageContent {
             MessageContent::TextWithToolCalls {
                 text: s.to_string(),
                 tool_calls,
+                reasoning: None,
             }
         }
     } else {
@@ -1032,7 +1168,64 @@ fn parse_content_block(json: &Value) -> Option<ContentBlock> {
                     .map(|s| s.to_string()),
             })
         }
-        _ => None,
+        "file" => {
+            // OpenAI file 部件：file_data（data URL/直链）→ Document；
+            // file_id 无跨协议等价 → 显性丢弃（debug 可检索）
+            let file = json.get("file")?.as_object()?;
+            let file_data = file.get("file_data").and_then(|v| v.as_str());
+            let Some(file_data) = file_data else {
+                drop_unsupported(Protocol::OpenAI, "file_id", "no cross-protocol equivalent");
+                return None;
+            };
+            let (source, media_type) = match file_data.strip_prefix("data:") {
+                Some(rest) => match rest.split_once(";base64,") {
+                    Some((media_type, data)) => (
+                        ImageSource::Base64 {
+                            media_type: media_type.to_string(),
+                            data: data.to_string(),
+                        },
+                        media_type.to_string(),
+                    ),
+                    None => (
+                        ImageSource::Url {
+                            url: file_data.to_string(),
+                        },
+                        "application/octet-stream".to_string(),
+                    ),
+                },
+                None => (
+                    ImageSource::Url {
+                        url: file_data.to_string(),
+                    },
+                    "application/octet-stream".to_string(),
+                ),
+            };
+            Some(ContentBlock::Document {
+                source,
+                media_type,
+                title: file
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                cache_control: None,
+            })
+        }
+        "input_audio" => {
+            let audio = json.get("input_audio")?.as_object()?;
+            Some(ContentBlock::Audio {
+                data: audio.get("data")?.as_str()?.to_string(),
+                format: audio.get("format")?.as_str()?.to_string(),
+            })
+        }
+        _ => {
+            // 未知块型无 IR 等价 → 显性丢弃（debug 可检索）
+            drop_unsupported(
+                Protocol::OpenAI,
+                &format!("content[].{type_}"),
+                "unknown content block type",
+            );
+            None
+        }
     }
 }
 
@@ -1044,8 +1237,8 @@ fn message_to_openai(msg: Message) -> Value {
         Role::Tool => "tool",
     };
 
-    let (content, tool_call_id, top_level_tool_calls) = match msg.content {
-        MessageContent::Text(s) => (Value::String(s), None, None),
+    let (content, tool_call_id, top_level_tool_calls, reasoning) = match msg.content {
+        MessageContent::Text(s) => (Value::String(s), None, None, None),
         MessageContent::MultiModal(blocks) => {
             let arr: Vec<Value> = blocks
                 .iter()
@@ -1071,24 +1264,95 @@ fn message_to_openai(msg: Message) -> Value {
                             },
                         })
                     }
-                    _ => json!({}),
+                    ContentBlock::Document {
+                        source,
+                        title,
+                        cache_control,
+                        ..
+                    } => {
+                        // cache_control 无 OpenAI 槽 → 显性丢弃
+                        if cache_control.is_some() {
+                            drop_unsupported(
+                                Protocol::OpenAI,
+                                "cache_control",
+                                "no OpenAI slot on file parts",
+                            );
+                        }
+                        // base64 → data URL 重建；Url → 直链原样；
+                        // filename ← title
+                        let file_data = match &source {
+                            ImageSource::Base64 { media_type, data } => {
+                                format!("data:{media_type};base64,{data}")
+                            }
+                            ImageSource::Url { url } => url.clone(),
+                        };
+                        let mut file = json!({"file_data": file_data});
+                        if let Some(title) = title {
+                            file["filename"] = json!(title);
+                        }
+                        json!({
+                            "type": "file",
+                            "file": file,
+                        })
+                    }
+                    ContentBlock::Audio { data, format } => json!({
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": data,
+                            "format": format,
+                        },
+                    }),
+                    ContentBlock::Type(t) => {
+                        // 未知块型（IR Type 保真槽）无 OpenAI 等价 → 显性丢弃
+                        drop_unsupported(
+                            Protocol::OpenAI,
+                            &format!("content[].{t}"),
+                            "content block type has no OpenAI equivalent",
+                        );
+                        json!({})
+                    }
                 })
                 .collect();
-            (Value::Array(arr), None, None)
+            (Value::Array(arr), None, None, None)
         }
         MessageContent::ToolCalls(tool_calls) => {
             // OpenAI 出站规范 —— 工具调用在顶层 tool_calls 字段，
             // content 为 null（不可塞进 content 数组，OpenAI 上游会拒收）
-            (Value::Null, None, Some(tool_calls))
+            (Value::Null, None, Some(tool_calls), None)
         }
         MessageContent::ToolResult(result) => (
             Value::String(result.content.clone()),
             Some(result.tool_call_id),
             None,
+            None,
         ),
-        MessageContent::TextWithToolCalls { text, tool_calls } => {
-            // 文本与工具调用并列 —— content 为文本 + 顶层 tool_calls
-            (Value::String(text), None, Some(tool_calls))
+        MessageContent::TextWithToolCalls {
+            text,
+            tool_calls,
+            reasoning,
+        } => {
+            // 文本与工具调用并列 —— content 为文本 + 顶层 tool_calls；
+            // tool_calls 为空（text+reasoning 组合）时不写空数组。
+            // reasoning 走非标 reasoning_content 字段（官方客户端
+            // extra=allow 容忍）
+            let calls = if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            };
+            (Value::String(text), None, calls, reasoning)
+        }
+        // 思考内容 → 非标 reasoning_content 字段，content 置空
+        //（signature 无 OpenAI 槽，显性化丢弃）
+        MessageContent::Reasoning { text, signature } => {
+            if signature.is_some() {
+                drop_unsupported(
+                    Protocol::OpenAI,
+                    "reasoning.signature",
+                    "no OpenAI slot for thinking signature",
+                );
+            }
+            (Value::String(String::new()), None, None, Some(text))
         }
     };
 
@@ -1096,6 +1360,11 @@ fn message_to_openai(msg: Message) -> Value {
         "role": role_str,
         "content": content,
     });
+
+    // 思考内容非标字段回写（DeepSeek/兼容端点形状）
+    if let Some(reasoning) = reasoning {
+        obj["reasoning_content"] = json!(reasoning);
+    }
 
     // 工具角色消息需要 tool_call_id
     if let Some(id) = tool_call_id {
@@ -1136,6 +1405,18 @@ fn delta_to_openai(delta: MessageContent) -> Value {
         MessageContent::ToolCalls(_) => json!({ "content": "" }),
         MessageContent::ToolResult(result) => json!({ "content": result.content }),
         MessageContent::TextWithToolCalls { text, .. } => json!({ "content": text }),
+        // 流式思考增量 → delta.reasoning_content（非标字段）；
+        // signature 无 OpenAI 槽 → 显性丢弃
+        MessageContent::Reasoning { text, signature } => {
+            if signature.is_some() {
+                drop_unsupported(
+                    Protocol::OpenAI,
+                    "reasoning.signature",
+                    "no OpenAI slot for thinking signature",
+                );
+            }
+            json!({ "reasoning_content": text })
+        }
     }
 }
 
@@ -1147,6 +1428,66 @@ fn parse_logit_bias(value: Option<&Value>) -> HashMap<String, f32> {
             .collect(),
         _ => HashMap::new(),
     }
+}
+
+/// OpenAI `usage.prompt_tokens_details` → IR 明细（对象缺省/空对象视为缺省）。
+fn parse_prompt_tokens_details(value: Option<&Value>) -> Option<PromptTokensDetails> {
+    let obj = value?.as_object()?;
+    if obj.is_empty() {
+        return None;
+    }
+    Some(PromptTokensDetails {
+        audio_tokens: obj
+            .get("audio_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        cached_tokens: obj
+            .get("cached_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    })
+}
+
+/// OpenAI `usage.completion_tokens_details` → IR 明细（对象缺省/空对象视为缺省）。
+fn parse_completion_tokens_details(value: Option<&Value>) -> Option<CompletionTokensDetails> {
+    let obj = value?.as_object()?;
+    if obj.is_empty() {
+        return None;
+    }
+    Some(CompletionTokensDetails {
+        reasoning_tokens: obj
+            .get("reasoning_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        audio_tokens: obj
+            .get("audio_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        accepted_prediction_tokens: obj
+            .get("accepted_prediction_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        rejected_prediction_tokens: obj
+            .get("rejected_prediction_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    })
+}
+
+/// IR logit_bias → OpenAI wire。整数值归一为整数（`-100` 而非
+/// `-100.0`，保真往返）；非整数值按浮点原样写出。
+fn logit_bias_to_openai(bias: &HashMap<String, f32>) -> Value {
+    let mut out = serde_json::Map::new();
+    for (key, value) in bias {
+        let number = if value.is_finite() && value.fract() == 0.0 && value.abs() <= i64::MAX as f32
+        {
+            Value::from(*value as i64)
+        } else {
+            Value::from(*value)
+        };
+        out.insert(key.clone(), number);
+    }
+    Value::Object(out)
 }
 
 /// 提取消息顶层 `tool_calls` 数组（String content 分支与
@@ -1198,15 +1539,24 @@ fn arguments_as_string(value: Option<&Value>) -> Option<String> {
 /// anyOf / $ref / 缺 type 属性等全量无损）。
 fn parse_openai_tool(json: &Value) -> Option<Tool> {
     let obj = json.as_object()?;
+    let tool_type = obj
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("function");
+    if tool_type != "function" {
+        // 非 function（custom 等）原样保真进 raw；function 字段缺省
+        return Some(Tool {
+            tool_type: tool_type.to_string(),
+            function: ToolFunction::default(),
+            raw: Some(json.clone()),
+            cache_control: None,
+        });
+    }
     let func = obj.get("function")?.as_object()?;
     let parameters = func.get("parameters").cloned().unwrap_or(Value::Null);
 
     Some(Tool {
-        tool_type: obj
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("function")
-            .to_string(),
+        tool_type: "function".to_string(),
         function: ToolFunction {
             name: func.get("name")?.as_str()?.to_string(),
             description: func
@@ -1217,12 +1567,24 @@ fn parse_openai_tool(json: &Value) -> Option<Tool> {
             parameters,
             strict: func.get("strict").and_then(|v| v.as_bool()),
         },
+        ..Default::default()
     })
 }
 
-/// 将工具转换为 OpenAI 格式（parameters 原样保真；未携带（Null）时
-/// 省略该键——OpenAI Chat Completions 中 parameters 为可选字段）。
-fn tool_to_openai(tool: &Tool) -> Value {
+/// 将工具转换为 OpenAI 格式：`raw`（custom 等非 function 保真形态）原样
+/// 回写；非本协议原生非 function 类型（Anthropic server tool 等跨协议形态）
+/// 显式 400，不静默降级。
+fn tool_to_openai(tool: &Tool, index: usize) -> Result<Value, GateError> {
+    if tool.tool_type != "function" {
+        if tool.tool_type == "custom" {
+            if let Some(raw) = tool.raw.as_ref() {
+                return Ok(raw.clone());
+            }
+        }
+        return Err(GateError::Validation {
+            field: format!("tools[{index}].type"),
+        });
+    }
     let mut function = json!({
         "name": tool.function.name,
         "description": tool.function.description,
@@ -1233,10 +1595,10 @@ fn tool_to_openai(tool: &Tool) -> Value {
     if let Some(strict) = tool.function.strict {
         function["strict"] = json!(strict);
     }
-    json!({
+    Ok(json!({
         "type": tool.tool_type,
         "function": function,
-    })
+    }))
 }
 
 /// 解析工具选择策略
@@ -1297,5 +1659,716 @@ fn tool_choice_to_openai(tool_choice: ToolChoice) -> Value {
                 "name": function.name,
             }
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 组装最小合法入站请求体（额外字段合并进顶层）。
+    fn inbound(extra: Value) -> UnifiedRequest {
+        let mut body = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        for (key, value) in extra.as_object().expect("extra 必须为对象") {
+            body[key] = value.clone();
+        }
+        OpenAIConverter::new()
+            .to_unified(body)
+            .expect("to_unified 应成功")
+    }
+
+    #[test]
+    fn inbound_reasoning_effort_full_vocabulary() {
+        for (wire, level) in [
+            ("none", EffortLevel::None),
+            ("minimal", EffortLevel::Minimal),
+            ("low", EffortLevel::Low),
+            ("medium", EffortLevel::Medium),
+            ("high", EffortLevel::High),
+            ("xhigh", EffortLevel::XHigh),
+            ("max", EffortLevel::Max),
+        ] {
+            let request = inbound(json!({"reasoning_effort": wire}));
+            assert_eq!(request.effort, Some(level), "wire={wire}");
+            assert!(
+                !request.vendor_extensions.contains_key("reasoning_effort"),
+                "合法词不落扩展表（wire={wire}）"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_unknown_reasoning_effort_preserves_raw_value() {
+        // 词表外字符串：不猜变体，原值留在扩展表
+        let request = inbound(json!({"reasoning_effort": "ultra"}));
+        assert_eq!(request.effort, None);
+        assert_eq!(
+            request.vendor_extensions.get("reasoning_effort"),
+            Some(&json!("ultra")),
+            "未知词原值留在扩展表防丢"
+        );
+
+        // 非字符串形态同样保留
+        let request = inbound(json!({"reasoning_effort": 3}));
+        assert_eq!(request.effort, None);
+        assert_eq!(
+            request.vendor_extensions.get("reasoning_effort"),
+            Some(&json!(3))
+        );
+    }
+
+    #[test]
+    fn inbound_parses_metadata_service_tier_verbosity_and_max_completion_tokens() {
+        let request = inbound(json!({
+            "metadata": {"user_id": "u1", "trace": "t"},
+            "service_tier": "flex",
+            "verbosity": "high",
+            "max_completion_tokens": 4096,
+            "max_tokens": 512
+        }));
+        assert_eq!(
+            request.metadata,
+            Some(json!({"user_id": "u1", "trace": "t"}))
+        );
+        assert_eq!(request.service_tier.as_deref(), Some("flex"));
+        assert_eq!(request.verbosity, Some(Verbosity::High));
+        assert_eq!(request.max_completion_tokens, Some(4096));
+        // 双槽独立并存
+        assert_eq!(request.max_tokens, Some(512));
+        // 协议键不落扩展表（known_keys 扩表生效）
+        for key in [
+            "metadata",
+            "service_tier",
+            "verbosity",
+            "max_completion_tokens",
+        ] {
+            assert!(!request.vendor_extensions.contains_key(key), "key={key}");
+        }
+    }
+
+    #[test]
+    fn inbound_non_object_metadata_and_unknown_verbosity_are_dropped() {
+        let request = inbound(json!({"metadata": "oops", "verbosity": "chatty"}));
+        assert_eq!(request.metadata, None, "非对象 metadata 不入槽");
+        assert_eq!(request.verbosity, None, "词表外 verbosity 不猜变体");
+    }
+
+    #[test]
+    fn outbound_rewrites_logit_bias_and_new_slots() {
+        let converter = OpenAIConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "logit_bias": {"50256": -100, "12345": 39.5},
+                "max_completion_tokens": 4096,
+                "metadata": {"trace": "t1"},
+                "service_tier": "auto",
+                "verbosity": "low",
+                "reasoning_effort": "xhigh"
+            }))
+            .expect("to_unified");
+        let body = converter.request_to_external(unified).expect("to_external");
+        // 整数保真：-100 而非 -100.0；非整数原样
+        assert_eq!(body["logit_bias"], json!({"50256": -100, "12345": 39.5}));
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert_eq!(body["metadata"], json!({"trace": "t1"}));
+        assert_eq!(body["service_tier"], "auto");
+        assert_eq!(body["verbosity"], "low");
+        assert_eq!(body["reasoning_effort"], "xhigh");
+    }
+
+    #[test]
+    fn outbound_new_slots_absent_by_default() {
+        let converter = OpenAIConverter::new();
+        let unified = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .expect("to_unified");
+        let body = converter.request_to_external(unified).expect("to_external");
+        for key in [
+            "logit_bias",
+            "max_completion_tokens",
+            "metadata",
+            "service_tier",
+            "verbosity",
+            "reasoning_effort",
+        ] {
+            assert!(body.get(key).is_none(), "缺省不写出: {key}");
+        }
+    }
+
+    #[test]
+    fn usage_details_roundtrip() {
+        let converter = OpenAIConverter::new();
+        let response = converter
+            .parse_response(json!({
+                "id": "chatcmpl-1",
+                "created": 123,
+                "model": "gpt-4o",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hi"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 64,
+                    "total_tokens": 164,
+                    "prompt_tokens_details": {"cached_tokens": 40, "audio_tokens": 2},
+                    "completion_tokens_details": {"reasoning_tokens": 64}
+                }
+            }))
+            .expect("parse_response");
+        // cached_tokens 镜像进 legacy 槽（跨协议载体）
+        assert_eq!(response.usage.cache_read_tokens, 40);
+        assert_eq!(
+            response.usage.prompt_tokens_details,
+            Some(PromptTokensDetails {
+                audio_tokens: 2,
+                cached_tokens: 40
+            })
+        );
+        assert_eq!(
+            response.usage.completion_tokens_details,
+            Some(CompletionTokensDetails {
+                reasoning_tokens: 64,
+                ..Default::default()
+            })
+        );
+        // 出站：details 原样保留
+        let body = converter
+            .response_to_external(response)
+            .expect("to external");
+        assert_eq!(
+            body["usage"]["prompt_tokens_details"],
+            json!({"audio_tokens": 2, "cached_tokens": 40})
+        );
+        assert_eq!(
+            body["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            64
+        );
+    }
+
+    #[test]
+    fn usage_legacy_cache_read_folds_into_cached_tokens_when_details_absent() {
+        let converter = OpenAIConverter::new();
+        let response = UnifiedResponse {
+            id: "resp-1".into(),
+            object: "chat.completion".into(),
+            created: 0,
+            model: "gpt-4o".into(),
+            choices: vec![],
+            usage: TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 1,
+                total_tokens: 11,
+                cache_read_tokens: 7,
+                ..Default::default()
+            },
+            stop_sequence: None,
+        };
+        let body = converter
+            .response_to_external(response)
+            .expect("to external");
+        assert_eq!(
+            body["usage"]["prompt_tokens_details"],
+            json!({"cached_tokens": 7}),
+            "details 缺省时 legacy cache_read 并入 cached_tokens"
+        );
+        assert!(body["usage"].get("completion_tokens_details").is_none());
+    }
+
+    #[test]
+    fn choices_logprobs_roundtrip() {
+        let converter = OpenAIConverter::new();
+        let response = converter
+            .parse_response(json!({
+                "id": "chatcmpl-2",
+                "created": 1,
+                "model": "gpt-4o",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hi"},
+                    "finish_reason": "stop",
+                    "logprobs": {
+                        "content": [{
+                            "token": "hi",
+                            "logprob": -0.1,
+                            "bytes": null,
+                            "top_logprobs": []
+                        }]
+                    }
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+            .expect("parse_response");
+        assert!(
+            response.choices[0].logprobs.is_some(),
+            "choices[].logprobs 应解析进 IR"
+        );
+        let body = converter
+            .response_to_external(response)
+            .expect("to external");
+        assert_eq!(body["choices"][0]["logprobs"]["content"][0]["token"], "hi");
+
+        // 缺省时不写出（旧形状不变）
+        let response = converter
+            .parse_response(json!({
+                "id": "chatcmpl-3",
+                "created": 1,
+                "model": "gpt-4o",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hi"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+            .expect("parse_response");
+        let body = converter
+            .response_to_external(response)
+            .expect("to external");
+        assert!(body["choices"][0].get("logprobs").is_none());
+    }
+
+    #[test]
+    fn reasoning_content_message_roundtrip() {
+        let converter = OpenAIConverter::new();
+        // 入站：仅 reasoning_content → Reasoning（文本空、无工具）
+        let response = converter
+            .parse_response(json!({
+                "id": "chatcmpl-r1",
+                "created": 1,
+                "model": "deepseek-r1",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "think"
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+            .expect("parse_response");
+        let message = response.choices[0].message.as_ref().expect("message");
+        match &message.content {
+            MessageContent::Reasoning { text, signature } => {
+                assert_eq!(text, "think");
+                assert!(signature.is_none());
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        // 出站：reasoning_content 回写、content 空串
+        let body = converter
+            .response_to_external(response)
+            .expect("to external");
+        assert_eq!(body["choices"][0]["message"]["reasoning_content"], "think");
+        assert_eq!(body["choices"][0]["message"]["content"], "");
+    }
+
+    #[test]
+    fn reasoning_content_with_text_preserves_reasoning_without_tool_calls_key() {
+        let converter = OpenAIConverter::new();
+        // content + reasoning_content（无工具）→ TextWithToolCalls（保住 reasoning）
+        let response = converter
+            .parse_response(json!({
+                "id": "chatcmpl-r2",
+                "created": 1,
+                "model": "deepseek-r1",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "answer",
+                        "reasoning_content": "think"
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+            .expect("parse_response");
+        let message = response.choices[0].message.as_ref().expect("message");
+        match &message.content {
+            MessageContent::TextWithToolCalls {
+                text,
+                tool_calls,
+                reasoning,
+            } => {
+                assert_eq!(text, "answer");
+                assert!(tool_calls.is_empty());
+                assert_eq!(reasoning.as_deref(), Some("think"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let body = converter
+            .response_to_external(response)
+            .expect("to external");
+        assert_eq!(body["choices"][0]["message"]["content"], "answer");
+        assert_eq!(body["choices"][0]["message"]["reasoning_content"], "think");
+        assert!(
+            body["choices"][0]["message"].get("tool_calls").is_none(),
+            "空 tool_calls 不写出空数组"
+        );
+    }
+
+    #[test]
+    fn stream_reasoning_content_roundtrip() {
+        let converter = OpenAIConverter::new();
+        // 入站：delta.reasoning_content → Content{delta: Reasoning}；
+        // 同帧 content:"" 不遮蔽 reasoning
+        let chunk = parse_sse_frame_to_chunk(
+            r#"{"choices":[{"index":0,"delta":{"content":"","reasoning_content":"th"},"finish_reason":null}]}"#,
+        )
+        .expect("chunk");
+        match chunk {
+            StreamChunk::Content {
+                delta: MessageContent::Reasoning { text, .. },
+                ..
+            } => assert_eq!(text, "th"),
+            other => panic!("unexpected: {other:?}"),
+        }
+        // 出站：Reasoning → delta.reasoning_content
+        let out = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 0,
+                delta: MessageContent::Reasoning {
+                    text: "th".into(),
+                    signature: None,
+                },
+                finish_reason: None,
+                logprobs: None,
+            })
+            .expect("to external");
+        assert_eq!(out["choices"][0]["delta"]["reasoning_content"], "th");
+    }
+
+    #[test]
+    fn file_and_audio_blocks_parse_into_document_and_audio() {
+        let converter = OpenAIConverter::new();
+        let request = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "read this"},
+                        {"type": "file", "file": {
+                            "file_data": "data:application/pdf;base64,QUJD",
+                            "filename": "doc.pdf"
+                        }},
+                        {"type": "input_audio", "input_audio": {"data": "QUJD", "format": "wav"}}
+                    ]
+                }]
+            }))
+            .expect("to_unified");
+        match &request.messages[0].content {
+            MessageContent::MultiModal(blocks) => {
+                assert_eq!(blocks.len(), 3);
+                match &blocks[1] {
+                    ContentBlock::Document {
+                        source,
+                        media_type,
+                        title,
+                        cache_control,
+                    } => {
+                        assert_eq!(media_type, "application/pdf");
+                        assert_eq!(title.as_deref(), Some("doc.pdf"));
+                        assert!(cache_control.is_none());
+                        match source {
+                            ImageSource::Base64 { media_type, data } => {
+                                assert_eq!(media_type, "application/pdf");
+                                assert_eq!(data, "QUJD");
+                            }
+                            other => panic!("unexpected: {other:?}"),
+                        }
+                    }
+                    other => panic!("unexpected: {other:?}"),
+                }
+                match &blocks[2] {
+                    ContentBlock::Audio { data, format } => {
+                        assert_eq!(data, "QUJD");
+                        assert_eq!(format, "wav");
+                    }
+                    other => panic!("unexpected: {other:?}"),
+                }
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // file_id 无跨协议等价 → 块丢弃（debug 显性化）
+        let request = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "x"},
+                        {"type": "file", "file": {"file_id": "file-abc"}}
+                    ]
+                }]
+            }))
+            .expect("to_unified");
+        match &request.messages[0].content {
+            MessageContent::MultiModal(blocks) => {
+                assert_eq!(blocks.len(), 1, "file_id 块被丢弃");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn document_and_audio_blocks_write_back_to_openai() {
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::MultiModal(vec![
+                ContentBlock::Document {
+                    source: ImageSource::Base64 {
+                        media_type: "application/pdf".into(),
+                        data: "QUJD".into(),
+                    },
+                    media_type: "application/pdf".into(),
+                    title: Some("doc.pdf".into()),
+                    cache_control: None,
+                },
+                ContentBlock::Audio {
+                    data: "QUJD".into(),
+                    format: "wav".into(),
+                },
+            ]),
+        };
+        let out = message_to_openai(msg);
+        assert_eq!(out["content"][0]["type"], "file");
+        assert_eq!(
+            out["content"][0]["file"]["file_data"],
+            "data:application/pdf;base64,QUJD"
+        );
+        assert_eq!(out["content"][0]["file"]["filename"], "doc.pdf");
+        assert_eq!(out["content"][1]["type"], "input_audio");
+        assert_eq!(
+            out["content"][1]["input_audio"],
+            json!({"data": "QUJD", "format": "wav"})
+        );
+
+        // url 形态直链回写
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::MultiModal(vec![ContentBlock::Document {
+                source: ImageSource::Url {
+                    url: "https://example.com/doc.pdf".into(),
+                },
+                media_type: "application/pdf".into(),
+                title: None,
+                cache_control: None,
+            }]),
+        };
+        let out = message_to_openai(msg);
+        assert_eq!(
+            out["content"][0]["file"]["file_data"],
+            "https://example.com/doc.pdf"
+        );
+        assert!(out["content"][0]["file"].get("filename").is_none());
+    }
+
+    #[test]
+    fn custom_tool_raw_fidelity_roundtrip() {
+        let converter = OpenAIConverter::new();
+        let request = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{
+                    "type": "custom",
+                    "custom": {
+                        "name": "fmt",
+                        "format": {"type": "grammar"}
+                    }
+                }]
+            }))
+            .expect("to_unified");
+        assert_eq!(request.tools[0].tool_type, "custom");
+        assert!(request.tools[0].raw.is_some(), "custom 原对象保真进 raw");
+
+        let body = converter.request_to_external(request).expect("to external");
+        assert_eq!(body["tools"][0]["type"], "custom");
+        assert_eq!(body["tools"][0]["custom"]["name"], "fmt");
+        assert_eq!(body["tools"][0]["custom"]["format"]["type"], "grammar");
+    }
+
+    #[test]
+    fn cross_protocol_non_function_tool_returns_validation_400() {
+        let converter = OpenAIConverter::new();
+        // Anthropic server tool（raw 存在但非 OpenAI 原生）→ 显式 400
+        let mut request = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .expect("to_unified");
+        request.tools = vec![Tool {
+            tool_type: "web_search_20250305".into(),
+            raw: Some(json!({"type": "web_search_20250305", "name": "web_search"})),
+            ..Default::default()
+        }];
+        let err = converter
+            .request_to_external(request)
+            .expect_err("跨协议非 function 工具必须 400");
+        match err {
+            crate::error::GateError::Validation { field } => {
+                assert_eq!(field, "tools[0].type");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // custom 但 raw 缺失（IR 手工构造的坏形状）→ 同样 400
+        let mut request = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .expect("to_unified");
+        request.tools = vec![Tool {
+            tool_type: "custom".into(),
+            ..Default::default()
+        }];
+        let err = converter
+            .request_to_external(request)
+            .expect_err("custom 无 raw 必须 400");
+        match err {
+            crate::error::GateError::Validation { field } => {
+                assert_eq!(field, "tools[0].type");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_logprobs_parse_and_write_back() {
+        let converter = OpenAIConverter::new();
+        // 入站 delta.logprobs → Content.logprobs
+        let chunk = parse_sse_frame_to_chunk(
+            r#"{"choices":[{"index":0,"delta":{"content":"hi","logprobs":{"content":[{"token":"hi","logprob":-0.2}]}},"finish_reason":null}]}"#,
+        )
+        .expect("chunk");
+        match &chunk {
+            StreamChunk::Content { logprobs, .. } => {
+                assert_eq!(logprobs.as_ref().unwrap()["content"][0]["token"], "hi");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        // 出站 delta.logprobs 回写
+        let out = converter
+            .stream_chunk_to_external(chunk)
+            .expect("to external");
+        assert_eq!(
+            out["choices"][0]["delta"]["logprobs"]["content"][0]["logprob"],
+            -0.2
+        );
+
+        // 缺省不写出（旧形状不变）
+        let chunk = parse_sse_frame_to_chunk(
+            r#"{"choices":[{"index":0,"delta":{"content":"x"},"finish_reason":null}]}"#,
+        )
+        .expect("chunk");
+        let out = converter
+            .stream_chunk_to_external(chunk)
+            .expect("to external");
+        assert!(out["choices"][0]["delta"].get("logprobs").is_none());
+    }
+
+    #[test]
+    fn stream_encoder_adds_role_on_reasoning_first_frame() {
+        let converter = OpenAIConverter::new();
+        let mut encoder = OpenAIStreamEncoder::new();
+        // Reasoning 首帧补 role（否则思考流在首个文本帧前无 role）
+        let encoded = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 0,
+                delta: MessageContent::Reasoning {
+                    text: "th".into(),
+                    signature: None,
+                },
+                finish_reason: None,
+                logprobs: None,
+            })
+            .expect("to external");
+        let normalized = encoder.normalize(encoded);
+        assert_eq!(normalized["choices"][0]["delta"]["role"], "assistant");
+        assert_eq!(normalized["choices"][0]["delta"]["reasoning_content"], "th");
+
+        // 后续 content 帧不重复补 role
+        let encoded = converter
+            .stream_chunk_to_external(StreamChunk::Content {
+                index: 0,
+                delta: MessageContent::Text("hi".into()),
+                finish_reason: None,
+                logprobs: None,
+            })
+            .expect("to external");
+        let normalized = encoder.normalize(encoded);
+        assert!(normalized["choices"][0]["delta"].get("role").is_none());
+    }
+
+    #[test]
+    fn drop_paths_are_reachable_without_panic() {
+        let converter = OpenAIConverter::new();
+        // 未知内容块型（入站）→ 丢弃 + debug，不 panic
+        let request = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "x"},
+                        {"type": "mystery_block", "data": 1}
+                    ]
+                }]
+            }))
+            .expect("to_unified");
+        match &request.messages[0].content {
+            MessageContent::MultiModal(blocks) => assert_eq!(blocks.len(), 1),
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // reasoning 带 signature 出站（无 OpenAI 槽）→ 丢弃 + debug
+        let out = message_to_openai(Message {
+            role: Role::Assistant,
+            content: MessageContent::Reasoning {
+                text: "t".into(),
+                signature: Some("sig".into()),
+            },
+        });
+        assert_eq!(out["reasoning_content"], "t");
+        assert_eq!(out["content"], "");
+
+        // thinking_config（含 display）出站 → 丢弃 + debug
+        let mut request = converter
+            .to_unified(json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .expect("to_unified");
+        request.thinking_config = Some(ThinkingConfig::Adaptive { display: None });
+        request.thinking_include_thoughts = Some(true);
+        let body = converter.request_to_external(request).expect("to external");
+        assert!(body.get("thinking_config").is_none());
+
+        // IR Type 保真块出站 → 丢弃 + debug（空对象占位）
+        let out = message_to_openai(Message {
+            role: Role::User,
+            content: MessageContent::MultiModal(vec![
+                ContentBlock::Text { text: "a".into() },
+                ContentBlock::Type("redacted_thinking".into()),
+            ]),
+        });
+        assert_eq!(out["content"].as_array().unwrap().len(), 2);
+        assert_eq!(out["content"][1], json!({}));
     }
 }

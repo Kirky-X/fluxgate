@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use crate::config::{ConfigManager, ModelConfig, PricingConfig, VendorConfig};
+use crate::config::{
+    ConfigManager, ModelConfig, ModelTask, PricingConfig, VendorConfig, VendorProtocol,
+};
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use crate::vendor::{VendorManager, VendorStatus, WindowInfo};
@@ -161,7 +163,7 @@ impl Router {
         self.config
             .resolve_model(normalized)
             .iter()
-            .filter(|(vendor, _)| vendor.type_ != "openai")
+            .filter(|(vendor, _)| !matches!(vendor.protocol(), VendorProtocol::OpenAi))
             .map(|(vendor, _)| vendor.id.clone())
             .collect()
     }
@@ -211,7 +213,7 @@ impl Router {
         let mut has_member: Vec<(String, bool)> = Vec::new();
         let mut group_members = 0usize;
         for (vendor, model) in self.config.resolve_model(normalized) {
-            let is_member = vendor.type_ == "openai"
+            let is_member = matches!(vendor.protocol(), VendorProtocol::OpenAi)
                 && EmbeddingPin::group_key(
                     &vendor.id,
                     &model.model_id,
@@ -319,7 +321,13 @@ impl Router {
 
     /// 能力复核：vendor 类型与条目 model_type 双维度同时满足
     fn is_rerank_capable(decision: &RoutingDecision) -> bool {
-        decision.vendor.type_ == "rerank" && decision.model.model_type.as_deref() == Some("rerank")
+        matches!(decision.vendor.protocol(), VendorProtocol::Rerank)
+            && decision
+                .model
+                .model_type
+                .as_deref()
+                .and_then(ModelTask::parse)
+                == Some(ModelTask::Rerank)
     }
 
     /// rerank 候选预过滤：「该 abstract 下无任何 rerank 能力条目」的 vendor
@@ -330,7 +338,9 @@ impl Router {
         let candidates = self.config.resolve_model(&normalized);
         let mut capable: Vec<&str> = Vec::new();
         for (vendor, model) in &candidates {
-            if vendor.type_ == "rerank" && model.model_type.as_deref() == Some("rerank") {
+            if matches!(vendor.protocol(), VendorProtocol::Rerank)
+                && model.model_type.as_deref().and_then(ModelTask::parse) == Some(ModelTask::Rerank)
+            {
                 capable.push(vendor.id.as_str());
             }
         }
@@ -437,7 +447,7 @@ impl Router {
                 Ok(decision) => decision,
                 Err(_) => return Err(self.gemini_native_exhausted_error(abstract_model)),
             };
-            if decision.vendor.type_ == "gemini" {
+            if matches!(decision.vendor.protocol(), VendorProtocol::Gemini) {
                 return Ok(decision);
             }
             if excluded
@@ -457,7 +467,7 @@ impl Router {
         let candidates = self.config.resolve_model(&normalized);
         let mut capable: Vec<&str> = Vec::new();
         for (vendor, _) in &candidates {
-            if vendor.type_ == "gemini" {
+            if matches!(vendor.protocol(), VendorProtocol::Gemini) {
                 capable.push(vendor.id.as_str());
             }
         }

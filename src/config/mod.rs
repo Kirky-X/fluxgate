@@ -101,21 +101,157 @@ pub struct VendorConfig {
     /// 与 `chat_path` 互斥（路径语义歧义拒绝）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_style: Option<String>,
+    /// Anthropic 出站 `anthropic-version` 头值（仅 type_ = "anthropic"
+    /// 生效）；缺省 None → "2023-06-01"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_version: Option<String>,
+    /// 转发入站 `anthropic-beta` 请求头（仅 type_ = "anthropic" 生效；
+    /// 默认 false 关闭）
+    #[serde(default)]
+    pub forward_beta_headers: bool,
+    /// 发送非标参数：OpenAI 型转换出站默认剥离 `top_k`（默认 false）；
+    /// 置 true 时原样发送（透传路径恒不触碰）
+    #[serde(default)]
+    pub send_nonstandard_params: bool,
 }
 
 impl VendorConfig {
-    /// 归一化端点风格：None/空白 = chat。
-    pub fn api_style(&self) -> Option<&str> {
+    /// 端点风格原始串归一化：trim 后空串视同未声明（None）。校验侧专用：
+    /// 非法值需以此原值点名拒绝（脱敏口径下唯一可透出的是用户自己的配置
+    /// 枚举词，非密钥），消费侧一律走 `api_style()` / `effective_api_style()`。
+    pub fn api_style_raw(&self) -> Option<&str> {
         self.api_style
             .as_deref()
             .map(str::trim)
             .filter(|style| !style.is_empty())
     }
 
-    /// 是否为 Responses 原生上游（大小写不敏感）。
+    /// 归一化端点风格：None/空白/非法值 = None（合法集见 [`ApiStyle`]，
+    /// CI 口径单源其 `parse`）。
+    pub fn api_style(&self) -> Option<ApiStyle> {
+        self.api_style_raw().and_then(ApiStyle::parse)
+    }
+
+    /// 生效端点风格：None/空白/非法值手构配置一律按 Chat（与历史「缺省 =
+    /// chat」语义一致；非法值在 loader 已被拒绝，不可达此处）。
+    pub fn effective_api_style(&self) -> ApiStyle {
+        self.api_style().unwrap_or(ApiStyle::Chat)
+    }
+
+    /// 是否为 Responses 原生上游（大小写不敏感，经 [`ApiStyle::parse`] 单源）。
     pub fn is_responses_style(&self) -> bool {
-        self.api_style()
-            .is_some_and(|style| style.eq_ignore_ascii_case("responses"))
+        self.api_style() == Some(ApiStyle::Responses)
+    }
+
+    /// 厂商协议分类（已知变体 + Custom 兜底，口径见 [`VendorProtocol::parse`]）。
+    pub fn protocol(&self) -> VendorProtocol<'_> {
+        VendorProtocol::parse(&self.type_)
+    }
+}
+
+/// 端点风格闭集（`api_style` 字段的合法值集）。枚举化的动因：合法值集合与
+/// CI 归一化规则单源于此，比较点拼写错误（如 `"respnoses"`）从运行时故障
+/// 变为编译错误。字段保持 `Option<String>` 不作 serde 枚举：未知值需由
+/// loader 以原始值点名拒绝（i18n `t_args`），严格枚举反序列化会在 serde 层
+/// 回显输入值、破坏解析错误脱敏口径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiStyle {
+    Chat,
+    Responses,
+}
+
+impl ApiStyle {
+    /// 大小写不敏感解析（与历史 `to_ascii_lowercase` 白名单 /
+    /// `eq_ignore_ascii_case` 口径逐字一致）；未知值 None，由调用方持原始
+    /// 值报错。不 trim：空白归一化在 `VendorConfig::api_style_raw` 单层完成。
+    pub fn parse(raw: &str) -> Option<Self> {
+        if raw.eq_ignore_ascii_case("chat") {
+            Some(Self::Chat)
+        } else if raw.eq_ignore_ascii_case("responses") {
+            Some(Self::Responses)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Responses => "responses",
+        }
+    }
+}
+
+/// 模型任务类型闭集（`model_type` 字段的合法值集）：与 [`ApiStyle`] 同构
+/// 收益（合法值单源、防拼写），但归一化口径不同——历史 `matches!` 严格
+/// 大小写（`"CHAT"` 必须继续被拒），故不沿用其 CI 规则；两种口径都是
+/// 存量行为，不得统一。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelTask {
+    Chat,
+    Embedding,
+    Rerank,
+}
+
+impl ModelTask {
+    /// 严格大小写解析（不 trim、不 CI）；None = 非法值，由 loader 点名原值
+    /// 拒绝。空白串的「空白 = 未声明」判定在调用方先行，不入本函数。
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "chat" => Some(Self::Chat),
+            "embedding" => Some(Self::Embedding),
+            "rerank" => Some(Self::Rerank),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Embedding => "embedding",
+            Self::Rerank => "rerank",
+        }
+    }
+}
+
+/// 厂商协议分类（`type_` 的已知成员 + [`VendorProtocol::Custom`] 兜底）。
+/// `type_` 是有意设计的开放集合（第三方 OpenAI 兼容厂商依赖任意值，代码
+/// 不校验取值），故不能做成严格枚举字段；枚举只活在逻辑层：把散落全仓的
+/// 字面量比较收敛为穷尽 match（新增协议分支时编译器强制覆盖），历史 `_`
+/// 通配臂获得显式命名 `Custom`，语义逐点对应不变更。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VendorProtocol<'a> {
+    OpenAi,
+    Anthropic,
+    Gemini,
+    Rerank,
+    /// 未知/第三方兼容类型：携带原始字面量（不 trim、大小写敏感）供透传
+    /// URL/日志原样使用；行为等同历史通配臂。
+    Custom(&'a str),
+}
+
+impl<'a> VendorProtocol<'a> {
+    /// 大小写敏感、不 trim——与全部历史比较点口径一致（`"OpenAI"` 仍是
+    /// Custom，回落语义不变）。
+    pub fn parse(raw: &'a str) -> Self {
+        match raw {
+            "openai" => Self::OpenAi,
+            "anthropic" => Self::Anthropic,
+            "gemini" => Self::Gemini,
+            "rerank" => Self::Rerank,
+            other => Self::Custom(other),
+        }
+    }
+
+    /// 已知变体返回协议词，Custom 返回原始值（透传侧原样语义）。
+    pub fn as_str(&self) -> &'a str {
+        match self {
+            Self::OpenAi => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::Rerank => "rerank",
+            Self::Custom(raw) => raw,
+        }
     }
 }
 
@@ -1766,8 +1902,10 @@ fn default_difficulty_engine() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DifficultySection, ModelConfig, ResponsesSection};
-
+    use super::{
+        ApiStyle, ConcurrencyConfig, DifficultySection, ModelConfig, ModelTask, RateLimitConfig,
+        ResponsesSection, VendorConfig, VendorProtocol,
+    };
     #[test]
     fn model_config_parses_model_type_and_defaults_none() {
         let raw = r#"
@@ -1915,5 +2053,158 @@ enabled = true
         assert!(text.contains("hard"), "Some 必须序列化");
         let back: DifficultySection = toml::from_str(&text).expect("roundtrip custom");
         assert_eq!(back, custom);
+    }
+
+    /// `ApiStyle` CI 口径与 as_str 往返（与历史 `to_ascii_lowercase` 白名单
+    /// / `eq_ignore_ascii_case` 等价）；不 trim（归一化在字段层单点）。
+    #[test]
+    fn api_style_parse_is_case_insensitive_and_roundtrips() {
+        assert_eq!(ApiStyle::parse("chat"), Some(ApiStyle::Chat));
+        assert_eq!(ApiStyle::parse("Chat"), Some(ApiStyle::Chat));
+        assert_eq!(ApiStyle::parse("RESPONSES"), Some(ApiStyle::Responses));
+        assert_eq!(ApiStyle::parse("grpc"), None);
+        assert_eq!(ApiStyle::parse("chat "), None, "parse 不 trim");
+        assert_eq!(ApiStyle::Chat.as_str(), "chat");
+        assert_eq!(ApiStyle::Responses.as_str(), "responses");
+    }
+
+    /// `ModelTask` 严格大小写口径（历史 `matches!` 逐字等价）。
+    #[test]
+    fn model_task_parse_is_case_sensitive_and_roundtrips() {
+        assert_eq!(ModelTask::parse("chat"), Some(ModelTask::Chat));
+        assert_eq!(ModelTask::parse("embedding"), Some(ModelTask::Embedding));
+        assert_eq!(ModelTask::parse("rerank"), Some(ModelTask::Rerank));
+        assert_eq!(ModelTask::parse("CHAT"), None, "严格大小写不得放宽");
+        assert_eq!(ModelTask::parse("reranker"), None);
+        for task in [ModelTask::Chat, ModelTask::Embedding, ModelTask::Rerank] {
+            assert_eq!(ModelTask::parse(task.as_str()), Some(task));
+        }
+    }
+
+    /// `VendorProtocol` 大小写敏感、不 trim；未知值 Custom 携原值。
+    #[test]
+    fn vendor_protocol_parse_is_case_sensitive_with_custom_fallback() {
+        assert_eq!(VendorProtocol::parse("openai"), VendorProtocol::OpenAi);
+        assert_eq!(
+            VendorProtocol::parse("anthropic"),
+            VendorProtocol::Anthropic
+        );
+        assert_eq!(VendorProtocol::parse("gemini"), VendorProtocol::Gemini);
+        assert_eq!(VendorProtocol::parse("rerank"), VendorProtocol::Rerank);
+        assert_eq!(
+            VendorProtocol::parse("OpenAI"),
+            VendorProtocol::Custom("OpenAI")
+        );
+        assert_eq!(
+            VendorProtocol::parse(" rerank "),
+            VendorProtocol::Custom(" rerank ")
+        );
+        assert_eq!(
+            VendorProtocol::parse("deepseek-compat").as_str(),
+            "deepseek-compat"
+        );
+        for known in ["openai", "anthropic", "gemini", "rerank"] {
+            assert_eq!(VendorProtocol::parse(known).as_str(), known);
+        }
+    }
+
+    /// 方法层行为保真：trim→空=None、CI 解析、None/空白=Chat 生效风格、
+    /// `is_responses_style` 等价原 `eq_ignore_ascii_case` 口径。
+    #[test]
+    fn vendor_config_style_and_protocol_helpers_match_legacy_semantics() {
+        fn vendor(type_: &str, api_style: Option<&str>) -> VendorConfig {
+            VendorConfig {
+                id: "v".into(),
+                name: "v".into(),
+                type_: type_.into(),
+                api_key_env: "V_KEY".into(),
+                api_key_envs: Vec::new(),
+                extra_headers: Default::default(),
+                api_base: String::new(),
+                enabled: true,
+                priority: 1,
+                models: vec![],
+                rate_limit: RateLimitConfig::Interval {
+                    hours: 1,
+                    sliding: false,
+                },
+                concurrency: ConcurrencyConfig::default(),
+                timeout_ms: 60_000,
+                stream_ttft_ms: 60_000,
+                stream_idle_ms: 30_000,
+                supports_batch: false,
+                chat_path: None,
+                api_style: api_style.map(str::to_string),
+                anthropic_version: None,
+                forward_beta_headers: false,
+                send_nonstandard_params: false,
+            }
+        }
+
+        assert_eq!(vendor("openai", None).api_style(), None);
+        assert_eq!(vendor("openai", Some("  ")).api_style(), None);
+        assert_eq!(
+            vendor("openai", None).effective_api_style(),
+            ApiStyle::Chat,
+            "空白/缺省 = chat"
+        );
+        assert_eq!(
+            vendor("openai", Some("RESPONSES")).api_style(),
+            Some(ApiStyle::Responses)
+        );
+        assert!(vendor("openai", Some("Responses")).is_responses_style());
+        assert!(!vendor("openai", Some("CHAT")).is_responses_style());
+        assert!(!vendor("openai", Some("  ")).is_responses_style());
+        assert_eq!(vendor("gemini", None).protocol(), VendorProtocol::Gemini);
+        assert_eq!(
+            vendor("OpenAI", None).protocol(),
+            VendorProtocol::Custom("OpenAI")
+        );
+    }
+
+    /// D8 厂商字段解析：`anthropic_version` 缺省 None 且不落盘、声明即
+    /// 读出；`forward_beta_headers`/`send_nonstandard_params` 缺省 false。
+    #[test]
+    fn vendor_config_parses_anthropic_version_and_switches() {
+        let base = r#"
+id = "v"
+name = "V"
+type_ = "anthropic"
+api_key_env = "V_KEY"
+
+[rate_limit]
+type = "interval"
+hours = 1
+
+[concurrency]
+requests_per_second = 1
+"#;
+        let config: VendorConfig = toml::from_str(base).expect("缺省解析");
+        assert_eq!(config.anthropic_version, None);
+        assert!(!config.forward_beta_headers);
+        assert!(!config.send_nonstandard_params);
+        let value = serde_json::to_value(&config).expect("serialize");
+        assert!(value.get("anthropic_version").is_none(), "None 不落盘");
+
+        let explicit = r#"
+id = "v"
+name = "V"
+type_ = "anthropic"
+api_key_env = "V_KEY"
+anthropic_version = "2024-10-22"
+forward_beta_headers = true
+send_nonstandard_params = true
+
+[rate_limit]
+type = "interval"
+hours = 1
+
+[concurrency]
+requests_per_second = 1
+"#;
+        let config: VendorConfig = toml::from_str(explicit).expect("显式解析");
+        assert_eq!(config.anthropic_version.as_deref(), Some("2024-10-22"));
+        assert!(config.forward_beta_headers);
+        assert!(config.send_nonstandard_params);
     }
 }

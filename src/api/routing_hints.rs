@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 const FALLBACK_HASH_INPUT_BYTES: usize = 2048;
 /// 兜底会话键的 hex 截断长度（64 bit，碰撞面与键长度平衡）
 const FALLBACK_HASH_HEX_LEN: usize = 16;
+/// `anthropic-beta` 头值长度上限（字节）
+const ANTHROPIC_BETA_MAX_LEN: usize = 4096;
 
 /// 路由提示结构
 #[derive(Debug, Clone, Default)]
@@ -24,6 +26,9 @@ pub struct RoutingHints {
     pub session_key: Option<String>,
     /// N1 batch 标记（X-Batch: 1）
     pub batch: bool,
+    /// 入站 `anthropic-beta` 头值（已过白名单校验）；Anthropic 型厂商
+    /// 且 `forward_beta_headers` 开启时注入出站
+    pub anthropic_beta: Option<String>,
     /// 请求级权重（X-Weight header，LiteLLM simple_shuffle
     /// _router_weights 对照）。仅接受有限正数——非数值 / 非有限 / 非正
     /// 一律忽略为 None（非法值忽略语义）。是否生效由
@@ -60,6 +65,10 @@ impl RoutingHints {
                 .and_then(|v| v.to_str().ok())
                 .map(|v| v.trim() == "1")
                 .unwrap_or(false),
+            anthropic_beta: headers
+                .get("anthropic-beta")
+                .and_then(|v| v.to_str().ok())
+                .and_then(validate_anthropic_beta),
         }
     }
 
@@ -77,6 +86,22 @@ impl RoutingHints {
         }
         fallback_session_key(body)
     }
+}
+
+/// `anthropic-beta` 值白名单：非空、ASCII 可见字符（0x21..=0x7E）且
+/// 长度 ≤ [`ANTHROPIC_BETA_MAX_LEN`]；非法值 warn 后丢弃（None）。
+fn validate_anthropic_beta(value: &str) -> Option<String> {
+    let valid = !value.is_empty()
+        && value.len() <= ANTHROPIC_BETA_MAX_LEN
+        && value.bytes().all(|b| (0x21..=0x7e).contains(&b));
+    if !valid {
+        tracing::warn!(
+            header = "anthropic-beta",
+            "invalid anthropic-beta header value dropped"
+        );
+        return None;
+    }
+    Some(value.to_string())
 }
 
 /// messages 前缀兜底会话键 — 同前缀的对话粘同一 vendor。
@@ -201,6 +226,55 @@ mod tests {
             RoutingHints::from_headers(&HeaderMap::new()).preferred_weight,
             None,
             "缺失忽略"
+        );
+    }
+
+    // ============ tests：anthropic-beta 白名单 ============
+
+    /// 合法 beta 值原样提取（含逗号多值）；缺失 → None。
+    #[test]
+    fn anthropic_beta_parsed_when_visible_ascii() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "anthropic-beta",
+            "extended-thinking-2025-01-01,prompt-caching-2024-07-31"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            RoutingHints::from_headers(&h).anthropic_beta.as_deref(),
+            Some("extended-thinking-2025-01-01,prompt-caching-2024-07-31")
+        );
+        assert_eq!(
+            RoutingHints::from_headers(&HeaderMap::new()).anthropic_beta,
+            None
+        );
+    }
+
+    /// 非法值（含空格 / 非 ASCII / 超长）丢弃为 None；4096 边界合法。
+    #[test]
+    fn anthropic_beta_rejects_invalid_values() {
+        let mut h = HeaderMap::new();
+        h.insert("anthropic-beta", "bad value".parse().unwrap()); // 空格非可见字符
+        assert_eq!(RoutingHints::from_headers(&h).anthropic_beta, None);
+
+        // 非 ASCII 与空串：validator 直测（HeaderValue 无法承载该形态）
+        assert_eq!(validate_anthropic_beta("calf\u{00e9}"), None);
+        assert_eq!(validate_anthropic_beta(""), None);
+
+        let mut h = HeaderMap::new();
+        let long = "a".repeat(ANTHROPIC_BETA_MAX_LEN + 1);
+        h.insert("anthropic-beta", long.parse().unwrap());
+        assert_eq!(RoutingHints::from_headers(&h).anthropic_beta, None);
+
+        let mut h = HeaderMap::new();
+        let edge = "a".repeat(ANTHROPIC_BETA_MAX_LEN);
+        h.insert("anthropic-beta", edge.parse().unwrap());
+        assert_eq!(
+            RoutingHints::from_headers(&h)
+                .anthropic_beta
+                .map(|s| s.len()),
+            Some(ANTHROPIC_BETA_MAX_LEN)
         );
     }
 }

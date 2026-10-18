@@ -354,6 +354,11 @@ pub fn to_unified_request(
         tool_choice,
         parallel_tool_calls: parsed.request.parallel_tool_calls,
         response_format,
+        // 本变更仅 IR 形状适配：新槽入站解析由后续任务补齐
+        metadata: None,
+        service_tier: None,
+        verbosity: None,
+        max_completion_tokens: None,
         vendor_extensions: vendor_extensions.into_iter().collect(),
     })
 }
@@ -565,6 +570,7 @@ fn parse_tools(tools: Option<&Vec<Value>>) -> Result<Vec<Tool>, GateError> {
                 parameters: parameters.cloned().unwrap_or(Value::Null),
                 strict,
             },
+            ..Default::default()
         });
     }
     Ok(parsed)

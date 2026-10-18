@@ -384,8 +384,8 @@ async fn reframe_passthrough_empty_stream_ends_promptly() {
 #[cfg(all(test, feature = "sdk"))]
 mod sdk_client_coverage {
     use fluxgate::sdk::{
-        ChatRequest, ChatRole, FluxgateClient, FluxgateClientBuilder, FluxgateSdkError,
-        RequestConfig,
+        ApiError, ApiErrorKind, ChatRequest, ChatRole, FluxgateClient, FluxgateClientBuilder,
+        FluxgateSdkError, RequestConfig,
     };
     use futures::StreamExt;
     use std::time::Duration;
@@ -543,7 +543,7 @@ mod sdk_client_coverage {
         mock.assert_async().await;
     }
 
-    /// 401 → Auth 错误；其他非 2xx → Server{status, 响应原文}。
+    /// 401 → Api{401, Authentication}；其他非 2xx → Api{status, kind, 响应原文}。
     #[tokio::test]
     async fn chat_maps_error_statuses_to_typed_errors() {
         let mut server = mockito::Server::new_async().await;
@@ -557,7 +557,14 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, FluxgateSdkError::Auth { .. }),
+            matches!(
+                err,
+                FluxgateSdkError::Api(ApiError {
+                    status: 401,
+                    kind: ApiErrorKind::Authentication,
+                    ..
+                })
+            ),
             "401 必须映射 Auth"
         );
 
@@ -572,11 +579,13 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         match err {
-            FluxgateSdkError::Server { status, message } => {
+            FluxgateSdkError::Api(ApiError {
+                status, message, ..
+            }) => {
                 assert_eq!(status, 503);
                 assert_eq!(message, "upstream overloaded", "响应原文必须透传");
             }
-            other => panic!("expected Server error, got {other:?}"),
+            other => panic!("expected Api error, got {other:?}"),
         }
     }
 
@@ -717,7 +726,11 @@ mod sdk_client_coverage {
             .chat_stream(&ChatRequest::new("m", "hi"))
             .await
         {
-            Err(FluxgateSdkError::Auth { .. }) => {}
+            Err(FluxgateSdkError::Api(ApiError {
+                status: 401,
+                kind: ApiErrorKind::Authentication,
+                ..
+            })) => {}
             Err(other) => panic!("expected Auth error, got {other:?}"),
             Ok(_) => panic!("401 必须报错而非返回流"),
         }
@@ -732,11 +745,13 @@ mod sdk_client_coverage {
             .chat_stream(&ChatRequest::new("m", "hi"))
             .await
         {
-            Err(FluxgateSdkError::Server { status, message }) => {
+            Err(FluxgateSdkError::Api(ApiError {
+                status, message, ..
+            })) => {
                 assert_eq!(status, 500);
                 assert_eq!(message, "boom");
             }
-            Err(other) => panic!("expected Server error, got {other:?}"),
+            Err(other) => panic!("expected Api error, got {other:?}"),
             Ok(_) => panic!("500 必须报错而非返回流"),
         }
 
@@ -806,7 +821,7 @@ mod sdk_client_coverage {
         assert_eq!(health.timestamp, "2026-10-05T00:00:00+00:00");
     }
 
-    /// admin 端点非 2xx → Server{status, 响应原文}（models / health 代表）。
+    /// admin 端点非 2xx → Api{status, kind, 响应原文}（models / health 代表）。
     #[tokio::test]
     async fn admin_endpoints_map_error_statuses() {
         let mut server = mockito::Server::new_async().await;
@@ -818,11 +833,13 @@ mod sdk_client_coverage {
             .await;
         let err = build_client(&server.url()).models().await.unwrap_err();
         match err {
-            FluxgateSdkError::Server { status, message } => {
+            FluxgateSdkError::Api(ApiError {
+                status, message, ..
+            }) => {
                 assert_eq!(status, 503);
                 assert_eq!(message, "unavailable");
             }
-            other => panic!("expected Server error, got {other:?}"),
+            other => panic!("expected Api error, got {other:?}"),
         }
 
         server
@@ -833,11 +850,13 @@ mod sdk_client_coverage {
             .await;
         let err = build_client(&server.url()).health().await.unwrap_err();
         match err {
-            FluxgateSdkError::Server { status, message } => {
+            FluxgateSdkError::Api(ApiError {
+                status, message, ..
+            }) => {
                 assert_eq!(status, 500);
                 assert_eq!(message, "db down");
             }
-            other => panic!("expected Server error, got {other:?}"),
+            other => panic!("expected Api error, got {other:?}"),
         }
     }
 
@@ -879,22 +898,25 @@ mod sdk_client_coverage {
     }
 
     /// read_timeout 是「按读停滞」看护：服务端迟迟不回字节，超过客户端
-    /// read_timeout 即 Network 错误（而非无限悬挂），也不受默认 30s 拖累。
+    /// read_timeout 即 `Timeout` 错误（reqwest `is_timeout` 分流；而非
+    /// 无限悬挂），也不受默认 30s 拖累。
     #[tokio::test]
     async fn read_timeout_intercepts_stalled_connection() {
         let base = spawn_delayed_server(Duration::from_millis(1_500)).await;
+        // max_retries(0)：本测只关心停滞拦截上界（< 1s），排除重试退避干扰
         let client = FluxgateClientBuilder::new()
             .base_url(&base)
             .api_key("k")
             .read_timeout(Duration::from_millis(200))
+            .max_retries(0)
             .build()
             .unwrap();
 
         let started = std::time::Instant::now();
         let err = client.chat(&ChatRequest::new("m", "hi")).await.unwrap_err();
         match err {
-            FluxgateSdkError::Network { .. } => {}
-            other => panic!("expected Network error, got {other:?}"),
+            FluxgateSdkError::Timeout { .. } => {}
+            other => panic!("expected Timeout error, got {other:?}"),
         }
         assert!(
             started.elapsed() < Duration::from_secs(1),

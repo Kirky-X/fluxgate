@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::sdk::client::FluxgateClientBuilder;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::{ApiError, ApiErrorKind, FluxgateSdkError};
 use crate::sdk::ChatRequest;
 use std::time::Duration;
 
@@ -105,13 +105,10 @@ async fn chat_sends_tools_and_vendor_extensions() {
     let client = build_client(&server.url());
     let request = ChatRequest::new("gpt-4", "hello")
         .with_tools(
-            vec![crate::sdk::ChatTool {
-                function: crate::sdk::ChatToolDefinition {
-                    name: "get_weather".into(),
-                    description: None,
-                    parameters: serde_json::json!({"type":"object"}),
-                },
-            }],
+            vec![crate::sdk::ChatTool::function(
+                "get_weather",
+                serde_json::json!({"type":"object"}),
+            )],
             Some(crate::sdk::ChatToolChoice::specific("get_weather")),
         )
         .with_vendor_extension("thinking_mode", serde_json::json!("off"))
@@ -214,7 +211,14 @@ async fn chat_401_returns_auth_error() {
         .await
         .unwrap_err();
 
-    assert!(matches!(err, FluxgateSdkError::Auth { .. }));
+    assert!(matches!(
+        err,
+        FluxgateSdkError::Api(ApiError {
+            status: 401,
+            kind: ApiErrorKind::Authentication,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
@@ -234,8 +238,8 @@ async fn chat_500_returns_server_error() {
         .unwrap_err();
 
     match err {
-        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 500),
-        other => panic!("expected Server error, got {other:?}"),
+        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        other => panic!("expected Api error, got {other:?}"),
     }
 }
 

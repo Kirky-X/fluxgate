@@ -261,3 +261,116 @@ fn image_data_url_pads_double_equals_for_rem1() {
     let url = v["image_url"]["url"].as_str().unwrap();
     assert!(url.ends_with("YWJjZA=="), "%3==1 必须双等号 padding: {url}");
 }
+
+/// 多 choice 解析：`n>1` 非流式响应的全量候选保留（index 槽位），
+/// 首 choice 便捷字段与 `choices[0]` 同源。
+#[test]
+fn chat_response_parses_multi_choice() {
+    let wire = json!({
+        "id": "chatcmpl-2",
+        "object": "chat.completion",
+        "model": "gpt-4",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "A"}, "finish_reason": "stop"},
+            {"index": 1, "message": {"role": "assistant", "content": "B", "reasoning_content": "think"}, "finish_reason": "length"}
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+    });
+    let resp = ChatResponse::from_wire(&wire).unwrap();
+
+    assert_eq!(resp.choices.len(), 2, "多候选全量保留");
+    assert_eq!(resp.choices[0].index, 0);
+    assert_eq!(resp.choices[1].index, 1);
+    assert_eq!(resp.choices[1].content, "B");
+    assert_eq!(resp.choices[1].reasoning_content, "think");
+    assert_eq!(
+        resp.choices[1].finish_reason,
+        ChatFinishReason::Standard(StandardFinishReason::Length)
+    );
+
+    assert_eq!(resp.content, "A", "首 choice 便捷视图");
+    assert_eq!(
+        resp.finish_reason,
+        ChatFinishReason::Standard(StandardFinishReason::Stop)
+    );
+    assert_eq!(resp.usage.total_tokens, 3);
+    assert_eq!(resp.choices.len(), 2);
+}
+
+/// 工具面 wire：function 工具补 `type` 键（缺省读兼容旧 wire）、
+/// custom 工具原对象保真、allowed_tools 形状（D7）。
+#[test]
+fn chat_tool_wire_shapes() {
+    // function 工具：type 键补全 + parameters 原样
+    let tool = ChatTool::function("get_weather", json!({"type": "object"}));
+    assert_eq!(
+        serde_json::to_value(&tool).unwrap(),
+        json!({"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}})
+    );
+
+    // 描述链式设置；parameters 未设（null）时省略键（不写显式 null）
+    let described = tool.clone().with_description("查天气");
+    let v = serde_json::to_value(&described).unwrap();
+    assert_eq!(v["function"]["description"], json!("查天气"));
+    let no_params = ChatTool::function("noop", json!(null));
+    let v = serde_json::to_value(&no_params).unwrap();
+    assert!(v["function"].get("parameters").is_none(), "null 参数省略");
+
+    // custom 工具原样保真（含 format 嵌套）
+    let custom = json!({
+        "type": "custom",
+        "custom": {"name": "code_execution", "description": "跑代码", "format": {"type": "text"}}
+    });
+    let tool = ChatTool::Raw(custom.clone());
+    assert_eq!(serde_json::to_value(&tool).unwrap(), custom);
+    assert_eq!(tool.tool_type(), "custom");
+
+    // 反序列化分类：custom → Raw；旧 wire（无 type）→ Function
+    let back: ChatTool = serde_json::from_value(custom).unwrap();
+    assert!(matches!(back, ChatTool::Raw(_)), "custom 对象归 Raw");
+    let legacy: ChatTool =
+        serde_json::from_value(json!({"function": {"name": "f", "parameters": {}}})).unwrap();
+    assert_eq!(legacy.tool_type(), "function", "缺省 type 键兼容");
+}
+
+/// allowed_tools 形状：`{"type":"allowed_tools","allowed_tools":{mode,tools}}`；
+/// 策略词 / 具名函数既有形状不变。
+#[test]
+fn chat_tool_choice_allowed_tools_wire() {
+    let choice = ChatToolChoice::allowed_tools(
+        AllowedToolsMode::Auto,
+        vec![ChatTool::function("get_weather", json!(null))],
+    );
+    assert_eq!(
+        serde_json::to_value(&choice).unwrap(),
+        json!({
+            "type": "allowed_tools",
+            "allowed_tools": {
+                "mode": "auto",
+                "tools": [{"type": "function", "function": {"name": "get_weather"}}]
+            }
+        })
+    );
+
+    // 策略词与具名函数形状不回归
+    assert_eq!(
+        serde_json::to_value(ChatToolChoice::none()).unwrap(),
+        json!("none")
+    );
+    assert_eq!(
+        serde_json::to_value(ChatToolChoice::specific("get_weather")).unwrap(),
+        json!({"type": "function", "function": {"name": "get_weather"}})
+    );
+
+    // untagged 往返（分类到 AllowedTools）
+    let roundtrip: ChatToolChoice =
+        serde_json::from_value(serde_json::to_value(&choice).unwrap()).unwrap();
+    assert_eq!(roundtrip, choice);
+
+    // required 模式词
+    let required = ChatToolChoice::allowed_tools(AllowedToolsMode::Required, vec![]);
+    assert_eq!(
+        serde_json::to_value(&required).unwrap(),
+        json!({"type": "allowed_tools", "allowed_tools": {"mode": "required", "tools": []}})
+    );
+}

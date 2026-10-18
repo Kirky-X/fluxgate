@@ -130,23 +130,12 @@ impl ProtocolConverter for GeminiConverter {
 }
 
 fn message_parts(content: &crate::protocol::MessageContent) -> Vec<Value> {
-    use crate::protocol::{ContentBlock, ImageSource, MessageContent};
+    use crate::protocol::MessageContent;
     match content {
         MessageContent::Text(text) => vec![json!({"text": text})],
         MessageContent::MultiModal(blocks) => blocks
             .iter()
-            .map(|block| match block {
-                ContentBlock::Text { text } => json!({"text": text}),
-                ContentBlock::Image {
-                    source: ImageSource::Base64 { media_type, data },
-                    ..
-                } => json!({"inlineData": {"mimeType": media_type, "data": data}}),
-                ContentBlock::Image {
-                    source: ImageSource::Url { url },
-                    ..
-                } => json!({"fileData": {"fileUri": url}}),
-                other => json!({"text": format!("{other:?}")}),
-            })
+            .map(crate::protocol::gemini::convert_out::block_to_part)
             .collect(),
         MessageContent::ToolCalls(calls) => calls
             .iter()
@@ -160,7 +149,9 @@ fn message_parts(content: &crate::protocol::MessageContent) -> Vec<Value> {
                 }})
             })
             .collect(),
-        MessageContent::TextWithToolCalls { text, tool_calls } => {
+        MessageContent::TextWithToolCalls {
+            text, tool_calls, ..
+        } => {
             let mut parts = vec![json!({"text": text})];
             parts.extend(tool_calls.iter().map(|call| {
                 json!({"functionCall": {
@@ -180,6 +171,15 @@ fn message_parts(content: &crate::protocol::MessageContent) -> Vec<Value> {
                 .filter(Value::is_object)
                 .unwrap_or_else(|| json!({"result": result.content})),
         }})],
+        // Gemini 无思考 part：丢弃并 debug 显性化（归 gemini-api 功能面）
+        MessageContent::Reasoning { .. } => {
+            crate::protocol::drop_unsupported(
+                crate::protocol::Protocol::Gemini,
+                "message.reasoning",
+                "no gemini reasoning part",
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -243,6 +243,7 @@ mod tests {
                 index: 0,
                 delta: crate::protocol::MessageContent::Text("hi".into()),
                 finish_reason: None,
+                logprobs: None,
             })
             .unwrap();
         assert_eq!(text["candidates"][0]["content"]["parts"][0]["text"], "hi");

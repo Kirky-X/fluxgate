@@ -78,6 +78,9 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
             token_ticket_max: 16384,
             token_ticket_default: 4096,
         },
+        anthropic_version: None,
+        forward_beta_headers: false,
+        send_nonstandard_params: false,
     }
 }
 

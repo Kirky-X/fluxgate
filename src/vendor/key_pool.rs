@@ -615,6 +615,9 @@ mod tests {
             supports_batch: false,
             chat_path: None,
             api_style: None,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 
@@ -933,6 +936,9 @@ mod inline_tests {
             supports_batch: false,
             chat_path: None,
             api_style: None,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 

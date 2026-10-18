@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::{
-    Config, ConfigManager, DifficultySection, MAX_DIFFICULTY_LENGTH_CAP,
-    MAX_DIFFICULTY_LEXICON_ENTRIES, MAX_DIFFICULTY_LEXICON_ENTRY_CHARS,
+    ApiStyle, Config, ConfigManager, DifficultySection, ModelTask, VendorProtocol,
+    MAX_DIFFICULTY_LENGTH_CAP, MAX_DIFFICULTY_LEXICON_ENTRIES, MAX_DIFFICULTY_LEXICON_ENTRY_CHARS,
 };
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
@@ -514,7 +514,8 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
             });
         }
         // rerank 型无官方默认端点：api_base 必须显式声明（URL 构建侧同拒）
-        if vendor.type_ == "rerank" && vendor.api_base.trim().is_empty() {
+        if matches!(vendor.protocol(), VendorProtocol::Rerank) && vendor.api_base.trim().is_empty()
+        {
             return Err(GateError::Config {
                 message: t_args(
                     "config-rerank-api-base-required",
@@ -523,7 +524,7 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
             });
         }
         // gemini 的端点由 model+action 动态拼接，chat_path 静态覆盖语义冲突
-        if vendor.type_ == "gemini"
+        if matches!(vendor.protocol(), VendorProtocol::Gemini)
             && vendor
                 .chat_path
                 .as_deref()
@@ -536,19 +537,43 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
-        // 端点风格：白名单；responses 仅限 openai 型且与 chat_path 互斥
-        if let Some(style) = vendor.api_style() {
-            let normalized = style.to_ascii_lowercase();
-            if !matches!(normalized.as_str(), "chat" | "responses") {
+        // anthropic_version 一旦声明必须为 YYYY-MM-DD 形态（缺省 None →
+        // 出站按 "2023-06-01"）；仅做格式校验，不限制厂商类型
+        if let Some(version) = vendor.anthropic_version.as_deref() {
+            let bytes = version.as_bytes();
+            let valid = bytes.len() == 10
+                && bytes[4] == b'-'
+                && bytes[7] == b'-'
+                && bytes
+                    .iter()
+                    .enumerate()
+                    .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
+            if !valid {
                 return Err(GateError::Config {
                     message: t_args(
-                        "config-vendor-api-style-unknown",
-                        &[("vendor", vendor.id.clone()), ("value", style.to_string())],
+                        "config-vendor-anthropic-version-invalid",
+                        &[
+                            ("vendor", vendor.id.clone()),
+                            ("value", version.to_string()),
+                        ],
                     ),
                 });
             }
-            if normalized == "responses" {
-                if vendor.type_ != "openai" {
+        }
+        // 端点风格：白名单；responses 仅限 openai 型且与 chat_path 互斥。
+        // 合法集与 CI 归一化单源 ApiStyle（未知值仍持原始串点名拒绝，守脱敏
+        // 口径与既有守卫断言）
+        if let Some(raw) = vendor.api_style_raw() {
+            let Some(style) = ApiStyle::parse(raw) else {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-vendor-api-style-unknown",
+                        &[("vendor", vendor.id.clone()), ("value", raw.to_string())],
+                    ),
+                });
+            };
+            if style == ApiStyle::Responses {
+                if !matches!(vendor.protocol(), VendorProtocol::OpenAi) {
                     return Err(GateError::Config {
                         message: t_args(
                             "config-vendor-api-style-requires-openai",
@@ -626,7 +651,7 @@ fn validate_model_types(config: &Config) -> Result<(), GateError> {
             if model_type.trim().is_empty() {
                 continue;
             }
-            if matches!(model_type, "chat" | "embedding" | "rerank") {
+            if ModelTask::parse(model_type).is_some() {
                 continue;
             }
             return Err(GateError::Config {

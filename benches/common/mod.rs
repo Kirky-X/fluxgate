@@ -113,6 +113,7 @@ pub fn tool_use_chunk_sequence() -> Vec<StreamChunk> {
             index: 0,
             delta: MessageContent::Text("Done.".into()),
             finish_reason: Some("tool_use".into()),
+            logprobs: None,
         },
     ]
 }
@@ -239,6 +240,9 @@ pub fn routing_config() -> Config {
                 token_ticket_max: 16384,
                 token_ticket_default: 4096,
             },
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         })
         .collect();
 

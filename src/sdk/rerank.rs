@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::sdk::client::FluxgateClient;
 use crate::sdk::config::RequestConfig;
 use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::transport::send_with_retry;
 
 /// Rerank 请求（documents 为纯文本数组；对象形态由 REST 直接使用）。
 #[derive(Debug, Clone)]
@@ -89,23 +90,16 @@ impl FluxgateClient {
                 message: format!("invalid URL: {e}"),
             })?;
 
-        let resp = self
+        let request = self
             .http
             .post(url)
             .bearer_auth(&self.api_key)
             .json(&payload)
-            .timeout(merged.timeout.unwrap_or(self.effective_timeout))
-            .send()
-            .await?;
+            .timeout(merged.timeout.unwrap_or(self.effective_timeout));
+        let request = self.apply_request_headers(request, &merged);
+        let policy = self.retry_policy_for(&merged);
+        let resp = send_with_retry(&request, &policy).await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(FluxgateSdkError::Server {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
         Ok(resp.json().await?)
     }
 
@@ -124,22 +118,14 @@ impl FluxgateClient {
             url.query_pairs_mut().append_pair("task", task);
         }
 
-        let resp = self
+        let request = self
             .http
             .get(url)
             .bearer_auth(&self.api_key)
-            .timeout(self.effective_timeout)
-            .send()
-            .await?;
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(FluxgateSdkError::Server {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
         Ok(resp.json().await?)
     }
 }

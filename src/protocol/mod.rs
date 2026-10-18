@@ -30,14 +30,14 @@ pub use sse_frame::{
     ReframeObservation, SseFrame, SseFrameParser,
 };
 pub(crate) use unified::{
-    absorb_vendor_extensions, merge_vendor_extensions, validate_tool_schemas,
+    absorb_vendor_extensions, drop_unsupported, merge_vendor_extensions, validate_tool_schemas,
 };
 pub use unified::{
-    Choice, ContentBlock, EffortLevel, EmbeddingData, EmbeddingUsage, FinishReason, ImageSource,
-    Message, MessageContent, Role, SamplingParams, StreamChunk, ThinkingConfig, TokenUsage, Tool,
-    ToolCall, ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolResult,
-    UnifiedEmbeddingResponse, UnifiedRequest, UnifiedResponse, MAX_TOOL_SCHEMA_BYTES,
-    MAX_TOOL_SCHEMA_DEPTH,
+    Choice, CompletionTokensDetails, ContentBlock, EffortLevel, EmbeddingData, EmbeddingUsage,
+    FinishReason, ImageSource, Message, MessageContent, PromptTokensDetails, Role, SamplingParams,
+    StreamChunk, ThinkingConfig, ThinkingDisplay, TokenUsage, Tool, ToolCall, ToolCallFunction,
+    ToolChoice, ToolChoiceFunction, ToolFunction, ToolResult, UnifiedEmbeddingResponse,
+    UnifiedRequest, UnifiedResponse, Verbosity, MAX_TOOL_SCHEMA_BYTES, MAX_TOOL_SCHEMA_DEPTH,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -188,6 +188,7 @@ mod default_impl_tests {
             model: "m".into(),
             choices: vec![],
             usage: Default::default(),
+            stop_sequence: None,
         };
 
         let is_validation = |e: GateError| matches!(e, GateError::Validation { .. });
@@ -203,5 +204,30 @@ mod default_impl_tests {
             c.stream_chunk_to_external(StreamChunk::Heartbeat)
                 .unwrap_err()
         ));
+    }
+}
+
+#[cfg(test)]
+mod drop_unsupported_tests {
+    use super::*;
+
+    /// 四协议 × 典型丢弃点全部可调用、不 panic；`field`/`reason` 为
+    /// 实现中可检索的锚点参数（grep `drop_unsupported(` 可见调用清单）。
+    #[test]
+    fn drop_unsupported_callable_for_all_protocols() {
+        for protocol in [
+            Protocol::OpenAI,
+            Protocol::Anthropic,
+            Protocol::Responses,
+            Protocol::Gemini,
+        ] {
+            drop_unsupported(
+                protocol,
+                "content[2].redacted_thinking",
+                "no cross-protocol equivalent",
+            );
+            drop_unsupported(protocol, "file_id", "no cross-protocol slot");
+            drop_unsupported(protocol, "service_tier", "value outside target vocabulary");
+        }
     }
 }

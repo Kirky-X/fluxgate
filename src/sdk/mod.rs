@@ -14,24 +14,31 @@ pub mod embed;
 pub mod error;
 pub mod rerank;
 pub mod responses;
+pub mod retry;
 pub mod stream;
+pub(crate) mod transport;
 
 pub use admin::{
     HealthStatus, KeyPoolInfo, ModelCatalogInfo, ModelCatalogUpsert, VendorStatusInfo,
 };
 pub use chat::{
-    ChatContent, ChatContentPart, ChatFinishReason, ChatMessage, ChatRequest, ChatResponse,
-    ChatRole, ChatTool, ChatToolCall, ChatToolChoice, ChatToolChoiceFunction, ChatToolDefinition,
-    ChatToolFunction, ChatUsage, ImageUrlBody, StandardFinishReason,
+    AllowedToolsBody, AllowedToolsMode, ChatChoice, ChatContent, ChatContentPart, ChatFinishReason,
+    ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatTool, ChatToolCall, ChatToolChoice,
+    ChatToolChoiceFunction, ChatToolDefinition, ChatToolFunction, ChatUsage, ImageUrlBody,
+    StandardFinishReason,
 };
 pub use client::{FluxgateClient, FluxgateClientBuilder};
 pub use config::RequestConfig;
-pub use embed::{EmbedRequest, EmbedResponse};
-pub use error::FluxgateSdkError;
+pub use embed::{
+    EmbedData, EmbedEncodingFormat, EmbedInput, EmbedRequest, EmbedResponse, EmbedUsage,
+    EmbeddingValue,
+};
+pub use error::{ApiError, ApiErrorKind, FluxgateSdkError};
 pub use rerank::{RerankDocument, RerankMeta, RerankRequest, RerankResponse, RerankResult};
 pub use responses::{
-    ResponsesContent, ResponsesError, ResponsesInputTokensDetails, ResponsesOutputItem,
-    ResponsesRequest, ResponsesResponse, ResponsesStream, ResponsesStreamEvent, ResponsesUsage,
+    ResponsesContent, ResponsesError, ResponsesInputTokensDetails, ResponsesInputTokensRequest,
+    ResponsesInputTokensResponse, ResponsesOutputItem, ResponsesRequest, ResponsesResponse,
+    ResponsesStream, ResponsesStreamEvent, ResponsesUsage,
 };
 pub use stream::{ChatChunk, ChatDelta, ChatStream, ChatToolCallDelta, ChatToolCallDeltaFunction};
 

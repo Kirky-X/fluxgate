@@ -172,7 +172,9 @@ pub fn parse_gemini_response(
             cache_creation_tokens: 0,
             cost_usd: None,
             cost_cny: None,
+            ..Default::default()
         },
+        stop_sequence: None,
     })
 }
 
@@ -263,10 +265,21 @@ fn message_parts(content: &MessageContent) -> Vec<Value> {
         MessageContent::Text(text) => vec![json!({"text": text})],
         MessageContent::MultiModal(blocks) => blocks.iter().map(block_to_part).collect(),
         MessageContent::ToolCalls(calls) => calls.iter().map(call_to_part).collect(),
-        MessageContent::TextWithToolCalls { text, tool_calls } => {
+        MessageContent::TextWithToolCalls {
+            text, tool_calls, ..
+        } => {
             let mut parts = vec![json!({"text": text})];
             parts.extend(tool_calls.iter().map(call_to_part));
             parts
+        }
+        // Gemini 无思考内容 part：丢弃并 debug 显性化（功能面归 gemini-api）
+        MessageContent::Reasoning { .. } => {
+            crate::protocol::drop_unsupported(
+                crate::protocol::Protocol::Gemini,
+                "message.reasoning",
+                "no gemini reasoning part",
+            );
+            Vec::new()
         }
         MessageContent::ToolResult(result) => vec![json!({
             "functionResponse": {
@@ -277,23 +290,37 @@ fn message_parts(content: &MessageContent) -> Vec<Value> {
     }
 }
 
-fn block_to_part(block: &ContentBlock) -> Value {
+/// IR ContentBlock → Gemini part（请求/流式/响应三路径共享）。
+///
+/// Text/Image/Document → 原生 part；Audio → inlineData（mime 由 format 推断）；
+/// 其余未知块降级为文本占位防丢（不 panic、不静默丢弃）。
+pub(crate) fn block_to_part(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text } => json!({"text": text}),
-        ContentBlock::Image { source, .. } => match source {
-            ImageSource::Base64 { media_type, data } => json!({
-                "inlineData": {"mimeType": media_type, "data": data}
-            }),
-            ImageSource::Url { url } => {
-                let mut file = json!({"fileUri": url});
-                if let Some(mime) = mime_from_uri(url) {
-                    file["mimeType"] = json!(mime);
-                }
-                json!({"fileData": file})
-            }
-        },
+        ContentBlock::Image { source, .. } | ContentBlock::Document { source, .. } => {
+            source_to_part(source)
+        }
+        ContentBlock::Audio { data, format } => json!({
+            "inlineData": {"mimeType": format!("audio/{format}"), "data": data}
+        }),
         // 其它块类型无 Gemini 对应形状：降级为文本占位防丢
         other => json!({"text": format!("{other:?}")}),
+    }
+}
+
+/// IR source（base64/url）→ Gemini media part。
+fn source_to_part(source: &ImageSource) -> Value {
+    match source {
+        ImageSource::Base64 { media_type, data } => json!({
+            "inlineData": {"mimeType": media_type, "data": data}
+        }),
+        ImageSource::Url { url } => {
+            let mut file = json!({"fileUri": url});
+            if let Some(mime) = mime_from_uri(url) {
+                file["mimeType"] = json!(mime);
+            }
+            json!({"fileData": file})
+        }
     }
 }
 
@@ -421,10 +448,23 @@ fn thinking_config(request: &UnifiedRequest) -> Option<Value> {
         Some(ThinkingConfig::Disabled) => {
             thinking.insert("thinkingBudget".into(), json!(0));
         }
-        Some(ThinkingConfig::Adaptive) => {
+        Some(ThinkingConfig::Adaptive { .. }) => {
             thinking.insert("thinkingBudget".into(), json!(-1));
         }
-        Some(ThinkingConfig::Enabled { budget_tokens }) => {
+        // IR BetweenTools（工具间思考）在 Gemini 无原生对应：按 Adaptive
+        // 预算处理（-1），丢弃语义并 debug 显性化
+        Some(ThinkingConfig::BetweenTools) => {
+            crate::protocol::drop_unsupported(
+                crate::protocol::Protocol::Gemini,
+                "thinking_config.between_tools",
+                "no gemini equivalent; mapped to adaptive budget",
+            );
+            thinking.insert("thinkingBudget".into(), json!(-1));
+        }
+        Some(ThinkingConfig::Enabled {
+            budget_tokens,
+            display: _,
+        }) => {
             thinking.insert(
                 "thinkingBudget".into(),
                 json!(budget_tokens.min(i32::MAX as u64)),
@@ -433,9 +473,12 @@ fn thinking_config(request: &UnifiedRequest) -> Option<Value> {
         None => {
             if let Some(effort) = request.effort {
                 let budget = match effort {
-                    EffortLevel::Low => 1024,
+                    // None/Minimal/Low 同落 1024（Gemini 无更低思考档）
+                    EffortLevel::None | EffortLevel::Minimal | EffortLevel::Low => 1024,
                     EffortLevel::Medium => 8192,
                     EffortLevel::High => 24576,
+                    EffortLevel::XHigh => 32768,
+                    EffortLevel::Max => 65536,
                 };
                 thinking.insert("thinkingBudget".into(), json!(budget));
             }
@@ -518,6 +561,7 @@ fn compose_content(
         (_, _, true) => MessageContent::TextWithToolCalls {
             text,
             tool_calls: calls,
+            reasoning: None,
         },
     }
 }
@@ -649,6 +693,7 @@ mod tests {
                 parameters: json!({"type": "object", "additionalProperties": false}),
                 strict: Some(true),
             },
+            ..Default::default()
         }];
         request.tool_choice = Some(ToolChoice::Specific {
             choice_type: "function".into(),
@@ -733,6 +778,7 @@ mod tests {
         }));
         request.thinking_config = Some(ThinkingConfig::Enabled {
             budget_tokens: 2048,
+            display: None,
         });
         request.thinking_include_thoughts = Some(true);
         let body = request_to_gemini(&request).unwrap();
@@ -752,16 +798,58 @@ mod tests {
 
     #[test]
     fn effort_maps_to_budget_only_without_thinking_config() {
-        let mut request = request_with(vec![Message {
-            role: Role::User,
-            content: MessageContent::Text("hi".into()),
-        }]);
-        request.effort = Some(EffortLevel::High);
-        let body = request_to_gemini(&request).unwrap();
-        assert_eq!(
-            body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
-            24576
-        );
+        // 七值全词表预算表（含边界 1024/65536）
+        for (effort, budget) in [
+            (EffortLevel::None, 1024),
+            (EffortLevel::Minimal, 1024),
+            (EffortLevel::Low, 1024),
+            (EffortLevel::Medium, 8192),
+            (EffortLevel::High, 24576),
+            (EffortLevel::XHigh, 32768),
+            (EffortLevel::Max, 65536),
+        ] {
+            let mut request = request_with(vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }]);
+            request.effort = Some(effort);
+            let body = request_to_gemini(&request).unwrap();
+            assert_eq!(
+                body["generationConfig"]["thinkingConfig"]["thinkingBudget"], budget,
+                "effort={effort:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_config_four_arms_encode_thinking_budget() {
+        // Disabled → 0；Adaptive → -1；BetweenTools → -1（无原生对应，落
+        // Adaptive 预算并 debug 显性化）；Enabled → 显式预算
+        for (config, budget) in [
+            (ThinkingConfig::Disabled, 0),
+            (ThinkingConfig::Adaptive { display: None }, -1),
+            (ThinkingConfig::BetweenTools, -1),
+            (
+                ThinkingConfig::Enabled {
+                    budget_tokens: 2048,
+                    display: None,
+                },
+                2048,
+            ),
+        ] {
+            let mut request = request_with(vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }]);
+            request.thinking_config = Some(config.clone());
+            // thinking 槽存在时 effort 不接管预算
+            request.effort = Some(EffortLevel::Max);
+            let body = request_to_gemini(&request).unwrap();
+            assert_eq!(
+                body["generationConfig"]["thinkingConfig"]["thinkingBudget"], budget,
+                "config={config:?}"
+            );
+        }
     }
 
     #[test]
@@ -794,7 +882,9 @@ mod tests {
         assert_eq!(choice.finish, Some(FinishReason::Stop));
         assert_eq!(choice.finish_reason.as_deref(), Some("stop"));
         match &choice.message.as_ref().unwrap().content {
-            MessageContent::TextWithToolCalls { text, tool_calls } => {
+            MessageContent::TextWithToolCalls {
+                text, tool_calls, ..
+            } => {
                 assert_eq!(text, "hi");
                 assert_eq!(tool_calls[0].function.name, "f");
             }
@@ -814,7 +904,9 @@ mod tests {
         });
         let response = parse_gemini_response(&body, "m").unwrap();
         match &response.choices[0].message.as_ref().unwrap().content {
-            MessageContent::TextWithToolCalls { text, tool_calls } => {
+            MessageContent::TextWithToolCalls {
+                text, tool_calls, ..
+            } => {
                 assert!(text.is_empty());
                 assert_eq!(tool_calls[0].function.name, "f");
             }
@@ -859,6 +951,7 @@ mod tests {
                 cache_read_tokens: 1,
                 ..Default::default()
             },
+            stop_sequence: None,
         };
         let body = response_to_gemini(&response);
         assert_eq!(
@@ -874,5 +967,52 @@ mod tests {
     #[test]
     fn missing_candidates_without_feedback_is_protocol_error() {
         assert!(parse_gemini_response(&json!({"candidates": []}), "m").is_err());
+    }
+
+    /// 新增 IR 块型在 Gemini 三路径（请求/流式/响应共享 `block_to_part`）
+    /// 的显式映射：Document → inlineData/fileData、Audio → inlineData；
+    /// 无 Debug 字符串泄漏（T033）。
+    #[test]
+    fn document_and_audio_blocks_map_to_gemini_parts() {
+        use crate::protocol::{ContentBlock, ImageSource};
+
+        // Document base64 → inlineData（mime 原样）
+        let part = block_to_part(&ContentBlock::Document {
+            source: ImageSource::Base64 {
+                media_type: "application/pdf".into(),
+                data: "QUJD".into(),
+            },
+            media_type: "application/pdf".into(),
+            title: Some("doc.pdf".into()),
+            cache_control: None,
+        });
+        assert_eq!(
+            part,
+            json!({"inlineData": {"mimeType": "application/pdf", "data": "QUJD"}})
+        );
+
+        // Document url → fileData（mime 从扩展名推断）
+        let part = block_to_part(&ContentBlock::Document {
+            source: ImageSource::Url {
+                url: "https://example.com/doc.pdf".into(),
+            },
+            media_type: "application/pdf".into(),
+            title: None,
+            cache_control: None,
+        });
+        assert_eq!(
+            part,
+            json!({"fileData": {"fileUri": "https://example.com/doc.pdf", "mimeType": "application/pdf"}})
+        );
+
+        // Audio → inlineData（mime 由 format 推断）
+        let part = block_to_part(&ContentBlock::Audio {
+            data: "QUJD".into(),
+            format: "wav".into(),
+        });
+        assert_eq!(
+            part,
+            json!({"inlineData": {"mimeType": "audio/wav", "data": "QUJD"}})
+        );
     }
 }

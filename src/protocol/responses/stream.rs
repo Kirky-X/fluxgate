@@ -539,6 +539,7 @@ pub fn parse_stream_frame(data: &str) -> Option<StreamChunk> {
             index: event.output_index.unwrap_or(0),
             delta: MessageContent::Text(event.delta.unwrap_or_default()),
             finish_reason: None,
+            logprobs: None,
         }),
         "response.completed" | "response.incomplete" => {
             let response = event.response?;
@@ -641,11 +642,13 @@ mod tests {
             index: 0,
             delta: MessageContent::Text("hel".into()),
             finish_reason: None,
+            logprobs: None,
         }));
         events.extend(encoder.on_chunk(&StreamChunk::Content {
             index: 0,
             delta: MessageContent::Text("lo".into()),
             finish_reason: Some("stop".into()),
+            logprobs: None,
         }));
         events.extend(encoder.on_chunk(&StreamChunk::Usage {
             prompt_tokens: 5,
@@ -739,6 +742,7 @@ mod tests {
             index: 0,
             delta: MessageContent::Text("x".into()),
             finish_reason: Some("length".into()),
+            logprobs: None,
         }));
         events.extend(encoder.finish());
         assert_eq!(

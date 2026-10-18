@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use fluxgate::sdk::{
-    ChatMessage, ChatRequest, FluxgateClientBuilder, FluxgateSdkError, RequestConfig,
+    ApiError, ChatMessage, ChatRequest, FluxgateClientBuilder, FluxgateSdkError, RequestConfig,
 };
 
 use super::require_env;
@@ -19,8 +19,10 @@ pub async fn run() -> Result<(), FluxgateSdkError> {
         .timeout(Duration::from_secs(60))
         .build()?;
 
-    // vendor_hint / model_hint 映射 X-Vendor / X-Model 路由头（不进请求 body），
-    // 取值须与网关侧 vendor/model 配置一致（样例值来自 config.example.toml）
+    // 路由提示头（不进请求 body）：vendor_hint/model_hint 映射 X-Vendor/X-Model
+    //（仅 OpenAI 兼容端点消费，取值须与网关配置一致，样例值来自
+    // config.example.toml）；session_id/weight 映射 X-Session-Id/X-Weight
+    //（会话亲和与请求级加权，两个 LLM 端点均生效）。
     let req = ChatRequest {
         model: "gpt-4".into(),
         messages: vec![
@@ -35,6 +37,8 @@ pub async fn run() -> Result<(), FluxgateSdkError> {
             user: Some("sdk-usage-example".into()),
             vendor_hint: Some("mock-openai".into()),
             model_hint: Some("gpt-4".into()),
+            session_id: Some("sdk-usage-example".into()),
+            weight: Some(1.0),
             ..RequestConfig::default()
         },
         tools: Vec::new(),
@@ -45,8 +49,17 @@ pub async fn run() -> Result<(), FluxgateSdkError> {
     // 认证失败单列提示（最常见故障是 key 配错），其余错误原样上抛
     let resp = match client.chat(&req).await {
         Ok(resp) => resp,
-        Err(FluxgateSdkError::Auth { message }) => {
+        Err(FluxgateSdkError::Api(ApiError {
+            status: 401,
+            message,
+            ..
+        })) => {
             eprintln!("认证失败（{message}）：检查 FLUXGATE_API_KEY 是否为网关签发的 key");
+            std::process::exit(1);
+        }
+        // 新版错误体系：超时从 Network 单列（重试已耗尽才会到这里）
+        Err(err @ FluxgateSdkError::Timeout { .. }) => {
+            eprintln!("请求超时（重试已耗尽）：{err}");
             std::process::exit(1);
         }
         Err(err) => return Err(err),

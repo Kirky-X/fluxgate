@@ -8,6 +8,7 @@
 //! [`crate::protocol::gemini`]。
 
 use crate::api::RoutingHints;
+use crate::config::{ModelTask, VendorProtocol};
 use crate::database::RequestLog;
 use crate::error::{FluxgateError, GateError};
 use crate::i18n::{t, t_args};
@@ -115,9 +116,14 @@ fn model_entries(state: &Arc<ApiState>) -> Vec<Value> {
     let mut entries = Vec::new();
     for vendor in config.vendors.iter().filter(|vendor| vendor.enabled) {
         for model in vendor.models.iter().filter(|model| model.enabled) {
-            let task = model.model_type.as_deref().unwrap_or("chat");
+            // 声明值经 ModelTask 归类（CI 无关、严格大小写），缺省/非法值→Chat
+            let task = model
+                .model_type
+                .as_deref()
+                .and_then(ModelTask::parse)
+                .unwrap_or(ModelTask::Chat);
             // rerank 无 Gemini 对应方法，不进入 Gemini 模型清单
-            if task == "rerank" {
+            if task == ModelTask::Rerank {
                 continue;
             }
             let public = model.abstract_id.as_deref().unwrap_or(&model.model_id);
@@ -125,7 +131,7 @@ fn model_entries(state: &Arc<ApiState>) -> Vec<Value> {
                 continue;
             }
             let methods: &[&str] = match task {
-                "embedding" => &["embedContent", "batchEmbedContents"],
+                ModelTask::Embedding => &["embedContent", "batchEmbedContents"],
                 _ => &["generateContent", "streamGenerateContent", "countTokens"],
             };
             entries.push(json!({
@@ -494,7 +500,9 @@ fn ensure_native_vendor(state: &Arc<ApiState>, ctx: &GeminiCtx) -> Result<(), Fl
         return Ok(());
     };
     let capable = state.config.read().vendors.iter().any(|entry| {
-        entry.enabled && entry.id.eq_ignore_ascii_case(vendor) && entry.type_ == "gemini"
+        entry.enabled
+            && entry.id.eq_ignore_ascii_case(vendor)
+            && matches!(entry.protocol(), VendorProtocol::Gemini)
     });
     if capable {
         Ok(())
@@ -641,7 +649,12 @@ async fn dispatch_nonstream(
             state.config.read().resilience.expose_fallback_headers,
         );
         return match crate::api::execute_request_with_fallback(
-            state, model, decision, request, &mut trail,
+            state,
+            model,
+            decision,
+            request,
+            crate::vendor::manager::VendorCallOptions::default(),
+            &mut trail,
         )
         .await
         {

@@ -295,6 +295,9 @@ mod tests {
                         token_ticket_max: 16384,
                         token_ticket_default: 4096,
                     },
+                    anthropic_version: None,
+                    forward_beta_headers: false,
+                    send_nonstandard_params: false,
                 },
                 VendorConfig {
                     timeout_ms: 60_000,
@@ -334,6 +337,9 @@ mod tests {
                         token_ticket_max: 16384,
                         token_ticket_default: 4096,
                     },
+                    anthropic_version: None,
+                    forward_beta_headers: false,
+                    send_nonstandard_params: false,
                 },
             ],
             global_model: Some(GlobalModelConfig {
@@ -593,6 +599,38 @@ concurrency = { requests_per_second = 10 }
         assert_eq!(entry.model_id, "claude-3-opus");
         assert!((entry.input_per_1k_tokens - 0.015).abs() < f64::EPSILON);
         assert!((entry.output_per_1k_tokens - 0.075).abs() < f64::EPSILON);
+    }
+
+    // ======== [vendors] D8 新键校验（validate_config） ========
+
+    /// anthropic_version 格式校验：非空且 YYYY-MM-DD；缺省 None 合法
+    /// （出站回退 "2023-06-01"）。
+    #[test]
+    fn vendor_anthropic_version_rejects_malformed_values() {
+        let base = create_test_config();
+        assert!(validate_config(&base).is_ok(), "缺省 None 必须合法");
+
+        for bad in ["", "2024-1-2", "2024/10/22", "20241022", "2024-10-22x"] {
+            let mut config = create_test_config();
+            config.vendors[0].anthropic_version = Some(bad.to_string());
+            let vendor_id = config.vendors[0].id.clone();
+            let err = validate_config(&config).expect_err("非法 anthropic_version 必须拒绝");
+            match err {
+                GateError::Config { message } => {
+                    assert!(
+                        message.contains("anthropic_version"),
+                        "错误必须点名字段: {message}"
+                    );
+                    assert!(message.contains(&vendor_id), "错误必须点名厂商: {message}");
+                }
+                other => panic!("expected Config error, got {:?}", other),
+            }
+        }
+
+        // 合法形态：YYYY-MM-DD
+        let mut config = create_test_config();
+        config.vendors[0].anthropic_version = Some("2024-10-22".to_string());
+        assert!(validate_config(&config).is_ok());
     }
 
     // ======== [[model_catalog]] 校验（validate_config） ========

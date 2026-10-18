@@ -199,3 +199,108 @@ async fn heartbeat_frame_is_filtered() {
     );
     assert!(stream.next().await.is_none());
 }
+
+/// 多片段聚合：content/reasoning 拼接、tool_calls 按 index 槽位累积
+///（id/name 取首个非空、arguments 拼接）、finish_reason/usage 取末尾值。
+#[tokio::test]
+async fn finalize_aggregates_multi_fragment_stream() {
+    let frames = [
+        "data: {\"id\":\"chunk-0\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Hel\",\"reasoning_content\":\"th\"}}]}\n\n",
+        "data: {\"id\":\"chunk-0\",\"choices\":[{\"delta\":{\"content\":\"lo\",\"reasoning_content\":\"ink\"}}]}\n\n",
+        "data: {\"id\":\"chunk-0\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"id\":\"call_1\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"ci\"}}]}}]}\n\n",
+        "data: {\"id\":\"chunk-0\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"type\":\"function\",\"id\":\"call_2\",\"function\":{\"name\":\"get_time\",\"arguments\":\"{}\"}}]}}]}\n\n",
+        "data: {\"id\":\"chunk-0\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ty\\\":\\\"SF\\\"}\"}}]}}]}\n\n",
+        "data: {\"id\":\"chunk-0\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"id\":\"usage\",\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n",
+        "data: [DONE]\n\n",
+    ];
+    let byte_stream = futures::stream::iter(
+        frames
+            .iter()
+            .map(|frame| Ok::<bytes::Bytes, reqwest::Error>(Bytes::from(frame.to_string())))
+            .collect::<Vec<_>>(),
+    );
+
+    let final_response = ChatStream::from_bytes_stream(byte_stream)
+        .finalize()
+        .await
+        .expect("聚合不得因正常流报错");
+
+    assert_eq!(final_response.id, "chunk-0");
+    assert_eq!(final_response.content, "Hello");
+    assert_eq!(final_response.reasoning_content, "think");
+    assert_eq!(
+        final_response.finish_reason,
+        crate::sdk::ChatFinishReason::Standard(crate::sdk::StandardFinishReason::ToolCalls)
+    );
+    assert_eq!(final_response.usage.prompt_tokens, 1);
+    assert_eq!(final_response.usage.completion_tokens, 2);
+    assert_eq!(final_response.usage.total_tokens, 3);
+
+    assert_eq!(final_response.tool_calls.len(), 2, "两个 index 槽位");
+    let first_call = &final_response.tool_calls[0];
+    assert_eq!(first_call.id, "call_1");
+    assert_eq!(first_call.function.name, "get_weather");
+    assert_eq!(
+        first_call.function.arguments, "{\"city\":\"SF\"}",
+        "arguments 跨片段拼接（首片段 + 续片段）"
+    );
+    let second_call = &final_response.tool_calls[1];
+    assert_eq!(second_call.id, "call_2");
+    assert_eq!(second_call.function.name, "get_time");
+    assert_eq!(second_call.function.arguments, "{}");
+
+    // 聚合产物为单 choice（index 0），与便捷字段同源
+    assert_eq!(final_response.choices.len(), 1);
+    assert_eq!(final_response.choices[0].index, 0);
+    assert_eq!(final_response.choices[0].content, "Hello");
+    assert_eq!(final_response.choices[0].tool_calls.len(), 2);
+}
+
+/// wire 端 `index` 不可信：超出槽位上限的片段必须被丢弃（不 panic、
+/// 不触发巨量分配），其余片段照常聚合。
+#[tokio::test]
+async fn finalize_drops_tool_call_fragments_with_oversized_index() {
+    let frames = [
+        "data: {\"id\":\"c0\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"}}]}\n\n",
+        "data: {\"id\":\"c0\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":4294967295,\"type\":\"function\",\"id\":\"call_boom\",\"function\":{\"name\":\"boom\",\"arguments\":\"{}\"}}]}}]}\n\n",
+        "data: {\"id\":\"c0\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"id\":\"call_ok\",\"function\":{\"name\":\"ok\",\"arguments\":\"{}\"}}]}}]}\n\n",
+        "data: [DONE]\n\n",
+    ];
+    let byte_stream = futures::stream::iter(
+        frames
+            .iter()
+            .map(|frame| Ok::<bytes::Bytes, reqwest::Error>(Bytes::from(frame.to_string())))
+            .collect::<Vec<_>>(),
+    );
+
+    let final_response = ChatStream::from_bytes_stream(byte_stream)
+        .finalize()
+        .await
+        .expect("超限 index 走丢弃路径，不得到 Err");
+
+    assert_eq!(final_response.tool_calls.len(), 1, "超限片段被丢弃");
+    assert_eq!(final_response.tool_calls[0].id, "call_ok");
+    assert_eq!(final_response.content, "hi");
+}
+
+/// 非标增量解析：`reasoning_content`（思考）与 `logprobs` 原样保真——
+/// 网关 `delta_to_openai` 对 Reasoning 走非标字段、logprobs 直通。
+#[tokio::test]
+async fn stream_parses_reasoning_content_and_logprobs() {
+    let frame = Bytes::from(
+        "data: {\"id\":\"chunk-0\",\"choices\":[{\"delta\":{\"content\":\"x\",\"reasoning_content\":\"think\",\"logprobs\":{\"content\":[{\"token\":\"x\",\"logprob\":-0.1,\"bytes\":[120],\"top_logprobs\":[]}]}}}]}\n\n".to_string(),
+    );
+    let byte_stream = futures::stream::iter(vec![Ok::<bytes::Bytes, reqwest::Error>(frame)]);
+
+    let mut stream = ChatStream::from_bytes_stream(byte_stream);
+    let chunk = stream.next().await.unwrap().expect("帧解析");
+    let delta = chunk.delta.expect("delta 存在");
+
+    assert_eq!(delta.content.as_deref(), Some("x"));
+    assert_eq!(delta.reasoning_content.as_deref(), Some("think"));
+    let logprobs = delta.logprobs.expect("logprobs 原样保真");
+    assert_eq!(logprobs["content"][0]["token"], "x");
+    assert_eq!(logprobs["content"][0]["logprob"], -0.1);
+    assert_eq!(logprobs["content"][0]["bytes"][0], 120);
+}

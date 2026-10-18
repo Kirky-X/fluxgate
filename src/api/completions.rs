@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::api::RoutingHints;
+use crate::config::VendorProtocol;
 use crate::database::RequestLog;
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
@@ -34,6 +35,8 @@ struct ChatDispatchCtx {
     lexcompressed: bool,
     // N1 batch 标记（X-Batch-Routed 响应头来源）
     batch: bool,
+    // 调用级厂商选项（anthropic-beta 转发等）
+    call_options: crate::vendor::manager::VendorCallOptions,
 }
 
 #[axum::debug_handler]
@@ -67,6 +70,10 @@ pub async fn chat_completions(
 
     // 提取路由提示与会话亲和键（X-Session-Id 优先，messages 前缀哈希兜底）
     let hints = RoutingHints::from_headers(&headers);
+    // 调用级厂商选项：anthropic-beta 由 manager 按厂商类型与开关门控
+    let call_options = crate::vendor::manager::VendorCallOptions {
+        anthropic_beta: hints.anthropic_beta.clone(),
+    };
     let request_batch = hints.batch;
     let session_key = hints.effective_session_key(&body);
     // 亲和键租户维度（与响应缓存同源，从已验证 key 派生；affinity_tenant_scoped 关闭时不参与键构造）
@@ -103,12 +110,13 @@ pub async fn chat_completions(
         difficulty_tier,
         lexcompressed,
         batch: request_batch && decision.vendor.supports_batch,
+        call_options,
     };
 
     // 零拷贝透传（入站格式 OpenAI == 出站格式 OpenAI）；透传路径不做工具
     // schema 上限校验（字节保真是设计承诺），兜底 = axum 体限 + auth + 限流。
-    let use_passthrough =
-        decision.vendor.type_ == "openai" && !decision.vendor.is_responses_style();
+    let use_passthrough = matches!(decision.vendor.protocol(), VendorProtocol::OpenAi)
+        && !decision.vendor.is_responses_style();
 
     if use_passthrough {
         if stream {
@@ -163,9 +171,14 @@ async fn chat_passthrough_stream(
             |d| {
                 let vendor_manager = state.vendor_manager.clone();
                 let body = body.clone();
+                let call_options = ctx.call_options.clone();
                 async move {
                     vendor_manager
-                        .execute_passthrough_stream_request(&d.vendor.id, body)
+                        .execute_passthrough_stream_request_with_options(
+                            &d.vendor.id,
+                            body,
+                            call_options,
+                        )
                         .await
                 }
             },
@@ -178,7 +191,11 @@ async fn chat_passthrough_stream(
         dispatch_direct(
             state
                 .vendor_manager
-                .execute_passthrough_stream_request(&decision.vendor.id, body.clone())
+                .execute_passthrough_stream_request_with_options(
+                    &decision.vendor.id,
+                    body.clone(),
+                    ctx.call_options.clone(),
+                )
                 .await,
             decision,
         )
@@ -187,7 +204,11 @@ async fn chat_passthrough_stream(
     let outcome = dispatch_direct(
         state
             .vendor_manager
-            .execute_passthrough_stream_request(&decision.vendor.id, body.clone())
+            .execute_passthrough_stream_request_with_options(
+                &decision.vendor.id,
+                body.clone(),
+                ctx.call_options.clone(),
+            )
             .await,
         decision,
     );
@@ -272,9 +293,14 @@ async fn chat_passthrough_json(
                             |d| {
                                 let vendor_manager = state.vendor_manager.clone();
                                 let body = body.clone();
+                                let call_options = ctx.call_options.clone();
                                 async move {
                                     vendor_manager
-                                        .execute_passthrough_request(&d.vendor.id, body)
+                                        .execute_passthrough_request_with_options(
+                                            &d.vendor.id,
+                                            body,
+                                            call_options,
+                                        )
                                         .await
                                 }
                             },
@@ -296,9 +322,10 @@ async fn chat_passthrough_json(
                         dispatch_direct(
                             state
                                 .vendor_manager
-                                .execute_passthrough_request(
+                                .execute_passthrough_request_with_options(
                                     &initial_decision.vendor.id,
                                     body.clone(),
+                                    ctx.call_options.clone(),
                                 )
                                 .await
                                 .map(|v| {
@@ -318,7 +345,11 @@ async fn chat_passthrough_json(
                 let outcome = dispatch_direct(
                     state
                         .vendor_manager
-                        .execute_passthrough_request(&initial_decision.vendor.id, body.clone())
+                        .execute_passthrough_request_with_options(
+                            &initial_decision.vendor.id,
+                            body.clone(),
+                            ctx.call_options.clone(),
+                        )
                         .await
                         .map(|v| (v, axum::http::HeaderMap::new())),
                     initial_decision,
@@ -448,9 +479,14 @@ async fn chat_convert_stream(
             |d| {
                 let vendor_manager = state.vendor_manager.clone();
                 let unified_request = unified_request.clone();
+                let call_options = ctx.call_options.clone();
                 async move {
                     vendor_manager
-                        .execute_stream_request(&d.vendor.id, unified_request)
+                        .execute_stream_request_with_options(
+                            &d.vendor.id,
+                            unified_request,
+                            call_options,
+                        )
                         .await
                 }
             },
@@ -463,7 +499,11 @@ async fn chat_convert_stream(
         dispatch_direct(
             state
                 .vendor_manager
-                .execute_stream_request(&decision.vendor.id, unified_request)
+                .execute_stream_request_with_options(
+                    &decision.vendor.id,
+                    unified_request,
+                    ctx.call_options.clone(),
+                )
                 .await,
             decision,
         )
@@ -472,7 +512,11 @@ async fn chat_convert_stream(
     let outcome = dispatch_direct(
         state
             .vendor_manager
-            .execute_stream_request(&decision.vendor.id, unified_request)
+            .execute_stream_request_with_options(
+                &decision.vendor.id,
+                unified_request,
+                ctx.call_options.clone(),
+            )
             .await,
         decision,
     );
@@ -802,6 +846,7 @@ async fn dispatch_unified_request(
             model,
             decision.clone(),
             request,
+            ctx.call_options.clone(),
             &mut fallback_trail,
         )
         .await
@@ -818,7 +863,7 @@ async fn dispatch_unified_request(
     #[cfg(not(feature = "resilience"))]
     match state
         .vendor_manager
-        .execute_request(&decision.vendor.id, request)
+        .execute_request_with_options(&decision.vendor.id, request, ctx.call_options.clone())
         .await
     {
         Ok(r) => Ok((r, decision, axum::http::HeaderMap::new())),
@@ -1136,7 +1181,7 @@ pub(crate) async fn execute_embeddings(
     };
 
     // 只支持 OpenAI vendor（兼容组/pin 契约按 OpenAI 形状定义）
-    if decision.vendor.type_ != "openai" {
+    if !matches!(decision.vendor.protocol(), VendorProtocol::OpenAi) {
         return Err(FluxgateError::from(GateError::Protocol {
             source: t("api-embeddings-openai-only"),
             inner: None,

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::config::{ConfigManager, VendorConfig};
+use crate::config::{ConfigManager, VendorConfig, VendorProtocol};
 use crate::i18n::{t, t_args};
 use crate::vendor::{VendorManager, VendorStatus};
 
@@ -135,15 +135,16 @@ pub async fn run_probe_loop(manager: Arc<VendorManager>, config: Arc<ConfigManag
 }
 
 fn auth_headers(config: &VendorConfig, key: &str) -> Vec<(String, String)> {
-    if config.type_ == "gemini" {
-        vec![("x-goog-api-key".to_string(), key.to_string())]
-    } else if config.type_ == "anthropic" {
-        vec![
+    match config.protocol() {
+        VendorProtocol::Gemini => vec![("x-goog-api-key".to_string(), key.to_string())],
+        VendorProtocol::Anthropic => vec![
             ("x-api-key".to_string(), key.to_string()),
             ("anthropic-version".to_string(), "2023-06-01".to_string()),
-        ]
-    } else {
-        vec![("authorization".to_string(), format!("Bearer {key}"))]
+        ],
+        // openai / rerank / Custom 均走 Bearer 鉴权（历史 else 分支）
+        VendorProtocol::OpenAi | VendorProtocol::Rerank | VendorProtocol::Custom(_) => {
+            vec![("authorization".to_string(), format!("Bearer {key}"))]
+        }
     }
 }
 
@@ -212,7 +213,7 @@ async fn probe_one(
     let suspect = target.status != VendorStatus::Available || !target.blacklist.is_empty();
     // rerank 厂商：free（GET models）与 minimal_call（chat）均不适用，
     // 走专用最小重排探测（1 文档，2xx 即恢复）
-    if target.config.type_ == "rerank" {
+    if matches!(target.config.protocol(), VendorProtocol::Rerank) {
         let recovered = probe_rerank_call(manager, client, target, timeout, suspect).await;
         return (1, recovered);
     }
@@ -311,7 +312,7 @@ async fn probe_minimal_call(
             VendorManager::build_vendor_url_at(&target.config, "responses"),
             minimal_responses_body(&target.config),
         )
-    } else if target.config.type_ == "gemini" {
+    } else if matches!(target.config.protocol(), VendorProtocol::Gemini) {
         let model = target
             .config
             .models
@@ -486,6 +487,9 @@ mod tests {
             supports_batch: false,
             chat_path: None,
             api_style: None,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 

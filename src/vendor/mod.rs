@@ -15,7 +15,8 @@ pub mod status;
 pub use cost::{CostCalculator, PricingEntry};
 pub use key_pool::{KeyPoolInfo, PoolSnapshot};
 pub use manager::{
-    estimate_cost_json, estimate_cost_unified, TicketPolicy, VendorManager, WindowInfo,
+    estimate_cost_json, estimate_cost_unified, TicketPolicy, VendorCallOptions, VendorManager,
+    WindowInfo,
 };
 pub use pool::{ConnectionPool, OwnedReqwestClient};
 pub use queue::{PendingRequest, VendorQueue};

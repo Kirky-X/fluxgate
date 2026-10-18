@@ -120,4 +120,5 @@ config-vendor-api-style-unknown = [vendors] 厂商 { $vendor } 的 api_style 非
 config-vendor-api-style-requires-openai = [vendors] 厂商 { $vendor } 声明 api_style = "responses" 时 type_ 必须为 "openai"（当前: "{ $type }"）
 config-vendor-api-style-chat-path-conflict = [vendors] 厂商 { $vendor } 不能同时声明 api_style = "responses" 与 chat_path（路径语义歧义）
 config-vendor-gemini-chat-path-conflict = [vendors] type_ = "gemini" 的厂商 { $vendor } 不能声明 chat_path（路径由 model + action 构造）
+config-vendor-anthropic-version-invalid = [vendors] 厂商 { $vendor } 的 anthropic_version 非法: "{ $value }"（应为 YYYY-MM-DD）
 router-responses-no-native-vendor = 模型 "{ $model }" 无 Responses 原生候选：请为厂商声明 type_ = "openai" 且 api_style = "responses"，并确认厂商与模型均已启用

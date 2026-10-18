@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::sdk::client::FluxgateClientBuilder;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::{ApiError, FluxgateSdkError};
 use std::time::Duration;
 
 fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
@@ -150,7 +150,7 @@ async fn upsert_and_delete_model_roundtrip() {
 }
 
 /// PUT /admin/models/global — 保留键显性 400（validation_error），SDK 映射
-/// Server 错误（status 字段区分）
+/// Api 错误（status/kind 字段区分）
 #[tokio::test]
 async fn put_global_reserved_key_maps_to_server_error() {
     let mut server = mockito::Server::new_async().await;
@@ -173,8 +173,8 @@ async fn put_global_reserved_key_maps_to_server_error() {
         .await
         .unwrap_err();
     match err {
-        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 400),
-        other => panic!("expected Server error, got {other:?}"),
+        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 400),
+        other => panic!("expected Api error, got {other:?}"),
     }
 }
 
@@ -248,8 +248,8 @@ async fn models_500_returns_server_error() {
     let err = client.models().await.unwrap_err();
 
     match err {
-        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 500),
-        other => panic!("expected Server error, got {other:?}"),
+        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        other => panic!("expected Api error, got {other:?}"),
     }
 }
 
@@ -265,10 +265,10 @@ async fn vendors_401_returns_server_error() {
     let client = build_client(&server.url());
     let err = client.vendors().await.unwrap_err();
 
-    // admin 端点统一返回 Server 错误（status 字段区分）
+    // admin 端点统一返回 Api 错误（status/kind 字段区分）
     match err {
-        FluxgateSdkError::Server { status, .. } => assert_eq!(status, 401),
-        other => panic!("expected Server error, got {other:?}"),
+        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 401),
+        other => panic!("expected Api error, got {other:?}"),
     }
 }
 
@@ -320,16 +320,18 @@ async fn spawn_slow_admin_server(delay: Duration) -> String {
 }
 
 /// admin 请求族必须有总时长上界：服务器停滞（500ms）超过客户端总超时
-///（100ms）时，三个 admin 方法都应 promptly 报 Network 超时，而不是
-/// 无限悬挂。流式请求不受总超时约束（由 read_timeout 看护），admin /
-/// chat / embed 非流式逐请求携带总超时。
+///（100ms）时，三个 admin 方法都应 promptly 报 `Timeout`（`is_timeout`
+/// 分流），而不是无限悬挂。流式请求不受总超时约束（由 read_timeout
+/// 看护），admin / chat / embed 非流式逐请求携带总超时。
 #[tokio::test]
 async fn admin_requests_bounded_by_total_timeout() {
     let base_url = spawn_slow_admin_server(Duration::from_millis(500)).await;
+    // max_retries(0)：本测只关心超时上界，排除重试退避的时间干扰
     let client = FluxgateClientBuilder::new()
         .base_url(&base_url)
         .api_key("test-key")
         .timeout(Duration::from_millis(100))
+        .max_retries(0)
         .build()
         .unwrap();
 
@@ -338,10 +340,10 @@ async fn admin_requests_bounded_by_total_timeout() {
         .expect("总超时必须切断 admin 停滞（不能拖到外层兜底）")
         .unwrap_err();
     match models_err {
-        FluxgateSdkError::Network { source } => {
+        FluxgateSdkError::Timeout { source } => {
             assert!(source.is_timeout(), "models 应被总超时切断: {source}");
         }
-        other => panic!("models 应报 Network 超时，实际: {other:?}"),
+        other => panic!("models 应报 Timeout，实际: {other:?}"),
     }
 
     let vendors_err = tokio::time::timeout(Duration::from_secs(5), client.vendors())
@@ -349,8 +351,8 @@ async fn admin_requests_bounded_by_total_timeout() {
         .expect("vendors 未被总超时切断")
         .unwrap_err();
     assert!(
-        matches!(vendors_err, FluxgateSdkError::Network { .. }),
-        "vendors 应报 Network 超时，实际: {vendors_err:?}"
+        matches!(vendors_err, FluxgateSdkError::Timeout { .. }),
+        "vendors 应报 Timeout，实际: {vendors_err:?}"
     );
 
     let health_err = tokio::time::timeout(Duration::from_secs(5), client.health())
@@ -358,7 +360,7 @@ async fn admin_requests_bounded_by_total_timeout() {
         .expect("health 未被总超时切断")
         .unwrap_err();
     assert!(
-        matches!(health_err, FluxgateSdkError::Network { .. }),
-        "health 应报 Network 超时，实际: {health_err:?}"
+        matches!(health_err, FluxgateSdkError::Timeout { .. }),
+        "health 应报 Timeout，实际: {health_err:?}"
     );
 }

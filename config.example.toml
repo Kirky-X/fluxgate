@@ -620,7 +620,7 @@ enabled = false
 [[vendors]]
 id = "openai"
 name = "OpenAI"
-type_ = "openai"          # openai | anthropic | gemini | embedding | rerank（协议方向与转换器选型）
+type_ = "openai"          # openai | anthropic | gemini | rerank（协议方向与转换器选型；其余值按 OpenAI 兼容面处理，代码不校验取值。注意：embedding 是条目 model_type 任务值，非厂商 type_ 协议值）
 api_key_env = "OPENAI_API_KEY"
 # 可选：多 key 池——显式 env 名列表，与 api_key_env 合并去重（本列表在前），
 # 按序轮换出站 key；401/403 认证失败自动切换下一把（生效于下次请求）。缺
@@ -632,6 +632,10 @@ api_key_env = "OPENAI_API_KEY"
 # 协议头）同名时跳过该项并记 warn，不覆盖。默认空表（零行为变化）。
 # （行为以实现为准——早期「需重启」标注不实，见 CHANGELOG 评审修复条目。）
 # extra_headers = { "x-tenant-id" = "acme", "x-trace-namespace" = "prod" }
+# 非标参数门控（仅 type_ = "openai" 的转换出站）：**默认 false**——转换出站
+# 剥离非 OpenAI 标准参数 `top_k`（记 debug 显性化）；置 true 原样发送。
+# 同协议零拷贝透传路径恒不剥离（字节保真）。
+# send_nonstandard_params = false
 api_base = "https://api.openai.com/v1"
 enabled = true
 # fallback 优先级：数值越小越优先（1 = primary；换路 fallback 链按此构建）
@@ -744,6 +748,13 @@ type_ = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 # ✅ 热生效 —— 出站自定义头（语义同上，默认空表）：
 # extra_headers = { "x-tenant-id" = "acme" }
+# Anthropic 版本头 `anthropic-version`（出站注入；缺省 None → "2023-06-01"；
+# 格式 YYYY-MM-DD，非法值加载即拒 config 错误）：
+# anthropic_version = "2023-06-01"
+# 转发入站 `anthropic-beta` 头（**默认 false**）：开启后转换与透传两条路径
+# 均把入站值原样注入出站；仅 ASCII 可见字符且长度 ≤ 4096 的值被采纳
+#（非法值丢弃并 warn）。
+# forward_beta_headers = false
 api_base = "https://api.anthropic.com/v1"
 enabled = true
 priority = 2

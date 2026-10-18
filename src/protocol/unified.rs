@@ -71,6 +71,19 @@ pub struct UnifiedRequest {
     /// 透传回顶层；目标协议 known_keys（denylist）永不由扩展表补入/覆写。
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub vendor_extensions: HashMap<String, serde_json::Value>,
+    /// 请求元数据（OpenAI `metadata` / Anthropic `metadata` 对象）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    /// 服务层级（OpenAI/Anthropic `service_tier` 原词）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    /// 输出详略（OpenAI `verbosity`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<Verbosity>,
+    /// 最大补全 token（OpenAI `max_completion_tokens`；与 `max_tokens`
+    /// 独立双槽并存，出站各按目标协议槽位回写）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
 }
 
 /// LLM 采样参数（对齐 core `SamplingParams`）。全部可选：`None` 表示
@@ -89,34 +102,96 @@ pub struct SamplingParams {
     pub presence_penalty: Option<f32>,
 }
 
+/// 思考展示模式（Anthropic `thinking.display`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingDisplay {
+    /// 返回思考摘要
+    Summarized,
+    /// 省略思考内容
+    Omitted,
+}
+
 /// 思考深度配置（对齐 core `ThinkingConfig`，`crates/core/src/traits/types.rs`）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThinkingConfig {
-    /// 模型自适应决定思考预算
-    Adaptive,
+    /// 模型自适应决定思考预算（`display` 缺省 = 沿用上游默认）
+    Adaptive {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<ThinkingDisplay>,
+    },
     /// 启用思考，指定 token 预算（u64 对齐 core 宽度）
     Enabled {
         #[serde(default)]
         budget_tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<ThinkingDisplay>,
     },
+    /// 工具调用间思考（Anthropic `between_tools`）
+    BetweenTools,
     /// 禁用思考（默认）
     #[default]
     Disabled,
 }
 
-/// 任务努力级别（对齐 core `EffortLevel`）。
+/// 任务努力级别（对齐 core `EffortLevel`；词表对齐官方 SDK
+/// `reasoning_effort`：none/minimal/low/medium/high/xhigh/max）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
+    None,
+    Minimal,
     Low,
     #[default]
     Medium,
     High,
+    /// wire 词为 `xhigh`（非 `x_high`），显式重命名
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
 }
 
 impl EffortLevel {
     /// wire 词汇（OpenAI `reasoning_effort` 同形）→ IR 枚举；未知词返回 `None`。
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    /// IR 枚举 → wire 词汇（小写，OpenAI `reasoning_effort` 同形）。
+    pub fn to_wire(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// 输出详略级别（OpenAI `verbosity`：low/medium/high）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verbosity {
+    Low,
+    Medium,
+    High,
+}
+
+impl Verbosity {
+    /// wire 词汇（OpenAI `verbosity` 同形）→ IR 枚举；未知词返回 `None`。
     pub fn from_wire(s: &str) -> Option<Self> {
         match s {
             "low" => Some(Self::Low),
@@ -126,7 +201,7 @@ impl EffortLevel {
         }
     }
 
-    /// IR 枚举 → wire 词汇（小写，OpenAI `reasoning_effort` 同形）。
+    /// IR 枚举 → wire 词汇（小写，OpenAI `verbosity` 同形）。
     pub fn to_wire(self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -214,6 +289,13 @@ pub struct Tool {
     /// 函数工具定义
     #[serde(default)]
     pub function: ToolFunction,
+    /// 原始工具对象（server tool / custom tool 等非 function 形态原样保真；
+    /// 出站时优先按原对象回写）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<serde_json::Value>,
+    /// 工具级缓存控制（Anthropic `cache_control` 原样保真）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<serde_json::Value>,
 }
 
 impl Default for Tool {
@@ -221,6 +303,8 @@ impl Default for Tool {
         Self {
             tool_type: "function".to_string(),
             function: ToolFunction::default(),
+            raw: None,
+            cache_control: None,
         }
     }
 }
@@ -329,6 +413,11 @@ pub struct ToolResult {
 }
 
 /// 消息内容
+///
+/// ⚠️ untagged 枚举对声明顺序敏感：struct 变体默认忽略未知字段，形状更宽
+/// 的变体放后则会被更窄的前者吞掉。`Reasoning` 仅要求 `text`（可选
+/// `signature`），必须放在 `TextWithToolCalls` 之后，避免
+/// `{text, toolCalls, …}` 被反序列化成丢字段的 `Reasoning`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageContent {
@@ -338,11 +427,19 @@ pub enum MessageContent {
     ToolCalls(Vec<ToolCall>),
     /// 工具结果内容（工具角色消息的结果）
     ToolResult(ToolResult),
-    /// 混合内容：文本 + 工具调用
+    /// 混合内容：文本 + 工具调用（可带思考内容）
     #[serde(rename_all = "camelCase")]
     TextWithToolCalls {
         text: String,
         tool_calls: Vec<ToolCall>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
+    },
+    /// 思考内容（Anthropic thinking 块映射；`signature` 为回传校验签名）
+    Reasoning {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 }
 
@@ -363,6 +460,20 @@ pub enum ContentBlock {
     Image {
         source: ImageSource,
         detail: Option<String>,
+    },
+    /// 文档块（Anthropic `document` / OpenAI `file` 部件映射）
+    Document {
+        source: ImageSource,
+        media_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<serde_json::Value>,
+    },
+    /// 音频块（OpenAI `input_audio` 部件映射）
+    Audio {
+        data: String,
+        format: String,
     },
 }
 
@@ -398,6 +509,9 @@ pub struct UnifiedResponse {
     pub model: String,
     pub choices: Vec<Choice>,
     pub usage: TokenUsage,
+    /// 命中停止序列的实际值（Anthropic `stop_sequence`；OpenAI 无对应槽）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequence: Option<String>,
 }
 
 /// 响应选择。
@@ -416,6 +530,34 @@ pub struct Choice {
     pub finish: Option<FinishReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logprobs: Option<serde_json::Value>,
+}
+
+/// 提示 token 明细（OpenAI `prompt_tokens_details` 映射）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    /// 音频提示 token 数
+    #[serde(default)]
+    pub audio_tokens: u64,
+    /// 命中缓存的提示 token 数
+    #[serde(default)]
+    pub cached_tokens: u64,
+}
+
+/// 补全 token 明细（OpenAI `completion_tokens_details` 映射）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CompletionTokensDetails {
+    /// 思考 token 数
+    #[serde(default)]
+    pub reasoning_tokens: u64,
+    /// 音频补全 token 数
+    #[serde(default)]
+    pub audio_tokens: u64,
+    /// 被接受的三方预测 token 数
+    #[serde(default)]
+    pub accepted_prediction_tokens: u64,
+    /// 被拒绝的三方预测 token 数
+    #[serde(default)]
+    pub rejected_prediction_tokens: u64,
 }
 
 /// Token 使用统计（对齐 core `Usage`）。cache 宽度 u64 对齐 core。
@@ -439,6 +581,12 @@ pub struct TokenUsage {
     /// CNY 计价成本（协议 wire 无成本字段，仅 IR/serde 承载）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_cny: Option<f64>,
+    /// 提示 token 明细（OpenAI `prompt_tokens_details`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    /// 补全 token 明细（OpenAI `completion_tokens_details`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
 /// 流式响应块（映射 core `StreamChunk`）。
@@ -457,6 +605,10 @@ pub enum StreamChunk {
         delta: MessageContent,
         #[serde(default)]
         finish_reason: Option<String>,
+        /// 采样概率信息（OpenAI `delta.logprobs` / `choices[].logprobs`
+        /// 原样保真）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        logprobs: Option<serde_json::Value>,
     },
     /// 流式工具调用片段（对齐 core `ToolCallDelta` types.rs）。
     /// `id`/`name` 仅首片段携带（续片为空/None）；`arguments` 为增量分片。
@@ -536,6 +688,16 @@ pub(crate) fn absorb_vendor_extensions(
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 跨协议不可避免的字段丢弃显性化（统一 debug 记录，禁止静默 `_ => {}`/`None`）。
+///
+/// `protocol` 为目标协议；`field` 为被丢弃字段/块型的定位锚（如
+/// `"content[2].redacted_thinking"`、`"tools[0].type"`）；`reason` 为丢弃
+/// 原因。target 固定为 `fluxgate::protocol`，运维可按
+/// `RUST_LOG=fluxgate::protocol=debug` 检索。
+pub(crate) fn drop_unsupported(protocol: super::Protocol, field: &str, reason: &str) {
+    tracing::debug!(target: "fluxgate::protocol", ?protocol, field, reason, "unsupported field dropped");
 }
 
 /// 出站透传 [`UnifiedRequest::vendor_extensions`] → 顶层键。
@@ -648,39 +810,439 @@ mod tests {
 
     #[test]
     fn effort_level_wire_and_serde() {
-        assert_eq!(EffortLevel::from_wire("low"), Some(EffortLevel::Low));
-        assert_eq!(EffortLevel::from_wire("medium"), Some(EffortLevel::Medium));
-        assert_eq!(EffortLevel::from_wire("high"), Some(EffortLevel::High));
-        assert_eq!(EffortLevel::from_wire("minimal"), None);
-        assert_eq!(EffortLevel::High.to_wire(), "high");
+        // 七值全词表：wire → IR
+        for (wire, level) in [
+            ("none", EffortLevel::None),
+            ("minimal", EffortLevel::Minimal),
+            ("low", EffortLevel::Low),
+            ("medium", EffortLevel::Medium),
+            ("high", EffortLevel::High),
+            ("xhigh", EffortLevel::XHigh),
+            ("max", EffortLevel::Max),
+        ] {
+            assert_eq!(EffortLevel::from_wire(wire), Some(level), "wire={wire}");
+            // IR → wire 全词表往返
+            assert_eq!(level.to_wire(), wire, "level={level:?}");
+        }
+        // 未知词不猜变体
+        assert_eq!(EffortLevel::from_wire("ultra"), None);
+        assert_eq!(EffortLevel::from_wire(""), None);
+        // serde：xhigh 非 x_high 的显式重命名
         assert_eq!(
-            serde_json::to_value(EffortLevel::Medium).unwrap(),
-            json!("medium")
+            serde_json::to_value(EffortLevel::XHigh).unwrap(),
+            json!("xhigh")
         );
-        let back: EffortLevel = serde_json::from_value(json!("high")).unwrap();
-        assert_eq!(back, EffortLevel::High);
+        assert_eq!(
+            serde_json::to_value(EffortLevel::None).unwrap(),
+            json!("none")
+        );
+        let back: EffortLevel = serde_json::from_value(json!("xhigh")).unwrap();
+        assert_eq!(back, EffortLevel::XHigh);
+        let back: EffortLevel = serde_json::from_value(json!("none")).unwrap();
+        assert_eq!(back, EffortLevel::None);
     }
 
     #[test]
     fn thinking_config_serde_roundtrip() {
+        // Enabled 携带 display
         let enabled = ThinkingConfig::Enabled {
             budget_tokens: 2048,
+            display: Some(ThinkingDisplay::Omitted),
         };
         let json = serde_json::to_value(&enabled).unwrap();
-        assert_eq!(json, json!({"type": "enabled", "budget_tokens": 2048}));
+        assert_eq!(
+            json,
+            json!({"type": "enabled", "budget_tokens": 2048, "display": "omitted"})
+        );
         let back: ThinkingConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back, enabled);
 
+        // 旧 wire 形状（无 display）继续可解析
+        let back: ThinkingConfig =
+            serde_json::from_value(json!({"type": "enabled", "budget_tokens": 1024})).unwrap();
         assert_eq!(
-            serde_json::to_value(&ThinkingConfig::Adaptive).unwrap(),
-            json!({"type": "adaptive"})
+            back,
+            ThinkingConfig::Enabled {
+                budget_tokens: 1024,
+                display: None
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(ThinkingConfig::Enabled {
+                budget_tokens: 1024,
+                display: None
+            })
+            .unwrap(),
+            json!({"type": "enabled", "budget_tokens": 1024}),
+            "display 缺省时不输出该键"
+        );
+
+        // Adaptive 携带 display
+        assert_eq!(
+            serde_json::to_value(ThinkingConfig::Adaptive {
+                display: Some(ThinkingDisplay::Summarized)
+            })
+            .unwrap(),
+            json!({"type": "adaptive", "display": "summarized"})
         );
         let back: ThinkingConfig = serde_json::from_value(json!({"type": "adaptive"})).unwrap();
-        assert_eq!(back, ThinkingConfig::Adaptive);
+        assert_eq!(back, ThinkingConfig::Adaptive { display: None });
+
+        // BetweenTools 变体
+        assert_eq!(
+            serde_json::to_value(ThinkingConfig::BetweenTools).unwrap(),
+            json!({"type": "between_tools"})
+        );
+        let back: ThinkingConfig =
+            serde_json::from_value(json!({"type": "between_tools"})).unwrap();
+        assert_eq!(back, ThinkingConfig::BetweenTools);
 
         let back: ThinkingConfig = serde_json::from_value(json!({"type": "disabled"})).unwrap();
         assert_eq!(back, ThinkingConfig::Disabled);
         assert_eq!(ThinkingConfig::default(), ThinkingConfig::Disabled);
+    }
+
+    #[test]
+    fn message_content_reasoning_and_tool_calls_roundtrip() {
+        // Reasoning 对象形状往返（含 signature）
+        let reasoning = MessageContent::Reasoning {
+            text: "let me think".into(),
+            signature: Some("sig-1".into()),
+        };
+        let json = serde_json::to_value(&reasoning).unwrap();
+        assert_eq!(json, json!({"text": "let me think", "signature": "sig-1"}));
+        let back: MessageContent = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            MessageContent::Reasoning {
+                signature: Some(_),
+                ..
+            }
+        ));
+
+        // 无 signature：键省略且可解析
+        let json = serde_json::to_value(MessageContent::Reasoning {
+            text: "t".into(),
+            signature: None,
+        })
+        .unwrap();
+        assert_eq!(json, json!({"text": "t"}));
+        let back: MessageContent = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            MessageContent::Reasoning {
+                signature: None,
+                ..
+            }
+        ));
+
+        // TextWithToolCalls 携带 reasoning：不能被 Reasoning 变体吞掉
+        let mixed = MessageContent::TextWithToolCalls {
+            text: "done".into(),
+            tool_calls: vec![ToolCall {
+                id: "call_1".into(),
+                call_type: "function".into(),
+                function: ToolCallFunction {
+                    name: "f".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+            reasoning: Some("because".into()),
+        };
+        let json = serde_json::to_value(&mixed).unwrap();
+        assert_eq!(json["reasoning"], "because");
+        let back: MessageContent = serde_json::from_value(json).unwrap();
+        match back {
+            MessageContent::TextWithToolCalls {
+                text,
+                tool_calls,
+                reasoning,
+            } => {
+                assert_eq!(text, "done");
+                assert_eq!(tool_calls.len(), 1, "tool_calls 不得被 Reasoning 变体吞掉");
+                assert_eq!(reasoning.as_deref(), Some("because"));
+            }
+            other => panic!("expected TextWithToolCalls, got {other:?}"),
+        }
+
+        // reasoning 缺省的旧形状继续可解析
+        let back: MessageContent = serde_json::from_value(json!({
+            "text": "done",
+            "toolCalls": []
+        }))
+        .unwrap();
+        assert!(matches!(
+            back,
+            MessageContent::TextWithToolCalls {
+                reasoning: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn content_block_document_and_audio_serde() {
+        let document = ContentBlock::Document {
+            source: ImageSource::Base64 {
+                media_type: "application/pdf".into(),
+                data: "JVBERi0=".into(),
+            },
+            media_type: "application/pdf".into(),
+            title: Some("spec.pdf".into()),
+            cache_control: Some(json!({"type": "ephemeral"})),
+        };
+        let json = serde_json::to_value(&document).unwrap();
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        match back {
+            ContentBlock::Document {
+                media_type,
+                title,
+                cache_control,
+                ..
+            } => {
+                assert_eq!(media_type, "application/pdf");
+                assert_eq!(title.as_deref(), Some("spec.pdf"));
+                assert!(cache_control.is_some());
+            }
+            other => panic!("expected Document, got {other:?}"),
+        }
+
+        // title/cache_control 缺省时跳过序列化
+        let json = serde_json::to_value(ContentBlock::Document {
+            source: ImageSource::Url {
+                url: "https://example.com/a.pdf".into(),
+            },
+            media_type: "application/pdf".into(),
+            title: None,
+            cache_control: None,
+        })
+        .unwrap();
+        let block_json = json.get("Document").expect("外部标签 Document");
+        assert!(block_json.get("title").is_none());
+        assert!(block_json.get("cache_control").is_none());
+
+        let audio = ContentBlock::Audio {
+            data: "aGk=".into(),
+            format: "wav".into(),
+        };
+        let json = serde_json::to_value(&audio).unwrap();
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            ContentBlock::Audio { ref format, .. } if format == "wav"
+        ));
+    }
+
+    #[test]
+    fn tool_raw_and_cache_control_serde() {
+        // 缺省：raw/cache_control 跳过序列化、旧形状可解析
+        let tool = Tool {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "f".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert!(json.get("raw").is_none());
+        assert!(json.get("cache_control").is_none());
+        let back: Tool = serde_json::from_value(json!({
+            "type": "function",
+            "function": {"name": "f", "description": "", "parameters": null}
+        }))
+        .unwrap();
+        assert!(back.raw.is_none());
+        assert!(back.cache_control.is_none());
+
+        // 全字段往返
+        let tool = Tool {
+            tool_type: "web_search_20250305".into(),
+            raw: Some(json!({"type": "web_search_20250305", "name": "web_search"})),
+            cache_control: Some(json!({"type": "ephemeral"})),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["raw"]["name"], "web_search");
+        assert_eq!(json["cache_control"]["type"], "ephemeral");
+        let back: Tool = serde_json::from_value(json).unwrap();
+        assert!(back.raw.is_some());
+        assert!(back.cache_control.is_some());
+    }
+
+    #[test]
+    fn token_usage_details_serde() {
+        // 旧形状（无 details）：None 缺省
+        let legacy: TokenUsage = serde_json::from_value(json!({
+            "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15
+        }))
+        .unwrap();
+        assert!(legacy.prompt_tokens_details.is_none());
+        assert!(legacy.completion_tokens_details.is_none());
+
+        // 全字段往返
+        let usage = TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                audio_tokens: 1,
+                cached_tokens: 6,
+            }),
+            completion_tokens_details: Some(CompletionTokensDetails {
+                reasoning_tokens: 64,
+                audio_tokens: 2,
+                accepted_prediction_tokens: 3,
+                rejected_prediction_tokens: 4,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&usage).unwrap();
+        assert_eq!(json["prompt_tokens_details"]["cached_tokens"], 6);
+        assert_eq!(json["completion_tokens_details"]["reasoning_tokens"], 64);
+        let back: TokenUsage = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            back.prompt_tokens_details,
+            Some(PromptTokensDetails {
+                audio_tokens: 1,
+                cached_tokens: 6
+            })
+        );
+        assert_eq!(
+            back.completion_tokens_details,
+            Some(CompletionTokensDetails {
+                reasoning_tokens: 64,
+                audio_tokens: 2,
+                accepted_prediction_tokens: 3,
+                rejected_prediction_tokens: 4
+            })
+        );
+
+        // details 子字段缺省：serde default 回落 0
+        let partial: TokenUsage = serde_json::from_value(json!({
+            "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 4},
+            "completion_tokens_details": {"reasoning_tokens": 8}
+        }))
+        .unwrap();
+        assert_eq!(
+            partial.prompt_tokens_details.unwrap().audio_tokens,
+            0,
+            "details 子字段缺省回落 0"
+        );
+    }
+
+    #[test]
+    fn unified_request_metadata_and_service_fields_serde() {
+        // 旧形状解析：新字段全部 serde default
+        let legacy: UnifiedRequest = serde_json::from_value(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap();
+        assert!(legacy.metadata.is_none());
+        assert!(legacy.service_tier.is_none());
+        assert!(legacy.verbosity.is_none());
+        assert!(legacy.max_completion_tokens.is_none());
+
+        // 全量新字段往返
+        let req = UnifiedRequest {
+            metadata: Some(json!({"user_id": "u1"})),
+            service_tier: Some("auto".into()),
+            verbosity: Some(Verbosity::High),
+            max_completion_tokens: Some(4096),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["metadata"]["user_id"], "u1");
+        assert_eq!(json["service_tier"], "auto");
+        assert_eq!(json["verbosity"], "high");
+        assert_eq!(json["max_completion_tokens"], 4096);
+        let back: UnifiedRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(back.metadata.unwrap()["user_id"], "u1");
+        assert_eq!(back.service_tier.as_deref(), Some("auto"));
+        assert_eq!(back.verbosity, Some(Verbosity::High));
+        assert_eq!(back.max_completion_tokens, Some(4096));
+
+        // 缺省跳过
+        let json = serde_json::to_value(UnifiedRequest::default()).unwrap();
+        for key in [
+            "metadata",
+            "service_tier",
+            "verbosity",
+            "max_completion_tokens",
+        ] {
+            assert!(json.get(key).is_none(), "{key} 应被跳过");
+        }
+
+        // Verbosity serde 词表
+        assert_eq!(serde_json::to_value(Verbosity::Low).unwrap(), json!("low"));
+        let back: Verbosity = serde_json::from_value(json!("medium")).unwrap();
+        assert_eq!(back, Verbosity::Medium);
+
+        // 响应 stop_sequence：旧形状缺省、实际值往返
+        let legacy: UnifiedResponse = serde_json::from_value(json!({
+            "id": "r", "object": "", "created": 0, "model": "m",
+            "choices": [], "usage": {"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}
+        }))
+        .unwrap();
+        assert!(legacy.stop_sequence.is_none());
+        let resp = UnifiedResponse {
+            id: "r".into(),
+            object: String::new(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![],
+            usage: TokenUsage::default(),
+            stop_sequence: Some("END".into()),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["stop_sequence"], "END");
+        let back: UnifiedResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(back.stop_sequence.as_deref(), Some("END"));
+    }
+
+    #[test]
+    fn stream_content_logprobs_serde() {
+        // 旧形状（无 logprobs）解析：缺省 None
+        let legacy: StreamChunk = serde_json::from_value(json!({
+            "type": "content",
+            "index": 0,
+            "delta": "hi"
+        }))
+        .unwrap();
+        match legacy {
+            StreamChunk::Content { logprobs, .. } => assert!(logprobs.is_none()),
+            other => panic!("expected Content, got {other:?}"),
+        }
+
+        // 携带 logprobs 往返
+        let chunk = StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::Text("hi".into()),
+            finish_reason: None,
+            logprobs: Some(json!({"content": [{"token": "hi"}]})),
+        };
+        let json = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(json["logprobs"]["content"][0]["token"], "hi");
+        let back: StreamChunk = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            back,
+            StreamChunk::Content {
+                logprobs: Some(_),
+                ..
+            }
+        ));
+
+        // 缺省跳过
+        let json = serde_json::to_value(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::Text("x".into()),
+            finish_reason: None,
+            logprobs: None,
+        })
+        .unwrap();
+        assert!(json.get("logprobs").is_none());
     }
 
     #[test]
@@ -761,6 +1323,7 @@ mod tests {
             }),
             thinking_config: Some(ThinkingConfig::Enabled {
                 budget_tokens: 1024,
+                display: None,
             }),
             effort: Some(EffortLevel::High),
             turn_index: Some(3),
@@ -782,7 +1345,8 @@ mod tests {
         assert_eq!(
             back.thinking_config,
             Some(ThinkingConfig::Enabled {
-                budget_tokens: 1024
+                budget_tokens: 1024,
+                display: None
             })
         );
         assert_eq!(back.effort, Some(EffortLevel::High));
@@ -955,6 +1519,7 @@ mod tests {
                 parameters,
                 strict: None,
             },
+            ..Default::default()
         }
     }
 

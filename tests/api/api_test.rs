@@ -286,6 +286,7 @@ mod endpoints {
                 total_tokens: 15,
                 ..Default::default()
             },
+            stop_sequence: None,
         };
 
         let external = state
@@ -583,6 +584,7 @@ mod integration {
                 total_tokens: 15,
                 ..Default::default()
             },
+            stop_sequence: None,
         };
 
         let external = converter.response_to_external(unified_response);
@@ -1051,6 +1053,9 @@ mod admin {
                 token_ticket_default: 4096,
             },
             supports_batch: false,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         };
         let result =
             admin::update_vendor(State(state), Path("nonexistent".to_string()), Json(vendor)).await;
@@ -6369,6 +6374,9 @@ mod fallback_observation_headers {
                 token_ticket_default: 4096,
             },
             supports_batch: false,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
         }
     }
 

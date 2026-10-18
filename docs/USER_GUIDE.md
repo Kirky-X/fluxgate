@@ -143,6 +143,7 @@ tier = "dedicated"
 | `api_key_envs` | 数组 | 空 | 多 key 池的额外环境变量名（与 `api_key_env` 合并去重，本列表在前；缺名 env 跳过并告警，池上限见 `key_pool::MAX_KEY_POOL`） |
 | `extra_headers` | 表 | 空 | 出站自定义头（静态值，热生效；与网关已设头冲突时跳过并记 warn） |
 | `api_base` | String | `""` | 上游 API 基地址 |
+| `api_style` | String | 缺省（`chat`） | 端点风格：`chat`（`chat/completions`）或 `responses`（OpenAI Responses `/responses`，仅 `type_ = "openai"` 合法）；与 `chat_path` 互斥 |
 | `enabled` | bool | `true` | 厂商开关 |
 | `priority` | u8 | `1` | fallback 优先级，**数值越小优先级越高**（1 = primary） |
 | `models` | 数组 | 空 | 模型列表，见下 |
@@ -266,6 +267,44 @@ flowchart TB
 | `quality` | 0.7 | 0.2 | 0.1 | 偏模型配置权重 |
 | `latency` | 0.2 | 0.2 | 0.2 | 额外开 `w_latency = 0.4`、`latency_ref_ms = 500` |
 | `cost` | 0.2 | 0.2 | 0.6 | 偏窗口预算（Token 余额 ≈ 成本预算代理） |
+
+---
+
+## 📝 Responses API responses
+
+`POST /v1/responses` 接受 OpenAI Responses 格式（`input` 字符串或 item 数组、`instructions`、flat function tools、`text.format` 结构化输出），默认转成统一 chat IR 后进入现有路由池（OpenAI chat / Anthropic messages 厂商均可命中）；`stream: true` 返回语义化 SSE 事件（`response.created` → `response.output_text.delta` → `response.completed`）。
+
+### [responses] 字段与默认值
+
+| 字段 | 默认值 | 说明 |
+|:-----|:-------|:-----|
+| `enabled` | `true` | 端点总开关（热读）；`false` 时四个端点一律 404 |
+| `store_enabled` | `true` | 是否允许落库；`false` 时 `store=true` 请求按 `store=false` 降级并回显 |
+| `retention_hours` | `720` | 存储保留时长（1–8760 小时） |
+| `max_response_bytes` | `1048576` | 单列 JSON 上限（1 KiB–16 MiB），超限拒绝写入 |
+| `background_enabled` | `true` | 后台任务开关 |
+| `max_background_jobs` | `16` | 后台并发上限（1–256，热读）；超限 429 |
+
+### 有状态语义
+
+- `store` 缺省 `true`：响应写入 `response_store` 表（迁移 V4），`GET /v1/responses/{id}` 可检索、`DELETE` 可删除；`store=false` 不落库。
+- `previous_response_id`：网关按链回溯（深度 ≤100）把祖先 input/output items 回放到当前请求；`conversation` 按会话回放全部历史；两者互斥。上游永远看不到这两个字段（统一 `store=false`），因此跨厂商可用。
+- `background: true`：网关侧异步执行，入队返回 `status: "queued"`，`GET` 轮询结果，`POST /v1/responses/{id}/cancel` 取消；要求 `store=true` 且不支持 `stream`。
+
+### 原生直通与 `api_style`
+
+内置工具（`web_search`/`file_search`/`code_interpreter`/`image_generation`/`mcp`）、`prompt` 模板、`input_file`/音频输入无法等价降级，只路由到 `api_style = "responses"` 的厂商（请求体改写后原样打 `{api_base}/responses`）：
+
+```toml
+[[vendors]]
+id = "openai-native"
+type_ = "openai"
+api_style = "responses"
+api_key_env = "OPENAI_API_KEY"  # pragma: allowlist secret（示例环境变量名，非凭证）
+api_base = "https://api.openai.com/v1"
+```
+
+未声明 `api_style` 的 `type_ = "openai"` 厂商行为与历史逐位一致（chat/completions）；`/v1/chat/completions` 客户端命中 `api_style="responses"` 厂商时自动转成 `/responses` 出站。
 
 ---
 

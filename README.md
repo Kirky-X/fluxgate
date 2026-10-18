@@ -199,7 +199,7 @@ model_type = "rerank"
 | 文档 | 说明 |
 |------|------|
 | [📖 用户指南](docs/USER_GUIDE.md) | 从配置、部署到运维的完整使用教程 |
-| [📘 API 参考](docs/API_REFERENCE.md) | 全部 22 个方法端点（数据面 6 + 管理 15 + 健康 1）的参数、响应与错误码 |
+| [📘 API 参考](docs/API_REFERENCE.md) | 全部 27 个方法端点（数据面 11 + 管理 15 + 健康 1）的参数、响应与错误码 |
 | [🏗️ 架构文档](docs/ARCHITECTURE.md) | 设计原则、路由决策体系、弹性与热更新机制 |
 | [🔒 安全文档](docs/SECURITY.md) | 安全设计、供应链门禁与漏洞处理流程 |
 | [❓ FAQ](docs/FAQ.md) | 常见问题与已知边界 |
@@ -383,7 +383,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
-<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、21 个方法端点（数据面 5 + 管理 15 + 健康 1）</td></tr>
+<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic 协议互转、SSE 流式、零拷贝透传、27 个方法端点（数据面 11 + 管理 15 + 健康 1）</td></tr>
 <tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、会话亲和、LinUCB、Power-of-Two、SLA / LPS 可选层；难度定档三档路由（规则 + 进程内决策引擎融合，<code>difficulty-classifier</code> feature 门控）；缓存成本套件（前缀亲和 PoTC / 语义缓存默认关，缓存价因子默认开）</td></tr>
 <tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
 <tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、`[[model_catalog]]` 四档计价与成本分账</td></tr>

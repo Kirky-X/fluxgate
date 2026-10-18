@@ -16,6 +16,11 @@
   - [POST /v1/chat/completions](#post-v1chatcompletions)
   - [POST /v1/embeddings](#post-v1embeddings)
   - [POST /v1/rerank](#post-v1rerank)
+  - [POST /v1/responses](#post-v1responses)
+  - [GET /v1/responses/:id](#get-v1responsesid)
+  - [DELETE /v1/responses/:id](#delete-v1responsesid)
+  - [POST /v1/responses/:id/cancel](#post-v1responsesidcancel)
+  - [POST /v1/responses/input_tokens](#post-v1responsesinput_tokens)
   - [POST /v1/messages](#post-v1messages)
   - [GET /v1/models](#get-v1models)
   - [POST /v1/messages/count_tokens](#post-v1messagescount_tokens)
@@ -476,6 +481,117 @@ curl -X POST http://localhost:8080/v1/messages \
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```
+
+---
+
+### POST /v1/responses
+
+OpenAI Responses API 兼容端点（非流式 + 语义化 SSE）。请求默认转成统一 chat IR，进入现有加权/亲和/熔断/配额路由池——OpenAI chat 与 Anthropic messages 厂商均可命中。
+
+**认证**: 需要 Bearer Token
+
+**请求字段**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `model` | string | 是 | 路由抽象名（`abstract_id`，缺省回落 `model_id`） |
+| `input` | string \| array | 是 | 字符串或 item 数组（message / function_call / function_call_output / reasoning / item_reference） |
+| `instructions` | string | 否 | 系统指令（IR `system_prompt`） |
+| `max_output_tokens` | integer | 否 | 1–1,000,000；缺省由上游决定 |
+| `temperature` / `top_p` | number | 否 | 采样参数 |
+| `stream` | boolean | 否 | `true` 时返回语义化 SSE |
+| `tools` | array | 否 | flat function tools（`{type,name,description,parameters,strict}`）；内置工具（`web_search`/`file_search`/`code_interpreter`/`image_generation`/`mcp`）仅原生直通 |
+| `tool_choice` | string \| object | 否 | `auto`/`none`/`required`/`{type:"function",name}` |
+| `text.format` | object | 否 | 结构化输出（`text`/`json_object`/`json_schema`） |
+| `reasoning.effort` | string | 否 | `low`/`medium`/`high` |
+| `parallel_tool_calls` | boolean | 否 | 并行工具调用 |
+| `store` | boolean | 否 | 缺省 `true`；`false` 不落库，后续不可被 `previous_response_id` 引用 |
+| `previous_response_id` | string | 否 | 网关回放该响应及其祖先的 input/output items |
+| `conversation` | string | 否 | 按会话回放全部历史（与 `previous_response_id` 互斥） |
+| `metadata` | object | 否 | ≤16 项，键 ≤64 / 值 ≤512 字符；原样回显 |
+| `truncation` | string | 否 | `auto` 时按目录 `context_window` 粗粒度丢弃最旧 items |
+| `background` | boolean | 否 | 网关侧后台执行；要求 `store=true` 且不支持 `stream` |
+
+**input item 形状**
+
+- `{"role":"user","content":"..."}` 或 `{"role":"user","content":[{"type":"input_text","text":"..."},{"type":"input_image","image_url":"...","detail":"auto"}]}`
+- `{"type":"function_call","call_id":"...","name":"...","arguments":"..."}`
+- `{"type":"function_call_output","call_id":"...","output":"..."}`
+- `{"type":"item_reference","id":"..."}`（在回放历史内按 id 解析）
+
+**响应形状（非流式）**
+
+```json
+{
+  "id": "resp_...",
+  "object": "response",
+  "created_at": 1760000000,
+  "status": "completed",
+  "model": "gpt-4.1",
+  "output": [
+    {"type": "message", "id": "msg_...", "status": "completed", "role": "assistant",
+     "content": [{"type": "output_text", "text": "...", "annotations": []}]},
+    {"type": "function_call", "id": "fc_...", "call_id": "call_...", "name": "f", "arguments": "{}", "status": "completed"}
+  ],
+  "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+            "input_tokens_details": {"cached_tokens": 2}},
+  "store": true,
+  "metadata": {}
+}
+```
+
+`finish_reason=length` → `status: "incomplete"` + `incomplete_details.reason: "max_output_tokens"`；`content_filter` 同理。
+
+**流式事件（`event:` 名与 `data.type` 同值，`sequence_number` 从 0 单调递增）**
+
+| 事件 | 说明 |
+|---|---|
+| `response.created` / `response.in_progress` | 起始（携带 in_progress 响应对象） |
+| `response.output_item.added` | message / function_call item 开启 |
+| `response.content_part.added` | message 的 output_text 部分开启 |
+| `response.output_text.delta` / `.done` | 文本增量 / 收口 |
+| `response.function_call_arguments.delta` / `.done` | 工具参数增量 / 收口 |
+| `response.content_part.done` / `response.output_item.done` | 部分 / item 收口 |
+| `response.completed` / `response.incomplete` / `response.failed` | 终止事件（恰好一次，携带完整 response 与 usage） |
+
+流中上游错误 → `response.failed` 后终止；不发 `[DONE]`。
+
+**原生直通**：内置工具、`prompt` 模板、`input_file`/音频输入只允许 `api_style="responses"` 厂商（`X-Vendor`/`X-Model` 点名校验不匹配 → 502 且不发请求）；无候选 → 400 并给配置指引。请求体经改写（`input` 为回放后 items、剥离 `previous_response_id`/`conversation`、上游 `store=false`）后原样打 `{api_base}/responses`。
+
+**错误码**: `validation_error`(400) | `protocol_error`(502) | `vendor_unavailable`(503) | `timeout`(504) | `rate_limited`(429)；`[responses].enabled=false` → 404。
+
+**curl 示例**
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4.1","input":"用一句话解释重排","max_output_tokens":128}'
+```
+
+---
+
+### GET /v1/responses/:id
+
+按 id 检索已存 Responses 对象（租户隔离：只能看到同一 API key 摘要写入的记录）。不存在 / 越权 / 过期 → 404。
+
+---
+
+### DELETE /v1/responses/:id
+
+删除已存响应（同时 abort 运行中的后台任务）。成功返回 `{"id":"...","object":"response.deleted","deleted":true}`；不存在 / 越权 → 404。
+
+---
+
+### POST /v1/responses/:id/cancel
+
+取消后台任务：置 `status:"cancelled"`、abort 任务并返回 cancelled 响应对象；非 background 响应 → 400。
+
+---
+
+### POST /v1/responses/input_tokens
+
+近似输入 token 估算（字符/4 + 结构开销，确定性）。入参 `{model, input, instructions?, tools?}`，返回 `{"object":"response.input_tokens","input_tokens":N}`；缺 `model` 或 `input` 为空 → 400。
 
 ---
 

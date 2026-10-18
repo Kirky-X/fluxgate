@@ -185,7 +185,7 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 | Document | Description |
 |----------|-------------|
 | [📖 User Guide](docs/USER_GUIDE.md) | End-to-end tutorial: configuration, deployment, operations |
-| [📘 API Reference](docs/API_REFERENCE.md) | All 21 method endpoints (5 data-plane + 15 admin + 1 health): parameters, responses, error codes |
+| [📘 API Reference](docs/API_REFERENCE.md) | All 27 method endpoints (11 data-plane + 15 admin + 1 health): parameters, responses, error codes |
 | [🏗️ Architecture](docs/ARCHITECTURE.md) | Design principles, routing decision system, resilience & hot reload |
 | [🔒 Security](docs/SECURITY.md) | Security design, supply-chain gates, vulnerability handling |
 | [❓ FAQ](docs/FAQ.md) | Common questions and known limitations |
@@ -371,7 +371,7 @@ Please do not report security vulnerabilities through public issues. Use the Git
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
-<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 21 method endpoints (5 data-plane + 15 admin + 1 health)</td></tr>
+<tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic conversion, SSE streaming, zero-copy passthrough, 27 method endpoints (11 data-plane + 15 admin + 1 health)</td></tr>
 <tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, session affinity, LinUCB, Power-of-Two, optional SLA / LPS layers; difficulty-tiered routing (rule + in-process decision-engine fusion behind the <code>difficulty-classifier</code> feature); cache-cost suite (prefix-affinity PoTC / semantic cache off by default, cache-aware price factor on by default)</td></tr>
 <tr><td align="center">✅</td><td>Resilience</td><td>limiteron circuit / retry / fallback chain, congestion-aware admission, key tiers</td></tr>
 <tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, four-tier `[[model_catalog]]` costing and cost breakdown</td></tr>

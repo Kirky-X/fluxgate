@@ -109,6 +109,7 @@ flowchart TB
 | `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:724-776`）；admission 准入判定挂载（`src/api/router_builder.rs:478-554`） |
 | `api/openai.rs` | `POST /v1/chat/completions`、`POST /v1/embeddings` 端点 |
 | `api/rerank.rs` | `POST /v1/rerank` 端点：能力过滤路由、Cohere 形状转换与日志摘要（不含 query/documents 原文） |
+| `api/responses.rs` | `POST /v1/responses` 与检索/删除/取消/input_tokens：IR 与原生双路径、语义化 SSE、`response_store` 状态回放与后台任务 |
 | `api/anthropic.rs` | `POST /v1/messages` 端点 |
 | `api/health.rs` | `/health` 健康检查端点 |
 | `api/admin.rs` | `/admin/*` 运维端点 handler（日志查询、指标、厂商状态、配置热更新、模型管理） |
@@ -165,7 +166,7 @@ flowchart TB
 |---|---|
 | `src/config/` | `mod.rs`：`Config` 结构体（19 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
 | `src/middleware/` | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`lexcompress.rs`：词法压缩（N2，`X-Compress: 1` 触发的确定性剪枝）；`mod.rs`：中间件组织 |
-| `src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3） |
+| `src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`responses/`：Responses wire 类型、入站/出站转换与语义化 SSE 编解码；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3） |
 | `src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器 |
 | `src/i18n/` | `catalog.rs`：Fluent 双束编译期内嵌（`OnceLock` 静态缓存）；`locale.rs`：语言检测链与全局 locale 上下文；`mod.rs`：`t()`/`t_args()` 查找门面 |
 | `src/infrastructure/` | `di.rs`：`AsyncKit` 四模块拓扑序组装与 `verify_kit` |

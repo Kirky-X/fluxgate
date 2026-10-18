@@ -28,15 +28,20 @@ repos:
         # 本仓工作流在 main 上提交，故仅保护 master
         args: ['--branch', 'master']
 
-  - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.5.0
+  # detect-secrets 换本地门禁脚本：官方 detect-secrets-hook 的扫描集是「本次
+  # 暂存文件」，账本随之每次重写、随提交批次轮换（先败重写、再提即过，多批
+  # 交替会互相挤掉已登记条目）。本地脚本用恒定的全仓文件集（git ls-files 减
+  # 排除，口径同原 args），账本 = 全仓发现的稳定快照，仅真出现新发现时才重写。
+  # 误报人工核实后登记（is_verified=true 保留）；tests/ 与 src/sdk/tests 的
+  # mock 厂商凭证夹具维持排除；账本自身与 Cargo.lock 不参与扫描。
+  - repo: local
     hooks:
       - id: detect-secrets
-        # --baseline: .secrets.baseline 记录已人工核实的误报；带 --baseline 时
-        # 基线内发现放行，基线外的新发现仍阻断。
-        args: [--baseline, .secrets.baseline, --exclude-files, tests/, --exclude-files, src/sdk/tests, --exclude-files, out/]
-        # 自排除: 基线文件本身(内含凭证哈希)与锁文件不参与扫描
-        exclude: '^(Cargo\.lock|\.secrets\.baseline)$'
+        name: Detect secrets (full-repo fixed file set)
+        entry: ./scripts/detect_secrets_gate.sh
+        language: system
+        always_run: true
+        pass_filenames: false
 
   - repo: https://github.com/crate-ci/typos
     rev: v1.28.0

@@ -152,7 +152,7 @@ submit_route_i18n!(
     "/v1/models",
     "GET",
     "OpenAI models list",
-    "Union of model catalog and enabled vendor models, deduplicated; vendor entries list their routable public name (abstract_id, else model_id). Never cached.",
+    "Union of model catalog and enabled vendor models, deduplicated; vendor entries list their routable public name (abstract_id, else model_id). Supports ?task=chat|embedding|rerank filtering. Never cached.",
     &["openai"],
     "api-openapi-models-list-description"
 );

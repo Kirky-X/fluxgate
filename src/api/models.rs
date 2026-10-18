@@ -7,7 +7,11 @@
 
 use crate::error::FluxgateError;
 use crate::ApiState;
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -15,8 +19,33 @@ use std::sync::Arc;
 /// 目录独有条目的 `owned_by` 归属标记（无 vendor 认领时）。
 const CATALOG_OWNER: &str = "fluxgate";
 
+/// `GET /v1/models` 查询参数：按任务类型过滤（缺省不过滤）。
+#[derive(Debug, Deserialize)]
+pub struct ModelsQuery {
+    pub task: Option<String>,
+}
+
+/// 合法 task 白名单
+const TASK_FILTERS: [&str; 3] = ["chat", "embedding", "rerank"];
+
 #[axum::debug_handler]
-pub async fn list_models(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, FluxgateError> {
+pub async fn list_models(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<ModelsQuery>,
+) -> Result<Json<Value>, FluxgateError> {
+    // task 过滤：trim 后空 = 未声明；白名单外显式 400（不静默忽略）
+    let task_filter = match query.task.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(value) => {
+            let normalized = value.to_ascii_lowercase();
+            if !TASK_FILTERS.contains(&normalized.as_str()) {
+                return Err(FluxgateError::from(crate::error::GateError::Validation {
+                    field: "task".to_string(),
+                }));
+            }
+            Some(normalized)
+        }
+    };
     let config = state.config.read();
 
     // vendor 模型先占（owned_by = vendor id，task 按条目能力标注），目录
@@ -50,6 +79,11 @@ pub async fn list_models(State(state): State<Arc<ApiState>>) -> Result<Json<Valu
 
     let data: Vec<Value> = models
         .into_iter()
+        .filter(|(_, (_, task))| {
+            task_filter
+                .as_deref()
+                .is_none_or(|filter| (*task).eq_ignore_ascii_case(filter))
+        })
         .map(|(id, (owned_by, task))| {
             json!({
                 "id": id,

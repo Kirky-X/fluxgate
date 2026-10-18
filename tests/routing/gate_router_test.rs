@@ -533,14 +533,25 @@ mod scheduling_weight {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn in_flight_load_signal_lowers_weight_only_when_selected() {
         let mut server = mockito::Server::new_async().await;
-        // 慢响应（800ms）×2 占满并发 permit，让两条请求在途悬挂
+        // 慢响应：mock 侧阻塞到测试显式放行（Condvar 门闩）×2 占满并发 permit，
+        // 让两条请求在途悬挂。门闩而非 sleep 窗口：本测试在整套
+        // `cargo llvm-cov --workspace` 并行插桩下运行时，测试任务可能被调度
+        // 饿死数百毫秒——固定时间窗口会失效（两条请求已跑完、在途归零，权重
+        // 不再降权；实测 800ms 窗口在覆盖率作业里偶发 busy=idle=1）。
+        // 30s 超时是防死锁逃生阀（vendor timeout 60s 大于它）。
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let mock_gate = gate.clone();
         server
             .mock("POST", "/v1/chat/completions")
             .with_status(200)
-            .with_chunked_body(|w| {
+            .with_chunked_body(move |w| {
                 let _ = w.write_all(b"data: x\n\n");
                 let _ = w.flush();
-                std::thread::sleep(Duration::from_millis(800));
+                let (lock, cvar) = &*mock_gate;
+                let released = lock.lock().expect("gate 锁可用");
+                let _ = cvar
+                    .wait_timeout_while(released, Duration::from_secs(30), |r| !*r)
+                    .expect("gate 等待可用");
                 Ok::<(), std::io::Error>(())
             })
             .expect(2)
@@ -652,7 +663,12 @@ mod scheduling_weight {
             "load_signal=queue（默认）时在途不参与权重（历史行为）: busy={busy_w_q} idle={idle_w_q}"
         );
 
-        // 收尾：放走两条在途，避免任务泄漏告警
+        // 收尾：放行两条在途（开门闩 → mock 返回 → 句柄完成），避免任务泄漏告警
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().expect("gate 锁可用") = true;
+            cvar.notify_all();
+        }
         for h in handles {
             let _ = h.await;
         }

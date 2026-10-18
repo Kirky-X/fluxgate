@@ -958,8 +958,8 @@ impl Default for ResilienceSection {
 }
 
 /// `[admission]` 段：拥塞感知优先级准入。并发占用率（Σ in_flight / Σ 上限）
-/// 达 congestion_threshold 时，低于「当前在途最小档」优先级的新请求直接
-/// 429 + Retry-After。Section 字段落地防热更抹段；热读
+/// 达 congestion_threshold 时，档位基准权重低于「当前在途最小档」的新请求
+/// 直接 429 + Retry-After（同档/高档放行）。Section 字段落地防热更抹段；热读
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct AdmissionSection {
     /// 默认 false = 完全关闭（判定旁路、EWMA 不记账、计数不增减）
@@ -968,14 +968,16 @@ pub struct AdmissionSection {
     /// 拥塞阈值 — Σ in_flight / Σ 并发上限 ≥ 该值视为拥塞。默认 0.9。
     #[serde(default = "default_congestion_threshold")]
     pub congestion_threshold: f64,
-    /// 优先级公式系数（论文式 1 典型值 2.0/1.0/4.0）。α_slo 预留
-    ///（ℓ* 恒 0，本条不生效）。
+    /// 观测优先级公式系数（论文式 1 典型值 2.0/1.0/4.0）。α_slo 预留
+    ///（ℓ* 恒 0，本条不生效）；三条系数只进
+    /// [`admission_priority`](crate::middleware::admission::admission_priority)
+    /// 折算的观测优先级，shed 判定按档位基准权重直比、不消费该公式。
     #[serde(default = "default_alpha_slo")]
     pub alpha_slo: f64,
-    /// burst EWMA（到达速率）对优先级的压制系数。默认 1.0。
+    /// burst EWMA（到达速率）在观测优先级里的压制系数。默认 1.0。
     #[serde(default = "default_alpha_burst")]
     pub alpha_burst: f64,
-    /// debt EWMA（被 shed 频度）对优先级的压制系数。默认 4.0。
+    /// debt EWMA（被 shed 频度）在观测优先级里的压制系数。默认 4.0。
     #[serde(default = "default_alpha_debt")]
     pub alpha_debt: f64,
 }

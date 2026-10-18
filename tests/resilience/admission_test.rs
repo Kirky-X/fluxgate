@@ -196,6 +196,75 @@ async fn no_congestion_admits_all() {
     }
 }
 
+/// 同档放行不受 burst 惩罚影响（F13 语义钉子）：同一 dedicated key 先以
+/// 高到达速率推高 burst（观测优先级被压到基准以下），拥塞且 dedicated
+/// 在途时同档请求仍必须放行——判定按档位基准权重直比。
+#[tokio::test]
+async fn same_tier_passes_despite_burst_penalty() {
+    let (state, vm) = make_admission(section()).await;
+    let _p1 = vm.acquire_permit("v1").await.expect("permit");
+    let _p2 = vm.acquire_permit("v1").await.expect("permit");
+
+    let g = state
+        .admit(AuthTier::Dedicated, "ded", 1_000)
+        .expect("首位放行");
+    // 1ms 间隔重放同一 key → 到达速率 ~1000 req/s，burst EWMA 迅速抬高
+    for i in 1..6 {
+        state
+            .admit(AuthTier::Dedicated, "ded", 1_000 + i)
+            .expect("同档放行");
+    }
+    let (burst, _debt) = state.key_ewma("ded");
+    assert!(burst > 0.0, "前置：burst 必须已被推高（{burst}）");
+    let s = section();
+    assert!(
+        admission_priority(&s, tier_weight(AuthTier::Dedicated), burst, 0.0) < 1000.0,
+        "前置：带惩罚的观测优先级此刻低于 dedicated 基准"
+    );
+
+    // 同档（在途最小档 = dedicated）不因 burst 被 429
+    let _g2 = state
+        .admit(AuthTier::Dedicated, "ded", 1_010)
+        .expect("同档放行（F13：burst 不入判定）");
+    drop(g);
+}
+
+/// 同档放行不受债务惩罚影响：elastic key 先被 shed 抬高 debt，拥塞仍在
+/// 但在途最小档降为 elastic 时，同一 key 必须放行（否则债务自我强化）。
+#[tokio::test]
+async fn same_tier_passes_despite_debt() {
+    let (state, vm) = make_admission(section()).await;
+    let _p1 = vm.acquire_permit("v1").await.expect("permit");
+    let _p2 = vm.acquire_permit("v1").await.expect("permit");
+
+    let g_ded = state
+        .admit(AuthTier::Dedicated, "ded", 1_000)
+        .expect("dedicated 放行");
+    for i in 0..4 {
+        state
+            .admit(AuthTier::Elastic, "elastic", 1_100 + i)
+            .expect_err("低于在途最小档必须被 shed");
+    }
+    let (_burst, debt) = state.key_ewma("elastic");
+    assert!(debt > 0.0, "前置：debt 必须已抬升（{debt}）");
+    let s = section();
+    assert!(
+        admission_priority(&s, tier_weight(AuthTier::Elastic), 0.0, debt) < 1.0,
+        "前置：带惩罚的观测优先级此刻低于 elastic 基准"
+    );
+
+    // 在途最小档转为 elastic（同一档位）后，该 key 必须放行
+    drop(g_ded);
+    let g_e = state
+        .admit(AuthTier::Elastic, "elastic-other", 1_200)
+        .expect("无在途档位时放行");
+    assert_eq!(state.tier_in_flight(AuthTier::Elastic), 1);
+    state
+        .admit(AuthTier::Elastic, "elastic", 1_201)
+        .expect("同档放行（F13：debt 不入判定）");
+    drop(g_e);
+}
+
 /// 拥塞但无可比较的在途档位（fleet 信号已拥塞、admission 在途计数为空
 /// ——流式近似误差/非网关侧占用）→ 保守放行：shed 无依据，fail-open。
 #[tokio::test]
@@ -530,6 +599,38 @@ mod full_chain {
                 StatusCode::TOO_MANY_REQUESTS,
                 "dedicated 必须放行（到 handler 执行，超时错误非准入 429）"
             );
+        }
+    }
+
+    /// 同档放行（F13 全链钉子）：同一 dedicated key 已在途（在途最小档 =
+    /// dedicated，且该 key 的 burst/debt 观测值已被推高）时，第二个同档请求
+    /// 仍必须放行到 handler——判定按档位基准权重直比，不带 burst/debt 惩罚。
+    #[tokio::test]
+    async fn congestion_admits_same_tier_request() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (app, _vm) = build_app_with_base(true, format!("http://127.0.0.1:{port}/v1")).await;
+
+        // 两个 dedicated 挂住（占用率 1.0 ≥ 0.9 拥塞；在途最小档 = dedicated）
+        let mut dedicated_tasks = Vec::new();
+        for _ in 0..2 {
+            let ded_app = app.clone();
+            dedicated_tasks.push(tokio::spawn(async move {
+                post_chat(ded_app, "dedicated-key").await
+            }));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        // 同档第三个请求：burst>0（同 key 连续到达）也不得被准入 429
+        let same_tier = post_chat(app.clone(), "dedicated-key").await;
+        assert_ne!(
+            same_tier.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "同档请求不得被准入 shed（F13：burst/debt 不入判定）"
+        );
+
+        for t in dedicated_tasks {
+            let _ = t.await;
         }
     }
 

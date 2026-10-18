@@ -483,12 +483,13 @@ est_chars_per_token = 4
 # ✅ 热生效 —— 拥塞感知优先级准入（准入每请求从热配置现读）
 #
 # 网关侧并发占用率（Σ in_flight / Σ vendor 并发上限）达到 congestion_threshold
-# 时，新请求的档位优先级与「当前在途最小档」比较：
+# 时，新请求的档位基准权重与「当前在途最小档」直比：低于者直接
+# 429 + Retry-After（不排队）；同档/高档照常放行（同档内保持先到先得）。
+# w_tier 见 [[auth.keys]]（缺省 elastic=1.0）。
+# burst/debt 的 per-key EWMA（到达速率/被拒频度）只进观测口径的优先级公式
 #   priority = w_tier / (1+α_slo·ℓ*) / (1+α_burst·b) / (1+α_debt·d)
-# 低于在途最小档者直接 429 + Retry-After（不排队）；同档/高档照常放行
-#（同档内保持先到先得）。w_tier 见 [[auth.keys]]（缺省 elastic=1.0）；
-# ℓ*（SLO 缺口）维度无数据源恒 0（该项恒 1，α_slo 预留）；b/d 为 per-key 的
-# 到达速率/被拒频度 EWMA（网关侧近似，粗分类 shed 定位）。
+#（`admission_priority`，供诊断），**不参与** shed 判定——同档请求不得被抑制；
+# ℓ*（SLO 缺口）维度无数据源恒 0（该项恒 1，α_slo 预留）。
 # 健康检查路径永不卸载。
 [admission]
 # **默认 false = 完全关闭**：准入判定旁路、EWMA 不记账、per-tier 在途计数

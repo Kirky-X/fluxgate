@@ -5,9 +5,12 @@
 //!
 //! 拥塞信号 = Σ in_flight / Σ 并发上限 ≥ `[admission].congestion_threshold` 时，
 //! 低于「当前在途最小档」的新请求直接 429 + Retry-After（不排队）；同档/高档照常
-//! 放行（同档内保持先到先得）。健康检查在 rate_limit_middleware 头部白名单放行。
+//! 放行（同档内保持先到先得）。判定只比档位基准权重，不经 burst/debt 惩罚——
+//! 后者是同档内不得被抑制的观测 EWMA（`key_ewma` 暴露），经
+//! [`admission_priority`] 折算为观测优先级。
+//! 健康检查在 rate_limit_middleware 头部白名单放行。
 //! 默认关闭（`[admission].enabled` 默认 false）；per-tier 在途计数经 guard 的
-//! Drop 释放（panic 展开亦不泄漏）。优先级公式见 [`admission_priority`]。
+//! Drop 释放（panic 展开亦不泄漏）。
 
 use crate::config::{AdmissionSection, AuthTier, ConfigManager};
 use crate::middleware::auth::{extract_api_key, ApiAuthState};
@@ -53,8 +56,10 @@ pub fn tier_weight(tier: AuthTier) -> f64 {
     }
 }
 
-/// 优先级纯函数：`w_tier·(1+α_slo·ℓ*)⁻¹·(1+α_burst·b)⁻¹·(1+α_debt·d)⁻¹`。
+/// 优先级纯函数（观测口径）：`w_tier·(1+α_slo·ℓ*)⁻¹·(1+α_burst·b)⁻¹·(1+α_debt·d)⁻¹`。
 /// ℓ* 恒 0（SLO 缺口无数据源，该项恒 1）；burst/debt 负值按 0（防御）。
+/// 仅用于折算 key 的观测优先级——准入判定按档位基准权重比较（同档/高档放行），
+/// 不带 burst/debt 惩罚。
 pub fn admission_priority(
     section: &AdmissionSection,
     tier_weight: f64,
@@ -150,8 +155,6 @@ impl AdmissionState {
         if !section.enabled {
             return Ok(self.guard(tier));
         }
-        let (burst, debt) = self.key_ewma(key_hash);
-        let priority = admission_priority(&section, tier_weight(tier), burst, debt);
         // 拥塞信号：网关侧并发占用率（容量 0 = 无实例，按无拥塞处理）
         let (in_flight, capacity) = self.vendor_manager.fleet_concurrency();
         let congested =
@@ -162,7 +165,9 @@ impl AdmissionState {
             match self.min_in_flight_weight() {
                 // 无在途而信号拥塞（流式近似误差）→ 保守放行：没有可比较的在途档位
                 None => true,
-                Some(min_weight) => priority >= min_weight,
+                // 严格低于在途最小档才 shed：同档放行（先到先得），高档一律放行。
+                // 档位基准权重直比——burst/debt 惩罚不入判定（同档不得被抑制）
+                Some(min_weight) => tier_weight(tier) >= min_weight,
             }
         };
         if admitted {

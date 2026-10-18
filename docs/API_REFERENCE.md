@@ -369,13 +369,15 @@ curl -X POST http://localhost:8080/v1/rerank \
 }
 ```
 
-**分数口径**：`relevance_score` 原样透传上游数值，不做归一化——不同厂商可能返回 0-1 相关度或未归一化 logits/原始分，做绝对阈值过滤前请先核对该模型口径；只取 `top_n` 相对排序则不受影响。
+**分数口径**：默认 `none` 原样透传上游数值；`[routing].rerank_score_normalization = "sigmoid"` 把原始分映射到 (0,1)，`"minmax"` 在批内缩放到 [0,1]（等值批全 0.5）。归一化只改分数，不改排序与 `index`；跨厂商做绝对阈值过滤前请确认厂商口径，只取 `top_n` 相对排序则不受影响。
 
 **路由提示**：`X-Vendor` 必须指向启用的 `type_ = "rerank"` 厂商、`X-Model` 必须能解析到 `model_type = "rerank"` 条目，否则 502 且请求不发出；合法点名继续在能力集合内路由。
 
+**会话亲和**：带 `X-Session-Id` 时参与会话亲和（`[routing].affinity_mode` hard 直选 / soft 权重 boost，仅限合格候选集内）；成功响应写回实际 vendor 绑定，失败不写。
+
 **错误**：校验失败/无可用 rerank 候选 → 400；上游非 2xx/超时/连接失败 → 503/504；上游响应形状非法（`index` 越界或重复、分数非有限）→ 502。
 
-**计量**：纳入 `[quota]` 预扣（`query + documents` 字符折算 token）；请求级成本按 `[[model_catalog]].rerank_price_per_1k_docs` 计算并写入 `request_logs.cost_usd`（未登记价 = 0）；`/admin/cost` 的 token 分账暂不覆盖 rerank。请求日志只存摘要（`query_chars` / `documents` / `top_n` / `results` / `top_score`），不落 query 与文档原文。
+**计量**：纳入 `[quota]` 预扣（`query + documents` 字符折算 token）；请求级成本按 `[[model_catalog]].rerank_price_per_1k_docs` 计算并写入 `request_logs.cost_usd`，同时经分账预聚合记入 `token_usage`（归入 `input_cost` 分项、token 列恒 0）——`/admin/cost` 的 `input_cost`/`total_cost` 覆盖 rerank。请求日志只存摘要（`query_chars` / `documents` / `top_n` / `results` / `top_score`），不落 query 与文档原文。
 
 **上游配置**：厂商 `type_ = "rerank"` 且必须显式声明 `api_base`（无官方默认端点），出站固定 `POST {api_base}/rerank` + `Authorization: Bearer`：
 
@@ -482,6 +484,12 @@ curl -X POST http://localhost:8080/v1/messages \
 OpenAI 模型列表兼容端点。模型集合 = `[[model_catalog]]` 目录 ∪ 各 vendor 配置模型去重（仅 enabled vendor 的 enabled 模型；同 id 只出现一次，按 id 排序）。vendor 条目列出的是**路由可解析的公开名**：声明了 `abstract_id` 的模型列 `abstract_id`，未声明的列 `model_id`——清单里的 `id` 可原样用于 `/v1/chat/completions`、`/v1/messages` 与 `X-Model` 头；限定形式 `vendor.model_id` 也可路由（ID 匹配大小写不敏感），但不出现在清单中（避免列出回投即 400 的裸上游名）。响应始终现算，不进入响应缓存（无 `X-Cache` 头）。
 
 **认证**: 需要 Bearer Token
+
+**Query 参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `task` | `chat` \| `embedding` \| `rerank` | 否 | 按任务类型过滤（大小写不敏感；缺省不过滤；非法值 400 `validation_error`） |
 
 **响应**:
 
@@ -694,7 +702,7 @@ curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
 
 ### GET /admin/cost
 
-成本分账聚合查询（`token_usage` 预聚合表，四类 token 与分项成本按维度求和）。空窗口返回空数组而非错误。
+成本分账聚合查询（`token_usage` 预聚合表，四类 token 与分项成本按维度求和）。rerank 请求成本归入 `input_cost` 分项、token 列为 0。空窗口返回空数组而非错误。
 
 **认证**: 需要 Bearer Token
 

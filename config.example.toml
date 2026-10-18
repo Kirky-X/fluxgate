@@ -282,6 +282,9 @@ affinity_boost_factor = 1.0
 # 缓存同源）——实为租户劫持修复（两租户同 session id 不再互相劫持），建议
 # 上线开启；键格式变更换代使存量绑定一次性失效（TTL 1h 内自然过渡）。
 affinity_tenant_scoped = false
+# rerank 分数归一化：none（默认，原样透传）| sigmoid（映射到 0-1）|
+# minmax（批内缩放，等值批全 0.5）。只改 /v1/rerank 响应分数，不改排序与 index。
+rerank_score_normalization = "none"
 # 价格因子：[[model_catalog]] 单价参与加权路由（**默认开启**）。因子 =
 # 候选模型 (input_price+output_price)/2（每 1M tokens；cache 档不进因子），
 # 乘性修正 weight ×= min_p/p——等价条件下低价候选胜出。中性豁免：目录为空 /

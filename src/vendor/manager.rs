@@ -2562,17 +2562,6 @@ impl VendorManager {
                 continue;
             };
             drop(config);
-            // rerank-only 厂商不适用 free（GET /v1/models）与 minimal_call
-            // （POST chat/completions）探针，跳过避免被误判不可用；专用探针
-            // 见 Deferred。仅 warn 一次，防周期刷屏
-            if vendor_config.type_ == "rerank" {
-                static RERANK_SKIP_WARNED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !RERANK_SKIP_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    tracing::warn!(vendor = %vendor_id, "{}", crate::i18n::t("vendor-probe-rerank-skipped"));
-                }
-                continue;
-            }
             let keys: Vec<(String, String)> = instance
                 .key_pool
                 .keys_snapshot()

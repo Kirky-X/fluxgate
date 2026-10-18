@@ -159,6 +159,23 @@ fn minimal_body(config: &VendorConfig) -> Value {
     })
 }
 
+/// rerank 最小探测体：1 文档 + `top_n=1`（与 chat minimal_call 同量级的
+/// 最小计费调用，不引入新的计价面）
+fn minimal_rerank_body(config: &VendorConfig) -> Value {
+    let model = config
+        .models
+        .iter()
+        .find(|m| m.enabled)
+        .map(|m| m.model_id.clone())
+        .unwrap_or_else(|| "probe".to_string());
+    json!({
+        "model": model,
+        "query": "ping",
+        "documents": ["ping"],
+        "top_n": 1,
+    })
+}
+
 /// 单对象探测 → (probed, recovered)。`recovered` 仅当对象曾为 suspect 且成功。
 async fn probe_one(
     manager: &Arc<VendorManager>,
@@ -168,6 +185,12 @@ async fn probe_one(
     timeout: Option<Duration>,
 ) -> (usize, usize) {
     let suspect = target.status != VendorStatus::Available || !target.blacklist.is_empty();
+    // rerank 厂商：free（GET models）与 minimal_call（chat）均不适用，
+    // 走专用最小重排探测（1 文档，2xx 即恢复）
+    if target.config.type_ == "rerank" {
+        let recovered = probe_rerank_call(manager, client, target, timeout, suspect).await;
+        return (1, recovered);
+    }
     match strategy {
         ProbeStrategy::Free => {
             // probed 恒 1（目标已处理，HTTP 未发出同样计入）
@@ -270,6 +293,46 @@ async fn probe_minimal_call(
             return 0;
         }
     };
+    let body = minimal_body(&target.config);
+    probe_measured_call(manager, client, target, timeout, recover, &url, &body).await
+}
+
+/// rerank 专用探测：最小重排请求（1 文档）替代 chat minimal_call；
+/// 恢复语义与 minimal_call 完全一致（解黑名单 + 清冷却 + 重置模型熔断）
+async fn probe_rerank_call(
+    manager: &Arc<VendorManager>,
+    client: &reqwest::Client,
+    target: &crate::vendor::manager::ProbeTarget,
+    timeout: Option<Duration>,
+    recover: bool,
+) -> usize {
+    let url = match VendorManager::build_vendor_url_at(&target.config, "rerank") {
+        Ok(url) => url,
+        Err(e) => {
+            tracing::debug!(
+                vendor = %target.vendor_id,
+                error = %e,
+                "{}",
+                t("vendor-probe-url-build-failed")
+            );
+            return 0;
+        }
+    };
+    let body = minimal_rerank_body(&target.config);
+    probe_measured_call(manager, client, target, timeout, recover, &url, &body).await
+}
+
+/// 最小计费探测共用体：对黑名单 key + 当前 key 逐个发请求，2xx 且 `recover`
+/// 即 `probe_recover_key`；返回实际恢复的 key 数（无候选→ 0）。
+async fn probe_measured_call(
+    manager: &Arc<VendorManager>,
+    client: &reqwest::Client,
+    target: &crate::vendor::manager::ProbeTarget,
+    timeout: Option<Duration>,
+    recover: bool,
+    url: &str,
+    body: &Value,
+) -> usize {
     // 候选 = 黑名单 key（按指纹回查明文）+ 当前 key（去重）。
     let mut candidates: Vec<(String, String)> = Vec::new();
     for fp in &target.blacklist {
@@ -282,10 +345,16 @@ async fn probe_minimal_call(
             candidates.push(current.clone());
         }
     }
-    let body = minimal_body(&target.config);
+    if candidates.is_empty() {
+        // 无池/黑名单：legacy env 凭证（空指纹；成功只恢复 vendor 可用态，
+        // 不解黑名单——无指纹可解）
+        if let Ok(key) = std::env::var(&target.config.api_key_env) {
+            candidates.push((key, String::new()));
+        }
+    }
     let mut recovered = 0usize;
     for (key, fingerprint) in candidates {
-        let mut request = client.post(&url).json(&body);
+        let mut request = client.post(url).json(body);
         for (name, value) in auth_headers(&target.config, &key) {
             request = request.header(name, value);
         }
@@ -295,9 +364,14 @@ async fn probe_minimal_call(
         match request.send().await {
             Ok(response) if response.status().is_success() => {
                 if recover {
-                    manager
-                        .probe_recover_key(&target.vendor_id, &fingerprint)
-                        .await;
+                    if fingerprint.is_empty() {
+                        // env 凭证无池指纹：仅恢复 vendor 级可用态
+                        manager.mark_available(&target.vendor_id);
+                    } else {
+                        manager
+                            .probe_recover_key(&target.vendor_id, &fingerprint)
+                            .await;
+                    }
                     tracing::info!(
                         vendor = %target.vendor_id,
                         "{}",
@@ -781,9 +855,9 @@ type_ = \"openai\"
         );
     }
 
-    /// rerank-only 厂商不进入探测目标（free/minimal_call 均无法探测其端点）
+    /// rerank 厂商使用专用探测，仍进入探测目标（不再跳过）
     #[tokio::test]
-    async fn probe_targets_skip_rerank_only_vendors() {
+    async fn probe_targets_include_rerank_vendors() {
         let toml = r#"
 [server]
 host = "127.0.0.1"
@@ -826,12 +900,90 @@ model_type = "rerank"
         let targets = manager.probe_targets(false).await;
         let ids: Vec<&str> = targets.iter().map(|t| t.vendor_id.as_str()).collect();
         assert!(ids.contains(&"chat-v"), "普通厂商仍在探测目标: {ids:?}");
-        assert!(!ids.contains(&"rr-v"), "rerank 厂商必须被跳过: {ids:?}");
+        assert!(
+            ids.contains(&"rr-v"),
+            "rerank 厂商必须由专用探测覆盖: {ids:?}"
+        );
 
         let suspects = manager.probe_targets(true).await;
         assert!(
             !suspects.iter().any(|t| t.vendor_id == "rr-v"),
-            "suspects_only 也不得包含 rerank 厂商"
+            "全 Available 时 suspects_only 不含任何厂商"
         );
+
+        // 置为 suspect 后，rerank 厂商同样进入 suspects_only 视角
+        manager.mark_throttled("rr-v", Duration::from_secs(60));
+        let suspects = manager.probe_targets(true).await;
+        assert!(
+            suspects.iter().any(|t| t.vendor_id == "rr-v"),
+            "suspects_only 同样覆盖 rerank 厂商"
+        );
+    }
+
+    #[test]
+    fn minimal_rerank_body_uses_first_enabled_model() {
+        let mut config = probe_config("http://127.0.0.1:1", "rerank");
+        config.models = vec![model("disabled", false), model("rerank-v3", true)];
+        let body = minimal_rerank_body(&config);
+        assert_eq!(body["model"], "rerank-v3");
+        assert_eq!(body["query"], "ping");
+        assert_eq!(body["documents"], json!(["ping"]));
+        assert_eq!(body["top_n"], 1);
+    }
+
+    /// rerank 专用探测：2xx 恢复（未知 vendor 的恢复动作为 no-op，计数为准）
+    #[tokio::test]
+    async fn probe_rerank_call_recovers_on_2xx() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/rerank")
+            .match_header("authorization", "Bearer k-current")
+            .with_status(200)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut config = probe_config(&server.url(), "rerank");
+        config.models = vec![model("rerank-v3", true)];
+        let t = target(config, Some(("k-current".into(), "fp-cur".into())));
+
+        let recovered = probe_rerank_call(&manager, &client, &t, None, true).await;
+        assert_eq!(recovered, 1, "当前 key 2xx 即计恢复");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn probe_rerank_call_non_2xx_does_not_recover() {
+        let mut server = mockito::Server::new_async().await;
+        server.mock("POST", "/rerank").with_status(500).create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut config = probe_config(&server.url(), "rerank");
+        config.models = vec![model("rerank-v3", true)];
+        let t = target(config, Some(("k-current".into(), "fp-cur".into())));
+
+        let recovered = probe_rerank_call(&manager, &client, &t, None, true).await;
+        assert_eq!(recovered, 0, "非 2xx 不恢复");
+    }
+
+    /// 无池/无黑名单：回退 api_key_env 现读凭证，成功计恢复
+    #[tokio::test]
+    async fn probe_rerank_call_falls_back_to_env_credential() {
+        let mut server = mockito::Server::new_async().await;
+        std::env::set_var("PROBE_RERANK_ENV_XYZ", "env-key"); // pragma: allowlist secret（测试凭证占位）
+        let mock = server
+            .mock("POST", "/rerank")
+            .match_header("authorization", "Bearer env-key")
+            .with_status(200)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut config = probe_config(&server.url(), "rerank");
+        config.api_key_env = "PROBE_RERANK_ENV_XYZ".into(); // pragma: allowlist secret（测试环境变量名）
+        config.models = vec![model("rerank-v3", true)];
+        let t = target(config, None);
+
+        let recovered = probe_rerank_call(&manager, &client, &t, None, true).await;
+        assert_eq!(recovered, 1, "env 凭证成功也计恢复");
+        mock.assert_async().await;
     }
 }

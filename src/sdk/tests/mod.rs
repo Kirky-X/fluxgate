@@ -8,5 +8,6 @@ mod error_test;
 mod integration_admin;
 mod integration_chat;
 mod integration_embed;
+mod integration_rerank;
 mod integration_stream;
 mod wire_test;

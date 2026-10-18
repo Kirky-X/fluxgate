@@ -12,6 +12,7 @@ pub mod client;
 pub mod config;
 pub mod embed;
 pub mod error;
+pub mod rerank;
 pub mod stream;
 
 pub use admin::{
@@ -26,6 +27,7 @@ pub use client::{FluxgateClient, FluxgateClientBuilder};
 pub use config::RequestConfig;
 pub use embed::{EmbedRequest, EmbedResponse};
 pub use error::FluxgateSdkError;
+pub use rerank::{RerankDocument, RerankMeta, RerankRequest, RerankResponse, RerankResult};
 pub use stream::{ChatChunk, ChatDelta, ChatStream, ChatToolCallDelta, ChatToolCallDeltaFunction};
 
 #[cfg(test)]

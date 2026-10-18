@@ -13,7 +13,8 @@ use crate::database::RequestLog;
 use crate::error::{FluxgateError, GateError};
 use crate::i18n::t;
 use crate::protocol::rerank_converter::{
-    parse_rerank_request, parse_rerank_response, to_upstream_request, RerankRequest,
+    normalize_rerank_scores, parse_rerank_request, parse_rerank_response, to_upstream_request,
+    RerankRequest,
 };
 use crate::router::RoutingDecision;
 use crate::ApiState;
@@ -29,10 +30,15 @@ pub async fn rerank(
 ) -> Result<impl IntoResponse, FluxgateError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
+    let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
 
     let parsed = parse_rerank_request(&body)?;
     validate_rerank_hints(&state, &headers)?;
-    let decision = state.router.route_rerank(&parsed.model).await?;
+    let session_key = RoutingHints::from_headers(&headers).session_key;
+    let decision = state
+        .router
+        .route_rerank(&parsed.model, session_key.as_deref())
+        .await?;
 
     // 点名路径兜底：X-Vendor / X-Model / vendor.model 限定形式不得绕过能力过滤
     if decision.vendor.type_ != "rerank" || decision.model.model_type.as_deref() != Some("rerank") {
@@ -83,13 +89,15 @@ pub async fn rerank(
         }
     };
 
-    let items = match parse_rerank_response(&response_json, &parsed) {
+    let mut items = match parse_rerank_response(&response_json, &parsed) {
         Ok(items) => items,
         Err(err) => {
             state
                 .vendor_manager
                 .metrics()
                 .record_rerank_upstream_failure();
+            // 上游已 2xx（已计费）：形状非法也需入分账
+            record_rerank_usage(&state, &decision, &api_key_hash, parsed.documents.len()).await;
             let error = FluxgateError::from(err);
             push_rerank_log(
                 &state,
@@ -105,6 +113,15 @@ pub async fn rerank(
             return Err(error);
         }
     };
+
+    // 分数归一化（默认 none 原样透传；只改分数，不改排序/index）
+    let normalization = state
+        .config
+        .read()
+        .routing
+        .rerank_score_normalization
+        .clone();
+    normalize_rerank_scores(&mut items, &normalization);
 
     let results: Vec<Value> = items
         .iter()
@@ -144,7 +161,53 @@ pub async fn rerank(
         .vendor_manager
         .metrics()
         .record_rerank(parsed.documents.len() as u64);
+    record_rerank_usage(&state, &decision, &api_key_hash, parsed.documents.len()).await;
+    // 会话亲和软粘着：成功请求写回实际 vendor（失败路径不绑定）
+    if let (Some(affinity), Some(session_key)) = (state.affinity.as_ref(), session_key.as_deref()) {
+        let tenant = state
+            .config
+            .read()
+            .routing
+            .affinity_tenant_scoped
+            .then_some(api_key_hash.as_str());
+        affinity
+            .bind(tenant, session_key, &decision.vendor.id)
+            .await;
+    }
     Ok(Json(response))
+}
+
+/// 成本分账：rerank 成本记入 `input_cost`，token 三列与 cache 两列恒 0——
+/// 不虚增 `/admin/stats/tokens` 的 token 口径，`/admin/cost` 的 total 覆盖
+/// 重排成本。记账失败仅 warn（不失败请求，与 chat 记账同语义）。
+async fn record_rerank_usage(
+    state: &Arc<ApiState>,
+    decision: &RoutingDecision,
+    api_key_hash: &str,
+    documents: usize,
+) {
+    let Some(aggregator) = state.pre_aggregator.as_ref() else {
+        return;
+    };
+    let usage = crate::storage::KeyedUsage {
+        vendor: decision.vendor.id.clone(),
+        model: decision.model.model_id.clone(),
+        api_key_hash: api_key_hash.to_string(),
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        input_cost: rerank_cost(state, &decision.model.model_id, documents),
+        output_cost: 0.0,
+        cache_read_cost: 0.0,
+        cache_creation_cost: 0.0,
+    };
+    if let Err(e) = aggregator.record_keyed(&usage).await {
+        tracing::warn!(
+            "{}",
+            crate::i18n::t_args("api-usage-record-rejected", &[("error", e.to_string())])
+        );
+    }
 }
 
 /// 点名提示能力复核：X-Vendor 必须指向启用的 rerank 厂商，X-Model 必须能

@@ -192,6 +192,37 @@ pub fn parse_rerank_response(
     Ok(items)
 }
 
+/// 分数归一化（配置层已白名单）：`sigmoid` 映射到 (0,1)；`minmax` 批内
+/// 缩放（max==min 全 0.5）；其他值（含 `none`）恒等。只改分数，不改
+/// `index`/`document`/排序。
+pub fn normalize_rerank_scores(items: &mut [RerankResultItem], mode: &str) {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "sigmoid" => {
+            for item in items.iter_mut() {
+                item.relevance_score = 1.0 / (1.0 + (-item.relevance_score).exp());
+            }
+        }
+        "minmax" => {
+            let Some(min) = items.iter().map(|i| i.relevance_score).reduce(f64::min) else {
+                return;
+            };
+            let max = items
+                .iter()
+                .map(|i| i.relevance_score)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let range = max - min;
+            for item in items.iter_mut() {
+                item.relevance_score = if range > f64::EPSILON {
+                    (item.relevance_score - min) / range
+                } else {
+                    0.5
+                };
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +452,61 @@ mod tests {
             let err = parse_rerank_response(&response, &request).expect_err("非法上游响应必须拒绝");
             assert_eq!(err.status_code(), 502, "上游形状错误映射 502");
         }
+    }
+
+    fn items_with(scores: &[f64]) -> Vec<RerankResultItem> {
+        scores
+            .iter()
+            .enumerate()
+            .map(|(index, score)| RerankResultItem {
+                index,
+                relevance_score: *score,
+                document: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sigmoid_normalization_is_monotonic_and_bounded() {
+        let mut items = items_with(&[-2.0, 0.0, 3.0]);
+        normalize_rerank_scores(&mut items, "sigmoid");
+        assert!((items[0].relevance_score - 0.119_202_92).abs() < 1e-6);
+        assert!((items[1].relevance_score - 0.5).abs() < 1e-9);
+        assert!((items[2].relevance_score - 0.952_574_13).abs() < 1e-6);
+        assert!(
+            items
+                .windows(2)
+                .all(|w| w[0].relevance_score < w[1].relevance_score),
+            "单调性保持"
+        );
+        assert!(items.iter().all(|i| i.relevance_score.is_finite()));
+    }
+
+    #[test]
+    fn minmax_normalization_scales_batch_and_keeps_order() {
+        let mut items = items_with(&[0.2, 0.9, 0.5]);
+        normalize_rerank_scores(&mut items, "minmax");
+        assert!(items[0].relevance_score.abs() < 1e-9, "最小值→0");
+        assert!((items[1].relevance_score - 1.0).abs() < 1e-9, "最大值→1");
+        assert!((items[2].relevance_score - 0.428_571_428).abs() < 1e-6);
+        assert_eq!(items[0].index, 0, "index 不变");
+
+        let mut equal = items_with(&[0.7, 0.7]);
+        normalize_rerank_scores(&mut equal, "minmax");
+        assert!(
+            equal.iter().all(|i| (i.relevance_score - 0.5).abs() < 1e-9),
+            "等值批全 0.5"
+        );
+
+        let mut empty: Vec<RerankResultItem> = Vec::new();
+        normalize_rerank_scores(&mut empty, "minmax");
+        let mut single = items_with(&[0.3]);
+        normalize_rerank_scores(&mut single, "minmax");
+        assert!((single[0].relevance_score - 0.5).abs() < 1e-9);
+
+        let mut none = items_with(&[0.2, 0.9]);
+        normalize_rerank_scores(&mut none, "none");
+        assert_eq!(none[0].relevance_score, 0.2, "none 恒等");
+        assert_eq!(none[1].relevance_score, 0.9);
     }
 }

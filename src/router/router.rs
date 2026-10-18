@@ -288,10 +288,17 @@ impl Router {
     /// `model.model_type == Some("rerank")` 的候选；同 vendor 多条目跨
     /// 类型越界按 vendor 收缩重试，不收敛或无候选 → 显式 Validation。
     /// 不读写 `EmbeddingPin`（rerank 无向量空间契约，多厂商可互换）
-    pub async fn route_rerank(&self, abstract_model: &str) -> Result<RoutingDecision, GateError> {
+    pub async fn route_rerank(
+        &self,
+        abstract_model: &str,
+        session_key: Option<&str>,
+    ) -> Result<RoutingDecision, GateError> {
         let mut excluded = self.non_rerank_exclusion(abstract_model);
         loop {
-            let decision = match self.route_excluding(abstract_model, &excluded).await {
+            let decision = match self
+                .route_with_session_excluding(abstract_model, session_key, &excluded)
+                .await
+            {
                 Ok(decision) => decision,
                 Err(_) => return Err(self.rerank_capability_exhausted_error(abstract_model)),
             };

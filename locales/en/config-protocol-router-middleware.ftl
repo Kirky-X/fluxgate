@@ -16,6 +16,7 @@ config-embedding-group-cross-abstract = [vendors] compat_group "{ $group }" span
 config-embedding-group-reserved-separator = [vendors] compat_group "{ $group }" must not contain the reserved separator "/::" — it would collide with the singleton group key "{vendor}/::{model}" of undeclared entries and silently break the never-swap default
 config-model-type-unknown = [vendors] model_type of model { $model } in vendor { $vendor } is invalid: "{ $model_type }" (valid values: chat / embedding / rerank)
 config-rerank-api-base-required = [vendors] vendor { $vendor } with type_ = "rerank" must declare api_base explicitly (there is no official default rerank endpoint)
+config-rerank-score-normalization-unknown = [routing] rerank_score_normalization is invalid: "{ $value }" (valid values: none / sigmoid / minmax)
 config-api-key-env-missing = API key environment variable of vendor { $vendor } is not set (configured value length { $length }) — verify it is an environment variable NAME, not a key pasted by mistake
 config-api-key-pool-env-missing = API key pool environment variable #{ $index } (value length { $length }) of vendor { $vendor } is not set — verify it is an environment variable NAME, not a key pasted by mistake
 config-duplicate-catalog-model-id = duplicate model catalog id { $model }

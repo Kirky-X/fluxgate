@@ -16,6 +16,7 @@ config-embedding-group-cross-abstract = [vendors] 兼容组 "{ $group }" 跨两�
 config-embedding-group-reserved-separator = [vendors] 兼容组 "{ $group }" 不得包含保留分隔符 "/::"——会与未声明条目的单例组键 "{vendor}/::{model}" 撞键，静默击穿「永不互换」安全默认
 config-model-type-unknown = [vendors] 厂商 { $vendor } 模型 { $model } 的 model_type 非法: "{ $model_type }"（合法值: chat / embedding / rerank）
 config-rerank-api-base-required = [vendors] 厂商 { $vendor } 的 type_ = "rerank" 必须显式声明 api_base（重排无官方默认端点）
+config-rerank-score-normalization-unknown = [routing] rerank_score_normalization 非法: "{ $value }"（合法值: none / sigmoid / minmax）
 config-api-key-env-missing = 厂商 { $vendor } 的 API Key 环境变量未设置（配置值长度 { $length }）——请核对是否误将 key 原文当作环境变量名
 config-api-key-pool-env-missing = 厂商 { $vendor } 的 API Key 池环境变量 #{ $index }（值长度 { $length }）未设置——请核对是否误将 key 原文当作环境变量名
 config-duplicate-catalog-model-id = 模型目录 id 重复：{ $model }

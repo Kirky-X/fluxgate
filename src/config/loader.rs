@@ -137,6 +137,7 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_admin_secrets(config)?;
     validate_vendor_entries(config)?;
     validate_model_types(config)?;
+    validate_rerank_score_normalization(config)?;
     validate_embedding_groups(config)?;
     warn_missing_api_key_envs(config);
     validate_model_catalog(config)?;
@@ -589,6 +590,21 @@ fn validate_model_types(config: &Config) -> Result<(), GateError> {
         }
     }
     Ok(())
+}
+
+/// rerank 分数归一化模式校验：none / sigmoid / minmax（trim 后空 = 默认 none）。
+/// 未知值配置错误并点名原值（加载与热载同入口）。
+fn validate_rerank_score_normalization(config: &Config) -> Result<(), GateError> {
+    let mode = config.routing.rerank_score_normalization.trim();
+    if mode.is_empty() || matches!(mode, "none" | "sigmoid" | "minmax") {
+        return Ok(());
+    }
+    Err(GateError::Config {
+        message: t_args(
+            "config-rerank-score-normalization-unknown",
+            &[("value", mode.to_string())],
+        ),
+    })
 }
 
 /// 嵌入兼容组校验（R1-R3）：同一 `compat_group`（trim 后精确匹配）内
@@ -1863,6 +1879,24 @@ model_type = "rerank"
         assert!(
             error.to_string().contains("api_base"),
             "错误必须点名 api_base: {error}"
+        );
+    }
+
+    #[test]
+    fn rerank_score_normalization_validates_whitelist() {
+        let vendors = difficulty_vendor("v1", &typed_model("m", None));
+        for mode in ["none", "sigmoid", "minmax", ""] {
+            let mut config = parse_vendors_toml(&vendors).expect("基础配置");
+            config.routing.rerank_score_normalization = mode.into();
+            validate_config(&config).unwrap_or_else(|e| panic!("mode={mode:?} 必须通过: {e}"));
+        }
+
+        let mut config = parse_vendors_toml(&vendors).expect("基础配置");
+        config.routing.rerank_score_normalization = "softmax".into();
+        let error = validate_config(&config).expect_err("未知模式必须拒绝");
+        assert!(
+            error.to_string().contains("softmax"),
+            "错误必须点名非法值: {error}"
         );
     }
 }

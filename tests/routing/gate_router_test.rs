@@ -4095,7 +4095,10 @@ mod route_gap_coverage {
 #[cfg(test)]
 mod embedding_compat_group {
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, ModelConfig, ServerConfig, VendorConfig};
+    use fluxgate::config::{
+        Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
+    };
+    use fluxgate::router::affinity::AffinityTable;
     use fluxgate::router::{EmbeddingPin, Router, RoutingStrategy};
     use fluxgate::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
@@ -4607,6 +4610,28 @@ mod embedding_compat_group {
         )
     }
 
+    fn make_rerank_router_with_affinity(
+        vendors: Vec<VendorConfig>,
+        affinity_mode: &str,
+    ) -> (Router, Arc<AffinityTable>) {
+        let config = Config {
+            routing: RoutingSection {
+                affinity_mode: affinity_mode.into(),
+                ..Default::default()
+            },
+            ..common::test_config(vendors)
+        };
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let affinity = Arc::new(AffinityTable::with_memory_backend(
+            std::time::Duration::from_secs(3600),
+        ));
+        (
+            Router::new(config_manager, vendor_manager).with_affinity(affinity.clone()),
+            affinity,
+        )
+    }
+
     /// 高权重 chat-only 厂商与低权重 rerank 厂商共存：恒选 rerank 厂商
     #[tokio::test]
     async fn rerank_route_skips_chat_only_vendor() {
@@ -4616,7 +4641,7 @@ mod embedding_compat_group {
 
         for i in 0..20 {
             let decision = router
-                .route_rerank("shared-rr")
+                .route_rerank("shared-rr", None)
                 .await
                 .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
             assert_eq!(
@@ -4644,7 +4669,7 @@ mod embedding_compat_group {
 
         for i in 0..30 {
             let decision = router
-                .route_rerank("shared-rr")
+                .route_rerank("shared-rr", None)
                 .await
                 .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
             assert_eq!(
@@ -4671,7 +4696,7 @@ mod embedding_compat_group {
         let chat = embedding_vendor("chat-only", "shared-rr", "m", None, 1.0);
         let (router, _pin) = make_rerank_router(vec![chat]);
         let err = router
-            .route_rerank("shared-rr")
+            .route_rerank("shared-rr", None)
             .await
             .expect_err("无 rerank 候选必须拒绝");
         assert_eq!(err.status_code(), 400, "能力耗尽映射 Validation 400");
@@ -4689,12 +4714,59 @@ mod embedding_compat_group {
         pin.pin_or_get("emb-shared", "g1");
 
         for _ in 0..5 {
-            router.route_rerank("shared-rr").await.expect("rerank 路由");
+            router
+                .route_rerank("shared-rr", None)
+                .await
+                .expect("rerank 路由");
         }
         assert_eq!(
             pin.list(),
             vec![("emb-shared".to_string(), "g1".to_string())],
             "rerank 路由不得改写嵌入 pin 表"
+        );
+    }
+
+    /// 会话亲和 hard：绑定 vendor 在合格集合内直选
+    #[tokio::test]
+    async fn rerank_route_honors_hard_affinity() {
+        let a = rerank_vendor("rr-a", "shared-rr", "m", &[("m", Some("rerank"), 1.0)]);
+        let b = rerank_vendor("rr-b", "shared-rr", "m", &[("m", Some("rerank"), 1.0)]);
+        let (router, affinity) = make_rerank_router_with_affinity(vec![a, b], "hard");
+        affinity.bind(None, "sess-rr", "rr-b").await;
+
+        for _ in 0..10 {
+            let decision = router
+                .route_rerank("shared-rr", Some("sess-rr"))
+                .await
+                .expect("路由");
+            assert_eq!(
+                decision.vendor.id, "rr-b",
+                "hard 亲和必须在合格集合内直选绑定 vendor"
+            );
+        }
+    }
+
+    /// 会话亲和 soft：绑定 vendor 获得权重 boost（统计多数）
+    #[tokio::test]
+    async fn rerank_route_soft_affinity_boosts_bound_vendor() {
+        let a = rerank_vendor("rr-a", "shared-rr", "m", &[("m", Some("rerank"), 1.0)]);
+        let b = rerank_vendor("rr-b", "shared-rr", "m", &[("m", Some("rerank"), 1.0)]);
+        let (router, affinity) = make_rerank_router_with_affinity(vec![a, b], "soft");
+        affinity.bind(None, "sess-rr", "rr-b").await;
+
+        let mut bound_hits = 0;
+        for _ in 0..60 {
+            let decision = router
+                .route_rerank("shared-rr", Some("sess-rr"))
+                .await
+                .expect("路由");
+            if decision.vendor.id == "rr-b" {
+                bound_hits += 1;
+            }
+        }
+        assert!(
+            bound_hits > 30,
+            "soft boost 后绑定 vendor 必须占多数: {bound_hits}/60"
         );
     }
 }

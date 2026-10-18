@@ -426,6 +426,10 @@ fn default_retry_total_attempts() -> u32 {
 /// 3D 权重一致（0.4/0.3/0.3，新维度默认 0），显式开启才生效
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RoutingSection {
+    /// rerank 分数归一化：`none`（默认，原样透传）| `sigmoid` | `minmax`。
+    /// 仅影响 /v1/rerank 响应分数，不改排序与 index
+    #[serde(default = "default_rerank_score_normalization")]
+    pub rerank_score_normalization: String,
     /// 第 1 维：model.weight（配置权重，通常 0.0-2.0）系数
     #[serde(default = "default_w_model")]
     pub w_model: f64,
@@ -656,6 +660,10 @@ fn default_ewma_tau_ms() -> u64 {
     10_000
 }
 
+fn default_rerank_score_normalization() -> String {
+    "none".into()
+}
+
 impl Default for RoutingSection {
     fn default() -> Self {
         Self {
@@ -686,6 +694,7 @@ impl Default for RoutingSection {
             difficulty: DifficultySection::default(),
             price_factor_mode: default_price_factor_mode(),
             prefix_affinity: PrefixAffinitySection::default(),
+            rerank_score_normalization: default_rerank_score_normalization(),
         }
     }
 }

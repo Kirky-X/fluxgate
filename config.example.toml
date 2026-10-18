@@ -613,7 +613,10 @@ enabled = false
 # 上游密钥持久化（key-vault）：除 env 外，密钥可经 POST /admin/vault/keys 录入保密柜
 # （cocoon AEAD 加密入库，首装时 env 值自动吸收、之后免二次输入）。主钥来源：
 #   1. env FLUXGATE_MASTER_KEY（64 位 hex = 32 字节；服务器/容器推荐）
-#   2. 缺失时自动生成 ~/.fluxgate/vault_master.key（Unix 0600）
+#   2. 缺失时自动生成主钥文件：默认 ~/.fluxgate/vault_master.key（Unix 0600），
+#      路径可由 env FLUXGATE_MASTER_KEY_FILE 覆盖——容器部署必须指向持久卷
+#      （compose 已指向 /app/data/vault_master.key），否则容器重建后新主钥解不开
+#      既有密文，启动即 fail-fast 重启循环。
 # ⚠ 主钥丢失则柜内密钥不可恢复，请备份主钥文件或妥善保管 env 值。
 # 上游密钥只从环境变量读取（api_key_env / api_key_envs 存的是 env 名，
 # 绝不存 key 原文）。

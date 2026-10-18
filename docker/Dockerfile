@@ -122,8 +122,9 @@ RUN apk add --no-cache \
 # -H 省掉的家目录必须手工补建：vault 主钥的文件回退路径是 ~/.fluxgate/
 # （HOME=/home/appuser 由运行时 HOME env 提供），目录缺失时启动期写主钥
 # Permission denied，叠加 restart: unless-stopped 即成重启循环（实测缺陷）。
-# 容器内生成的主钥随容器层走、重建即丢——持久部署应注入 FLUXGATE_MASTER_KEY
-#（compose 已透传），此处只是保证开箱可启动。
+# 容器内主钥缺省落在容器层、重建即丢（既有密文随之不可解）——compose 以
+# FLUXGATE_MASTER_KEY_FILE 把主钥文件钉到数据卷（/app/data/vault_master.key），
+# 或由部署方注入 FLUXGATE_MASTER_KEY；此处的家目录补建只保证开箱可启动。
 ARG UID=10001
 ARG GID=10001
 
@@ -165,6 +166,13 @@ ENV APP_NAME=${APP_NAME}
 ENV APP_VERSION=${APP_VERSION}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
+# vault 主钥文件默认落数据卷（/app/data 是本镜像唯一的数据持久化挂载点）：
+# 自动生成的主钥随卷存活，容器重建不再换钥、既有 vault_keys 行可解（缺省路径
+# ~/.fluxgate/ 随容器层走，重建即丢 → 启动重启循环，实测缺陷）。
+# 安全边界：主钥与密文同卷意味着卷泄露即两者同泄——生产应注入
+# FLUXGATE_MASTER_KEY（env/secret 管理）或把 FLUXGATE_MASTER_KEY_FILE 指向
+# 独立卷/secret 挂载点。
+ENV FLUXGATE_MASTER_KEY_FILE=/app/data/vault_master.key
 
 # 暴露服务端口
 EXPOSE 8080
@@ -175,7 +183,11 @@ EXPOSE 8080
 # 探活地址必须写 127.0.0.1 而非 localhost：busybox wget 将 localhost 解析到
 # ::1（IPv6 回环），而服务只绑 IPv4 0.0.0.0——写 localhost 会永久 unhealthy
 #（实测：容器外 curl 200 与容器内探针 refused 并存）
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+# start-period=120s：宿主高负载（并行编译/测试）下冷启动可被拖到分钟级，启动
+# 期探针失败不计入 retries（语义免疫冷启动窗口）；interval=15s 收敛健康态。
+# 原 10s/30s/3 组合在负载下 ~100s 即判 unhealthy → restart 循环（发布集成轮
+# 3 连败的根因）。
+HEALTHCHECK --interval=15s --timeout=10s --start-period=120s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/v1/health || exit 1
 
 # 启动应用

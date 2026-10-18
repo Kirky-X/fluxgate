@@ -35,9 +35,11 @@ services:
     environment:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
-      # vault 主钥（持久部署必注入）：64 位 hex = 32 字节。缺失时容器内在
-      # /home/appuser/.fluxgate/ 自动生成——随容器层走、重建即丢，柜内厂商
-      # 密钥随之不可解。空值等价未设置（启动回落文件生成）。
+      # vault 主钥（持久部署建议注入）：64 位 hex = 32 字节。缺失时按镜像层
+      # 默认的 FLUXGATE_MASTER_KEY_FILE（/app/data/vault_master.key，随数据卷
+      # 持久）生成——不设该变量则回落容器内 ~/.fluxgate/，随容器层走、重建即丢，
+      # 柜内密钥随之不可解（此项已由镜像默认值覆盖，此处不再重复声明）。
+      # 空值等价未设置（启动回落文件生成）。
       - FLUXGATE_MASTER_KEY=${FLUXGATE_MASTER_KEY:-}
       # 可选: API Keys (通过环境变量注入)
       # - OPENAI_API_KEY=${OPENAI_API_KEY}

@@ -4,7 +4,7 @@
 //! Fluxgate Rust SDK
 //!
 //! 通过 Rust 接口与 Fluxgate 网关交互（HTTP 客户端 SDK），
-//! 支持 chat / stream / embed / admin。
+//! 支持 chat / stream / embed / rerank / responses / admin。
 
 pub mod admin;
 pub mod chat;
@@ -13,6 +13,7 @@ pub mod config;
 pub mod embed;
 pub mod error;
 pub mod rerank;
+pub mod responses;
 pub mod stream;
 
 pub use admin::{
@@ -28,6 +29,10 @@ pub use config::RequestConfig;
 pub use embed::{EmbedRequest, EmbedResponse};
 pub use error::FluxgateSdkError;
 pub use rerank::{RerankDocument, RerankMeta, RerankRequest, RerankResponse, RerankResult};
+pub use responses::{
+    ResponsesContent, ResponsesError, ResponsesInputTokensDetails, ResponsesOutputItem,
+    ResponsesRequest, ResponsesResponse, ResponsesStream, ResponsesStreamEvent, ResponsesUsage,
+};
 pub use stream::{ChatChunk, ChatDelta, ChatStream, ChatToolCallDelta, ChatToolCallDeltaFunction};
 
 #[cfg(test)]

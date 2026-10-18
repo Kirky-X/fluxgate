@@ -93,6 +93,16 @@ path = "src/bin/admin.rs"
 required-features = ["sdk"]
 
 [[bin]]
+name = "rerank"
+path = "src/bin/rerank.rs"
+required-features = ["sdk"]
+
+[[bin]]
+name = "responses"
+path = "src/bin/responses.rs"
+required-features = ["sdk"]
+
+[[bin]]
 name = "grpc_client"
 path = "src/bin/grpc_client.rs"
 required-features = ["grpc"]

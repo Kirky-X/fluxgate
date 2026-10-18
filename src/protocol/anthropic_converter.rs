@@ -189,6 +189,7 @@ impl ProtocolConverter for AnthropicConverter {
             user: None,
             sampling,
             thinking_config,
+            thinking_include_thoughts: None,
             effort: None,
             turn_index: None,
             tools,

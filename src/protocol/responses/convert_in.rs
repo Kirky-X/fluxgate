@@ -347,6 +347,7 @@ pub fn to_unified_request(
         user: parsed.request.user.clone(),
         sampling: Some(SamplingParams::default()),
         thinking_config: None,
+        thinking_include_thoughts: None,
         effort,
         turn_index: None,
         tools,

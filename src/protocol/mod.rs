@@ -5,6 +5,7 @@ use crate::error::GateError;
 
 pub mod anthropic_converter;
 pub mod embedding_converter;
+pub mod gemini;
 pub mod openai_converter;
 pub mod rerank_converter;
 pub mod responses;
@@ -20,6 +21,7 @@ pub(crate) use usage::parse_usage_detailed;
 
 pub use anthropic_converter::{AnthropicConverter, AnthropicStreamEncoder};
 pub use embedding_converter::embedding_request_to_openai;
+pub use gemini::{GeminiConverter, GeminiStreamEncoder};
 pub use openai_converter::{OpenAIConverter, OpenAIStreamEncoder};
 pub use rerank_converter::parse_rerank_request;
 pub use responses::ResponsesConverter;
@@ -44,6 +46,8 @@ pub enum Protocol {
     Anthropic,
     /// OpenAI Responses API（`POST /v1/responses`，语义化 SSE）
     Responses,
+    /// Google Gemini API（`POST /v1beta/models/{model}:generateContent`）
+    Gemini,
 }
 
 #[async_trait::async_trait]
@@ -166,6 +170,10 @@ mod default_impl_tests {
         assert!(
             !c.can_passthrough(Protocol::Responses),
             "Responses 与 chat 不可透传"
+        );
+        assert!(
+            !c.can_passthrough(Protocol::Gemini),
+            "Gemini 与 chat 不可透传"
         );
 
         let req = UnifiedRequest {

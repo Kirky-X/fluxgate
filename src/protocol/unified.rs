@@ -42,6 +42,10 @@ pub struct UnifiedRequest {
     /// 思考深度配置（对齐 core `ThinkingConfig` types.rs）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_config: Option<ThinkingConfig>,
+    /// 是否回传思考摘要（Gemini `thinkingConfig.includeThoughts`）。
+    /// 其它协议无对应槽，出站忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_include_thoughts: Option<bool>,
     /// 任务努力级别（对齐 core `EffortLevel` types.rs）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<EffortLevel>,

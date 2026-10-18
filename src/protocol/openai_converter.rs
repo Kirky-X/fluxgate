@@ -141,6 +141,7 @@ impl ProtocolConverter for OpenAIConverter {
             // （OpenAI 无 top_k 概念，该类非标参数走 vendor_extensions 透传）
             sampling: None,
             thinking_config: None,
+            thinking_include_thoughts: None,
             effort,
             turn_index: None,
             tools,

@@ -223,6 +223,7 @@ pub fn routing_config() -> Config {
                 enabled: true,
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }],
             rate_limit: RateLimitConfig::Token {
                 max_tokens: 1_000_000,

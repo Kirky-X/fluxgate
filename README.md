@@ -175,6 +175,21 @@ input_per_1k_tokens = 0.03
 output_per_1k_tokens = 0.06
 ```
 
+重排（Rerank）：厂商声明 `type_ = "rerank"` 且必须显式 `api_base`（无官方默认端点），条目声明 `model_type = "rerank"`：
+
+```toml
+[[vendors]]
+id = "cohere-prod"
+type_ = "rerank"
+api_key_env = "COHERE_API_KEY"  # pragma: allowlist secret（示例环境变量名，非凭证）
+api_base = "https://api.cohere.com/v1"   # Jina: https://api.jina.ai/v1；TEI: http://host:port
+
+[[vendors.models]]
+model_id = "rerank-v3.5"
+abstract_id = "rerank-v3"
+model_type = "rerank"
+```
+
 认证开启：将 API Key 的 SHA256 摘要填入 `[auth]` 段（`echo -n "your-key" | sha256sum`），完整字段说明、限流规则与准入配置见 [📖 用户指南](docs/USER_GUIDE.md)。
 
 ---

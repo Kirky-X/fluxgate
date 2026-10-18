@@ -35,6 +35,7 @@ vendor-upstream-retry-wait-truncated = 上游重试等待已截断
 vendor-probe-unknown-mode = 未知 [health].mode，按 off 处理（fail-safe，防误配探针风暴）
 vendor-probe-unknown-strategy = 未知 [health].probe_strategy，按 free 处理
 vendor-probe-target-missing = 探针目标实例缺失，跳过
+vendor-probe-rerank-skipped = rerank 厂商不参与现有探针策略，已跳过（free/minimal_call 无法探测 rerank-only 端点）
 vendor-probe-task-error = 探针任务异常结束（保持现状）: { $error }
 vendor-probe-cycle-done = 健康探针周期完成
 vendor-probe-free-recovered = 健康探针 free 成功：vendor 冷却已清除（被动恢复）

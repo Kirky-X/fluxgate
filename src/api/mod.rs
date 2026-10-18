@@ -14,6 +14,7 @@ pub mod models;
 pub mod openai;
 pub mod openapi_docs;
 pub mod readiness;
+pub mod rerank;
 pub mod response_cache;
 pub mod route_difficulty_explain;
 pub mod route_explain;
@@ -715,6 +716,7 @@ mod fallback_guard_tests {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }],
             rate_limit: RateLimitConfig::Token {
                 max_tokens: 1_000_000,
@@ -1026,6 +1028,7 @@ mod cooldown_retry_after {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }],
             rate_limit: RateLimitConfig::Token {
                 max_tokens,

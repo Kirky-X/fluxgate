@@ -141,6 +141,13 @@ submit_route!(
     "Unified embeddings API across vendors.",
     &["openai"]
 );
+submit_route!(
+    "/v1/rerank",
+    "POST",
+    "Cohere rerank",
+    "Unified rerank API (Cohere wire format) across vendors; non-streaming, documents capped at 1000 per request.",
+    &["rerank"]
+);
 submit_route_i18n!(
     "/v1/models",
     "GET",

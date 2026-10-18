@@ -187,6 +187,9 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 name = "api_test"
 path = "tests/api/api_test.rs"
 [[test]]
+name = "rerank_api_test"
+path = "tests/api/rerank_api_test.rs"
+[[test]]
 name = "health_metrics_test"
 path = "tests/api/health_metrics_test.rs"
 [[test]]

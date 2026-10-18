@@ -74,6 +74,7 @@ fn anthropic_entry() -> ModelCatalogEntry {
     ModelCatalogEntry {
         model_id: "claude-sonnet-4-20250514".into(),
         context_window: 200_000,
+        rerank_price_per_1k_docs: 0.0,
         currency: PricingCurrency::Usd,
         supports_tools: true,
         ..Default::default()

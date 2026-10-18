@@ -30,6 +30,7 @@ fn vendor_with_model(id: &str, model_id: &str) -> VendorConfig {
 
         dimensions: None,
         compat_group: None,
+        model_type: None,
     }];
     v
 }
@@ -38,6 +39,7 @@ fn entry(model_id: &str, input: f64, output: f64) -> ModelCatalogEntry {
     ModelCatalogEntry {
         model_id: model_id.into(),
         context_window: 128_000,
+        rerank_price_per_1k_docs: 0.0,
         input_price: input,
         output_price: output,
         currency: PricingCurrency::Usd,

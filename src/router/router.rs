@@ -283,6 +283,73 @@ impl Router {
         }
     }
 
+    /// rerank 路由（`POST /v1/rerank`）：在既有加权/fail-open/熔断路径上
+    /// 叠加能力过滤——只允许同时满足 `vendor.type_ == "rerank"` 与
+    /// `model.model_type == Some("rerank")` 的候选；同 vendor 多条目跨
+    /// 类型越界按 vendor 收缩重试，不收敛或无候选 → 显式 Validation。
+    /// 不读写 `EmbeddingPin`（rerank 无向量空间契约，多厂商可互换）
+    pub async fn route_rerank(&self, abstract_model: &str) -> Result<RoutingDecision, GateError> {
+        let mut excluded = self.non_rerank_exclusion(abstract_model);
+        loop {
+            let decision = match self.route_excluding(abstract_model, &excluded).await {
+                Ok(decision) => decision,
+                Err(_) => return Err(self.rerank_capability_exhausted_error(abstract_model)),
+            };
+            if Self::is_rerank_capable(&decision) {
+                return Ok(decision);
+            }
+            // 同 vendor 多条目跨类型：排除该 vendor 后收缩重试；已在其排除
+            // 列表中再次越界 = 无收敛路径 → 显式失败
+            if excluded
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(&decision.vendor.id))
+            {
+                return Err(self.rerank_capability_exhausted_error(abstract_model));
+            }
+            excluded.push(decision.vendor.id.clone());
+        }
+    }
+
+    /// 能力复核：vendor 类型与条目 model_type 双维度同时满足
+    fn is_rerank_capable(decision: &RoutingDecision) -> bool {
+        decision.vendor.type_ == "rerank" && decision.model.model_type.as_deref() == Some("rerank")
+    }
+
+    /// rerank 候选预过滤：「该 abstract 下无任何 rerank 能力条目」的 vendor
+    /// 整体排除（与 `non_openai_exclusion` 同粒度），避免高权重 chat-only
+    /// 厂商被反复选中后又越界重试
+    fn non_rerank_exclusion(&self, abstract_model: &str) -> Vec<String> {
+        let normalized = crate::router::bandit::linucb_arm_key(abstract_model);
+        let candidates = self.config.resolve_model(&normalized);
+        let mut capable: Vec<&str> = Vec::new();
+        for (vendor, model) in &candidates {
+            if vendor.type_ == "rerank" && model.model_type.as_deref() == Some("rerank") {
+                capable.push(vendor.id.as_str());
+            }
+        }
+        let mut excluded: Vec<String> = Vec::new();
+        for (vendor, _) in &candidates {
+            let is_capable = capable.iter().any(|id| id.eq_ignore_ascii_case(&vendor.id));
+            let already = excluded
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(&vendor.id));
+            if !is_capable && !already {
+                excluded.push(vendor.id.clone());
+            }
+        }
+        excluded
+    }
+
+    /// rerank 无可用候选：显式错误含配置指引（type_ / model_type / enabled）
+    fn rerank_capability_exhausted_error(&self, model: &str) -> GateError {
+        GateError::Validation {
+            field: t_args(
+                "router-rerank-no-capable-vendor",
+                &[("model", model.to_string())],
+            ),
+        }
+    }
+
     /// 带请求级权重的路由：request_weight 经 `[routing]`.allow_request_weight
     /// 门控后覆盖 model.weight；tenant 为调用方 API key 哈希，仅
     /// affinity_tenant_scoped 开启时参与亲和键。

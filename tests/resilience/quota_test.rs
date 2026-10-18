@@ -88,6 +88,7 @@ fn catalog_entry(
     vec![ModelCatalogEntry {
         model_id: "gpt-4".into(),
         context_window: 8192,
+        rerank_price_per_1k_docs: 0.0,
         input_price: input,
         output_price: output,
         cache_read_price: cache_read,
@@ -116,6 +117,7 @@ fn openai_vendor(id: &str, api_base: String) -> VendorConfig {
 
         dimensions: None,
         compat_group: None,
+        model_type: None,
     }];
     v
 }
@@ -132,6 +134,7 @@ fn anthropic_vendor(id: &str, api_base: String) -> VendorConfig {
 
         dimensions: None,
         compat_group: None,
+        model_type: None,
     }];
     v
 }
@@ -1014,6 +1017,7 @@ fn claude_vendor(id: &str, api_base: String) -> VendorConfig {
 
         dimensions: None,
         compat_group: None,
+        model_type: None,
     }];
     v
 }

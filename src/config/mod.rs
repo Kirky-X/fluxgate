@@ -141,6 +141,11 @@ pub struct ModelConfig {
     /// 任何其他厂商条目互换）
     #[serde(default)]
     pub compat_group: Option<String>,
+    /// 条目任务类型：`chat` / `embedding` / `rerank`；缺省 None 等价
+    /// `chat`（存量配置零改动）。显式声明优先于 `dimensions`/`compat_group`
+    /// 的嵌入推断，rerank 路由按它做能力过滤（`Router::route_rerank`）
+    #[serde(default)]
+    pub model_type: Option<String>,
 }
 
 fn default_weight() -> f64 {
@@ -1666,6 +1671,23 @@ fn default_difficulty_engine() -> String {
 #[cfg(test)]
 mod tests {
     use super::{DifficultySection, ModelConfig};
+
+    #[test]
+    fn model_config_parses_model_type_and_defaults_none() {
+        let raw = r#"
+model_id = "rerank-v3.5"
+model_type = "rerank"
+"#;
+        let model: ModelConfig = toml::from_str(raw).expect("model_type 解析");
+        assert_eq!(model.model_type.as_deref(), Some("rerank"));
+
+        let legacy: ModelConfig = toml::from_str("model_id = \"gpt-4o\"").expect("缺字段解析");
+        assert_eq!(legacy.model_type, None, "缺省 None 等价 chat");
+
+        let roundtrip: ModelConfig =
+            toml::from_str(&toml::to_string(&model).expect("序列化")).expect("回读");
+        assert_eq!(roundtrip.model_type.as_deref(), Some("rerank"));
+    }
 
     /// 两嵌入字段的解析：声明后值原样读出，未声明为空。
     #[test]

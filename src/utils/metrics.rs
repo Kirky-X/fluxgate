@@ -185,6 +185,11 @@ pub struct GlobalMetrics {
     embedding_pin_reset_total: AtomicU64,
     embedding_group_exhausted_total: AtomicU64,
     embedding_dimension_mismatch_total: AtomicU64,
+    /// rerank 观测三计数：成功请求数 / 参与重排文档数 / 上游失败数
+    ///（vendor 维度由既有 per_vendor 请求计数覆盖）
+    rerank_requests_total: AtomicU64,
+    rerank_documents_total: AtomicU64,
+    rerank_upstream_failures_total: AtomicU64,
 }
 
 impl GlobalMetrics {
@@ -218,6 +223,9 @@ impl GlobalMetrics {
             embedding_pin_reset_total: AtomicU64::new(0),
             embedding_group_exhausted_total: AtomicU64::new(0),
             embedding_dimension_mismatch_total: AtomicU64::new(0),
+            rerank_requests_total: AtomicU64::new(0),
+            rerank_documents_total: AtomicU64::new(0),
+            rerank_upstream_failures_total: AtomicU64::new(0),
         }
     }
 
@@ -244,6 +252,19 @@ impl GlobalMetrics {
     /// 嵌入响应维度漂移拦截（502）
     pub fn record_embedding_dimension_mismatch(&self) {
         self.embedding_dimension_mismatch_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// rerank 成功请求：请求数 +1、文档数累加（vendor 维度由 per_vendor 覆盖）
+    pub fn record_rerank(&self, documents: u64) {
+        self.rerank_requests_total.fetch_add(1, Ordering::Relaxed);
+        self.rerank_documents_total
+            .fetch_add(documents, Ordering::Relaxed);
+    }
+
+    /// rerank 上游失败（非 2xx / 超时 / 响应形状非法）
+    pub fn record_rerank_upstream_failure(&self) {
+        self.rerank_upstream_failures_total
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -761,6 +782,11 @@ impl GlobalMetrics {
             embedding_dimension_mismatch_total: self
                 .embedding_dimension_mismatch_total
                 .load(Ordering::Relaxed),
+            rerank_requests_total: self.rerank_requests_total.load(Ordering::Relaxed),
+            rerank_documents_total: self.rerank_documents_total.load(Ordering::Relaxed),
+            rerank_upstream_failures_total: self
+                .rerank_upstream_failures_total
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -807,6 +833,10 @@ impl GlobalMetrics {
         self.embedding_group_exhausted_total
             .store(0, Ordering::Relaxed);
         self.embedding_dimension_mismatch_total
+            .store(0, Ordering::Relaxed);
+        self.rerank_requests_total.store(0, Ordering::Relaxed);
+        self.rerank_documents_total.store(0, Ordering::Relaxed);
+        self.rerank_upstream_failures_total
             .store(0, Ordering::Relaxed);
     }
 }
@@ -948,6 +978,12 @@ pub struct MetricsSnapshot {
     pub embedding_group_exhausted_total: u64,
     /// 嵌入响应维度漂移拦截累计（502）
     pub embedding_dimension_mismatch_total: u64,
+    /// rerank 成功请求累计
+    pub rerank_requests_total: u64,
+    /// rerank 参与重排文档数累计
+    pub rerank_documents_total: u64,
+    /// rerank 上游失败累计（非 2xx/超时/响应形状非法）
+    pub rerank_upstream_failures_total: u64,
 }
 
 /// 难度定档观测子块（/admin/metrics 快照字段）
@@ -1109,6 +1145,30 @@ mod tests {
         assert_eq!(snap.embedding_pin_reset_total, 0);
         assert_eq!(snap.embedding_group_exhausted_total, 0);
         assert_eq!(snap.embedding_dimension_mismatch_total, 0);
+    }
+
+    #[test]
+    fn rerank_counters_accumulate_snapshot_and_reset() {
+        let m = GlobalMetrics::new();
+        m.record_rerank(3);
+        m.record_rerank(2);
+        m.record_rerank_upstream_failure();
+
+        let snap = m.snapshot();
+        assert_eq!(snap.rerank_requests_total, 2);
+        assert_eq!(snap.rerank_documents_total, 5);
+        assert_eq!(snap.rerank_upstream_failures_total, 1);
+
+        let json = serde_json::to_value(&snap).expect("snapshot 可序列化");
+        assert_eq!(json["rerank_requests_total"], 2);
+        assert_eq!(json["rerank_documents_total"], 5);
+        assert_eq!(json["rerank_upstream_failures_total"], 1);
+
+        m.reset();
+        let snap = m.snapshot();
+        assert_eq!(snap.rerank_requests_total, 0);
+        assert_eq!(snap.rerank_documents_total, 0);
+        assert_eq!(snap.rerank_upstream_failures_total, 0);
     }
 
     #[test]

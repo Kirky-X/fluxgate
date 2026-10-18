@@ -22,8 +22,8 @@ use tower_http::trace::TraceLayer;
 
 use super::state::ApiState;
 use super::{
-    admin, anthropic, count_tokens, health, models, openai, openapi_docs, route_difficulty_explain,
-    route_explain,
+    admin, anthropic, count_tokens, health, models, openai, openapi_docs, rerank,
+    route_difficulty_explain, route_explain,
 };
 use crate::config::{RateLimitRule, RateLimitSection};
 use crate::i18n::{t, t_args};
@@ -552,9 +552,10 @@ async fn admission_middleware(
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
     #[cfg(feature = "vault")]
-    const TEMPLATES: [&str; 22] = [
+    const TEMPLATES: [&str; 23] = [
         "/v1/chat/completions",
         "/v1/embeddings",
+        "/v1/rerank",
         "/v1/messages",
         "/v1/messages/count_tokens",
         "/v1/models",
@@ -577,9 +578,10 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/api/v1/health",
     ];
     #[cfg(not(feature = "vault"))]
-    const TEMPLATES: [&str; 20] = [
+    const TEMPLATES: [&str; 21] = [
         "/v1/chat/completions",
         "/v1/embeddings",
+        "/v1/rerank",
         "/v1/messages",
         "/v1/messages/count_tokens",
         "/v1/models",
@@ -726,6 +728,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
     let router = Router::new()
         .route("/v1/chat/completions", post(openai::chat_completions))
         .route("/v1/embeddings", post(openai::embeddings))
+        .route("/v1/rerank", post(rerank::rerank))
         .route("/v1/messages", post(anthropic::messages))
         // 数据面端点（实现在独立 handler 文件，mod.rs 仅模块声明）：
         // GET /v1/models（OpenAI list 格式，去重现算、不缓存），

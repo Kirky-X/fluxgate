@@ -371,6 +371,7 @@ mod tests {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }
     }
 
@@ -396,7 +397,12 @@ mod tests {
     fn cycle_manager(mode: &str) -> Arc<ConfigManager> {
         let toml = format!(
             "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 0\n\n\
-             [database]\npath = \":memory:\"\n\n[health]\nmode = \"{mode}\"\n"
+             [database]
+path = \":memory:\"
+
+[health]
+mode = \"{mode}\"
+"
         );
         let config = crate::config::loader::parse_config_content(Path::new("config.toml"), &toml)
             .expect("探针周期测试配置必须合法");
@@ -727,11 +733,19 @@ mod tests {
         let toml = format!(
             "[server]\nhost = \"127.0.0.1\"\nport = 0\n\n\
              [database]\npath = \":memory:\"\n\n\
-             [[vendors]]\nid = \"v-a\"\nname = \"VA\"\ntype_ = \"openai\"\n\
+             [[vendors]]
+id = \"v-a\"
+name = \"VA\"
+type_ = \"openai\"
+\
              api_key_env = \"PROBE_TEST_POOL_ENV_XYZ\"\napi_base = \"{url}\"\n\
              rate_limit = {{ type = \"time_window\", start = \"00:00\", end = \"24:00\" }}\n\
              concurrency = {{ requests_per_second = 1 }}\n\
-             [[vendors]]\nid = \"v-b\"\nname = \"VB\"\ntype_ = \"openai\"\n\
+             [[vendors]]
+id = \"v-b\"
+name = \"VB\"
+type_ = \"openai\"
+\
              api_key_env = \"PROBE_TEST_POOL_ENV_XYZ\"\napi_base = \"http://127.0.0.1:1\"\n\
              rate_limit = {{ type = \"time_window\", start = \"00:00\", end = \"24:00\" }}\n\
              concurrency = {{ requests_per_second = 1 }}\n\n\
@@ -764,6 +778,60 @@ mod tests {
             manager.get_status("v-a").await,
             VendorStatus::Available,
             "恢复动作把目标翻回 Available"
+        );
+    }
+
+    /// rerank-only 厂商不进入探测目标（free/minimal_call 均无法探测其端点）
+    #[tokio::test]
+    async fn probe_targets_skip_rerank_only_vendors() {
+        let toml = r#"
+[server]
+host = "127.0.0.1"
+port = 0
+
+[database]
+path = ":memory:"
+
+[[vendors]]
+id = "chat-v"
+name = "Chat"
+type_ = "openai"
+api_key_env = "CHAT_KEY"  # pragma: allowlist secret（测试环境变量名，非凭证）
+api_base = "http://127.0.0.1:1/v1"
+rate_limit = { type = "time_window", start = "00:00", end = "24:00" }
+concurrency = { requests_per_second = 10 }
+
+[[vendors.models]]
+model_id = "gpt-4o"
+
+[[vendors]]
+id = "rr-v"
+name = "Rerank"
+type_ = "rerank"
+api_key_env = "RR_KEY"  # pragma: allowlist secret（测试环境变量名，非凭证）
+api_base = "http://127.0.0.1:1"
+rate_limit = { type = "time_window", start = "00:00", end = "24:00" }
+concurrency = { requests_per_second = 10 }
+
+[[vendors.models]]
+model_id = "rerank-v3"
+model_type = "rerank"
+"#;
+        let config = crate::config::loader::parse_config_content(Path::new("config.toml"), toml)
+            .expect("配置必须合法");
+        let cm = Arc::new(ConfigManager::new(config));
+        let manager = Arc::new(VendorManager::new(cm));
+        manager.initialize().await.expect("实例初始化必须成功");
+
+        let targets = manager.probe_targets(false).await;
+        let ids: Vec<&str> = targets.iter().map(|t| t.vendor_id.as_str()).collect();
+        assert!(ids.contains(&"chat-v"), "普通厂商仍在探测目标: {ids:?}");
+        assert!(!ids.contains(&"rr-v"), "rerank 厂商必须被跳过: {ids:?}");
+
+        let suspects = manager.probe_targets(true).await;
+        assert!(
+            !suspects.iter().any(|t| t.vendor_id == "rr-v"),
+            "suspects_only 也不得包含 rerank 厂商"
         );
     }
 }

@@ -49,6 +49,7 @@ api-vendor-failed-rerouting-pre-stream = vendor 在响应/流建立前失败；�
 api-log-push-rejected = 请求日志推送被拒：{ $error }
 api-usage-record-rejected = Token 用量记账被拒：{ $error }
 api-embeddings-openai-only = embeddings 仅支持 OpenAI 类型厂商
+api-rerank-capability-mismatch = 重排请求命中的厂商或模型不具备 rerank 能力：请检查 X-Vendor/X-Model 点名，或为条目声明 model_type = "rerank"
 api-embeddings-dimension-mismatch = 厂商 { $vendor }/{ $model } 的嵌入维度漂移：首次响应 { $old } 维，本次 { $new } 维——不同向量空间的向量不得混用；若上游模型已变更，可 POST /admin/embedding-pins/{ $abstract }/reset 重置 pin
 
 # ---- api/response_cache.rs ----

@@ -35,6 +35,7 @@ vendor-upstream-retry-wait-truncated = upstream retry wait truncated
 vendor-probe-unknown-mode = unknown [health].mode; falling back to off (fail-safe against a probe storm from misconfiguration)
 vendor-probe-unknown-strategy = unknown [health].probe_strategy; falling back to free
 vendor-probe-target-missing = probe target instance missing; skipped
+vendor-probe-rerank-skipped = rerank vendor skipped by the active probe strategy (free/minimal_call cannot probe rerank-only endpoints)
 vendor-probe-task-error = probe task ended abnormally (state unchanged): { $error }
 vendor-probe-cycle-done = health probe cycle finished
 vendor-probe-free-recovered = health probe free succeeded: vendor cooldown cleared (passive recovery)

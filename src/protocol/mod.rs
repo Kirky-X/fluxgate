@@ -6,6 +6,7 @@ use crate::error::GateError;
 pub mod anthropic_converter;
 pub mod embedding_converter;
 pub mod openai_converter;
+pub mod rerank_converter;
 pub mod sse_frame;
 pub mod unified;
 // usage 提数单源：消费面仅 api/middleware（web-server），内部模块无跨特性复用，
@@ -19,6 +20,7 @@ pub(crate) use usage::parse_usage_detailed;
 pub use anthropic_converter::{AnthropicConverter, AnthropicStreamEncoder};
 pub use embedding_converter::embedding_request_to_openai;
 pub use openai_converter::{OpenAIConverter, OpenAIStreamEncoder};
+pub use rerank_converter::parse_rerank_request;
 pub use sse_frame::{
     encode_sse_done, encode_sse_error, encode_sse_event, reframe_passthrough_stream_with_usage,
     ReframeObservation, SseFrame, SseFrameParser,

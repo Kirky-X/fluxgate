@@ -15,6 +15,7 @@
 - [LLM 推理端点](#llm-推理端点)
   - [POST /v1/chat/completions](#post-v1chatcompletions)
   - [POST /v1/embeddings](#post-v1embeddings)
+  - [POST /v1/rerank](#post-v1rerank)
   - [POST /v1/messages](#post-v1messages)
   - [GET /v1/models](#get-v1models)
   - [POST /v1/messages/count_tokens](#post-v1messagescount_tokens)
@@ -318,6 +319,77 @@ curl -X POST http://localhost:8080/v1/embeddings \
     "model": "text-embedding-3-small",
     "input": "The food was delicious."
   }'
+```
+
+---
+
+### POST /v1/rerank
+
+Cohere 兼容重排序端点（非流式）。按 `model` 字段路由，只允许命中「`type_ = "rerank"` 厂商 + `model_type = "rerank"` 条目」的候选；不设嵌入兼容组 pin（重排无向量空间契约，多厂商可互换）。响应 `model` 回传实际上游模型名、`meta.vendor` 回传实际厂商，便于在多厂商路由下感知分数来源。
+
+**认证**: 需要 Bearer Token
+
+**请求字段**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `model` | string | 是 | 路由抽象名（`abstract_id`，缺省回落 `model_id`） |
+| `query` | string | 是 | 查询文本，≤4096 字符 |
+| `documents` | array | 是 | 元素为字符串或 `{"text": "..."}`；1–1000 条，单条 ≤8192 字符 |
+| `top_n` | integer | 否 | 缺省 = `documents.len()`，取值 `1..=documents.len()` |
+| `return_documents` | boolean | 否 | 缺省 `false`；`true` 时响应回传文档文本 |
+| `instruction` | string | 否 | 上游支持时透传（Cohere 形态） |
+| `stream` | — | 否 | 不支持，出现即 400 |
+
+**请求示例**
+
+```bash
+curl -X POST http://localhost:8080/v1/rerank \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "rerank-v3",
+    "query": "什么是向量检索",
+    "documents": ["向量检索是…", "重排序是…"],
+    "top_n": 2
+  }'
+```
+
+**响应示例**
+
+```json
+{
+  "id": "rerank-<uuid>",
+  "model": "rerank-v3.5",
+  "results": [
+    {"index": 1, "relevance_score": 0.93},
+    {"index": 0, "relevance_score": 0.12}
+  ],
+  "meta": {"vendor": "cohere-prod", "billed_documents": 2}
+}
+```
+
+**分数口径**：`relevance_score` 原样透传上游数值，不做归一化——不同厂商可能返回 0-1 相关度或未归一化 logits/原始分，做绝对阈值过滤前请先核对该模型口径；只取 `top_n` 相对排序则不受影响。
+
+**路由提示**：`X-Vendor` 必须指向启用的 `type_ = "rerank"` 厂商、`X-Model` 必须能解析到 `model_type = "rerank"` 条目，否则 502 且请求不发出；合法点名继续在能力集合内路由。
+
+**错误**：校验失败/无可用 rerank 候选 → 400；上游非 2xx/超时/连接失败 → 503/504；上游响应形状非法（`index` 越界或重复、分数非有限）→ 502。
+
+**计量**：纳入 `[quota]` 预扣（`query + documents` 字符折算 token）；请求级成本按 `[[model_catalog]].rerank_price_per_1k_docs` 计算并写入 `request_logs.cost_usd`（未登记价 = 0）；`/admin/cost` 的 token 分账暂不覆盖 rerank。请求日志只存摘要（`query_chars` / `documents` / `top_n` / `results` / `top_score`），不落 query 与文档原文。
+
+**上游配置**：厂商 `type_ = "rerank"` 且必须显式声明 `api_base`（无官方默认端点），出站固定 `POST {api_base}/rerank` + `Authorization: Bearer`：
+
+```toml
+[[vendors]]
+id = "cohere-prod"
+type_ = "rerank"
+api_key_env = "COHERE_API_KEY"  # pragma: allowlist secret（示例环境变量名，非凭证）
+api_base = "https://api.cohere.com/v1"   # Jina: https://api.jina.ai/v1；TEI: http://host:port
+
+[[vendors.models]]
+model_id = "rerank-v3.5"
+abstract_id = "rerank-v3"
+model_type = "rerank"
 ```
 
 ---

@@ -35,6 +35,7 @@ mod web_server_hints {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }];
             v.concurrency.requests_per_second = 100;
             v.concurrency.max_concurrent_requests = Some(1);

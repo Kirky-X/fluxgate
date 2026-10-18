@@ -41,6 +41,7 @@ fn claude_entry() -> ModelCatalogEntry {
     ModelCatalogEntry {
         model_id: "claude-sonnet-4-20250514".into(),
         context_window: 200_000,
+        rerank_price_per_1k_docs: 0.0,
         input_price: 3.0,
         output_price: 15.0,
         cache_read_price: 0.3,

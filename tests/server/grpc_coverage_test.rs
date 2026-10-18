@@ -58,6 +58,7 @@ fn test_config(grpc_port: u16) -> Config {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }],
             rate_limit: fluxgate::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,

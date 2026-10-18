@@ -374,6 +374,7 @@ mod integration {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v
     }
@@ -390,6 +391,7 @@ mod integration {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v
     }

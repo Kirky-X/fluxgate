@@ -382,6 +382,7 @@ mod full_chain {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }]
         } else {
             vec![]

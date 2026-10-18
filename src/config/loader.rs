@@ -136,6 +136,7 @@ fn line_column(raw: &str, offset: usize) -> Option<(usize, usize)> {
 pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_admin_secrets(config)?;
     validate_vendor_entries(config)?;
+    validate_model_types(config)?;
     validate_embedding_groups(config)?;
     warn_missing_api_key_envs(config);
     validate_model_catalog(config)?;
@@ -510,6 +511,15 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
+        // rerank 型无官方默认端点：api_base 必须显式声明（URL 构建侧同拒）
+        if vendor.type_ == "rerank" && vendor.api_base.trim().is_empty() {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-rerank-api-base-required",
+                    &[("vendor", vendor.id.clone())],
+                ),
+            });
+        }
     }
 
     for vendor in &config.vendors {
@@ -546,6 +556,36 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
                     ),
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+/// 模型任务类型校验：`model_type` 合法值 chat / embedding / rerank；
+/// 缺省或 trim 后为空等价未声明（存量配置零改动），非空未知值配置错误
+/// 并点名 vendor / model / 原值。独立函数，不与嵌入组校验共享状态
+fn validate_model_types(config: &Config) -> Result<(), GateError> {
+    for vendor in &config.vendors {
+        for model in &vendor.models {
+            let Some(model_type) = model.model_type.as_deref() else {
+                continue;
+            };
+            if model_type.trim().is_empty() {
+                continue;
+            }
+            if matches!(model_type, "chat" | "embedding" | "rerank") {
+                continue;
+            }
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-model-type-unknown",
+                    &[
+                        ("vendor", vendor.id.clone()),
+                        ("model", model.model_id.clone()),
+                        ("model_type", model_type.to_string()),
+                    ],
+                ),
+            });
         }
     }
     Ok(())
@@ -769,6 +809,7 @@ fn validate_catalog_prices(
         ("output_price", entry.output_price),
         ("cache_read_price", entry.cache_read_price),
         ("cache_creation_price", entry.cache_creation_price),
+        ("rerank_price_per_1k_docs", entry.rerank_price_per_1k_docs),
     ];
     for (field, price) in prices {
         if !price.is_finite() || price < 0.0 {
@@ -1068,7 +1109,13 @@ concurrency = { requests_per_second = 1 }
         };
         let toml = format!(
             "{vendors_block}[server]\nhost = \"127.0.0.1\"\nport = 8080\n\n\
-             [database]\npath = \":memory:\"\n\n[routing]\n[routing.difficulty]\n{difficulty}\n"
+             [database]
+path = \":memory:\"
+
+[routing]
+[routing.difficulty]
+{difficulty}
+"
         );
         parse_config_content(Path::new("config.toml"), &toml)
     }
@@ -1175,7 +1222,11 @@ concurrency = { requests_per_second = 1 }
         let error = parse_difficulty_toml(
             &vendors,
             "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
-             [routing.difficulty.tiers]\nlow = \"fast\"\nmid = \"balanced\"\nhigh = \"reasoning\"\n",
+             [routing.difficulty.tiers]
+low = \"fast\"
+mid = \"balanced\"
+high = \"reasoning\"
+",
         )
         .expect_err("V7 mid 无候选必须拒绝");
         assert!(
@@ -1549,7 +1600,11 @@ concurrency = { requests_per_second = 1 }
         let config = parse_difficulty_toml(
             &vendors,
             "enabled = true\nw_clf = 0.0\nscore_low = 0.35\nscore_high = 0.65\n\
-             [routing.difficulty.tiers]\nlow = \"fast\"\nmid = \"balanced\"\nhigh = \"reasoning\"\n",
+             [routing.difficulty.tiers]
+low = \"fast\"
+mid = \"balanced\"
+high = \"reasoning\"
+",
         )
         .expect("三档各有候选必须合法（同集仅告警不拒绝）");
         warn_identical_difficulty_tiers(&config);
@@ -1740,5 +1795,74 @@ concurrency = { requests_per_second = 1 }
         let distinct = difficulty_vendor("v1", &embedding_model("m1", "emb-a", Some("ga"), None))
             + &difficulty_vendor("v2", &embedding_model("m2", "emb-b", Some("gb"), None));
         parse_vendors_toml(&distinct).expect("不同组名不同 abstract 必须通过");
+    }
+
+    // ---- model_type 校验 ----
+
+    /// `[[vendors.models]]` model_type 条目（None = 缺省不写）
+    fn typed_model(model_id: &str, model_type: Option<&str>) -> String {
+        let mut block = format!(
+            "[[vendors.models]]\nmodel_id = \"{model_id}\"\nabstract_id = \"{model_id}\"\n"
+        );
+        if let Some(model_type) = model_type {
+            block.push_str(&format!("model_type = \"{model_type}\"\n"));
+        }
+        block
+    }
+
+    #[test]
+    fn model_type_valid_values_pass() {
+        for value in ["chat", "embedding", "rerank"] {
+            let vendors = difficulty_vendor("v1", &typed_model("m", Some(value)));
+            parse_vendors_toml(&vendors)
+                .unwrap_or_else(|e| panic!("合法 model_type={value} 必须通过: {e}"));
+        }
+    }
+
+    #[test]
+    fn model_type_unknown_value_rejected() {
+        let vendors = difficulty_vendor("v1", &typed_model("m", Some("reranker")));
+        let error = parse_vendors_toml(&vendors).expect_err("未知 model_type 必须拒绝");
+        let message = error.to_string();
+        assert!(
+            message.contains("reranker"),
+            "错误必须点名非法值: {message}"
+        );
+        assert!(message.contains("v1"), "错误必须点名 vendor: {message}");
+        assert!(
+            message.contains("model_type"),
+            "错误必须点名字段: {message}"
+        );
+    }
+
+    #[test]
+    fn model_type_absent_and_blank_are_untyped() {
+        let absent = difficulty_vendor("v1", &typed_model("m", None));
+        parse_vendors_toml(&absent).expect("缺省 model_type 必须通过");
+
+        let blank = difficulty_vendor("v1", &typed_model("m", Some("  ")));
+        parse_vendors_toml(&blank).expect("空白 model_type 等价未声明");
+    }
+
+    #[test]
+    fn rerank_vendor_requires_explicit_api_base() {
+        let vendors = r#"
+[[vendors]]
+id = "r1"
+name = "R"
+type_ = "rerank"
+api_key_env = "R_KEY"  # pragma: allowlist secret（测试环境变量名，非凭证）
+rate_limit = { type = "time_window", start = "00:00", end = "24:00" }
+concurrency = { requests_per_second = 1 }
+
+[[vendors.models]]
+model_id = "rerank-v3"
+model_type = "rerank"
+"#;
+        let error = parse_vendors_toml(vendors).expect_err("rerank 空 api_base 必须拒绝");
+        assert!(
+            error.to_string().contains("api_base"),
+            "错误必须点名 api_base: {error}"
+        );
     }
 }

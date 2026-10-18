@@ -49,6 +49,7 @@ api-vendor-failed-rerouting-pre-stream = vendor failed before response/stream; r
 api-log-push-rejected = request log push rejected: { $error }
 api-usage-record-rejected = token usage record rejected: { $error }
 api-embeddings-openai-only = Embeddings only supported for OpenAI vendors
+api-rerank-capability-mismatch = Rerank request resolved to a vendor or model without rerank capability: check X-Vendor/X-Model hints, or declare model_type = "rerank" on the entry
 api-embeddings-dimension-mismatch = Embedding dimension drift from { $vendor }/{ $model }: first response had { $old } dimensions, now { $new } — vectors from different spaces must not mix; reset the pin via POST /admin/embedding-pins/{ $abstract }/reset if the upstream model changed
 
 # ---- api/response_cache.rs ----

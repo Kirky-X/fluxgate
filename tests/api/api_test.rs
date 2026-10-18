@@ -51,6 +51,7 @@ mod endpoints {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         anthropic_main.rate_limit = fluxgate::config::RateLimitConfig::Interval {
             hours: 1,
@@ -1294,6 +1295,7 @@ mod streaming_error_propagation {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.concurrency.requests_per_second = 100;
         v
@@ -2071,6 +2073,7 @@ mod embeddings_governance {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.rate_limit = RateLimitConfig::Token {
             max_tokens,
@@ -2685,6 +2688,7 @@ mod response_cache_tests {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.concurrency.requests_per_second = 100;
         v
@@ -3409,6 +3413,7 @@ mod api_handler_coverage {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.rate_limit = RateLimitConfig::Token {
             max_tokens,
@@ -5852,6 +5857,7 @@ mod data_plane_endpoints {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             })
             .collect();
         v
@@ -5861,6 +5867,7 @@ mod data_plane_endpoints {
         ModelCatalogEntry {
             model_id: id.into(),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             ..Default::default()
         }
     }
@@ -6265,6 +6272,7 @@ mod fallback_observation_headers {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }],
             rate_limit: fluxgate::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
@@ -6591,6 +6599,7 @@ mod route_explain {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             })
             .collect();
         v
@@ -6845,6 +6854,7 @@ mod route_explain {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         let state = make_state(vec![vendor], plain()).await;
         // 一次真实派发驱动 401 → 永久错误 → 唯一 key 进黑名单。
@@ -6898,6 +6908,7 @@ mod route_explain {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.rate_limit = fluxgate::config::RateLimitConfig::Token {
             max_tokens: 0,
@@ -7133,6 +7144,7 @@ mod fallback_observation_headers_anthropic {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v
     }

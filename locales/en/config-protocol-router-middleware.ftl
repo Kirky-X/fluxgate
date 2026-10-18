@@ -14,6 +14,8 @@ config-embedding-group-model-mismatch = [vendors] compat_group "{ $group }" mixe
 config-embedding-group-dimension-conflict = [vendors] compat_group "{ $group }" mixes declared dimensions: vendor { $vendor_a } model "{ $model_a }" declares { $dims_a } but vendor { $vendor_b } model "{ $model_b }" declares { $dims_b }
 config-embedding-group-cross-abstract = [vendors] compat_group "{ $group }" spans two abstract_id values: "{ $abstract_a }" (vendor { $vendor_a }) and "{ $abstract_b }" (vendor { $vendor_b }); one compat_group must serve exactly one abstract embedding model
 config-embedding-group-reserved-separator = [vendors] compat_group "{ $group }" must not contain the reserved separator "/::" — it would collide with the singleton group key "{vendor}/::{model}" of undeclared entries and silently break the never-swap default
+config-model-type-unknown = [vendors] model_type of model { $model } in vendor { $vendor } is invalid: "{ $model_type }" (valid values: chat / embedding / rerank)
+config-rerank-api-base-required = [vendors] vendor { $vendor } with type_ = "rerank" must declare api_base explicitly (there is no official default rerank endpoint)
 config-api-key-env-missing = API key environment variable of vendor { $vendor } is not set (configured value length { $length }) — verify it is an environment variable NAME, not a key pasted by mistake
 config-api-key-pool-env-missing = API key pool environment variable #{ $index } (value length { $length }) of vendor { $vendor } is not set — verify it is an environment variable NAME, not a key pasted by mistake
 config-duplicate-catalog-model-id = duplicate model catalog id { $model }
@@ -70,6 +72,7 @@ router-explain-queue-over-limit = Queue depth { $queue_len } ≥ saturation poin
 router-explain-weight-zero = Composite weight is 0 (production roulette may still pick uniformly when all weights are zero; diagnostic only)
 router-explain-eligible = Eligible candidate (selection={ $selection })
 router-embedding-group-exhausted = Embedding pin group "{ $group }" has no available vendor for model { $model }: declare compat_group on the vendors to enable in-group failover, or POST /admin/embedding-pins/{ $model }/reset to re-pin by weight
+router-rerank-no-capable-vendor = No rerank-capable vendor for model "{ $model }": declare type_ = "rerank" on the vendor and model_type = "rerank" on the entry, and make sure both are enabled
 
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = Missing API key

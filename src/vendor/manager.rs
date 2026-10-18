@@ -962,6 +962,24 @@ impl VendorManager {
         config: &VendorConfig,
         path: &str,
     ) -> Result<String, GateError> {
+        // rerank 型：api_base 必须显式声明且视为完整前缀（不再自动补 /v1），
+        // 出站固定 `{api_base}/{path}`；Cohere/Jina 配 .../v1，TEI 配裸 host
+        if config.type_ == "rerank" {
+            if config.api_base.trim().is_empty() {
+                return Err(GateError::Config {
+                    message: crate::i18n::t_args(
+                        "config-rerank-api-base-required",
+                        &[("vendor", config.id.clone())],
+                    ),
+                });
+            }
+            return Ok(format!(
+                "{}/{}",
+                config.api_base.trim_end_matches('/'),
+                path
+            ));
+        }
+
         let api_base = if config.api_base.is_empty() {
             match config.type_.as_str() {
                 "anthropic" => "https://api.anthropic.com",
@@ -998,12 +1016,12 @@ impl VendorManager {
         Ok(url)
     }
 
-    /// 构建 vendor API URL（chat/messages 默认端点）；`pub(crate)` 供健康探针复用。
+    /// 构建 vendor API URL（chat/messages/rerank 默认端点）；`pub(crate)` 供健康探针复用。
     pub(crate) fn build_vendor_url(config: &VendorConfig) -> Result<String, GateError> {
-        let path = if config.type_ == "anthropic" {
-            "messages"
-        } else {
-            "chat/completions"
+        let path = match config.type_.as_str() {
+            "anthropic" => "messages",
+            "rerank" => "rerank",
+            _ => "chat/completions",
         };
         Self::build_vendor_url_at(config, path)
     }
@@ -2177,6 +2195,17 @@ impl VendorManager {
         result
     }
 
+    /// rerank 出站：请求体已由 `rerank_converter` 构造为上游 Cohere 形状，
+    /// 复用 passthrough 治理（连接池 / RPS+并发限流 / 熔断 / 超时 / 非 2xx 映射）
+    pub async fn execute_rerank(
+        &self,
+        vendor_id: &str,
+        request_body: Value,
+    ) -> Result<Value, GateError> {
+        self.execute_passthrough_request_at(vendor_id, request_body, "rerank")
+            .await
+    }
+
     /// cover_all_paths 开启时，透传非流式由 per-vendor CircuitBreaker 包裹（CB 拒绝还原为
     /// `VendorUnavailable`，业务错误经 `Inner` 无损透传）；关闭时直连 inner。
     async fn execute_passthrough_request_covered(
@@ -2533,6 +2562,17 @@ impl VendorManager {
                 continue;
             };
             drop(config);
+            // rerank-only 厂商不适用 free（GET /v1/models）与 minimal_call
+            // （POST chat/completions）探针，跳过避免被误判不可用；专用探针
+            // 见 Deferred。仅 warn 一次，防周期刷屏
+            if vendor_config.type_ == "rerank" {
+                static RERANK_SKIP_WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !RERANK_SKIP_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(vendor = %vendor_id, "{}", crate::i18n::t("vendor-probe-rerank-skipped"));
+                }
+                continue;
+            }
             let keys: Vec<(String, String)> = instance
                 .key_pool
                 .keys_snapshot()
@@ -2923,6 +2963,7 @@ mod tests {
             vec![ModelCatalogEntry {
                 model_id: "claude-sonnet-4-20250514".into(),
                 context_window: 200_000,
+                rerank_price_per_1k_docs: 0.0,
                 max_output_tokens: Some(8192),
                 supports_tools: true,
                 supports_thinking: true,
@@ -2979,6 +3020,7 @@ mod tests {
         updated.model_catalog = vec![ModelCatalogEntry {
             model_id: "gpt-9-turbo".into(),
             context_window: 400_000,
+            rerank_price_per_1k_docs: 0.0,
             ..Default::default()
         }];
         cm.update_config(updated).expect("hot update");
@@ -3058,6 +3100,7 @@ mod tests {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         // 前缀大小写变体 + 模型大小写变体 → canonical model_id
         assert_eq!(
@@ -3427,5 +3470,44 @@ mod chat_path_tests {
         let v = vendor("http://localhost:11434/v1", None);
         let url = VendorManager::build_vendor_url_at(&v, "chat/completions").unwrap();
         assert_eq!(url, "http://localhost:11434/v1/chat/completions");
+    }
+
+    fn rerank_vendor(api_base: &str) -> VendorConfig {
+        let mut v = vendor(api_base, None);
+        v.type_ = "rerank".into();
+        v
+    }
+
+    #[test]
+    fn rerank_vendor_uses_api_base_as_full_prefix() {
+        // Cohere/Jina 形态：base 含 /v1，直接拼 /rerank（不再自动补 /v1）
+        let cohere = rerank_vendor("https://api.cohere.com/v1");
+        assert_eq!(
+            VendorManager::build_vendor_url_at(&cohere, "rerank").unwrap(),
+            "https://api.cohere.com/v1/rerank"
+        );
+        // TEI 形态：裸 host + /rerank，末尾斜杠归一
+        let tei = rerank_vendor("http://localhost:8080/");
+        assert_eq!(
+            VendorManager::build_vendor_url_at(&tei, "rerank").unwrap(),
+            "http://localhost:8080/rerank"
+        );
+        assert_eq!(
+            VendorManager::build_vendor_url(&cohere).unwrap(),
+            "https://api.cohere.com/v1/rerank",
+            "rerank 厂商的默认端点即 /rerank"
+        );
+    }
+
+    #[test]
+    fn rerank_vendor_requires_explicit_api_base() {
+        let empty = rerank_vendor("");
+        let err =
+            VendorManager::build_vendor_url_at(&empty, "rerank").expect_err("空 api_base 必须拒绝");
+        assert_eq!(err.status_code(), 500, "配置错误映射 500");
+        assert!(
+            err.to_string().contains("api_base"),
+            "错误必须点名 api_base: {err}"
+        );
     }
 }

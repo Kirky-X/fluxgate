@@ -240,6 +240,7 @@ mod build_fallback_chain {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }],
             rate_limit: RateLimitConfig::Token {
                 max_tokens: 1000,
@@ -399,6 +400,7 @@ mod cover_all_paths {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }],
             rate_limit: fluxgate::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,

@@ -26,6 +26,7 @@ mod tests {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }
     }
 
@@ -179,6 +180,7 @@ mod tests {
 
                     dimensions: None,
                     compat_group: None,
+                    model_type: None,
                 }],
                 false,
             ),
@@ -192,6 +194,7 @@ mod tests {
 
                     dimensions: None,
                     compat_group: None,
+                    model_type: None,
                 }],
                 false,
             ),
@@ -201,6 +204,7 @@ mod tests {
             fluxgate::config::ModelCatalogEntry {
                 model_id: "m-full".into(),
                 context_window: 128_000,
+                rerank_price_per_1k_docs: 0.0,
                 input_price: 1.0,
                 output_price: 1.0,
                 cache_read_price: 0.0,
@@ -216,6 +220,7 @@ mod tests {
             fluxgate::config::ModelCatalogEntry {
                 model_id: "m-cache".into(),
                 context_window: 128_000,
+                rerank_price_per_1k_docs: 0.0,
                 input_price: 1.0,
                 output_price: 1.0,
                 cache_read_price: 0.1,

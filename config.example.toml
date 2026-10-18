@@ -60,6 +60,9 @@ pool_size = 5
 # output_price = 15.0
 # cache_read_price = 0.3
 # cache_creation_price = 3.75
+# # 可选：重排计价（每 1000 篇文档，currency 同口径；0/缺省 = 未登记，
+# # 仅 rerank 请求级成本写入 request_logs.cost_usd 时消费）
+# rerank_price_per_1k_docs = 0.0
 # # 可选：长上下文价（仅 price_factor_mode = "cache_expected" 时生效）——
 # # 估 prompt tokens（body 字符数/4）超阈值且本价 > 0 时，改用本价替代
 # # 输入价参与价格因子；阈值或本价任一为 0 即不启用。
@@ -667,6 +670,9 @@ rate_limit = { type = "token", max_tokens = 10000000, window_hours = 24, sliding
 #   允许组内迁移；未声明 = 单例组（安全默认：不与其他厂商互换，故障显式报错
 #   而非静默换家）。组名不得跨 abstract_id（R3），同组 model_id 必须一致
 #   （R1，大小写不敏感），同组已声明的 dimensions 必须相等（R2）。
+# - model_type: 条目任务类型 chat / embedding / rerank（缺省 = chat）。显式声明
+#   优先于 dimensions/compat_group 的嵌入推断；rerank 路由按
+#   type_ = "rerank" + model_type = "rerank" 双维度过滤候选（其余候选显式拒绝）。
 # 示例（同组条目在各自 vendor 下声明相同的 model_id 与组名）：
 # [[vendors.models]]
 # model_id = "text-embedding-3-small"
@@ -675,6 +681,23 @@ rate_limit = { type = "token", max_tokens = 10000000, window_hours = 24, sliding
 # weight = 1.0
 # dimensions = 1536
 # compat_group = "openai-embedding-v1"
+#
+# ---- 重排（Rerank）厂商示例（Cohere / Jina / TEI 等同形状上游）----
+# type_ = "rerank" 必须显式 api_base（无官方默认端点），出站固定
+# POST {api_base}/rerank + Authorization: Bearer；条目必须声明
+# model_type = "rerank"（条目级能力位缺失时不会被 rerank 路由选中）。
+# [[vendors]]
+# id = "cohere-prod"
+# name = "Cohere Rerank"
+# type_ = "rerank"
+# api_key_env = "COHERE_API_KEY"  # pragma: allowlist secret（示例环境变量名，非凭证）
+# api_base = "https://api.cohere.com/v1"   # Jina: https://api.jina.ai/v1；TEI: http://host:port
+# [[vendors.models]]
+# model_id = "rerank-v3.5"
+# abstract_id = "rerank-v3"
+# model_type = "rerank"
+# enabled = true
+# weight = 1.0
 [[vendors.models]]
 model_id = "gpt-3.5-turbo"
 enabled = true

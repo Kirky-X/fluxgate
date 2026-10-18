@@ -62,6 +62,7 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }],
         rate_limit: fluxgate::config::RateLimitConfig::Token {
             max_tokens: 1_000_000,

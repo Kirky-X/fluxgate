@@ -192,6 +192,7 @@ mod catalog_pricing_tests {
         ModelCatalogEntry {
             model_id: "claude-sonnet-4-20250514".into(),
             context_window: 200_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 3.0,
             output_price: 15.0,
             cache_read_price: 0.3,
@@ -296,12 +297,14 @@ mod catalog_pricing_tests {
         let short = ModelCatalogEntry {
             model_id: "gpt-x-2".into(),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 9.0,
             ..Default::default()
         };
         let long = ModelCatalogEntry {
             model_id: "gpt-x-10".into(),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 1.0,
             ..Default::default()
         };
@@ -349,6 +352,7 @@ mod catalog_pricing_tests {
         let gpt4o = ModelCatalogEntry {
             model_id: "gpt-4o".into(),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 2.5,
             output_price: 10.0,
             cache_read_price: 1.25,

@@ -96,6 +96,11 @@ pub fn precharge_for(
         Some(model) => model,
         None => return (0, 0),
     };
+    // rerank 形态（documents 数组且无 messages）：按 query+documents 字符数
+    // 折算 token，成本按目录每 1k 文档价（与 chat 的 token 口径分离）
+    if body.get("messages").is_none() && body.get("documents").is_some() {
+        return precharge_rerank(body, catalog, chars_per_token);
+    }
     let est_input = estimate_messages_tokens_with(body, chars_per_token);
     let max_tokens = body.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
     let usd = match resolve_price_source(catalog, pricing, model) {
@@ -107,6 +112,46 @@ pub fn precharge_for(
         }
     };
     (est_input.saturating_add(max_tokens), usd_to_millicents(usd))
+}
+
+/// rerank 预扣：token = ceil((query 字符 + Σ 文档字符) / chars_per_token)；
+/// 成本 = 目录每 1k 文档价 × 文档数 / 1000（USD → millicents，未登记价 = 0）。
+pub fn precharge_rerank(
+    body: &Value,
+    catalog: &[ModelCatalogEntry],
+    chars_per_token: u64,
+) -> (u64, u64) {
+    let cpt = chars_per_token.max(1) as usize;
+    let query_chars = body
+        .get("query")
+        .and_then(Value::as_str)
+        .map(|query| query.chars().count())
+        .unwrap_or(0);
+    let documents = body.get("documents").and_then(Value::as_array);
+    let doc_chars: usize = documents
+        .map(|docs| {
+            docs.iter()
+                .map(|doc| match doc {
+                    Value::String(text) => text.chars().count(),
+                    Value::Object(map) => map
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(|text| text.chars().count())
+                        .unwrap_or(0),
+                    _ => 0,
+                })
+                .sum()
+        })
+        .unwrap_or(0);
+    let total_chars = query_chars.saturating_add(doc_chars);
+    let tokens = total_chars.div_ceil(cpt) as u64;
+    let doc_count = documents.map(|docs| docs.len()).unwrap_or(0);
+    let usd = catalog
+        .iter()
+        .find(|entry| Some(entry.model_id.as_str()) == body.get("model").and_then(Value::as_str))
+        .map(|entry| entry.rerank_price_per_1k_docs * doc_count as f64 / 1000.0)
+        .unwrap_or(0.0);
+    (tokens, usd_to_millicents(usd))
 }
 
 /// 实际成本输入单束（usage 四档 + 档源 + 协议）：`model` 为档源命中键，
@@ -354,7 +399,7 @@ pub async fn quota_middleware(
     // 零分配路径判定（matches! 不产生 String）。
     let applicable = matches!(
         request.uri().path(),
-        "/v1/chat/completions" | "/v1/messages"
+        "/v1/chat/completions" | "/v1/messages" | "/v1/rerank"
     );
     let (parts, body) = request.into_parts();
     // 非适用路径：body 未触碰，原样透传（零拷贝）。
@@ -831,6 +876,31 @@ mod tests {
         assert_eq!(cost, 4000);
     }
 
+    /// rerank 预扣：token 按 query+documents 字符折算，成本按目录每 1k 文档价。
+    #[test]
+    fn rerank_precharge_estimates_tokens_and_cost() {
+        let catalog = vec![ModelCatalogEntry {
+            model_id: "rerank-v3".into(),
+            context_window: 128_000,
+            rerank_price_per_1k_docs: 2.0,
+            ..Default::default()
+        }];
+        let body = serde_json::json!({
+            "model": "rerank-v3",
+            "query": "12345678",
+            "documents": ["1234", {"text": "12345678"}],
+        });
+        let (tokens, cost) = precharge_for(&body, &catalog, &[], 4);
+        assert_eq!(tokens, 5, "(8+12)/4 向上取整");
+        // 2 docs × $2/1k docs = $0.004 → 400 millicents
+        assert_eq!(cost, 400);
+
+        // 未登记价：成本 0，token 照算
+        let (tokens, cost) = precharge_for(&body, &[], &[], 4);
+        assert_eq!(tokens, 5);
+        assert_eq!(cost, 0);
+    }
+
     fn catalog(
         input: f64,
         output: f64,
@@ -840,6 +910,7 @@ mod tests {
         vec![ModelCatalogEntry {
             model_id: "m".into(),
             context_window: 1000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: input,
             output_price: output,
             cache_read_price: cache_read,

@@ -32,6 +32,10 @@ pub struct ModelCatalogEntry {
     pub model_id: String,
     /// 上下文窗口（tokens），登记条目必须 > 0
     pub context_window: u64,
+    /// 重排计价（currency 计价，**每 1000 篇文档**）；0 = 未登记。
+    /// 仅 rerank 请求级成本估算消费，chat/embedding 无语义
+    #[serde(default)]
+    pub rerank_price_per_1k_docs: f64,
     /// 输入单价（currency 计价，**每 1M tokens**）
     #[serde(default)]
     pub input_price: f64,
@@ -203,6 +207,7 @@ mod tests {
         ModelCatalogEntry {
             model_id: "claude-sonnet-4-20250514".into(),
             context_window: 200_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 3.0,
             output_price: 15.0,
             cache_read_price: 0.3,
@@ -348,6 +353,7 @@ currency = "eur"
         let gpt4o = ModelCatalogEntry {
             model_id: "gpt-4o".into(),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 2.5,
             output_price: 10.0,
             cache_read_price: 1.25,

@@ -14,6 +14,8 @@ config-embedding-group-model-mismatch = [vendors] 兼容组 "{ $group }" 内 ups
 config-embedding-group-dimension-conflict = [vendors] 兼容组 "{ $group }" 内已声明 dimensions 冲突：厂商 { $vendor_a } 模型 "{ $model_a }" 声明 { $dims_a }，厂商 { $vendor_b } 模型 "{ $model_b }" 声明 { $dims_b }
 config-embedding-group-cross-abstract = [vendors] 兼容组 "{ $group }" 跨两个 abstract_id："{ $abstract_a }"（厂商 { $vendor_a }）与 "{ $abstract_b }"（厂商 { $vendor_b }）；一个兼容组只能服务一个抽象嵌入模型
 config-embedding-group-reserved-separator = [vendors] 兼容组 "{ $group }" 不得包含保留分隔符 "/::"——会与未声明条目的单例组键 "{vendor}/::{model}" 撞键，静默击穿「永不互换」安全默认
+config-model-type-unknown = [vendors] 厂商 { $vendor } 模型 { $model } 的 model_type 非法: "{ $model_type }"（合法值: chat / embedding / rerank）
+config-rerank-api-base-required = [vendors] 厂商 { $vendor } 的 type_ = "rerank" 必须显式声明 api_base（重排无官方默认端点）
 config-api-key-env-missing = 厂商 { $vendor } 的 API Key 环境变量未设置（配置值长度 { $length }）——请核对是否误将 key 原文当作环境变量名
 config-api-key-pool-env-missing = 厂商 { $vendor } 的 API Key 池环境变量 #{ $index }（值长度 { $length }）未设置——请核对是否误将 key 原文当作环境变量名
 config-duplicate-catalog-model-id = 模型目录 id 重复：{ $model }
@@ -70,6 +72,7 @@ router-explain-queue-over-limit = 队列深度 { $queue_len } ≥ 饱和点 { $s
 router-explain-weight-zero = 合成权重为 0（生产轮盘赌全零时仍均匀回退可能选中，仅诊断提示）
 router-explain-eligible = 候选合格（selection={ $selection }）
 router-embedding-group-exhausted = 嵌入 pin 组 "{ $group }" 对模型 { $model } 已无可用厂商：给厂商声明 compat_group 可启用组内故障迁移，或 POST /admin/embedding-pins/{ $model }/reset 按权重重新粘着
+router-rerank-no-capable-vendor = 模型 "{ $model }" 无可用的 rerank 候选：请为厂商声明 type_ = "rerank" 且为条目声明 model_type = "rerank"，并确认厂商与模型均已启用
 
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = 缺少 API Key

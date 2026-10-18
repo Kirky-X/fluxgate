@@ -43,6 +43,7 @@ mod tests {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         vendor
     }

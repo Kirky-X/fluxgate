@@ -31,6 +31,7 @@ mod tests {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             },
             ModelConfig {
                 model_id: "gpt-3.5-turbo".to_string(),
@@ -40,6 +41,7 @@ mod tests {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             },
         ];
         openai.rate_limit = RateLimitConfig::Interval {
@@ -59,6 +61,7 @@ mod tests {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         anthropic.rate_limit = RateLimitConfig::Interval {
             hours: 1,
@@ -194,6 +197,7 @@ mod tests {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         let config_manager = Arc::new(ConfigManager::new(Config {
             server: ServerConfig {
@@ -407,6 +411,7 @@ mod scheduling_weight {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }];
             v.concurrency.requests_per_second = 100;
             v.concurrency.max_concurrent_requests = Some(1);
@@ -1232,6 +1237,7 @@ mod session_affinity {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }];
             v.concurrency.requests_per_second = 100;
             v.concurrency.max_concurrent_requests = Some(1);
@@ -1436,6 +1442,7 @@ mod failure_rate_gate {
 
                 dimensions: None,
                 compat_group: None,
+                model_type: None,
             }];
             v.concurrency.requests_per_second = 100;
             v
@@ -1562,6 +1569,7 @@ mod cooldown_improvements {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.rate_limit = RateLimitConfig::Token {
             max_tokens,
@@ -1854,6 +1862,7 @@ mod soft_affinity {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.concurrency.requests_per_second = 100;
         v.concurrency.max_concurrent_requests = Some(1);
@@ -2064,6 +2073,7 @@ mod sla_virtual_queue {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.concurrency.requests_per_second = 100;
         v
@@ -2433,6 +2443,7 @@ mod linucb_selection {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.concurrency.requests_per_second = 100;
         v
@@ -2779,6 +2790,7 @@ mod lps_lookahead {
 
             dimensions: None,
             compat_group: None,
+            model_type: None,
         }];
         v.concurrency.requests_per_second = 100;
         v.concurrency.max_concurrent_requests = max_concurrent;
@@ -3014,6 +3026,7 @@ mod route_gap_coverage {
 
                     dimensions: None,
                     compat_group: None,
+                    model_type: None,
                 },
             )
             .collect();
@@ -4105,6 +4118,7 @@ mod embedding_compat_group {
             enabled: true,
             dimensions: None,
             compat_group: group.map(str::to_string),
+            model_type: None,
         }];
         vendor
     }
@@ -4544,6 +4558,143 @@ mod embedding_compat_group {
             pin.list(),
             vec![("emb-shared".to_string(), "g1".to_string())],
             "pin 不受组内类型过滤影响"
+        );
+    }
+
+    // ============ rerank 能力过滤 ============
+
+    /// rerank 型 vendor（api_base 仅占位，路由测试不发出站请求）
+    fn rerank_vendor(
+        id: &str,
+        abstract_id: &str,
+        _model_id: &str,
+        model_types: &[(&str, Option<&str>, f64)],
+    ) -> VendorConfig {
+        common::ensure_test_api_key();
+        let mut vendor = common::base_vendor(id, String::new());
+        vendor.name = format!("Vendor {id}");
+        vendor.type_ = "rerank".into();
+        vendor.api_base = format!("http://127.0.0.1:1/{id}");
+        vendor.models = model_types
+            .iter()
+            .map(|(model_id, model_type, weight)| ModelConfig {
+                model_id: model_id.to_string(),
+                abstract_id: Some(abstract_id.to_string()),
+                weight: *weight,
+                enabled: true,
+                dimensions: None,
+                compat_group: None,
+                model_type: model_type.map(str::to_string),
+            })
+            .collect();
+        vendor
+    }
+
+    fn make_rerank_router(vendors: Vec<VendorConfig>) -> (Router, Arc<EmbeddingPin>) {
+        let config = Config {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            ..common::test_config(vendors)
+        };
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let pin = Arc::new(EmbeddingPin::new());
+        (
+            Router::new(config_manager, vendor_manager).with_embedding_pin(pin.clone()),
+            pin,
+        )
+    }
+
+    /// 高权重 chat-only 厂商与低权重 rerank 厂商共存：恒选 rerank 厂商
+    #[tokio::test]
+    async fn rerank_route_skips_chat_only_vendor() {
+        let chat = embedding_vendor("chat-only", "shared-rr", "m", None, 100.0);
+        let rr = rerank_vendor("rr-a", "shared-rr", "m", &[("m", Some("rerank"), 0.001)]);
+        let (router, _pin) = make_rerank_router(vec![chat, rr]);
+
+        for i in 0..20 {
+            let decision = router
+                .route_rerank("shared-rr")
+                .await
+                .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
+            assert_eq!(
+                decision.vendor.id, "rr-a",
+                "必须落在 rerank 厂商（第 {i} 次，得到 {}）",
+                decision.vendor.id
+            );
+            assert_eq!(decision.model.model_type.as_deref(), Some("rerank"));
+        }
+    }
+
+    /// 同 vendor 跨类型条目不越界：选中 rr-a 时必须是其 rerank 条目
+    ///（m-chat 永不被返回；若加权选中 chat 条目，按 vendor 收缩到 rr-b）
+    #[tokio::test]
+    async fn rerank_route_never_returns_cross_type_entry() {
+        // A 同时挂 chat（高权重）与 rerank 条目；B 只有 rerank 条目
+        let a = rerank_vendor(
+            "rr-a",
+            "shared-rr",
+            "m",
+            &[("m-chat", None, 100.0), ("m-rr", Some("rerank"), 0.001)],
+        );
+        let b = rerank_vendor("rr-b", "shared-rr", "m", &[("m", Some("rerank"), 1.0)]);
+        let (router, _pin) = make_rerank_router(vec![a, b]);
+
+        for i in 0..30 {
+            let decision = router
+                .route_rerank("shared-rr")
+                .await
+                .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
+            assert_eq!(
+                decision.model.model_type.as_deref(),
+                Some("rerank"),
+                "第 {i} 次不得返回跨类型条目: vendor={} model={}",
+                decision.vendor.id,
+                decision.model.model_id
+            );
+            if decision.vendor.id == "rr-a" {
+                assert_eq!(
+                    decision.model.model_id, "m-rr",
+                    "选中 rr-a 时必须是其 rerank 条目"
+                );
+            } else {
+                assert_eq!(decision.vendor.id, "rr-b");
+            }
+        }
+    }
+
+    /// 全 chat 候选：显式 Validation，不跨能力回退
+    #[tokio::test]
+    async fn rerank_route_fails_when_no_capable_candidate() {
+        let chat = embedding_vendor("chat-only", "shared-rr", "m", None, 1.0);
+        let (router, _pin) = make_rerank_router(vec![chat]);
+        let err = router
+            .route_rerank("shared-rr")
+            .await
+            .expect_err("无 rerank 候选必须拒绝");
+        assert_eq!(err.status_code(), 400, "能力耗尽映射 Validation 400");
+        assert!(
+            err.to_string().contains("shared-rr"),
+            "错误必须点名模型: {err}"
+        );
+    }
+
+    /// 不读写嵌入 pin：预置 pin 不被 rerank 路由改写
+    #[tokio::test]
+    async fn rerank_route_does_not_touch_embedding_pin() {
+        let rr = rerank_vendor("rr-a", "shared-rr", "m", &[("m", Some("rerank"), 1.0)]);
+        let (router, pin) = make_rerank_router(vec![rr]);
+        pin.pin_or_get("emb-shared", "g1");
+
+        for _ in 0..5 {
+            router.route_rerank("shared-rr").await.expect("rerank 路由");
+        }
+        assert_eq!(
+            pin.list(),
+            vec![("emb-shared".to_string(), "g1".to_string())],
+            "rerank 路由不得改写嵌入 pin 表"
         );
     }
 }

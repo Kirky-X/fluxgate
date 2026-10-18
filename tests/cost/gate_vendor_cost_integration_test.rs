@@ -80,6 +80,7 @@ async fn setup_cost_test(
         model_catalog: vec![ModelCatalogEntry {
             model_id: "gpt-4".into(),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 30.0,
             output_price: 60.0,
             currency: fluxgate::config::PricingCurrency::Usd,
@@ -244,6 +245,7 @@ async fn claude_cache_token_usage_priced_with_cache_tiers() {
         model_catalog: vec![ModelCatalogEntry {
             model_id: "claude-sonnet-4-20250514".into(),
             context_window: 200_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 3.0,
             output_price: 15.0,
             cache_read_price: 0.3,

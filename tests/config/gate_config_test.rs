@@ -269,6 +269,7 @@ mod tests {
 
                             dimensions: None,
                             compat_group: None,
+                            model_type: None,
                         },
                         ModelConfig {
                             model_id: "gpt-3.5-turbo".to_string(),
@@ -278,6 +279,7 @@ mod tests {
 
                             dimensions: None,
                             compat_group: None,
+                            model_type: None,
                         },
                     ],
                     rate_limit: fluxgate::config::RateLimitConfig::Interval {
@@ -316,6 +318,7 @@ mod tests {
 
                         dimensions: None,
                         compat_group: None,
+                        model_type: None,
                     }],
                     rate_limit: fluxgate::config::RateLimitConfig::Interval {
                         hours: 1,
@@ -599,11 +602,13 @@ concurrency = { requests_per_second = 10 }
             ModelCatalogEntry {
                 model_id: "claude-sonnet-4-20250514".into(),
                 context_window: 200_000,
+                rerank_price_per_1k_docs: 0.0,
                 ..Default::default()
             },
             ModelCatalogEntry {
                 model_id: "claude-sonnet-4-20250514".into(),
                 context_window: 100_000,
+                rerank_price_per_1k_docs: 0.0,
                 ..Default::default()
             },
         ];
@@ -627,6 +632,7 @@ concurrency = { requests_per_second = 10 }
         config.model_catalog = vec![ModelCatalogEntry {
             model_id: "bad-model".into(),
             context_window: 0,
+            rerank_price_per_1k_docs: 0.0,
             ..Default::default()
         }];
         let err = validate_config(&config).expect_err("zero window must reject");
@@ -649,6 +655,7 @@ concurrency = { requests_per_second = 10 }
             ModelCatalogEntry {
                 model_id: "claude-sonnet-4-20250514".into(),
                 context_window: 200_000,
+                rerank_price_per_1k_docs: 0.0,
                 input_price: 3.0,
                 output_price: 15.0,
                 cache_read_price: 0.3,
@@ -664,6 +671,7 @@ concurrency = { requests_per_second = 10 }
             ModelCatalogEntry {
                 model_id: "gpt-4o".into(),
                 context_window: 128_000,
+                rerank_price_per_1k_docs: 0.0,
                 ..Default::default()
             },
         ];
@@ -680,7 +688,8 @@ concurrency = { requests_per_second = 10 }
 
     // ======== 价格/空白 id/条目上限校验 ========
 
-    /// 四个价格字段必须有限（拒 NaN/Inf）且 ≥ 0（加载与热更新两路同拒）。
+    /// 五个价格字段（含 rerank 按文档计价）必须有限（拒 NaN/Inf）且 ≥ 0
+    ///（加载与热更新两路同拒）。
     #[test]
     fn catalog_rejects_non_finite_and_negative_prices() {
         let cases: Vec<(&str, f64)> = vec![
@@ -690,12 +699,19 @@ concurrency = { requests_per_second = 10 }
             ("output_price", f64::NAN),
             ("cache_read_price", f64::NEG_INFINITY),
             ("cache_creation_price", -1.0),
+            ("rerank_price_per_1k_docs", f64::NAN),
+            ("rerank_price_per_1k_docs", -0.5),
         ];
         for (field, value) in cases {
             let mut config = create_test_config();
             config.model_catalog = vec![ModelCatalogEntry {
                 model_id: "m".into(),
                 context_window: 128_000,
+                rerank_price_per_1k_docs: if field == "rerank_price_per_1k_docs" {
+                    value
+                } else {
+                    0.0
+                },
                 input_price: if field == "input_price" { value } else { 0.0 },
                 output_price: if field == "output_price" { value } else { 0.0 },
                 cache_read_price: if field == "cache_read_price" {
@@ -727,6 +743,7 @@ concurrency = { requests_per_second = 10 }
         config.model_catalog = vec![ModelCatalogEntry {
             model_id: "m".into(),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             input_price: 0.0,
             output_price: 15.5,
             cache_read_price: 0.3,
@@ -743,6 +760,7 @@ concurrency = { requests_per_second = 10 }
         config.model_catalog = vec![ModelCatalogEntry {
             model_id: "   ".into(),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             ..Default::default()
         }];
         let err = validate_config(&config).expect_err("blank id must reject");
@@ -755,6 +773,7 @@ concurrency = { requests_per_second = 10 }
         let build_entry = |i: usize| ModelCatalogEntry {
             model_id: format!("model-{i}"),
             context_window: 128_000,
+            rerank_price_per_1k_docs: 0.0,
             ..Default::default()
         };
         let mut config = create_test_config();

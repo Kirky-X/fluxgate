@@ -108,6 +108,7 @@ flowchart TB
 | `api/mod.rs` | 业务路由组装与请求处理主循环：换路重试循环、亲和 bind/clear 编排（`src/api/mod.rs:48-98`、`src/api/mod.rs:526-730`） |
 | `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:724-776`）；admission 准入判定挂载（`src/api/router_builder.rs:478-554`） |
 | `api/openai.rs` | `POST /v1/chat/completions`、`POST /v1/embeddings` 端点 |
+| `api/rerank.rs` | `POST /v1/rerank` 端点：能力过滤路由、Cohere 形状转换与日志摘要（不含 query/documents 原文） |
 | `api/anthropic.rs` | `POST /v1/messages` 端点 |
 | `api/health.rs` | `/health` 健康检查端点 |
 | `api/admin.rs` | `/admin/*` 运维端点 handler（日志查询、指标、厂商状态、配置热更新、模型管理） |

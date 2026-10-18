@@ -21,6 +21,9 @@ use std::sync::Once;
 /// mock 厂商凭证的环境变量名（各测试装配统一走它，值恒定）
 pub const TEST_API_KEY_ENV: &str = "FLUXGATE_TEST_KEY";
 
+/// mock 厂商凭证值（出站鉴权断言复用）。
+pub const TEST_API_KEY_VALUE: &str = "test-key-for-mockito";
+
 /// 进程内一次性注入 mock 厂商凭证。
 ///
 /// edition 2021 下 `set_var` 与并行测试线程的 getenv 存在理论竞态：收敛到
@@ -29,7 +32,7 @@ pub const TEST_API_KEY_ENV: &str = "FLUXGATE_TEST_KEY";
 pub fn ensure_test_api_key() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        std::env::set_var(TEST_API_KEY_ENV, "test-key-for-mockito");
+        std::env::set_var(TEST_API_KEY_ENV, TEST_API_KEY_VALUE);
     });
 }
 

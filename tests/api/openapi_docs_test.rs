@@ -136,6 +136,8 @@ async fn docs_enabled_serves_openapi_and_ui() {
         "/v1/chat/completions",
         "/v1/messages",
         "/v1/embeddings",
+        "/v1beta/models",
+        "/v1beta/models/{model_action}",
         "/api/v1/health",
         "/admin/logs",
         "/admin/vendors",

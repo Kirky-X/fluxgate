@@ -4787,4 +4787,53 @@ mod embedding_compat_group {
             "soft boost 后绑定 vendor 必须占多数: {bound_hits}/60"
         );
     }
+
+    // ============ Gemini 原生直通能力过滤 ============
+
+    fn gemini_vendor(id: &str, abstract_id: &str, weight: f64) -> VendorConfig {
+        common::ensure_test_api_key();
+        let mut vendor = common::base_vendor(id, "http://127.0.0.1:1".to_string());
+        vendor.type_ = "gemini".into();
+        vendor.models = vec![ModelConfig {
+            model_id: "gemini-2.5-pro".into(),
+            abstract_id: Some(abstract_id.into()),
+            weight,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        }];
+        vendor
+    }
+
+    /// 高权重 chat-only 与低权重 gemini 共存：原生直通恒选 gemini。
+    #[tokio::test]
+    async fn gemini_native_route_skips_non_gemini_vendor() {
+        let chat = embedding_vendor("chat-only", "shared-gm", "m", None, 100.0);
+        let gemini = gemini_vendor("gm-a", "shared-gm", 0.001);
+        let (router, _pin) = make_rerank_router(vec![chat, gemini]);
+        for i in 0..10 {
+            let decision = router
+                .route_gemini_native("shared-gm", None)
+                .await
+                .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
+            assert_eq!(decision.vendor.id, "gm-a");
+            assert_eq!(decision.vendor.type_, "gemini");
+        }
+    }
+
+    /// 无 gemini 候选：显式 Validation，错误信息含配置指引。
+    #[tokio::test]
+    async fn gemini_native_route_exhausted_is_explicit() {
+        let chat = embedding_vendor("chat-only", "shared-gm", "m", None, 1.0);
+        let (router, _pin) = make_rerank_router(vec![chat]);
+        let error = router
+            .route_gemini_native("shared-gm", None)
+            .await
+            .expect_err("无 gemini 候选必须失败");
+        assert!(
+            error.to_string().contains("gemini"),
+            "错误必须点名 gemini: {error}"
+        );
+    }
 }

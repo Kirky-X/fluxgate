@@ -193,6 +193,9 @@ path = "tests/api/rerank_api_test.rs"
 name = "responses_api_test"
 path = "tests/api/responses_api_test.rs"
 [[test]]
+name = "gemini_api_test"
+path = "tests/api/gemini_api_test.rs"
+[[test]]
 name = "health_metrics_test"
 path = "tests/api/health_metrics_test.rs"
 [[test]]
@@ -294,6 +297,9 @@ path = "tests/vendor/health_probe_test.rs"
 [[test]]
 name = "gate_vendor_test"
 path = "tests/vendor/gate_vendor_test.rs"
+[[test]]
+name = "gemini_vendor_test"
+path = "tests/vendor/gemini_vendor_test.rs"
 
 # ---- vault：密钥保密柜管理面（key-vault）----
 [[test]]

@@ -5,11 +5,12 @@
 //! 与模型目录同库同事务语义；掩码/指纹为明文衍生列，列表页零解密。
 //!
 //! 语句口径仿 `repository.rs`：`pool.get_session("admin")` +
-//! `Statement::from_sql_and_values`（占位符统一 `?`，按 backend 翻译）。
+//! `dialect::raw_statement`（占位符统一 `?`，构造前按 backend 方言化）。
 
-use sea_orm::{ConnectionTrait, Statement, Value};
+use sea_orm::{ConnectionTrait, Value};
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::database::raw_statement;
 use crate::i18n::t_args;
 use crate::vault::crypto;
 use crate::vault::{KeyStore, SecretKeyRecord, VaultError};
@@ -61,7 +62,7 @@ impl KeyStore for DbKeyStore {
         let mask = crypto::mask_key(plaintext.expose_secret());
         let now = crypto::now_ms();
 
-        let existing = Statement::from_sql_and_values(
+        let existing = raw_statement(
             backend,
             "SELECT id FROM vault_keys WHERE vendor_id = ? AND fingerprint = ?",
             [vendor_id.into(), fingerprint.as_str().into()],
@@ -70,7 +71,7 @@ impl KeyStore for DbKeyStore {
         let blob = crypto::seal(&self.master_key, plaintext)?;
         let id = if let Some(row) = found.first() {
             let id: String = row.try_get("", "id").map_err(db_err)?;
-            let update = Statement::from_sql_and_values(
+            let update = raw_statement(
                 backend,
                 "UPDATE vault_keys SET label = ?, payload = ?, mask = ?, updated_at = ? WHERE id = ?",
                 [
@@ -85,7 +86,7 @@ impl KeyStore for DbKeyStore {
             id
         } else {
             let id = crypto::new_id();
-            let insert = Statement::from_sql_and_values(
+            let insert = raw_statement(
                 backend,
                 "INSERT INTO vault_keys (id, vendor_id, label, payload, mask, fingerprint, created_at, updated_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -104,7 +105,7 @@ impl KeyStore for DbKeyStore {
             id
         };
 
-        let row = Statement::from_sql_and_values(
+        let row = raw_statement(
             backend,
             format!("SELECT {SELECT_COLS} FROM vault_keys WHERE id = ?"),
             [id.clone().into()],
@@ -131,7 +132,7 @@ impl KeyStore for DbKeyStore {
                 Vec::new(),
             ),
         };
-        let stmt = Statement::from_sql_and_values(conn.get_database_backend(), &sql, values);
+        let stmt = raw_statement(conn.get_database_backend(), &sql, values);
         let rows = conn.query_all_raw(stmt).await.map_err(db_err)?;
         rows.iter().map(Self::record).collect()
     }
@@ -139,7 +140,7 @@ impl KeyStore for DbKeyStore {
     async fn remove(&self, id: &str) -> Result<bool, VaultError> {
         let session = self.pool.get_session("admin").await.map_err(db_err)?;
         let conn = session.connection().map_err(db_err)?;
-        let stmt = Statement::from_sql_and_values(
+        let stmt = raw_statement(
             conn.get_database_backend(),
             "DELETE FROM vault_keys WHERE id = ?",
             [id.into()],
@@ -151,7 +152,7 @@ impl KeyStore for DbKeyStore {
     async fn reveal(&self, id: &str) -> Result<SecretString, VaultError> {
         let session = self.pool.get_session("admin").await.map_err(db_err)?;
         let conn = session.connection().map_err(db_err)?;
-        let stmt = Statement::from_sql_and_values(
+        let stmt = raw_statement(
             conn.get_database_backend(),
             "SELECT payload FROM vault_keys WHERE id = ?",
             [id.into()],
@@ -269,7 +270,7 @@ mod tests {
             .expect("put");
         let session = store.pool.get_session("admin").await.expect("session");
         let conn = session.connection().expect("conn");
-        let stmt = Statement::from_sql_and_values(
+        let stmt = raw_statement(
             conn.get_database_backend(),
             "SELECT payload FROM vault_keys WHERE id = ?",
             [record.id.as_str().into()],

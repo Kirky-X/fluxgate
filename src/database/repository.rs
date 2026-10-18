@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 use crate::database::{
-    CostGroupBy, CostUsageRow, LogFilter, RequestLog, TokenUsageRow, VendorStatusRecord,
+    raw_statement, CostGroupBy, CostUsageRow, LogFilter, RequestLog, TokenUsageRow,
+    VendorStatusRecord,
 };
 use crate::i18n::t_args;
 use dbnexus::{DbError, DbPool, Session};
 use sea_orm::{
-    ConnectionTrait, DatabaseBackend, DatabaseConnection, QueryResult, Statement, Value,
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, QueryResult, Statement, TransactionTrait,
+    Value,
 };
 
 /// LIKE 通配符转义（纯函数）：`\` → `\\`、`%` → `\%`、`_` → `\_`，
@@ -83,10 +85,14 @@ async fn migrate_v0_1_columns(session: &Session, backend: DatabaseBackend) -> Re
 /// 与 sqlite/postgres 的 V2 UP 内联索引同语义；MySQL 无
 /// `CREATE INDEX IF NOT EXISTS` 故统一走本探针）。
 async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> {
+    // idx_model 列携带前缀长度：V1 mysql 的 abstract_model 是 TEXT，MySQL 拒绝
+    // 无长度键规格的 TEXT 索引（1170 BLOB/TEXT column used in key specification
+    // without a key length）；255 字符 = 1020 字节，在 3072 字节上限内，与
+    // sqlite/postgres 的全列索引同语义（非唯一索引，等值/前缀查找等价）。
     const INDEXES: [(&str, &str, &str); 6] = [
         ("idx_timestamp", "request_logs", "timestamp"),
         ("idx_vendor", "request_logs", "actual_vendor"),
-        ("idx_model", "request_logs", "abstract_model"),
+        ("idx_model", "request_logs", "abstract_model(255)"),
         ("idx_request_id", "request_logs", "request_id"),
         ("idx_token_usage_date", "token_usage", "date"),
         (
@@ -167,74 +173,83 @@ impl Repository {
     }
 
     /// 列存在性探针语句与结果列名（纯函数）。
-    /// sqlite 的 PRAGMA table_info 返回键为 `name`，information_schema 为
-    /// `COLUMN_NAME`——语句与键随元组成对返回，调用方不再分支。
+    /// sqlite 的 PRAGMA table_info 返回键为 `name`；information_schema 两后端
+    /// 统一 `AS column_name` 显式别名——postgres 对未加引号的标识符做小写折叠
+    ///（裸 `COLUMN_NAME` 结果列名实为 `column_name`，按原名取值恒落空）。
+    /// 语句与键随元组成对返回，调用方不再分支。
     fn column_probe(backend: DatabaseBackend, table: &str, column: &str) -> (String, &'static str) {
         match backend {
             DatabaseBackend::Sqlite => (format!("PRAGMA table_info({table})"), "name"),
             DatabaseBackend::MySql => (
                 format!(
-                    "SELECT COLUMN_NAME FROM information_schema.columns \
+                    "SELECT COLUMN_NAME AS column_name FROM information_schema.columns \
                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}' AND COLUMN_NAME = '{column}'"
                 ),
-                "COLUMN_NAME",
+                "column_name",
             ),
             // DatabaseBackend 带 #[non_exhaustive]：其余服务端后端（含
             // postgres）共用 ANSI information_schema，按当前 schema 限定
             _ => (
                 format!(
-                    "SELECT COLUMN_NAME FROM information_schema.columns \
+                    "SELECT COLUMN_NAME AS column_name FROM information_schema.columns \
                      WHERE TABLE_SCHEMA = current_schema() AND TABLE_NAME = '{table}' AND COLUMN_NAME = '{column}'"
                 ),
-                "COLUMN_NAME",
+                "column_name",
             ),
         }
     }
 
     pub async fn log_request(&self, log: &RequestLog) -> Result<(), DbError> {
         let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
         let (sql, params) = Self::insert_log_parts(log);
-        session.execute_with_params(&sql, &params).await?;
+        let stmt = raw_statement(conn.get_database_backend(), &sql, params);
+        conn.execute_raw(stmt).await?;
         Ok(())
     }
 
     /// 单事务参数化批量写入：N 条 INSERT 包在一个事务里 commit（N 次 fsync
     /// 合为 1），参数绑定无手写转义（不用裸 SQL batch——用户内容拼接引入
-    /// 注入面）；单条失败回滚整批
+    /// 注入面）；单条失败回滚整批。
+    /// 事务取连接自身（`TransactionTrait`）：值走 sea-orm `Value` 带类型绑定
+    /// ——dbnexus `execute_with_params` 的 JSON 映射把 null 绑成 TEXT，PG 下
+    /// 数值列（cost_usd/token 计数）收到 TEXT 参数即拒（`expression is of
+    /// type text`）。
     pub async fn log_requests_batch(&self, logs: &[RequestLog]) -> Result<(), DbError> {
         if logs.is_empty() {
             return Ok(());
         }
         let session = self.pool.get_session("admin").await?;
-        session.begin_transaction().await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let tx = conn.begin().await.map_err(DbError::from)?;
         let mut failed: Option<DbError> = None;
         for log in logs {
             let (sql, params) = Self::insert_log_parts(log);
-            if let Err(e) = session.execute_with_params(&sql, &params).await {
-                failed = Some(e);
+            if let Err(e) = tx.execute_raw(raw_statement(backend, &sql, params)).await {
+                failed = Some(DbError::from(e));
                 break;
             }
         }
         match failed {
             // commit 失败同样尝试回滚，不残留开事务连接
-            None => {
-                if let Err(e) = session.commit().await {
-                    let _ = session.rollback().await;
-                    return Err(e);
-                }
-                Ok(())
-            }
+            None => match tx.commit().await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(DbError::from(e)),
+            },
             Some(e) => {
-                let _ = session.rollback().await;
+                let _ = tx.rollback().await;
                 Err(e)
             }
         }
     }
 
     /// request_logs 参数化 INSERT（`log_request`/`log_requests_batch` 共用）。
-    /// 占位符统一 `?`：`Statement::from_sql_and_values` 按 backend 标注翻译
-    ///（postgres 下 `?` → `$n`），调用方不再按后端分支。
-    fn insert_log_parts(log: &RequestLog) -> (String, Vec<serde_json::Value>) {
+    /// 占位符统一 `?`，执行前经 [`crate::database::dialect_placeholders`] 按
+    /// backend 方言化（postgres 需 `$n`），调用方不再按后端分支。
+    /// 参数为不透明 `Value`（带类型绑定）：sqlite/postgres/mysql 三端
+    /// NULL 都按列类型落在正确位置。
+    fn insert_log_parts(log: &RequestLog) -> (String, Vec<Value>) {
         const SQL: &str = r#"
             INSERT INTO request_logs (
                 request_id, timestamp, endpoint, input_format,
@@ -244,24 +259,24 @@ impl Repository {
                 cost_usd
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#;
-        let params = vec![
-            serde_json::json!(log.request_id),
-            serde_json::json!(log.timestamp),
-            serde_json::json!(log.endpoint),
-            serde_json::json!(log.input_format),
-            serde_json::json!(log.abstract_model),
-            serde_json::json!(log.messages),
-            serde_json::json!(log.actual_vendor),
-            serde_json::json!(log.actual_model),
-            serde_json::json!(log.routing_strategy),
-            serde_json::json!(log.status_code),
-            serde_json::json!(log.response),
-            serde_json::json!(log.error_message),
-            serde_json::json!(log.prompt_tokens),
-            serde_json::json!(log.completion_tokens),
-            serde_json::json!(log.total_tokens),
-            serde_json::json!(log.duration_ms),
-            serde_json::json!(log.cost_usd),
+        let params: Vec<Value> = vec![
+            log.request_id.clone().into(),
+            log.timestamp.into(),
+            log.endpoint.clone().into(),
+            log.input_format.clone().into(),
+            log.abstract_model.clone().into(),
+            log.messages.clone().into(),
+            log.actual_vendor.clone().into(),
+            log.actual_model.clone().into(),
+            log.routing_strategy.clone().into(),
+            log.status_code.into(),
+            log.response.clone().into(),
+            log.error_message.clone().into(),
+            log.prompt_tokens.into(),
+            log.completion_tokens.into(),
+            log.total_tokens.into(),
+            log.duration_ms.into(),
+            log.cost_usd.into(),
         ];
         (SQL.to_string(), params)
     }
@@ -299,7 +314,7 @@ impl Repository {
 
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
-        let stmt = Statement::from_sql_and_values(conn.get_database_backend(), &query, values);
+        let stmt = raw_statement(conn.get_database_backend(), &query, values);
         let rows = conn.query_all_raw(stmt).await?;
 
         Ok(rows.iter().map(map_request_log).collect())
@@ -339,7 +354,7 @@ impl Repository {
             (limit as i64).into(),
         ];
 
-        let stmt = Statement::from_sql_and_values(backend, &sql, values);
+        let stmt = raw_statement(backend, &sql, values);
         let rows = conn.query_all_raw(stmt).await?;
 
         Ok(rows.iter().map(map_request_log).collect())
@@ -372,7 +387,7 @@ impl Repository {
 
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
-        let stmt = Statement::from_sql_and_values(conn.get_database_backend(), &sql, values);
+        let stmt = raw_statement(conn.get_database_backend(), &sql, values);
         let rows = conn.query_all_raw(stmt).await?;
 
         Ok(rows.iter().map(map_token_usage).collect())
@@ -393,14 +408,22 @@ impl Repository {
             CostGroupBy::Vendor => "vendor",
             CostGroupBy::Model => "model",
         };
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
         let mut sql = format!(
             "SELECT {dimension} AS dimension, \
-             SUM(request_count) AS request_count, SUM(input_tokens) AS input_tokens, \
-             SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, \
-             SUM(cache_creation_tokens) AS cache_creation_tokens, SUM(input_cost) AS input_cost, \
+             {request_count}, {input_tokens}, \
+             {output_tokens}, {cache_read_tokens}, \
+             {cache_creation_tokens}, SUM(input_cost) AS input_cost, \
              SUM(output_cost) AS output_cost, SUM(cache_read_cost) AS cache_read_cost, \
              SUM(cache_creation_cost) AS cache_creation_cost \
-             FROM token_usage"
+             FROM token_usage",
+            request_count = int_sum_expr(backend, "request_count"),
+            input_tokens = int_sum_expr(backend, "input_tokens"),
+            output_tokens = int_sum_expr(backend, "output_tokens"),
+            cache_read_tokens = int_sum_expr(backend, "cache_read_tokens"),
+            cache_creation_tokens = int_sum_expr(backend, "cache_creation_tokens"),
         );
         let mut values: Vec<Value> = Vec::new();
         let mut clauses: Vec<String> = Vec::new();
@@ -422,9 +445,7 @@ impl Repository {
         }
         sql.push_str(&format!(" GROUP BY {dimension} ORDER BY {dimension}"));
 
-        let session = self.pool.get_session("admin").await?;
-        let conn = session.connection()?;
-        let stmt = Statement::from_sql_and_values(conn.get_database_backend(), &sql, values);
+        let stmt = raw_statement(backend, &sql, values);
         let rows = conn.query_all_raw(stmt).await?;
 
         Ok(rows
@@ -471,6 +492,27 @@ impl Repository {
     }
 }
 
+/// 整数聚合列投影（纯函数）：`SUM(bigint)` 在 postgres 是 `numeric`、在
+/// mysql 是 `decimal`，与 i64 解码不兼容（`unwrap_or_default` 静默归 0），
+/// 故按后端显式 CAST 回整数类型；sqlite 的 SUM 保持整数类型，原样即可。
+fn int_sum_expr(backend: DatabaseBackend, column: &str) -> String {
+    match backend {
+        DatabaseBackend::Postgres => format!("CAST(SUM({column}) AS BIGINT) AS {column}"),
+        DatabaseBackend::MySql => format!("CAST(SUM({column}) AS SIGNED) AS {column}"),
+        _ => format!("SUM({column}) AS {column}"),
+    }
+}
+
+/// 整数列读取为 i32（纯函数）：postgres 侧这些列自 V1 起即 BIGINT，
+/// 按 i32 直读会解码失败而静默落成缺省值（NULL/0）；统一经 i64 读再收窄
+///（sqlite/mysql 的 i64 读法兼容）。越界值按缺省处理（计数/状态码量级内）。
+fn read_i32(row: &QueryResult, column: &str) -> Option<i32> {
+    row.try_get::<Option<i64>>("", column)
+        .ok()
+        .flatten()
+        .and_then(|v| i32::try_from(v).ok())
+}
+
 fn map_request_log(row: &QueryResult) -> RequestLog {
     RequestLog {
         id: row.try_get::<Option<i64>>("", "id").unwrap_or(None),
@@ -485,24 +527,16 @@ fn map_request_log(row: &QueryResult) -> RequestLog {
         actual_vendor: row.try_get("", "actual_vendor").unwrap_or_default(),
         actual_model: row.try_get("", "actual_model").unwrap_or_default(),
         routing_strategy: row.try_get("", "routing_strategy").unwrap_or_default(),
-        status_code: row
-            .try_get::<Option<i32>>("", "status_code")
-            .unwrap_or(None),
+        status_code: read_i32(row, "status_code"),
         response: row
             .try_get::<Option<String>>("", "response")
             .unwrap_or(None),
         error_message: row
             .try_get::<Option<String>>("", "error_message")
             .unwrap_or(None),
-        prompt_tokens: row
-            .try_get::<Option<i32>>("", "prompt_tokens")
-            .unwrap_or(None),
-        completion_tokens: row
-            .try_get::<Option<i32>>("", "completion_tokens")
-            .unwrap_or(None),
-        total_tokens: row
-            .try_get::<Option<i32>>("", "total_tokens")
-            .unwrap_or(None),
+        prompt_tokens: read_i32(row, "prompt_tokens"),
+        completion_tokens: read_i32(row, "completion_tokens"),
+        total_tokens: read_i32(row, "total_tokens"),
         duration_ms: row
             .try_get::<Option<i64>>("", "duration_ms")
             .unwrap_or(None),
@@ -549,7 +583,7 @@ fn map_vendor_status(row: &QueryResult) -> VendorStatusRecord {
         window_reset_at: row
             .try_get::<Option<i64>>("", "window_reset_at")
             .unwrap_or(None),
-        error_count: row.try_get("", "error_count").unwrap_or_default(),
+        error_count: read_i32(row, "error_count").unwrap_or_default(),
     }
 }
 
@@ -727,7 +761,11 @@ mod schema_tests {
         }
     }
 
-    /// 列探针语句分派：语句与结果键成对返回（R-schema-002）
+    /// 列探针语句分派：语句与结果键成对返回（R-schema-002）。
+    /// information_schema 两后端统一 `AS column_name` 显式别名——postgres 对
+    /// 未加引号标识符做小写折叠，裸 `COLUMN_NAME` 的结果列名实为
+    /// `column_name`，按原名取值恒落空（探针恒判缺失 → 重复 ALTER 报
+    /// "column already exists"）；别名后结果键三后端均为小写口径。
     #[test]
     fn column_probe_dispatch_by_backend() {
         use super::Repository;
@@ -742,11 +780,34 @@ mod schema_tests {
         assert!(sql.contains("TABLE_SCHEMA = DATABASE()"));
         assert!(sql.contains("TABLE_NAME = 'request_logs'"));
         assert!(sql.contains("COLUMN_NAME = 'cost_usd'"));
-        assert_eq!(key, "COLUMN_NAME");
+        assert!(sql.contains("COLUMN_NAME AS column_name"), "{sql}");
+        assert_eq!(key, "column_name");
 
         let (sql, key) =
             Repository::column_probe(DatabaseBackend::Postgres, "request_logs", "cost_usd");
         assert!(sql.contains("TABLE_SCHEMA = current_schema()"));
-        assert_eq!(key, "COLUMN_NAME");
+        assert!(sql.contains("COLUMN_NAME AS column_name"), "{sql}");
+        assert_eq!(key, "column_name");
+    }
+
+    /// 整数聚合列投影分派：postgres 的 `SUM(bigint)` 是 numeric、mysql 是
+    /// decimal，按 i64 解码静默归 0，故两后端显式 CAST；sqlite 的 SUM 保持
+    /// 整数类型（R-schema-002 的读回口径）。
+    #[test]
+    fn int_sum_expr_casts_on_server_side_backends() {
+        use super::int_sum_expr;
+
+        assert_eq!(
+            int_sum_expr(DatabaseBackend::Postgres, "request_count"),
+            "CAST(SUM(request_count) AS BIGINT) AS request_count"
+        );
+        assert_eq!(
+            int_sum_expr(DatabaseBackend::MySql, "input_tokens"),
+            "CAST(SUM(input_tokens) AS SIGNED) AS input_tokens"
+        );
+        assert_eq!(
+            int_sum_expr(DatabaseBackend::Sqlite, "output_tokens"),
+            "SUM(output_tokens) AS output_tokens"
+        );
     }
 }

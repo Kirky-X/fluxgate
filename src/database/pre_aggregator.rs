@@ -203,7 +203,7 @@ impl TokenPreAggregator {
                 value.cache_creation_cost.into(),
             ];
 
-            let stmt = sea_orm::Statement::from_sql_and_values(backend, sql, values);
+            let stmt = crate::database::raw_statement(backend, sql, values);
             conn.execute_raw(stmt).await?;
         }
 
@@ -233,22 +233,24 @@ fn upsert_token_usage_sql(backend: sea_orm::DatabaseBackend) -> &'static str {
                 cache_creation_cost = cache_creation_cost + VALUES(cache_creation_cost)
         "#
         }
-        // DatabaseBackend 带 #[non_exhaustive]：其余（sqlite/postgres）ON CONFLICT 通用
+        // DatabaseBackend 带 #[non_exhaustive]：其余（sqlite/postgres）ON CONFLICT 通用。
+        // 存量行引用按表名限定——postgres 的 DO UPDATE 表达式里裸列名在
+        // 「目标表 vs excluded」间有歧义（column reference is ambiguous）
         _ => {
             r#"
             INSERT INTO token_usage (vendor, model, api_key_hash, date, hour, request_count, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, input_cost, output_cost, cache_read_cost, cache_creation_cost)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(vendor, model, api_key_hash, date, hour)
             DO UPDATE SET
-                request_count = request_count + excluded.request_count,
-                input_tokens = input_tokens + excluded.input_tokens,
-                output_tokens = output_tokens + excluded.output_tokens,
-                cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-                cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
-                input_cost = input_cost + excluded.input_cost,
-                output_cost = output_cost + excluded.output_cost,
-                cache_read_cost = cache_read_cost + excluded.cache_read_cost,
-                cache_creation_cost = cache_creation_cost + excluded.cache_creation_cost
+                request_count = token_usage.request_count + excluded.request_count,
+                input_tokens = token_usage.input_tokens + excluded.input_tokens,
+                output_tokens = token_usage.output_tokens + excluded.output_tokens,
+                cache_read_tokens = token_usage.cache_read_tokens + excluded.cache_read_tokens,
+                cache_creation_tokens = token_usage.cache_creation_tokens + excluded.cache_creation_tokens,
+                input_cost = token_usage.input_cost + excluded.input_cost,
+                output_cost = token_usage.output_cost + excluded.output_cost,
+                cache_read_cost = token_usage.cache_read_cost + excluded.cache_read_cost,
+                cache_creation_cost = token_usage.cache_creation_cost + excluded.cache_creation_cost
         "#
         }
     }

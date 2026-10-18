@@ -236,8 +236,13 @@ CREATE INDEX IF NOT EXISTS idx_token_usage_key_date ON token_usage(api_key_hash,
 
 /// V2 UP（mysql）：内联 UNIQUE 自动以首列命名（V1 键名 = vendor），换绑 =
 /// DROP INDEX + ADD UNIQUE KEY；普通索引走 `ensure_indexes_mysql`。
+/// 新键 5 列必须落在 InnoDB 3072 字节上限内（utf8mb4 = 4 字节/字符）：
+/// V1 形态 3 VARCHAR(255) + INT = 3064 字节本已贴顶，再并入 api_key_hash
+/// 即 4084 → 建键报 1071；故本次一并收窄两列——api_key_hash（SHA256 hex，
+/// 恒 64 字符）与 date（`%Y-%m-%d`，10 字符），得
+/// 255+255+64+16 = 590 字符 = 2360 字节 + INT ✓；vendor/model 维持 V1 宽度。
 const UP_V2_MYSQL: &str = r#"
-ALTER TABLE token_usage ADD COLUMN api_key_hash VARCHAR(255) NOT NULL DEFAULT '', ADD COLUMN input_tokens BIGINT DEFAULT 0, ADD COLUMN output_tokens BIGINT DEFAULT 0, ADD COLUMN cache_read_tokens BIGINT DEFAULT 0, ADD COLUMN cache_creation_tokens BIGINT DEFAULT 0, ADD COLUMN input_cost DOUBLE DEFAULT 0.0, ADD COLUMN output_cost DOUBLE DEFAULT 0.0, ADD COLUMN cache_read_cost DOUBLE DEFAULT 0.0, ADD COLUMN cache_creation_cost DOUBLE DEFAULT 0.0;
+ALTER TABLE token_usage ADD COLUMN api_key_hash VARCHAR(64) NOT NULL DEFAULT '', ADD COLUMN input_tokens BIGINT DEFAULT 0, ADD COLUMN output_tokens BIGINT DEFAULT 0, ADD COLUMN cache_read_tokens BIGINT DEFAULT 0, ADD COLUMN cache_creation_tokens BIGINT DEFAULT 0, ADD COLUMN input_cost DOUBLE DEFAULT 0.0, ADD COLUMN output_cost DOUBLE DEFAULT 0.0, ADD COLUMN cache_read_cost DOUBLE DEFAULT 0.0, ADD COLUMN cache_creation_cost DOUBLE DEFAULT 0.0, MODIFY date VARCHAR(16) NOT NULL;
 UPDATE token_usage SET api_key_hash = '', input_tokens = prompt_tokens, output_tokens = completion_tokens, input_cost = cost_usd_sum;
 ALTER TABLE token_usage DROP COLUMN total_tokens, DROP COLUMN prompt_tokens, DROP COLUMN completion_tokens, DROP COLUMN cost_usd_sum, DROP INDEX vendor, ADD UNIQUE KEY uk_token_usage_v2 (vendor, model, api_key_hash, date, hour);
 "#;
@@ -276,7 +281,7 @@ DROP INDEX IF EXISTS idx_token_usage_key_date;
 "#;
 
 const DOWN_V2_MYSQL: &str = r#"
-ALTER TABLE token_usage DROP INDEX uk_token_usage_v2, ADD UNIQUE KEY vendor (vendor, model, date, hour);
+ALTER TABLE token_usage DROP INDEX uk_token_usage_v2, ADD UNIQUE KEY vendor (vendor, model, date, hour), MODIFY date VARCHAR(255) NOT NULL;
 ALTER TABLE token_usage ADD COLUMN total_tokens BIGINT DEFAULT 0, ADD COLUMN prompt_tokens BIGINT DEFAULT 0, ADD COLUMN completion_tokens BIGINT DEFAULT 0, ADD COLUMN cost_usd_sum DOUBLE DEFAULT 0.0;
 UPDATE token_usage SET prompt_tokens = input_tokens, completion_tokens = output_tokens, total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens, cost_usd_sum = input_cost + output_cost + cache_read_cost + cache_creation_cost;
 ALTER TABLE token_usage DROP COLUMN api_key_hash, DROP COLUMN input_tokens, DROP COLUMN output_tokens, DROP COLUMN cache_read_tokens, DROP COLUMN cache_creation_tokens, DROP COLUMN input_cost, DROP COLUMN output_cost, DROP COLUMN cache_read_cost, DROP COLUMN cache_creation_cost;

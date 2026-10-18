@@ -7,9 +7,13 @@
 --   REAL -> DOUBLE
 --   键规格列（PK/UNIQUE/索引覆盖）TEXT -> VARCHAR(255)：MySQL 要求
 --   BLOB/TEXT 索引必须带前缀长度（ERROR 1170），utf8mb4 下 VARCHAR(255)
---   = 1020 字节 < 3072 上限
+--   = 1020 字节 < 3072 上限；
+--   token_usage 的 UNIQUE 键含 4 个变长列，宽度受 3072 字节键长上限约束：
+--   api_key_hash（SHA256 hex，恒 64 字符）与 date（%Y-%m-%d）收窄为
+--   VARCHAR(64)/VARCHAR(16)，键长 2360 字节（对齐 migration.rs 的 V2 UP）。
 -- 注意：本文件只含建表——MySQL 8 不支持 CREATE INDEX IF NOT EXISTS，索引由
--- repository::ensure_indexes_mysql 按 information_schema.statistics 幂等创建。
+-- repository::ensure_indexes_mysql 按 information_schema.statistics 幂等创建
+-- （TEXT 列 idx_model 带 (255) 前缀）。
 
 -- 请求日志表
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -38,8 +42,8 @@ CREATE TABLE IF NOT EXISTS token_usage (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     vendor VARCHAR(255) NOT NULL,
     model VARCHAR(255) NOT NULL,
-    api_key_hash VARCHAR(255) NOT NULL DEFAULT '',
-    date VARCHAR(255) NOT NULL,
+    api_key_hash VARCHAR(64) NOT NULL DEFAULT '',
+    date VARCHAR(16) NOT NULL,
     hour INTEGER NOT NULL,
     request_count BIGINT DEFAULT 0,
     input_tokens BIGINT DEFAULT 0,

@@ -11,12 +11,14 @@ use serde::{Deserialize, Serialize};
 pub mod async_logger;
 #[allow(clippy::module_inception)]
 pub mod database;
+mod dialect;
 pub mod migration;
 pub mod pre_aggregator;
 pub mod repository;
 
 pub use async_logger::{AsyncLogger, AsyncLoggerHandle};
 pub use database::{redact_db_url, resolve_database_url, Database};
+pub(crate) use dialect::raw_statement;
 pub use pre_aggregator::{TokenPreAggregator, TokenPreAggregatorHandle};
 pub use repository::Repository;
 

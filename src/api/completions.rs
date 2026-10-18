@@ -1099,32 +1099,43 @@ async fn log_chat_failure(
     .await;
 }
 
-/// embeddings 走 VendorManager 治理路径（共享连接池、限流、token 记账、
-/// metrics 全部生效）；上游非 2xx → VendorUnavailable；日志同 chat 走异步管道
-#[axum::debug_handler]
-pub async fn embeddings(
-    State(state): State<Arc<ApiState>>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<impl IntoResponse, FluxgateError> {
+/// embeddings 入站日志元数据（端点/入站格式由调用方指定）。
+pub(crate) struct EmbeddingLogMeta<'a> {
+    pub endpoint: &'a str,
+    pub input_format: &'a str,
+}
+
+/// embeddings 公共执行体（`/v1/embeddings` 与 Gemini `:embedContent` 共用）：
+/// 路由 → OpenAI 形状上游 → 维度守门 → 日志/分账。`settlement_body` 存在时
+/// 追加 quota 回补（Gemini 入口已预扣；OpenAI 入口未预扣故传 None）。
+pub(crate) async fn execute_embeddings(
+    state: &Arc<ApiState>,
+    headers: &HeaderMap,
+    openai_body: Value,
+    settlement_body: Option<&Value>,
+    log_meta: EmbeddingLogMeta<'_>,
+    input_str: &str,
+) -> Result<Value, FluxgateError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
-    // 请求方 key 摘要透传分账（与响应缓存同源）。
-    let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
+    let api_key_hash = crate::utils::tenant::api_key_digest(headers);
 
-    // 路由决策 - embedding 使用特殊路由
-    let model = body.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
-        FluxgateError::from(GateError::Validation {
-            field: "model".into(),
-        })
-    })?;
+    let model = openai_body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            FluxgateError::from(GateError::Validation {
+                field: "model".into(),
+            })
+        })?
+        .to_string();
 
-    let decision = match state.router.route_embedding(model).await {
+    let decision = match state.router.route_embedding(&model).await {
         Ok(d) => d,
         Err(e) => return Err(e.into()),
     };
 
-    // 只支持 OpenAI vendor
+    // 只支持 OpenAI vendor（兼容组/pin 契约按 OpenAI 形状定义）
     if decision.vendor.type_ != "openai" {
         return Err(FluxgateError::from(GateError::Protocol {
             source: t("api-embeddings-openai-only"),
@@ -1132,55 +1143,40 @@ pub async fn embeddings(
         }));
     }
 
-    // 转换为 OpenAI 格式
-    let openai_body = embedding_request_to_openai(body.clone())?;
-
-    // 治理路径执行
     let response_json = match state
         .vendor_manager
-        .execute_passthrough_request_at(&decision.vendor.id, openai_body, "embeddings")
+        .execute_passthrough_request_at(&decision.vendor.id, openai_body.clone(), "embeddings")
         .await
     {
         Ok(r) => r,
         Err(e) => {
             let e = FluxgateError::from(e);
-            // 失败落库：status_code/error_message 真实值
             let duration_ms = start_time.elapsed().as_millis() as i64;
-            let input_str = body
-                .get("input")
-                .map(|v| serde_json::to_string(v).unwrap_or_default())
-                .unwrap_or_default();
-            let decision_ref = &decision;
             let error_str = e.to_string();
             push_embeddings_log(
-                &state,
+                state,
                 &request_id,
-                model,
-                decision_ref,
-                &input_str,
+                &model,
+                &decision,
+                input_str,
                 None,
                 duration_ms,
                 crate::api::status_code_for_error(&e),
                 Some(error_str),
                 &api_key_hash,
+                &log_meta,
             )
             .await;
             return Err(e);
         }
     };
 
-    // 记录日志
-    let input_str = body
-        .get("input")
-        .map(|v| serde_json::to_string(v).unwrap_or_default())
-        .unwrap_or_default();
-
-    // 维度守门：无 dimensions 参数的请求参与记录/比对（首见放行；维度漂移 →
-    // 502 且向量不落给客户端，错误体含 vendor/model/新旧维度值）。带
-    // dimensions 参数的请求由上游按参数裁剪维度，不写记录也不比对。
-    // batch 响应逐元素校验（同批各元素与同一基准比对）；base64 编码形态
-    // （embedding 为字符串）不解码守门，debug 日志显性化跳过
-    if body.get("dimensions").map(|v| v.is_null()).unwrap_or(true) {
+    // 维度守门（无 dimensions 参数才比对；带参由上游按参数裁剪）
+    if openai_body
+        .get("dimensions")
+        .map(|v| v.is_null())
+        .unwrap_or(true)
+    {
         if let Some(pin) = state.router.embedding_pin() {
             let data = response_json.get("data").and_then(|data| data.as_array());
             if data.is_some_and(|data| {
@@ -1225,9 +1221,7 @@ pub async fn embeddings(
                                 ("model", decision.model.model_id.clone()),
                                 ("old", old.to_string()),
                                 ("new", now.to_string()),
-                                // pin 键是 abstract（路由归一后），重置指引必须
-                                // 指向同源键；model 仅用于定位漂移厂商条目
-                                ("abstract", crate::router::bandit::linucb_arm_key(model)),
+                                ("abstract", crate::router::bandit::linucb_arm_key(&model)),
                             ],
                         ),
                         inner: None,
@@ -1235,16 +1229,17 @@ pub async fn embeddings(
                     let duration_ms = start_time.elapsed().as_millis() as i64;
                     let error_message = error.to_string();
                     push_embeddings_log(
-                        &state,
+                        state,
                         &request_id,
-                        model,
+                        &model,
                         &decision,
-                        &input_str,
+                        input_str,
                         None,
                         duration_ms,
                         502,
                         Some(error_message),
                         &api_key_hash,
+                        &log_meta,
                     )
                     .await;
                     return Err(error);
@@ -1253,23 +1248,66 @@ pub async fn embeddings(
         }
     }
 
-    // 记录日志
     let duration_ms = start_time.elapsed().as_millis() as i64;
     push_embeddings_log(
-        &state,
+        state,
         &request_id,
-        model,
+        &model,
         &decision,
-        &input_str,
+        input_str,
         Some(&response_json),
         duration_ms,
         200,
         None,
         &api_key_hash,
+        &log_meta,
     )
     .await;
 
-    Ok(Json(response_json))
+    // Gemini 入口经 quota 中间件预扣，成功时按实际 usage 回补；
+    // `/v1/embeddings` 未预扣，传 None 保持历史零行为
+    if let Some(settlement) = settlement_body {
+        crate::middleware::quota::settle_nonstream(
+            &state.config,
+            state.quota.as_ref(),
+            &api_key_hash,
+            settlement,
+            &response_json,
+            &decision.vendor.type_,
+            &decision.vendor.id,
+            Some(state.vendor_manager.metrics()),
+        );
+    }
+
+    Ok(response_json)
+}
+
+/// embeddings 走 VendorManager 治理路径（共享连接池、限流、token 记账、
+/// metrics 全部生效）；上游非 2xx → VendorUnavailable；日志同 chat 走异步管道
+#[axum::debug_handler]
+pub async fn embeddings(
+    State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<impl IntoResponse, FluxgateError> {
+    let input_str = body
+        .get("input")
+        .map(|v| serde_json::to_string(v).unwrap_or_default())
+        .unwrap_or_default();
+    let openai_body = embedding_request_to_openai(body)?;
+    let response = execute_embeddings(
+        &state,
+        &headers,
+        openai_body,
+        None,
+        EmbeddingLogMeta {
+            endpoint: "/v1/embeddings",
+            input_format: "openai",
+        },
+        &input_str,
+    )
+    .await?;
+    Ok(Json(response))
 }
 
 /// embeddings 的异步日志 push（同 log_chat_request 的背压
@@ -1286,6 +1324,7 @@ async fn push_embeddings_log(
     status_code: i32,
     error_message: Option<String>,
     api_key_hash: &str,
+    meta: &EmbeddingLogMeta<'_>,
 ) {
     let usage = response.and_then(|r| r.get("usage"));
     let prompt_tokens = usage
@@ -1320,8 +1359,8 @@ async fn push_embeddings_log(
         id: None,
         request_id: request_id.to_string(),
         timestamp: chrono::Utc::now().timestamp(),
-        endpoint: "/v1/embeddings".to_string(),
-        input_format: "openai".to_string(),
+        endpoint: meta.endpoint.to_string(),
+        input_format: meta.input_format.to_string(),
         abstract_model: Some(model.to_string()),
         messages: crate::api::truncate_payload(input_str.to_string()),
         actual_vendor: decision.vendor.id.clone(),

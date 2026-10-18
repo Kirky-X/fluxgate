@@ -45,7 +45,7 @@ api-amplification-tightening = 失败率逼近临界 f_c；本请求 max_total_a
 api-vendor-failed-rerouting = vendor 失败；切换 fallback 重路由
 api-vendor-failed-rerouting-pre-stream = vendor 在响应/流建立前失败；切换 fallback 重路由
 
-# ---- api/openai.rs / api/anthropic.rs ----
+# ---- api/completions.rs / api/anthropic.rs ----
 api-log-push-rejected = 请求日志推送被拒：{ $error }
 api-usage-record-rejected = Token 用量记账被拒：{ $error }
 api-embeddings-openai-only = embeddings 仅支持 OpenAI 类型厂商
@@ -69,7 +69,7 @@ api-count-tokens-messages-empty = messages（不得为空）
 api-route-explain-model-invalid = model（缺失或非字符串）
 api-route-explain-model-unknown = model '{ $model }'（未知模型）
 
-# ---- 不变量 panic 文案（api/{anthropic,openai}.rs 最终路由 / api/route_explain.rs 入选者字段）----
+# ---- 不变量 panic 文案（api/{anthropic,completions}.rs 最终路由 / api/route_explain.rs 入选者字段）----
 api-final-route-missing = leader/自愈/未参与路径闭包必产出最终路由
 api-explain-no-factors = 入选者必有分解
 api-explain-no-weight = 入选者必有权重
@@ -95,3 +95,28 @@ api-responses-native-hint-vendor = X-Vendor "{ $vendor }" 不具备 Responses �
 api-responses-native-hint-model = X-Model "{ $model }" 无 Responses 原生厂商承载：请检查厂商 api_style 与启用状态
 api-responses-orphans-failed = Responses 孤儿后台任务已置 failed：{ $count } 条
 api-responses-orphan-cleanup-failed = Responses 孤儿任务清理失败（启动继续）：{ $error }
+
+# ---- api/gemini.rs（Gemini 原生入站） ----
+api-gemini-action-required = Gemini 请求路径必须包含 ":<action>"（generateContent / streamGenerateContent / countTokens / embedContent / batchEmbedContents）
+api-gemini-action-unknown = 未知的 Gemini action "{ $action }"
+api-gemini-model-required = Gemini 请求缺少 model（路径 /models/{model}:{action}）
+api-gemini-model-mismatch = Gemini body 中的 model "{ $body }" 与路径 model "{ $path }" 不一致
+api-gemini-contents-invalid = Gemini "contents" 必须是非空数组
+api-gemini-parts-invalid = Gemini content 的 "parts" 必须是非空数组
+api-gemini-part-invalid = Gemini content part 形状非法
+api-gemini-part-unsupported = 网关不支持该 Gemini content part 类型
+api-gemini-tool-name-required = Gemini function declaration/functionCall 缺少 "name"
+api-gemini-tool-unsupported = 不含 functionDeclarations 的 Gemini tools 仅支持原生直通
+api-gemini-function-response-name-missing = Gemini functionResponse 缺少 name 且无法从历史工具调用反查
+api-gemini-response-invalid = Gemini 上游响应缺少 candidates/output
+api-gemini-stream-failed = Gemini 上游流中断：{ $error }
+api-gemini-embed-content-invalid = Gemini embedContent 需要 "content.parts[].text"
+api-gemini-embed-requests-invalid = Gemini batchEmbedContents 需要非空 "requests" 数组
+api-gemini-embed-dimensions-conflict = Gemini batchEmbedContents 各请求的 outputDimensionality 必须一致
+api-gemini-schema-ref-cycle = Gemini responseSchema 的 $ref 存在环：{ $detail }
+api-gemini-schema-ref-depth = Gemini responseSchema 的 $ref 超过最大展开深度：{ $detail }
+api-gemini-schema-ref-missing = Gemini responseSchema 的 $ref 目标不存在：{ $detail }
+api-gemini-schema-ref-unsupported = Gemini responseSchema 的 $ref 必须指向 #/$defs 或 #/definitions：{ $detail }
+api-gemini-native-vendor-mismatch = X-Vendor "{ $vendor }" 不是 Gemini 原生厂商
+router-gemini-no-native-vendor = 模型 "{ $model }" 无 Gemini 原生厂商：请声明 type_ = "gemini" 并启用厂商/模型
+middleware-gemini-unauthorized = Gemini 请求缺少有效的 API key

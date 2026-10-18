@@ -7,7 +7,9 @@ use super::{
 };
 use crate::config::{ConfigManager, RetrySection, VendorConfig};
 use crate::error::GateError;
-use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter, ResponsesConverter};
+use crate::protocol::{
+    AnthropicConverter, GeminiConverter, OpenAIConverter, ProtocolConverter, ResponsesConverter,
+};
 use crate::protocol::{StreamChunk, UnifiedRequest, UnifiedResponse};
 use crate::utils::metrics::GlobalMetrics;
 use crate::utils::retry::{retry_delay_for, spread_delay, ErrorCategory, RetryDelayPolicy};
@@ -351,6 +353,7 @@ pub struct VendorManager {
     openai_converter: Arc<OpenAIConverter>,
     anthropic_converter: Arc<AnthropicConverter>,
     responses_converter: Arc<ResponsesConverter>,
+    gemini_converter: Arc<GeminiConverter>,
     metrics: Arc<GlobalMetrics>,
     #[cfg(feature = "cost-tracking")]
     cost_tracker: Arc<CostTracker>,
@@ -382,6 +385,7 @@ impl VendorManager {
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             responses_converter: Arc::new(ResponsesConverter::new()),
+            gemini_converter: Arc::new(GeminiConverter::new()),
             metrics: Arc::new(GlobalMetrics::new()),
             #[cfg(feature = "cost-tracking")]
             cost_tracker: Arc::new(CostTracker::new()),
@@ -632,6 +636,7 @@ impl VendorManager {
         let openai = self.openai_converter.clone();
         let anthropic = self.anthropic_converter.clone();
         let responses = self.responses_converter.clone();
+        let gemini = self.gemini_converter.clone();
         let config_manager = self.config.clone();
         // metrics 传入 worker — 转换路径（经队列）在 worker 内记账
         let metrics = self.metrics.clone();
@@ -643,6 +648,7 @@ impl VendorManager {
                 openai,
                 anthropic,
                 responses,
+                gemini,
                 config_manager,
                 metrics,
             )
@@ -652,12 +658,14 @@ impl VendorManager {
         instance
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn process_vendor_queue(
         instance: Arc<VendorInstance>,
         client: reqwest::Client,
         openai: Arc<OpenAIConverter>,
         anthropic: Arc<AnthropicConverter>,
         responses: Arc<ResponsesConverter>,
+        gemini: Arc<GeminiConverter>,
         config_manager: Arc<ConfigManager>,
         metrics: Arc<GlobalMetrics>,
     ) {
@@ -713,6 +721,7 @@ impl VendorManager {
                 openai.clone(),
                 anthropic.clone(),
                 responses.clone(),
+                gemini.clone(),
                 config_manager.clone(),
                 metrics.clone(),
                 config,
@@ -731,6 +740,7 @@ impl VendorManager {
         openai: Arc<OpenAIConverter>,
         anthropic: Arc<AnthropicConverter>,
         responses: Arc<ResponsesConverter>,
+        gemini: Arc<GeminiConverter>,
         config_manager: Arc<ConfigManager>,
         metrics: Arc<GlobalMetrics>,
         config: VendorConfig,
@@ -771,6 +781,7 @@ impl VendorManager {
             &openai,
             &anthropic,
             &responses,
+            &gemini,
             &retry_cfg,
             #[cfg(feature = "resilience")]
             &circuit_breaker,
@@ -918,6 +929,7 @@ impl VendorManager {
         openai: &OpenAIConverter,
         anthropic: &AnthropicConverter,
         responses: &ResponsesConverter,
+        gemini: &GeminiConverter,
         retry_cfg: &RetrySection,
         #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker<GateError>>,
         metrics: &GlobalMetrics,
@@ -926,7 +938,11 @@ impl VendorManager {
         cache_policy: Option<&crate::config::model_catalog::CacheBreakpointPolicy>,
     ) -> Result<UnifiedResponse, GateError> {
         let converter: &dyn ProtocolConverter =
-            Self::converter_for(config, openai, anthropic, responses)?;
+            Self::converter_for(config, openai, anthropic, responses, gemini)?;
+
+        // Gemini 的 model 在 URL（body 无 model），须在请求被 move 前捕获；
+        // 其它厂商委托 build_vendor_url_for_model 后行为零变化
+        let target_model = request.model.clone();
 
         // anthropic 型走缓存断点注入入口（None = 非 anthropic，走原编码）
         let request_body = if let Some(policy) = cache_policy {
@@ -939,6 +955,7 @@ impl VendorManager {
         Self::execute_http_with_retry(
             client,
             config,
+            &target_model,
             request_body,
             converter,
             retry_cfg,
@@ -959,15 +976,17 @@ impl VendorManager {
     }
 
     /// 转换器选型（非流式/流式共用）：anthropic 型 → Anthropic；
-    /// openai + api_style="responses" → Responses；其余 openai → chat。
+    /// gemini 型 → Gemini；openai + api_style="responses" → Responses；其余 openai → chat。
     fn converter_for<'a>(
         config: &VendorConfig,
         openai: &'a OpenAIConverter,
         anthropic: &'a AnthropicConverter,
         responses: &'a ResponsesConverter,
+        gemini: &'a GeminiConverter,
     ) -> Result<&'a dyn ProtocolConverter, GateError> {
         match config.type_.as_str() {
             "anthropic" => Ok(anthropic),
+            "gemini" => Ok(gemini),
             "openai" if config.is_responses_style() => Ok(responses),
             "openai" => Ok(openai),
             _ => Err(GateError::Config {
@@ -978,10 +997,22 @@ impl VendorManager {
 
     /// 构建 vendor API URL（path 可变版：chat/completions / messages / embeddings）；
     /// `pub(crate)` 供健康探针复用同一拼接规则。
+    ///
+    /// Gemini 分支：base 缺省为 Google 官方 host；base 已以 `/v1`/`/v1beta`
+    /// 结尾时视为版本前缀直接拼接，否则补 `/v1beta`。
     pub(crate) fn build_vendor_url_at(
         config: &VendorConfig,
         path: &str,
     ) -> Result<String, GateError> {
+        if config.type_ == "gemini" {
+            let base = Self::gemini_api_base(config);
+            let path = path.trim_start_matches('/');
+            return Ok(if base.ends_with("/v1beta") || base.ends_with("/v1") {
+                format!("{base}/{path}")
+            } else {
+                format!("{base}/v1beta/{path}")
+            });
+        }
         // rerank 型：api_base 必须显式声明且视为完整前缀（不再自动补 /v1），
         // 出站固定 `{api_base}/{path}`；Cohere/Jina 配 .../v1，TEI 配裸 host
         if config.type_ == "rerank" {
@@ -1039,11 +1070,63 @@ impl VendorManager {
         Ok(url)
     }
 
+    /// Gemini base：显式 api_base 优先，缺省官方 host（去尾斜杠）。
+    fn gemini_api_base(config: &VendorConfig) -> String {
+        let base = config.api_base.trim().trim_end_matches('/');
+        if base.is_empty() {
+            "https://generativelanguage.googleapis.com".to_string()
+        } else {
+            base.to_string()
+        }
+    }
+
+    /// 按目标 model + action 构造出站 URL（Gemini 必需；其它厂商委托
+    /// [`Self::build_vendor_url`]，行为零变化）。
+    pub(crate) fn build_vendor_url_for_model(
+        config: &VendorConfig,
+        model: &str,
+        stream: bool,
+        action: &str,
+    ) -> Result<String, GateError> {
+        if config.type_ != "gemini" {
+            return Self::build_vendor_url(config);
+        }
+        // 客户端可能用 abstract_id 请求：URL 必须带上游真实 model_id
+        let normalized = crate::protocol::gemini::normalize_model(model);
+        let model_id = config
+            .models
+            .iter()
+            .find(|entry| {
+                entry.enabled
+                    && (entry.model_id.eq_ignore_ascii_case(normalized)
+                        || entry.abstract_id.as_deref().is_some_and(|abstract_id| {
+                            abstract_id.eq_ignore_ascii_case(normalized)
+                        }))
+            })
+            .map(|entry| entry.model_id.as_str())
+            .unwrap_or(normalized);
+        let mut path = format!("models/{model_id}:{action}");
+        if stream {
+            path.push_str("?alt=sse");
+        }
+        Self::build_vendor_url_at(config, &path)
+    }
+
     /// 构建 vendor API URL（chat/messages/rerank/responses 默认端点）；
     /// `pub(crate)` 供健康探针复用。
     pub(crate) fn build_vendor_url(config: &VendorConfig) -> Result<String, GateError> {
         if config.is_responses_style() {
             return Self::build_vendor_url_at(config, "responses");
+        }
+        if config.type_ == "gemini" {
+            // Gemini 端点含 model + action，无法用静态默认路径；调用方须走
+            // `build_vendor_url_for_model`
+            return Err(GateError::Config {
+                message: crate::i18n::t_args(
+                    "vendor-gemini-url-requires-model",
+                    &[("vendor", config.id.clone())],
+                ),
+            });
         }
         let path = match config.type_.as_str() {
             "anthropic" => "messages",
@@ -1081,7 +1164,12 @@ impl VendorManager {
     ) -> Result<reqwest::RequestBuilder, GateError> {
         let mut builder = client.post(url);
 
-        if config.type_ == "anthropic" {
+        if config.type_ == "gemini" {
+            builder = builder.header("x-goog-api-key", api_key);
+            if include_content_type {
+                builder = builder.header("content-type", "application/json");
+            }
+        } else if config.type_ == "anthropic" {
             builder = builder
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01");
@@ -1102,6 +1190,7 @@ impl VendorManager {
     const RESERVED_OUTBOUND_HEADERS: &'static [&'static str] = &[
         "authorization",
         "x-api-key",
+        "x-goog-api-key",
         "content-length",
         "host",
         "content-type",
@@ -1234,6 +1323,7 @@ impl VendorManager {
     async fn execute_http_with_retry(
         client: &reqwest::Client,
         config: &VendorConfig,
+        target_model: &str,
         request_body: Value,
         converter: &dyn ProtocolConverter,
         retry_cfg: &RetrySection,
@@ -1250,6 +1340,7 @@ impl VendorManager {
                     Self::execute_http_with_retry_policy(
                         client,
                         config,
+                        target_model,
                         request_body.clone(),
                         converter,
                         retry_cfg,
@@ -1268,6 +1359,7 @@ impl VendorManager {
             Self::execute_http_with_retry_policy(
                 client,
                 config,
+                target_model,
                 request_body,
                 converter,
                 retry_cfg,
@@ -1288,6 +1380,7 @@ impl VendorManager {
     async fn execute_http_with_retry_policy(
         client: &reqwest::Client,
         config: &VendorConfig,
+        target_model: &str,
         request_body: Value,
         converter: &dyn ProtocolConverter,
         retry_cfg: &RetrySection,
@@ -1295,7 +1388,7 @@ impl VendorManager {
         instance: &VendorInstance,
         credential: &RequestCredential,
     ) -> Result<UnifiedResponse, GateError> {
-        let url = Self::build_vendor_url(config)?;
+        let url = Self::build_vendor_url_for_model(config, target_model, false, "generateContent")?;
         let policy = RetryDelayPolicy::from_config(retry_cfg);
 
         // 重试总时间预算（默认 0 = 不限时，行为与现状一致）。
@@ -1326,9 +1419,15 @@ impl VendorManager {
                         Self::send_attempt(builder, &request_body, config, instance, credential)
                             .await?;
                     let response_json = Self::read_attempt_json(response, config).await?;
-                    converter
+                    let mut parsed = converter
                         .parse_response(response_json)
-                        .map_err(AttemptFailure::Fatal)
+                        .map_err(AttemptFailure::Fatal)?;
+                    // Gemini 响应缺 modelVersion 时，转换器回退占位 "gemini"；
+                    // 用本次目标 model 补齐（其它厂商响应自带 model，不动）
+                    if config.type_ == "gemini" && parsed.model == "gemini" {
+                        parsed.model = target_model.to_string();
+                    }
+                    Ok(parsed)
                 },
                 |attempt, failure| {
                     // 决策闭包：业务分类留应用（机制归库——见函数 doc）。
@@ -1895,7 +1994,13 @@ impl VendorManager {
 
         // 热读新鲜配置：api_base/api_key_env 热更新立即生效
         let config = self.fresh_config(vendor_id)?;
-        let url = Self::build_vendor_url(&config)?;
+        // Gemini 的 model 在 URL（body 无 model）；其它厂商委托后行为零变化
+        let url = Self::build_vendor_url_for_model(
+            &config,
+            &request.model,
+            true,
+            "streamGenerateContent",
+        )?;
 
         // 请求级凭证选择 — key 在请求启动时固定（池空回退 legacy 读 env）
         let credential = instance.select_request_key(&config);
@@ -1903,6 +2008,7 @@ impl VendorManager {
         // converter 以 Arc 进流（parse_stream_frame 按 vendor 协议分派）
         let converter: Arc<dyn ProtocolConverter> = match config.type_.as_str() {
             "anthropic" => self.anthropic_converter.clone(),
+            "gemini" => self.gemini_converter.clone(),
             "openai" if config.is_responses_style() => self.responses_converter.clone(),
             "openai" => self.openai_converter.clone(),
             _ => {
@@ -3421,6 +3527,22 @@ mod tests {
         assert_eq!(headers["authorization"], "Bearer test-key");
     }
 
+    /// Gemini 出站鉴权：`x-goog-api-key` 单头，不携带 Authorization。
+    #[test]
+    fn gemini_uses_goog_api_key_header() {
+        let mut config = extra_headers_config(&[]);
+        config.type_ = "gemini".into();
+        config
+            .extra_headers
+            .insert("x-goog-api-key".into(), "evil".into());
+        let headers = built_headers(&config);
+        assert_eq!(headers["x-goog-api-key"], "test-key");
+        assert!(
+            headers.get("authorization").is_none(),
+            "Gemini 不得发送 Authorization"
+        );
+    }
+
     /// 冲突跳过：与网关头同名（大小写不敏感）的配置项被跳过并保留网关值。
     #[test]
     fn extra_headers_conflicting_with_gateway_headers_are_skipped() {
@@ -3546,6 +3668,91 @@ mod chat_path_tests {
         let mut v = vendor(api_base, None);
         v.api_style = Some("responses".into());
         v
+    }
+
+    fn gemini_vendor(api_base: &str) -> VendorConfig {
+        let mut v = vendor(api_base, None);
+        v.type_ = "gemini".into();
+        v
+    }
+
+    /// Gemini：默认 host、/v1beta 去重、/v1 去重、裸 host 补 /v1beta、
+    /// model 前缀归一与流式 alt=sse。
+    #[test]
+    fn gemini_url_building() {
+        assert_eq!(
+            VendorManager::build_vendor_url_for_model(
+                &gemini_vendor(""),
+                "gemini-2.5-pro",
+                false,
+                "generateContent"
+            )
+            .unwrap(),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+        );
+        assert_eq!(
+            VendorManager::build_vendor_url_for_model(
+                &gemini_vendor("http://localhost:8080/v1beta"),
+                "models/gemini-2.5-pro",
+                true,
+                "streamGenerateContent"
+            )
+            .unwrap(),
+            "http://localhost:8080/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(
+            VendorManager::build_vendor_url_for_model(
+                &gemini_vendor("http://localhost:8080/v1"),
+                "gemini-2.5-pro",
+                false,
+                "generateContent"
+            )
+            .unwrap(),
+            "http://localhost:8080/v1/models/gemini-2.5-pro:generateContent"
+        );
+        assert_eq!(
+            VendorManager::build_vendor_url_at(&gemini_vendor("http://localhost:8080/"), "models")
+                .unwrap(),
+            "http://localhost:8080/v1beta/models"
+        );
+    }
+
+    /// Gemini 无静态默认端点：build_vendor_url 必须显式拒绝，防调用方误用。
+    #[test]
+    fn gemini_requires_model_for_url() {
+        let err = VendorManager::build_vendor_url(&gemini_vendor("http://localhost:8080"))
+            .expect_err("Gemini 必须拒绝静态 URL");
+        assert_eq!(err.status_code(), 500);
+        assert!(
+            err.to_string().contains("model"),
+            "错误必须说明需要 model: {err}"
+        );
+    }
+
+    /// 客户端用 abstract_id 请求时，URL 必须映射到上游真实 model_id。
+    #[test]
+    fn gemini_url_maps_abstract_id_to_model_id() {
+        let mut v = gemini_vendor("http://localhost:8080");
+        v.models = vec![crate::config::ModelConfig {
+            model_id: "gemini-2.5-pro".into(),
+            abstract_id: Some("gpt-4".into()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        }];
+        assert_eq!(
+            VendorManager::build_vendor_url_for_model(&v, "gpt-4", false, "generateContent")
+                .unwrap(),
+            "http://localhost:8080/v1beta/models/gemini-2.5-pro:generateContent"
+        );
+        // 未知模型回退原名（上游显式拒绝，不做静默改写）
+        assert_eq!(
+            VendorManager::build_vendor_url_for_model(&v, "other", false, "generateContent")
+                .unwrap(),
+            "http://localhost:8080/v1beta/models/other:generateContent"
+        );
     }
 
     /// responses 风格：默认 base、带 /v1 的 base、裸 host 三种拼接。

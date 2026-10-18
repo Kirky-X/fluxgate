@@ -3220,7 +3220,7 @@ mod linucb_reward_chain {
         axum::Router::new()
             .route(
                 "/v1/chat/completions",
-                post(fluxgate::api::openai::chat_completions),
+                post(fluxgate::api::completions::chat_completions),
             )
             .with_state(state)
     }
@@ -3366,7 +3366,7 @@ mod global_model_switch {
         let app = axum::Router::new()
             .route(
                 "/v1/chat/completions",
-                post(fluxgate::api::openai::chat_completions),
+                post(fluxgate::api::completions::chat_completions),
             )
             .with_state(state);
         app.oneshot(
@@ -4386,7 +4386,7 @@ mod api_handler_coverage {
         mock.assert_async().await;
     }
 
-    // ---- openai.rs：转换流式（anthropic vendor）、cover_all_paths、缓存 ----
+    // ---- completions.rs：转换流式（anthropic vendor）、cover_all_paths、缓存 ----
 
     /// 转换流式成功（cover_all_paths 关）：Anthropic 上游 SSE 经 IR 重建为
     /// OpenAI chunk 事件并以 [DONE] 收尾，文本完整。
@@ -4890,7 +4890,7 @@ mod api_handler_coverage {
         mock.assert_async().await;
     }
 
-    // ---- openai.rs：embeddings（预聚合记账 + Protocol 门 + logger 降级）----
+    // ---- completions.rs：embeddings（预聚合记账 + Protocol 门 + logger 降级）----
 
     /// embeddings 成功且 usage 三元齐全：预聚合器记账（flush 后 token_stats
     /// 非空）；logger 已 shutdown 时 warn 降级不影响响应。

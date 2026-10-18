@@ -75,7 +75,7 @@ impl IntoResponse for FluxgateError {
 #[cfg(feature = "web-server")]
 impl FluxgateError {
     /// 本地化用户消息（展示轨道）：随 locale 查 FTL 目录。
-    fn user_message(&self) -> String {
+    pub(crate) fn user_message(&self) -> String {
         match self {
             FluxgateError::Database { message } => {
                 t_args("error-database", &[("message", message.clone())])

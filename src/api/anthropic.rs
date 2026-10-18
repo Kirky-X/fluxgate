@@ -102,7 +102,7 @@ pub async fn messages(
 
     // 检查是否可以使用零拷贝透传（入站格式 Anthropic == 出站格式 Anthropic）。
     // 透传路径不做工具 schema 上限校验（字节保真是透传的设计承诺），
-    // 兜底 = axum 体限 + auth + 限流（与 openai.rs 同口径）。
+    // 兜底 = axum 体限 + auth + 限流（与 completions.rs 同口径）。
     let use_passthrough = decision.vendor.type_ == "anthropic";
 
     if use_passthrough {

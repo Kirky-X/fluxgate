@@ -87,7 +87,10 @@ use crate::config::model_catalog::ModelCatalogEntry;
 use crate::protocol::TokenUsage;
 
 /// prompt_tokens 的 cache 档包含语义（按上游协议分裂）。调用方按 vendor `type_`
-/// 选择：openai → Inclusive、anthropic → Exclusive。
+/// 选择：openai/gemini → Inclusive、anthropic → Exclusive。
+///
+/// Gemini `promptTokenCount` 是含 cachedContent 的有效 prompt 总量，
+/// `cachedContentTokenCount` 为其子集，故与 OpenAI 同为 Inclusive。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptCacheSemantics {
     /// prompt 含 cache 档（OpenAI 口径）：基数 = prompt − cache 档（饱和）
@@ -96,9 +99,9 @@ pub enum PromptCacheSemantics {
     Exclusive,
 }
 
-/// vendor 协议 → cache 语义单源判定：仅 openai 为 Inclusive，其余一律 Exclusive（基数不缩减，防少计）。
+/// vendor 协议 → cache 语义单源判定：openai/gemini 为 Inclusive，其余一律 Exclusive（基数不缩减，防少计）。
 pub fn prompt_cache_semantics(vendor_type: &str) -> PromptCacheSemantics {
-    if vendor_type == "openai" {
+    if vendor_type == "openai" || vendor_type == "gemini" {
         PromptCacheSemantics::Inclusive
     } else {
         PromptCacheSemantics::Exclusive
@@ -378,5 +381,22 @@ mod catalog_pricing_tests {
         assert!((est.cache_read_cost - 2.5).abs() < 1e-9);
         assert!((est.cache_creation_cost - 0.0).abs() < 1e-9);
         assert!((est.output_cost - 5.0).abs() < 1e-9);
+    }
+
+    /// 缓存语义单源：gemini 与 openai 同为 Inclusive，anthropic 为 Exclusive。
+    #[test]
+    fn gemini_uses_inclusive_cache_semantics() {
+        assert_eq!(
+            prompt_cache_semantics("gemini"),
+            PromptCacheSemantics::Inclusive
+        );
+        assert_eq!(
+            prompt_cache_semantics("openai"),
+            PromptCacheSemantics::Inclusive
+        );
+        assert_eq!(
+            prompt_cache_semantics("anthropic"),
+            PromptCacheSemantics::Exclusive
+        );
     }
 }

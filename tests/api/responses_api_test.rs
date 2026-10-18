@@ -583,7 +583,7 @@ mod tests {
         Router::new()
             .route(
                 "/v1/chat/completions",
-                post(fluxgate::api::openai::chat_completions),
+                post(fluxgate::api::completions::chat_completions),
             )
             .with_state(state)
     }

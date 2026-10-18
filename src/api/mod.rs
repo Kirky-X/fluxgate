@@ -7,11 +7,12 @@
 
 pub mod admin;
 pub mod anthropic;
+pub mod completions;
 pub mod count_tokens;
+pub mod gemini;
 pub mod global_state;
 pub mod health;
 pub mod models;
-pub mod openai;
 pub mod openapi_docs;
 pub mod readiness;
 pub mod rerank;
@@ -33,8 +34,8 @@ pub use state::ApiState;
 
 pub use admin::{get_config, get_models, update_config, update_model};
 pub use anthropic::messages;
+pub use completions::{chat_completions, embeddings};
 pub use global_state::{get_global_state, init_global_state};
-pub use openai::{chat_completions, embeddings};
 
 use crate::error::{FluxgateError, GateError};
 #[cfg(feature = "resilience")]

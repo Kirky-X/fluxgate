@@ -51,3 +51,4 @@ vendor-probe-semaphore-closed = probe semaphore never closes
 vendor-extra-header-conflict = extra_headers conflicts with a gateway header; skipped
 vendor-extra-header-name-invalid = extra_headers header name invalid; skipped
 vendor-extra-header-value-invalid = extra_headers header value invalid; skipped
+vendor-gemini-url-requires-model = vendor { $vendor } is Gemini type: URL must be built from model + action

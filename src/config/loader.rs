@@ -522,6 +522,20 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
+        // gemini 的端点由 model+action 动态拼接，chat_path 静态覆盖语义冲突
+        if vendor.type_ == "gemini"
+            && vendor
+                .chat_path
+                .as_deref()
+                .is_some_and(|path| !path.trim().is_empty())
+        {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-vendor-gemini-chat-path-conflict",
+                    &[("vendor", vendor.id.clone())],
+                ),
+            });
+        }
         // 端点风格：白名单；responses 仅限 openai 型且与 chat_path 互斥
         if let Some(style) = vendor.api_style() {
             let normalized = style.to_ascii_lowercase();
@@ -2061,6 +2075,18 @@ model_type = "rerank"
         assert!(
             error.to_string().contains("chat_path"),
             "错误必须点名冲突字段: {error}"
+        );
+
+        // gemini 型：chat_path 静态覆盖与 model+action 动态端点冲突，加载期拒绝
+        let gemini = vendor_with_style("gemini", None, None);
+        parse_vendors_toml(&gemini).expect("gemini 无 chat_path 必须通过");
+        let gemini_style = vendor_with_style("gemini", Some("chat"), None);
+        parse_vendors_toml(&gemini_style).expect("gemini + api_style=chat 必须通过");
+        let gemini_path = vendor_with_style("gemini", None, Some("/v1beta/models/x"));
+        let error = parse_vendors_toml(&gemini_path).expect_err("gemini + chat_path 必须拒绝");
+        assert!(
+            error.to_string().contains("chat_path"),
+            "错误必须点名 chat_path: {error}"
         );
     }
 }

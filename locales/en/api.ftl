@@ -45,7 +45,7 @@ api-amplification-tightening = failure rate approaching critical f_c; tightening
 api-vendor-failed-rerouting = vendor failed; rerouting to fallback
 api-vendor-failed-rerouting-pre-stream = vendor failed before response/stream; rerouting to fallback
 
-# ---- api/openai.rs / api/anthropic.rs ----
+# ---- api/completions.rs / api/anthropic.rs ----
 api-log-push-rejected = request log push rejected: { $error }
 api-usage-record-rejected = token usage record rejected: { $error }
 api-embeddings-openai-only = Embeddings only supported for OpenAI vendors
@@ -69,7 +69,7 @@ api-count-tokens-messages-empty = messages (must not be empty)
 api-route-explain-model-invalid = model (missing or not a string)
 api-route-explain-model-unknown = model '{ $model }' (unknown model)
 
-# ---- 不变量 panic 文案（api/{anthropic,openai}.rs 最终路由 / api/route_explain.rs 入选者字段）----
+# ---- 不变量 panic 文案（api/{anthropic,completions}.rs 最终路由 / api/route_explain.rs 入选者字段）----
 api-final-route-missing = leader/self-heal/non-participant path closure must produce a final route
 api-explain-no-factors = eligible candidate must carry a weight-factor breakdown
 api-explain-no-weight = eligible candidate must carry a weight
@@ -95,3 +95,28 @@ api-responses-native-hint-vendor = X-Vendor "{ $vendor }" is not Responses-nativ
 api-responses-native-hint-model = X-Model "{ $model }" has no Responses-native vendor: check vendor api_style and enabled flag
 api-responses-orphans-failed = Responses orphaned background jobs marked failed: { $count }
 api-responses-orphan-cleanup-failed = Responses orphan cleanup failed (startup continues): { $error }
+
+# ---- api/gemini.rs（Gemini 原生入站） ----
+api-gemini-action-required = Gemini request path must include ":<action>" (generateContent / streamGenerateContent / countTokens / embedContent / batchEmbedContents)
+api-gemini-action-unknown = Unknown Gemini action "{ $action }"
+api-gemini-model-required = Gemini request is missing a model (path /models/{model}:{action})
+api-gemini-model-mismatch = Gemini body model "{ $body }" does not match path model "{ $path }"
+api-gemini-contents-invalid = Gemini "contents" must be a non-empty array
+api-gemini-parts-invalid = Gemini content "parts" must be a non-empty array
+api-gemini-part-invalid = Gemini content part has an invalid shape
+api-gemini-part-unsupported = Gemini content part type is not supported by the gateway
+api-gemini-tool-name-required = Gemini function declaration/functionCall is missing "name"
+api-gemini-tool-unsupported = Gemini tools without functionDeclarations are native-only
+api-gemini-function-response-name-missing = Gemini functionResponse name is missing and cannot be resolved
+api-gemini-response-invalid = Gemini upstream response is missing candidates/output
+api-gemini-stream-failed = Gemini upstream stream interrupted: { $error }
+api-gemini-embed-content-invalid = Gemini embedContent requires "content.parts[].text"
+api-gemini-embed-requests-invalid = Gemini batchEmbedContents requires a non-empty "requests" array
+api-gemini-embed-dimensions-conflict = Gemini batchEmbedContents requests must share one outputDimensionality
+api-gemini-schema-ref-cycle = Gemini responseSchema $ref cycle: { $detail }
+api-gemini-schema-ref-depth = Gemini responseSchema $ref exceeds max depth: { $detail }
+api-gemini-schema-ref-missing = Gemini responseSchema $ref target not found: { $detail }
+api-gemini-schema-ref-unsupported = Gemini responseSchema $ref must point to #/$defs or #/definitions: { $detail }
+api-gemini-native-vendor-mismatch = X-Vendor "{ $vendor }" is not Gemini-native
+router-gemini-no-native-vendor = No native Gemini vendor for model "{ $model }": declare type_ = "gemini" and enable the vendor/model
+middleware-gemini-unauthorized = Gemini request is missing or has an invalid API key

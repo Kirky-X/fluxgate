@@ -22,8 +22,8 @@ use tower_http::trace::TraceLayer;
 
 use super::state::ApiState;
 use super::{
-    admin, anthropic, count_tokens, health, models, openai, openapi_docs, rerank, responses,
-    route_difficulty_explain, route_explain,
+    admin, anthropic, completions, count_tokens, gemini, health, models, openapi_docs, rerank,
+    responses, route_difficulty_explain, route_explain,
 };
 use crate::config::{RateLimitRule, RateLimitSection};
 use crate::i18n::{t, t_args};
@@ -552,7 +552,7 @@ async fn admission_middleware(
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
     #[cfg(feature = "vault")]
-    const TEMPLATES: [&str; 27] = [
+    const TEMPLATES: [&str; 29] = [
         "/v1/chat/completions",
         "/v1/embeddings",
         "/v1/rerank",
@@ -562,6 +562,8 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/v1/responses/{id}/cancel",
         "/v1/messages",
         "/v1/messages/count_tokens",
+        "/v1beta/models",
+        "/v1beta/models/{id}",
         "/v1/models",
         "/admin/route/explain",
         "/admin/logs",
@@ -582,7 +584,7 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/api/v1/health",
     ];
     #[cfg(not(feature = "vault"))]
-    const TEMPLATES: [&str; 25] = [
+    const TEMPLATES: [&str; 27] = [
         "/v1/chat/completions",
         "/v1/embeddings",
         "/v1/rerank",
@@ -592,6 +594,8 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/v1/responses/{id}/cancel",
         "/v1/messages",
         "/v1/messages/count_tokens",
+        "/v1beta/models",
+        "/v1beta/models/{id}",
         "/v1/models",
         "/admin/route/explain",
         "/admin/logs",
@@ -734,8 +738,8 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
     });
 
     let router = Router::new()
-        .route("/v1/chat/completions", post(openai::chat_completions))
-        .route("/v1/embeddings", post(openai::embeddings))
+        .route("/v1/chat/completions", post(completions::chat_completions))
+        .route("/v1/embeddings", post(completions::embeddings))
         .route("/v1/rerank", post(rerank::rerank))
         // Responses API：创建/检索/删除/取消（语义化 SSE）
         .route("/v1/responses", post(responses::create_response))
@@ -753,6 +757,13 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         // GET /v1/models（OpenAI list 格式，去重现算、不缓存），
         // POST /v1/messages/count_tokens（近似估算）。
         .route("/v1/models", get(models::list_models))
+        // Gemini 原生端点：model 与 action 同段（`<model>:<action>`），
+        // GET 同路径返回单模型元数据
+        .route("/v1beta/models", get(gemini::list_models))
+        .route(
+            "/v1beta/models/{model_action}",
+            post(gemini::dispatch).get(gemini::get_model),
+        )
         .route(
             "/v1/messages/count_tokens",
             post(count_tokens::count_tokens),
@@ -1057,6 +1068,20 @@ mod tests {
         assert!(
             gate.check("other-tenant").await.is_err(),
             "default bucket must be shared across tenants"
+        );
+    }
+
+    /// Gemini 路径归一到固定模板（model:action 整段通配，标签基数有界）。
+    #[test]
+    fn gemini_paths_have_metric_labels() {
+        assert_eq!(metrics_route_label("/v1beta/models"), "/v1beta/models");
+        assert_eq!(
+            metrics_route_label("/v1beta/models/gemini-2.5-pro:generateContent"),
+            "/v1beta/models/{id}"
+        );
+        assert_eq!(
+            metrics_route_label("/v1beta/models/gemini-2.5-pro:streamGenerateContent"),
+            "/v1beta/models/{id}"
         );
     }
 

@@ -26,6 +26,13 @@ pub fn extract_api_key(headers: &HeaderMap) -> Option<String> {
         }
     }
 
+    // Gemini SDK 默认携带 x-goog-api-key（认证中间件亦会在 ?key= 场景注入同头）
+    if let Some(key) = headers.get("x-goog-api-key") {
+        if let Ok(value) = key.to_str() {
+            return Some(value.to_string());
+        }
+    }
+
     None
 }
 
@@ -68,6 +75,15 @@ mod tests {
         assert_eq!(
             extract_api_key(&headers(&[("x-api-key", "xyz")])).as_deref(),
             Some("xyz")
+        );
+        assert_eq!(
+            extract_api_key(&headers(&[("x-goog-api-key", "goog")])).as_deref(),
+            Some("goog")
+        );
+        assert_eq!(
+            api_key_digest(&headers(&[("x-goog-api-key", "goog")])),
+            hex::encode(Sha256::digest(b"goog")),
+            "Gemini 头与 Bearer 同源摘要"
         );
         assert_eq!(extract_api_key(&headers(&[])), None);
         assert_eq!(

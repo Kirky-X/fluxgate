@@ -51,3 +51,4 @@ vendor-probe-semaphore-closed = 探针信号量永不关闭
 vendor-extra-header-conflict = extra_headers 与网关头冲突，已跳过
 vendor-extra-header-name-invalid = extra_headers 头名非法，已跳过
 vendor-extra-header-value-invalid = extra_headers 头值非法，已跳过
+vendor-gemini-url-requires-model = 厂商 { $vendor } 为 Gemini 类型：URL 必须由 model + action 构造

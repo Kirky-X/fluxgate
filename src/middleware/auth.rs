@@ -143,10 +143,13 @@ pub async fn auth_middleware(
 
 /// API Key 认证中间件
 pub async fn api_auth_middleware(
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
     auth_state: Arc<ApiAuthState>,
 ) -> Result<Response, StatusCode> {
+    // Gemini SDK 可用 `?key=` 传凭证：认证/租户摘要前注入到标准头，
+    // 仅限 `/v1beta/` 路径（其它路径不接受 query key，避免进入代理日志）
+    inject_gemini_query_key(&mut request);
     if !auth_state.enabled {
         return Ok(next.run(request).await);
     }
@@ -170,39 +173,96 @@ pub async fn api_auth_middleware(
     let api_key = match extract_api_key(request.headers()) {
         Some(key) => key,
         None => {
-            return Ok(Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("Content-Type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "error": {
-                            "message": t("middleware-missing-api-key"),
-                            "type": "authentication_error"
-                        }
-                    })
-                    .to_string(),
-                ))
-                .unwrap());
+            return Ok(unauthorized_response(path, t("middleware-missing-api-key")));
         }
     };
 
     if !auth_state.validate_key(&api_key) {
-        return Ok(Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("Content-Type", "application/json")
-            .body(Body::from(
-                json!({
-                    "error": {
-                        "message": t("middleware-invalid-api-key"),
-                        "type": "authentication_error"
-                    }
-                })
-                .to_string(),
-            ))
-            .unwrap());
+        return Ok(unauthorized_response(path, t("middleware-invalid-api-key")));
     }
 
     Ok(next.run(request).await)
+}
+
+/// Gemini 路径的 query key 注入：仅在无任何凭证头时生效，`key` 经
+/// 最小 percent-decode 后写入 `x-goog-api-key`。
+fn inject_gemini_query_key(request: &mut Request<Body>) {
+    if !request.uri().path().starts_with("/v1beta/") {
+        return;
+    }
+    let headers = request.headers();
+    if headers.contains_key("authorization")
+        || headers.contains_key("x-api-key")
+        || headers.contains_key("x-goog-api-key")
+    {
+        return;
+    }
+    let Some(key) = request
+        .uri()
+        .query()
+        .and_then(|query| query_param(query, "key"))
+    else {
+        return;
+    };
+    if key.is_empty() {
+        return;
+    }
+    if let Ok(value) = axum::http::HeaderValue::from_str(&key) {
+        request
+            .headers_mut()
+            .insert(axum::http::HeaderName::from_static("x-goog-api-key"), value);
+    }
+}
+
+fn query_param(query: &str, name: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then(|| percent_decode(value))
+    })
+}
+
+/// 最小 percent-decode（仅 `%XX`；`+` 保持字面值，API key 以 `%2B` 传递）。
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// 认证失败：Gemini 路径返回其原生错误体，其它路径保持历史形状。
+fn unauthorized_response(path: &str, message: String) -> Response {
+    let body = if path.starts_with("/v1beta/") {
+        json!({
+            "error": {
+                "code": 401,
+                "message": t("middleware-gemini-unauthorized"),
+                "status": "UNAUTHENTICATED",
+            }
+        })
+    } else {
+        json!({
+            "error": {
+                "message": message,
+                "type": "authentication_error",
+            }
+        })
+    };
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 #[cfg(test)]
@@ -291,5 +351,42 @@ mod tests {
         let state = ApiAuthState::from_section(&disabled);
         assert!(!state.enabled);
         assert!(state.validate_key("anything"), "disabled → 放行");
+    }
+
+    fn request(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    #[test]
+    fn gemini_query_key_is_injected_only_on_v1beta_paths() {
+        let mut gemini =
+            request("/v1beta/models/gemini-2.5-pro:generateContent?alt=sse&key=abc-123");
+        inject_gemini_query_key(&mut gemini);
+        assert_eq!(gemini.headers()["x-goog-api-key"], "abc-123");
+
+        let mut other = request("/v1/chat/completions?key=abc-123");
+        inject_gemini_query_key(&mut other);
+        assert!(
+            other.headers().get("x-goog-api-key").is_none(),
+            "非 Gemini 路径不得接受 query key"
+        );
+
+        let mut header_wins = request("/v1beta/models/x:generateContent?key=query-key");
+        header_wins.headers_mut().insert(
+            "x-goog-api-key",
+            axum::http::HeaderValue::from_static("header-key"),
+        );
+        inject_gemini_query_key(&mut header_wins);
+        assert_eq!(header_wins.headers()["x-goog-api-key"], "header-key");
+    }
+
+    #[test]
+    fn query_param_percent_decodes() {
+        assert_eq!(
+            query_param("a=1&key=sk%2Babc%3D", "key").as_deref(),
+            Some("sk+abc=")
+        );
+        assert_eq!(query_param("alt=sse", "key"), None);
+        assert_eq!(query_param("key=", "key").as_deref(), Some(""));
     }
 }

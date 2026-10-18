@@ -70,6 +70,29 @@ macro_rules! submit_route_with_id {
     };
 }
 
+/// 提交带 `{model_action}` 路径参数的条目（Gemini `<model>:<action>` 同段）。
+macro_rules! submit_gemini_model_action {
+    ($path:expr, $method:expr, $summary:expr, $desc:expr, $tags:expr) => {
+        sdforge::inventory::submit! {
+            sdforge::openapi::OpenApiRouteInfo::with_path_params(
+                $path,
+                $method,
+                $summary,
+                $desc,
+                OPENAPI_VERSION,
+                $tags,
+                &[sdforge::openapi::OpenApiPathParam::new(
+                    "model_action",
+                    "Gemini model and action (`<model>:<action>`)",
+                    true,
+                    "string",
+                    "",
+                )],
+            )
+        }
+    };
+}
+
 /// OpenAPI 条目描述翻译注册进 sdforge 运行时翻译注册表（幂等，建站期触发）；
 /// en/zh 字面量与 locales/{en,zh}/api.ftl 同源，两处同步维护
 static REGISTER_OPENAPI_I18N: Once = Once::new();
@@ -185,6 +208,27 @@ submit_route_with_id!(
     "Cancel a background Responses job and return the cancelled response object.",
     &["openai", "responses"],
     "Response ID"
+);
+submit_gemini_model_action!(
+    "/v1beta/models/{model_action}",
+    "POST",
+    "Gemini generateContent",
+    "Gemini native API (`generateContent`, `streamGenerateContent`, `countTokens`, `embedContent`, `batchEmbedContents`). Requests convert to the unified chat IR and route across vendors; safetySettings/cachedContent/built-in tools route to type_=\"gemini\" vendors.",
+    &["gemini"]
+);
+submit_gemini_model_action!(
+    "/v1beta/models/{model_action}",
+    "GET",
+    "Gemini model metadata",
+    "Return one Gemini model entry from the gateway catalog.",
+    &["gemini"]
+);
+submit_route!(
+    "/v1beta/models",
+    "GET",
+    "List Gemini models",
+    "List routable models in Gemini `models[]` shape (abstract_id preferred, deduplicated) with supportedGenerationMethods.",
+    &["gemini"]
 );
 submit_route_i18n!(
     "/v1/models",

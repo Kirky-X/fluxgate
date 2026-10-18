@@ -135,7 +135,9 @@ pub async fn run_probe_loop(manager: Arc<VendorManager>, config: Arc<ConfigManag
 }
 
 fn auth_headers(config: &VendorConfig, key: &str) -> Vec<(String, String)> {
-    if config.type_ == "anthropic" {
+    if config.type_ == "gemini" {
+        vec![("x-goog-api-key".to_string(), key.to_string())]
+    } else if config.type_ == "anthropic" {
         vec![
             ("x-api-key".to_string(), key.to_string()),
             ("anthropic-version".to_string(), "2023-06-01".to_string()),
@@ -171,6 +173,14 @@ fn minimal_responses_body(config: &VendorConfig) -> Value {
         "model": model,
         "input": "ping",
         "store": false,
+    })
+}
+
+/// Gemini 最小探测体：1 条 user text + `maxOutputTokens=1`。
+fn minimal_gemini_body(_config: &VendorConfig) -> Value {
+    json!({
+        "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
+        "generationConfig": {"maxOutputTokens": 1},
     })
 }
 
@@ -296,10 +306,33 @@ async fn probe_minimal_call(
     timeout: Option<Duration>,
     recover: bool,
 ) -> usize {
-    let url = if target.config.is_responses_style() {
-        VendorManager::build_vendor_url_at(&target.config, "responses")
+    let (url, body) = if target.config.is_responses_style() {
+        (
+            VendorManager::build_vendor_url_at(&target.config, "responses"),
+            minimal_responses_body(&target.config),
+        )
+    } else if target.config.type_ == "gemini" {
+        let model = target
+            .config
+            .models
+            .iter()
+            .find(|m| m.enabled)
+            .map(|m| m.model_id.clone())
+            .unwrap_or_else(|| "probe".to_string());
+        (
+            VendorManager::build_vendor_url_for_model(
+                &target.config,
+                &model,
+                false,
+                "generateContent",
+            ),
+            minimal_gemini_body(&target.config),
+        )
     } else {
-        VendorManager::build_vendor_url(&target.config)
+        (
+            VendorManager::build_vendor_url(&target.config),
+            minimal_body(&target.config),
+        )
     };
     let url = match url {
         Ok(url) => url,
@@ -312,11 +345,6 @@ async fn probe_minimal_call(
             );
             return 0;
         }
-    };
-    let body = if target.config.is_responses_style() {
-        minimal_responses_body(&target.config)
-    } else {
-        minimal_body(&target.config)
     };
     probe_measured_call(manager, client, target, timeout, recover, &url, &body).await
 }
@@ -543,6 +571,11 @@ mode = \"{mode}\"
             auth_headers(&openai, "k-1"),
             vec![("authorization".to_string(), "Bearer k-1".to_string())]
         );
+        let gemini = probe_config("", "gemini");
+        assert_eq!(
+            auth_headers(&gemini, "k-1"),
+            vec![("x-goog-api-key".to_string(), "k-1".to_string())]
+        );
     }
 
     #[test]
@@ -569,6 +602,15 @@ mode = \"{mode}\"
         assert_eq!(body["model"], "m-live");
         assert_eq!(body["input"], "ping");
         assert_eq!(body["store"], false);
+    }
+
+    #[test]
+    fn minimal_gemini_body_has_single_turn_and_budget() {
+        let body = minimal_gemini_body(&probe_config("", "gemini"));
+        assert_eq!(body["contents"][0]["role"], "user");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], "ping");
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 1);
+        assert!(body.get("model").is_none(), "Gemini body 不含 model");
     }
 
     // ---- probe_free：2xx / 非 2xx / 连接失败 / URL 构建失败 / env 凭证回退 ----

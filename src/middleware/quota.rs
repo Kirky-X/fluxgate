@@ -108,6 +108,15 @@ pub fn precharge_for(
     {
         return precharge_responses(body, catalog, pricing, chars_per_token);
     }
+    // Gemini 形态（contents / content / requests）：按 parts[].text +
+    // systemInstruction + tools 字符折算，成本按 catalog/pricing 单价
+    if body.get("messages").is_none()
+        && (body.get("contents").is_some()
+            || body.get("content").is_some()
+            || body.get("requests").is_some())
+    {
+        return precharge_gemini(body, catalog, pricing, chars_per_token);
+    }
     let est_input = estimate_messages_tokens_with(body, chars_per_token);
     let max_tokens = body.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
     let usd = match resolve_price_source(catalog, pricing, model) {
@@ -164,6 +173,86 @@ pub fn precharge_responses(
         }
     };
     (est_input.saturating_add(max_tokens), usd_to_millicents(usd))
+}
+
+/// Gemini 预扣：token = ceil((Σ parts[].text + systemInstruction + tools JSON)
+/// 字符 / chars_per_token) + `generationConfig.maxOutputTokens`；embedding
+/// 形态无输出预算，只计输入。成本按 catalog/pricing 单价（与 chat 同口径）。
+pub fn precharge_gemini(
+    body: &Value,
+    catalog: &[ModelCatalogEntry],
+    pricing: &[PricingConfig],
+    chars_per_token: u64,
+) -> (u64, u64) {
+    let cpt = chars_per_token.max(1) as usize;
+    let mut chars = 0usize;
+    // chat：contents[] 与 systemInstruction
+    if let Some(contents) = body.get("contents").and_then(Value::as_array) {
+        for content in contents {
+            chars += parts_text_chars(content.get("parts"));
+        }
+    }
+    chars += parts_text_chars(
+        body.get("systemInstruction")
+            .or_else(|| body.get("system_instruction"))
+            .and_then(|system| system.get("parts")),
+    );
+    // embedding：单条 content / 批量 requests[].content
+    if let Some(content) = body.get("content") {
+        chars += parts_text_chars(content.get("parts"));
+    }
+    if let Some(requests) = body.get("requests").and_then(Value::as_array) {
+        for request in requests {
+            chars += parts_text_chars(
+                request
+                    .get("content")
+                    .and_then(|content| content.get("parts")),
+            );
+        }
+    }
+    if let Some(tools) = body.get("tools") {
+        chars += serde_json::to_string(tools)
+            .map(|json| json.chars().count())
+            .unwrap_or(0);
+    }
+    let est_input = chars.div_ceil(cpt) as u64;
+    let max_tokens = body
+        .get("generationConfig")
+        .or_else(|| body.get("generation_config"))
+        .and_then(|config| config.get("maxOutputTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+    let usd = match resolve_price_source(catalog, pricing, model) {
+        PriceSource::Catalog { input, output } => {
+            est_input as f64 / 1_000_000.0 * input + max_tokens as f64 / 1_000_000.0 * output
+        }
+        PriceSource::Pricing { input, output } => {
+            est_input as f64 / 1000.0 * input + max_tokens as f64 / 1000.0 * output
+        }
+    };
+    (est_input.saturating_add(max_tokens), usd_to_millicents(usd))
+}
+
+/// parts[].text 字符数（非文本 part 不计）。
+fn parts_text_chars(parts: Option<&Value>) -> usize {
+    parts
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .map(|text| text.chars().count())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// 从 Gemini 路径提取 model：`/v1beta/models/<model>:<action>` → `<model>`。
+pub fn gemini_model_from_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/v1beta/models/")?;
+    let model = rest.split(':').next()?.trim();
+    (!model.is_empty()).then(|| model.strip_prefix("models/").unwrap_or(model).to_string())
 }
 
 /// rerank 预扣：token = ceil((query 字符 + Σ 文档字符) / chars_per_token)；
@@ -448,11 +537,19 @@ pub async fn quota_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    // 零分配路径判定（matches! 不产生 String）。
-    let applicable = matches!(
-        request.uri().path(),
-        "/v1/chat/completions" | "/v1/messages" | "/v1/rerank" | "/v1/responses"
-    );
+    // 零分配路径判定（matches! 不产生 String）；path 在 into_parts 前结束借用
+    let (gemini, applicable) = {
+        let path = request.uri().path();
+        let gemini = request.method() == axum::http::Method::POST
+            && path.starts_with("/v1beta/models/")
+            && !path.ends_with(":countTokens");
+        let applicable = gemini
+            || matches!(
+                path,
+                "/v1/chat/completions" | "/v1/messages" | "/v1/rerank" | "/v1/responses"
+            );
+        (gemini, applicable)
+    };
     let (parts, body) = request.into_parts();
     // 非适用路径：body 未触碰，原样透传（零拷贝）。
     if !applicable {
@@ -503,6 +600,13 @@ pub async fn quota_middleware(
                 .await;
         }
     };
+    // Gemini body 无 model（在路径上）：为预扣注入本地副本，不改变转发体
+    let mut parsed = parsed;
+    if gemini {
+        if let Some(model) = gemini_model_from_path(parts.uri.path()) {
+            parsed["model"] = Value::String(model);
+        }
+    }
     let (pre_tokens, pre_cost) =
         precharge_for(&parsed, &snapshot.model_catalog, &snapshot.pricing, cpt);
     match quota.consume(
@@ -749,6 +853,17 @@ fn frame_usage(data: &str) -> Option<(u64, u64, u64, u64)> {
         return None;
     }
     let value = serde_json::from_str::<Value>(trimmed).ok()?;
+    // Gemini 原生直通：`usageMetadata` 顶层累积值，直接复用三形态提数
+    if value.get("usageMetadata").is_some() {
+        let (prompt, completion, cache_read, cache_creation) =
+            crate::protocol::parse_usage_detailed(&value)?;
+        return Some((
+            prompt as u64,
+            completion as u64,
+            cache_read as u64,
+            cache_creation as u64,
+        ));
+    }
     let usage = value
         .get("usage")
         .or_else(|| value.get("message")?.get("usage"))?;
@@ -1320,5 +1435,89 @@ mod tests {
         let other = QuotaState::new();
         settle_nonstream_cached(&config, None, "tenant-digest", &body);
         assert_eq!(other.tracked_keys(), 0);
+    }
+
+    /// Gemini 预扣：parts 文本 + systemInstruction + tools 字符 + maxOutputTokens。
+    #[test]
+    fn gemini_precharge_counts_text_and_output_budget() {
+        let body = serde_json::json!({
+            "model": "m",
+            "systemInstruction": {"parts": [{"text": "sys"}]},
+            "contents": [{"role": "user", "parts": [{"text": "hello!"}]}],
+            "tools": [{"functionDeclarations": [{"name": "f"}]}],
+            "generationConfig": {"maxOutputTokens": 10}
+        });
+        let (tokens, cost) = precharge_for(&body, &[], &pricing(), 4);
+        assert!(tokens > 10, "预估 = 输入 token + maxOutputTokens: {tokens}");
+        assert!(cost > 0, "单价命中后成本必须非零: {cost}");
+
+        let embed = serde_json::json!({
+            "model": "m",
+            "content": {"parts": [{"text": "hello!"}]}
+        });
+        let (embed_tokens, _) = precharge_for(&embed, &[], &pricing(), 4);
+        assert_eq!(embed_tokens, 2, "embedding 无输出预算，只计文本");
+    }
+
+    #[tokio::test]
+    async fn gemini_settlement_refunds_to_actual_usage() {
+        let config = Arc::new(ConfigManager::new(quota_enabled_config(true)));
+        let quota = Arc::new(QuotaState::new());
+        let body = serde_json::json!({
+            "model": "m",
+            "contents": [{"role": "user", "parts": [{"text": "hello!"}]}],
+            "generationConfig": {"maxOutputTokens": 10}
+        });
+        let (pre_tokens, pre_cost) = precharge_for(&body, &[], &pricing(), 4);
+        quota
+            .consume("tenant-digest", 1_000_000, 0, pre_tokens, pre_cost, 3600)
+            .expect("入口预扣");
+        assert_eq!(quota.snapshot("tenant-digest"), (pre_tokens, pre_cost));
+
+        let response = serde_json::json!({
+            "usageMetadata": {
+                "promptTokenCount": 2,
+                "candidatesTokenCount": 1,
+                "totalTokenCount": 3
+            }
+        });
+        settle_nonstream(
+            &config,
+            Some(&quota),
+            "tenant-digest",
+            &body,
+            &response,
+            "gemini",
+            "v",
+            None,
+        );
+        let (tokens, cost) = quota.snapshot("tenant-digest");
+        assert_eq!(tokens, 3, "按实际 prompt+completion 结算");
+        assert!(
+            cost <= pre_cost,
+            "回补后成本不得高于预扣: {cost} > {pre_cost}"
+        );
+    }
+
+    #[test]
+    fn gemini_model_from_path_parses_action_suffix() {
+        assert_eq!(
+            gemini_model_from_path("/v1beta/models/gemini-2.5-pro:generateContent").as_deref(),
+            Some("gemini-2.5-pro")
+        );
+        assert_eq!(
+            gemini_model_from_path("/v1beta/models/models/gemini-2.5-pro:embedContent").as_deref(),
+            Some("gemini-2.5-pro")
+        );
+        assert_eq!(gemini_model_from_path("/v1beta/models"), None);
+        assert_eq!(gemini_model_from_path("/v1/chat/completions"), None);
+    }
+
+    #[test]
+    fn frame_usage_reads_gemini_usage_metadata() {
+        let data = r#"{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":2,"cachedContentTokenCount":3}}"#;
+        assert_eq!(frame_usage(data), Some((10, 7, 3, 0)));
+        assert_eq!(frame_usage("[DONE]"), None);
+        assert_eq!(frame_usage(r#"{"candidates":[]}"#), None);
     }
 }

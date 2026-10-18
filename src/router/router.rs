@@ -420,6 +420,69 @@ impl Router {
         }
     }
 
+    /// Gemini 原生直通路由（`safetySettings`/`cachedContent`/内置工具）：
+    /// 只允许 `type_ == "gemini"` 的候选；同 vendor 多条目越界按 vendor
+    /// 收缩重试，候选耗尽显式 Validation 并给配置指引。
+    pub async fn route_gemini_native(
+        &self,
+        abstract_model: &str,
+        session_key: Option<&str>,
+    ) -> Result<RoutingDecision, GateError> {
+        let mut excluded = self.non_gemini_exclusion(abstract_model);
+        loop {
+            let decision = match self
+                .route_with_session_excluding(abstract_model, session_key, &excluded)
+                .await
+            {
+                Ok(decision) => decision,
+                Err(_) => return Err(self.gemini_native_exhausted_error(abstract_model)),
+            };
+            if decision.vendor.type_ == "gemini" {
+                return Ok(decision);
+            }
+            if excluded
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(&decision.vendor.id))
+            {
+                return Err(self.gemini_native_exhausted_error(abstract_model));
+            }
+            excluded.push(decision.vendor.id.clone());
+        }
+    }
+
+    /// native 候选预过滤：「该 abstract 下无任何 type_=gemini 条目」的 vendor
+    /// 整体排除（与 `non_responses_native_exclusion` 同口径）。
+    fn non_gemini_exclusion(&self, abstract_model: &str) -> Vec<String> {
+        let normalized = crate::router::bandit::linucb_arm_key(abstract_model);
+        let candidates = self.config.resolve_model(&normalized);
+        let mut capable: Vec<&str> = Vec::new();
+        for (vendor, _) in &candidates {
+            if vendor.type_ == "gemini" {
+                capable.push(vendor.id.as_str());
+            }
+        }
+        let mut excluded: Vec<String> = Vec::new();
+        for (vendor, _) in &candidates {
+            let is_capable = capable.iter().any(|id| id.eq_ignore_ascii_case(&vendor.id));
+            let already = excluded
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(&vendor.id));
+            if !is_capable && !already {
+                excluded.push(vendor.id.clone());
+            }
+        }
+        excluded
+    }
+
+    fn gemini_native_exhausted_error(&self, model: &str) -> GateError {
+        GateError::Validation {
+            field: t_args(
+                "router-gemini-no-native-vendor",
+                &[("model", model.to_string())],
+            ),
+        }
+    }
+
     /// 带请求级权重的路由：request_weight 经 `[routing]`.allow_request_weight
     /// 门控后覆盖 model.weight；tenant 为调用方 API key 哈希，仅
     /// affinity_tenant_scoped 开启时参与亲和键。

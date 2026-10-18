@@ -196,6 +196,9 @@ pub struct GlobalMetrics {
     responses_stored_total: AtomicU64,
     responses_store_failures_total: AtomicU64,
     responses_background_jobs_total: AtomicU64,
+    /// Gemini 观测双计数：请求 / 上游失败
+    gemini_requests_total: AtomicU64,
+    gemini_upstream_failures_total: AtomicU64,
 }
 
 impl GlobalMetrics {
@@ -237,6 +240,8 @@ impl GlobalMetrics {
             responses_stored_total: AtomicU64::new(0),
             responses_store_failures_total: AtomicU64::new(0),
             responses_background_jobs_total: AtomicU64::new(0),
+            gemini_requests_total: AtomicU64::new(0),
+            gemini_upstream_failures_total: AtomicU64::new(0),
         }
     }
 
@@ -290,6 +295,19 @@ impl GlobalMetrics {
     /// Responses 上游失败（非 2xx / 超时 / 响应形状非法）。
     pub fn record_responses_upstream_failure(&self) {
         self.responses_upstream_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    // ---- Gemini 观测（api::gemini 写、admin/快照读）----
+
+    /// Gemini 入站请求计数（含原生直通与 IR 路径）。
+    pub fn record_gemini_request(&self) {
+        self.gemini_requests_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Gemini 上游失败（非 2xx / 超时 / 流中断 / 响应形状非法）。
+    pub fn record_gemini_upstream_failure(&self) {
+        self.gemini_upstream_failures_total
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -840,6 +858,10 @@ impl GlobalMetrics {
             responses_background_jobs_total: self
                 .responses_background_jobs_total
                 .load(Ordering::Relaxed),
+            gemini_requests_total: self.gemini_requests_total.load(Ordering::Relaxed),
+            gemini_upstream_failures_total: self
+                .gemini_upstream_failures_total
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -898,6 +920,9 @@ impl GlobalMetrics {
         self.responses_store_failures_total
             .store(0, Ordering::Relaxed);
         self.responses_background_jobs_total
+            .store(0, Ordering::Relaxed);
+        self.gemini_requests_total.store(0, Ordering::Relaxed);
+        self.gemini_upstream_failures_total
             .store(0, Ordering::Relaxed);
     }
 }
@@ -1055,6 +1080,10 @@ pub struct MetricsSnapshot {
     pub responses_store_failures_total: u64,
     /// Responses 后台任务入队累计
     pub responses_background_jobs_total: u64,
+    /// Gemini 入站请求累计
+    pub gemini_requests_total: u64,
+    /// Gemini 上游失败累计
+    pub gemini_upstream_failures_total: u64,
 }
 
 /// 难度定档观测子块（/admin/metrics 快照字段）
@@ -1268,6 +1297,25 @@ mod tests {
         assert_eq!(snap.responses_requests_total, 0);
         assert_eq!(snap.responses_stored_total, 0);
         assert_eq!(snap.responses_background_jobs_total, 0);
+    }
+
+    #[test]
+    fn gemini_counters_accumulate_snapshot_and_reset() {
+        let m = GlobalMetrics::new();
+        m.record_gemini_request();
+        m.record_gemini_request();
+        m.record_gemini_upstream_failure();
+
+        let snap = m.snapshot();
+        assert_eq!(snap.gemini_requests_total, 2);
+        assert_eq!(snap.gemini_upstream_failures_total, 1);
+        let json = serde_json::to_value(&snap).expect("snapshot 可序列化");
+        assert_eq!(json["gemini_requests_total"], 2);
+
+        m.reset();
+        let snap = m.snapshot();
+        assert_eq!(snap.gemini_requests_total, 0);
+        assert_eq!(snap.gemini_upstream_failures_total, 0);
     }
 
     #[test]

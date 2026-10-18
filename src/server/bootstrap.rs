@@ -171,6 +171,9 @@ pub(crate) async fn assemble(
                 )
             );
         }
+        // 柜句柄挂 VendorManager：API 管理面（/admin/vault/keys）经
+        // `vault()` 取用；不挂则管理面恒 503（装配期一次性）。
+        vendor_manager.set_vault(store.clone());
         for vendor in &vendors {
             if vendor.enabled {
                 crate::vault::inject_vendor_keys(store.as_ref(), &vendor_manager, &vendor.id)

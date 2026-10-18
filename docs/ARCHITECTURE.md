@@ -502,7 +502,7 @@ flowchart LR
 | 类别 | 段 |
 |---|---|
 | 热生效 | `routing`、`retry`、`resilience`、`admission`、`auth`、`cache`（精确缓存）、`quota`、`health`、`pricing`、`lexcompress`、`global_model`（经 admin 写入路径）、`vendors`（enabled 与权重） |
-| 需重启 | `server`、`cors`、`routing.difficulty.classifier` 的 `model_path`/`engine`/`cache_ttl_secs`（以上经 POST 响应 `restart_required` 数组显式提示）、`rate_limit`（tower 层构造期构建）、vendor concurrency、`database`、`docs`（路由建站期挂载）、`cache.semantic`（语义层 bootstrap 装配） |
+| 需重启 | `server`、`cors`、`rate_limit`（tower 层构造期构建）、`database`、`grpc`、`global_model`、`docs.enabled`（路由建站期挂载）、`cache.semantic`（语义层 bootstrap 装配）、`routing.difficulty.enabled` 与 `routing.difficulty.classifier` 的 `model_path`/`engine`/`cache_ttl_secs`（以上经 POST 响应 `restart_required` 数组显式提示）、vendor concurrency、`vendors` 拓扑（不在数组内） |
 
 ---
 
@@ -534,8 +534,8 @@ flowchart LR
 `src/middleware/admission.rs`——把 429 的决定权从"先到先得"交给"优先级"：
 
 - **拥塞信号**：网关侧并发占用率 = Σ in_flight / Σ 并发上限（复用 `ConcurrencyLimiter::in_flight`，流式 permit 随流存活故对长流真实）；达到 `[admission].congestion_threshold`（默认 0.9）即视为拥塞；
-- **裁决**：新请求档位优先级低于"当前在途最小档"时直接 429 + Retry-After 1s，不排队；
-- **优先级公式**：`w_tier · (1+α_slo·ℓ*)⁻¹ · (1+α_burst·b)⁻¹ · (1+α_debt·d)⁻¹`，其中 burst/debt 为 per-key EWMA（表上限 1024）。
+- **裁决**：新请求档位基准权重低于"当前在途最小档"时直接 429 + Retry-After 1s，不排队；同档/高档放行（同档内先到先得）；
+- **观测优先级公式**：`w_tier · (1+α_slo·ℓ*)⁻¹ · (1+α_burst·b)⁻¹ · (1+α_debt·d)⁻¹`，其中 burst/debt 为 per-key EWMA（表上限 1024）——只作诊断口径，**不参与** shed 判定（同档请求不得被抑制）。
 
 ### 限流（rate_limit）
 

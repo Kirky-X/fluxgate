@@ -49,9 +49,9 @@ curl http://127.0.0.1:8080/api/v1/health
 
 因为各段生效方式不同。`server` / `cors` 在建站期被 sdforge 固化进 axum Router，`rate_limit` 在 Router 构造期消费，vendor `concurrency` 在 vendor 实例构造期消费，`database` 启动期建池，`cache.semantic` 的语义层在 bootstrap 装配一次——这些段**必须重启进程**才生效；其余段（`auth` / `retry` / `routing` / `cache`（精确缓存）/ `resilience` / `admission` / `quota` / `health` / `pricing` / `global_model` / `lexcompress`）每请求热读，下一请求即生效。
 
-响应里的 `restart_required` 数组会列出需重启的段，但覆盖面有限——**当前检测 `server` 与 `cors` 两段，外加 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键**（分类器 bootstrap 装配一次）；改了 `rate_limit` / `concurrency` / `database` / `cache.semantic` 后不会出现在数组里，请自行安排重启。
+响应里的 `restart_required` 数组会列出需重启的段：`server` / `cors` / `rate_limit` / `database` / `grpc` / `global_model` / `cache.semantic` / `docs.enabled` / `routing.difficulty.enabled`，外加 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键（分类器 bootstrap 装配一次）。数组之外仍有两类需重启面请自行安排重启：vendor `concurrency`（vendor 实例构造期消费）与 `vendors` 拓扑。
 
-**代码位置**：`src/api/admin.rs:276-316`（update_config 的 restart_required 组装）
+**代码位置**：`src/api/admin.rs:333-395`（update_config 的 restart_required 组装）
 
 ### ❓ config.toml 被写回后自定义段消失了？
 

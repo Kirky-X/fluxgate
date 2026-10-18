@@ -330,9 +330,10 @@ pub async fn update_config(
     State(state): State<Arc<ApiState>>,
     Json(config): Json<Config>,
 ) -> Result<impl IntoResponse, FluxgateError> {
-    // 对比建站期消费的段（server/cors 在 main.rs 建站时被 sdforge 固化，
-    // 运行期不可热换——axum Router 的 layer 在构造时编译固化，sdforge 无
-    // 热重载中间件能力），变更时显式告知需重启，消除"静默失效"误判。
+    // 对比建站期消费的段（server/cors/rate_limit 在 create_router 期固化，
+    // database/grpc/cache.semantic 在 bootstrap 装配一次，global_model 无热读点），
+    // 变更时显式告知需重启，消除"静默失效"误判；口径与 config.example.toml 的
+    // ❌ 标注、文件监听侧结构门（hot_reload.rs）一致。
     let old = state.config.get_config();
     let mut restart_required: Vec<&'static str> = Vec::new();
     if old.server != config.server {
@@ -340,6 +341,38 @@ pub async fn update_config(
     }
     if old.cors != config.cors {
         restart_required.push("cors");
+    }
+    // 以下四段同为建站期消费（config.example.toml 的 ❌ 标注 + 文件监听侧
+    // 结构门拒绝口径）：database 在建连时解析、grpc 服务器构造期固化、
+    // rate_limit 进 Router 构造、global_model 无热读点（hot_reload.rs），
+    // 经本端点改后不热生效——显性告知消除"静默失效"误判。
+    if old.database != config.database {
+        restart_required.push("database");
+    }
+    if old.grpc != config.grpc {
+        restart_required.push("grpc");
+    }
+    if old.rate_limit != config.rate_limit {
+        restart_required.push("rate_limit");
+    }
+    if old.global_model != config.global_model {
+        restart_required.push("global_model");
+    }
+    // 语义缓存层在 bootstrap 装配一次（enabled 时加载 BGE 模型），热更不重
+    // 装配——启用/停用与参数变更均需重启。
+    if old.cache.semantic != config.cache.semantic {
+        restart_required.push("cache.semantic");
+    }
+    // docs 开关是建站期挂载判定（create_router 内 `state.config.read().docs.enabled`
+    // 决定是否 merge swagger 路由），改后须重启；文件监听侧结构门同样拒绝该段
+    //（hot_reload.rs "docs switch changed (router rebuild required)"）。
+    if old.docs != config.docs {
+        restart_required.push("docs.enabled");
+    }
+    // 难度定档路由是 bootstrap 一次装配（enabled=false 时不接线，ApiState.difficulty
+    // 恒 None），经本端点打开后解释接口仍按未接线拒绝，必须重启。
+    if old.routing.difficulty.enabled != config.routing.difficulty.enabled {
+        restart_required.push("routing.difficulty.enabled");
     }
     // 难度分类器在 bootstrap 装配一次（EngineFactory 加载 checkpoint），
     // 这两个键热更后惰性直到重启——显性告知防"已生效"误判

@@ -1180,6 +1180,73 @@ mod admin {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// 建站期/装配期消费的键经 POST 改后不热生效，必须在 restart_required 里
+    /// 显性提示，消除"返回 success 但静默失效"的运维误判（F17/F20）：
+    /// docs 开关（swagger 路由在 create_router 期挂载）、
+    /// routing.difficulty.enabled（定档路由 bootstrap 一次装配）、
+    /// rate_limit（Router 构造期消费，config.example.toml ❌ 标注）。
+    #[tokio::test]
+    async fn test_admin_update_config_reports_restart_required_for_docs_and_difficulty() {
+        async fn body_json<R: IntoResponse>(resp: Result<R, FluxgateError>) -> serde_json::Value {
+            let bytes =
+                axum::body::to_bytes(resp.unwrap().into_response().into_body(), 1024 * 1024)
+                    .await
+                    .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        let state = create_api_state().await;
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let dir = tmpdir.path().to_path_buf();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+        state.config.set_path(path.clone());
+
+        // 翻转 docs.enabled（默认 false → true）
+        let mut next = state.config.get_config();
+        next.docs.enabled = !next.docs.enabled;
+        let value = body_json(admin::update_config(State(state.clone()), Json(next)).await).await;
+        let required = value["restart_required"].as_array().unwrap();
+        assert!(
+            required.iter().any(|v| v == "docs.enabled"),
+            "docs 开关变更必须显式提示需重启: {required:?}"
+        );
+
+        // 新增一条 rate_limit 规则：Router 构造期消费，改后须重启
+        let mut next = state.config.get_config();
+        next.rate_limit.rules.push(fluxgate::config::RateLimitRule {
+            id: "restart-probe".to_string(),
+            path: None,
+            per_tenant: false,
+            window_secs: 60,
+            max_requests: 1,
+        });
+        let value = body_json(admin::update_config(State(state.clone()), Json(next)).await).await;
+        let required = value["restart_required"].as_array().unwrap();
+        assert!(
+            required.iter().any(|v| v == "rate_limit"),
+            "rate_limit 变更必须显式提示需重启: {required:?}"
+        );
+
+        // 翻转 routing.difficulty.enabled（默认 false → true）；纯规则形态
+        //（w_clf=0，不要求 difficulty-classifier feature）+ 档位指向本次请求
+        // 里新声明的抽象模型名（校验 V5/V6 要求档位可解析且不与 model_id 撞名；
+        // 本夹具唯一的模型名 gpt-4 即 model_id，直接用会撞名）
+        let mut next = state.config.get_config();
+        next.vendors[0].models[0].abstract_id = Some("difficulty-low".to_string());
+        next.routing.difficulty.enabled = true;
+        next.routing.difficulty.w_clf = 0.0;
+        next.routing.difficulty.tiers.low = "difficulty-low".to_string();
+        next.routing.difficulty.tiers.high = "difficulty-low".to_string();
+        let value = body_json(admin::update_config(State(state.clone()), Json(next)).await).await;
+        let required = value["restart_required"].as_array().unwrap();
+        assert!(
+            required.iter().any(|v| v == "routing.difficulty.enabled"),
+            "难度定档开关变更必须显式提示需重启: {required:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// 真机回归：config.toml 被进程外修改后，管理面写回必须显式失败且磁盘
     /// 编辑逐字节保留——此前的全量写回会用内存态覆盖磁盘，静默抹掉按约定
     /// 「改文件后重启」新增、但热重载以 topology changed 拒绝的 vendor 段。

@@ -514,7 +514,7 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 | 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读） | `POST /admin/config` 后下一请求即用新值 |
 | 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑）、`cache.semantic`（语义层 bootstrap 装配一次） | 修改后须重启进程 |
 
-> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组检测 `server` 与 `cors` 两段（`src/api/admin.rs:276-316`），另在 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键变更时加入对应键名（分类器 bootstrap 装配一次，热更后惰性直到重启）。`rate_limit` / `concurrency` / `database` / `cache.semantic` 等其余需重启面不会出现在数组里——改这些段后请自行安排重启。
+> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组检测 `server` / `cors` / `rate_limit` / `database` / `grpc` / `global_model` / `cache.semantic` / `docs.enabled` / `routing.difficulty.enabled`（`src/api/admin.rs:333-395`），另在 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键变更时加入对应键名（分类器 bootstrap 装配一次，热更后惰性直到重启）。数组之外仍有两类需重启面：vendor `concurrency` 与 `vendors` 拓扑——改这些段后请自行安排重启。
 
 ```mermaid
 flowchart TB

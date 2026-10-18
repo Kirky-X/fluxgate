@@ -620,7 +620,7 @@ enabled = false
 [[vendors]]
 id = "openai"
 name = "OpenAI"
-type_ = "openai"          # openai | anthropic | ollama（协议转换与透传判定）
+type_ = "openai"          # openai | anthropic | gemini | embedding | rerank（协议方向与转换器选型）
 api_key_env = "OPENAI_API_KEY"
 # 可选：多 key 池——显式 env 名列表，与 api_key_env 合并去重（本列表在前），
 # 按序轮换出站 key；401/403 认证失败自动切换下一把（生效于下次请求）。缺
@@ -759,6 +759,34 @@ rate_limit = { type = "token", max_tokens = 10000000, window_hours = 24, sliding
 model_id = "claude-3-opus-20240229"
 enabled = true
 weight = 1.0
+
+# ---- Gemini 原生厂商（type_ = "gemini"）----
+# 出站固定 {api_base}/v1beta/models/{model}:generateContent|
+# streamGenerateContent?alt=sse；鉴权头 x-goog-api-key；api_base 可省略（缺省
+# https://generativelanguage.googleapis.com）。不得声明 chat_path（端点由
+# model + action 动态拼接）；api_style 仅允许缺省或 "chat"。
+# 入站同时提供 /v1beta/models/{model}:{action} 原生端点（generateContent /
+# streamGenerateContent / countTokens / embedContent / batchEmbedContents）；
+# safetySettings/cachedContent/内置工具仅路由本类型厂商。
+[[vendors]]
+id = "gemini"
+name = "Google Gemini"
+type_ = "gemini"
+api_key_env = "GEMINI_API_KEY"  # pragma: allowlist secret（示例环境变量名，非凭证）
+# api_base = "https://generativelanguage.googleapis.com"
+enabled = true
+priority = 3
+timeout_ms = 60000
+stream_ttft_ms = 60000
+stream_idle_ms = 30000
+concurrency = { requests_per_second = 50, token_weighted = false, token_ticket_min = 1, token_ticket_max = 16384, token_ticket_default = 4096 }
+rate_limit = { type = "token", max_tokens = 10000000, window_hours = 24, sliding = false }
+
+[[vendors.models]]
+model_id = "gemini-2.5-pro"
+enabled = true
+weight = 1.0
+# abstract_id = "gemini-pro"
 
 # ---- 本地示例/联调用 mock 厂商（按需整段取消注释，生产保持注释）----
 # examples/ 的请求以 vendor_hint = "mock-openai" 与模型名 gpt-4 /

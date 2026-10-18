@@ -21,6 +21,7 @@
   - [DELETE /v1/responses/:id](#delete-v1responsesid)
   - [POST /v1/responses/:id/cancel](#post-v1responsesidcancel)
   - [POST /v1/responses/input_tokens](#post-v1responsesinput_tokens)
+  - [Gemini 原生端点](#gemini-原生端点)
   - [POST /v1/messages](#post-v1messages)
   - [GET /v1/models](#get-v1models)
   - [POST /v1/messages/count_tokens](#post-v1messagescount_tokens)
@@ -63,6 +64,7 @@
 | 认证方式 | Bearer Token (API Key) |
 | 请求头 | `Authorization: Bearer <api_key>` |
 | 备用请求头 | `x-api-key: <api_key>` |
+| Gemini 请求头 | `x-goog-api-key: <api_key>`（`/v1beta/` 路径也接受 `?key=<api_key>`） |
 | 配置位置 | `config.toml` 的 `[auth]` 段（`api_keys` 存 SHA256 hex 摘要，明文不落盘） |
 | 启用开关 | `auth.enabled` (`true` / `false`) |
 
@@ -594,6 +596,70 @@ curl -X POST http://localhost:8080/v1/responses \
 近似输入 token 估算（字符/4 + 结构开销，确定性）。入参 `{model, input, instructions?, tools?}`，返回 `{"object":"response.input_tokens","input_tokens":N}`；缺 `model` 或 `input` 为空 → 400。
 
 ---
+
+### Gemini 原生端点
+
+Google 官方 SDK 可将 base URL 指向网关根地址，直接使用 Gemini 原生协议。入站按 `model:action` 同段解析（`model` 可带或不带 `models/` 前缀）。
+
+| 方法与路径 | 说明 |
+|---|---|
+| `POST /v1beta/models/<model>:generateContent` | 非流式对话（文本/多模态/函数调用/结构化输出/thinking） |
+| `POST /v1beta/models/<model>:streamGenerateContent` | 流式对话（SSE；无论是否带 `alt=sse` 均返回 `text/event-stream`） |
+| `POST /v1beta/models/<model>:countTokens` | 本地近似估算（字符/4 + 结构开销，不发上游） |
+| `POST /v1beta/models/<model>:embedContent` | 单条嵌入（转 OpenAI embeddings 形状，路由到 OpenAI 型厂商） |
+| `POST /v1beta/models/<model>:batchEmbedContents` | 批量嵌入（同上，`outputDimensionality` 全批必须一致） |
+| `GET /v1beta/models` | 可路由模型的 Gemini 清单（`abstract_id` 优先、去重、`supportedGenerationMethods`） |
+| `GET /v1beta/models/<model>` | 单模型元数据（未知模型 404） |
+
+**鉴权**：`x-goog-api-key` 或 `/v1beta/` 路径上的 `?key=`（query key 仅限该前缀，且不写入访问日志）。认证失败返回 Gemini 形状错误体。
+
+**默认路由**：请求转成统一 chat IR，进入现有加权/亲和/难度/熔断/配额路由池（OpenAI/Anthropic/Responses/Gemini 厂商均可命中）。Gemini 专属字段：
+
+- `safetySettings` / `cachedContent` / 非函数工具（`googleSearch`、`codeExecution` 等）→ **原生直通**：只路由 `type_ = "gemini"` 厂商，body 原样打上游，无候选时 400 并给出配置指引。
+- `generationConfig.responseSchema` → IR `response_format`（json_schema）；`thinkingConfig.thinkingBudget`（0=禁用、>0=预算、<0=动态）与 `includeThoughts` → IR thinking 槽。
+- `functionDeclarations` / `toolConfig.functionCallingConfig` → IR tools/tool_choice；`functionCall` 在 IR 中生成稳定调用 ID，`functionResponse` 按 `name` 关联。
+- `taskType` / `title`（embedding）无 IR 等价槽，转 OpenAI 形状时丢弃。
+
+**示例（generateContent）**：
+
+```bash
+curl http://localhost:8080/v1beta/models/gemini-2.5-pro:generateContent \
+  -H "x-goog-api-key: $FLUXGATE_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "systemInstruction": {"parts": [{"text": "回答不超过 80 字"}]},
+    "contents": [{"role": "user", "parts": [{"text": "解释重排与嵌入的区别"}]}],
+    "generationConfig": {"maxOutputTokens": 256}
+  }'
+```
+
+**响应形状**：
+
+```json
+{
+  "candidates": [{
+    "content": {"role": "model", "parts": [{"text": "…"}]},
+    "finishReason": "STOP",
+    "index": 0
+  }],
+  "usageMetadata": {
+    "promptTokenCount": 12,
+    "candidatesTokenCount": 34,
+    "totalTokenCount": 46,
+    "cachedContentTokenCount": 0
+  },
+  "modelVersion": "gemini-2.5-pro",
+  "responseId": "resp_…"
+}
+```
+
+**流式语义**：每帧为一个 `data: <GenerateContentResponse>`，无 `event:` 名与 `[DONE]`；函数调用在终止帧以完整 `functionCall` 下发；`usageMetadata` 在末帧给出。
+
+**限制**：
+
+- 不支持 Live API（WebSocket）、Files API、cachedContents CRUD、Batches API。
+- `?key=` 仅建议兼容 Google SDK；生产优先使用 `x-goog-api-key` 头，避免密钥进入代理访问日志。
+- 普通 http(s) 图片 URL 以 `fileData.fileUri` 透传，Gemini 只接受 Files API / `gs://` URI；网关不做服务端抓取（避免 SSRF）。
 
 ### GET /v1/models
 
@@ -1860,7 +1926,7 @@ enabled = true
 
 ## 附录：路由提示请求头
 
-LLM 推理端点（`/v1/chat/completions` 与 `/v1/messages`）均解析路由提示请求头（`RoutingHints::from_headers`，见 `src/api/openai.rs` 与 `src/api/anthropic.rs`）；其中 `X-Vendor`/`X-Model` 仅由 OpenAI 兼容端点消费（`route_with_hints`），`X-Session-Id`/`X-Weight` 两个端点均生效：
+LLM 推理端点（`/v1/chat/completions` 与 `/v1/messages`）均解析路由提示请求头（`RoutingHints::from_headers`，见 `src/api/completions.rs` 与 `src/api/anthropic.rs`）；其中 `X-Vendor`/`X-Model` 仅由 OpenAI 兼容端点消费（`route_with_hints`），`X-Session-Id`/`X-Weight` 两个端点均生效：
 
 | Header | 说明 | 生效条件 |
 |---|---|---|

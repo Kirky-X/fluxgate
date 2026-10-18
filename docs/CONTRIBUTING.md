@@ -82,7 +82,7 @@ Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 
 | 目录 | 职责 | 关键文件 |
 |:-----|:-----|:---------|
-| `src/api/` | REST 端点与路由构建 | `router_builder.rs`（中间件挂载）、`admin.rs`、`openai.rs`、`anthropic.rs`、`sse.rs`、`response_cache.rs` |
+| `src/api/` | REST 端点与路由构建 | `router_builder.rs`（中间件挂载）、`admin.rs`、`completions.rs`、`anthropic.rs`、`sse.rs`、`response_cache.rs` |
 | `src/config/` | TOML 配置加载 / 校验 / 热更新 | `mod.rs`（Config 结构与默认值）、`manager.rs`、`loader.rs`、`model_catalog.rs` |
 | `src/database/` | SQLite 持久化 | `repository.rs`、`async_logger.rs`（异步批量写）、`pre_aggregator.rs`（Token 预聚合） |
 | `src/i18n/` | Fluent 双语目录（en/zh）与 locale 检测 | `catalog.rs`、`locale.rs` |

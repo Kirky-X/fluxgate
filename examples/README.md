@@ -60,8 +60,8 @@ cd examples/assets/rest-http && npm install openai && FLUXGATE_API_KEY=你的key
 **协议事实与勘误**（编写时以源码核实）：
 
 - `GET /v1/models` 已在网关注册（`src/api/router_builder.rs:703`）：OpenAI list 格式，返回「模型目录 ∪ vendor 配置模型」去重排序、需鉴权、始终现算不缓存。`GET /admin/models` 是另一个端点——`[[model_catalog]]` 能力目录（含定价/能力位），管理员鉴权，二者用途不同。SDK 的 `FluxgateClient::models`（`src/sdk/admin.rs:140-143`）打的是 `GET /admin/models`（旧版误打未注册的 `/v1/models` 恒 404 的失配已修复），已无 SDK 偏差。
-- 路由提示头按端点区分：`X-Vendor`/`X-Model` **仅 OpenAI 兼容端点消费**（`hints.has_hints()` 时走 `route_with_hints`，`src/api/openai.rs:692-698`），`/v1/messages` 保持无 hints 语义、忽略这两个头（`src/api/anthropic.rs:64`、`:702` 走 `route_weighted`）；`X-Session-Id` / `X-Weight` 两个推理端点均生效（头提取统一在 `RoutingHints::from_headers`，`src/api/routing_hints.rs`）。
-- SSE 错误帧 `event: error` 之后网关不补 `[DONE]`（`src/api/openai.rs:592-624`、`src/protocol/sse_frame.rs:25-46`），客户端解析器按失败终止，不要等待 `[DONE]`。
+- 路由提示头按端点区分：`X-Vendor`/`X-Model` **仅 OpenAI 兼容端点消费**（`hints.has_hints()` 时走 `route_with_hints`，`src/api/completions.rs:692-698`），`/v1/messages` 保持无 hints 语义、忽略这两个头（`src/api/anthropic.rs:64`、`:702` 走 `route_weighted`）；`X-Session-Id` / `X-Weight` 两个推理端点均生效（头提取统一在 `RoutingHints::from_headers`，`src/api/routing_hints.rs`）。
+- SSE 错误帧 `event: error` 之后网关不补 `[DONE]`（`src/api/completions.rs:876-918`、`src/protocol/sse_frame.rs:25-46`），客户端解析器按失败终止，不要等待 `[DONE]`。
 
 ---
 

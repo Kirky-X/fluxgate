@@ -10,6 +10,8 @@
 - [认证配置](#-认证配置)
 - [厂商与模型配置](#-厂商与模型配置)
 - [路由调优 routing](#-路由调优-routing)
+- [Responses API responses](#-responses-api-responses)
+- [Gemini 原生端点 gemini](#-gemini-原生端点-gemini)
 - [重试与韧性 retryresilience](#-重试与韧性-retry--resilience)
 - [响应缓存 cache](#-响应缓存-cache)
 - [入站限流与准入 ratelimitadmission](#-入站限流与准入-ratelimit--admission)
@@ -138,7 +140,7 @@ tier = "dedicated"
 |:-----|:-----|:-------|:-----|
 | `id` | String | 必填 | 厂商唯一标识；**不得为空白**；**跨条目去重校验**（按 ASCII 大小写不敏感），重复导致配置加载失败（`src/config/loader.rs`） |
 | `name` | String | 必填 | 显示名 |
-| `type_` | String | 必填（TOML 键名 `type`） | 协议方向：`"anthropic"` 走 Anthropic 面，其余值按 OpenAI 兼容面处理（代码不校验取值；模型能力档对未知类型回落 ollama 保守档） |
+| `type_` | String | 必填（TOML 键名 `type`） | 协议方向：`"anthropic"` 走 Anthropic 面，`"gemini"` 走 Gemini 原生面（`/v1beta/models/{model}:{action}` + `x-goog-api-key`），`"rerank"` 走重排面，其余值按 OpenAI 兼容面处理（代码不校验取值；模型能力档对未知类型回落 ollama 保守档） |
 | `api_key_env` | String | 必填 | 存放上游密钥的环境变量名 |
 | `api_key_envs` | 数组 | 空 | 多 key 池的额外环境变量名（与 `api_key_env` 合并去重，本列表在前；缺名 env 跳过并告警，池上限见 `key_pool::MAX_KEY_POOL`） |
 | `extra_headers` | 表 | 空 | 出站自定义头（静态值，热生效；与网关已设头冲突时跳过并记 warn） |
@@ -267,6 +269,59 @@ flowchart TB
 | `quality` | 0.7 | 0.2 | 0.1 | 偏模型配置权重 |
 | `latency` | 0.2 | 0.2 | 0.2 | 额外开 `w_latency = 0.4`、`latency_ref_ms = 500` |
 | `cost` | 0.2 | 0.2 | 0.6 | 偏窗口预算（Token 余额 ≈ 成本预算代理） |
+
+---
+
+## ♊ Gemini 原生端点 gemini
+
+`type_ = "gemini"` 厂商既能承接本网关其它入口（`/v1/chat/completions`、`/v1/messages`、`/v1/responses`）的流量，也提供 Gemini 原生入站端点（Google 官方 SDK 可直接把 base URL 指向网关根地址）。
+
+### 厂商配置
+
+```toml
+[[vendors]]
+id = "google"
+name = "Google Gemini"
+type_ = "gemini"
+api_base = "https://generativelanguage.googleapis.com"   # 可省略（缺省即官方 host）
+api_key_env = "GEMINI_API_KEY"                           # pragma: allowlist secret（示例环境变量名）；出站以 x-goog-api-key 发送
+rate_limit = { type = "time_window", start = "00:00", end = "24:00" }
+concurrency = { requests_per_second = 20 }
+
+[[vendors.models]]
+model_id = "gemini-2.5-pro"
+abstract_id = "gemini-pro"
+enabled = true
+weight = 1.0
+```
+
+`type_ = "gemini"` 不允许声明 `chat_path`（端点由 model + action 动态拼接），`api_style` 仅允许缺省或 `chat`。健康探针：`free` 策略 GET `models`，`minimal_call` 发 1 token 的 `generateContent`。
+
+### 入站端点
+
+| 端点 | 说明 |
+|---|---|
+| `POST /v1beta/models/{model}:generateContent` | 非流式对话 |
+| `POST /v1beta/models/{model}:streamGenerateContent` | 流式 SSE（无 `[DONE]`） |
+| `POST /v1beta/models/{model}:countTokens` | 本地估算 |
+| `POST /v1beta/models/{model}:embedContent` | 单条嵌入（转 OpenAI 形状） |
+| `POST /v1beta/models/{model}:batchEmbedContents` | 批量嵌入 |
+| `GET /v1beta/models` / `GET /v1beta/models/{model}` | 模型清单/详情 |
+
+认证：Google SDK 默认发送 `x-goog-api-key`；网关也接受 `/v1beta/` 路径上的 `?key=`（建议仅在 SDK 无法定制请求头时使用，并确保反向代理不记录 query）。
+
+### 路由与直通
+
+- 默认转统一 chat IR，命中任意厂商（含 OpenAI/Anthropic/Responses/Gemini），享受加权/亲和/难度/熔断/配额。
+- `safetySettings`、`cachedContent`、内置工具（`googleSearch` 等）无法等价降级 → 仅路由 `type_ = "gemini"` 厂商，body 原样直通；无候选时 400 并提示补配置。
+- 思考摘要：`thinkingConfig.includeThoughts` 进入 IR 请求级开关，仅 Gemini 出站生效；其它厂商忽略。
+- `generationConfig.responseSchema` 支持 OpenAI JSON Schema 的 `$defs/$ref` 内联（深度上限 32、环引用拒绝）。
+
+### 限制
+
+- 不做 Gemini 原生 Embeddings 出站（`/v1/embeddings` 仍只路由 OpenAI 型厂商；Gemini embeddings 可走其 OpenAI 兼容端点）。
+- 不支持 Live API、Files API、cachedContents CRUD、Batches API。
+- 普通 http(s) 图片 URL 以 `fileData.fileUri` 透传，上游只接受 Files API / `gs://` URI；网关不做服务端抓取。
 
 ---
 
@@ -456,7 +511,7 @@ max_requests = 100
 
 - **`[[model_catalog]]` 未登记该 (vendor, model) 时成本按 `0` 计**，不会阻塞响应。
 - 目录与定价热更立即生效（下一次请求即用新值）。
-- 逐请求日志表 `request_logs.cost_usd` 恒为 `None`（`src/api/openai.rs` / `src/api/anthropic.rs` 构造日志条目时固定填 `None`）——它是历史兼容列，成本不写在这里，而走下方 token_usage 预聚合落库与进程内 `CostTracker`。
+- 逐请求日志表 `request_logs.cost_usd` 恒为 `None`（`src/api/completions.rs` / `src/api/anthropic.rs` 构造日志条目时固定填 `None`）——它是历史兼容列，成本不写在这里，而走下方 token_usage 预聚合落库与进程内 `CostTracker`。
 
 ### 成本分账落库与查询
 

@@ -39,7 +39,7 @@ curl http://127.0.0.1:8080/api/v1/health
 | `X-Session-Id: <key>` | 会话亲和键（两端点均支持）；缺失时兜底 `sha256(messages[0] 前 2KB)` 截断 hex |
 | `X-Weight: <正数>` | 请求级权重（两端点均支持），需 `[routing].allow_request_weight = true` 才生效（默认忽略） |
 
-**代码位置**：`src/api/routing_hints.rs`（头提取）、`src/api/openai.rs:692-698`（`hints.has_hints()` 时走 `route_with_hints`，X-Vendor 未命中即报错）、`src/api/anthropic.rs:64`、`:702`（保持无 hints 语义，走 `route_weighted`）
+**代码位置**：`src/api/routing_hints.rs`（头提取）、`src/api/completions.rs:692-698`（`hints.has_hints()` 时走 `route_with_hints`，X-Vendor 未命中即报错）、`src/api/anthropic.rs:64`、`:702`（保持无 hints 语义，走 `route_weighted`）
 
 ---
 

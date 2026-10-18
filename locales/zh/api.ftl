@@ -84,3 +84,14 @@ api-openapi-models-list-description = 模型目录与已启用厂商模型的并
 api-openapi-count-tokens-description = 近似输入 token 估算（字符数/4 + 每条消息结构开销，确定性）
 api-openapi-route-explain-description = 只读的逐候选路由评估（原因码 + 权重分解）
 api-openapi-cost-usage-description = 按厂商或模型聚合的 token 与成本分账，支持可选时间窗与 API key 过滤
+api-responses-disabled = Responses 端点已禁用（[responses].enabled = false）
+api-responses-stream-failed = Responses 上游流中断：{ $error }
+api-responses-store-failed = Responses 有状态存储写入失败（响应不受影响）：{ $error }
+api-responses-purge-failed = Responses 过期行清理失败：{ $error }
+api-responses-store-too-large = Responses 存储被拒：单列 JSON 超过 max_response_bytes 上限
+api-responses-not-found = Responses 记录不存在或已过期：{ $id }
+api-responses-store-unavailable = Responses 有状态存储未接线（[responses] 运行时缺失）
+api-responses-native-hint-vendor = X-Vendor "{ $vendor }" 不具备 Responses 原生能力：请声明 type_ = "openai" 且 api_style = "responses"
+api-responses-native-hint-model = X-Model "{ $model }" 无 Responses 原生厂商承载：请检查厂商 api_style 与启用状态
+api-responses-orphans-failed = Responses 孤儿后台任务已置 failed：{ $count } 条
+api-responses-orphan-cleanup-failed = Responses 孤儿任务清理失败（启动继续）：{ $error }

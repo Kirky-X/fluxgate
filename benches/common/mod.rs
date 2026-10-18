@@ -207,6 +207,7 @@ pub fn routing_config() -> Config {
             stream_idle_ms: 30_000,
             supports_batch: false,
             chat_path: None,
+            api_style: None,
             id: format!("bench-vendor-{i}"),
             name: format!("Bench Vendor {i}"),
             type_: "openai".into(),
@@ -271,6 +272,7 @@ pub fn routing_config() -> Config {
         resilience: Default::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
+        responses: Default::default(),
     }
 }
 

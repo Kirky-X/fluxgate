@@ -125,6 +125,7 @@ fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Co
         resilience: fluxgate::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
+        responses: Default::default(),
         rate_limit: RateLimitSection { rules },
     }
 }
@@ -175,6 +176,7 @@ async fn build_app_with_vendors(rules: Vec<RateLimitRule>, vendors: Vec<VendorCo
         bandit: None,
         quota: None,
         difficulty: None,
+        responses: None,
     });
 
     create_router(state).await
@@ -568,6 +570,7 @@ async fn auth_runs_before_rate_limit_layers() {
         bandit: None,
         quota: None,
         difficulty: None,
+        responses: None,
     });
     let app = create_router(state).await;
 

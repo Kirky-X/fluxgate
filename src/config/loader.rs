@@ -137,6 +137,7 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_admin_secrets(config)?;
     validate_vendor_entries(config)?;
     validate_model_types(config)?;
+    validate_responses(config)?;
     validate_rerank_score_normalization(config)?;
     validate_embedding_groups(config)?;
     warn_missing_api_key_envs(config);
@@ -521,6 +522,43 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
+        // 端点风格：白名单；responses 仅限 openai 型且与 chat_path 互斥
+        if let Some(style) = vendor.api_style() {
+            let normalized = style.to_ascii_lowercase();
+            if !matches!(normalized.as_str(), "chat" | "responses") {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-vendor-api-style-unknown",
+                        &[("vendor", vendor.id.clone()), ("value", style.to_string())],
+                    ),
+                });
+            }
+            if normalized == "responses" {
+                if vendor.type_ != "openai" {
+                    return Err(GateError::Config {
+                        message: t_args(
+                            "config-vendor-api-style-requires-openai",
+                            &[
+                                ("vendor", vendor.id.clone()),
+                                ("type", vendor.type_.clone()),
+                            ],
+                        ),
+                    });
+                }
+                if vendor
+                    .chat_path
+                    .as_deref()
+                    .is_some_and(|path| !path.trim().is_empty())
+                {
+                    return Err(GateError::Config {
+                        message: t_args(
+                            "config-vendor-api-style-chat-path-conflict",
+                            &[("vendor", vendor.id.clone())],
+                        ),
+                    });
+                }
+            }
+        }
     }
 
     for vendor in &config.vendors {
@@ -605,6 +643,37 @@ fn validate_rerank_score_normalization(config: &Config) -> Result<(), GateError>
             &[("value", mode.to_string())],
         ),
     })
+}
+
+/// `[responses]` 段边界校验：保留时长、单列上限与后台并发上限。
+/// 越界一律配置错误并点名字段与原值（加载与热载同入口）。
+fn validate_responses(config: &Config) -> Result<(), GateError> {
+    let responses = &config.responses;
+    if !(1..=8760).contains(&responses.retention_hours) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-responses-retention-hours-out-of-range",
+                &[("value", responses.retention_hours.to_string())],
+            ),
+        });
+    }
+    if !(1024..=16 * 1024 * 1024).contains(&responses.max_response_bytes) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-responses-max-response-bytes-out-of-range",
+                &[("value", responses.max_response_bytes.to_string())],
+            ),
+        });
+    }
+    if !(1..=256).contains(&responses.max_background_jobs) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-responses-max-background-jobs-out-of-range",
+                &[("value", responses.max_background_jobs.to_string())],
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// 嵌入兼容组校验（R1-R3）：同一 `compat_group`（trim 后精确匹配）内
@@ -1036,6 +1105,7 @@ mod tests {
             resilience: Default::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 
@@ -1897,6 +1967,100 @@ model_type = "rerank"
         assert!(
             error.to_string().contains("softmax"),
             "错误必须点名非法值: {error}"
+        );
+    }
+
+    /// `[responses]` 边界：下限/上限通过，三类越界均拒绝并点名字段。
+    #[test]
+    fn responses_section_bounds_are_validated() {
+        let vendors = difficulty_vendor("v1", &typed_model("m", None));
+        let base = parse_vendors_toml(&vendors).expect("基础配置");
+
+        let mut valid = base.clone();
+        valid.responses.retention_hours = 1;
+        valid.responses.max_response_bytes = 1024;
+        valid.responses.max_background_jobs = 1;
+        validate_config(&valid).expect("下限值必须通过");
+        valid.responses.retention_hours = 8760;
+        valid.responses.max_response_bytes = 16 * 1024 * 1024;
+        valid.responses.max_background_jobs = 256;
+        validate_config(&valid).expect("上限值必须通过");
+
+        let mut zero_retention = base.clone();
+        zero_retention.responses.retention_hours = 0;
+        let error = validate_config(&zero_retention).expect_err("retention=0 必须拒绝");
+        assert!(
+            error.to_string().contains("retention_hours"),
+            "错误必须点名字段: {error}"
+        );
+
+        let mut small_bytes = base.clone();
+        small_bytes.responses.max_response_bytes = 1023;
+        let error = validate_config(&small_bytes).expect_err("bytes=1023 必须拒绝");
+        assert!(
+            error.to_string().contains("max_response_bytes"),
+            "错误必须点名字段: {error}"
+        );
+
+        let mut too_many_jobs = base;
+        too_many_jobs.responses.max_background_jobs = 257;
+        let error = validate_config(&too_many_jobs).expect_err("jobs=257 必须拒绝");
+        assert!(
+            error.to_string().contains("max_background_jobs"),
+            "错误必须点名字段: {error}"
+        );
+    }
+
+    /// `api_style` 白名单、responses 仅限 openai 型、与 chat_path 互斥。
+    #[test]
+    fn vendor_api_style_is_validated() {
+        fn vendor_with_style(type_: &str, style: Option<&str>, chat_path: Option<&str>) -> String {
+            let mut block = format!(
+                "[[vendors]]\nid = \"v1\"\nname = \"v1\"\ntype_ = \"{type_}\"\n\
+                 api_key_env = \"V_KEY\"\n\
+                 rate_limit = {{ type = \"time_window\", start = \"00:00\", end = \"24:00\" }}\n\
+                 concurrency = {{ requests_per_second = 1 }}\n"
+            );
+            if let Some(style) = style {
+                block.push_str(&format!("api_style = \"{style}\"\n"));
+            }
+            if let Some(path) = chat_path {
+                block.push_str(&format!("chat_path = \"{path}\"\n"));
+            }
+            block.push_str(&typed_model("m", None));
+            block
+        }
+
+        for (type_, style, chat_path) in [
+            ("openai", None, None),
+            ("openai", Some("chat"), None),
+            ("openai", Some("RESPONSES"), None),
+            ("openai", Some(""), None),
+        ] {
+            let vendors = vendor_with_style(type_, style, chat_path);
+            parse_vendors_toml(&vendors)
+                .unwrap_or_else(|e| panic!("合法 api_style={style:?} 必须通过: {e}"));
+        }
+
+        let unknown = vendor_with_style("openai", Some("grpc"), None);
+        let error = parse_vendors_toml(&unknown).expect_err("未知 api_style 必须拒绝");
+        assert!(
+            error.to_string().contains("grpc"),
+            "错误必须点名非法值: {error}"
+        );
+
+        let wrong_type = vendor_with_style("anthropic", Some("responses"), None);
+        let error = parse_vendors_toml(&wrong_type).expect_err("非 openai 型必须拒绝");
+        assert!(
+            error.to_string().contains("openai"),
+            "错误必须说明需要 openai 型: {error}"
+        );
+
+        let conflict = vendor_with_style("openai", Some("responses"), Some("/chat/completions"));
+        let error = parse_vendors_toml(&conflict).expect_err("chat_path 互斥必须拒绝");
+        assert!(
+            error.to_string().contains("chat_path"),
+            "错误必须点名冲突字段: {error}"
         );
     }
 }

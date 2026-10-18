@@ -107,7 +107,8 @@ pub async fn chat_completions(
 
     // 零拷贝透传（入站格式 OpenAI == 出站格式 OpenAI）；透传路径不做工具
     // schema 上限校验（字节保真是设计承诺），兜底 = axum 体限 + auth + 限流。
-    let use_passthrough = decision.vendor.type_ == "openai";
+    let use_passthrough =
+        decision.vendor.type_ == "openai" && !decision.vendor.is_responses_style();
 
     if use_passthrough {
         if stream {

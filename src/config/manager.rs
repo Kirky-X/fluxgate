@@ -499,6 +499,7 @@ mod tests {
                 stream_idle_ms: 30_000,
                 supports_batch: false,
                 chat_path: None,
+                api_style: None,
             }],
             global_model: Some(GlobalModelConfig {
                 enabled: true,
@@ -518,6 +519,7 @@ mod tests {
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 

@@ -7,7 +7,7 @@ use super::{
 };
 use crate::config::{ConfigManager, RetrySection, VendorConfig};
 use crate::error::GateError;
-use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
+use crate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter, ResponsesConverter};
 use crate::protocol::{StreamChunk, UnifiedRequest, UnifiedResponse};
 use crate::utils::metrics::GlobalMetrics;
 use crate::utils::retry::{retry_delay_for, spread_delay, ErrorCategory, RetryDelayPolicy};
@@ -350,6 +350,7 @@ pub struct VendorManager {
     client: reqwest::Client,
     openai_converter: Arc<OpenAIConverter>,
     anthropic_converter: Arc<AnthropicConverter>,
+    responses_converter: Arc<ResponsesConverter>,
     metrics: Arc<GlobalMetrics>,
     #[cfg(feature = "cost-tracking")]
     cost_tracker: Arc<CostTracker>,
@@ -380,6 +381,7 @@ impl VendorManager {
                 .expect("reqwest Client build failed"),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
+            responses_converter: Arc::new(ResponsesConverter::new()),
             metrics: Arc::new(GlobalMetrics::new()),
             #[cfg(feature = "cost-tracking")]
             cost_tracker: Arc::new(CostTracker::new()),
@@ -629,6 +631,7 @@ impl VendorManager {
         let client_clone = self.client.clone();
         let openai = self.openai_converter.clone();
         let anthropic = self.anthropic_converter.clone();
+        let responses = self.responses_converter.clone();
         let config_manager = self.config.clone();
         // metrics 传入 worker — 转换路径（经队列）在 worker 内记账
         let metrics = self.metrics.clone();
@@ -639,6 +642,7 @@ impl VendorManager {
                 client_clone,
                 openai,
                 anthropic,
+                responses,
                 config_manager,
                 metrics,
             )
@@ -653,6 +657,7 @@ impl VendorManager {
         client: reqwest::Client,
         openai: Arc<OpenAIConverter>,
         anthropic: Arc<AnthropicConverter>,
+        responses: Arc<ResponsesConverter>,
         config_manager: Arc<ConfigManager>,
         metrics: Arc<GlobalMetrics>,
     ) {
@@ -707,6 +712,7 @@ impl VendorManager {
                 client.clone(),
                 openai.clone(),
                 anthropic.clone(),
+                responses.clone(),
                 config_manager.clone(),
                 metrics.clone(),
                 config,
@@ -724,6 +730,7 @@ impl VendorManager {
         client: reqwest::Client,
         openai: Arc<OpenAIConverter>,
         anthropic: Arc<AnthropicConverter>,
+        responses: Arc<ResponsesConverter>,
         config_manager: Arc<ConfigManager>,
         metrics: Arc<GlobalMetrics>,
         config: VendorConfig,
@@ -763,6 +770,7 @@ impl VendorManager {
             request,
             &openai,
             &anthropic,
+            &responses,
             &retry_cfg,
             #[cfg(feature = "resilience")]
             &circuit_breaker,
@@ -909,6 +917,7 @@ impl VendorManager {
         request: UnifiedRequest,
         openai: &OpenAIConverter,
         anthropic: &AnthropicConverter,
+        responses: &ResponsesConverter,
         retry_cfg: &RetrySection,
         #[cfg(feature = "resilience")] circuit_breaker: &Arc<CircuitBreaker<GateError>>,
         metrics: &GlobalMetrics,
@@ -916,15 +925,8 @@ impl VendorManager {
         credential: &RequestCredential,
         cache_policy: Option<&crate::config::model_catalog::CacheBreakpointPolicy>,
     ) -> Result<UnifiedResponse, GateError> {
-        let converter: &dyn ProtocolConverter = match config.type_.as_str() {
-            "openai" => openai,
-            "anthropic" => anthropic,
-            _ => {
-                return Err(GateError::Config {
-                    message: crate::i18n::t("vendor-unknown-type"),
-                })
-            }
-        };
+        let converter: &dyn ProtocolConverter =
+            Self::converter_for(config, openai, anthropic, responses)?;
 
         // anthropic 型走缓存断点注入入口（None = 非 anthropic，走原编码）
         let request_body = if let Some(policy) = cache_policy {
@@ -954,6 +956,24 @@ impl VendorManager {
     fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
         let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
         value.trim().parse::<u64>().ok().map(Duration::from_secs)
+    }
+
+    /// 转换器选型（非流式/流式共用）：anthropic 型 → Anthropic；
+    /// openai + api_style="responses" → Responses；其余 openai → chat。
+    fn converter_for<'a>(
+        config: &VendorConfig,
+        openai: &'a OpenAIConverter,
+        anthropic: &'a AnthropicConverter,
+        responses: &'a ResponsesConverter,
+    ) -> Result<&'a dyn ProtocolConverter, GateError> {
+        match config.type_.as_str() {
+            "anthropic" => Ok(anthropic),
+            "openai" if config.is_responses_style() => Ok(responses),
+            "openai" => Ok(openai),
+            _ => Err(GateError::Config {
+                message: crate::i18n::t("vendor-unknown-type"),
+            }),
+        }
     }
 
     /// 构建 vendor API URL（path 可变版：chat/completions / messages / embeddings）；
@@ -995,15 +1015,18 @@ impl VendorManager {
         };
 
         // chat_path 覆盖（如 Zhipu /api/paas/v4 + /chat/completions）：
-        // 直接 api_base + 覆盖路径，跳过 /v1 自动拼接
-        if let Some(override_path) = config.chat_path.as_deref() {
-            let override_path = override_path.trim_start_matches('/');
-            if !override_path.is_empty() {
-                return Ok(format!(
-                    "{}/{}",
-                    api_base.trim_end_matches('/'),
-                    override_path
-                ));
+        // 直接 api_base + 覆盖路径，跳过 /v1 自动拼接。responses 风格与
+        // chat_path 互斥（配置校验同拒），此处再守一道防手构配置绕过。
+        if !config.is_responses_style() {
+            if let Some(override_path) = config.chat_path.as_deref() {
+                let override_path = override_path.trim_start_matches('/');
+                if !override_path.is_empty() {
+                    return Ok(format!(
+                        "{}/{}",
+                        api_base.trim_end_matches('/'),
+                        override_path
+                    ));
+                }
             }
         }
 
@@ -1016,8 +1039,12 @@ impl VendorManager {
         Ok(url)
     }
 
-    /// 构建 vendor API URL（chat/messages/rerank 默认端点）；`pub(crate)` 供健康探针复用。
+    /// 构建 vendor API URL（chat/messages/rerank/responses 默认端点）；
+    /// `pub(crate)` 供健康探针复用。
     pub(crate) fn build_vendor_url(config: &VendorConfig) -> Result<String, GateError> {
+        if config.is_responses_style() {
+            return Self::build_vendor_url_at(config, "responses");
+        }
         let path = match config.type_.as_str() {
             "anthropic" => "messages",
             "rerank" => "rerank",
@@ -1875,8 +1902,9 @@ impl VendorManager {
 
         // converter 以 Arc 进流（parse_stream_frame 按 vendor 协议分派）
         let converter: Arc<dyn ProtocolConverter> = match config.type_.as_str() {
-            "openai" => self.openai_converter.clone(),
             "anthropic" => self.anthropic_converter.clone(),
+            "openai" if config.is_responses_style() => self.responses_converter.clone(),
+            "openai" => self.openai_converter.clone(),
             _ => {
                 return Err(GateError::Config {
                     message: crate::i18n::t("vendor-unknown-type"),
@@ -2416,6 +2444,27 @@ impl VendorManager {
         vendor_id: &str,
         request_body: Value,
     ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
+        self.execute_passthrough_stream_request_inner(vendor_id, request_body, None)
+            .await
+    }
+
+    /// 指定端点的透传流（Responses 原生直通等）：与默认入口同治理。
+    pub async fn execute_passthrough_stream_request_at(
+        &self,
+        vendor_id: &str,
+        request_body: Value,
+        path: &str,
+    ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
+        self.execute_passthrough_stream_request_inner(vendor_id, request_body, Some(path))
+            .await
+    }
+
+    async fn execute_passthrough_stream_request_inner(
+        &self,
+        vendor_id: &str,
+        request_body: Value,
+        path: Option<&str>,
+    ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
@@ -2445,7 +2494,10 @@ impl VendorManager {
 
         // 热读新鲜配置
         let config = self.fresh_config(vendor_id)?;
-        let url = Self::build_vendor_url(&config)?;
+        let url = match path {
+            Some(path) => Self::build_vendor_url_at(&config, path)?,
+            None => Self::build_vendor_url(&config)?,
+        };
 
         // 请求级凭证选择 — key 在请求启动时固定（池空回退 legacy 读 env）
         let credential = instance.select_request_key(&config);
@@ -2941,6 +2993,7 @@ mod tests {
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 
@@ -3071,6 +3124,7 @@ mod tests {
             stream_idle_ms: 30_000,
             supports_batch: false,
             chat_path: None,
+            api_style: None,
         }
     }
 
@@ -3485,6 +3539,41 @@ mod chat_path_tests {
             VendorManager::build_vendor_url(&cohere).unwrap(),
             "https://api.cohere.com/v1/rerank",
             "rerank 厂商的默认端点即 /rerank"
+        );
+    }
+
+    fn responses_vendor(api_base: &str) -> VendorConfig {
+        let mut v = vendor(api_base, None);
+        v.api_style = Some("responses".into());
+        v
+    }
+
+    /// responses 风格：默认 base、带 /v1 的 base、裸 host 三种拼接。
+    #[test]
+    fn responses_style_uses_responses_path() {
+        assert_eq!(
+            VendorManager::build_vendor_url(&responses_vendor("")).unwrap(),
+            "https://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            VendorManager::build_vendor_url(&responses_vendor("http://localhost:8080/v1")).unwrap(),
+            "http://localhost:8080/v1/responses"
+        );
+        assert_eq!(
+            VendorManager::build_vendor_url(&responses_vendor("http://localhost:8080")).unwrap(),
+            "http://localhost:8080/v1/responses"
+        );
+    }
+
+    /// responses 风格与 chat_path 互斥：即使手构配置同时携带，也以
+    /// /responses 为准（配置校验已拒绝，此处守实现层）。
+    #[test]
+    fn responses_style_ignores_chat_path() {
+        let mut v = responses_vendor("http://localhost:8080/v1");
+        v.chat_path = Some("/chat/completions".into());
+        assert_eq!(
+            VendorManager::build_vendor_url(&v).unwrap(),
+            "http://localhost:8080/v1/responses"
         );
     }
 

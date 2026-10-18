@@ -357,6 +357,69 @@ impl Router {
         }
     }
 
+    /// Responses 原生能力路由（`POST /v1/responses` 的 native-only 请求）：
+    /// 只允许 `api_style == "responses"` 的候选；同 vendor 多条目越界按
+    /// vendor 收缩重试，候选耗尽显式 Validation 并给配置指引。
+    pub async fn route_responses_native(
+        &self,
+        abstract_model: &str,
+        session_key: Option<&str>,
+    ) -> Result<RoutingDecision, GateError> {
+        let mut excluded = self.non_responses_native_exclusion(abstract_model);
+        loop {
+            let decision = match self
+                .route_with_session_excluding(abstract_model, session_key, &excluded)
+                .await
+            {
+                Ok(decision) => decision,
+                Err(_) => return Err(self.responses_native_exhausted_error(abstract_model)),
+            };
+            if decision.vendor.is_responses_style() {
+                return Ok(decision);
+            }
+            if excluded
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(&decision.vendor.id))
+            {
+                return Err(self.responses_native_exhausted_error(abstract_model));
+            }
+            excluded.push(decision.vendor.id.clone());
+        }
+    }
+
+    /// native 候选预过滤：「该 abstract 下无任何 api_style=responses 条目」
+    /// 的 vendor 整体排除（与 `non_rerank_exclusion` 同粒度）。
+    fn non_responses_native_exclusion(&self, abstract_model: &str) -> Vec<String> {
+        let normalized = crate::router::bandit::linucb_arm_key(abstract_model);
+        let candidates = self.config.resolve_model(&normalized);
+        let mut capable: Vec<&str> = Vec::new();
+        for (vendor, _) in &candidates {
+            if vendor.is_responses_style() {
+                capable.push(vendor.id.as_str());
+            }
+        }
+        let mut excluded: Vec<String> = Vec::new();
+        for (vendor, _) in &candidates {
+            let is_capable = capable.iter().any(|id| id.eq_ignore_ascii_case(&vendor.id));
+            let already = excluded
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(&vendor.id));
+            if !is_capable && !already {
+                excluded.push(vendor.id.clone());
+            }
+        }
+        excluded
+    }
+
+    fn responses_native_exhausted_error(&self, model: &str) -> GateError {
+        GateError::Validation {
+            field: t_args(
+                "router-responses-no-native-vendor",
+                &[("model", model.to_string())],
+            ),
+        }
+    }
+
     /// 带请求级权重的路由：request_weight 经 `[routing]`.allow_request_weight
     /// 门控后覆盖 model.weight；tenant 为调用方 API key 哈希，仅
     /// affinity_tenant_scoped 开启时参与亲和键。

@@ -15,7 +15,7 @@ use crate::database::TokenPreAggregator;
 use crate::error::FluxgateError;
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
-use crate::storage::{RequestLogSink, UsageSink};
+use crate::storage::{RequestLogSink, ResponseStoreSink, UsageSink};
 use crate::ApiState;
 
 /// 装配产物：Router 构建与 serve 后停机 flush 收尾所需的运行时句柄。
@@ -375,10 +375,40 @@ pub(crate) async fn assemble(
         quota: Some(Arc::new(crate::middleware::quota::QuotaState::new())),
         // 难度定档：enabled=false / 分类器未接线时为 None（历史行为）
         difficulty: difficulty_router,
+        // Responses 有状态：存储接 Repository（端点开关/保留期请求期热读）
+        responses: Some(Arc::new(crate::api::responses::ResponsesRuntime::new(
+            database.repository.clone(),
+        ))),
     });
 
     crate::api::init_global_state(api_state.clone());
     tracing::info!("{}", t("main-global-state-initialized"));
+
+    // Responses 孤儿后台任务：进程重启后 queued/in_progress 不再有人推进，
+    // 统一置 failed（失败只 warn，不阻断启动）。
+    match database.repository.mark_orphaned_responses_failed().await {
+        Ok(count) if count > 0 => {
+            tracing::warn!(
+                count,
+                "{}",
+                t_args(
+                    "api-responses-orphans-failed",
+                    &[("count", count.to_string())]
+                )
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "{}",
+                t_args(
+                    "api-responses-orphan-cleanup-failed",
+                    &[("error", error.to_string())]
+                )
+            );
+        }
+    }
 
     // 健康探针常驻（mode/interval/strategy 每周期热读），句柄移交 Assembly 停机 abort。
     let probe_handle = Some(tokio::spawn(crate::vendor::probe::run_probe_loop(

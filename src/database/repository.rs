@@ -89,7 +89,7 @@ async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> 
     // 无长度键规格的 TEXT 索引（1170 BLOB/TEXT column used in key specification
     // without a key length）；255 字符 = 1020 字节，在 3072 字节上限内，与
     // sqlite/postgres 的全列索引同语义（非唯一索引，等值/前缀查找等价）。
-    const INDEXES: [(&str, &str, &str); 6] = [
+    const INDEXES: [(&str, &str, &str); 9] = [
         ("idx_timestamp", "request_logs", "timestamp"),
         ("idx_vendor", "request_logs", "actual_vendor"),
         ("idx_model", "request_logs", "abstract_model(255)"),
@@ -100,6 +100,17 @@ async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> 
             "token_usage",
             "api_key_hash, date",
         ),
+        (
+            "idx_response_store_tenant",
+            "response_store",
+            "tenant_hash, created_at",
+        ),
+        (
+            "idx_response_store_conversation",
+            "response_store",
+            "conversation_id, created_at",
+        ),
+        ("idx_response_store_expires", "response_store", "expires_at"),
     ];
     for (index, table, column) in INDEXES {
         let exists_sql = format!(

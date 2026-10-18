@@ -159,6 +159,21 @@ fn minimal_body(config: &VendorConfig) -> Value {
     })
 }
 
+/// Responses 最小探测体：1 条 input（`store=false` 不落上游状态）。
+fn minimal_responses_body(config: &VendorConfig) -> Value {
+    let model = config
+        .models
+        .iter()
+        .find(|m| m.enabled)
+        .map(|m| m.model_id.clone())
+        .unwrap_or_else(|| "probe".to_string());
+    json!({
+        "model": model,
+        "input": "ping",
+        "store": false,
+    })
+}
+
 /// rerank 最小探测体：1 文档 + `top_n=1`（与 chat minimal_call 同量级的
 /// 最小计费调用，不引入新的计价面）
 fn minimal_rerank_body(config: &VendorConfig) -> Value {
@@ -281,7 +296,12 @@ async fn probe_minimal_call(
     timeout: Option<Duration>,
     recover: bool,
 ) -> usize {
-    let url = match VendorManager::build_vendor_url(&target.config) {
+    let url = if target.config.is_responses_style() {
+        VendorManager::build_vendor_url_at(&target.config, "responses")
+    } else {
+        VendorManager::build_vendor_url(&target.config)
+    };
+    let url = match url {
         Ok(url) => url,
         Err(e) => {
             tracing::debug!(
@@ -293,7 +313,11 @@ async fn probe_minimal_call(
             return 0;
         }
     };
-    let body = minimal_body(&target.config);
+    let body = if target.config.is_responses_style() {
+        minimal_responses_body(&target.config)
+    } else {
+        minimal_body(&target.config)
+    };
     probe_measured_call(manager, client, target, timeout, recover, &url, &body).await
 }
 
@@ -433,6 +457,7 @@ mod tests {
             stream_idle_ms: 30_000,
             supports_batch: false,
             chat_path: None,
+            api_style: None,
         }
     }
 
@@ -533,6 +558,17 @@ mode = \"{mode}\"
             "probe",
             "无 enabled 模型回退占位名"
         );
+    }
+
+    #[test]
+    fn minimal_responses_body_uses_enabled_model_and_store_false() {
+        let mut config = probe_config("http://127.0.0.1:1", "openai");
+        config.api_style = Some("responses".into());
+        config.models = vec![model("m-disabled", false), model("m-live", true)];
+        let body = minimal_responses_body(&config);
+        assert_eq!(body["model"], "m-live");
+        assert_eq!(body["input"], "ping");
+        assert_eq!(body["store"], false);
     }
 
     // ---- probe_free：2xx / 非 2xx / 连接失败 / URL 构建失败 / env 凭证回退 ----

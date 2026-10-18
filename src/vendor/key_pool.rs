@@ -614,6 +614,7 @@ mod tests {
             stream_idle_ms: 30_000,
             supports_batch: false,
             chat_path: None,
+            api_style: None,
         }
     }
 
@@ -931,6 +932,7 @@ mod inline_tests {
             stream_idle_ms: 30_000,
             supports_batch: false,
             chat_path: None,
+            api_style: None,
         }
     }
 

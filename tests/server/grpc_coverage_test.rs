@@ -41,6 +41,7 @@ fn test_config(grpc_port: u16) -> Config {
             stream_idle_ms: 30_000,
             supports_batch: false,
             chat_path: None,
+            api_style: None,
             id: "openai_main".into(),
             name: "OpenAI Main".into(),
             type_: "openai".into(),
@@ -101,6 +102,7 @@ fn test_config(grpc_port: u16) -> Config {
         resilience: fluxgate::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
+        responses: Default::default(),
     }
 }
 

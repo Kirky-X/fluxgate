@@ -2083,6 +2083,7 @@ mod token_weighted_tickets {
                 stream_ttft_ms: 2_000,
                 stream_idle_ms: 2_000,
                 chat_path: None,
+                api_style: None,
                 id: "v1".to_string(),
                 supports_batch: false,
                 name: "V1".into(),
@@ -2123,6 +2124,7 @@ mod token_weighted_tickets {
             resilience: fluxgate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         };
         let cm = Arc::new(fluxgate::config::ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm));

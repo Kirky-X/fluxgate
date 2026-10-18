@@ -48,6 +48,7 @@ fn make_config(docs_enabled: bool) -> Config {
         },
         rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
         lexcompress: Default::default(),
+        responses: Default::default(),
     }
 }
 
@@ -88,6 +89,7 @@ async fn build_app(docs_enabled: bool) -> Router {
         bandit: None,
         quota: None,
         difficulty: None,
+        responses: None,
     });
     create_router(state).await
 }

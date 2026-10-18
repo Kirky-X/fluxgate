@@ -42,6 +42,7 @@ pub fn base_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         stream_idle_ms: 30_000,
         supports_batch: false,
         chat_path: None,
+        api_style: None,
         id: id.into(),
         name: format!("Test {}", id),
         type_: "openai".into(),
@@ -110,5 +111,6 @@ pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
         resilience: Default::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
+        responses: Default::default(),
     }
 }

@@ -190,6 +190,12 @@ pub struct GlobalMetrics {
     rerank_requests_total: AtomicU64,
     rerank_documents_total: AtomicU64,
     rerank_upstream_failures_total: AtomicU64,
+    /// Responses 观测五计数：请求 / 上游失败 / 存储成功 / 存储失败 / 后台任务
+    responses_requests_total: AtomicU64,
+    responses_upstream_failures_total: AtomicU64,
+    responses_stored_total: AtomicU64,
+    responses_store_failures_total: AtomicU64,
+    responses_background_jobs_total: AtomicU64,
 }
 
 impl GlobalMetrics {
@@ -226,6 +232,11 @@ impl GlobalMetrics {
             rerank_requests_total: AtomicU64::new(0),
             rerank_documents_total: AtomicU64::new(0),
             rerank_upstream_failures_total: AtomicU64::new(0),
+            responses_requests_total: AtomicU64::new(0),
+            responses_upstream_failures_total: AtomicU64::new(0),
+            responses_stored_total: AtomicU64::new(0),
+            responses_store_failures_total: AtomicU64::new(0),
+            responses_background_jobs_total: AtomicU64::new(0),
         }
     }
 
@@ -265,6 +276,37 @@ impl GlobalMetrics {
     /// rerank 上游失败（非 2xx / 超时 / 响应形状非法）
     pub fn record_rerank_upstream_failure(&self) {
         self.rerank_upstream_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    // ---- Responses 观测（api::responses 写、admin/快照读）----
+
+    /// Responses 成功请求计数。
+    pub fn record_responses_request(&self) {
+        self.responses_requests_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Responses 上游失败（非 2xx / 超时 / 响应形状非法）。
+    pub fn record_responses_upstream_failure(&self) {
+        self.responses_upstream_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Responses 存储写入成功。
+    pub fn record_responses_stored(&self) {
+        self.responses_stored_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Responses 存储写入失败。
+    pub fn record_responses_store_failure(&self) {
+        self.responses_store_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Responses 后台任务入队。
+    pub fn record_responses_background_job(&self) {
+        self.responses_background_jobs_total
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -787,6 +829,17 @@ impl GlobalMetrics {
             rerank_upstream_failures_total: self
                 .rerank_upstream_failures_total
                 .load(Ordering::Relaxed),
+            responses_requests_total: self.responses_requests_total.load(Ordering::Relaxed),
+            responses_upstream_failures_total: self
+                .responses_upstream_failures_total
+                .load(Ordering::Relaxed),
+            responses_stored_total: self.responses_stored_total.load(Ordering::Relaxed),
+            responses_store_failures_total: self
+                .responses_store_failures_total
+                .load(Ordering::Relaxed),
+            responses_background_jobs_total: self
+                .responses_background_jobs_total
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -837,6 +890,14 @@ impl GlobalMetrics {
         self.rerank_requests_total.store(0, Ordering::Relaxed);
         self.rerank_documents_total.store(0, Ordering::Relaxed);
         self.rerank_upstream_failures_total
+            .store(0, Ordering::Relaxed);
+        self.responses_requests_total.store(0, Ordering::Relaxed);
+        self.responses_upstream_failures_total
+            .store(0, Ordering::Relaxed);
+        self.responses_stored_total.store(0, Ordering::Relaxed);
+        self.responses_store_failures_total
+            .store(0, Ordering::Relaxed);
+        self.responses_background_jobs_total
             .store(0, Ordering::Relaxed);
     }
 }
@@ -984,6 +1045,16 @@ pub struct MetricsSnapshot {
     pub rerank_documents_total: u64,
     /// rerank 上游失败累计（非 2xx/超时/响应形状非法）
     pub rerank_upstream_failures_total: u64,
+    /// Responses 成功请求累计
+    pub responses_requests_total: u64,
+    /// Responses 上游失败累计
+    pub responses_upstream_failures_total: u64,
+    /// Responses 存储写入成功累计
+    pub responses_stored_total: u64,
+    /// Responses 存储写入失败累计
+    pub responses_store_failures_total: u64,
+    /// Responses 后台任务入队累计
+    pub responses_background_jobs_total: u64,
 }
 
 /// 难度定档观测子块（/admin/metrics 快照字段）
@@ -1169,6 +1240,34 @@ mod tests {
         assert_eq!(snap.rerank_requests_total, 0);
         assert_eq!(snap.rerank_documents_total, 0);
         assert_eq!(snap.rerank_upstream_failures_total, 0);
+    }
+
+    #[test]
+    fn responses_counters_accumulate_snapshot_and_reset() {
+        let m = GlobalMetrics::new();
+        m.record_responses_request();
+        m.record_responses_request();
+        m.record_responses_upstream_failure();
+        m.record_responses_stored();
+        m.record_responses_store_failure();
+        m.record_responses_background_job();
+
+        let snap = m.snapshot();
+        assert_eq!(snap.responses_requests_total, 2);
+        assert_eq!(snap.responses_upstream_failures_total, 1);
+        assert_eq!(snap.responses_stored_total, 1);
+        assert_eq!(snap.responses_store_failures_total, 1);
+        assert_eq!(snap.responses_background_jobs_total, 1);
+
+        let json = serde_json::to_value(&snap).expect("snapshot 可序列化");
+        assert_eq!(json["responses_requests_total"], 2);
+        assert_eq!(json["responses_background_jobs_total"], 1);
+
+        m.reset();
+        let snap = m.snapshot();
+        assert_eq!(snap.responses_requests_total, 0);
+        assert_eq!(snap.responses_stored_total, 0);
+        assert_eq!(snap.responses_background_jobs_total, 0);
     }
 
     #[test]

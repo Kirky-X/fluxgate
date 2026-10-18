@@ -113,3 +113,10 @@ difficulty-explain-not-consulted = not consulted
 difficulty-laya-engine-load-failed = laya engine load failed: { $error }
 difficulty-laya-decide-failed = laya decide failed: { $error }
 difficulty-laya-request-rejected = decision request rejected: { $error }
+config-responses-retention-hours-out-of-range = [responses] retention_hours out of range: { $value } (valid range: 1-8760 hours)
+config-responses-max-response-bytes-out-of-range = [responses] max_response_bytes out of range: { $value } (valid range: 1024-16777216 bytes)
+config-responses-max-background-jobs-out-of-range = [responses] max_background_jobs out of range: { $value } (valid range: 1-256)
+config-vendor-api-style-unknown = [vendors] api_style of vendor { $vendor } is invalid: "{ $value }" (valid values: chat / responses)
+config-vendor-api-style-requires-openai = [vendors] vendor { $vendor } with api_style = "responses" must have type_ = "openai" (current: "{ $type }")
+config-vendor-api-style-chat-path-conflict = [vendors] vendor { $vendor } cannot declare both api_style = "responses" and chat_path (ambiguous path semantics)
+router-responses-no-native-vendor = No native Responses vendor for model "{ $model }": declare type_ = "openai" and api_style = "responses" on the vendor, and make sure both vendor and model are enabled

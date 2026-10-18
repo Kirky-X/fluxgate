@@ -22,7 +22,7 @@ use tower_http::trace::TraceLayer;
 
 use super::state::ApiState;
 use super::{
-    admin, anthropic, count_tokens, health, models, openai, openapi_docs, rerank,
+    admin, anthropic, count_tokens, health, models, openai, openapi_docs, rerank, responses,
     route_difficulty_explain, route_explain,
 };
 use crate::config::{RateLimitRule, RateLimitSection};
@@ -552,10 +552,14 @@ async fn admission_middleware(
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
     #[cfg(feature = "vault")]
-    const TEMPLATES: [&str; 23] = [
+    const TEMPLATES: [&str; 27] = [
         "/v1/chat/completions",
         "/v1/embeddings",
         "/v1/rerank",
+        "/v1/responses",
+        "/v1/responses/input_tokens",
+        "/v1/responses/{id}",
+        "/v1/responses/{id}/cancel",
         "/v1/messages",
         "/v1/messages/count_tokens",
         "/v1/models",
@@ -578,10 +582,14 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/api/v1/health",
     ];
     #[cfg(not(feature = "vault"))]
-    const TEMPLATES: [&str; 21] = [
+    const TEMPLATES: [&str; 25] = [
         "/v1/chat/completions",
         "/v1/embeddings",
         "/v1/rerank",
+        "/v1/responses",
+        "/v1/responses/input_tokens",
+        "/v1/responses/{id}",
+        "/v1/responses/{id}/cancel",
         "/v1/messages",
         "/v1/messages/count_tokens",
         "/v1/models",
@@ -729,6 +737,17 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route("/v1/chat/completions", post(openai::chat_completions))
         .route("/v1/embeddings", post(openai::embeddings))
         .route("/v1/rerank", post(rerank::rerank))
+        // Responses API：创建/检索/删除/取消（语义化 SSE）
+        .route("/v1/responses", post(responses::create_response))
+        .route("/v1/responses/input_tokens", post(responses::input_tokens))
+        .route(
+            "/v1/responses/{id}",
+            get(responses::get_response).delete(responses::delete_response),
+        )
+        .route(
+            "/v1/responses/{id}/cancel",
+            post(responses::cancel_response),
+        )
         .route("/v1/messages", post(anthropic::messages))
         // 数据面端点（实现在独立 handler 文件，mod.rs 仅模块声明）：
         // GET /v1/models（OpenAI list 格式，去重现算、不缓存），
@@ -869,6 +888,7 @@ mod tests {
             quota: Default::default(),
             grpc: None,
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 

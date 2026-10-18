@@ -222,6 +222,7 @@ mod build_fallback_chain {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             chat_path: None,
+            api_style: None,
             id: id.into(),
             supports_batch: false,
             name: format!("Test {}", id),
@@ -289,6 +290,7 @@ mod build_fallback_chain {
             resilience: fluxgate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         };
         let cm = Arc::new(ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm.clone()));
@@ -382,6 +384,7 @@ mod cover_all_paths {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             chat_path: None,
+            api_style: None,
             id: id.into(),
             supports_batch: false,
             name: format!("Test {}", id),
@@ -452,6 +455,7 @@ mod cover_all_paths {
             },
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 
@@ -511,6 +515,7 @@ mod cover_all_paths {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         });
         (state, logger, repository)
     }

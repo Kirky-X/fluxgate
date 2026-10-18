@@ -48,6 +48,7 @@ fn make_config() -> Config {
         resilience: fluxgate::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
+        responses: Default::default(),
         rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
     }
 }
@@ -98,6 +99,7 @@ async fn build_app() -> (Router, Arc<ApiState>, DbPool) {
         bandit: None,
         quota: None,
         difficulty: None,
+        responses: None,
     });
     let app = create_router(state.clone()).await;
     // /readyz 由 sdforge 站点在生产合并侧自挂；直连 create_router 时经

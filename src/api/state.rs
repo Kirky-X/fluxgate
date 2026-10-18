@@ -44,6 +44,9 @@ pub struct ApiState {
     /// 难度定档路由（`[routing.difficulty]`）— groups 命中的请求在路由前
     /// 改写档位抽象名。None = 未接线（enabled=false，行为与历史一致）。
     pub difficulty: Option<Arc<crate::router::difficulty::DifficultyRouter>>,
+    /// Responses 运行时（有状态存储 + 后台任务）。None = 未接线：
+    /// 端点仍可用，但 `store`/`previous_response_id`/`background` 降级。
+    pub responses: Option<Arc<crate::api::responses::ResponsesRuntime>>,
 }
 
 impl std::fmt::Debug for ApiState {
@@ -61,6 +64,7 @@ impl std::fmt::Debug for ApiState {
             .field("response_cache", &self.response_cache.is_some())
             .field("bandit", &self.bandit.is_some())
             .field("difficulty", &self.difficulty.is_some())
+            .field("responses", &self.responses.is_some())
             .finish()
     }
 }

@@ -96,6 +96,27 @@ pub struct VendorConfig {
     /// 跳过 /v1 自动拼接规则；None/缺省走历史规则
     #[serde(default)]
     pub chat_path: Option<String>,
+    /// 端点风格：`chat`（缺省，chat/completions）| `responses`
+    ///（OpenAI Responses `/responses`，仅 type_ = "openai" 合法）。
+    /// 与 `chat_path` 互斥（路径语义歧义拒绝）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_style: Option<String>,
+}
+
+impl VendorConfig {
+    /// 归一化端点风格：None/空白 = chat。
+    pub fn api_style(&self) -> Option<&str> {
+        self.api_style
+            .as_deref()
+            .map(str::trim)
+            .filter(|style| !style.is_empty())
+    }
+
+    /// 是否为 Responses 原生上游（大小写不敏感）。
+    pub fn is_responses_style(&self) -> bool {
+        self.api_style()
+            .is_some_and(|style| style.eq_ignore_ascii_case("responses"))
+    }
 }
 
 fn default_vendor_priority() -> u8 {
@@ -1148,6 +1169,70 @@ pub struct Config {
     ///（完全旁路）
     #[serde(default)]
     pub lexcompress: LexCompressSection,
+    /// `[responses]` 段 — OpenAI Responses API 入站端点与有状态能力。
+    /// 缺段时全默认（端点开启、存储开启、保留 30 天）。
+    #[serde(default)]
+    pub responses: ResponsesSection,
+}
+
+/// `[responses]` 段：Responses 端点与有状态能力。
+/// - `enabled`：端点总开关（热读）；false 时四个端点一律 404
+/// - `store_enabled`：是否允许落库；false 时 `store=true` 请求按
+///   `store=false` 降级并在响应回显
+/// - `retention_hours`：存储保留时长（1..=8760，默认 720 = 30 天）
+/// - `max_response_bytes`：单列 JSON 上限（1KiB..=16MiB），超限拒绝写入
+/// - `background_enabled` / `max_background_jobs`：后台任务开关与并发上限
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ResponsesSection {
+    #[serde(default = "default_responses_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_responses_store_enabled")]
+    pub store_enabled: bool,
+    #[serde(default = "default_responses_retention_hours")]
+    pub retention_hours: u64,
+    #[serde(default = "default_responses_max_response_bytes")]
+    pub max_response_bytes: u64,
+    #[serde(default = "default_responses_background_enabled")]
+    pub background_enabled: bool,
+    #[serde(default = "default_responses_max_background_jobs")]
+    pub max_background_jobs: usize,
+}
+
+fn default_responses_enabled() -> bool {
+    true
+}
+
+fn default_responses_store_enabled() -> bool {
+    true
+}
+
+fn default_responses_retention_hours() -> u64 {
+    720
+}
+
+fn default_responses_max_response_bytes() -> u64 {
+    1_048_576
+}
+
+fn default_responses_background_enabled() -> bool {
+    true
+}
+
+fn default_responses_max_background_jobs() -> usize {
+    16
+}
+
+impl Default for ResponsesSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_responses_enabled(),
+            store_enabled: default_responses_store_enabled(),
+            retention_hours: default_responses_retention_hours(),
+            max_response_bytes: default_responses_max_response_bytes(),
+            background_enabled: default_responses_background_enabled(),
+            max_background_jobs: default_responses_max_background_jobs(),
+        }
+    }
 }
 
 /// `[docs]` 段：OpenAPI 文档面开关。默认 false 时 /api-docs 与 Swagger UI
@@ -1681,7 +1766,7 @@ fn default_difficulty_engine() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DifficultySection, ModelConfig};
+    use super::{DifficultySection, ModelConfig, ResponsesSection};
 
     #[test]
     fn model_config_parses_model_type_and_defaults_none() {
@@ -1698,6 +1783,34 @@ model_type = "rerank"
         let roundtrip: ModelConfig =
             toml::from_str(&toml::to_string(&model).expect("序列化")).expect("回读");
         assert_eq!(roundtrip.model_type.as_deref(), Some("rerank"));
+    }
+
+    /// `[responses]` 缺段全默认；显式段覆盖默认值。
+    #[test]
+    fn responses_section_defaults_and_overrides() {
+        let default = ResponsesSection::default();
+        assert!(default.enabled);
+        assert!(default.store_enabled);
+        assert_eq!(default.retention_hours, 720);
+        assert_eq!(default.max_response_bytes, 1_048_576);
+        assert!(default.background_enabled);
+        assert_eq!(default.max_background_jobs, 16);
+
+        let raw = r#"
+enabled = false
+store_enabled = false
+retention_hours = 24
+max_response_bytes = 2048
+background_enabled = false
+max_background_jobs = 4
+"#;
+        let parsed: ResponsesSection = toml::from_str(raw).expect("responses 段解析");
+        assert!(!parsed.enabled);
+        assert!(!parsed.store_enabled);
+        assert_eq!(parsed.retention_hours, 24);
+        assert_eq!(parsed.max_response_bytes, 2048);
+        assert!(!parsed.background_enabled);
+        assert_eq!(parsed.max_background_jobs, 4);
     }
 
     /// 两嵌入字段的解析：声明后值原样读出，未声明为空。

@@ -84,3 +84,14 @@ api-openapi-models-list-description = Union of model catalog and enabled vendor 
 api-openapi-count-tokens-description = Approximate input token estimation (chars/4 + per-message overhead, deterministic).
 api-openapi-route-explain-description = Read-only per-candidate routing assessment (reason codes + weight breakdown).
 api-openapi-cost-usage-description = Aggregated token and cost ledger grouped by vendor or model, with optional time window and API key filter.
+api-responses-disabled = Responses endpoint is disabled ([responses].enabled = false)
+api-responses-stream-failed = Responses upstream stream interrupted: { $error }
+api-responses-store-failed = Responses state store write failed (response unaffected): { $error }
+api-responses-purge-failed = Responses expired-row purge failed: { $error }
+api-responses-store-too-large = Responses store rejected: a JSON column exceeds max_response_bytes
+api-responses-not-found = Responses record not found or expired: { $id }
+api-responses-store-unavailable = Responses state store is not wired (missing [responses] runtime)
+api-responses-native-hint-vendor = X-Vendor "{ $vendor }" is not Responses-native: declare type_ = "openai" and api_style = "responses"
+api-responses-native-hint-model = X-Model "{ $model }" has no Responses-native vendor: check vendor api_style and enabled flag
+api-responses-orphans-failed = Responses orphaned background jobs marked failed: { $count }
+api-responses-orphan-cleanup-failed = Responses orphan cleanup failed (startup continues): { $error }

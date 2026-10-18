@@ -441,6 +441,7 @@ mod tests {
             resilience: Default::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 

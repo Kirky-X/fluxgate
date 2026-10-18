@@ -116,6 +116,7 @@ mod tests {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         });
         (state, repository)
     }

@@ -107,6 +107,7 @@ async fn setup(
         bandit: None,
         quota: None,
         difficulty: None,
+        responses: None,
         openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
         anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
         database: Arc::new(fluxgate::Database {

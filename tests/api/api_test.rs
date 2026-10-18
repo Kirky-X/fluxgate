@@ -113,6 +113,7 @@ mod endpoints {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -438,6 +439,7 @@ mod integration {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -919,6 +921,7 @@ mod admin {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
             openai_converter,
             anthropic_converter,
             database,
@@ -1024,6 +1027,7 @@ mod admin {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             chat_path: None,
+            api_style: None,
             id: "nonexistent".to_string(),
             name: "Test".to_string(),
             type_: "openai".to_string(),
@@ -1417,6 +1421,7 @@ mod streaming_error_propagation {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -1823,6 +1828,7 @@ mod logging_pipeline {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         });
         (state, logger, pa, repository)
     }
@@ -2013,6 +2019,7 @@ mod logging_pipeline {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         });
 
         let response = Router::new()
@@ -2212,6 +2219,7 @@ mod embeddings_governance {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 
@@ -2824,6 +2832,7 @@ mod response_cache_tests {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 
@@ -3201,6 +3210,7 @@ mod linucb_reward_chain {
             bandit: Some(bandit.clone()),
             quota: None,
             difficulty: None,
+            responses: None,
         });
         (state, bandit)
     }
@@ -3347,6 +3357,7 @@ mod global_model_switch {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 
@@ -3576,6 +3587,7 @@ mod api_handler_coverage {
             bandit,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 
@@ -5985,6 +5997,7 @@ mod data_plane_endpoints {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 
@@ -6322,6 +6335,7 @@ mod fallback_observation_headers {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             chat_path: None,
+            api_style: None,
             id: id.into(),
             name: format!("Test {id}"),
             type_: "openai".into(),
@@ -6420,6 +6434,7 @@ mod fallback_observation_headers {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 
@@ -6730,6 +6745,7 @@ mod route_explain {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 
@@ -7282,6 +7298,7 @@ mod fallback_observation_headers_anthropic {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 

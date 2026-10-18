@@ -223,6 +223,7 @@ async fn make_state_with_cache(config: Config, with_quota: bool) -> Arc<ApiState
         bandit: None,
         quota,
         difficulty: None,
+        responses: None,
     })
 }
 
@@ -278,6 +279,7 @@ async fn make_state_inner(
         bandit: None,
         quota,
         difficulty: None,
+        responses: None,
     })
 }
 

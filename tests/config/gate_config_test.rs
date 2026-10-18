@@ -250,6 +250,7 @@ mod tests {
                     stream_ttft_ms: 60_000,
                     stream_idle_ms: 30_000,
                     chat_path: None,
+                    api_style: None,
                     supports_batch: false,
                     id: "openai_main".to_string(),
                     name: "OpenAI Main".to_string(),
@@ -300,6 +301,7 @@ mod tests {
                     stream_ttft_ms: 60_000,
                     stream_idle_ms: 30_000,
                     chat_path: None,
+                    api_style: None,
                     supports_batch: false,
                     id: "anthropic_main".to_string(),
                     name: "Anthropic Main".to_string(),
@@ -352,6 +354,7 @@ mod tests {
             resilience: fluxgate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 

@@ -33,9 +33,17 @@ pub(crate) fn parse_usage_detailed(response: &serde_json::Value) -> Option<(u32,
             .get("output_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        // Anthropic 用顶层 cache_*_input_tokens；Responses 用
+        // input_tokens_details.cached_tokens（优先 Anthropic 形态）
         let cache_read = usage
             .get("cache_read_input_tokens")
             .and_then(|v| v.as_u64())
+            .or_else(|| {
+                usage
+                    .get("input_tokens_details")
+                    .and_then(|details| details.get("cached_tokens"))
+                    .and_then(|v| v.as_u64())
+            })
             .unwrap_or(0);
         let cache_creation = usage
             .get("cache_creation_input_tokens")
@@ -67,6 +75,30 @@ mod tests {
             }
         });
         assert_eq!(parse_usage_detailed(&body), Some((50, 7, 20, 0)));
+    }
+
+    #[test]
+    fn responses_shape_reads_cached_tokens_details() {
+        let body = serde_json::json!({
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "input_tokens_details": {"cached_tokens": 40}
+            }
+        });
+        assert_eq!(parse_usage_detailed(&body), Some((100, 20, 40, 0)));
+
+        // Anthropic 顶层字段优先（两种形态同时出现时）
+        let both = serde_json::json!({
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 1,
+                "cache_read_input_tokens": 7,
+                "input_tokens_details": {"cached_tokens": 3}
+            }
+        });
+        assert_eq!(parse_usage_detailed(&both), Some((10, 1, 7, 0)));
     }
 
     /// Anthropic 形态（四档齐备）与缺省 0；无 usage → None；超大值钳 u32。

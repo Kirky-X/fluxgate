@@ -16,6 +16,7 @@ pub mod openapi_docs;
 pub mod readiness;
 pub mod rerank;
 pub mod response_cache;
+pub mod responses;
 pub mod route_difficulty_explain;
 pub mod route_explain;
 pub mod router_builder;
@@ -699,6 +700,7 @@ mod fallback_guard_tests {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             chat_path: None,
+            api_style: None,
             id: id.into(),
             name: format!("Vendor {id}"),
             type_: "openai".into(),
@@ -766,6 +768,7 @@ mod fallback_guard_tests {
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
@@ -819,6 +822,7 @@ mod fallback_guard_tests {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 
@@ -1011,6 +1015,7 @@ mod cooldown_retry_after {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             chat_path: None,
+            api_style: None,
             id: id.to_string(),
             name: format!("Vendor {id}"),
             type_: "openai".to_string(),
@@ -1082,6 +1087,7 @@ mod cooldown_retry_after {
             resilience: crate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
@@ -1135,6 +1141,7 @@ mod cooldown_retry_after {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 

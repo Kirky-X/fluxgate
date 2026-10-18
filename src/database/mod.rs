@@ -15,6 +15,7 @@ mod dialect;
 pub mod migration;
 pub mod pre_aggregator;
 pub mod repository;
+pub mod response_store;
 
 pub use async_logger::{AsyncLogger, AsyncLoggerHandle};
 pub use database::{redact_db_url, resolve_database_url, Database};
@@ -27,7 +28,8 @@ pub use repository::Repository;
 // 此处 re-export 维持 database::X 既有路径可用。TokenUsage 行结构已按
 // 改名 TokenUsageRow，与 IR 的 protocol::TokenUsage 消歧。
 pub use crate::storage::{
-    CostGroupBy, CostUsageRow, KeyedUsage, LogFilter, RequestLog, TokenUsageRow,
+    CostGroupBy, CostUsageRow, KeyedUsage, LogFilter, RequestLog, ResponseStoreSink,
+    StoredResponse, TokenUsageRow,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

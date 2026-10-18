@@ -148,6 +148,44 @@ submit_route!(
     "Unified rerank API (Cohere wire format) across vendors; non-streaming, documents capped at 1000 per request.",
     &["rerank"]
 );
+submit_route!(
+    "/v1/responses",
+    "POST",
+    "OpenAI Responses",
+    "OpenAI Responses API (semantic SSE). Requests convert to the unified chat IR and route across all chat vendors; native-only capabilities (built-in tools, background, prompt templates, file/audio input) route to api_style=\"responses\" vendors. Supports previous_response_id/conversation replay via the gateway store.",
+    &["openai", "responses"]
+);
+submit_route!(
+    "/v1/responses/input_tokens",
+    "POST",
+    "Responses input tokens",
+    "Approximate input token estimation for a Responses request (chars/4 + structure overhead, deterministic).",
+    &["openai", "responses"]
+);
+submit_route_with_id!(
+    "/v1/responses/{id}",
+    "GET",
+    "Retrieve response",
+    "Retrieve a stored Responses object (tenant-scoped).",
+    &["openai", "responses"],
+    "Response ID"
+);
+submit_route_with_id!(
+    "/v1/responses/{id}",
+    "DELETE",
+    "Delete response",
+    "Delete a stored Responses object (tenant-scoped).",
+    &["openai", "responses"],
+    "Response ID"
+);
+submit_route_with_id!(
+    "/v1/responses/{id}/cancel",
+    "POST",
+    "Cancel response",
+    "Cancel a background Responses job and return the cancelled response object.",
+    &["openai", "responses"],
+    "Response ID"
+);
 submit_route_i18n!(
     "/v1/models",
     "GET",

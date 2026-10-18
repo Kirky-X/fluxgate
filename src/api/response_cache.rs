@@ -711,6 +711,7 @@ mod tests {
             resilience: Default::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         });
         let cache = ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),
@@ -785,6 +786,7 @@ mod tests {
             resilience: Default::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         });
         let cache = ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),
@@ -856,6 +858,7 @@ mod ttl_load_linking_tests {
             resilience: Default::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 
@@ -973,6 +976,7 @@ mod single_flight_and_sentinel_tests {
             resilience: Default::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         };
         ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),
@@ -1121,6 +1125,7 @@ mod get_or_flow_tests {
             resilience: Default::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         };
         ResponseCache::new(
             Arc::new(oxcache::backend::default_memory_backend()),

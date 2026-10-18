@@ -95,3 +95,20 @@ CREATE TABLE IF NOT EXISTS vault_keys (
 -- 索引（idx_vault_keys_vendor_fingerprint 唯一 / idx_vault_keys_vendor）
 -- 不落本文档：MySQL 投影将索引推迟到 ensure_indexes_mysql 运行时探针
 -- （与 V3 迁移内联索引一致），见 repository.rs。
+
+-- Responses 有状态表（V4）
+CREATE TABLE IF NOT EXISTS response_store (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_hash VARCHAR(64) NOT NULL,
+    conversation_id VARCHAR(128),
+    parent_response_id VARCHAR(64),
+    model VARCHAR(255) NOT NULL,
+    status VARCHAR(24) NOT NULL,
+    store_flag BIGINT NOT NULL DEFAULT 1,
+    background BIGINT NOT NULL DEFAULT 0,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    input_items LONGTEXT NOT NULL,
+    output_items LONGTEXT NOT NULL,
+    response_json LONGTEXT NOT NULL
+) ENGINE = InnoDB;

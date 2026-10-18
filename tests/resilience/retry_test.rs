@@ -37,6 +37,7 @@ mod vendor_fallback_integration {
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
             chat_path: None,
+            api_style: None,
             id: id.into(),
             supports_batch: false,
             name: format!("Test {}", id),
@@ -110,6 +111,7 @@ mod vendor_fallback_integration {
             resilience: fluxgate::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 
@@ -151,6 +153,7 @@ mod vendor_fallback_integration {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,

@@ -46,6 +46,7 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         id: id.into(),
         supports_batch: false,
         chat_path: None,
+        api_style: None,
         name: format!("Test {id}"),
         type_: "openai".into(),
         api_key_env: "FLUXGATE_TEST_KEY".into(),
@@ -126,6 +127,7 @@ fn make_config(vendors: Vec<VendorConfig>, circuit_open_timeout_ms: u64) -> Conf
         },
         docs: Default::default(),
         lexcompress: Default::default(),
+        responses: Default::default(),
     }
 }
 
@@ -171,6 +173,7 @@ async fn make_state(config: Config) -> Arc<ApiState> {
         bandit: None,
         quota: None,
         difficulty: None,
+        responses: None,
     })
 }
 

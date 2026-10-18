@@ -113,3 +113,10 @@ difficulty-explain-not-consulted = 未咨询
 difficulty-laya-engine-load-failed = laya 引擎加载失败：{ $error }
 difficulty-laya-decide-failed = laya 决策失败：{ $error }
 difficulty-laya-request-rejected = 决策请求被拒：{ $error }
+config-responses-retention-hours-out-of-range = [responses] retention_hours 越界: { $value }（合法范围: 1-8760 小时）
+config-responses-max-response-bytes-out-of-range = [responses] max_response_bytes 越界: { $value }（合法范围: 1024-16777216 字节）
+config-responses-max-background-jobs-out-of-range = [responses] max_background_jobs 越界: { $value }（合法范围: 1-256）
+config-vendor-api-style-unknown = [vendors] 厂商 { $vendor } 的 api_style 非法: "{ $value }"（合法值: chat / responses）
+config-vendor-api-style-requires-openai = [vendors] 厂商 { $vendor } 声明 api_style = "responses" 时 type_ 必须为 "openai"（当前: "{ $type }"）
+config-vendor-api-style-chat-path-conflict = [vendors] 厂商 { $vendor } 不能同时声明 api_style = "responses" 与 chat_path（路径语义歧义）
+router-responses-no-native-vendor = 模型 "{ $model }" 无 Responses 原生候选：请为厂商声明 type_ = "openai" 且 api_style = "responses"，并确认厂商与模型均已启用

@@ -449,6 +449,7 @@ mod integration {
             bandit: None,
             quota: None,
             difficulty: None,
+            responses: None,
         })
     }
 

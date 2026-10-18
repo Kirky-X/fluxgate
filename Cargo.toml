@@ -190,6 +190,9 @@ path = "tests/api/api_test.rs"
 name = "rerank_api_test"
 path = "tests/api/rerank_api_test.rs"
 [[test]]
+name = "responses_api_test"
+path = "tests/api/responses_api_test.rs"
+[[test]]
 name = "health_metrics_test"
 path = "tests/api/health_metrics_test.rs"
 [[test]]

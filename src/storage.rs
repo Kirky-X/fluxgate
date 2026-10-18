@@ -169,6 +169,70 @@ pub trait UsageSink: Send + Sync {
     }
 }
 
+/// Responses 有状态行：本回合 input/output items、父子链、会话分组与
+/// 过期时间。items 与 response 均以 JSON 文本存（跨方言统一）。
+#[derive(Debug, Clone, Default)]
+pub struct StoredResponse {
+    pub id: String,
+    pub tenant_hash: String,
+    pub conversation_id: Option<String>,
+    pub parent_response_id: Option<String>,
+    pub model: String,
+    pub status: String,
+    pub store: bool,
+    pub background: bool,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub input_items: String,
+    pub output_items: String,
+    pub response_json: String,
+}
+
+/// Responses 有状态存储缝（网关侧 `response_store` 表）。
+///
+/// 所有读/删条件强制携带 `tenant_hash` 与 `now`（过期行视为不存在）；
+/// 写失败由 handler 记 warn 后吞掉（不失败已付费的响应）。
+#[async_trait::async_trait]
+pub trait ResponseStoreSink: Send + Sync {
+    async fn insert_response(&self, row: &StoredResponse) -> Result<(), GateError>;
+
+    async fn get_response(
+        &self,
+        id: &str,
+        tenant_hash: &str,
+        now: i64,
+    ) -> Result<Option<StoredResponse>, GateError>;
+
+    async fn delete_response(
+        &self,
+        id: &str,
+        tenant_hash: &str,
+        now: i64,
+    ) -> Result<bool, GateError>;
+
+    async fn list_conversation(
+        &self,
+        conversation_id: &str,
+        tenant_hash: &str,
+        now: i64,
+    ) -> Result<Vec<StoredResponse>, GateError>;
+
+    /// 后台任务的状态/结果回写（仅 status 与 response_json）。
+    async fn set_response_status(
+        &self,
+        id: &str,
+        tenant_hash: &str,
+        status: &str,
+        response_json: &str,
+    ) -> Result<(), GateError>;
+
+    /// 删除最多 `limit` 条过期行，返回实际删除数。
+    async fn purge_expired_responses(&self, now: i64, limit: u32) -> Result<u64, GateError>;
+
+    /// 进程启动时把孤儿 `queued|in_progress` 置 `failed`，返回影响行数。
+    async fn mark_orphaned_responses_failed(&self) -> Result<u64, GateError>;
+}
+
 /// 成本分账分组维度（`GET /admin/cost?group_by=` 白名单）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CostGroupBy {

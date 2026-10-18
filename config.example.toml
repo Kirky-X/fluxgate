@@ -563,6 +563,24 @@ enabled = false
 min_chars = 4000
 ratio_ceiling = 0.5
 
+# ✅ 全字段请求期热读 —— OpenAI Responses API（/v1/responses）。
+# 默认转成统一 chat IR 后进入现有路由池；有状态能力由网关侧
+# response_store 表（迁移 V4）承担。
+# - enabled: 端点总开关；false 时 POST/GET/DELETE/cancel 一律 404
+# - store_enabled: 是否允许落库；false 时 store=true 请求按 store=false
+#   降级并在响应回显
+# - retention_hours: 存储保留时长（1-8760 小时，默认 720 = 30 天）
+# - max_response_bytes: 单列 JSON 上限（1024-16777216 字节），超限拒绝写入
+# - background_enabled / max_background_jobs: 后台任务开关与并发上限
+#   （1-256，热读；超限 429）
+[responses]
+enabled = true
+store_enabled = true
+retention_hours = 720
+max_response_bytes = 1048576
+background_enabled = true
+max_background_jobs = 16
+
 # ❌ 需重启 —— gRPC Server（feature = "grpc"）— sdforge grpc 门面
 #（sdforge.v1.SdForgeService）。GrpcServerConfig 固化于服务器构造，更新后需
 # 重启进程生效。本段缺席或 enabled = false 时 gRPC 服务器完全禁用（不监听
@@ -625,6 +643,12 @@ supports_batch = false
 # "/v1/chat/completions"）：设置后出站 URL = api_base + 该路径，跳过 /v1 自动
 # 拼接规则；None/缺省 = 走历史规则。示例（按需取消注释）：
 # chat_path = "/chat/completions"
+# 端点风格（仅 type_ = "openai" 合法，与 chat_path 互斥）：
+# - "chat"（缺省）：出站 chat/completions
+# - "responses"：出站 /responses（OpenAI Responses API）；入站
+#   /v1/responses 的原生能力（内置工具/background/prompt/文件输入）也只
+#   允许该类厂商承接。示例（按需取消注释）：
+# api_style = "responses"
 # 出站三层超时模型，**0 = 对应层不限时（逃生阀）**：
 # - timeout_ms: 非流式请求 per-attempt 总超时（从 send 发起起算至响应体读完，
 #   不含本地排队；每次重试独立计时）。默认 60000

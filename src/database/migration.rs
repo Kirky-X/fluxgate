@@ -1,21 +1,23 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! 核心表版本化迁移（V1..=V3）——sqlite/postgres/mysql 启动建表唯一入口。
+//! 核心表版本化迁移（V1..=V4）——sqlite/postgres/mysql 启动建表唯一入口。
 //!
 //! V1（FROZEN）建四张初版表；V2 把 token_usage 原地升级为分账形态（新增
 //! api_key_hash 与四类 token/四项分项成本列，UNIQUE 键扩为 (vendor, model,
 //! api_key_hash, date, hour)，旧行映射 prompt→input、cost_usd_sum 整额入 input 档）。
 //! V3 建密钥保密柜表 vault_keys（key-vault：cocoon 加密 blob + 掩码/指纹列）。
+//! V4 建 Responses 有状态表 response_store（input/output items + 父子链 +
+//! 会话分组 + 过期时间）。
 //! 已发布的迁移常量禁止改动（已部署库的历史行指向它们），新变更走新版本。
-//! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级）。
+//! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级） 。
 
 use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
 use sea_orm::DatabaseBackend;
 use std::path::PathBuf;
 
-/// 核心表迁移最新版本（V3：vault_keys 密钥保密柜，见模块文档）。
-pub(crate) const CORE_SCHEMA_VERSION: u32 = 3;
+/// 核心表迁移最新版本（V4：response_store Responses 有状态表）。
+pub(crate) const CORE_SCHEMA_VERSION: u32 = 4;
 
 /// V1 UP（sqlite，FROZEN；含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
@@ -341,6 +343,79 @@ const DOWN_V3: &str = r#"
 DROP TABLE IF EXISTS vault_keys;
 "#;
 
+/// V4 UP（sqlite）：Responses 有状态表；items/response 以 JSON 文本存
+///（sqlite 无原生 JSON 列类型，TEXT 即可）。
+const UP_V4_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS response_store (
+    id TEXT PRIMARY KEY,
+    tenant_hash TEXT NOT NULL,
+    conversation_id TEXT,
+    parent_response_id TEXT,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    store_flag INTEGER NOT NULL DEFAULT 1,
+    background INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    input_items TEXT NOT NULL DEFAULT '[]',
+    output_items TEXT NOT NULL DEFAULT '[]',
+    response_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_response_store_tenant ON response_store(tenant_hash, created_at);
+CREATE INDEX IF NOT EXISTS idx_response_store_conversation ON response_store(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_response_store_expires ON response_store(expires_at);
+"#;
+
+/// V4 UP（postgres）：JSON 文本用 TEXT，时间戳 BIGINT。
+const UP_V4_POSTGRES: &str = r#"
+CREATE TABLE IF NOT EXISTS response_store (
+    id TEXT PRIMARY KEY,
+    tenant_hash TEXT NOT NULL,
+    conversation_id TEXT,
+    parent_response_id TEXT,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    store_flag BIGINT NOT NULL DEFAULT 1,
+    background BIGINT NOT NULL DEFAULT 0,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    input_items TEXT NOT NULL DEFAULT '[]',
+    output_items TEXT NOT NULL DEFAULT '[]',
+    response_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_response_store_tenant ON response_store(tenant_hash, created_at);
+CREATE INDEX IF NOT EXISTS idx_response_store_conversation ON response_store(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_response_store_expires ON response_store(expires_at);
+"#;
+
+/// V4 UP（mysql）：id/tenant/conversation 走 VARCHAR 控制索引键长，
+/// JSON 文本用 LONGTEXT（单行上限远大于 1 MiB 默认响应体积）。
+const UP_V4_MYSQL: &str = r#"
+CREATE TABLE IF NOT EXISTS response_store (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_hash VARCHAR(64) NOT NULL,
+    conversation_id VARCHAR(128),
+    parent_response_id VARCHAR(64),
+    model VARCHAR(255) NOT NULL,
+    status VARCHAR(24) NOT NULL,
+    store_flag BIGINT NOT NULL DEFAULT 1,
+    background BIGINT NOT NULL DEFAULT 0,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    input_items LONGTEXT NOT NULL,
+    output_items LONGTEXT NOT NULL,
+    response_json LONGTEXT NOT NULL
+) ENGINE = InnoDB;
+CREATE INDEX idx_response_store_tenant ON response_store(tenant_hash, created_at);
+CREATE INDEX idx_response_store_conversation ON response_store(conversation_id, created_at);
+CREATE INDEX idx_response_store_expires ON response_store(expires_at);
+"#;
+
+/// V4 DOWN（三后端通用：DROP TABLE 隐式带走索引）。
+const DOWN_V4: &str = r#"
+DROP TABLE IF EXISTS response_store;
+"#;
+
 /// V1 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
 const DOWN_COMMON: &str = r#"
 DROP TABLE IF EXISTS model_stats;
@@ -377,6 +452,9 @@ pub(crate) fn core_migration_file(
         (3, DatabaseBackend::Sqlite) => UP_V3_SQLITE,
         (3, DatabaseBackend::Postgres) => UP_V3_POSTGRES,
         (3, DatabaseBackend::MySql) => UP_V3_MYSQL,
+        (4, DatabaseBackend::Sqlite) => UP_V4_SQLITE,
+        (4, DatabaseBackend::Postgres) => UP_V4_POSTGRES,
+        (4, DatabaseBackend::MySql) => UP_V4_MYSQL,
         _ => {
             return Err(DbError::Config(format!(
                 "no core migration v{version} for {label}"
@@ -386,6 +464,7 @@ pub(crate) fn core_migration_file(
     let down: &str = match version {
         1 => DOWN_COMMON,
         3 => DOWN_V3,
+        4 => DOWN_V4,
         2 => match backend {
             DatabaseBackend::Sqlite => DOWN_V2_SQLITE,
             DatabaseBackend::Postgres => DOWN_V2_POSTGRES,

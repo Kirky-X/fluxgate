@@ -101,8 +101,60 @@ pub fn precharge_for(
     if body.get("messages").is_none() && body.get("documents").is_some() {
         return precharge_rerank(body, catalog, chars_per_token);
     }
+    // Responses 形态（无 messages 但有 input/instructions）：按 items/
+    // instructions/tools 字符折算 token，成本按 catalog/pricing 单价
+    if body.get("messages").is_none()
+        && (body.get("input").is_some() || body.get("instructions").is_some())
+    {
+        return precharge_responses(body, catalog, pricing, chars_per_token);
+    }
     let est_input = estimate_messages_tokens_with(body, chars_per_token);
     let max_tokens = body.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let usd = match resolve_price_source(catalog, pricing, model) {
+        PriceSource::Catalog { input, output } => {
+            est_input as f64 / 1_000_000.0 * input + max_tokens as f64 / 1_000_000.0 * output
+        }
+        PriceSource::Pricing { input, output } => {
+            est_input as f64 / 1000.0 * input + max_tokens as f64 / 1000.0 * output
+        }
+    };
+    (est_input.saturating_add(max_tokens), usd_to_millicents(usd))
+}
+
+/// Responses 预扣：token = ceil((instructions + input JSON + tools JSON)
+/// 字符 / chars_per_token) + `max_output_tokens`；成本按 catalog/pricing
+/// 单价（与 chat 同口径）。
+pub fn precharge_responses(
+    body: &Value,
+    catalog: &[ModelCatalogEntry],
+    pricing: &[PricingConfig],
+    chars_per_token: u64,
+) -> (u64, u64) {
+    let cpt = chars_per_token.max(1) as usize;
+    let instructions_chars = body
+        .get("instructions")
+        .and_then(Value::as_str)
+        .map(|text| text.chars().count())
+        .unwrap_or(0);
+    let input_chars = body
+        .get("input")
+        .and_then(|input| serde_json::to_string(input).ok())
+        .map(|text| text.chars().count())
+        .unwrap_or(0);
+    let tools_chars = body
+        .get("tools")
+        .and_then(|tools| serde_json::to_string(tools).ok())
+        .map(|text| text.chars().count())
+        .unwrap_or(0);
+    let total_chars = instructions_chars
+        .saturating_add(input_chars)
+        .saturating_add(tools_chars);
+    let est_input = (total_chars.div_ceil(cpt)) as u64;
+    let max_tokens = body
+        .get("max_output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
     let usd = match resolve_price_source(catalog, pricing, model) {
         PriceSource::Catalog { input, output } => {
             est_input as f64 / 1_000_000.0 * input + max_tokens as f64 / 1_000_000.0 * output
@@ -388,9 +440,9 @@ fn quota_applies(
     })
 }
 
-/// 配额中间件（入口裁决）：仅 `/v1/chat/completions` 与 `/v1/messages`；
-/// 关闭/无账本/双限额不限时零行为透传（限额判定先于体读取）。超限 429 +
-/// Retry-After + i18n 文案。
+/// 配额中间件（入口裁决）：`/v1/chat/completions`、`/v1/messages`、
+/// `/v1/rerank` 与 `/v1/responses`；关闭/无账本/双限额不限时零行为透传
+/// （限额判定先于体读取）。超限 429 + Retry-After + i18n 文案。
 pub async fn quota_middleware(
     State(gate): State<QuotaGate>,
     request: Request,
@@ -399,7 +451,7 @@ pub async fn quota_middleware(
     // 零分配路径判定（matches! 不产生 String）。
     let applicable = matches!(
         request.uri().path(),
-        "/v1/chat/completions" | "/v1/messages" | "/v1/rerank"
+        "/v1/chat/completions" | "/v1/messages" | "/v1/rerank" | "/v1/responses"
     );
     let (parts, body) = request.into_parts();
     // 非适用路径：body 未触碰，原样透传（零拷贝）。
@@ -876,6 +928,30 @@ mod tests {
         assert_eq!(cost, 4000);
     }
 
+    /// Responses 预扣：instructions+input+tools 字符折算 token，叠加
+    /// `max_output_tokens`；成本按 catalog/pricing 单价。
+    #[test]
+    fn responses_precharge_estimates_tokens_and_cost() {
+        let catalog = vec![ModelCatalogEntry {
+            model_id: "gpt-4".into(),
+            context_window: 128_000,
+            input_price: 1.0,
+            output_price: 2.0,
+            ..Default::default()
+        }];
+        let body = serde_json::json!({
+            "model": "gpt-4",
+            "instructions": "1234",
+            "input": "12345678",
+            "max_output_tokens": 10,
+        });
+        let (tokens, cost) = precharge_for(&body, &catalog, &[], 4);
+        // instructions 4 + JSON 字符串 10 字符 = 14 → ceil(14/4)=4；+10 = 14
+        assert_eq!(tokens, 14);
+        // 4/1e6*1 + 10/1e6*2 = 0.000024 USD = 2.4 millicents → ceil 3
+        assert_eq!(cost, 3);
+    }
+
     /// rerank 预扣：token 按 query+documents 字符折算，成本按目录每 1k 文档价。
     #[test]
     fn rerank_precharge_estimates_tokens_and_cost() {
@@ -1159,6 +1235,7 @@ mod tests {
             resilience: Default::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
+            responses: Default::default(),
         }
     }
 

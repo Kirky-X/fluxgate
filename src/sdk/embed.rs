@@ -79,7 +79,7 @@ pub struct EmbedRequest {
 
 impl EmbedRequest {
     /// 便捷构造：模型 + 输入（`impl Into<EmbedInput>`：&str / String /
-    /// Vec<String> / Vec<u32> / Vec<Vec<u32>>）+ 默认配置。
+    /// `Vec<String>` / `Vec<u32>` / `Vec<Vec<u32>>`）+ 默认配置。
     pub fn new(model: impl Into<String>, input: impl Into<EmbedInput>) -> Self {
         Self {
             model: model.into(),

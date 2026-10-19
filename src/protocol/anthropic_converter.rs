@@ -950,6 +950,37 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
             // stop_reason（message_delta）或流尾判定；事件序由出站状态机重建
             None
         }
+        "message_start" => {
+            // 生命周期事件中唯一携带 input 用量的帧：映射为 Usage（output 取
+            // 同帧值，通常 1 或 0），供转换链的配额结算/分账与出站 usage
+            // 形状使用；事件序仍由出站状态机重建。缺 usage 的帧（测试/非
+            // 标准上游）保持不映射 IR。
+            let usage = json.get("message")?.get("usage")?;
+            let input = usage
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let output = usage
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let cache_read_tokens = usage
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let cache_creation_tokens = usage
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            Some(StreamChunk::Usage {
+                prompt_tokens: input,
+                completion_tokens: output,
+                total_tokens: input + output,
+                cache_read_tokens,
+                cache_creation_tokens,
+                finish_reason: None,
+            })
+        }
         "message_delta" => {
             // delta.stop_reason 同帧映射（end_turn/stop_sequence→Stop、
             // max_tokens→Length、tool_use→ToolCalls；未知词原样透传）

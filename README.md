@@ -343,12 +343,12 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1863 个用例通过、0 失败**——单元测试 868 个（`src/` 内联）+ 集成测试 995 个（`tests/` 56 个测试二进制，default 口径实际编译 54 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至当前版本（`cargo test --workspace` 实测）：**1878 个用例通过、0 失败**——单元测试 881 个（`src/` 内联）+ 集成测试 997 个（`tests/` 56 个测试二进制，default 口径实际编译 54 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
 | protocol_test | 160 | tests/protocol/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
-| api_test | 136 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
+| api_test | 138 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
 | vendor_test | 116 | tests/vendor/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
 | router_test | 115 | tests/routing/ | 加权选择 / 亲和 / 提示路由 / 边界 |
 | difficulty_tier_test | 6 | tests/routing/ | 难度定档改写 → 既有路由链集成 |

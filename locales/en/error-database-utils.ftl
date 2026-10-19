@@ -55,7 +55,7 @@ vault-sync-file-failed = sync vault file failed: { $error }
 vault-replace-file-failed = replace vault file failed: { $error }
 # crypto.rs
 vault-seal-blob-failed = seal failed: { $error }
-vault-open-blob-failed = open failed: { $error }
+vault-open-blob-failed = open failed: { $error } — the stored entry cannot be decrypted with the current master key (FLUXGATE_MASTER_KEY / master key file changed since it was stored); entries are unrecoverable after a master key change, re-enter vendor keys
 vault-decrypted-not-utf8 = decrypted bytes are not utf-8: { $error }
 # db_store.rs
 vault-db-access-failed = vault db access failed: { $error }

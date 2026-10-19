@@ -327,6 +327,18 @@ async fn stream_response(
         Some(Arc::clone(state.vendor_manager.metrics())),
     );
     let chunk_stream = crate::middleware::quota::settle_stream(chunk_stream, settlement);
+    // 转换流用量记账：IR `StreamChunk::Usage` 已结构化——占位日志行终止补写
+    // 与 keyed 分账（分账 model 维度取上游 model_id，与非流式同口径）。
+    let chunk_stream = crate::api::stream_usage::record_converted_stream(
+        state.clone(),
+        ctx.request_id.clone(),
+        crate::api::stream_usage::StreamProtocol::Responses,
+        decision.vendor.id.clone(),
+        decision.vendor.type_.clone(),
+        decision.model.model_id.clone(),
+        ctx.api_key_hash.clone(),
+        chunk_stream,
+    );
 
     let mut template = queued_response(&format!("resp_{}", uuid::Uuid::new_v4()), &parsed.request);
     template.status = "in_progress".to_string();
@@ -507,10 +519,7 @@ async fn native_response(
             crate::api::stream_usage::StreamProtocol::Responses,
             decision.vendor.id.clone(),
             decision.vendor.type_.clone(),
-            body.get("model")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
+            decision.model.model_id.clone(),
             ctx.api_key_hash.clone(),
         );
         let observer = recorder.clone();

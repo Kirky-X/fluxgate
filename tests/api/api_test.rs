@@ -1743,6 +1743,7 @@ mod logging_pipeline {
     };
     use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
     use fluxgate::router::Router as NexusRouter;
+    use fluxgate::storage::UsageSink;
     use fluxgate::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
@@ -1780,7 +1781,19 @@ mod logging_pipeline {
         Arc<TokenPreAggregator>,
         Arc<Repository>,
     ) {
-        let config_manager = Arc::new(ConfigManager::new(make_config(api_base)));
+        make_wired_state_with_config(make_config(api_base)).await
+    }
+
+    /// 同 [`make_wired_state`]，配置由调用方提供（模型维度等差异夹具）。
+    async fn make_wired_state_with_config(
+        config: Config,
+    ) -> (
+        Arc<ApiState>,
+        Arc<AsyncLoggerHandle>,
+        Arc<TokenPreAggregator>,
+        Arc<Repository>,
+    ) {
+        let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
         vendor_manager.initialize().await.expect("vendor init");
 
@@ -1969,6 +1982,63 @@ mod logging_pipeline {
             response.contains("\"prompt_tokens\":11"),
             "response 列必须补写 usage：{response}"
         );
+    }
+
+    /// 透传流的分账 model 维度取上游 `model_id`（抽象名只进 request_logs）。
+    /// 旧实现取请求体抽象名，会让同一流量在 token_usage 里被拆成两个维度。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_usage_keyed_accounting_uses_upstream_model_id() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_chunked_body(|w| {
+                let _ = w.write_all(
+                    b"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                );
+                let _ = w.write_all(
+                    b"data: {\"id\":\"c1\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n",
+                );
+                let _ = w.write_all(b"data: [DONE]\n\n");
+                Ok::<(), std::io::Error>(())
+            })
+            .create_async()
+            .await;
+
+        let mut config = make_config(format!("{}/v1", server.url()));
+        config.vendors[0].models[0].model_id = "gpt-4-0613".into();
+        let (state, logger, pa, repository) = make_wired_state_with_config(config).await;
+
+        let mut stream_body = chat_body();
+        stream_body["stream"] = json!(true);
+        let response = post_chat(state, stream_body).await;
+        assert_eq!(response.status(), 200);
+        let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("consume stream");
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        logger.shutdown().await.expect("shutdown");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        pa.flush().await.expect("flush");
+        let stats = pa
+            .get_token_stats(Some("openai_main"))
+            .await
+            .expect("token stats");
+        assert_eq!(stats.len(), 1, "流式完毕必须写 keyed 分账");
+        assert_eq!(stats[0].model, "gpt-4-0613", "分账维度必须是上游 model_id");
+        assert_eq!(stats[0].prompt_tokens, 11);
+        assert_eq!(stats[0].completion_tokens, 7);
+
+        let logs = repository
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("query ok");
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].abstract_model.as_deref(), Some("gpt-4"));
+        assert_eq!(logs[0].actual_model, "gpt-4-0613");
     }
 
     /// ⑤ 上游 500 → 客户端 503（VendorUnavailable 固定映射），且失败路径
@@ -3766,6 +3836,18 @@ mod api_handler_coverage {
         .to_string()
     }
 
+    /// OpenAI 上游 SSE（usage 尾帧：仅在 `stream_options.include_usage`
+    /// 时由上游回传；转换出站自动索取）。
+    fn openai_sse_with_usage() -> String {
+        let base = openai_sse();
+        let base = base
+            .strip_suffix("data: [DONE]\n\n")
+            .unwrap_or(base.as_str());
+        format!(
+            "{base}data: {{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{{\"prompt_tokens\":7,\"completion_tokens\":4,\"total_tokens\":11,\"prompt_tokens_details\":{{\"cached_tokens\":2}}}}}}\n\ndata: [DONE]\n\n"
+        )
+    }
+
     // ---- anthropic.rs：透传流式（cover_all_paths 开/关 × 成功/失败）----
 
     /// 透传流式成功（cover_all_paths 关）：上游 SSE 帧原样转发给客户端，
@@ -4111,7 +4193,7 @@ mod api_handler_coverage {
             .mock("POST", "/v1/chat/completions")
             .with_status(200)
             .with_header("content-type", "text/event-stream")
-            .with_body(openai_sse())
+            .with_body(openai_sse_with_usage())
             .expect(1)
             .create_async()
             .await;
@@ -4127,9 +4209,23 @@ mod api_handler_coverage {
             None,
         )]);
         config.resilience.cover_all_paths = true;
-        let state = build_state(config, Wire::default()).await;
+        let state = build_state(
+            config,
+            Wire {
+                logger: true,
+                pre_aggregator: true,
+                ..Default::default()
+            },
+        )
+        .await;
 
-        let response = post_json(state, "/v1/messages", anthropic_body("gpt-4", true), &[]).await;
+        let response = post_json(
+            state.clone(),
+            "/v1/messages",
+            anthropic_body("gpt-4", true),
+            &[],
+        )
+        .await;
 
         assert_eq!(response.status(), 200);
         assert_eq!(
@@ -4164,6 +4260,37 @@ mod api_handler_coverage {
             })
             .collect();
         assert_eq!(aggregated, "Hi there", "文本 delta 必须完整重建: {text:?}");
+
+        // 转换流用量记账：日志三列 + keyed 分账（含 cache 两档）。
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        state
+            .logger
+            .as_ref()
+            .expect("logger wired")
+            .shutdown()
+            .await
+            .expect("shutdown");
+        let logs = state
+            .database
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("query logs");
+        assert_eq!(logs.len(), 1, "流式请求必须落一条日志");
+        assert_eq!(logs[0].prompt_tokens, Some(7));
+        assert_eq!(logs[0].completion_tokens, Some(4));
+        assert_eq!(logs[0].total_tokens, Some(11));
+        let usage = state.pre_aggregator.as_ref().expect("pa wired");
+        usage.flush().await.expect("flush");
+        let stats = usage
+            .get_token_stats(Some("v-openai"))
+            .await
+            .expect("token stats");
+        assert_eq!(stats.len(), 1, "转换流必须写 keyed 分账");
+        assert_eq!(stats[0].model, "gpt-4");
+        assert_eq!(stats[0].prompt_tokens, 7);
+        assert_eq!(stats[0].completion_tokens, 4);
+        assert_eq!(stats[0].cache_read_tokens, 2, "cached tokens 必须入分账");
+        assert_eq!(stats[0].request_count, 1, "不得重复计数");
 
         mock.assert_async().await;
     }
@@ -4479,12 +4606,16 @@ mod api_handler_coverage {
                 1_000_000,
                 None,
             )]),
-            Wire::default(),
+            Wire {
+                logger: true,
+                pre_aggregator: true,
+                ..Default::default()
+            },
         )
         .await;
 
         let response = post_json(
-            state,
+            state.clone(),
             "/v1/chat/completions",
             chat_body("claude-x", true),
             &[],
@@ -4519,6 +4650,45 @@ mod api_handler_coverage {
             aggregated, "hi",
             "文本 delta 必须重建自 Anthropic 流: {text:?}"
         );
+
+        // 转换流用量记账：日志三列 + keyed 分账（分账 model = 上游 model_id）。
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        state
+            .logger
+            .as_ref()
+            .expect("logger wired")
+            .shutdown()
+            .await
+            .expect("shutdown");
+        let logs = state
+            .database
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("query logs");
+        assert_eq!(logs.len(), 1, "流式请求必须落一条日志");
+        assert_eq!(logs[0].prompt_tokens, Some(3));
+        assert_eq!(logs[0].completion_tokens, Some(2));
+        assert_eq!(logs[0].total_tokens, Some(5));
+        assert!(
+            logs[0]
+                .response
+                .as_deref()
+                .unwrap_or("")
+                .contains("\"prompt_tokens\":3"),
+            "response 列必须补写 usage: {:?}",
+            logs[0].response
+        );
+        let usage = state.pre_aggregator.as_ref().expect("pa wired");
+        usage.flush().await.expect("flush");
+        let stats = usage
+            .get_token_stats(Some("v-anthropic"))
+            .await
+            .expect("token stats");
+        assert_eq!(stats.len(), 1, "转换流必须写 keyed 分账");
+        assert_eq!(stats[0].model, "claude-x", "分账 model 取上游 model_id");
+        assert_eq!(stats[0].prompt_tokens, 3);
+        assert_eq!(stats[0].completion_tokens, 2);
+        assert_eq!(stats[0].request_count, 1, "不得重复计数");
 
         mock.assert_async().await;
     }

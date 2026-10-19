@@ -232,10 +232,7 @@ async fn chat_passthrough_stream(
         crate::api::stream_usage::StreamProtocol::OpenAI,
         decision.vendor.id.clone(),
         decision.vendor.type_.clone(),
-        body.get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        decision.model.model_id.clone(),
         ctx.api_key_hash.clone(),
     );
     let observer = recorder.clone();
@@ -555,6 +552,18 @@ async fn chat_convert_stream(
         Some(std::sync::Arc::clone(state.vendor_manager.metrics())),
     );
     let chunk_stream = crate::middleware::quota::settle_stream(chunk_stream, settle_ctx);
+    // 转换流用量记账：IR `StreamChunk::Usage` 已结构化——占位日志行终止补写
+    // 与 keyed 分账（分账 model 维度取上游 model_id，与非流式同口径）。
+    let chunk_stream = crate::api::stream_usage::record_converted_stream(
+        state.clone(),
+        ctx.request_id.clone(),
+        crate::api::stream_usage::StreamProtocol::OpenAI,
+        decision.vendor.id.clone(),
+        decision.vendor.type_.clone(),
+        decision.model.model_id.clone(),
+        ctx.api_key_hash.clone(),
+        chunk_stream,
+    );
 
     // 派发成功即回写亲和绑定；首绑定收敛（tenant_scoped 开启时 bind_if_absent）
     crate::api::bind_session_affinity(

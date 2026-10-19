@@ -2570,12 +2570,17 @@ mod manager_paths {
         .expect("weighted worker request should succeed");
         assert_eq!(result.id, "chatcmpl-1");
 
-        // permit 已随完成释放：在途归零，容量 = 显式并发上限
-        assert_eq!(
-            manager.fleet_concurrency(),
-            (0, 8),
-            "worker 完成后加权票据必须释放"
-        );
+        // permit 已随完成释放：在途归零，容量 = 显式并发上限。释放可能晚
+        // 于结果返回一个调度步（worker 尾部的 Drop），有界轮询消除调度抖动。
+        let mut observed = manager.fleet_concurrency();
+        for _ in 0..50 {
+            if observed.0 == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            observed = manager.fleet_concurrency();
+        }
+        assert_eq!(observed, (0, 8), "worker 完成后加权票据必须释放");
         mock.assert_async().await;
     }
 
@@ -2824,7 +2829,8 @@ mod manager_paths {
             .await;
         match result {
             Err(GateError::VendorUnavailable { vendor }) => {
-                assert_eq!(vendor, "v-conn-refused");
+                // 连接类 IO 错误只带 vendor id（无上游 HTTP 状态可携带）
+                assert!(vendor.contains("v-conn-refused"), "vendor: {vendor}");
             }
             other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
         }
@@ -2898,7 +2904,8 @@ mod manager_paths {
         .expect("no timeout");
         match result {
             Err(GateError::VendorUnavailable { vendor }) => {
-                assert_eq!(vendor, "v-budget-net");
+                // 连接类 IO 错误只带 vendor id（无上游 HTTP 状态可携带）
+                assert!(vendor.contains("v-budget-net"), "vendor: {vendor}");
             }
             other => panic!("expected VendorUnavailable, got {:?}", other.map(|_| ())),
         }
@@ -3202,7 +3209,8 @@ mod manager_paths {
         match result {
             Ok(_) => panic!("dead endpoint must fail"),
             Err(GateError::VendorUnavailable { vendor }) => {
-                assert_eq!(vendor, "v-stream-dead");
+                // 连接类 IO 错误只带 vendor id（无上游 HTTP 状态可携带）
+                assert!(vendor.contains("v-stream-dead"), "vendor: {vendor}");
             }
             Err(other) => panic!("expected VendorUnavailable, got {:?}", other),
         }

@@ -256,6 +256,13 @@ impl ProtocolConverter for OpenAIConverter {
         }
         if stream {
             body["stream"] = json!(true);
+            // 流式计费：OpenAI chat 转换出站统一索取 usage 尾帧（上游仅在
+            // include_usage=true 时回传 usage）；调用方经 vendor_extensions /
+            // extra_body 显式给出 stream_options 时尊重其值。同协议透传路径
+            // 不经此处，客户端可见字节保真不受影响。
+            if !vendor_extensions.contains_key("stream_options") {
+                body["stream_options"] = json!({"include_usage": true});
+            }
         }
         if !stop.is_empty() {
             body["stop"] = json!(stop);
@@ -1801,6 +1808,40 @@ mod tests {
         ] {
             assert!(body.get(key).is_none(), "缺省不写出: {key}");
         }
+    }
+
+    #[test]
+    fn outbound_stream_requests_usage_tail_frame() {
+        let converter = OpenAIConverter::new();
+        let unified = inbound(json!({"stream": true}));
+        let body = converter.request_to_external(unified).expect("to_external");
+        assert_eq!(body["stream"], json!(true));
+        assert_eq!(
+            body["stream_options"],
+            json!({"include_usage": true}),
+            "转换出站必须索取 usage 尾帧（否则流式计费无数据）"
+        );
+
+        // 非流式不写 stream_options
+        let plain = converter
+            .request_to_external(inbound(json!({})))
+            .expect("to_external");
+        assert!(plain.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn outbound_explicit_stream_options_are_respected() {
+        let converter = OpenAIConverter::new();
+        let unified = inbound(json!({
+            "stream": true,
+            "stream_options": {"include_usage": false}
+        }));
+        let body = converter.request_to_external(unified).expect("to_external");
+        assert_eq!(
+            body["stream_options"],
+            json!({"include_usage": false}),
+            "调用方显式值优先于默认注入"
+        );
     }
 
     #[test]

@@ -40,6 +40,10 @@ services:
       # 持久）生成——不设该变量则回落容器内 ~/.fluxgate/，随容器层走、重建即丢，
       # 柜内密钥随之不可解（此项已由镜像默认值覆盖，此处不再重复声明）。
       # 空值等价未设置（启动回落文件生成）。
+      # 纯 `docker compose up -d --build`（宿主机未导出该变量）会从项目目录的
+      # docker/.env（gitignored）读取：数据卷已有柜内数据时，在此固定与写入时
+      # 一致的主钥——env 与历史写入不一致时柜内条目不可解，启动即 fail-fast
+      #（Vault Crypto open failed）。
       - FLUXGATE_MASTER_KEY=${FLUXGATE_MASTER_KEY:-}
       # 可选: API Keys (通过环境变量注入)
       # - OPENAI_API_KEY=${OPENAI_API_KEY}

@@ -2260,7 +2260,11 @@ impl VendorManager {
     }
 
     /// 上游 SSE 字节流 → 分帧 + 反向解析的 IR StreamChunk 流：[DONE] 提前收流，
-    /// 中流错误语义化 Err 终止，EOF 冲刷残余帧。Unfold 闭包非 Unpin，Box::pin 后返回。
+    /// 中流错误语义化 Err 终止，EOF 冲刷残余帧。`Usage` 帧跨帧累积（各字段取
+    /// 最大值、终止原因取最后非空），只在流终止时下发一帧——Anthropic 的
+    /// input 在 `message_start`、output 在 `message_delta`，Gemini 逐帧累计；
+    /// 合并后出站 usage、配额结算与分账取同一份终值。Unfold 闭包非 Unpin，
+    /// Box::pin 后返回。
     fn framed_ir_stream(
         byte_stream: impl futures::Stream<Item = Result<Bytes, GateError>> + Send + 'static,
         vendor_id: &str,
@@ -2274,10 +2278,18 @@ impl VendorManager {
                 false,
                 vendor,
                 converter,
+                None,
             ),
-            |(mut parser, mut bytes, done, vendor, converter)| async move {
+            |(mut parser, mut bytes, mut done, vendor, converter, mut pending)| async move {
                 loop {
                     if done {
+                        // 终止前把跨帧累积的 usage 作为最后一帧下发（仅一次）
+                        if let Some(usage) = pending.take() {
+                            return Some((
+                                Ok(usage),
+                                (parser, bytes, true, vendor, converter, None),
+                            ));
+                        }
                         return None;
                     }
                     // 倾倒 buffer 中已凑齐的帧（一次 unfold 一个 item）
@@ -2296,17 +2308,24 @@ impl VendorManager {
                                         &[("vendor", vendor.clone()), ("detail", detail)],
                                     ),
                                 }),
-                                (parser, bytes, true, vendor, converter),
+                                (parser, bytes, true, vendor, converter, pending),
                             ));
                         }
                         let Some(data) = frame.data else {
                             continue; // 纯注释/空帧跳过
                         };
                         if data.trim() == "[DONE]" {
-                            return None; // OpenAI 终止标记：提前收流
+                            done = true; // 下一轮先下积累积 usage
+                            continue;
                         }
                         if let Some(chunk) = converter.parse_stream_frame(&data) {
-                            return Some((Ok(chunk), (parser, bytes, false, vendor, converter)));
+                            if let Some(chunk) = Self::buffer_stream_usage(&mut pending, chunk) {
+                                return Some((
+                                    Ok(chunk),
+                                    (parser, bytes, false, vendor, converter, pending),
+                                ));
+                            }
+                            continue; // usage 已累积，继续读帧
                         }
                         continue; // 无法映射 IR 的生命周期帧跳过
                     }
@@ -2333,20 +2352,90 @@ impl VendorManager {
                                     ),
                                 },
                             };
-                            return Some((Err(err), (parser, bytes, true, vendor, converter)));
+                            return Some((
+                                Err(err),
+                                (parser, bytes, true, vendor, converter, pending),
+                            ));
                         }
                         None => {
-                            // EOF：冲刷残余帧后终止
+                            // EOF：冲刷残余帧后终止（残余 usage 同样进累积）
                             if let Some(chunk) = Self::flush_eof_chunk(&mut parser, &converter) {
-                                return Some((Ok(chunk), (parser, bytes, true, vendor, converter)));
+                                if let Some(chunk) = Self::buffer_stream_usage(&mut pending, chunk)
+                                {
+                                    // 尾帧下发后立刻置 done：内层字节流已返回 None，
+                                    // 不能再 poll（unfold 流 poll-after-ready 会 panic）；
+                                    // 下一轮先下积累积 usage 再收流。
+                                    return Some((
+                                        Ok(chunk),
+                                        (parser, bytes, true, vendor, converter, pending),
+                                    ));
+                                }
                             }
-                            return None;
+                            done = true;
                         }
                     }
                 }
             },
         );
         Box::pin(framed)
+    }
+
+    /// 转换流 usage 累积：`Usage` 帧合并进 pending 并返回 None（不下发），
+    /// 其余 chunk 原样返回交给调用方 yield。
+    fn buffer_stream_usage(
+        pending: &mut Option<StreamChunk>,
+        chunk: StreamChunk,
+    ) -> Option<StreamChunk> {
+        match chunk {
+            StreamChunk::Usage { .. } => {
+                *pending = Some(match pending.take() {
+                    Some(prev) => Self::merge_stream_usage(prev, chunk),
+                    None => chunk,
+                });
+                None
+            }
+            other => Some(other),
+        }
+    }
+
+    /// 两帧 usage 合并：各字段取最大值（累计语义），终止原因取最后非空。
+    fn merge_stream_usage(prev: StreamChunk, next: StreamChunk) -> StreamChunk {
+        match (prev, next) {
+            (
+                StreamChunk::Usage {
+                    prompt_tokens: p1,
+                    completion_tokens: c1,
+                    total_tokens: _,
+                    cache_read_tokens: r1,
+                    cache_creation_tokens: cr1,
+                    finish_reason: f1,
+                },
+                StreamChunk::Usage {
+                    prompt_tokens: p2,
+                    completion_tokens: c2,
+                    total_tokens: _,
+                    cache_read_tokens: r2,
+                    cache_creation_tokens: cr2,
+                    finish_reason: f2,
+                },
+            ) => {
+                let prompt_tokens = p1.max(p2);
+                let completion_tokens = c1.max(c2);
+                StreamChunk::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    // 各协议上游 total ⊆/≡ prompt + completion；跨帧取 max
+                    // 会把 Anthropic 的 input 帧与 output 帧错拼（如 4 vs 2），
+                    // 统一按合并后的两档重算，保证出站 usage 自洽。
+                    total_tokens: prompt_tokens.saturating_add(completion_tokens),
+                    cache_read_tokens: r1.max(r2),
+                    cache_creation_tokens: cr1.max(cr2),
+                    finish_reason: f2.or(f1),
+                }
+            }
+            // 调用方仅对 Usage 调用；非 Usage 原样返回（防御）
+            (_, other) => other,
+        }
     }
 
     /// EOF 冲刷：`parser.flush()` 取残余帧，非错误且非 [DONE] 的可解析帧产出为最后一个
@@ -3056,6 +3145,46 @@ mod tests {
     use super::*;
     use crate::config::{Config, ModelCatalogEntry};
     use std::time::Duration;
+
+    /// 转换流 usage 跨帧合并：Anthropic input 帧 + output 帧 → 一份自洽终值
+    ///（各档取最大、total 按合并后的 prompt + completion 重算）。
+    #[test]
+    fn merge_stream_usage_takes_max_and_recomputes_total() {
+        let start = StreamChunk::Usage {
+            prompt_tokens: 3,
+            completion_tokens: 1,
+            total_tokens: 4,
+            cache_read_tokens: 2,
+            cache_creation_tokens: 1,
+            finish_reason: None,
+        };
+        let delta = StreamChunk::Usage {
+            prompt_tokens: 0,
+            completion_tokens: 2,
+            total_tokens: 2,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            finish_reason: Some("stop".into()),
+        };
+        match VendorManager::merge_stream_usage(start, delta) {
+            StreamChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                finish_reason,
+            } => {
+                assert_eq!(prompt_tokens, 3);
+                assert_eq!(completion_tokens, 2);
+                assert_eq!(total_tokens, 5, "total 按合并后两档重算");
+                assert_eq!(cache_read_tokens, 2);
+                assert_eq!(cache_creation_tokens, 1);
+                assert_eq!(finish_reason.as_deref(), Some("stop"));
+            }
+            other => panic!("expected Usage, got {other:?}"),
+        }
+    }
 
     // ============ is_ending_soon ============
 

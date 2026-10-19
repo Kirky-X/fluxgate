@@ -332,12 +332,12 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 
 ### 📊 Scale
 
-As of the current version (measured with `cargo test --workspace`): **1863 tests pass, 0 failures** — 868 unit tests (inline in `src/`) plus 995 integration tests (56 test binaries under `tests/`, 54 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+As of the current version (measured with `cargo test --workspace`): **1878 tests pass, 0 failures** — 881 unit tests (inline in `src/`) plus 997 integration tests (56 test binaries under `tests/`, 54 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
 | protocol_test | 160 | tests/protocol/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
-| api_test | 136 | tests/api/ | endpoint integration / caching / rerouting / affinity / admin |
+| api_test | 138 | tests/api/ | endpoint integration / caching / rerouting / affinity / admin |
 | vendor_test | 116 | tests/vendor/ | vendor management / rate limits / stream timeouts / health & metrics |
 | router_test | 115 | tests/routing/ | weighted selection / affinity / hint routing / edges |
 | database / sse | 41 / 40 | tests/database/ · tests/protocol/ | persistence & pre-aggregation / stream framing & SDK |

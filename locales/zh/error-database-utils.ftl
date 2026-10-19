@@ -55,7 +55,7 @@ vault-sync-file-failed = 同步保密柜文件失败：{ $error }
 vault-replace-file-failed = 替换保密柜文件失败：{ $error }
 # crypto.rs
 vault-seal-blob-failed = 密封失败：{ $error }
-vault-open-blob-failed = 解密失败：{ $error }
+vault-open-blob-failed = 解密失败：{ $error } —— 当前主钥无法解密该条目（存入后 FLUXGATE_MASTER_KEY / 主钥文件已变更；主钥变更后条目不可恢复，请重新录入厂商密钥）
 vault-decrypted-not-utf8 = 解密结果不是 UTF-8：{ $error }
 # db_store.rs
 vault-db-access-failed = 访问保密柜数据库失败：{ $error }

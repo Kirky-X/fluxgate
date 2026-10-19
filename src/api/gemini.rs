@@ -328,8 +328,8 @@ async fn native_stream(
         ctx.request_id.clone(),
         crate::api::stream_usage::StreamProtocol::Gemini,
         decision.vendor.id.clone(),
-        "gemini".to_string(),
-        model.clone(),
+        decision.vendor.type_.clone(),
+        decision.model.model_id.clone(),
         ctx.api_key_hash.clone(),
     );
     let observer = recorder.clone();
@@ -430,6 +430,18 @@ async fn stream_ir(
         Some(Arc::clone(state.vendor_manager.metrics())),
     );
     let chunk_stream = crate::middleware::quota::settle_stream(chunk_stream, settle_ctx);
+    // 转换流用量记账：IR `StreamChunk::Usage` 已结构化——占位日志行终止补写
+    // 与 keyed 分账（分账 model 维度取上游 model_id，与非流式同口径）。
+    let chunk_stream = crate::api::stream_usage::record_converted_stream(
+        state.clone(),
+        ctx.request_id.clone(),
+        crate::api::stream_usage::StreamProtocol::Gemini,
+        decision.vendor.id.clone(),
+        decision.vendor.type_.clone(),
+        decision.model.model_id.clone(),
+        ctx.api_key_hash.clone(),
+        chunk_stream,
+    );
     crate::api::bind_session_affinity(
         state,
         &ctx.api_key_hash,

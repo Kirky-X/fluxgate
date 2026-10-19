@@ -4,7 +4,7 @@
 
 [![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxgate?style=for-the-badge)](https://github.com/Kirky-X/fluxgate/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxgate/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxgate?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxgate) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)]() [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 
-[Chinese](README.md) | **English**
+[中文](README.md) | **English**
 
 **Intelligent LLM routing gateway — unified multi-provider access · protocol conversion · resilient scheduling**
 
@@ -36,7 +36,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 ## 📋 Table of Contents
 
 <details open>
-<summary>📑 目录</summary>
+<summary>📑 Table of Contents</summary>
 
 - [✨ Features](#-features)
 - [🚀 Quick Start](#-quick-start)
@@ -102,7 +102,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 ### 🔨 Build & run
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 # Runtime config is not committed (it carries API key digests and vendor endpoints);
@@ -121,7 +121,7 @@ cargo run --release -- /path/to/config.toml
 ### 💡 First requests
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 # Health check (no auth; the registered path carries the sdforge version prefix)
@@ -161,7 +161,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 Runtime configuration is a single `config.toml` (**not committed** — `.gitignore` lists it since it carries deployment-private material such as API key digests and upstream endpoints; start from `cp config.example.toml config.toml`, which carries every section and field with its default value), with 19 top-level sections (per-field details of `model_catalog` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Section | Purpose | Hot reload |
 |---------|---------|------------|
@@ -178,7 +178,7 @@ Runtime configuration is a single `config.toml` (**not committed** — `.gitigno
 </details>
 
 <details>
-<summary>📄 代码 · toml</summary>
+<summary>📄 Code · toml</summary>
 
 ```toml
 [[vendors]]
@@ -208,7 +208,7 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 ## 📚 Documentation
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Document | Description |
 |----------|-------------|
@@ -229,7 +229,7 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 Fluxgate uses a layered pipeline: inbound requests pass through the middleware chain (auth → rate limit → admission), then the router picks a target from the eligible vendor set (three-level decision: abstract model → `vendor.model` direct → `auto` global pool), and the request is executed by the VendorManager with circuit breaking and retries, after protocol conversion (or zero-copy passthrough). On the response side, SSE framing and protocol back-conversion complete while logs, token aggregation, cost accumulation, affinity binding and LinUCB rewards are recorded asynchronously.
 
 <details>
-<summary>📄 代码 · mermaid</summary>
+<summary>📄 Code · mermaid</summary>
 
 ```mermaid
 flowchart TB
@@ -275,7 +275,7 @@ Fluxgate is also a **library-first** component set: the server assembly chain li
 **Embedded startup** (hosting the gateway inside your own app):
 
 <details>
-<summary>📄 代码 · rust</summary>
+<summary>📄 Code · rust</summary>
 
 ```rust
 #[tokio::main]
@@ -291,7 +291,7 @@ async fn main() -> Result<(), fluxgate::error::FluxgateError> {
 **HTTP client SDK** (talking to a deployed gateway, requires the `sdk` feature):
 
 <details>
-<summary>📄 代码 · rust</summary>
+<summary>📄 Code · rust</summary>
 
 ```rust
 use fluxgate::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, FluxgateClientBuilder};
@@ -341,7 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 **Database backend selection (compile-time)**: `full` itself carries no database driver — it must be paired with one `db-*` feature group. `default = ["full", "db-sqlite"]` keeps the standalone default on the sqlite file store.
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Build target | Feature set |
 | --- | --- |
@@ -369,7 +369,7 @@ Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organiz
 ### ▶️ Commands (CI-consistent)
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 cargo fmt --all -- --check
@@ -390,7 +390,7 @@ Caliber note: default already carries `full + db-sqlite`; `--all-features` opens
 As of the current version (measured with `cargo test --workspace`): **1878 tests pass, 0 failures** — 881 unit tests (inline in `src/`) plus 997 integration tests (56 test binaries under `tests/`, 54 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
@@ -430,7 +430,7 @@ Please do not report security vulnerabilities through public issues. Use the Git
 ## 🗺️ Roadmap
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
@@ -453,7 +453,7 @@ Please do not report security vulnerabilities through public issues. Use the Git
 ## 🐳 Docker Deployment
 
 <details>
-<summary>📄 代码 · bash</summary>
+<summary>📄 Code · bash</summary>
 
 ```bash
 # Build (multi-stage: rust:1.99-alpine3.24 build → alpine:3.24 runtime, non-root)
@@ -530,7 +530,7 @@ Want to contribute code?<br>
 The full version history lives in the [📋 Changelog](docs/CHANGELOG.md) (following [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), semantic versioning).
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Version | Date | Highlights |
 |---------|------|------------|
@@ -553,7 +553,7 @@ This project is licensed under the [MIT License](LICENSE).
 Fluxgate integrates the following self-developed libraries through the crates.io registry (versions declared in the root `Cargo.toml`, checksums locked in `Cargo.lock`):
 
 <details>
-<summary>📋 表格</summary>
+<summary>📋 Table</summary>
 
 | Library | Purpose |
 |---------|---------|

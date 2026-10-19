@@ -2,7 +2,7 @@
 
 <img src="docs/assets/fluxgate.png" alt="Fluxgate Logo" width="240">
 
-[![CI Status](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Kirky-X/fluxgate)](https://github.com/Kirky-X/fluxgate/releases) [![License](https://img.shields.io/github/license/Kirky-X/fluxgate)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 
 [Chinese](README.md) | **English**
 

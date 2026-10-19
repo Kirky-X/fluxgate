@@ -35,6 +35,9 @@
 
 ## 📋 目录
 
+<details open>
+<summary>📑 目录</summary>
+
 - [✨ 功能特性](#-功能特性)
 - [🚀 快速开始](#-快速开始)
 - [⚙️ 配置概览](#️-配置概览)
@@ -52,6 +55,8 @@
 - [🙏 致谢](#-致谢)
 - [📞 联系与支持](#-联系与支持)
 - [⭐ Star 历史](#-star-历史)
+
+</details>
 
 ---
 
@@ -96,6 +101,9 @@
 
 ### 🔨 编译运行
 
+<details>
+<summary>📄 代码 · bash</summary>
+
 ```bash
 # 运行时配置为 config.toml——该文件不入库（.gitignore 已列），先 cp config.example.toml config.toml 起步（示例为随仓全量参考；起服前按需配置厂商与 `api_key_env` 指向的环境变量）
 cp config.example.toml config.toml
@@ -107,7 +115,12 @@ cargo run --release
 cargo run --release -- /path/to/config.toml
 ```
 
+</details>
+
 ### 💡 首次请求
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # 健康检查（无需认证；实际注册路径带 sdforge 版本前缀）
@@ -136,6 +149,8 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
   -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
+</details>
+
 > 提示：裸 `/health` 未注册路由（会 404），但已加入认证与限流白名单；完整端点清单见 [📘 API 参考](docs/API_REFERENCE.md)。
 
 ---
@@ -143,6 +158,9 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 ## ⚙️ 配置概览
 
 运行时配置为单个 `config.toml`（**不入库**——`.gitignore` 已列（承载 API Key 摘要与上游地址等部署私有物），干净检出先 `cp config.example.toml config.toml` 起步，每段每字段带默认值），共 19 个顶层段（`model_catalog` 逐条字段见 [📖 用户指南](docs/USER_GUIDE.md)）：
+
+<details>
+<summary>📋 表格</summary>
 
 | 段 | 作用 | 热更新 |
 |----|------|--------|
@@ -155,6 +173,11 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 | `health` / `quota` | 主动健康探针（默认 off）、成本/token 维度配额（默认关） | ✅ 均热读 |
 | `lexcompress` | 词法压缩（`X-Compress: 1` 且单条消息超阈值时生效，默认关） | ✅ 热读 |
 | `grpc` / `docs` | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用） | ❌ 需重启 |
+
+</details>
+
+<details>
+<summary>📄 代码 · toml</summary>
 
 ```toml
 [[vendors]]
@@ -175,7 +198,12 @@ input_per_1k_tokens = 0.03
 output_per_1k_tokens = 0.06
 ```
 
+</details>
+
 重排（Rerank）：厂商声明 `type_ = "rerank"` 且必须显式 `api_base`（无官方默认端点），条目声明 `model_type = "rerank"`：
+
+<details>
+<summary>📄 代码 · toml</summary>
 
 ```toml
 [[vendors]]
@@ -190,11 +218,16 @@ abstract_id = "rerank-v3"
 model_type = "rerank"
 ```
 
+</details>
+
 认证开启：将 API Key 的 SHA256 摘要填入 `[auth]` 段（`echo -n "your-key" | sha256sum`），完整字段说明、限流规则与准入配置见 [📖 用户指南](docs/USER_GUIDE.md)。
 
 ---
 
 ## 📚 文档
+
+<details>
+<summary>📋 表格</summary>
 
 | 文档 | 说明 |
 |------|------|
@@ -206,11 +239,16 @@ model_type = "rerank"
 | [📋 更新日志](docs/CHANGELOG.md) | 版本变更记录（Keep a Changelog 格式） |
 | [🤝 贡献指南](docs/CONTRIBUTING.md) | 环境搭建、开发命令与提交规范 |
 
+</details>
+
 ---
 
 ## 🏗️ 架构
 
 Fluxgate 采用分层管线设计：入站请求经中间件管线（认证 → 限流 → 准入）进入 API 层，由路由决策器在合格厂商集合中选择目标（抽象模型 → `vendor.model` 直连 → `auto` 全局池三级决策），再经协议转换（或零拷贝透传）交由 VendorManager 携带熔断/重试执行出站调用；响应侧完成 SSE 分帧与协议回转，同时异步落日志、预聚合 Token、累积成本并回写亲和与 LinUCB 奖励。
+
+<details>
+<summary>📄 代码 · mermaid</summary>
 
 ```mermaid
 flowchart TB
@@ -241,6 +279,8 @@ flowchart TB
     Vendor -.异步.-> Agg
 ```
 
+</details>
+
 路由决策体系、弹性层状态机、配置热更新事务语义、DI 组装与 i18n 架构的完整说明见 [🏗️ 架构文档](docs/ARCHITECTURE.md)。
 
 Fluxgate 同时是**库优先**组件：服务器装配链承载于 `fluxgate::server`（可独立部署的 HTTP 服务器），Rust 客户端承载于 `fluxgate::sdk`（`sdk` feature 门控）——二进制 `main.rs` 只是薄启动入口。`grpc` feature（独立门控，不进 `full`）另提供 gRPC 服务器：sdforge `sdforge.v1.SdForgeService` 门面（GetInfo / Call / CallStream，JSON over gRPC）经 `take_grpc_server` 与 HTTP 同进程共存，认证复用 `[auth]` 段 SHA256 摘要，优雅停机与 HTTP 共享同一信号。
@@ -253,6 +293,9 @@ Fluxgate 同时是**库优先**组件：服务器装配链承载于 `fluxgate::s
 
 **嵌入式起服**（在自己的应用中托管网关）：
 
+<details>
+<summary>📄 代码 · rust</summary>
+
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), fluxgate::error::FluxgateError> {
@@ -261,7 +304,12 @@ async fn main() -> Result<(), fluxgate::error::FluxgateError> {
 }
 ```
 
+</details>
+
 **HTTP 客户端 SDK**（调用已部署网关，需 `sdk` feature）：
+
+<details>
+<summary>📄 代码 · rust</summary>
 
 ```rust
 use fluxgate::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, FluxgateClientBuilder};
@@ -303,9 +351,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+</details>
+
 > **SDK 对齐**：`ChatMessage::content` 支持多模态内容件（`ChatContent::Parts`，图片 URL / base64 data URL）；tool 角色消息用 `ChatMessage::tool(tool_call_id, content)` 回填；admin 面走真实路由（目录 `GET/PUT/DELETE /admin/models`、健康 `GET /api/v1/health`、vendor 运行面状态）。
 
 **数据库后端选择（编译期）**：`full` 本身不含数据库驱动，必须搭配一组 `db-*` feature；`default = ["full", "db-sqlite"]` 保持独立运行默认为 sqlite 文件库。
+
+<details>
+<summary>📋 表格</summary>
 
 | 构建目标 | feature 组合 |
 | --- | --- |
@@ -313,6 +366,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 独立运行（PostgreSQL） | `cargo build --no-default-features --features "full,db-postgres"` |
 | 独立运行（MySQL） | `cargo build --no-default-features --features "full,db-mysql"` |
 | 库嵌入（自选后端） | `fluxgate = { default-features = false, features = ["full", "db-postgres"] }` |
+
+</details>
 
 - 三组互斥由 dbnexus 编译期守卫强制（embedded 与 server-side 不可混），`--all-features` 会编译失败——这是预期行为，CI 与 pre-commit 均以显式特性矩阵替代
 - 配置侧 `[database] url`（完整连接 URL）非空时优先；留空则 `path` 按 sqlite 文件库回退（未编译 db-sqlite 时启动报 `database-backend-missing` 并附重建指引）
@@ -330,6 +385,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### ▶️ 运行命令（与 CI 一致）
 
+<details>
+<summary>📄 代码 · bash</summary>
+
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -339,11 +397,16 @@ cargo check -p fluxgate --no-default-features --features "full,db-postgres"
 cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 ```
 
+</details>
+
 口径说明：default 已携带 `full + db-sqlite`；`--all-features` 会同时打开三组互斥后端而必然编译失败（见上节），因此 clippy / test / 覆盖率均按 default 口径跑，非默认后端单独按包检查——与 `ci.yml` 逐字一致。
 
 ### 📊 测试规模
 
 截至当前版本（`cargo test --workspace` 实测）：**1878 个用例通过、0 失败**——单元测试 881 个（`src/` 内联）+ 集成测试 997 个（`tests/` 56 个测试二进制，default 口径实际编译 54 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+
+<details>
+<summary>📋 表格</summary>
 
 | 测试域 | 用例数 | 位置 | 覆盖范围 |
 |--------|--------|------|----------|
@@ -358,6 +421,8 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 | quota / fallback / admission | 20 / 17 / 19 | tests/resilience/ | 配额窗 / 换路链 / 准入 |
 | bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit 路由 / 模型目录 admin |
 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点 / key 池等 | 其余 208 | tests/server/ 等 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点与厂商 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
+
+</details>
 
 ---
 
@@ -381,6 +446,9 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 ## 🗺️ 开发路线图
 
+<details>
+<summary>📋 表格</summary>
+
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
 <tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic / Responses / Gemini 协议互转、SSE 流式、零拷贝透传、33 个方法端点（数据面 14 + 管理 18 + 健康 1）</td></tr>
@@ -395,9 +463,14 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 <tr><td align="center">✅</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤已落 SQL（闭区间 <code>[start_time, end_time]</code>，两端含边界）</td></tr>
 </table>
 
+</details>
+
 ---
 
 ## 🐳 Docker 部署
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # 构建镜像（多阶段：rust:1.99-alpine3.24 构建 → alpine:3.24 运行，非 root）
@@ -414,6 +487,8 @@ docker run -d -p 8080:8080 \
 # 或使用 docker-compose 一键部署（含资源限制；compose 文件位于 docker/ 下）
 docker compose -f docker/docker-compose.yml up -d
 ```
+
+</details>
 
 > 健康检查：由**镜像层 HEALTHCHECK** 单一提供（compose 不再重复声明），探测实际注册路径 `/api/v1/health`；docker-compose 自带资源限制（cpus 2 / 内存 512M）与非 root 运行时，镜像 tag 默认 `fluxgate:0.1.0`，可用 `FLUXGATE_IMAGE_TAG` 覆盖（详见 [📖 用户指南 · Docker 部署](docs/USER_GUIDE.md)）。
 
@@ -464,9 +539,14 @@ docker compose -f docker/docker-compose.yml up -d
 
 完整版本历史见 [📋 更新日志](docs/CHANGELOG.md)（遵循 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 格式，语义化版本）。
 
+<details>
+<summary>📋 表格</summary>
+
 | 版本 | 日期 | 要点 |
 |------|------|------|
 | 0.1.0 | 2026-10-12 | 初始发布并持续迭代（63 commits）：协议互转网关、5 因子加权路由与可选智能层、limiteron 弹性体系、异步日志与预聚合、成本追踪、confers 热更新底座、i18n、35 项优化落地 |
+
+</details>
 
 ---
 
@@ -482,6 +562,9 @@ docker compose -f docker/docker-compose.yml up -d
 
 Fluxgate 经 crates.io registry 集成以下自研库（版本声明在根 `Cargo.toml`，校验和锁定在 `Cargo.lock`）：
 
+<details>
+<summary>📋 表格</summary>
+
 | 库 | 用途 |
 |----|------|
 | [confers](https://github.com/Kirky-X/confers) | 配置加载防护与热更新底座（DynamicField / SnapshotManager） |
@@ -491,6 +574,8 @@ Fluxgate 经 crates.io registry 集成以下自研库（版本声明在根 `Carg
 | [oxcache](https://github.com/Kirky-X/oxcache) | 统一缓存 API（会话亲和与响应缓存存储层 + single-flight 去重） |
 | [sdforge](https://github.com/Kirky-X/sdforge) | HTTP 服务框架（`#[forge]` 宏 / 路由注册） |
 | [trait-kit](https://github.com/Kirky-X/trait-kit) | DI 容器（AsyncKit，4 module 拓扑组装） |
+
+</details>
 
 ### 💝 特别感谢
 

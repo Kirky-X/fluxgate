@@ -35,6 +35,9 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 
 ## 📋 Table of Contents
 
+<details open>
+<summary>📑 目录</summary>
+
 - [✨ Features](#-features)
 - [🚀 Quick Start](#-quick-start)
 - [⚙️ Configuration Overview](#️-configuration-overview)
@@ -52,6 +55,8 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 - [🙏 Acknowledgments](#-acknowledgments)
 - [📞 Contact & Support](#-contact--support)
 - [⭐ Star History](#-star-history)
+
+</details>
 
 ---
 
@@ -96,6 +101,9 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 
 ### 🔨 Build & run
 
+<details>
+<summary>📄 代码 · bash</summary>
+
 ```bash
 # Runtime config is not committed (it carries API key digests and vendor endpoints);
 # start from the full reference shipped in the repo
@@ -108,7 +116,12 @@ cargo run --release
 cargo run --release -- /path/to/config.toml
 ```
 
+</details>
+
 ### 💡 First requests
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # Health check (no auth; the registered path carries the sdforge version prefix)
@@ -137,6 +150,8 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
   -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
+</details>
+
 > Note: the bare `/health` path is not a registered route (it 404s) but is included in the auth and rate-limit whitelists. See the [📘 API Reference](docs/API_REFERENCE.md) for the full endpoint list.
 
 ---
@@ -144,6 +159,9 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 ## ⚙️ Configuration Overview
 
 Runtime configuration is a single `config.toml` (**not committed** — `.gitignore` lists it since it carries deployment-private material such as API key digests and upstream endpoints; start from `cp config.example.toml config.toml`, which carries every section and field with its default value), with 19 top-level sections (per-field details of `model_catalog` are covered in the [📖 User Guide](docs/USER_GUIDE.md)):
+
+<details>
+<summary>📋 表格</summary>
 
 | Section | Purpose | Hot reload |
 |---------|---------|------------|
@@ -156,6 +174,11 @@ Runtime configuration is a single `config.toml` (**not committed** — `.gitigno
 | `health` / `quota` | Active health probes (default off), cost/token quota (default off) | ✅ both hot-read |
 | `lexcompress` | Lexical compression (applies on `X-Compress: 1` when a message exceeds the threshold, default off) | ✅ hot-read |
 | `grpc` / `docs` | gRPC facade, OpenAPI/Swagger UI surface (both opt-in) | ❌ restart required |
+
+</details>
+
+<details>
+<summary>📄 代码 · toml</summary>
 
 ```toml
 [[vendors]]
@@ -176,11 +199,16 @@ input_per_1k_tokens = 0.03
 output_per_1k_tokens = 0.06
 ```
 
+</details>
+
 To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`echo -n "your-key" | sha256sum`). Full field reference, rate-limit rules and admission settings: [📖 User Guide](docs/USER_GUIDE.md).
 
 ---
 
 ## 📚 Documentation
+
+<details>
+<summary>📋 表格</summary>
 
 | Document | Description |
 |----------|-------------|
@@ -192,11 +220,16 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 | [📋 Changelog](docs/CHANGELOG.md) | Version history (Keep a Changelog format) |
 | [🤝 Contributing](docs/CONTRIBUTING.md) | Environment setup, development commands, commit conventions |
 
+</details>
+
 ---
 
 ## 🏗️ Architecture
 
 Fluxgate uses a layered pipeline: inbound requests pass through the middleware chain (auth → rate limit → admission), then the router picks a target from the eligible vendor set (three-level decision: abstract model → `vendor.model` direct → `auto` global pool), and the request is executed by the VendorManager with circuit breaking and retries, after protocol conversion (or zero-copy passthrough). On the response side, SSE framing and protocol back-conversion complete while logs, token aggregation, cost accumulation, affinity binding and LinUCB rewards are recorded asynchronously.
+
+<details>
+<summary>📄 代码 · mermaid</summary>
 
 ```mermaid
 flowchart TB
@@ -227,6 +260,8 @@ flowchart TB
     Vendor -. async .-> Agg
 ```
 
+</details>
+
 The full routing decision system, resilience state machines, hot-reload transaction semantics, DI assembly and i18n design are documented in the [🏗️ Architecture guide](docs/ARCHITECTURE.md).
 
 Fluxgate is also a **library-first** component set: the server assembly chain lives in `fluxgate::server` (an independently deployable HTTP server) and the Rust client lives in `fluxgate::sdk` (gated behind the `sdk` feature) — the binary `main.rs` is only a thin bootstrap. The `grpc` feature (independently gated, not part of `full`) additionally provides a gRPC server: the sdforge `sdforge.v1.SdForgeService` facade (GetInfo / Call / CallStream, JSON over gRPC) coexists with HTTP in the same process via `take_grpc_server`, authentication reuses the `[auth]` section SHA256 digests, and graceful shutdown shares the same signal as HTTP.
@@ -239,6 +274,9 @@ Fluxgate is also a **library-first** component set: the server assembly chain li
 
 **Embedded startup** (hosting the gateway inside your own app):
 
+<details>
+<summary>📄 代码 · rust</summary>
+
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), fluxgate::error::FluxgateError> {
@@ -248,7 +286,12 @@ async fn main() -> Result<(), fluxgate::error::FluxgateError> {
 }
 ```
 
+</details>
+
 **HTTP client SDK** (talking to a deployed gateway, requires the `sdk` feature):
+
+<details>
+<summary>📄 代码 · rust</summary>
 
 ```rust
 use fluxgate::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, FluxgateClientBuilder};
@@ -291,9 +334,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+</details>
+
 > **SDK alignment**: `ChatMessage::content` supports multimodal content parts (`ChatContent::Parts`, image URLs / base64 data URLs); tool-role messages are filled back with `ChatMessage::tool(tool_call_id, content)`; the admin surface uses real routes (catalog `GET/PUT/DELETE /admin/models`, health `GET /api/v1/health`, vendor runtime status).
 
 **Database backend selection (compile-time)**: `full` itself carries no database driver — it must be paired with one `db-*` feature group. `default = ["full", "db-sqlite"]` keeps the standalone default on the sqlite file store.
+
+<details>
+<summary>📋 表格</summary>
 
 | Build target | Feature set |
 | --- | --- |
@@ -301,6 +349,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Standalone (PostgreSQL) | `cargo build --no-default-features --features "full,db-postgres"` |
 | Standalone (MySQL) | `cargo build --no-default-features --features "full,db-mysql"` |
 | Embedded library (own backend) | `fluxgate = { default-features = false, features = ["full", "db-postgres"] }` |
+
+</details>
 
 - The three groups are mutually exclusive, enforced by dbnexus's compile-time guard (embedded and server-side backends cannot mix). `--all-features` therefore fails to compile — this is expected; CI and pre-commit use explicit feature matrices instead.
 - On the config side, `[database] url` (a full connection URL) takes precedence when set; when empty, `path` falls back to the sqlite file store (without the db-sqlite feature the startup fails with `database-backend-missing` and a rebuild hint).
@@ -318,6 +368,9 @@ Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organiz
 
 ### ▶️ Commands (CI-consistent)
 
+<details>
+<summary>📄 代码 · bash</summary>
+
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -328,11 +381,16 @@ cargo check -p fluxgate --no-default-features --features "full,db-postgres"
 cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 ```
 
+</details>
+
 Caliber note: default already carries `full + db-sqlite`; `--all-features` opens all three mutually exclusive backends and cannot compile (see the section above), so clippy / test / coverage run on the default caliber while non-default backends are checked per package — literally matching `ci.yml`.
 
 ### 📊 Scale
 
 As of the current version (measured with `cargo test --workspace`): **1878 tests pass, 0 failures** — 881 unit tests (inline in `src/`) plus 997 integration tests (56 test binaries under `tests/`, 54 compiled on the default caliber — grpc_smoke / grpc_coverage build with the `grpc` feature); one `rust,ignore` example doctest is listed but not executed. Overall line coverage is measured with `cargo llvm-cov --workspace`. Main distribution:
+
+<details>
+<summary>📋 表格</summary>
 
 | Test domain | Cases | Location | Coverage |
 |-------------|-------|----------|----------|
@@ -346,6 +404,8 @@ As of the current version (measured with `cargo test --workspace`): **1878 tests
 | quota / fallback / admission | 20 / 17 / 19 | tests/resilience/ | quota window / fallback chain / admission |
 | bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit routing / model catalog admin |
 | server·grpc serving / assembly smoke / feature matrix / Responses·Gemini endpoints / key pool etc. | remainder (214) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / Responses·Gemini endpoints & vendors / key pool / price factors / model catalog admin / dead-code guard |
+
+</details>
 
 ---
 
@@ -369,6 +429,9 @@ Please do not report security vulnerabilities through public issues. Use the Git
 
 ## 🗺️ Roadmap
 
+<details>
+<summary>📋 表格</summary>
+
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
 <tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic / Responses / Gemini conversion, SSE streaming, zero-copy passthrough, 33 method endpoints (14 data-plane + 18 admin + 1 health)</td></tr>
@@ -383,9 +446,14 @@ Please do not report security vulnerabilities through public issues. Use the Git
 <tr><td align="center">✅</td><td>Log query completion</td><td><code>/admin/logs</code> end_time filtering pushed into SQL (closed interval <code>[start_time, end_time]</code>, both boundaries inclusive)</td></tr>
 </table>
 
+</details>
+
 ---
 
 ## 🐳 Docker Deployment
+
+<details>
+<summary>📄 代码 · bash</summary>
 
 ```bash
 # Build (multi-stage: rust:1.99-alpine3.24 build → alpine:3.24 runtime, non-root)
@@ -405,6 +473,8 @@ docker run -d -p 8080:8080 \
 # (the compose file lives under docker/)
 docker compose -f docker/docker-compose.yml up -d
 ```
+
+</details>
 
 > Health check: provided solely by the **image-level HEALTHCHECK** (compose no
 > longer duplicates it), probing the registered path `/api/v1/health`;
@@ -459,9 +529,14 @@ Want to contribute code?<br>
 
 The full version history lives in the [📋 Changelog](docs/CHANGELOG.md) (following [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), semantic versioning).
 
+<details>
+<summary>📋 表格</summary>
+
 | Version | Date | Highlights |
 |---------|------|------------|
 | 0.1.0 | 2026-10-12 | Initial release, continuously iterated (63 commits): protocol-converting gateway, 5-factor weighted routing with optional smart layers, limiteron resilience system, async logging & pre-aggregation, cost tracking, confers hot-reload foundation, i18n, 35 optimization recommendations landed |
+
+</details>
 
 ---
 
@@ -477,6 +552,9 @@ This project is licensed under the [MIT License](LICENSE).
 
 Fluxgate integrates the following self-developed libraries through the crates.io registry (versions declared in the root `Cargo.toml`, checksums locked in `Cargo.lock`):
 
+<details>
+<summary>📋 表格</summary>
+
 | Library | Purpose |
 |---------|---------|
 | [confers](https://github.com/Kirky-X/confers) | Config loading guards & hot-reload foundation (DynamicField / SnapshotManager) |
@@ -486,6 +564,8 @@ Fluxgate integrates the following self-developed libraries through the crates.io
 | [oxcache](https://github.com/Kirky-X/oxcache) | Unified cache API (storage for affinity & response cache) |
 | [sdforge](https://github.com/Kirky-X/sdforge) | HTTP service framework (`#[forge]` macro / route registration) |
 | [trait-kit](https://github.com/Kirky-X/trait-kit) | DI container (AsyncKit, 4-module topology) |
+
+</details>
 
 ### 💝 Special thanks
 

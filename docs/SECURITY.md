@@ -325,7 +325,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 | 方式 | 渠道 | 响应时间 |
 |:-----|:-----|:---------|
-| **GitHub 安全通告（推荐）** | [通过 GH Advisory 私密报告](https://github.com/Kirky-X/fluxgate/security/advisories/new) | 48 小时内确认 |
+| **GitHub 安全通告（推荐）** | [通过 GH Advisory 私密报告](https://github.com/Kirky-X/fluxgate/security/policy) | 48 小时内确认 |
 
 ### 报告内容
 

@@ -363,7 +363,7 @@ API keys stored as SHA256 digests with constant-time comparison, upstream creden
 
 ### 🚨 Reporting a vulnerability
 
-Please do not report security vulnerabilities through public issues. Use the GitHub [Security Advisories](https://github.com/Kirky-X/fluxgate/security/advisories/new) private disclosure channel instead. The project commits to acknowledging within 48 hours and providing an initial assessment within 7 days.
+Please do not report security vulnerabilities through public issues. Use the GitHub [Security Advisories](https://github.com/Kirky-X/fluxgate/security/policy) private disclosure channel instead. The project commits to acknowledging within 48 hours and providing an initial assessment within 7 days.
 
 ---
 

@@ -375,7 +375,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 ### 🚨 报告安全漏洞
 
-请勿通过公开 issue 报告安全漏洞。请使用 GitHub [Security Advisories](https://github.com/Kirky-X/fluxgate/security/advisories/new) 私密披露通道提交报告。项目承诺 48 小时内确认、7 天内给出初步评估。
+请勿通过公开 issue 报告安全漏洞。请使用 GitHub [Security Advisories](https://github.com/Kirky-X/fluxgate/security/policy) 私密披露通道提交报告。项目承诺 48 小时内确认、7 天内给出初步评估。
 
 ---
 

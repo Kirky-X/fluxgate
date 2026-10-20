@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-// Smart LLM Proxy - Core Library
+//! FluxGate：智能 LLM 路由代理核心库（多厂商统一管理、协议转换、路由调度与可观测性）。
 
 // config 单 struct 承载全部段：拆段会分裂 POST /admin/config 热更新语义
 pub mod config;

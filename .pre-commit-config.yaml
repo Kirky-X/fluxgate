@@ -90,6 +90,11 @@ repos:
         always_run: true
         pass_filenames: false
         stages: [post-commit]
+  # 密钥扫描（提交前拦截）——覆盖 PEM 私钥 / 云厂商 key / 通用高熵串，detect-private-key 只认 PEM 头
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
 ci:
   autoupdate_commit_msg: "chore: update pre-commit hooks"
 

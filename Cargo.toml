@@ -82,14 +82,15 @@ tower-http = { version = "0.7", default-features = false, features = ["cors", "t
 
 # 数据库层：kit 模块 + pool-warmup + retry（database.rs 直用 RetryPolicy）
 # 后端与 runtime 不在此写死：Cargo feature 只加不减，写死会锁死单后端，由 db-* 三组透传按构建选择。
-dbnexus = { version = "0.6.0-rc.9", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate", "pool-warmup", "retry"], optional = true }
+dbnexus = { version = "0.6.0-rc.10", default-features = false, features = ["permission", "sql-parser", "macros", "config-env", "with-time", "kit", "migration", "auto-migrate", "pool-warmup", "retry"], optional = true }
 # sea-orm 零特性面（ConnectionTrait/Statement/DatabaseBackend/Value 直用，无 entity derive、无 sqlx 驱动）
 sea-orm = { version = "2.0", default-features = false, optional = true }
 
 # 日志层：落库后端随 db-* 透传；fast-masking + secret-scan 仅日志面启用
-inklog = { version = "0.3.0-rc.9", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
+# rc.11 起 inklog 解除 oxcache 精确 pin，与 vecboost 线（需 oxcache rc.10）解析区间相交
+inklog = { version = "0.3.0-rc.11", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
 # 配置加载与热重载：dynamic/snapshot/loader + json 投影 + security-rules
-confers = { version = "0.6.0-rc.10", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
+confers = { version = "0.6.0-rc.11", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
 # tracing 显式集（关默认等价声明）：std + attributes（info!/span! 等事件宏的展开面）
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 # log→tracing 事件桥：reqwest/sea-orm 经 log crate 输出而 inklog LogAdapter 不投自定义 sink，装 LogTracer 并入统一总线。
@@ -100,16 +101,16 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 
 # 流控 — "retry" 提供重试原语（delay_for_attempt / RetryPolicy），是网关出站链路唯一的重试延迟实现；
 # src/sdk 另持一份最小对齐实现（sdk feature 不依赖 limiteron，见 absorb-official-sdk-parity D6）。
-limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "retry", "kit"], optional = true }
+limiteron = { version = "0.3.0-rc.8", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "retry", "kit"], optional = true }
 
 # 缓存
-oxcache = { version = "0.5.0-rc.8", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
+oxcache = { version = "0.5.0-rc.10", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 
 # 难度分类器 path dep：跟随本地 checkout，关默认特性避开服务端栈
 vecboost = { path = "../vecboost", default-features = false, optional = true }
 
 # DI（async + shutdown 面）
-trait-kit = { version = "0.5.0-rc.9", default-features = false, features = ["async", "shutdown"], optional = true }
+trait-kit = { version = "0.5.0-rc.10", default-features = false, features = ["async", "shutdown"], optional = true }
 
 # 服务框架门面。不声明 streaming：其流式分帧面本仓零引用，SSE 分帧由 src/protocol 自实现。
 sdforge = { version = "0.5.0-rc.8", default-features = false, features = ["http", "security", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
@@ -172,7 +173,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # mockito 关默认：default = color（colored 彩色终端输出）+ parking_lot，均非测试断言所需
 mockito = { version = "1", default-features = false }
 # 测试需注入 limiteron MockClock（假时钟驱动熔断超时 / 限流窗口重置）；MockClock 仅在 test-clock feature 下公开。
-limiteron = { version = "0.3.0-rc.7", default-features = false, features = ["test-clock"] }
+limiteron = { version = "0.3.0-rc.8", default-features = false, features = ["test-clock"] }
 # Criterion 组件级基准（透传/转换/路由决策）。只留 cargo_bench_support；裁掉 plotters（HTML 图）与 rayon（单机基线，单线程统计数值等价）。
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
@@ -405,6 +406,7 @@ lto = true
 codegen-units = 1
 
 # 回到本地开发态：给主依赖加回 path = "../<lib>" 并在末尾恢复 [patch.crates-io]——否则 path 版与 registry 版并存会 trait 身份分裂。
+# 当前状态：vecboost 处于 path 开发态（本地 0.3.0-rc.3 未发布，crates.io 最新 rc.2），其发布后改回 registry 依赖并移除 [patch.crates-io] 段。
 
 [workspace]
 # 示例集合并为单一 crate（examples/），内部按 feature 划分模块与 bin。

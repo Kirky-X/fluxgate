@@ -104,7 +104,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 limiteron = { version = "0.3.0-rc.8", default-features = false, features = ["tower-middleware", "ban-manager", "circuit-breaker", "gcra", "quota-control", "retry", "kit"], optional = true }
 
 # 缓存
-oxcache = { version = "0.5.0-rc.10", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
+oxcache = { version = "0.5.0-rc.11", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 
 # 难度分类器 path dep：跟随本地 checkout，关默认特性避开服务端栈
 vecboost = { path = "../vecboost", default-features = false, optional = true }

@@ -1,0 +1,44 @@
+# 安全检查补充 workflow
+# 由统一护栏配置生成（2026-10-20）。只包含本仓现有 CI 尚未覆盖的检查，
+# 不改动既有 workflow，避免与已有 job 重复。
+name: security
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          # shellcheck 子检查降到 error 级：YAML 语法/表达式错误仍阻断，
+          # 风格级（SC2086/SC2034 等）不阻断，避免打断既有流水线。
+          args: -color -shellcheck=error
+      - name: zizmor (GitHub Actions 安全审计)
+        # 首轮为非阻断基线：既有 workflow 存在一批 unpinned-uses / cache-poisoning /
+        # template-injection 发现，阻断式会直接打断现有流水线。backlog 清零后
+        # 把 continue-on-error 删掉即可转为阻断。
+        continue-on-error: true
+        uses: zizmorcore/zizmor-action@v0.12.0
+      - name: gitleaks 密钥扫描
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+      - name: cargo-vet (依赖来源审计)
+        run: |
+          cargo install cargo-vet --locked
+          cargo vet verify
+      - name: trivy (文件系统/依赖漏洞)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH

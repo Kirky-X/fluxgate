@@ -2,10 +2,7 @@
 name = "fluxgate-examples"
 edition = "2021"
 publish = false
-# MSRV 与根 `fluxgate` 包同值（事实源见根 Cargo.toml 的 `rust-version` 注释）。
-# 必须显式声明：clippy.toml 不再重复 `msrv` 键，clippy 只读包自己的
-# `rust-version`——缺它则该 crate 的 MSRV 门控 lint 回落到「运行时工具链版本」，
-# lint 集合随 stable 漂移（与 ci.yml 按 1.97 下限固定 lint 集合的口径不符）。
+# MSRV 与根 `fluxgate` 包同值（事实源见根 Cargo.toml 的 `rust-version` 注释）
 rust-version = "1.97.1"
 # bin 全部经显式 [[bin]] 声明（带 required-features），关闭自动发现避免同名 target 冲突
 autobins = false
@@ -36,10 +33,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"], 
 # default-tls 必留：rest 示例直连部署网关，缺 TLS 特性时 -p 单成员构建（--features rest）
 # 运行期 https 调用必失败；与根包口径一致（0.13 起 default-tls = rustls）
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "default-tls"], optional = true }
-# 按本成员直用面最小集（mount_router.rs：axum::{Json,Router} + routing::get + axum::serve）：
-# http1（serve 的 hyper 服务）+ json（Json 提取/响应）+ tokio（serve 运行时）；
-# macros/query/tower-log/tracing 本成员零消费（不加也能靠 workspace 归一化拿到根包集，
-# 但单成员构建下应自洽，不抄根包集）。
+# 最小集：http1（serve）+ json（Json）+ tokio（运行时）
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"], optional = true }
 # default-features=false：由 embedded/sdk 各自精确开启，避免 full 被无条件并入 sdk 构建
 fluxgate = { path = "..", default-features = false, optional = true }
@@ -50,9 +44,7 @@ tonic-prost = { version = "0.14", default-features = false, optional = true }
 prost = { version = "0.14", default-features = false, features = ["derive"], optional = true }
 
 [build-dependencies]
-# build.rs 无条件参与编译（即便 grpc 关闭也会编译 build.rs 源码，只是不在其中运行 protoc），
-# 故代码生成器须非 optional。代价：examples 任何构建都会编译 tonic-build/tonic-prost-build
-#（不触发 protoc），远小于把 grpc 拆成独立 crate 的维护成本。
+# build.rs 无条件参与编译（即便 grpc 关闭也会编译 build.rs 源码，只是不在其中运行 protoc），故代码生成器须非 optional
 tonic-build = { version = "0.14", default-features = false }
 tonic-prost-build = { version = "0.14", default-features = false }
 

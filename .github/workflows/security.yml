@@ -15,7 +15,12 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # 写法对齐 vecboost/garrison/CodeNexus 同一 workflow：SHA 钉 + fetch-depth: 0。
+      # 浅克隆会让 gitleaks-action 的 `<head>^..<head>` 区间无法解析（报
+      # "unknown revision" 后空转退 1），@v4 同时是 zizmor 的 unpinned-uses 发现项。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
       - name: actionlint
         uses: docker://rhysd/actionlint:latest
         with:
@@ -23,19 +28,20 @@ jobs:
           # 风格级（SC2086/SC2034 等）不阻断，避免打断既有流水线。
           args: -color -shellcheck=error
       - name: zizmor (GitHub Actions 安全审计)
-        # 首轮为非阻断基线：既有 workflow 存在一批 unpinned-uses / cache-poisoning /
-        # template-injection 发现，阻断式会直接打断现有流水线。backlog 清零后
-        # 把 continue-on-error 删掉即可转为阻断。
+        # 版本修正（外部事实）：`v0.12.0` 在 zizmorcore/zizmor-action 仓库不存在
+        # （API 核对 tags 最高到 v0.7.1），作业在 "Getting action download info"
+        # 阶段就红，`continue-on-error` 对这种 action 解析失败无效（garrison
+        # 同缺陷已证实）。改用 SHA 钉的 v0.7.1；本仓既有 workflow 的
+        # unpinned-uses backlog 未清零，保留非阻断语义。
         continue-on-error: true
-        uses: zizmorcore/zizmor-action@v0.12.0
+        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
       - name: gitleaks 密钥扫描
         uses: gitleaks/gitleaks-action@v2
         env:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
-      - name: cargo-vet (依赖来源审计)
-        run: |
-          cargo install cargo-vet --locked
-          cargo vet verify
+      # 不引入 cargo-vet：`cargo vet verify` 以仓库根存在 supply-chain/（vet.toml /
+      # imports.lock）为前提，本仓没有该目录，保留只会必红。依赖来源审计由
+      # ci.yml 已有的 cargo-audit + cargo-deny 承担（vecboost/CodeNexus 同口径）。
       - name: trivy (文件系统/依赖漏洞)
         uses: aquasecurity/trivy-action@master
         with:

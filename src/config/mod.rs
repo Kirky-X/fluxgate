@@ -1309,6 +1309,19 @@ pub struct Config {
     /// 缺段时全默认（端点开启、存储开启、保留 30 天）。
     #[serde(default)]
     pub responses: ResponsesSection,
+    /// `[metrics]` 段 — 观测装配参数。缺段时全默认（恢复窗口 24h）。
+    #[serde(default)]
+    pub metrics: MetricsSection,
+}
+
+/// `[metrics]` 段：观测装配参数。
+/// - `cost_restore_window_hours`：启动恢复 CostTracker 内存成本视图的
+///   `token_usage` 聚合窗口（1..=8760 小时，缺省 24h，默认函数在
+///   `loader`）。恢复是启动期一次性动作，运行期改值下次重启生效。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct MetricsSection {
+    #[serde(default = "loader::default_metrics_cost_restore_window_hours")]
+    pub cost_restore_window_hours: u64,
 }
 
 /// `[responses]` 段：Responses 端点与有状态能力。

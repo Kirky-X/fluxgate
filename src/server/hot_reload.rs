@@ -260,6 +260,7 @@ mod tests {
             quota: Default::default(),
             grpc: None,
             rate_limit: Default::default(),
+            metrics: Default::default(),
         }
     }
 

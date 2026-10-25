@@ -874,6 +874,7 @@ mod tests {
     fn min_config() -> crate::config::Config {
         crate::config::Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,

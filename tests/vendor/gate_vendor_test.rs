@@ -2340,6 +2340,7 @@ mod token_weighted_tickets {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            metrics: Default::default(),
         };
         let cm = Arc::new(fluxgate::config::ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm));

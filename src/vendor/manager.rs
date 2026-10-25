@@ -3357,6 +3357,7 @@ mod tests {
         vendor.enabled = true;
         Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".into(),
                 port: 0,

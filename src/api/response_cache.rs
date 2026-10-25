@@ -683,6 +683,7 @@ mod tests {
     async fn cache_roundtrip_via_oxcache_memory_backend() {
         let config = crate::config::ConfigManager::new(crate::config::Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
@@ -758,6 +759,7 @@ mod tests {
     async fn fallback_vendor_response_lands_under_final_vendor_key() {
         let config = crate::config::ConfigManager::new(crate::config::Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
@@ -833,6 +835,7 @@ mod ttl_load_linking_tests {
     fn make_config(cache: CacheSection) -> Config {
         Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
@@ -951,6 +954,7 @@ mod single_flight_and_sentinel_tests {
     fn make_cache(cache: CacheSection) -> ResponseCache {
         let config = Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
@@ -1100,6 +1104,7 @@ mod get_or_flow_tests {
     fn make_cache(cache: CacheSection) -> ResponseCache {
         let config = Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,

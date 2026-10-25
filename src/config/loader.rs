@@ -147,6 +147,7 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     warn_quota_without_auth(config);
     validate_difficulty(config)?;
     warn_identical_difficulty_tiers(config);
+    validate_metrics(config)?;
     Ok(())
 }
 
@@ -684,6 +685,35 @@ fn validate_rerank_score_normalization(config: &Config) -> Result<(), GateError>
     })
 }
 
+/// `[metrics]` 段缺省值：成本恢复窗口 24h（serde default 路径引用；
+/// mod.rs 规则 14 禁实现函数，默认值落在本实现文件）。
+pub fn default_metrics_cost_restore_window_hours() -> u64 {
+    24
+}
+
+impl Default for crate::config::MetricsSection {
+    fn default() -> Self {
+        Self {
+            cost_restore_window_hours: default_metrics_cost_restore_window_hours(),
+        }
+    }
+}
+
+/// `[metrics]` 段边界校验：成本恢复窗口 1..=8760 小时（1h..1y）。
+/// 越界一律配置错误并点名字段与原值（加载与热载同入口）。
+fn validate_metrics(config: &Config) -> Result<(), GateError> {
+    let window = config.metrics.cost_restore_window_hours;
+    if !(1..=8760).contains(&window) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-metrics-cost-restore-window-hours-out-of-range",
+                &[("value", window.to_string())],
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// `[responses]` 段边界校验：保留时长、单列上限与后台并发上限。
 /// 越界一律配置错误并点名字段与原值（加载与热载同入口）。
 fn validate_responses(config: &Config) -> Result<(), GateError> {
@@ -1116,6 +1146,7 @@ mod tests {
     fn config_with(quota_enabled: bool, auth: Option<crate::config::AuthSection>) -> Config {
         Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".into(),
                 port: 0,
@@ -2046,6 +2077,35 @@ model_type = "rerank"
         let error = validate_config(&too_many_jobs).expect_err("jobs=257 必须拒绝");
         assert!(
             error.to_string().contains("max_background_jobs"),
+            "错误必须点名字段: {error}"
+        );
+    }
+
+    /// `[metrics]` 边界：下限/上限通过，两类越界均拒绝并点名字段。
+    #[test]
+    fn metrics_section_bounds_are_validated() {
+        let vendors = difficulty_vendor("v1", &typed_model("m", None));
+        let base = parse_vendors_toml(&vendors).expect("基础配置");
+
+        let mut valid = base.clone();
+        valid.metrics.cost_restore_window_hours = 1;
+        validate_config(&valid).expect("下限值必须通过");
+        valid.metrics.cost_restore_window_hours = 8760;
+        validate_config(&valid).expect("上限值必须通过");
+
+        let mut zero_window = base.clone();
+        zero_window.metrics.cost_restore_window_hours = 0;
+        let error = validate_config(&zero_window).expect_err("window=0 必须拒绝");
+        assert!(
+            error.to_string().contains("cost_restore_window_hours"),
+            "错误必须点名字段: {error}"
+        );
+
+        let mut huge_window = base;
+        huge_window.metrics.cost_restore_window_hours = 8761;
+        let error = validate_config(&huge_window).expect_err("window=8761 必须拒绝");
+        assert!(
+            error.to_string().contains("cost_restore_window_hours"),
             "错误必须点名字段: {error}"
         );
     }

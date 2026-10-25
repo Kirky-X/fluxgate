@@ -127,6 +127,14 @@ pub(crate) async fn assemble(
     vendor_manager.initialize().await?;
     tracing::info!("{}", t("main-vendor-manager-initialized"));
 
+    // 成本内存视图启动恢复：文件库时按窗口聚合 token_usage 回填
+    // CostTracker（先恢复再对外服务）；内存库无跨重启数据，warn 跳过。
+    #[cfg(feature = "cost-tracking")]
+    {
+        let window_hours = config_manager.read().metrics.cost_restore_window_hours;
+        restore_cost_tracker(&vendor_manager, &database.pool, &db_url, window_hours).await;
+    }
+
     // 嵌入兼容组 pin 表（进程内存）：与 Router 共享；配置应用成功（落盘写回
     // 或热载桥接）后清空重新粘着——旧配置时代的组划分/维度基准一并失效。
     // 钩子经 ConfigManager 注册表在两处 apply 成功路径统一触发（manager.rs）。
@@ -446,6 +454,42 @@ pub(crate) fn register_embedding_pin_hook(
     }));
 }
 
+/// 启动恢复 CostTracker 内存成本视图：内存库（`:memory:`）无跨重启数据，
+/// warn 跳过；文件库按窗口聚合 `token_usage` 回填。失败仅 warn 不阻断启动
+///（恢复是观测增强，不失败服务）。
+#[cfg(feature = "cost-tracking")]
+async fn restore_cost_tracker(
+    vendor_manager: &crate::vendor::VendorManager,
+    pool: &dbnexus::DbPool,
+    db_url: &str,
+    window_hours: u64,
+) {
+    if db_url.contains(":memory:") {
+        tracing::warn!("{}", t("main-cost-restore-skipped-memory"));
+        return;
+    }
+    match vendor_manager
+        .cost_tracker()
+        .restore_from_db(pool, window_hours)
+        .await
+    {
+        Ok(groups) => tracing::info!(
+            "{}",
+            t_args(
+                "main-cost-restored",
+                &[
+                    ("groups", groups.to_string()),
+                    ("window_hours", window_hours.to_string()),
+                ],
+            )
+        ),
+        Err(e) => tracing::warn!(
+            "{}",
+            t_args("main-cost-restore-failed", &[("error", e.to_string())])
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +497,37 @@ mod tests {
     use inklog::LogSink;
     use std::sync::Mutex;
     use tracing_subscriber::layer::SubscriberExt;
+
+    /// 内存模式（`:memory:`）启动恢复跳过：不 panic 且计数为零。
+    #[tokio::test]
+    async fn cost_restore_skips_memory_db_without_panic() {
+        let toml_v = "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 8080\n\n[database]\npath = \":memory:\"\n";
+        let config: crate::config::Config =
+            crate::config::parse_config_content(std::path::Path::new("memory.toml"), toml_v)
+                .expect("样例配置解析");
+        let manager = Arc::new(crate::config::ConfigManager::new(config));
+        let vendor_manager = crate::vendor::VendorManager::new(manager);
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("memory pool");
+
+        restore_cost_tracker(&vendor_manager, &pool, "sqlite::memory:", 24).await;
+
+        assert!(
+            vendor_manager.cost_tracker().total_usd() == 0.0,
+            "内存模式跳过恢复后计数必须为零"
+        );
+    }
 
     /// F4：嵌入 pin 清空钩子注册（assemble 接缝函数）——配置应用成功后
     /// pin 全清并按条数计数

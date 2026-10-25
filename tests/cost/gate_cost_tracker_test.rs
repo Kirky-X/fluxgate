@@ -153,3 +153,96 @@ fn test_total_usd_zero_initially() {
         "new tracker total should be 0.0"
     );
 }
+
+/// 启动恢复：按 (vendor, model) 聚合 token_usage 最近窗口，填充
+/// by_vendor/by_model/total（两条不同 vendor 的聚合行 → 各桶等于聚合值）。
+#[tokio::test]
+#[cfg(all(feature = "cost-tracking", feature = "database"))]
+async fn restore_from_db_aggregates_token_usage_window() {
+    use fluxgate::database::{Database, KeyedUsage, TokenPreAggregator};
+    use std::time::Duration;
+
+    let database = Database::new("sqlite::memory:", 1)
+        .await
+        .expect("memory database");
+    let pre = TokenPreAggregator::new(database.repository.clone(), Duration::from_secs(3600));
+    pre.record_keyed(&KeyedUsage {
+        vendor: "vendor-a".into(),
+        model: "model-a".into(),
+        api_key_hash: String::new(),
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        input_cost: 0.25,
+        output_cost: 0.10,
+        cache_read_cost: 0.0,
+        cache_creation_cost: 0.0,
+    })
+    .await;
+    pre.record_keyed(&KeyedUsage {
+        vendor: "vendor-b".into(),
+        model: "model-b".into(),
+        api_key_hash: String::new(),
+        prompt_tokens: 200,
+        completion_tokens: 20,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        input_cost: 0.40,
+        output_cost: 0.05,
+        cache_read_cost: 0.0,
+        cache_creation_cost: 0.0,
+    })
+    .await;
+    pre.flush().await.expect("flush token_usage rows");
+
+    let tracker = CostTracker::new();
+    let restored = tracker
+        .restore_from_db(&database.pool, 24)
+        .await
+        .expect("restore from db");
+    assert_eq!(restored, 2, "两条 (vendor, model) 聚合组");
+    assert!(
+        (tracker.by_vendor_usd("vendor-a") - 0.35).abs() < 1e-9,
+        "vendor-a = 0.25 + 0.10, got {}",
+        tracker.by_vendor_usd("vendor-a")
+    );
+    assert!(
+        (tracker.by_vendor_usd("vendor-b") - 0.45).abs() < 1e-9,
+        "vendor-b = 0.40 + 0.05, got {}",
+        tracker.by_vendor_usd("vendor-b")
+    );
+    assert!(
+        (tracker.by_model_usd("model-a") - 0.35).abs() < 1e-9,
+        "model-a: {}",
+        tracker.by_model_usd("model-a")
+    );
+    assert!(
+        (tracker.by_model_usd("model-b") - 0.45).abs() < 1e-9,
+        "model-b: {}",
+        tracker.by_model_usd("model-b")
+    );
+    assert!(
+        (tracker.total_usd() - 0.80).abs() < 1e-9,
+        "total = 0.80, got {}",
+        tracker.total_usd()
+    );
+}
+
+/// 空表恢复：不 panic、计数保持零（内存库/新库首次启动形态）。
+#[tokio::test]
+#[cfg(all(feature = "cost-tracking", feature = "database"))]
+async fn restore_from_db_empty_table_keeps_zero_counts() {
+    use fluxgate::database::Database;
+
+    let database = Database::new("sqlite::memory:", 1)
+        .await
+        .expect("memory database");
+    let tracker = CostTracker::new();
+    let restored = tracker
+        .restore_from_db(&database.pool, 24)
+        .await
+        .expect("restore from db");
+    assert_eq!(restored, 0, "空窗口无聚合组");
+    assert!(tracker.total_usd() == 0.0, "total 保持 0");
+}

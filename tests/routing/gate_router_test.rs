@@ -296,6 +296,7 @@ mod tests {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            metrics: Default::default(),
         };
 
         let config_manager = Arc::new(ConfigManager::new(disabled_config));
@@ -334,6 +335,7 @@ mod tests {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            metrics: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(disabled_config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));

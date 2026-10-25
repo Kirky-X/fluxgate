@@ -113,3 +113,37 @@ impl Default for CostTracker {
         Self::new()
     }
 }
+
+#[cfg(all(feature = "cost-tracking", feature = "database"))]
+impl CostTracker {
+    /// 启动恢复：按 `(vendor, model)` 聚合 `token_usage` 最近
+    /// `window_hours` 小时的四档成本，回填 `by_vendor`/`by_model` 与
+    /// `total`（先恢复再对外服务——启动装配期调用，内部状态直接置为
+    /// 聚合值）。返回恢复的聚合组数。
+    pub async fn restore_from_db(
+        &self,
+        pool: &dbnexus::DbPool,
+        window_hours: u64,
+    ) -> Result<usize, dbnexus::DbError> {
+        let repository = crate::database::Repository::new(pool.clone());
+        let rows = repository.query_cost_window(window_hours).await?;
+
+        self.total_micro_usd.store(0, Ordering::Relaxed);
+        self.by_vendor.clear();
+        self.by_model.clear();
+        for row in &rows {
+            // 与 record 同一取整口径：×1e6 round，防浮点表示误差
+            let micro_usd = (row.total_cost * MICRO_PER_USD).round() as u64;
+            self.total_micro_usd.fetch_add(micro_usd, Ordering::Relaxed);
+            self.by_vendor
+                .entry(row.vendor.clone())
+                .or_insert_with(|| AtomicU64::new(0))
+                .fetch_add(micro_usd, Ordering::Relaxed);
+            self.by_model
+                .entry(row.model.clone())
+                .or_insert_with(|| AtomicU64::new(0))
+                .fetch_add(micro_usd, Ordering::Relaxed);
+        }
+        Ok(rows.len())
+    }
+}

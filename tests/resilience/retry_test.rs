@@ -115,6 +115,7 @@ mod vendor_fallback_integration {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            metrics: Default::default(),
         }
     }
 

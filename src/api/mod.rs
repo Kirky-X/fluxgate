@@ -746,6 +746,7 @@ mod fallback_guard_tests {
     async fn make_state(vendors: Vec<VendorConfig>, retry: RetrySection) -> Arc<ApiState> {
         let config = Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
@@ -1068,6 +1069,7 @@ mod cooldown_retry_after {
     ) -> Arc<ApiState> {
         let config = Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,

@@ -127,6 +127,7 @@ fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Co
         lexcompress: Default::default(),
         responses: Default::default(),
         rate_limit: RateLimitSection { rules },
+        metrics: Default::default(),
     }
 }
 

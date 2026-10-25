@@ -581,6 +581,12 @@ max_response_bytes = 1048576
 background_enabled = true
 max_background_jobs = 16
 
+# 观测装配参数（缺段时全默认）。cost_restore_window_hours：启动恢复
+# CostTracker 内存成本视图的 token_usage 聚合窗口（1-8760 小时，默认 24）。
+# 恢复是启动期一次性动作，运行期改值下次重启生效；内存库（:memory:）跳过恢复。
+[metrics]
+cost_restore_window_hours = 24
+
 # ❌ 需重启 —— gRPC Server（feature = "grpc"）— sdforge grpc 门面
 #（sdforge.v1.SdForgeService）。GrpcServerConfig 固化于服务器构造，更新后需
 # 重启进程生效。本段缺席或 enabled = false 时 gRPC 服务器完全禁用（不监听

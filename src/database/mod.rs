@@ -29,7 +29,7 @@ pub use repository::Repository;
 // 改名 TokenUsageRow，与 IR 的 protocol::TokenUsage 消歧。
 pub use crate::storage::{
     CostGroupBy, CostUsageRow, KeyedUsage, LogFilter, RequestLog, ResponseStoreSink,
-    StoredResponse, TokenUsageRow,
+    StoredResponse, TokenUsageRow, VendorModelCostRow,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -50,6 +50,7 @@ cargo-audit.json
 specmark/
 .gitnexus/
 openspec/
+/temp/
 
 # 项目特定产物（已归档或被取代）
 prd.md

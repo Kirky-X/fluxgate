@@ -294,6 +294,7 @@ mod build_fallback_chain {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            metrics: Default::default(),
         };
         let cm = Arc::new(ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm.clone()));
@@ -462,6 +463,7 @@ mod cover_all_paths {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            metrics: Default::default(),
         }
     }
 

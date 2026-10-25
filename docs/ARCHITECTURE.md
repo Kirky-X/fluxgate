@@ -418,7 +418,7 @@ stateDiagram-v2
 | 组件 | 文件 | 职责 |
 |---|---|---|
 | `CostCalculator` | `src/vendor/cost.rs` | 定价表来自热配置 `[[pricing]]`，按 `(prompt/1000)×in_price + (completion/1000)×out_price` 计算 USD；`(vendor_id, model_id)` 未命中计 0.0；每请求现读热配置，定价修改即时生效（`src/vendor/manager.rs` 的定价热读点） |
-| `CostTracker` | `src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径 |
+| `CostTracker` | `src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径；`restore_from_db(pool, window_hours)` 启动恢复（按 `(vendor, model)` 聚合 `token_usage` 最近窗口回填内存视图，装配期先恢复再对外服务） |
 
 **成本落库与内存边界（如实标注）**：成本分账已落库——`token_usage` 表按 `(vendor, model, api_key_hash, date, hour)` UPSERT，写入 `input_cost` / `output_cost` / `cache_read_cost` / `cache_creation_cost` 四档成本列（`src/database/pre_aggregator.rs`，单价取 `[[model_catalog]]` 四档，未登记记 0），并可由 `GET /admin/cost` 按 vendor/model 分组聚合查询。仍留的内存/历史边界：进程内 `CostTracker`（`by_vendor`/`by_model`）仅在内存累积、重启清零；逐请求日志 `request_logs.cost_usd` 仍恒写 `None`（该列为历史库兼容保留）。
 

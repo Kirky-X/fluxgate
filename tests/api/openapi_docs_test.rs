@@ -49,6 +49,7 @@ fn make_config(docs_enabled: bool) -> Config {
         rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
         lexcompress: Default::default(),
         responses: Default::default(),
+        metrics: Default::default(),
     }
 }
 

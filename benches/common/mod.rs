@@ -277,6 +277,7 @@ pub fn routing_config() -> Config {
         docs: Default::default(),
         lexcompress: Default::default(),
         responses: Default::default(),
+        metrics: Default::default(),
     }
 }
 

@@ -416,6 +416,7 @@ mod tests {
     fn base_config() -> Config {
         Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: ServerConfig {
                 host: "127.0.0.1".into(),
                 port: 0,

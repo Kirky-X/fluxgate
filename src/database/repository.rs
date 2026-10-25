@@ -3,7 +3,7 @@
 
 use crate::database::{
     raw_statement, CostGroupBy, CostUsageRow, LogFilter, RequestLog, TokenUsageRow,
-    VendorStatusRecord,
+    VendorModelCostRow, VendorStatusRecord,
 };
 use crate::i18n::t_args;
 use dbnexus::{DbError, DbPool, Session};
@@ -517,6 +517,45 @@ impl Repository {
                     cache_creation_cost,
                     total_cost: input_cost + output_cost + cache_read_cost + cache_creation_cost,
                 }
+            })
+            .collect())
+    }
+
+    /// CostTracker 启动恢复聚合：按 `(vendor, model)` 分组对四档成本求和，
+    /// 窗口 = 最近 `window_hours` 小时（date/hour 联合下界；cutoff 由本地
+    /// 时钟计算后参数化，规避跨后端时间函数方言差）。空窗口返回空集。
+    pub async fn query_cost_window(
+        &self,
+        window_hours: u64,
+    ) -> Result<Vec<VendorModelCostRow>, DbError> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::hours(window_hours as i64);
+        let cutoff_date = cutoff.format("%Y-%m-%d").to_string();
+        let cutoff_hour: i32 = cutoff.format("%H").to_string().parse().unwrap_or(0);
+        let sql = "SELECT vendor, model, \
+             SUM(input_cost) + SUM(output_cost) + SUM(cache_read_cost) + SUM(cache_creation_cost) \
+             AS total_cost \
+             FROM token_usage \
+             WHERE date > ? OR (date = ? AND hour >= ?) \
+             GROUP BY vendor, model ORDER BY vendor, model";
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let stmt = raw_statement(
+            conn.get_database_backend(),
+            sql,
+            vec![
+                cutoff_date.clone().into(),
+                cutoff_date.into(),
+                cutoff_hour.into(),
+            ],
+        );
+        let rows = conn.query_all_raw(stmt).await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| VendorModelCostRow {
+                vendor: row.try_get("", "vendor").unwrap_or_default(),
+                model: row.try_get("", "model").unwrap_or_default(),
+                total_cost: row.try_get("", "total_cost").unwrap_or_default(),
             })
             .collect())
     }

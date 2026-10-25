@@ -462,6 +462,7 @@ mod tests {
     fn sample_config(vendor_id: &str) -> Config {
         Config {
             rate_limit: Default::default(),
+            metrics: Default::default(),
             server: ServerConfig {
                 host: "127.0.0.1".into(),
                 port: 8080,

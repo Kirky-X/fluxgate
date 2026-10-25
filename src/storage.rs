@@ -104,6 +104,15 @@ pub struct KeyedUsage {
     pub cache_creation_cost: f64,
 }
 
+/// (vendor, model) 维度成本聚合行 — CostTracker 启动恢复消费
+///（`Repository::query_cost_window` 产出）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VendorModelCostRow {
+    pub vendor: String,
+    pub model: String,
+    pub total_cost: f64,
+}
+
 /// 请求日志存储缝：数据面写入（管道前沿 push 或存储后端直写）+ admin 查询。
 #[async_trait::async_trait]
 pub trait RequestLogSink: Send + Sync {

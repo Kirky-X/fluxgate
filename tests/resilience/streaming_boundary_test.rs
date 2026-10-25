@@ -131,6 +131,7 @@ fn make_config(vendors: Vec<VendorConfig>, circuit_open_timeout_ms: u64) -> Conf
         docs: Default::default(),
         lexcompress: Default::default(),
         responses: Default::default(),
+        metrics: Default::default(),
     }
 }
 

@@ -15,7 +15,7 @@ mod gate;
 
 pub use gate::GateError;
 
-/// 错误双轨：`#[error]` Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`
+/// 错误双轨：`#[error]` Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message`
 ///（FTL，随 locale）；`Gate` 变体 `transparent` 透传英文规范串。
 #[derive(Error, Debug)]
 pub enum FluxgateError {
@@ -250,7 +250,7 @@ mod tests {
         let err = FluxgateError::from(GateError::Validation {
             field: "model".to_string(),
         });
-        // error.message 走本地化轨道：必须等于 user_message() 的输出
+        // error.message 走本地化轨道：必须等于 user_message 的输出
         let expected_message = err.user_message();
         let response = err.into_response();
         let body = extract_body(response).await;

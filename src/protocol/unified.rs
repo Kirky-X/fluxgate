@@ -1506,7 +1506,7 @@ mod tests {
         ));
     }
 
-    // ======== 工具 schema 体积/深度上限 ========
+    // 工具 schema 体积/深度上限
 
     use crate::error::GateError;
 

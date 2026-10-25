@@ -16,7 +16,7 @@ mod common;
 fn bench_conversion(c: &mut Criterion) {
     let mut group = c.benchmark_group("conversion");
 
-    // ---- OpenAI 流式 chunk 归一化：稳态续块路径（id/created 逐帧重写） ----
+    // OpenAI 流式 chunk 归一化：稳态续块路径（id/created 逐帧重写）
     group.throughput(Throughput::Elements(1));
     let fixture = common::openai_chunk_value();
     let mut encoder = OpenAIStreamEncoder::new();
@@ -29,7 +29,7 @@ fn bench_conversion(c: &mut Criterion) {
         })
     });
 
-    // ---- Anthropic 出站编码 + 自动缓存断点注入（多轮 + system + tools） ----
+    // Anthropic 出站编码 + 自动缓存断点注入（多轮 + system + tools）
     group.throughput(Throughput::Elements(1));
     let converter = AnthropicConverter::new();
     let policy = common::cache_policy();
@@ -44,7 +44,7 @@ fn bench_conversion(c: &mut Criterion) {
         })
     });
 
-    // ---- Anthropic 流式帧编码：tool_use 片段序列（首片段 → 参数分片 → 终止） ----
+    // Anthropic 流式帧编码：tool_use 片段序列（首片段 → 参数分片 → 终止）
     let sequence = common::tool_use_chunk_sequence();
     // fixture 冒烟：序列必须产出事件帧（防 fixture 形态漂移后基准空转）
     let smoke_events: usize = {
@@ -68,7 +68,7 @@ fn bench_conversion(c: &mut Criterion) {
         })
     });
 
-    // ---- 缓存断点注入纯函数（长多轮请求体：tools / system / last_user 三锚点） ----
+    // 缓存断点注入纯函数（长多轮请求体：tools / system / last_user 三锚点）
     group.throughput(Throughput::Elements(1));
     let body_fixture = common::long_anthropic_body();
     group.bench_function("inject_cache_control", |b| {

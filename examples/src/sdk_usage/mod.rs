@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! Rust SDK 客户端调用已部署网关：chat / stream_chat / embed / rerank / responses / admin 六形态 。
+//! Rust SDK 客户端调用已部署网关：chat / stream_chat / embed / rerank / responses / admin 六形态。
 //! 每个子模块暴露 `run`，由 `src/bin` 下的同名入口启动 tokio 运行时后转发进来。
 
 pub mod admin;

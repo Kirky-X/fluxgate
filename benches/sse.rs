@@ -14,7 +14,7 @@ mod common;
 fn bench_sse_parsing(c: &mut Criterion) {
     let mut group = c.benchmark_group("sse");
 
-    // ---- OpenAI 帧序列（data: 前缀 + [DONE] 终止帧） ----
+    // OpenAI 帧序列（data: 前缀 + [DONE] 终止帧）
     let openai_payloads = common::data_payloads(common::OPENAI_SSE_TAIL);
     assert!(
         !openai_payloads.is_empty(),
@@ -34,7 +34,7 @@ fn bench_sse_parsing(c: &mut Criterion) {
         })
     });
 
-    // ---- Anthropic 帧序列（event:/data: 前缀 + message_stop 收束） ----
+    // Anthropic 帧序列（event:/data: 前缀 + message_stop 收束）
     let anthropic_payloads = common::data_payloads(common::ANTHROPIC_SSE_TAIL);
     assert!(
         !anthropic_payloads.is_empty(),

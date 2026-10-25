@@ -118,7 +118,7 @@ pub struct VendorConfig {
 impl VendorConfig {
     /// 端点风格原始串归一化：trim 后空串视同未声明（None）。校验侧专用：
     /// 非法值需以此原值点名拒绝（脱敏口径下唯一可透出的是用户自己的配置
-    /// 枚举词，非密钥），消费侧一律走 `api_style()` / `effective_api_style()`。
+    /// 枚举词，非密钥），消费侧一律走 `api_style` / `effective_api_style`。
     pub fn api_style_raw(&self) -> Option<&str> {
         self.api_style
             .as_deref()
@@ -954,8 +954,8 @@ pub struct CacheSection {
     /// 对称抖动，同批键过期错峰
     #[serde(default)]
     pub ttl_jitter: f64,
-    /// 空响应负缓存窗口（秒，默认 60）。store() 收到 Null 响应时写
-    /// 哨兵而非值，窗口内 check() 直接 Hit(Null) 不再穿透上游。
+    /// 空响应负缓存窗口（秒，默认 60）。store 收到 Null 响应时写
+    /// 哨兵而非值，窗口内 check 直接 Hit(Null) 不再穿透上游。
     #[serde(default = "default_cache_null_cache_ttl_secs")]
     pub null_cache_ttl_secs: u64,
     /// 语义响应缓存子段（`semantic-cache` feature 门控；默认关）

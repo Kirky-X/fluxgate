@@ -38,7 +38,7 @@ impl CostTracker {
 
     /// 记录一次成本（USD，内部转 micro_usd 整数原子累加）。
     ///
-    /// 用 `.round()` 而非 `as u64` 截断，避免浮点表示误差导致的截断损失。
+    /// 用 `.round` 而非 `as u64` 截断，避免浮点表示误差导致的截断损失。
     pub fn record(&self, vendor: &str, model: &str, cost_usd: f64) {
         if cost_usd <= 0.0 {
             return;

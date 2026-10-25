@@ -1004,7 +1004,7 @@ async fn cost_window_uses_catalog_source_and_counts_cache_tiers() {
     mock_b.assert_async().await;
 }
 
-// ==================== 透传流结算（ 流式侧补齐） ====================
+// 透传流结算（ 流式侧补齐）
 
 /// Anthropic 入站 + Anthropic 上游 = 真透传流（走 `passthrough_stream_body`）。
 fn claude_vendor(id: &str, api_base: String) -> VendorConfig {
@@ -1256,7 +1256,7 @@ async fn cache_hit_requests_settle_zero_and_do_not_burn_quota() {
     mock.assert_async().await;
 }
 
-// ==================== admission × quota 叠加（ 第三条） ====================
+// admission × quota 叠加（ 第三条）
 
 /// 拥塞 shed 造数用的挂起监听地址（只 accept 不响应，同 admission_test 手法）。
 fn hanging_base() -> (std::net::TcpListener, String) {

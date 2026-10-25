@@ -52,7 +52,7 @@ impl Database {
 }
 
 /// 连接参数单一构造点（`Database::new` 消费；测试直接断言策略与池上下界）：
-/// - 池上下界：rc.5 校验 min <= max；`PoolConfig::default()` 的 min=5 会在
+/// - 池上下界：rc.5 校验 min <= max；`PoolConfig::default` 的 min=5 会在
 ///   pool_size < 5 时失败，显式给 1 与旧行为等价
 /// - retry：特性由本 manifest 显式声明（Cargo.toml dbnexus 条目），
 ///   `DbConfig` 默认 None 不生效；激活后仅幂等语句（SELECT/SHOW/EXPLAIN）

@@ -82,7 +82,6 @@ pub fn extract_status_code(error: &str) -> u16 {
                 return code;
             }
         }
-        // 尝试直接解析括号内的数字
         if let Ok(code) = rest.split_whitespace().next().unwrap_or("").parse::<u16>() {
             return code;
         }
@@ -257,7 +256,7 @@ mod tests {
         assert_eq!(extract_status_code("no status code here"), 500); // default
     }
 
-    // ============ tests：重试放大守门器纯函数 ============
+    // tests：重试放大守门器纯函数
 
     /// amplification(0.3, 0.4) = 1/(1−0.12) ≈ 1.136（评审给定的数值对照）。
     #[test]

@@ -689,7 +689,7 @@ impl Router {
         capacity
     }
 
-    // ============ 路由可解释性 ============
+    // 路由可解释性
 
     /// 逐候选解释（`POST /admin/route/explain` 数据源）：纯只读，零计量副作用。
     /// reason 优先级（首个命中即定）：not_in_catalog → disabled → throttled →

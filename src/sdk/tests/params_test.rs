@@ -66,7 +66,7 @@ async fn routing_hint_headers_injected() {
 }
 
 /// 路由头只能经 typed 字段设置：`extra_headers` 里的同名键被忽略并 debug
-///（reqwest `header()` 为追加语义，扩展头先插入会以首个值压过 typed 注入）。
+///（reqwest `header` 为追加语义，扩展头先插入会以首个值压过 typed 注入）。
 #[tokio::test]
 async fn routing_headers_in_extra_headers_are_rejected() {
     let mut server = mockito::Server::new_async().await;

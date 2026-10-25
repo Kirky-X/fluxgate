@@ -245,7 +245,7 @@ impl GlobalMetrics {
         }
     }
 
-    // ---- 嵌入兼容组观测（router::route_embedding / admin / embeddings 处理器写）----
+    // 嵌入兼容组观测（router::route_embedding / admin / embeddings 处理器写）
 
     /// pin 首写建立（首次加权选中某组键并写入 pin 表）
     pub fn record_embedding_pin_set(&self) {
@@ -284,7 +284,7 @@ impl GlobalMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    // ---- Responses 观测（api::responses 写、admin/快照读）----
+    // Responses 观测（api::responses 写、admin/快照读）
 
     /// Responses 成功请求计数。
     pub fn record_responses_request(&self) {
@@ -298,7 +298,7 @@ impl GlobalMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    // ---- Gemini 观测（api::gemini 写、admin/快照读）----
+    // Gemini 观测（api::gemini 写、admin/快照读）
 
     /// Gemini 入站请求计数（含原生直通与 IR 路径）。
     pub fn record_gemini_request(&self) {
@@ -328,7 +328,7 @@ impl GlobalMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    // ---- 难度定档观测（difficulty 模块写、admin/快照读）----
+    // 难度定档观测（difficulty 模块写、admin/快照读）
 
     /// 定档路径计数 + tier 分布 + 延迟（一次调用记齐；classifier_failed /
     /// features_degraded / 熔断迁移由专门入口补记）
@@ -394,7 +394,7 @@ impl GlobalMetrics {
         self.ewma_tau_ms.store(tau_ms, Ordering::Relaxed);
     }
 
-    /// 记录一次请求结果。`duration` 通常由 `Instant::now()` 差值计算。
+    /// 记录一次请求结果。`duration` 通常由 `Instant::now` 差值计算。
     pub fn record_request(&self, vendor: &str, success: bool, duration: std::time::Duration) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         if success {
@@ -1209,7 +1209,7 @@ mod tests {
         assert!(snap.vendors.is_empty());
     }
 
-    // ============ tests：嵌入兼容组四计数 ============
+    // tests：嵌入兼容组四计数
 
     /// 四计数独立累计并经快照带出（/admin/metrics 序列化面）；
     /// reset 同步清零
@@ -1353,7 +1353,7 @@ mod tests {
         assert_eq!(v.avg_duration_ms(), 0.0);
     }
 
-    // ============ tests：EWMA 延迟/错误率 ============
+    // tests：EWMA 延迟/错误率
 
     /// 连续 100→200→400ms：ewma 逐次上升且新值权重大于全生命期均值；
     /// 等价 α=0.2 的采样间隔由 Peak-EWMA 反解 Δt ≈ 2231.4ms（now 注入）
@@ -1460,7 +1460,7 @@ mod tests {
         assert!((latency - 200.0).abs() < 1e-9);
     }
 
-    // ============ tests：口径分道 + Peak-EWMA ============
+    // tests：口径分道 + Peak-EWMA
 
     /// 三口径互不混流：同一 vendor 分别记 ttft/e2e/queue → 三字段独立，
     /// 各道样本数独立；后续 ttft 采样不动 e2e/queue。
@@ -1639,7 +1639,7 @@ mod tests {
         assert!((v.ewma_latency_ms - v.ewma_e2e_ms).abs() < 1e-12);
     }
 
-    // ============ tests：top-1 占比与流量份额熵 ============
+    // tests：top-1 占比与流量份额熵
 
     /// ① 3 vendor 均分 → entropy≈1.0、top1≈0.333（归一熵的均匀分布基准）。
     #[test]
@@ -1677,7 +1677,7 @@ mod tests {
         assert_eq!(m.share_entropy(), 0.0, "V=1 定义熵为 0");
     }
 
-    /// ③ 空窗口 → top1==0 且 should_alert()==false（无流量不算崩溃，语义锁定）。
+    /// ③ 空窗口 → top1==0 且 should_alert==false（无流量不算崩溃，语义锁定）。
     #[test]
     fn test_empty_window_zero_top1_no_alert() {
         let m = GlobalMetrics::new();
@@ -1687,7 +1687,7 @@ mod tests {
         assert!(!m.should_alert());
     }
 
-    /// ④ top1=0.95、活跃 vendor=3 → should_alert()==true（崩溃告警阈值）。
+    /// ④ top1=0.95、活跃 vendor=3 → should_alert==true（崩溃告警阈值）。
     #[test]
     fn test_concentrated_three_vendor_alerts() {
         let m = GlobalMetrics::new();
@@ -1850,7 +1850,7 @@ mod tests {
         assert!(m.traffic_shares().is_empty());
     }
 
-    // ============ tests：失败率滑窗 ============
+    // tests：失败率滑窗
 
     /// 窗口失败率基础口径：注入 now 连记 3 成功 3 失败 → (6, 3)。
     #[test]
@@ -1931,7 +1931,7 @@ mod tests {
         );
     }
 
-    // ============ tests：重试维度计数与守门器视图 ============
+    // tests：重试维度计数与守门器视图
 
     /// 模拟 3 次重试：retried_attempts==3；失败进重试候选路径计数独立
     /// 累计；reset 同步清零。

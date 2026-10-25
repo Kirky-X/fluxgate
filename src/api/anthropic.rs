@@ -162,7 +162,7 @@ async fn chat_passthrough_stream(
     );
     #[cfg(feature = "resilience")]
     let outcome = if state.config.read().resilience.cover_all_paths {
-        // decision.clone() 进循环（原样）：失败收尾仍引用初始决策
+        // decision.clone 进循环（原样）：失败收尾仍引用初始决策
         crate::api::execute_dispatch_with_fallback(
             state,
             model,
@@ -307,7 +307,7 @@ async fn chat_passthrough_json(
                         state.config.read().resilience.expose_fallback_headers,
                     );
                     if state.config.read().resilience.cover_all_paths {
-                        // decision.clone() 进循环（原样）：失败收尾仍引用初始决策
+                        // decision.clone 进循环（原样）：失败收尾仍引用初始决策
                         crate::api::execute_dispatch_with_fallback(
                             &state,
                             &model,
@@ -500,7 +500,7 @@ async fn chat_convert_stream(
     );
     #[cfg(feature = "resilience")]
     let outcome = if state.config.read().resilience.cover_all_paths {
-        // decision.clone() 进循环（原样）：失败收尾仍引用初始决策；
+        // decision.clone 进循环（原样）：失败收尾仍引用初始决策；
         // 换路循环逐 attempt 克隆请求体（原 fallback 语义）
         crate::api::execute_dispatch_with_fallback(
             state,
@@ -1053,7 +1053,7 @@ async fn log_request(
     // 两路，`response: None` = 失败）。门控（接线 + selection 热读）在
     // ApiState 内，默认 weighted 档零开销、无状态更新。
     // 评审修复 major：臂键与选择侧同源归一（anthropic 无 hints 路由，
-    // 即 route_inner 的 abstract_model.to_lowercase()/auto→__global__）。
+    // 即 route_inner 的 abstract_model.to_lowercase/auto→__global__）。
     state.record_linucb_reward(
         Some(
             crate::router::bandit::linucb_arm_key(

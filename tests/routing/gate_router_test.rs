@@ -383,7 +383,7 @@ mod tests {
     }
 }
 
-// ============ queue_factor 真实队列 + 权重公式升级 ============
+// queue_factor 真实队列 + 权重公式升级
 
 #[cfg(test)]
 mod scheduling_weight {
@@ -744,7 +744,7 @@ mod scheduling_weight {
         }
     }
 
-    // ============ tests：权重公式升级 ============
+    // tests：权重公式升级
 
     /// ① 系数 (1,0,0)：queue/window 因子完全不影响权重（纯函数断言）。
     #[test]

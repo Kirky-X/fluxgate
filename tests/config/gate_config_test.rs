@@ -186,7 +186,7 @@ mod hot_reload {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// ③ update 后 read() 立即可见（confers DynamicField 无锁热读语义）
+    /// ③ update 后 read 立即可见（confers DynamicField 无锁热读语义）
     #[test]
     fn test_update_visible_immediately_via_read() {
         let (manager, path, _dir) = setup("nx-hot-visible", &sample_config("v1", "KEY_A"));
@@ -601,7 +601,7 @@ concurrency = { requests_per_second = 10 }
         assert!((entry.output_per_1k_tokens - 0.075).abs() < f64::EPSILON);
     }
 
-    // ======== [vendors] D8 新键校验（validate_config） ========
+    // [vendors] D8 新键校验（validate_config）
 
     /// anthropic_version 格式校验：非空且 YYYY-MM-DD；缺省 None 合法
     /// （出站回退 "2023-06-01"）。
@@ -633,7 +633,7 @@ concurrency = { requests_per_second = 10 }
         assert!(validate_config(&config).is_ok());
     }
 
-    // ======== [[model_catalog]] 校验（validate_config） ========
+    // [[model_catalog]] 校验（validate_config）
 
     /// 登记条目 model_id 去重（与 vendor/model id 同级唯一性约束）
     #[test]
@@ -727,7 +727,7 @@ concurrency = { requests_per_second = 10 }
         validate_config(&config).expect("empty catalog must pass");
     }
 
-    // ======== 价格/空白 id/条目上限校验 ========
+    // 价格/空白 id/条目上限校验
 
     /// 五个价格字段（含 rerank 按文档计价）必须有限（拒 NaN/Inf）且 ≥ 0
     ///（加载与热更新两路同拒）。

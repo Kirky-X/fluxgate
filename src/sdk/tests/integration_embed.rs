@@ -55,7 +55,7 @@ async fn embed_401_returns_auth_error() {
     let req = EmbedRequest::new("m", "x");
     let err = client.embed(&req).await.unwrap_err();
 
-    // embed() 非 2xx 统一返回 Api 错误（kind 由 status 派生）。
+    // embed 非 2xx 统一返回 Api 错误（kind 由 status 派生）。
     // 这里仅断言错误发生即可。
     let _ = err;
 }

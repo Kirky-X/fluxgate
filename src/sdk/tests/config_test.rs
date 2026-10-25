@@ -76,7 +76,7 @@ fn openai_params_includes_all_fields_when_set() {
     assert_eq!(v["user"], json!("user-123"));
 }
 
-/// 全量 typed 参数配置（T044 面向官方 SDK 参数面）。
+/// 全量 typed 参数配置。
 fn full_config() -> RequestConfig {
     use crate::sdk::config::{ReasoningEffort, StreamOptions, Verbosity};
     use std::collections::BTreeMap;

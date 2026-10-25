@@ -12,7 +12,7 @@ use fluxgate::sdk::{
 use super::require_env;
 
 pub async fn run() -> Result<(), FluxgateSdkError> {
-    // timeout() 只约束非流式请求的总时长；流式行为见 stream_chat 的 read_timeout
+    // timeout 只约束非流式请求的总时长；流式行为见 stream_chat 的 read_timeout
     let client = FluxgateClientBuilder::new()
         .base_url(require_env("FLUXGATE_BASE_URL"))
         .api_key(require_env("FLUXGATE_API_KEY"))

@@ -14,7 +14,7 @@ fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
 }
 
 /// 路由 diff 防回归钉：SDK admin 面 (method, path) 清单必须全部
-/// 出现在网关路由表源码（`src/api/router_builder.rs` axum `.route()`
+/// 出现在网关路由表源码（`src/api/router_builder.rs` axum `.route`
 /// 注册）中——SDK 方法与 server 实际路由的零差异契约。失配史：旧 SDK 打
 /// `GET /v1/models`（网关未注册）与 `GET /admin/health`（不存在）。
 #[test]
@@ -64,7 +64,7 @@ fn sdk_admin_routes_are_subset_of_server_route_table() {
     }
 
     // 健康面：/api/v1/health 经 sdforge forge 属性注册（version="v1"，
-    // path="/health"）——属性漂移（version/path 改名）即 SDK health() 404
+    // path="/health"）——属性漂移（version/path 改名）即 SDK health 404
     const HEALTH_SRC: &str = include_str!("../../api/health.rs");
     assert!(
         HEALTH_SRC.contains("version = \"v1\"") && HEALTH_SRC.contains("path = \"/health\""),

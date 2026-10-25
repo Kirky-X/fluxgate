@@ -34,7 +34,7 @@ const LEADER_DISPATCH_TIMEOUT: &str = "fluxgate:leader-dispatch-timeout";
 pub const RESPONSE_KEY_PREFIX: &str = "resp:";
 
 /// 递归 canonical 化 JSON：对象键按字典序排序后序列化（数组保序——
-/// 语义上有序，messages/choices 的顺序参与哈希是正确的）。
+/// 语义上有序，messages/choices 的顺序参与哈希是正确）。
 pub fn canonicalize(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -823,7 +823,7 @@ mod tests {
 
 #[cfg(test)]
 mod ttl_load_linking_tests {
-    //! TTL 负载联动 + 类别差异化（ttl() 三段式）。
+    //! TTL 负载联动 + 类别差异化（ttl 三段式）。
 
     use super::*;
     use crate::config::Config;

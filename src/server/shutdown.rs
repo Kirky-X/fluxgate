@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::database::{AsyncLoggerHandle, TokenPreAggregator};
 use crate::i18n::{t, t_args};
 
-/// inklog 关闭钩子（`run()` 注入 manager；嵌入式未注入时该阶段 no-op）。
+/// inklog 关闭钩子（`run` 注入 manager；嵌入式未注入时该阶段 no-op）。
 pub(crate) type InklogShutdownHook = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 /// 终止信号：sdforge 默认触发（SIGTERM/Ctrl-C，首个信号即决）。
@@ -25,7 +25,7 @@ pub(crate) async fn shutdown_signal() {
 /// 阶段超时打断，故每个钩子体再包一层超时，超时记 warn 并继续。
 const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// 构建三阶段收尾协调器（调用方 `shutdown().await` 执行；幂等由 `ServerHandle` 的 done 位保证）。
+/// 构建三阶段收尾协调器（调用方 `shutdown.await` 执行；幂等由 `ServerHandle` 的 done 位保证）。
 pub(crate) fn build_teardown_coordinator(
     logger_handle: &Arc<AsyncLoggerHandle>,
     pre_aggregator: &Arc<TokenPreAggregator>,

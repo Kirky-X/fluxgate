@@ -86,7 +86,6 @@ mod tests {
 
         let now = chrono::Utc::now().timestamp();
 
-        // Log some requests
         for i in 0..3 {
             let log = RequestLog {
                 id: None,
@@ -111,7 +110,6 @@ mod tests {
             repository.log_request(&log).await.unwrap();
         }
 
-        // Filter by vendor
         let filter = LogFilter {
             start_time: None,
             end_time: None,
@@ -134,7 +132,6 @@ mod tests {
 
         let now = chrono::Utc::now().timestamp();
 
-        // Log requests at different times
         for i in 0..5 {
             let log = RequestLog {
                 id: None,
@@ -354,7 +351,6 @@ mod tests {
             handles.push(tokio::spawn(async move { repo.log_request(&log).await }));
         }
 
-        // Wait for all inserts
         let results: Vec<Result<(), dbnexus::DbError>> = futures::future::join_all(handles)
             .await
             .into_iter()
@@ -513,7 +509,6 @@ mod tests {
                 cost_usd: None,
             };
 
-            // Log each one individually
             let result = repository.log_request(&log).await;
             if result.is_err() {
                 println!("Error inserting log {}: {:?}", i, result);
@@ -557,7 +552,7 @@ mod tests {
     }
 }
 
-// ============ 单事务批量写入（Repository::log_requests_batch） ============
+// 单事务批量写入（Repository::log_requests_batch）
 
 #[cfg(test)]
 mod batch_tx {
@@ -655,7 +650,7 @@ mod batch_tx {
     }
 }
 
-// ============ 覆盖补缺：Token 预聚合器（record / flush / flush worker / handle） ============
+// 覆盖补缺：Token 预聚合器（record / flush / flush worker / handle）
 
 #[cfg(test)]
 mod preagg {
@@ -848,7 +843,7 @@ mod preagg {
     }
 }
 
-// ============ 覆盖补缺：Repository 迁移 / 批量回滚 / 厂商状态读取 ============
+// 覆盖补缺：Repository 迁移 / 批量回滚 / 厂商状态读取
 
 #[cfg(test)]
 mod repository_gap {
@@ -1019,7 +1014,7 @@ mod repository_gap {
     }
 }
 
-// ============ 覆盖补缺：AsyncLogger 关闭/背压/缓冲阈值/落库失败路径 ============
+// 覆盖补缺：AsyncLogger 关闭/背压/缓冲阈值/落库失败路径
 
 #[cfg(test)]
 mod async_logger_gap {
@@ -1070,7 +1065,7 @@ mod async_logger_gap {
         }
     }
 
-    /// shutdown 后 log() 拒绝写入：Database 错误 + shutdown 语义消息。
+    /// shutdown 后 log 拒绝写入：Database 错误 + shutdown 语义消息。
     #[tokio::test]
     async fn log_after_shutdown_is_rejected_with_database_error() {
         let repo = initialized_repository().await;
@@ -1202,7 +1197,7 @@ mod async_logger_gap {
     }
 }
 
-// ============ 覆盖补缺：Database::new 自举与父路径非法 ============
+// 覆盖补缺：Database::new 自举与父路径非法
 
 #[cfg(test)]
 mod database_gap {
@@ -1233,8 +1228,8 @@ mod database_gap {
         }
     }
 
-    /// 内存库自举：Database::new 建连 + 建表，repository() 可直接读写，
-    /// close() 幂等无副作用。
+    /// 内存库自举：Database::new 建连 + 建表，repository 可直接读写，
+    /// close 幂等无副作用。
     #[tokio::test]
     async fn database_new_memory_bootstrap_and_repository_accessor() {
         let db = Database::new(&resolve_sqlite_url(":memory:"), 1)
@@ -1293,7 +1288,7 @@ mod database_gap {
     }
 }
 
-// ============ 成本分账落库（V2 分账聚合 + /admin/cost 查询面） ============
+// 成本分账落库（V2 分账聚合 + /admin/cost 查询面）
 
 #[cfg(test)]
 mod cost_ledger {

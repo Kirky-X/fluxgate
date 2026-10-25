@@ -1316,7 +1316,7 @@ mod tests {
         assert_eq!(usd_to_millicents(f64::NAN), 0);
     }
 
-    // ==================== 结算门控与 Arc<Config> 快照 ====================
+    // 结算门控与 Arc<Config> 快照
 
     /// quota 开启 + 已知租户限额的配置（结算门控单测共用）。
     fn quota_enabled_config(enabled: bool) -> crate::config::Config {

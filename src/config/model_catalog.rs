@@ -121,7 +121,7 @@ pub fn cache_policy_for(catalog: &[ModelCatalogEntry], model_id: &str) -> CacheB
         .unwrap_or_default()
 }
 
-/// 能力查询结果 — capabilities() 语义面（无定价；定价消费在 vendor/cost 计价）。
+/// 能力查询结果 — capabilities 语义面（无定价；定价消费在 vendor/cost 计价）。
 /// 字段名对齐 agentstem 消费方（`max_context_tokens` 为
 /// agent_session.rs auto-compact 判读的字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,7 +224,7 @@ mod tests {
         }
     }
 
-    // ======== serde 面 ========
+    // serde 面
 
     #[test]
     fn toml_full_entry_roundtrips() {
@@ -292,7 +292,7 @@ currency = "eur"
         assert_eq!(cny.currency, PricingCurrency::Cny);
     }
 
-    // ======== 能力查询（真实值 + per-flavor 回落） ========
+    // 能力查询（真实值 + per-flavor 回落）
 
     #[test]
     fn registered_model_returns_real_nonzero_capabilities() {
@@ -326,7 +326,7 @@ currency = "eur"
         );
     }
 
-    // ======== 定价契约（计价消费） ========
+    // 定价契约（计价消费）
 
     /// 单位口径契约：价格字段为「每 1M tokens」——对齐 agentstem
     /// estimate_usage_cost 的 per_million 公式。CostCalculator
@@ -376,7 +376,7 @@ currency = "eur"
         );
     }
 
-    // ======== 断点策略 ========
+    // 断点策略
 
     #[test]
     fn cache_policy_entry_override_and_default_fallback() {

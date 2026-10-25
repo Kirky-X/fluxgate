@@ -22,7 +22,7 @@ fn section() -> AdmissionSection {
     }
 }
 
-// ============ 优先级纯函数（论文式 1）============
+// 优先级纯函数（论文式 1）
 
 /// 四档主导性：burst=debt=0 时 priority == w_tier（ℓ*=0 项恒 1），
 /// 1000/100/1/0.1 数量级隔离。
@@ -84,7 +84,7 @@ fn priority_debt_suppression_exact() {
     );
 }
 
-// ============ AdmissionState 行为 ============
+// AdmissionState 行为
 
 fn vendor_config(id: &str, max_concurrent: Option<usize>) -> fluxgate::config::VendorConfig {
     common::ensure_test_api_key();
@@ -277,7 +277,7 @@ async fn congested_without_in_flight_tiers_admits_conservatively() {
         (2, 2),
         "前置：占用率 1.0 ≥ 0.9 拥塞信号成立"
     );
-    // 无任何 admission guard 在途 → min_in_flight_weight() == None
+    // 无任何 admission guard 在途 → min_in_flight_weight == None
     for tier in [
         AuthTier::Dedicated,
         AuthTier::Guaranteed,
@@ -407,7 +407,7 @@ fn tier_for_request_resolves_auth_keys_table() {
     );
 }
 
-// ============ 全链路集成（create_router，rate_limit_test 同模式）============
+// 全链路集成（create_router，rate_limit_test 同模式）
 
 mod full_chain {
     use crate::common;

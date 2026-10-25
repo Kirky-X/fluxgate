@@ -172,7 +172,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    // ============ 组键解析 ============
+    // 组键解析
 
     #[test]
     fn group_key_uses_declared_group_trimmed_or_singleton() {
@@ -193,7 +193,7 @@ mod tests {
         );
     }
 
-    // ============ pin_or_get 首写者胜 ============
+    // pin_or_get 首写者胜
 
     #[test]
     fn pin_or_get_converges_first_writing() {
@@ -244,7 +244,7 @@ mod tests {
         );
     }
 
-    // ============ 维度 record_and_check ============
+    // 维度 record_and_check
 
     #[test]
     fn record_and_check_first_seen_passes_then_mismatch_errs_with_both_values() {
@@ -289,7 +289,7 @@ mod tests {
         );
     }
 
-    // ============ clear_all / clear_one / list ============
+    // clear_all / clear_one / list
 
     #[test]
     fn clear_all_resets_pins_and_dimension_records() {

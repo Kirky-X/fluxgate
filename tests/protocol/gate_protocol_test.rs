@@ -238,7 +238,7 @@ mod converter {
         assert_eq!(parsed.choices.len(), 1);
     }
 
-    // ==================== Tool Calling Tests ====================
+    // Tool Calling Tests
 
     #[tokio::test]
     async fn test_openai_to_unified_with_tools() {
@@ -280,7 +280,7 @@ mod converter {
         assert!(unified.tool_choice.is_some());
     }
 
-    // ==================== Tool Schema Limits ====================
+    // Tool Schema Limits
 
     #[tokio::test]
     async fn test_openai_to_unified_rejects_oversized_tool_schema() {
@@ -544,7 +544,7 @@ mod converter {
         }
     }
 
-    // ==================== 流式转换与 SSE 增量分帧====================
+    // 流式转换与 SSE 增量分帧
 
     use fluxgate::protocol::sse_frame::SseFrameParser;
 
@@ -789,7 +789,7 @@ mod converter {
         }
     }
 
-    // ==================== 协议断点修复====================
+    // 协议断点修复
 
     use fluxgate::protocol::Role;
 
@@ -1126,7 +1126,7 @@ mod converter {
         );
     }
 
-    // ==================== 覆盖缺口补测：AnthropicConverter 边角分支 ====================
+    // 覆盖缺口补测：AnthropicConverter 边角分支
 
     use fluxgate::protocol::{
         Choice, ContentBlock, ImageSource, Message, MessageContent, TokenUsage, Tool, ToolCall,
@@ -1973,7 +1973,7 @@ mod converter {
         assert_eq!(blocks[1]["input"], json!({"city": "BJ"}));
     }
 
-    // ==================== 覆盖缺口补测：OpenAIConverter 边角分支 ====================
+    // 覆盖缺口补测：OpenAIConverter 边角分支
 
     #[tokio::test]
     async fn test_openai_converter_default() {
@@ -2538,7 +2538,7 @@ mod converter {
         ));
     }
 
-    // ==================== ProtocolConverter trait 默认方法契约 ====================
+    // ProtocolConverter trait 默认方法契约
 
     /// can_passthrough 仅在同协议时为真；透传方法原样返回请求/响应体。
     #[tokio::test]
@@ -2566,7 +2566,7 @@ mod converter {
         );
     }
 
-    // ==================== IR 一次补全 ====================
+    // IR 一次补全
 
     use fluxgate::protocol::{EffortLevel, FinishReason, SamplingParams, ThinkingConfig};
 
@@ -2582,7 +2582,7 @@ mod converter {
         }
     }
 
-    // ---- OpenAI：effort / vendor_extensions ----
+    // OpenAI：effort / vendor_extensions
 
     /// 入站 reasoning_effort → effort；未识别字段吸收进 vendor_extensions；出站双通道透传。
     #[tokio::test]
@@ -2744,7 +2744,7 @@ mod converter {
         assert!(out.get("system").is_none());
     }
 
-    // ---- OpenAI：usage cache token + finish_reason 结构化 ----
+    // OpenAI：usage cache token + finish_reason 结构化
 
     /// 入站：prompt_tokens_details.cached_tokens → cache_read_tokens
     ///（OpenAI 无 cache_creation 概念 → 0）；finish_reason 已知词双写结构化槽。
@@ -2882,7 +2882,7 @@ mod converter {
         }
     }
 
-    // ---- OpenAI：StreamChunk::ToolCall ----
+    // OpenAI：StreamChunk::ToolCall
 
     /// 出站 ToolCall → OpenAI delta.tool_calls 片段（首片段带 id/name）。
     #[tokio::test]
@@ -2940,7 +2940,7 @@ mod converter {
         }
     }
 
-    // ---- OpenAI：ImageSource::Url 保真 ----
+    // OpenAI：ImageSource::Url 保真
 
     /// 入站 https URL → Url 形态；data URI → Base64；出站 Url 直出 url 字段。
     #[tokio::test]
@@ -3007,7 +3007,7 @@ mod converter {
         assert_eq!(blocks[1]["image_url"]["url"], "data:image/jpeg;base64,aGk=");
     }
 
-    // ---- Anthropic：system_prompt 双写与合并 ----
+    // Anthropic：system_prompt 双写与合并
 
     /// 入站顶层 system → Role::System 消息 + system_prompt 回填（string 与 blocks 数组）。
     #[tokio::test]
@@ -3088,7 +3088,7 @@ mod converter {
         );
     }
 
-    // ---- Anthropic：usage cache token ----
+    // Anthropic：usage cache token
 
     /// 入站：cache_read_input_tokens/cache_creation_input_tokens → IR cache 字段。
     #[tokio::test]
@@ -3165,7 +3165,7 @@ mod converter {
         assert!(out["usage"].get("cache_creation_input_tokens").is_none());
     }
 
-    // ---- Anthropic：finish_reason 结构化（非流式全映射 + 流式 Stop/ToolCalls）----
+    // Anthropic：finish_reason 结构化（非流式全映射 + 流式 Stop/ToolCalls）
 
     /// 非流式：stop_reason → finish 结构化槽四变体映射（含未知词不猜变体）。
     #[tokio::test]
@@ -3265,7 +3265,7 @@ mod converter {
         }
     }
 
-    // ---- Anthropic：tool_choice 原生形状 ----
+    // Anthropic：tool_choice 原生形状
 
     /// 入站 Anthropic 原生 any/tool/auto/none → IR；标量兜底 auto。
     #[tokio::test]
@@ -3345,7 +3345,7 @@ mod converter {
         );
     }
 
-    // ---- Anthropic：thinking_config / top_k / effort / vendor_extensions ----
+    // Anthropic：thinking_config / top_k / effort / vendor_extensions
 
     /// thinking enabled+budget → Enabled；出站 Enabled → thinking 块；Adaptive/Disabled 省略。
     #[tokio::test]
@@ -3465,7 +3465,7 @@ mod converter {
         assert_eq!(out["model"], "claude", "扩展键不得覆写协议关键键");
     }
 
-    // ---- Anthropic：StreamChunk::ToolCall ----
+    // Anthropic：StreamChunk::ToolCall
 
     /// 入站 content_block_start(tool_use) 与 input_json_delta → ToolCall 片段（多 index 交错）。
     #[tokio::test]
@@ -3551,7 +3551,7 @@ mod converter {
         assert_eq!(out["delta"]["partial_json"], ":5}");
     }
 
-    // ---- Anthropic：ImageSource::Url ----
+    // Anthropic：ImageSource::Url
 
     /// 入站：source type url → Url 形态；出站 Url → {"type":"url","url"}。
     #[tokio::test]
@@ -3596,7 +3596,7 @@ mod converter {
         );
     }
 
-    // ==================== 流式工具链 golden（表示统一） ====================
+    // 流式工具链 golden（表示统一）
 
     use std::collections::BTreeMap;
 
@@ -4173,7 +4173,7 @@ mod converter {
         );
     }
 
-    // ==================== 协议边界场景补测 ====================
+    // 协议边界场景补测
 
     /// 入站：model 混合大小写 → to_lowercase 归一（路由按小写匹配模型目录）。
     #[tokio::test]
@@ -4554,7 +4554,7 @@ mod unified {
     use fluxgate::protocol::*;
     use serde_json::json;
 
-    // ==================== Role Tests ====================
+    // Role Tests
 
     #[test]
     fn test_role_serialize() {
@@ -4594,7 +4594,7 @@ mod unified {
         assert_ne!(Role::Assistant, Role::Tool);
     }
 
-    // ==================== MessageContent Tests ====================
+    // MessageContent Tests
 
     #[test]
     fn test_message_content_text_default() {
@@ -4679,7 +4679,7 @@ mod unified {
         assert_eq!(json["toolCalls"][0]["id"], "call_1");
     }
 
-    // ==================== Message Tests ====================
+    // Message Tests
 
     #[test]
     fn test_message_basic_serialize() {
@@ -4724,7 +4724,7 @@ mod unified {
         assert_eq!(json["content"]["content"], "Sunny, 25C");
     }
 
-    // ==================== UnifiedRequest Tests ====================
+    // UnifiedRequest Tests
 
     #[test]
     fn test_unified_request_minimal() {
@@ -4831,7 +4831,7 @@ mod unified {
         assert!(req.user.is_none());
     }
 
-    // ==================== UnifiedResponse Tests ====================
+    // UnifiedResponse Tests
 
     #[test]
     fn test_unified_response_basic() {
@@ -4902,7 +4902,7 @@ mod unified {
         assert_eq!(resp.usage.total_tokens, 0);
     }
 
-    // ==================== TokenUsage Tests ====================
+    // TokenUsage Tests
 
     #[test]
     fn test_token_usage_default() {
@@ -4930,7 +4930,7 @@ mod unified {
         assert_eq!(json["cache_creation_tokens"], 3);
     }
 
-    // ==================== Tool / ToolFunction / ToolParameters Tests ====================
+    // Tool / ToolFunction / ToolParameters Tests
 
     #[test]
     fn test_tool_default() {
@@ -5131,7 +5131,7 @@ mod unified {
         assert_eq!(native["choices"], json!([]), "原生透传保持空 choices");
     }
 
-    // ==================== ToolChoice Tests ====================
+    // ToolChoice Tests
 
     #[test]
     fn test_tool_choice_strategy() {
@@ -5172,7 +5172,7 @@ mod unified {
         }
     }
 
-    // ==================== ToolCall / ToolCallFunction / ToolResult Tests ====================
+    // ToolCall / ToolCallFunction / ToolResult Tests
 
     #[test]
     fn test_tool_call_roundtrip() {
@@ -5220,7 +5220,7 @@ mod unified {
         assert!(!deserialized.is_error);
     }
 
-    // ==================== StreamChunk Tests ====================
+    // StreamChunk Tests
 
     #[test]
     fn test_stream_chunk_content() {
@@ -5280,7 +5280,7 @@ mod unified {
         assert!(matches!(deserialized, StreamChunk::Heartbeat));
     }
 
-    // ==================== Embedding Tests ====================
+    // Embedding Tests
 
     #[test]
     fn test_embedding_response_roundtrip() {
@@ -5323,7 +5323,7 @@ mod unified {
         assert_eq!(json["embedding"][0], 0.5);
     }
 
-    // ==================== ImageSource / ToolParameterProperty Tests ====================
+    // ImageSource / ToolParameterProperty Tests
 
     #[test]
     fn test_image_source_serialize() {

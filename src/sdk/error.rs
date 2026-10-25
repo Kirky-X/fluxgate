@@ -3,7 +3,7 @@
 
 //! SDK 统一错误类型。
 //!
-//! - `reqwest::Error` 手写分流：`is_timeout()` → [`FluxgateSdkError::Timeout`]，
+//! - `reqwest::Error` 手写分流：`is_timeout` → [`FluxgateSdkError::Timeout`]，
 //!   其余 → [`FluxgateSdkError::Network`]（`#[from]` 只能标注一个变体，手写
 //!   实现保证既有 `?` 调用点零改动且超时可判别）。
 //! - HTTP 非 2xx 统一构造 [`ApiError`]：status/kind/message/code/param/

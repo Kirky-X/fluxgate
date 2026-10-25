@@ -617,7 +617,7 @@ concurrency = { requests_per_second = 1 }
     }
 
     // ③ 合法摘要形态放行：64 位小写十六进制（认证侧 sha256_hex 的输出
-    //    形态）过形态关逐位可用
+    // 形态）过形态关逐位可用
     let digest = "a".repeat(64);
     let path = temp_toml(
         "strong-api-key.toml",

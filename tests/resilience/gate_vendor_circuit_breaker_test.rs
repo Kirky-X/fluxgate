@@ -7,7 +7,7 @@
 //! 实时化于 get_status（持久回写会造成「路由排除→无探针→永不恢复」死锁）。
 //!
 //! 集成属性：
-//! 1. 熔断后 route() 不再选中该 vendor（路由过滤接线断言）
+//! 1. 熔断后 route 不再选中该 vendor（路由过滤接线断言）
 //! 2. VendorState 的 Unavailable 状态直接参与路由过滤（update_status 用例）
 
 #![cfg(all(feature = "resilience", feature = "router"))]
@@ -84,7 +84,7 @@ const OPENAI_SUCCESS_BODY: &str = r#"{
 }"#;
 
 /// mockito 预置 5 次 Fatal 失败（4xx，无内部重试）自然驱动熔断；
-/// 随后 route() 不再选中该 vendor（路由过滤接线断言），
+/// 随后 route 不再选中该 vendor（路由过滤接线断言），
 /// 而 vendor_b 的 HTTP 路径不受影响（per-vendor 隔离）。
 #[tokio::test]
 async fn circuit_opens_after_five_failures_and_route_excludes_vendor() {
@@ -143,7 +143,7 @@ async fn circuit_opens_after_five_failures_and_route_excludes_vendor() {
         "worker 回写让同步 get_status 感知熔断"
     );
 
-    // 路由过滤接线：vendor_a 已 Unavailable → route() 只会选中 vendor_b
+    // 路由过滤接线：vendor_a 已 Unavailable → route 只会选中 vendor_b
     for _ in 0..50 {
         let decision = router.route("gpt-4").await.expect("vendor_b should route");
         assert_eq!(
@@ -221,7 +221,7 @@ async fn open_circuit_rejects_requests_fast_without_http() {
 }
 
 /// 路由过滤直接由 VendorState 驱动：update_status(Unavailable) 后
-/// route() 排除该 vendor，恢复 Available 后重新可被选中。
+/// route 排除该 vendor，恢复 Available 后重新可被选中。
 #[tokio::test]
 async fn route_filter_follows_vendor_state_directly() {
     let mut server_a = mockito::Server::new_async().await;

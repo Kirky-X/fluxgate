@@ -7,7 +7,7 @@
 //! 1. 并发 1000 次 record(0.01) 后 total_usd ≈ 10.0（容差 0.01）
 //! 2. by_vendor_usd 累加正确，且 == total_usd（仅 openai vendor 时）
 //! 3. by_model_usd 累加正确
-//! 4. snapshot() 含 total_usd + by_vendor + by_model 三组字段
+//! 4. snapshot 含 total_usd + by_vendor + by_model 三组字段
 //! 5. record(0.0) 不改变 total_usd
 //! 6. 跨 vendor/model 隔离 — 不同 vendor 独立计数
 

@@ -971,7 +971,7 @@ mod tests {
 
     /// 新增 IR 块型在 Gemini 三路径（请求/流式/响应共享 `block_to_part`）
     /// 的显式映射：Document → inlineData/fileData、Audio → inlineData；
-    /// 无 Debug 字符串泄漏（T033）。
+    /// 无 Debug 字符串泄漏。
     #[test]
     fn document_and_audio_blocks_map_to_gemini_parts() {
         use crate::protocol::{ContentBlock, ImageSource};

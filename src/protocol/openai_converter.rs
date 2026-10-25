@@ -81,7 +81,6 @@ impl ProtocolConverter for OpenAIConverter {
             .map(parse_openai_message)
             .collect::<Result<Vec<_>, _>>()?;
 
-        // 解析工具定义
         let tools: Vec<Tool> = body
             .get("tools")
             .and_then(|v| v.as_array())
@@ -90,7 +89,6 @@ impl ProtocolConverter for OpenAIConverter {
         // 工具 schema 体积/深度上限（A3 审查 F4 纵深）：超限请求级 400
         validate_tool_schemas(&tools)?;
 
-        // 解析工具选择策略
         let tool_choice = body.get("tool_choice").map(parse_tool_choice);
 
         // reasoning_effort → effort（全词表 none/minimal/low/medium/high/
@@ -223,7 +221,6 @@ impl ProtocolConverter for OpenAIConverter {
             "messages": messages,
         });
 
-        // 添加工具定义
         if !tools.is_empty() {
             let tools: Vec<Value> = tools
                 .iter()
@@ -233,7 +230,6 @@ impl ProtocolConverter for OpenAIConverter {
             body["tools"] = json!(tools);
         }
 
-        // 添加工具选择策略
         if let Some(tool_choice) = tool_choice {
             body["tool_choice"] = tool_choice_to_openai(tool_choice);
         }
@@ -375,7 +371,6 @@ impl ProtocolConverter for OpenAIConverter {
     }
 
     fn parse_response(&self, response: Value) -> Result<UnifiedResponse, GateError> {
-        // Check for error response
         if let Some(error_obj) = response.get("error").and_then(|v| v.as_object()) {
             let message = error_obj
                 .get("message")
@@ -1108,7 +1103,6 @@ fn parse_string_content(json: &Value, role: &Role, s: &str) -> MessageContent {
 /// Array content：含工具调用块 → ToolCalls（解析为空回退 MultiModal）；
 /// 纯多模态块 → MultiModal。
 fn parse_array_content(arr: &[Value]) -> MessageContent {
-    // 检查是否包含工具调用块
     let has_tool_calls = arr.iter().any(|block| {
         block.get("type").and_then(|t| t.as_str()) == Some("tool_call")
             || block.get("function").is_some()
@@ -1531,7 +1525,7 @@ fn parse_tool_call(json: &Value) -> Option<ToolCall> {
 /// 提取工具调用参数字符串（OpenAI 规范 arguments 为含 JSON 文本的字符串）。
 ///
 /// 字符串原样取用；非字符串形状（对象等）保留其 JSON 表示。不可对任意
-/// `Value` 直接 `to_string()` —— 它会序列化整个值，把字符串再包一层
+/// `Value` 直接 `to_string` —— 它会序列化整个值，把字符串再包一层
 /// 引号造成双重编码（IR 中 arguments 损坏，出站 `input` 退化为字符串）。
 fn arguments_as_string(value: Option<&Value>) -> Option<String> {
     match value {

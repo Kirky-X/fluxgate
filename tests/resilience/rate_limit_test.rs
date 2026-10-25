@@ -29,7 +29,7 @@ use tower::ServiceExt;
 #[path = "../common/mod.rs"]
 mod common;
 
-// ==================== 配置解析 ====================
+// 配置解析
 
 /// [[rate_limit.rules]] 解析：字段形态与 per_tenant 缺省 true（Red：
 /// Config 无 rate_limit 字段时本测试编译失败）。
@@ -76,7 +76,7 @@ concurrency = { requests_per_second = 1 }
     assert_eq!(config.rate_limit.rules[1].path, None);
 }
 
-// ==================== 运行时行为 ====================
+// 运行时行为
 
 fn rate_rule(id: &str, path: Option<&str>, max_requests: u64) -> RateLimitRule {
     RateLimitRule {

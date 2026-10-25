@@ -21,7 +21,7 @@ pub struct ApiState {
     /// 请求日志存储后端（N2 存储缝）：admin 读（logs/search/token_stats）
     /// 与直写兜底经 trait 注入，bootstrap 恒接线 Database 实现
     pub database: Arc<dyn RequestLogSink>,
-    /// 异步日志管道前沿 — handler 对其 `log()` push 即返回
+    /// 异步日志管道前沿 — handler 对其 `log` push 即返回
     /// （try_send 背压，满即丢并计数）；None = 未接线（部分测试场景降级
     /// 为不落日志）。
     pub logger: Option<Arc<dyn RequestLogSink>>,

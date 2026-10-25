@@ -9,7 +9,7 @@ use fluxgate::api::sse::{
 use futures::StreamExt;
 use std::time::Duration;
 
-// ==================== 编码器 ====================
+// 编码器
 
 #[test]
 fn encodes_plain_data_without_event() {
@@ -41,7 +41,7 @@ fn encodes_error_event_terminates_with_double_newline() {
     assert!(out.ends_with("\n\n"));
 }
 
-// ==================== SseFrameParser（阶段一） ====================
+// SseFrameParser（阶段一）
 
 /// `data: {"a":1}` 劈两半喂入 → 恰出一完整帧。
 #[test]
@@ -180,7 +180,7 @@ fn comment_only_frame_has_no_data() {
     assert_eq!(frames[0].data, None);
 }
 
-// ==================== 错误帧检测（依赖） ====================
+// 错误帧检测（依赖）
 
 #[test]
 fn error_event_frame_detected() {
@@ -232,7 +232,7 @@ fn illegal_json_data_without_event_is_not_error() {
     assert!(!frames[0].is_error(), "解析失败的 data 不得误报为错误帧");
 }
 
-// ==================== reframe_passthrough_stream 集成 ====================
+// reframe_passthrough_stream 集成
 
 fn collect_frames(parser: &mut SseFrameParser) -> Vec<SseFrame> {
     let mut frames = Vec::new();
@@ -376,7 +376,7 @@ async fn reframe_passthrough_empty_stream_ends_promptly() {
     assert!(started.elapsed() < Duration::from_secs(1), "空流应立即结束");
 }
 
-// ==================== 覆盖补缺：SDK 客户端（chat / chat_stream / admin / builder） ====================
+// 覆盖补缺：SDK 客户端（chat / chat_stream / admin / builder）
 //
 // 从 tests/ 集成侧用 mockito 锁定 SDK wire 行为：响应解析、路由 hint、
 // 强制 stream=true、URL join 失败、read_timeout 拦截与 Debug 脱敏。
@@ -401,7 +401,7 @@ mod sdk_client_coverage {
     // 网关真实形状——无 vendor 键（response_to_external 不产出）
     const CHAT_OK_BODY: &str = r#"{"id":"chatcmpl-1","model":"gpt-4","choices":[{"message":{"role":"assistant","content":"Hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
 
-    // -------- builder 构造与 Debug 脱敏 --------
+    // builder 构造与 Debug 脱敏
 
     /// 缺 base_url / URL 非法 / 缺 api_key → Config 错误显性化，不 panic。
     #[test]
@@ -460,7 +460,7 @@ mod sdk_client_coverage {
             .unwrap()
     }
 
-    // -------- chat 非流式 --------
+    // chat 非流式
 
     /// chat 成功：字段逐一映射（id/model/content/usage/vendor/finish_reason）。
     #[tokio::test]
@@ -648,7 +648,7 @@ mod sdk_client_coverage {
         }
     }
 
-    // -------- chat_stream 流式 --------
+    // chat_stream 流式
 
     /// chat_stream 成功：SSE 分帧解码为 chunk、[DONE] 过滤、wire body 强制
     /// stream=true（请求未设也强制）、hint header 照带。
@@ -765,7 +765,7 @@ mod sdk_client_coverage {
         }
     }
 
-    // -------- admin / models / health --------
+    // admin / models / health
 
     /// models / vendors / health 成功路径：响应结构逐一反序列化。
     #[tokio::test]
@@ -879,7 +879,7 @@ mod sdk_client_coverage {
         }
     }
 
-    // -------- 读超时（连接停滞拦截） --------
+    // 读超时（连接停滞拦截）
 
     /// 裸 TCP 服务器：accept 后延迟 delay 才回（半）响应。返回 base_url。
     async fn spawn_delayed_server(delay: Duration) -> String {

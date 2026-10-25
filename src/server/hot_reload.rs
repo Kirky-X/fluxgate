@@ -574,7 +574,7 @@ concurrency = { requests_per_second = 1 }
         assert_eq!(manager.read().retry.max_retries, 20, "写回已生效");
     }
 
-    // ---- changed_sections 全段名覆盖（retry 臂由既有热更用例覆盖）----
+    // changed_sections 全段名覆盖（retry 臂由既有热更用例覆盖）
 
     #[test]
     fn changed_sections_lists_each_changed_segment() {
@@ -694,7 +694,7 @@ concurrency = { requests_per_second = 1 }
         assert!(ConfigProvider::keys(&provider).is_empty());
     }
 
-    // ---- maybe_start_hot_reload 启动门控与失败重载 ----
+    // maybe_start_hot_reload 启动门控与失败重载
 
     fn reload_toml(max_retries: u32) -> String {
         format!(

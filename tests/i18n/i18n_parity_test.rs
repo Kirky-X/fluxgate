@@ -508,7 +508,7 @@ fn call_site_arguments_cover_registered_placeholders() {
             }
             let placeholders = &registry[&key];
             match shape {
-                // `t()` 形：键带占位符必漏参（运行时渲染裸 `{$名}` 句柄）
+                // `t` 形：键带占位符必漏参（运行时渲染裸 `{$名}` 句柄）
                 None => {
                     if !placeholders.is_empty() {
                         failures.push(format!(
@@ -517,7 +517,7 @@ fn call_site_arguments_cover_registered_placeholders() {
                         ));
                     }
                 }
-                // `t_args()` 字面形：FTL 占位符必须全部被实参覆盖（多余的实参
+                // `t_args` 字面形：FTL 占位符必须全部被实参覆盖（多余的实参
                 // Fluent 无害忽略，不判失败；漏传则静默渲染裸句柄）
                 Some(names) => {
                     let missing: BTreeSet<String> =

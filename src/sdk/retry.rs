@@ -70,7 +70,7 @@ pub(crate) fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
 
 /// 指数退避 + 抖动：`min(initial * 2^attempt, max) × factor`，其中
 /// `factor = 1 - 0.25 × seed_fraction ∈ [0.75, 1.0]`——对齐官方
-/// `1 - 0.25 * random()`（抖动只减速不加速，避免重试风暴叠加）。
+/// `1 - 0.25 * random`（抖动只减速不加速，避免重试风暴叠加）。
 pub(crate) fn backoff(policy: &RetryPolicy, attempt: u32, jitter_seed: u64) -> Duration {
     let multiplier = 1u32.checked_shl(attempt.min(31)).unwrap_or(u32::MAX);
     let capped = policy.initial.saturating_mul(multiplier).min(policy.max);

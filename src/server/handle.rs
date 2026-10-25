@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! 停机收尾句柄：flush 管道收尾暴露给嵌入式调用方（`build_app` 产物），
-//! 收尾顺序与 `run()` 共用同一实现。
+//! 收尾顺序与 `run` 共用同一实现。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,11 +19,11 @@ pub struct ServerHandle {
     pre_aggregator: Arc<TokenPreAggregator>,
     pa_shutdown: Arc<AtomicBool>,
     done: AtomicBool,
-    /// inklog 关闭钩子（`run()` 注入 manager；嵌入式未注入时收尾阶段 no-op）。
+    /// inklog 关闭钩子（`run` 注入 manager；嵌入式未注入时收尾阶段 no-op）。
     inklog_hook: std::sync::OnceLock<Option<InklogShutdownHook>>,
     /// 热重载守护（装配期启动；随句柄存活，drop 即停止监听）。
     hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
-    /// 健康探针任务句柄（装配期按 [health].mode 启动；shutdown() 首阶段 abort）。
+    /// 健康探针任务句柄（装配期按 [health].mode 启动；shutdown 首阶段 abort）。
     probe_handle: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "grpc")]
     grpc_server: std::sync::OnceLock<Option<crate::server::grpc::GrpcServer>>,

@@ -296,7 +296,7 @@ impl ConfigManager {
         let tmp_path = parent.join(tmp_name);
 
         // 3.5 更新留痕：落盘前把当前配置快照到 config-backups/。尽力而为——
-        //     快照失败只记 warn，不阻塞合法更新（主回滚手段仍是 tmp+rename 原子性）。
+        // 快照失败只记 warn，不阻塞合法更新（主回滚手段仍是 tmp+rename 原子性）。
         snapshot_current_config(self, &path);
 
         if let Err(e) = std::fs::write(&tmp_path, content) {
@@ -336,7 +336,7 @@ impl ConfigManager {
         }
 
         // 4. 磁盘落定后才切换内存态（触发 on_change 回调），并把磁盘现值
-        //    记为新的指纹基线（下次写回以此判外部编辑）
+        // 记为新的指纹基线（下次写回以此判外部编辑）
         if let Some(fingerprint) = self.file_fingerprint(&path) {
             *self
                 .disk_fingerprint
@@ -613,7 +613,7 @@ mod tests {
         manager
             .update_config(sample_config("v2"))
             .expect("update ok");
-        // ③ update 后 read() 立即可见（DynamicField 语义）
+        // ③ update 后 read 立即可见（DynamicField 语义）
         assert!(manager.get_vendor("v2").is_some());
         assert!(manager.get_vendor("v1").is_none());
         // 磁盘已写回同一路径
@@ -784,7 +784,7 @@ mod tests {
 
     /// 应用成功钩子：update_config（落盘路径）与 swap_memory（热载路径）都在
     /// 内存态切换后触发；校验失败的应用内存态未切换，钩子不得触发
-    ///（嵌入 pin 清空即挂在此钩子上——见 T007 接线）
+    ///（嵌入 pin 清空即挂在此钩子上——见  接线）
     #[test]
     fn test_swap_hooks_fire_on_successful_apply_only() {
         use std::sync::atomic::AtomicUsize;

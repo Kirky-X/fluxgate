@@ -887,7 +887,7 @@ mod admin {
         let config = create_test_config();
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
-        // 初始化厂商实例，使 get_all_status() 能返回数据
+        // 初始化厂商实例，使 get_all_status 能返回数据
         vendor_manager.initialize().await.unwrap();
 
         let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
@@ -1730,7 +1730,7 @@ mod streaming_error_propagation {
     }
 }
 
-// ============ 日志管道接线（异步批量 + token 语义 + 失败落库） ============
+// 日志管道接线（异步批量 + token 语义 + 失败落库）
 
 #[cfg(test)]
 mod logging_pipeline {
@@ -2244,7 +2244,7 @@ mod logging_pipeline {
     }
 }
 
-// ============ embeddings 回归供应商治理 ============
+// embeddings 回归供应商治理
 
 #[cfg(test)]
 mod embeddings_governance {
@@ -2387,8 +2387,8 @@ mod embeddings_governance {
     }
 
     /// ① embeddings 经 mockito 成功 → 响应透传，且
-    /// metrics.snapshot().vendors 含该 vendor requests==1（治理接线证明：
-    /// 旧实现每请求 reqwest::Client::new() 不计 metrics）。
+    /// metrics.snapshot.vendors 含该 vendor requests==1（治理接线证明：
+    /// 旧实现每请求 reqwest::Client::new 不计 metrics）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn embeddings_success_passthrough_and_counts_metrics() {
         let mut server = mockito::Server::new_async().await;
@@ -2683,7 +2683,7 @@ mod embeddings_governance {
         mock.assert_async().await;
     }
 
-    /// ⑥ T008 admin pin 管理：GET 列表反映嵌入请求建立的 pin；POST 单条重置
+    /// ⑥  admin pin 管理：GET 列表反映嵌入请求建立的 pin；POST 单条重置
     /// 幂等（存在→cleared=true 且计数，不存在→cleared=false 不计数）；重置后
     /// 下一请求按权重重新粘着（等权双厂商有界轮询内必现换厂商）
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2866,7 +2866,7 @@ mod embeddings_governance {
     }
 }
 
-// ============ 精确响应缓存（oxcache，租户隔离键 + 确定性门控） ============
+// 精确响应缓存（oxcache，租户隔离键 + 确定性门控）
 
 #[cfg(test)]
 mod response_cache_tests {
@@ -3262,7 +3262,7 @@ mod response_cache_tests {
     }
 }
 
-// ============ handler→奖励臂键全链 ============
+// handler→奖励臂键全链
 
 #[cfg(test)]
 mod linucb_reward_chain {
@@ -3423,7 +3423,7 @@ mod linucb_reward_chain {
     }
 }
 
-// ============ [global_model].enabled 开关：HTTP 面语义 ============
+// [global_model].enabled 开关：HTTP 面语义
 
 #[cfg(test)]
 mod global_model_switch {
@@ -3554,7 +3554,7 @@ mod global_model_switch {
     }
 }
 
-// ============ handler 层行覆盖补齐：错误路径 / 流式 / 缓存 / 亲和 / admin ============
+// handler 层行覆盖补齐：错误路径 / 流式 / 缓存 / 亲和 / admin
 //
 // 针对 cargo-llvm-cov 实测的 src/api/* 未覆盖区间设计：每个测试让具体
 // 分支真正走进去（cover_all_paths 换路、流式透传、缓存 HIT/MISS、
@@ -3848,7 +3848,7 @@ mod api_handler_coverage {
         )
     }
 
-    // ---- anthropic.rs：透传流式（cover_all_paths 开/关 × 成功/失败）----
+    // anthropic.rs：透传流式（cover_all_paths 开/关 × 成功/失败）
 
     /// 透传流式成功（cover_all_paths 关）：上游 SSE 帧原样转发给客户端，
     /// 响应为 text/event-stream 且保留上游事件内容。
@@ -3981,7 +3981,7 @@ mod api_handler_coverage {
         mock.assert_async().await;
     }
 
-    // ---- anthropic.rs：透传非流式缓存 HIT/MISS + cover_all_paths ----
+    // anthropic.rs：透传非流式缓存 HIT/MISS + cover_all_paths
 
     /// 透传非流式 + 响应缓存：首次 MISS（回写缓存并带 X-Cache: MISS），
     /// 第二次 HIT（上游仅 1 次，响应体与首次一致）。
@@ -4182,7 +4182,7 @@ mod api_handler_coverage {
         untouched.assert_async().await;
     }
 
-    // ---- anthropic.rs：转换路径（流式 cover_all_paths、非流式缓存/错误）----
+    // anthropic.rs：转换路径（流式 cover_all_paths、非流式缓存/错误）
 
     /// 转换流式成功（cover_all_paths 开）：OpenAI 上游 SSE 经 IR 重建为
     /// 完整 Anthropic 生命周期事件（message_start → … → message_stop）。
@@ -4579,7 +4579,7 @@ mod api_handler_coverage {
         mock.assert_async().await;
     }
 
-    // ---- completions.rs：转换流式（anthropic vendor）、cover_all_paths、缓存 ----
+    // completions.rs：转换流式（anthropic vendor）、cover_all_paths、缓存
 
     /// 转换流式成功（cover_all_paths 关）：Anthropic 上游 SSE 经 IR 重建为
     /// OpenAI chunk 事件并以 [DONE] 收尾，文本完整。
@@ -5126,7 +5126,7 @@ mod api_handler_coverage {
         mock.assert_async().await;
     }
 
-    // ---- completions.rs：embeddings（预聚合记账 + Protocol 门 + logger 降级）----
+    // completions.rs：embeddings（预聚合记账 + Protocol 门 + logger 降级）
 
     /// embeddings 成功且 usage 三元齐全：预聚合器记账（flush 后 token_stats
     /// 非空）；logger 已 shutdown 时 warn 降级不影响响应。
@@ -5226,7 +5226,7 @@ mod api_handler_coverage {
         assert_eq!(body["error"]["type"], "protocol_error");
     }
 
-    // ---- 放大守门器（gate_adjusted_max_attempts 经 cover_all_paths 入口）----
+    // 放大守门器（gate_adjusted_max_attempts 经 cover_all_paths 入口）
 
     /// gate=true + 超阈观测（r=1, f=1）：本请求尝试预算收紧到 1 —— 首次
     /// 失败即放弃，健康 vendor 零触达；发散（r·f>0.95）与收紧 warn 同时
@@ -5368,7 +5368,7 @@ mod api_handler_coverage {
         ok_mock.assert_async().await;
     }
 
-    // ---- 全候选限流（handler 入口 → AllVendorsThrottled 429 + Retry-After）----
+    // 全候选限流（handler 入口 → AllVendorsThrottled 429 + Retry-After）
 
     /// 双 vendor 均限流（max_tokens=0）+ fail-open + retry_after_hint：
     /// 转换路径（anthropic 型 vendor）首路由 fail-open 进入 fallback 循环，
@@ -5436,7 +5436,7 @@ mod api_handler_coverage {
         );
     }
 
-    // ---- 会话亲和 bind/rebind（mod.rs 亲和读写体）----
+    // 会话亲和 bind/rebind（mod.rs 亲和读写体）
 
     /// 流式派发成功回写亲和绑定（tenant_scoped 开）：键带租户维度，
     /// lookup(Some(tenant), session) 命中派发 vendor。
@@ -5612,7 +5612,7 @@ mod api_handler_coverage {
         mock.assert_async().await;
     }
 
-    // ---- 大 payload 截断 / ApiState Debug / LinUCB 奖励守卫 / 全局状态 ----
+    // 大 payload 截断 / ApiState Debug / LinUCB 奖励守卫 / 全局状态
 
     /// >64KB 的 messages 落库截断：按 UTF-8 字符边界截断并附截断标记
     ///（CJK 内容使 64KB 边界落在多字节字符内部，覆盖回退循环）。
@@ -5828,7 +5828,7 @@ mod api_handler_coverage {
         );
     }
 
-    // ---- admin 查询与配置端点 ----
+    // admin 查询与配置端点
     // （既有 admin 端点测试在上方 `mod admin`；本段是覆盖率补缺新增的
     // 查询/更新分支，找 admin 测试时两处都要看。）
 

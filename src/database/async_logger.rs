@@ -5,7 +5,7 @@
 //!
 //! 使用专用 channel 实现异步批量日志写入，提高性能。
 //!
-//! 改造后的背压语义：`log()` 经 `try_send` 入队——channel 满即丢
+//! 改造后的背压语义：`log` 经 `try_send` 入队——channel 满即丢
 //! 弃并计数（`dropped_logs`），**绝不阻塞响应路径**；消费侧单事务批量
 //! flush（见 `Repository::log_requests_batch`），停机时补最终 flush。
 
@@ -181,7 +181,7 @@ pub struct AsyncLogger {
     /// 暴露进 /admin/metrics（与背压丢弃分列，原因不同）
     secret_scan_dropped: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
-    /// writer_loop 任务句柄：shutdown() 取出并等待退出，
+    /// writer_loop 任务句柄：shutdown 取出并等待退出，
     /// 保证返回时补最终 flush 已落库
     writer: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -197,7 +197,7 @@ impl AsyncLogger {
         let secret_scan_dropped = Arc::new(AtomicU64::new(0));
 
         // 启动后台写入任务（masker/计数器 move 进消费侧：脱敏不占
-        // 响应路径——log() 的 try_send 前台零扫描开销）
+        // 响应路径——log 的 try_send 前台零扫描开销）
         let masker = Arc::new(outbound_masker());
         let loop_dropped = Arc::clone(&secret_scan_dropped);
         let writer = tokio::spawn(async move {
@@ -277,7 +277,7 @@ impl AsyncLogger {
         self.secret_scan_dropped.load(Ordering::Relaxed)
     }
 
-    /// 优雅关闭：置 closed 标志（后续 log() 拒绝）→ 发 Shutdown 命令 →
+    /// 优雅关闭：置 closed 标志（后续 log 拒绝）→ 发 Shutdown 命令 →
     /// 等待 writer_loop flush 剩余缓冲并退出——返回即最终 flush 已落库，
     /// 停机拆除顺序不依赖调用方自行估算宽限时长。
     pub async fn shutdown(&self) -> Result<(), FluxgateError> {
@@ -393,7 +393,6 @@ impl AsyncLogger {
                             }
                         }
                         Ok(LogCommand::Shutdown) => {
-                            // 关闭前刷新剩余日志
                             Self::flush_buffer(&repository, &mut buffer).await;
                             break;
                         }
@@ -447,7 +446,7 @@ impl AsyncLogger {
     }
 }
 
-/// 异步日志写入器句柄：Clone 的 sender + AtomicBool 关闭标志，log() 无锁直通
+/// 异步日志写入器句柄：Clone 的 sender + AtomicBool 关闭标志，log 无锁直通
 #[derive(Clone)]
 pub struct AsyncLoggerHandle {
     inner: AsyncLogger,
@@ -557,7 +556,7 @@ mod tests {
     async fn setup_repository() -> Arc<Repository> {
         let pool = DbPool::with_config(DbConfig {
             url: "sqlite::memory:".to_string(),
-            // rc.5 起 PoolConfig::default() 的 min_connections=5 且校验
+            // rc.5 起 PoolConfig::default 的 min_connections=5 且校验
             // min <= max，必须与 max_connections 一起显式给出
             pool_config: dbnexus::PoolConfig {
                 max_connections: 1,

@@ -265,7 +265,7 @@ fn config_toml_example_parses() {
         content.contains("http2_keepalive_interval_secs"),
         "config.example.toml 示例缺 http2_keepalive_interval_secs 键"
     );
-    // ---- 全量参考面：Config 结构体的每个段与可选字段都必须在示例出现 ----
+    // 全量参考面：Config 结构体的每个段与可选字段都必须在示例出现
     // 示例是随仓唯一参考，缺席即示例过期
     // 显式锚点（键级清单此前漏项；全量兜底见
     // config_toml_example_covers_full_key_surface）：词法压缩 / 难度定档 /

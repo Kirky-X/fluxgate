@@ -16,7 +16,7 @@ pub struct RerankRequest {
     pub model: String,
     pub query: String,
     pub documents: Vec<String>,
-    /// 缺省 = documents.len()（网关侧语义）
+    /// 缺省 = documents.len（网关侧语义）
     pub top_n: Option<usize>,
     /// 缺省 false；true 时响应回传文档文本
     pub return_documents: Option<bool>,

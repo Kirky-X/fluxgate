@@ -12,7 +12,7 @@ use crate::sdk::retry::{system_jitter_seed, RetryPolicy};
 ///
 /// 重试判定（对齐官方 SDK）：
 /// - 传输错误：`is_timeout` / `is_connect` / `is_request`；
-/// - API 错误：`ApiError::is_retryable()`（408/409/429/5xx；
+/// - API 错误：`ApiError::is_retryable`（408/409/429/5xx；
 ///   `x-should-retry` 显式否决/放行优先）。
 ///
 /// 延迟：上游 `Retry-After` 提示优先（截断到 `max_retry_after`），缺省

@@ -6,7 +6,7 @@
 //! 与认证挂载的最小行为契约。
 //!
 //! 断言矩阵（tower::ServiceExt::oneshot，无网络依赖）：
-//! 1. sdforge build() + create_router merge 不 panic（站点路由与 /v1 共存，
+//! 1. sdforge build + create_router merge 不 panic（站点路由与 /v1 共存，
 //!    回归"merge 冲突 duplicate-route panic"风险）
 //! 2. /api/v1/health → 200（sdforge #[forge(version="v1")] 注册的站点路由
 //!    在 merge 后可达；带版本前缀）

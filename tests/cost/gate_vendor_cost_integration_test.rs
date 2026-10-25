@@ -6,7 +6,7 @@
 //! 计价消费 [[model_catalog]]（四档含 cache；[[pricing]] 留 SLA 因子消费）。
 //!
 //! 验证属性：
-//! 1. mock 200 + usage 响应后 CostTracker::total_usd() > 0.0
+//! 1. mock 200 + usage 响应后 CostTracker::total_usd > 0.0
 //! 2. cost 值与目录计价公式一致（per 1M：prompt×in/1M + completion×out/1M；
 //!    openai 型 Inclusive 语义——本套无 cache 档，与旧 per-1k 公式数值等价：
 //!    per-1k 价 ×1000 = per-1M 价）

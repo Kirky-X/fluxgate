@@ -10,7 +10,7 @@
 //! V4 建 Responses 有状态表 response_store（input/output items + 父子链 +
 //! 会话分组 + 过期时间）。
 //! 已发布的迁移常量禁止改动（已部署库的历史行指向它们），新变更走新版本。
-//! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级） 。
+//! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级）。
 
 use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
 use sea_orm::DatabaseBackend;

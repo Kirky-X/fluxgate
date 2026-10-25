@@ -182,7 +182,7 @@ pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
         .unwrap_or(0));
     // 缓存统计：库侧全局计数即本进程响应缓存计数——本模块只建一个
     // oxcache `Cache`（response_cache），其默认指标记录器是
-    // `UnifiedMetricsRecorder::global()`，而亲和表走裸 backend 不记账。
+    // `UnifiedMetricsRecorder::global`，而亲和表走裸 backend 不记账。
     // 供 `[cache].l_target` 等按 /admin/metrics 分布调参读数。
     value["cache"] = serde_json::to_value(oxcache::get_enhanced_stats()).unwrap_or(Value::Null);
     Ok(Json(value))
@@ -363,7 +363,7 @@ pub async fn update_config(
     if old.cache.semantic != config.cache.semantic {
         restart_required.push("cache.semantic");
     }
-    // docs 开关是建站期挂载判定（create_router 内 `state.config.read().docs.enabled`
+    // docs 开关是建站期挂载判定（create_router 内 `state.config.read.docs.enabled`
     // 决定是否 merge swagger 路由），改后须重启；文件监听侧结构门同样拒绝该段
     //（hot_reload.rs "docs switch changed (router rebuild required)"）。
     if old.docs != config.docs {

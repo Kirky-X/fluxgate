@@ -1220,7 +1220,7 @@ concurrency = { requests_per_second = 1 }
         );
     }
 
-    // ---- [routing.difficulty] 校验（V1-V8）----
+    // [routing.difficulty] 校验（V1-V8）
 
     /// 组装含 [[vendors]] 与 [routing.difficulty] 的完整配置并解析
     ///（parse_config_content 解析即校验，难度校验错误在 Err 消息中点名字段）

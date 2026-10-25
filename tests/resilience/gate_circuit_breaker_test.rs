@@ -58,7 +58,7 @@ fn ok_op() -> impl FnOnce() -> std::future::Ready<Result<u32, GateError>> {
     || std::future::ready(Ok(1))
 }
 
-// ============ ① 5 次可重试失败 → Open ============
+// ① 5 次可重试失败 → Open
 
 #[tokio::test]
 async fn five_retryable_failures_open_the_circuit() {
@@ -150,7 +150,7 @@ async fn threshold_minus_one_failures_stay_closed_and_keep_executing() {
     assert_eq!(cb.get_state().await, CircuitState::Open);
 }
 
-// ============ slow-call-rate 语义隔离证明 ============
+// slow-call-rate 语义隔离证明
 
 /// limiteron 慢调用参数语义证明（rate_threshold=1.0 下「非全慢」不熔断）：
 /// 1 快（0ms）+ 2 慢（800ms）→ 慢调用率全程严格 < 1.0 → Closed；
@@ -188,7 +188,7 @@ async fn slow_call_rate_threshold_one_requires_all_slow() {
     );
 }
 
-// ============ ② 死锁回归：超时后探针连续成功 3 次 → Closed ============
+// ② 死锁回归：超时后探针连续成功 3 次 → Closed
 
 #[tokio::test]
 async fn half_open_recovers_to_closed_after_three_probe_successes() {
@@ -221,7 +221,7 @@ async fn half_open_recovers_to_closed_after_three_probe_successes() {
     );
 }
 
-// ============ ③ 探针失败 → 立即回 Open ============
+// ③ 探针失败 → 立即回 Open
 
 #[tokio::test]
 async fn failing_probe_reopens_immediately() {
@@ -244,7 +244,7 @@ async fn failing_probe_reopens_immediately() {
     );
 }
 
-// ============ ④ 分类器 variant 语义（直判 GateError） ============
+// ④ 分类器 variant 语义（直判 GateError）
 
 #[test]
 fn classifier_counts_failures_by_variant_semantics() {
@@ -290,7 +290,7 @@ fn classifier_counts_failures_by_variant_semantics() {
     );
 }
 
-// ============ ⑤ 业务错误无损穿透熔断器（泛型收口） ============
+// ⑤ 业务错误无损穿透熔断器（泛型收口）
 
 /// 断言两个 GateError 同 variant 且字段一致（GateError 未派生
 /// PartialEq；Protocol 的 inner 源链不参与比较）。
@@ -391,7 +391,7 @@ async fn business_errors_pass_through_breaker_losslessly() {
     }
 }
 
-// ============ ⑥ from_circuit_call：CB Open 拒绝的还原形态 ============
+// ⑥ from_circuit_call：CB Open 拒绝的还原形态
 
 #[test]
 fn from_circuit_call_open_maps_to_circuit_open_form() {

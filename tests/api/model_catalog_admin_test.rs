@@ -64,7 +64,7 @@ async fn create_state() -> Arc<ApiState> {
     });
     let config_manager = Arc::new(ConfigManager::new(config));
     // 写路径需要落盘路径（ConfigManager 内存态构造拒绝 update_config）——
-    // tempfile 唯一目录 + keep()（测试进程内落盘，进程退出随 tmp 清理）
+    // tempfile 唯一目录 + keep（测试进程内落盘，进程退出随 tmp 清理）
     let dir = tempfile::TempDir::new().expect("tempdir");
     config_manager.set_path(dir.keep().join("config.toml"));
     let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));

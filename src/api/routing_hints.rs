@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(ka, kb, "前 2KB 相同的长消息必须同键（截断语义）");
     }
 
-    // ============ tests：X-Weight 请求级权重解析 ============
+    // tests：X-Weight 请求级权重解析
 
     /// X-Weight 头解析：合法有限正数入结构；非法值（非数值 / 负数 /
     /// 非有限 / 缺失）一律忽略为 None。
@@ -229,7 +229,7 @@ mod tests {
         );
     }
 
-    // ============ tests：anthropic-beta 白名单 ============
+    // tests：anthropic-beta 白名单
 
     /// 合法 beta 值原样提取（含逗号多值）；缺失 → None。
     #[test]

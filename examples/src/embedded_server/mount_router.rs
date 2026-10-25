@@ -48,7 +48,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    // 进程级约束二：退出前必须调用 shutdown()——句柄持有日志管道与预聚合器，
+    // 进程级约束二：退出前必须调用 shutdown——句柄持有日志管道与预聚合器，
     // 不收尾则 flush worker 泄漏（每 60s tick 持有 Repository）且缓冲日志丢失。
     handle.shutdown().await;
     Ok(())

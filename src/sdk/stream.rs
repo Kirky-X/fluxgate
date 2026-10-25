@@ -212,7 +212,7 @@ impl ChatStream {
         }
     }
 
-    /// 聚合流式碎片为完整响应（对齐官方 SDK `finalChatCompletion()`）：
+    /// 聚合流式碎片为完整响应（对齐官方 SDK `finalChatCompletion`）：
     /// `content`/`reasoning_content` 按到达序拼接；`tool_calls` 按 `index`
     /// 槽位累积（id/name 取首个非空，arguments 拼接）；`finish_reason`/
     /// `usage` 取最后一个携带值；`id` 取首个非空。`model` 流式帧不携带

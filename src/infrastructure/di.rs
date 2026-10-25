@@ -6,7 +6,7 @@
 //! Assembles the four infrastructure modules into a single `AsyncKit<AsyncReady>`
 //! at startup. The kit resolves modules in topological order and provides
 //! type-erased capabilities (`CacheBackend`, `ConnectionPool`, `Governor`,
-//! `Database`) that downstream code can retrieve via `kit.require::<M>()`.
+//! `Database`) that downstream code can retrieve via `kit.require::<M>`.
 //!
 //! # DI Chains
 //!
@@ -25,8 +25,8 @@ use crate::error::FluxgateError;
 use crate::error::GateError;
 
 /// Build a minimal valid `FlowControlConfig` (1 rule matching all IPs with a
-/// permissive token bucket). `FlowControlConfig::default()` has an empty
-/// rules vec which fails `validate()`.
+/// permissive token bucket). `FlowControlConfig::default` has an empty
+/// rules vec which fails `validate`.
 fn minimal_flow_config() -> limiteron::config::FlowControlConfig {
     use limiteron::config::{
         Action, ActionConfig, FlowControlConfig, LimiterConfig, Matcher, Rule,
@@ -70,16 +70,16 @@ fn memory_db_config() -> dbnexus::foundation::config::DbConfig {
 ///
 /// Registers `OxcacheModule`, `LimiteronModule`, `DbNexusModule`, `InklogModule`
 /// and resolves them in topological order. The returned `AsyncKit<AsyncReady>`
-/// provides capabilities via `require::<M>()`.
+/// provides capabilities via `require::<M>`.
 ///
 /// `db_config` should point to the production database (e.g. `sqlite:./data/llm_proxy.db`).
-/// Cache config uses `OxcacheConfig::default()` (in-memory).
+/// Cache config uses `OxcacheConfig::default` (in-memory).
 /// Flow config uses a permissive default (100 capacity / 10 refill rate, all IPs).
 ///
 /// # Errors
 ///
 /// Returns `FluxgateError::Config` if module registration or the topological
-/// build fails (missing dependency, cycle, or a module `build()` callback
+/// build fails (missing dependency, cycle, or a module `build` callback
 /// returning `Err`).
 pub async fn build_kit_with_config(
     db_config: dbnexus::foundation::config::DbConfig,
@@ -128,8 +128,8 @@ pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, FluxgateError> {
 
 /// Verify that all four module capabilities resolve successfully.
 ///
-/// Call after `build_kit()` to confirm the topological sort produced every
-/// expected capability. Returns `Ok(())` if all resolve, or the first
+/// Call after `build_kit` to confirm the topological sort produced every
+/// expected capability. Returns `Ok()` if all resolve, or the first
 /// failing module's error.
 ///
 /// # Errors
@@ -223,7 +223,7 @@ mod tests {
         // OxcacheModule) is successfully injected into InklogModule's
         // `Database` adapter (DbNexusAdapter). inklog 0.3 rc.5 的
         // `Database` trait 只暴露 `insert_batch` / `is_healthy`（无旧
-        // `LogDbProvider::execute_log`），故改用 `is_healthy()` 驱动一次
+        // `LogDbProvider::execute_log`），故改用 `is_healthy` 驱动一次
         // get_session → 连接获取，验证注入的连接池确实可用。
         let kit = build_kit().await.expect("DI kit should build");
 

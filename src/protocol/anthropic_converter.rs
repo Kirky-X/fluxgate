@@ -715,7 +715,6 @@ impl ProtocolConverter for AnthropicConverter {
                     MessageContent::TextWithToolCalls { text, .. } => {
                         vec![json!({"type": "text", "text": text})]
                     }
-                    // 思考块流式编码由 T028 的编码器路径承担；
                     // 此无状态单块路径对 Reasoning 不产出内容块
                     MessageContent::Reasoning { .. } => Vec::new(),
                 };
@@ -2167,7 +2166,7 @@ pub fn inject_cache_control(body: &mut Value, policy: &CacheBreakpointPolicy) ->
     let cap = policy.max_breakpoints as usize;
 
     // 1) 先做锚点规划（不改 body），再截断到尾部 max，最后统一应用——
-    //    截断语义 = 「保留锚序尾部 N 个」
+    // 截断语义 = 「保留锚序尾部 N 个」
     enum Edit {
         /// tools 末块标记
         MarkTools,

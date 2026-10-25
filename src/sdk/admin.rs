@@ -120,7 +120,7 @@ struct AdminActionResponse {
     message: String,
 }
 
-/// 目录条目模型 URL — `model_id` 经 `path_segments_mut().push` 自动
+/// 目录条目模型 URL — `model_id` 经 `path_segments_mut.push` 自动
 /// 百分号编码（审查 MEDIUM：字符串 join 对 `../` 类输入产生路径穿越，
 /// `push` 将段内 `/` 编码为 `%2F`，穿越Neutral 化）。
 fn admin_model_url(base_url: &url::Url, model_id: &str) -> Result<url::Url, FluxgateSdkError> {
@@ -257,7 +257,7 @@ impl FluxgateClient {
 #[cfg(test)]
 pub(crate) mod sdk_routes {
     /// SDK admin 面 (method, path) 清单 —— 与网关路由表（
-    /// `src/api/router_builder.rs` 的 axum `.route()` 注册）比对的单一
+    /// `src/api/router_builder.rs` 的 axum `.route` 注册）比对的单一
     /// 事实源；消费方为 `tests/integration_admin.rs` 的路由 diff 钉。
     /// 仅测试消费（生产路径各方法硬编码自身 URL）。
     pub(crate) const SDK_ADMIN_ROUTES: &[(&str, &str)] = &[

@@ -14,7 +14,7 @@ mod bandit_units {
     use rand::rngs::StdRng;
     use rand::SeedableRng;
 
-    // ---- linucb_invert：防御分支与成功路径 ----
+    // linucb_invert：防御分支与成功路径
 
     /// d=0、形状不匹配、非有限输入 → None（调用方据此走对角退化）。
     #[test]
@@ -93,7 +93,7 @@ mod bandit_units {
         assert!((diag2[8] - 0.125).abs() < 1e-12);
     }
 
-    // ---- 特征提取边界 ----
+    // 特征提取边界
 
     /// 手工 5 维特征与 LINUCB_DIM 一致；空请求（全零边界）各维取值正确。
     #[test]
@@ -160,7 +160,7 @@ mod bandit_units {
         }
     }
 
-    // ---- BanditState 生命周期与 argmax 决断 ----
+    // BanditState 生命周期与 argmax 决断
 
     /// 状态生命周期：new → 无臂；首次 update/ucb 惰性建臂；has_arm 精确键匹配；
     /// arm_count 反映规模。

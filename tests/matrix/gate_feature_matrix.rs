@@ -35,7 +35,7 @@ fn test_core_error_always_available() {
     let err = fluxgate::GateError::Config {
         message: "test".to_string(),
     };
-    // 双轨约定：Display 恒英文规范串，本地化文案走 user_message()（llm-gate error 模块）
+    // 双轨约定：Display 恒英文规范串，本地化文案走 user_message（llm-gate error 模块）
     assert_eq!(err.to_string(), "Configuration error: test");
 }
 

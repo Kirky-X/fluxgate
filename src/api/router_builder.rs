@@ -823,7 +823,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
     // /api/v1/health（forge 存活探针）保留不变。
 
     // 文档面按开关挂载（默认关 → /api-docs 与 /swagger-ui 不存在）。
-    // 合并点在 with_state 之后（两侧均为 Router<()>，无状态 handlers）。
+    // 合并点在 with_state 之后（两侧均为 Router<>，无状态 handlers）。
     // 开关直读 config（不经 openapi_docs 模块——该模块只承载 inventory
     // 注册，与挂载解耦）。
     let mut router = router.with_state(state.clone());
@@ -918,7 +918,7 @@ mod tests {
     /// 断言空洞背景：axum 0.8 的 `layer` 只作用于已有路由
     ///（"the middleware is only
     /// applied to existing routes"）：create_router 之后
-    /// 再 `.route()` 的路径不经过中间件。
+    /// 再 `.route` 的路径不经过中间件。
     ///
     /// 本用例 route 先于 layer 构建：`/health` 白名单豁免断言 +
     /// `/limited` 对照组（第 2 次 429）共同证明中间件真实挂载且生效；
@@ -1044,7 +1044,7 @@ mod tests {
         );
     }
 
-    /// 空规则默认兜底：TokenBucket(100, 10/s) 共享桶——100 次内全放行，第 101 次拒绝（与旧 Governor::new()
+    /// 空规则默认兜底：TokenBucket(100, 10/s) 共享桶——100 次内全放行，第 101 次拒绝（与旧 Governor::new
     /// 默认一致；租户维度不分桶）。
     #[tokio::test]
     async fn default_gate_matches_legacy_token_bucket_semantics() {

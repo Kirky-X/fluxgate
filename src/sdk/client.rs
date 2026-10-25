@@ -49,7 +49,7 @@ fn effective_read_timeout(explicit: Option<Duration>) -> Duration {
 
 /// 扩展头不得覆写的受限头名（比较忽略大小写）：凭证由 `bearer_auth`
 /// 持有，`host`/`content-length` 由传输层决定——配置面覆写即请求伪造面；
-/// 5 个路由头由 typed 字段作唯一来源（`header()` 为追加语义，扩展头注入
+/// 5 个路由头由 typed 字段作唯一来源（`header` 为追加语义，扩展头注入
 /// 会以先插入者压过 typed 值）。
 const RESTRICTED_HEADERS: &[&str] = &[
     "authorization",
@@ -135,7 +135,7 @@ mod tests {
     }
 
     /// 超时必须真的进 reqwest Client：默认构造 → DEFAULT_REQUEST_TIMEOUT，
-    /// 显式 timeout() → 该值（客户端存储的生效超时可审计）。
+    /// 显式 timeout → 该值（客户端存储的生效超时可审计）。
     #[test]
     fn builder_applies_effective_timeout_to_client() {
         let default_client = FluxgateClientBuilder::new()

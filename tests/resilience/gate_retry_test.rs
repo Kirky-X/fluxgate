@@ -17,7 +17,7 @@ mod tests {
     #[cfg(feature = "vendor-management")]
     use std::time::Duration;
 
-    // -------- ErrorCategory --------
+    // ErrorCategory
 
     #[test]
     fn test_error_category_from_status_code_fatal() {
@@ -74,7 +74,7 @@ mod tests {
         assert!(ErrorCategory::RetryableShort.is_retryable());
     }
 
-    // -------- extract_status_code（fallback.rs 生产消费的存量锁定） --------
+    // extract_status_code（fallback.rs 生产消费的存量锁定）
 
     #[test]
     fn test_extract_status_code_with_paren_format() {
@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(extract_status_code("no status code here"), 500);
     }
 
-    // -------- delay_for_attempt 首试偏移回归 --------
+    // delay_for_attempt 首试偏移回归
 
     /// 旧实现「先 retry_count += 1 再 2^retry_count」导致首试 2s，
     /// 与注释 '1s, 2s, 4s' 矛盾。limiteron delay_for_attempt 的 attempt
@@ -236,7 +236,7 @@ mod tests {
             assert!((policy.spread_jitter - 1.0).abs() < 1e-9);
         }
 
-        // ======== 同步惊群展宽 ========
+        // 同步惊群展宽
 
         /// spread_jitter=1.0（默认）下 Retry-After 值必须以 ra 为 base
         /// 全范围展宽 ∈ [ra, 2×ra)（半开：永不取上界），消除同步惊群；
@@ -327,7 +327,7 @@ mod tests {
     }
 }
 
-// ============ 覆盖补缺：分类边界 / 状态码解析 / 策略缺省 ============
+// 覆盖补缺：分类边界 / 状态码解析 / 策略缺省
 
 #[cfg(test)]
 mod coverage {
@@ -335,7 +335,7 @@ mod coverage {
     use fluxgate::utils::retry::{ErrorCategory, RetryDelayPolicy};
     use std::time::Duration;
 
-    // -------- ErrorCategory 边界 --------
+    // ErrorCategory 边界
 
     /// 网络错误关键词的完整覆盖：refused / reset 同判 Short；非网络错误 Fatal。
     #[test]
@@ -365,7 +365,7 @@ mod coverage {
         assert_eq!(ErrorCategory::RetryableShort.max_retries(), 2);
     }
 
-    // -------- extract_status_code 括号内无冒号形态 --------
+    // extract_status_code 括号内无冒号形态
 
     /// "(429 rate)" 无冒号 → 空白分词取首个 token 直接解析数字；
     /// 非数字 / 空括号 / 数字紧黏右括号（"429)" 非法 u16）回落 500。
@@ -385,7 +385,7 @@ mod coverage {
         );
     }
 
-    // -------- RetryDelayPolicy 缺省值锁定 --------
+    // RetryDelayPolicy 缺省值锁定
 
     /// [retry] 段缺省快照：1s / ×2 / 16s 封顶 / 0.2 抖动 / 1.0 展宽。
     #[test]

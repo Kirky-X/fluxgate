@@ -6,7 +6,7 @@
 //! 两层入口：
 //! - [`parse_request`]：wire 校验 + input item 归一（字符串 → item 数组），
 //!   产出当前回合 items、native-only 判定与原始请求；
-//! - [`to_unified_request`]：把（已合并历史回放的）items 转成
+//! - [`to_unified_request`]：把（已合并历史回放）items 转成
 //!   [`UnifiedRequest`]，供现有路由池消费。
 //!
 //! 校验口径：必填缺一不可、越界显式拒绝不静默截断；错误一律
@@ -243,10 +243,10 @@ pub fn parse_items(items: &[Value]) -> Result<Vec<ParsedInputItem>, GateError> {
     Ok(parsed)
 }
 
-/// 把（已合并历史回放的）items 转成 `UnifiedRequest`。
+/// 把（已合并历史回放）items 转成 `UnifiedRequest`。
 ///
 /// `parsed.current_items` 仅为当前回合（用于存储），`merged_items` 为
-/// 历史 + 当前（用于上游请求）。调用方须先确认 `native_only.is_none()`。
+/// 历史 + 当前（用于上游请求）。调用方须先确认 `native_only.is_none`。
 pub fn to_unified_request(
     parsed: &ParsedResponsesRequest,
     merged_items: &[Value],

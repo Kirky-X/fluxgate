@@ -349,7 +349,7 @@ fn openai_tool_call_fragments_assemble_by_index() {
     assert_eq!(assembled, r#"{"city":"Paris"}"#, "分片按序拼装");
 }
 
-// ==================== 集成级（全链路，mock 上游） ====================
+// 集成级（全链路，mock 上游）
 
 #[cfg(feature = "web-server")]
 mod integration {

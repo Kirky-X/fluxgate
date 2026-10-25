@@ -13,10 +13,10 @@
 //! ```rust,ignore
 //! use fluxgate::i18n;
 //!
-//! i18n::init();                          // 可选预热
+//! i18n::init;                          // 可选预热
 //! i18n::t("vendor-upstream-stream-interrupted");
-//! i18n::t_args("admin-vendor-not-found", &[("id", "openai".into())]);
-//! i18n::set_locale("zh-CN").unwrap();    // 覆盖位优先于检测链
+//! i18n::t_args("admin-vendor-not-found", &[("id", "openai".into)]);
+//! i18n::set_locale("zh-CN").unwrap;    // 覆盖位优先于检测链
 //! ```
 //!
 //! 缺键不 panic：回退链终结于 en 束，仍缺则原样返回键名——因此新增用户可见

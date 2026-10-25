@@ -71,7 +71,7 @@ impl AffinityTable {
 
     /// 首绑定收敛（真 SETNX）：已绑定不覆盖返回 false，未绑定写入返回 true。
     ///
-    /// 后端提供原子面（`as_atomic_writer()` 返回 `Some`，moka 恒有）时走库侧
+    /// 后端提供原子面（`as_atomic_writer` 返回 `Some`，moka 恒有）时走库侧
     /// 原子 `set_if_absent` — 同一会话的并发首请求只有一个写入者胜出，不会各自
     /// 绑到不同 vendor；无原子面的后端退回 get+set 兜底（并存竞态窗口，后写胜出）。
     pub async fn bind_if_absent(
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(raw, None, "亲和键必须带 affinity: 前缀");
     }
 
-    // ============ tests：键租户隔离 ============
+    // tests：键租户隔离
 
     /// 两租户同 session id 不得互相劫持；租户键与 legacy 键空间互不可见
     #[tokio::test]
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(table.lookup(Some("tenant-a-hash"), "sess-1").await, None);
     }
 
-    // ============ tests：bind_if_absent 首绑定收敛 ============
+    // tests：bind_if_absent 首绑定收敛
 
     /// 未绑定写入返回 true；已绑定不覆盖返回 false（后端有原子面走 SETNX）。
     #[tokio::test]
@@ -311,7 +311,7 @@ mod tests {
         );
     }
 
-    /// 无原子面的后端（dashmap 后端 `as_atomic_writer()` 为 None）走 get+set
+    /// 无原子面的后端（dashmap 后端 `as_atomic_writer` 为 None）走 get+set
     /// 兜底，语义与原子面一致：首绑写、后绑不覆盖。
     #[tokio::test]
     async fn bind_if_absent_falls_back_without_atomic_surface() {

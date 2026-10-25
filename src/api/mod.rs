@@ -672,7 +672,7 @@ where
     }
 }
 
-// ============ tests：fallback 预算与守门器 ============
+// tests：fallback 预算与守门器
 //
 // 两个 fallback 循环是 pub(crate)——集成面只能走 HTTP 全链路，无法对
 // 注入计数/时钟做确定性断言；本模块以桩派发闭包直接驱动循环本体。用
@@ -981,7 +981,7 @@ mod fallback_guard_tests {
         );
     }
 }
-// ============ tests：Retry-After 提示与耗尽收尾 ============
+// tests：Retry-After 提示与耗尽收尾
 //
 // 全 Throttled 场景经配置注入（Token max_tokens=0 → worker 限流早退
 // RateLimited，无真实 HTTP）；初始决策用 direct 形式手工构造
@@ -1171,7 +1171,7 @@ mod cooldown_retry_after {
         }
     }
 
-    // ---- 纯判定（脱离 state）----
+    // 纯判定（脱离 state）
 
     /// 收尾纯判定：min 重置秒数、混合原因/hint 关/重置不可得/空集 → 原错误。
     #[test]
@@ -1215,7 +1215,6 @@ mod cooldown_retry_after {
             finalize_all_throttled(true, &[("v-a".to_string(), Some(30))], false, original()),
             GateError::VendorUnavailable { .. }
         ));
-        // 重置全部不可得 → 原错误
         assert!(matches!(
             finalize_all_throttled(true, &[("v-a".to_string(), None)], true, original()),
             GateError::VendorUnavailable { .. }
@@ -1227,7 +1226,7 @@ mod cooldown_retry_after {
         ));
     }
 
-    // ---- E2E：execute_request_with_fallback 两处耗尽分支 ----
+    // E2E：execute_request_with_fallback 两处耗尽分支
 
     /// 分支一（trigger/预算耗尽）：max_total_attempts=1，v-a 首失败即耗尽
     /// → 全 Throttled + hint 开 → AllVendorsThrottled，429 + Retry-After 头。

@@ -175,17 +175,17 @@ mod tests {
         json!({"model": "auto", "messages": messages})
     }
 
-    // ---- benchmark 用例：人工标注难度（意图带），规则引擎应落在同档 ----
+    // benchmark 用例：人工标注难度（意图带），规则引擎应落在同档
 
     fn cases() -> Vec<(&'static str, serde_json::Value, Tier)> {
         vec![
-            // ---- 简单档：寒暄/翻译/摘要/致谢，零 hard 信号 ----
+            // 简单档：寒暄/翻译/摘要/致谢，零 hard 信号
             ("寒暄", body("你好呀，今天天气不错"), Tier::Low),
             ("翻译", body("帮我把「谢谢」翻译成英文"), Tier::Low),
             ("摘要", body("帮我总结一下这段话的中心思想"), Tier::Low),
             ("致谢", body("hello, thanks a lot!"), Tier::Low),
             // ---- 长 prompt：长度权重封顶 0.10，纯长度不得抬高档位；
-            //      文本特征取头部 ≤2KB，信号需落在头部窗口 ----
+            // 文本特征取头部 ≤2KB，信号需落在头部窗口 ----
             (
                 "长闲聊(30KB)",
                 body(&format!("{}今天到此为止，晚安。", filler(30_000))),
@@ -196,7 +196,7 @@ mod tests {
                 long_multi_turn_body(),
                 Tier::Low,
             ),
-            // ---- 中间档：有推理/调试信号但非深水区（r 落 0.35~0.65）----
+            // 中间档：有推理/调试信号但非深水区（r 落 0.35~0.65）
             (
                 "代码调试",
                 body("为什么这段并发代码会出现 race condition？帮我 debug 并分析 root cause，然后给出重构方案"),
@@ -221,7 +221,7 @@ mod tests {
                 )),
                 Tier::Mid,
             ),
-            // ---- 困难档：证明/推导 + 代码/公式 + 多问（r ≥ 0.65）----
+            // 困难档：证明/推导 + 代码/公式 + 多问（r ≥ 0.65）
             (
                 "数学证明",
                 body("请证明这个积分方程并给出完整推导，step by step：f(x)=∫g(t)dt≥0，为什么收敛？？？\n```math\nT(n)=2T(n/2)+n≤c·n·logn\n```"),
@@ -237,7 +237,7 @@ mod tests {
                 body("求解以下积分方程并证明收敛性：∫∫f(x,y)dxdy ≤ M，其中矩阵 A^2=A+I，为什么？给出算法复杂度推导 ```\nO(n^2)\n``` ？？？？"),
                 Tier::High,
             ),
-            // ---- 长 prompt 困难档：密集信号在头部窗口 + 20KB 填充 ----
+            // 长 prompt 困难档：密集信号在头部窗口 + 20KB 填充
             (
                 "长证明(21KB)",
                 body(&format!(

@@ -16,6 +16,10 @@ use crate::i18n::{t, t_args};
 /// inklog 关闭钩子（`run` 注入 manager；嵌入式未注入时该阶段 no-op）。
 pub(crate) type InklogShutdownHook = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
+/// OTLP 停机收尾钩子（feature = "otlp" 且 [otlp].enabled 时装配；None = no-op）。
+/// force_flush + provider shutdown 为同步阻塞，钩子体内 spawn_blocking 执行。
+pub(crate) type OtlpTeardownHook = Option<Arc<dyn Fn() + Send + Sync>>;
+
 /// 终止信号：sdforge 默认触发（SIGTERM/Ctrl-C，首个信号即决）。
 pub(crate) async fn shutdown_signal() {
     sdforge::http::default_shutdown_signal().await;
@@ -31,6 +35,7 @@ pub(crate) fn build_teardown_coordinator(
     pre_aggregator: &Arc<TokenPreAggregator>,
     pa_shutdown: &Arc<AtomicBool>,
     inklog_hook: Option<InklogShutdownHook>,
+    otlp_teardown: OtlpTeardownHook,
 ) -> trait_kit::kit::shutdown::AsyncShutdownCoordinator {
     use trait_kit::kit::shutdown::{AsyncShutdownCoordinator, ShutdownPhase};
 
@@ -76,10 +81,12 @@ pub(crate) fn build_teardown_coordinator(
     {
         let pre_aggregator = pre_aggregator.clone();
         let pa_shutdown = pa_shutdown.clone();
+        let otlp_teardown = otlp_teardown.clone();
         coordinator
             .register_hook(ShutdownPhase::DrainQueue, move || {
                 let pre_aggregator = pre_aggregator.clone();
                 let pa_shutdown = pa_shutdown.clone();
+                let otlp_teardown = otlp_teardown.clone();
                 Box::pin(async move {
                     pa_shutdown.store(true, Ordering::Relaxed);
                     match tokio::time::timeout(HOOK_TIMEOUT, pre_aggregator.flush()).await {
@@ -96,6 +103,18 @@ pub(crate) fn build_teardown_coordinator(
                                 t_args(
                                     "main-teardown-hook-timeout",
                                     &[("phase", "DrainQueue".to_string())]
+                                )
+                            );
+                        }
+                    }
+                    if let Some(otlp) = otlp_teardown {
+                        let flush = tokio::task::spawn_blocking(move || otlp());
+                        if tokio::time::timeout(HOOK_TIMEOUT, flush).await.is_err() {
+                            tracing::warn!(
+                                "{}",
+                                t_args(
+                                    "main-teardown-hook-timeout",
+                                    &[("phase", "OtlpFlush".to_string())]
                                 )
                             );
                         }
@@ -212,7 +231,8 @@ mod tests {
             )
             .await;
 
-        let coord = build_teardown_coordinator(&logger, &aggregator, &pa_shutdown, Some(hook));
+        let coord =
+            build_teardown_coordinator(&logger, &aggregator, &pa_shutdown, Some(hook), None);
         let result = coord.shutdown().await.expect("shutdown");
         assert!(result.is_ok(), "三阶段应全部按时完成");
 

@@ -120,3 +120,8 @@ api-gemini-schema-ref-unsupported = Gemini responseSchema $ref must point to #/$
 api-gemini-native-vendor-mismatch = X-Vendor "{ $vendor }" is not Gemini-native
 router-gemini-no-native-vendor = No native Gemini vendor for model "{ $model }": declare type_ = "gemini" and enable the vendor/model
 middleware-gemini-unauthorized = Gemini request is missing or has an invalid API key
+
+usage-insights-disabled = Usage insights are disabled; enable [usage_insights] to use this endpoint
+config-otlp-endpoint-invalid = OTLP endpoint is not a valid URL: { $value }
+config-otlp-endpoint-scheme = OTLP endpoint scheme must be http or https, got "{ $value }"
+config-otlp-endpoint-userinfo = OTLP endpoint must not embed credentials (userinfo)

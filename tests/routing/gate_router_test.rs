@@ -296,6 +296,8 @@ mod tests {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
         };
 
@@ -335,6 +337,8 @@ mod tests {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(disabled_config));

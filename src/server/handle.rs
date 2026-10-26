@@ -25,6 +25,12 @@ pub struct ServerHandle {
     hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
     /// 健康探针任务句柄（装配期按 [health].mode 启动；shutdown 首阶段 abort）。
     probe_handle: Option<tokio::task::JoinHandle<()>>,
+    /// OTLP 桥（feature = "otlp" 且 [otlp].enabled 装配；shutdown 时 flush + 停 reader）。
+    #[cfg(feature = "otlp")]
+    otlp_bridge: Option<Arc<crate::utils::otlp::OtlpBridge>>,
+    /// OTLP 桥轮询任务句柄（shutdown 首阶段 abort）。
+    #[cfg(feature = "otlp")]
+    otlp_task: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "grpc")]
     grpc_server: std::sync::OnceLock<Option<crate::server::grpc::GrpcServer>>,
 }
@@ -48,6 +54,10 @@ impl ServerHandle {
             inklog_hook: std::sync::OnceLock::new(),
             hot_reloader: assembly.hot_reloader,
             probe_handle: assembly.probe_handle,
+            #[cfg(feature = "otlp")]
+            otlp_bridge: assembly.otlp_bridge,
+            #[cfg(feature = "otlp")]
+            otlp_task: assembly.otlp_task,
             #[cfg(feature = "grpc")]
             grpc_server: std::sync::OnceLock::new(),
         }
@@ -81,13 +91,43 @@ impl ServerHandle {
         if let Some(handle) = &self.probe_handle {
             handle.abort();
         }
+        // OTLP 桥轮询任务同停（flush 钩子负责最后一跳导出）。
+        #[cfg(feature = "otlp")]
+        if let Some(handle) = &self.otlp_task {
+            handle.abort();
+        }
         // serve 返回即 in-flight 已完成，此刻补最终 flush 防缓冲日志与聚合数据丢失
         tracing::info!("{}", t("main-flushing-log-pipeline"));
+        let otlp_teardown: crate::server::shutdown::OtlpTeardownHook = {
+            #[cfg(feature = "otlp")]
+            {
+                self.otlp_bridge.clone().map(|bridge| {
+                    Arc::new(move || {
+                        // flush 与 shutdown 各自独立：末次导出失败（端点不可达、
+                        // 接收端 4xx）不代表 worker 线程该泄漏。调度顺序保留
+                        // flush 在前，错误合并上报。
+                        let flush_err = bridge.force_flush().err();
+                        let shutdown_err = bridge.shutdown().err();
+                        if let Some(e) = flush_err.or(shutdown_err) {
+                            tracing::warn!(
+                                "{}",
+                                t_args("main-otlp-teardown-failed", &[("error", e.to_string())])
+                            );
+                        }
+                    }) as Arc<dyn Fn() + Send + Sync>
+                })
+            }
+            #[cfg(not(feature = "otlp"))]
+            {
+                None
+            }
+        };
         let coordinator = crate::server::shutdown::build_teardown_coordinator(
             &self.logger_handle,
             &self.pre_aggregator,
             &self.pa_shutdown,
             self.inklog_hook.get().cloned().flatten(),
+            otlp_teardown,
         );
         match coordinator.shutdown().await {
             Ok(result) if result.is_ok() => {}

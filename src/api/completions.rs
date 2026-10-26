@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use crate::api::request_cost_usd;
 use crate::api::RoutingHints;
+use crate::api::{request_context_columns, request_cost_usd};
 use crate::config::VendorProtocol;
 use crate::database::RequestLog;
 use crate::error::GateError;
@@ -815,6 +815,7 @@ async fn on_dispatch_failure(
         duration_ms,
         &error,
         ctx.linucb_reward_key.as_deref(),
+        ctx.session_key.as_deref(),
     )
     .await;
     error
@@ -1013,6 +1014,7 @@ async fn log_stream_dispatch(
         200,
         None,
         ctx.linucb_reward_key.as_deref(),
+        ctx.session_key.as_deref(),
     )
     .await;
 }
@@ -1038,6 +1040,7 @@ async fn log_success_dispatch(
         200,
         None,
         ctx.linucb_reward_key.as_deref(),
+        ctx.session_key.as_deref(),
     )
     .await;
     // 分账落库（hash 透传 + cache 两类 + 四档单价）。
@@ -1069,6 +1072,7 @@ async fn log_chat_request(
     error_message: Option<String>,
     // 奖励臂键（None = 直连路径跳过奖励）
     linucb_arm_key: Option<&str>,
+    session_key: Option<&str>,
 ) {
     // LinUCB 奖励回传 — 与落库记账同点（本函数收敛成功/失败
     // 两路，`response: None` = 失败）。臂键由 handler 按路由分支归一
@@ -1110,6 +1114,17 @@ async fn log_chat_request(
     // `record_keyed_usage` 记账：hash 透传 + cache 两类 + 四档单价）。
     // 此处保留 usage 提取（RequestLog 落库仍需 prompt/completion/total）。
 
+    let ctx_columns = {
+        let cfg = state.config.read();
+        request_context_columns(
+            cfg.usage_insights.enabled,
+            &cfg.model_catalog,
+            &decision.model.model_id,
+            response,
+            session_key,
+        )
+    };
+
     let log = RequestLog {
         id: None,
         request_id: request_id.to_string(),
@@ -1139,6 +1154,10 @@ async fn log_chat_request(
                 response_value,
             )
         }),
+        session_key: ctx_columns.session_key,
+        context_window_tokens: ctx_columns.context_window_tokens,
+        cache_read_tokens: ctx_columns.cache_read_tokens,
+        cache_write_tokens: ctx_columns.cache_write_tokens,
     };
 
     // logger 未接线 = 降级为不落日志（不回退同步直写）
@@ -1166,6 +1185,7 @@ async fn log_chat_failure(
     error: &FluxgateError,
     // 奖励臂键（None = 直连路径跳过奖励）
     linucb_arm_key: Option<&str>,
+    session_key: Option<&str>,
 ) {
     log_chat_request(
         state,
@@ -1178,6 +1198,7 @@ async fn log_chat_failure(
         crate::api::status_code_for_error(error),
         Some(error.to_string()),
         linucb_arm_key,
+        session_key,
     )
     .await;
 }
@@ -1466,6 +1487,10 @@ async fn push_embeddings_log(
                 response_value,
             )
         }),
+        session_key: None,
+        context_window_tokens: None,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
     };
 
     if let Some(logger) = state.logger.as_ref() {

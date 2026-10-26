@@ -20,7 +20,11 @@ CREATE TABLE IF NOT EXISTS request_logs (
     completion_tokens INTEGER,
     total_tokens INTEGER,
     duration_ms INTEGER,
-    cost_usd REAL DEFAULT 0.0
+    cost_usd REAL DEFAULT 0.0,
+    session_key TEXT,
+    context_window_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER
 );
 
 -- Token 消耗统计表
@@ -71,6 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_timestamp ON request_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_vendor ON request_logs(actual_vendor);
 CREATE INDEX IF NOT EXISTS idx_model ON request_logs(abstract_model);
 CREATE INDEX IF NOT EXISTS idx_request_id ON request_logs(request_id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_session ON request_logs(session_key, timestamp);
 
 -- 密钥保密柜（key-vault，V3）：payload 为 cocoon self-contained 密文，
 -- mask/fingerprint 为明文衍生的展示/去重面（零明文）。

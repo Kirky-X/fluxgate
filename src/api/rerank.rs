@@ -63,6 +63,7 @@ pub async fn rerank(
             start_time.elapsed().as_millis() as i64,
             crate::api::status_code_for_error(&error),
             Some(error.to_string()),
+            session_key.as_deref(),
         )
         .await;
         return Err(error);
@@ -91,6 +92,7 @@ pub async fn rerank(
                 start_time.elapsed().as_millis() as i64,
                 crate::api::status_code_for_error(&error),
                 Some(error.to_string()),
+                session_key.as_deref(),
             )
             .await;
             return Err(error);
@@ -116,6 +118,7 @@ pub async fn rerank(
                 start_time.elapsed().as_millis() as i64,
                 crate::api::status_code_for_error(&error),
                 Some(error.to_string()),
+                session_key.as_deref(),
             )
             .await;
             return Err(error);
@@ -163,6 +166,7 @@ pub async fn rerank(
         start_time.elapsed().as_millis() as i64,
         200,
         None,
+        session_key.as_deref(),
     )
     .await;
     state
@@ -311,7 +315,24 @@ async fn push_rerank_log(
     duration_ms: i64,
     status_code: i32,
     error_message: Option<String>,
+    session_key: Option<&str>,
 ) {
+    // rerank 无 token 语义：缓存两列恒 NULL；`context_window_tokens` 也写
+    // NULL——否则 0 prompt 会以 0% 占用率落进 context-stats 的首桶，稀释均值。
+    // 会话键仍填充（handler 已用它做亲和路由）。
+    let rerank_columns = {
+        let enabled = state.config.read().usage_insights.enabled;
+        crate::api::ContextColumns {
+            session_key: if enabled {
+                session_key.map(str::to_string)
+            } else {
+                None
+            },
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        }
+    };
     let response_summary = response.map(rerank_response_summary);
     let log = RequestLog {
         id: None,
@@ -336,6 +357,10 @@ async fn push_rerank_log(
             &decision.model.model_id,
             request.documents.len(),
         )),
+        session_key: rerank_columns.session_key,
+        context_window_tokens: rerank_columns.context_window_tokens,
+        cache_read_tokens: rerank_columns.cache_read_tokens,
+        cache_write_tokens: rerank_columns.cache_write_tokens,
     };
     if let Some(logger) = state.logger.as_ref() {
         if let Err(e) = logger.log(log).await {
@@ -483,6 +508,8 @@ mod rerank_cost_db_tests {
     async fn make_state() -> (Arc<ApiState>, Arc<Repository>) {
         let config = Config {
             rate_limit: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
@@ -591,6 +618,7 @@ mod rerank_cost_db_tests {
             None,
             10,
             200,
+            None,
             None,
         )
         .await;

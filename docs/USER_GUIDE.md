@@ -511,7 +511,9 @@ max_requests = 100
 
 - **`[[model_catalog]]` 未登记该 (vendor, model) 时成本按 `0` 计**，不会阻塞响应。
 - 目录与定价热更立即生效（下一次请求即用新值）。
-- 逐请求日志表 `request_logs.cost_usd` 恒为 `None`（`src/api/completions.rs` / `src/api/anthropic.rs` 构造日志条目时固定填 `None`）——它是历史兼容列，成本不写在这里，而走下方 token_usage 预聚合落库与进程内 `CostTracker`。
+- 逐请求日志表 `request_logs.cost_usd` 按 `[[model_catalog]]` 四档求和 × 目录单价落库（rerank 按每千文档价）；
+  未登记单价写 `0`、无 usage 写 `NULL`。进程内 `CostTracker` 启动时自 `token_usage` 恢复最近
+  `[metrics].cost_restore_window_hours`（默认 24h）窗口，重启不再清零；内存库启动跳过恢复。
 
 ### 成本分账落库与查询
 
@@ -532,6 +534,58 @@ curl "http://127.0.0.1:8080/admin/cost?group_by=vendor" \
   -H "Authorization: Bearer $API_KEY" \
   -H "x-fluxgate-cost-key: <调用方 key 原文>"
 ```
+
+### 会话与上下文利用率 `[usage_insights]`
+
+按会话聚合成本与按模型聚合上下文占用率的内部统计（零出站、零新依赖）。
+
+| 字段 | 默认值 | 说明 |
+|:-----|:-------|:-----|
+| `enabled` | `true` | 采集与查询总开关（热读） |
+
+开启时 `request_logs` 落四列：`session_key`（会话键）、`context_window_tokens`（目录登记的
+上下文窗口）、`cache_read_tokens` / `cache_write_tokens`（上游 usage 的缓存读写）。
+关闭时四列写 `NULL`（存量行不受影响）且两端点返回 `404`。
+
+```bash
+# 按会话聚合（limit 缺省 50、上限 500；标题=首条用户消息前 80 字符）
+curl "http://127.0.0.1:8080/admin/sessions?limit=20" -H "Authorization: Bearer $API_KEY"
+
+# 按模型聚合上下文占用率、缓存份额与五桶分布（<20/20-40/40-60/60-80/>=80%）
+curl "http://127.0.0.1:8080/admin/context-stats" -H "Authorization: Bearer $API_KEY"
+```
+
+> **口径**：两个端点只统计 `status_code = 200` 的成功请求，并默认回看最近
+> **7 天**（`window_hours` 可调，上限 8760 小时）——`request_logs` 无保留策略，
+> 全史聚合是线性全表扫。会话聚合排除 `session_key` 为 `NULL` 的请求。
+>
+> **占用率口径**：上下文占用率 = `(prompt + cache_write) / context_window`。
+> `request_logs` 不存协议类型，查询侧无法区分缓存语义：OpenAI/Gemini
+>（Inclusive，prompt 已含缓存读）精确；Anthropic（Exclusive，prompt 不含）
+> 为**下界**。选择下界而非重复计数，避免占用率虚高误报。
+> `cache_read_share = cache_read / (prompt + cache_write)` 在 Exclusive 协议下
+> 可大于 1（prompt 不含缓存读），读取方需按此理解。
+>
+> `session_key` 取自 `X-Session-Id`（或协议字段回退哈希），入库前经脱敏管道，
+> 长度上限 255 字节（超长截断并告警，避免 MySQL 严格模式丢整批日志）。
+
+### OTLP 指标导出 `[otlp]`
+
+把网关自身的 Prometheus `/metrics` 指标与成本计数周期推送到外部可观测栈（OTLP/HTTP-Proto）。
+**编译门 `feature = "otlp"` + 运行时门 `[otlp].enabled`，双门控默认关**（不进 `full` 构建）。
+
+| 字段 | 默认值 | 说明 |
+|:-----|:-------|:-----|
+| `enabled` | `false` | 导出总开关（热读；启动期关闭则不建任务，事后开启需重启） |
+| `endpoint` | `""` | OTLP/HTTP 端点（`enabled` 时必填，如 `http://localhost:4318/v1/metrics`） |
+| `interval_secs` | `60` | 推送周期（1..=86400） |
+| `timeout_secs` | `10` | 单次导出超时（1..=300） |
+
+指标名前缀 `fluxgate.`；histogram 分解为 `_bucket`/`_sum`/`_count` 三序列，`le` 标签原样保留。
+成本面额外导出 `fluxgate.cost_usd_total{vendor,model}`（counter）与 `fluxgate.cost_usd{vendor,model}`（gauge）。
+
+> **fail-open**：接收端不可达或返回非 2xx 时只累计 `otlp_export_fail_total` 并 warn，
+> **不阻塞任何请求路径**，也不影响服务启动。构建失败同样 fail-open（服务照常起，日志告警）。
 
 ### [quota] 成本与 token 配额（预扣-回补）
 

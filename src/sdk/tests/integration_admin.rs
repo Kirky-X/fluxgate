@@ -33,6 +33,8 @@ fn sdk_admin_routes_are_subset_of_server_route_table() {
             "        )"
         ),
         ".route(\"/admin/vendors\", get(admin::vendors))",
+        ".route(\"/admin/sessions\", get(admin::sessions))",
+        ".route(\"/admin/context-stats\", get(admin::context_stats))",
     ];
     for pattern in &expected {
         assert!(
@@ -53,7 +55,10 @@ fn sdk_admin_routes_are_subset_of_server_route_table() {
                 ROUTE_TABLE_SRC.contains(".delete(admin::delete_model)"),
                 "DELETE /admin/models/{{id}} 绑定缺失"
             ),
-            ("GET", "admin/models") | ("GET", "admin/vendors") => {
+            ("GET", "admin/models")
+            | ("GET", "admin/vendors")
+            | ("GET", "admin/sessions")
+            | ("GET", "admin/context-stats") => {
                 // 已由 expected 精确模式覆盖
             }
             ("GET", "api/v1/health") => {
@@ -363,4 +368,126 @@ async fn admin_requests_bounded_by_total_timeout() {
         matches!(health_err, FluxgateSdkError::Timeout { .. }),
         "health 应报 Timeout，实际: {health_err:?}"
     );
+}
+
+/// GET /admin/sessions — 聚合形状与 limit 查询串透传。
+#[tokio::test]
+async fn list_sessions_returns_rows_and_passes_limit() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("GET", "/admin/sessions")
+        .match_query(mockito::Matcher::UrlEncoded("limit".into(), "10".into()))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "limit": 10,
+                "rows": [{
+                    "session_key": "s-a",
+                    "request_count": 3,
+                    "prompt_tokens": 600,
+                    "completion_tokens": 30,
+                    "cache_read_tokens": 60,
+                    "cache_write_tokens": 6,
+                    "total_cost": 1.5,
+                    "first_at": 100,
+                    "last_at": 102,
+                    "title": "first a"
+                }]
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = build_client(&server.url());
+    let response = client.list_sessions(Some(10)).await.expect("sessions ok");
+
+    assert_eq!(response.limit, 10);
+    assert_eq!(response.rows.len(), 1);
+    let row = &response.rows[0];
+    assert_eq!(row.session_key, "s-a");
+    assert_eq!(row.request_count, 3);
+    assert_eq!(row.prompt_tokens, 600);
+    assert_eq!(row.cache_read_tokens, 60);
+    assert!((row.total_cost - 1.5).abs() < 1e-9);
+    assert_eq!(row.first_at, 100);
+    assert_eq!(row.last_at, 102);
+    assert_eq!(row.title, "first a");
+    mock.assert_async().await;
+}
+
+/// GET /admin/sessions 未传 limit 时不带查询串（服务端取缺省 50）。
+#[tokio::test]
+async fn list_sessions_without_limit_sends_no_query() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("GET", "/admin/sessions")
+        .match_query(mockito::Matcher::Missing)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"limit":50,"rows":[]}"#)
+        .create_async()
+        .await;
+
+    let client = build_client(&server.url());
+    let response = client.list_sessions(None).await.expect("sessions ok");
+    assert_eq!(response.limit, 50);
+    assert!(response.rows.is_empty());
+    mock.assert_async().await;
+}
+
+/// GET /admin/context-stats — 五桶与份额形状。
+#[tokio::test]
+async fn context_stats_returns_buckets_and_share() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("GET", "/admin/context-stats")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "rows": [{
+                    "model": "ctx-m",
+                    "request_count": 5,
+                    "avg_occupancy": 0.64,
+                    "cache_read_share": 0.5,
+                    "bucket_counts": [1, 0, 1, 1, 2]
+                }]
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = build_client(&server.url());
+    let response = client.context_stats().await.expect("stats ok");
+    assert_eq!(response.rows.len(), 1);
+    let row = &response.rows[0];
+    assert_eq!(row.model, "ctx-m");
+    assert_eq!(row.bucket_counts, [1, 0, 1, 1, 2]);
+    assert!((row.avg_occupancy - 0.64).abs() < 1e-9);
+    assert!((row.cache_read_share - 0.5).abs() < 1e-9);
+    mock.assert_async().await;
+}
+
+/// `[usage_insights]` 关闭 → 网关 404，SDK 映射 Api 错误（不静默返回空）。
+#[tokio::test]
+async fn insights_disabled_404_maps_to_api_error() {
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("GET", "/admin/sessions")
+        .with_status(404)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"error":{"type":"not_found","message":"disabled"}}"#)
+        .create_async()
+        .await;
+
+    let client = build_client(&server.url());
+    match client.list_sessions(None).await {
+        Err(FluxgateSdkError::Api(ApiError { status, .. })) => {
+            assert_eq!(status, 404, "关闭必须是 404 而非其他状态");
+        }
+        other => panic!("应映射 Api(404)，实际: {other:?}"),
+    }
 }

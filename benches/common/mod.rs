@@ -278,6 +278,8 @@ pub fn routing_config() -> Config {
         lexcompress: Default::default(),
         responses: Default::default(),
         metrics: Default::default(),
+        otlp: Default::default(),
+        usage_insights: Default::default(),
     }
 }
 

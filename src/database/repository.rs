@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 use crate::database::{
-    raw_statement, CostGroupBy, CostUsageRow, LogFilter, RequestLog, TokenUsageRow,
-    VendorModelCostRow, VendorStatusRecord,
+    raw_statement, ContextStatRow, CostGroupBy, CostUsageRow, LogFilter, RequestLog, SessionRow,
+    TokenUsageRow, VendorModelCostRow, VendorStatusRecord,
 };
 use crate::i18n::t_args;
 use dbnexus::{DbError, DbPool, Session};
@@ -89,11 +89,20 @@ async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> 
     // 无长度键规格的 TEXT 索引（1170 BLOB/TEXT column used in key specification
     // without a key length）；255 字符 = 1020 字节，在 3072 字节上限内，与
     // sqlite/postgres 的全列索引同语义（非唯一索引，等值/前缀查找等价）。
-    const INDEXES: [(&str, &str, &str); 9] = [
+    const INDEXES: [(&str, &str, &str); 10] = [
         ("idx_timestamp", "request_logs", "timestamp"),
         ("idx_vendor", "request_logs", "actual_vendor"),
         ("idx_model", "request_logs", "abstract_model(255)"),
         ("idx_request_id", "request_logs", "request_id"),
+        // 复合索引只服务标题查询的 (session_key, timestamp) 等值定位。
+        // 它**不**加速 sessions/context-stats 的聚合：9 个输出列里 7 个不在
+        // 索引中，非覆盖索引 + 每行回表实测比全表扫更慢（优化器还会被带离
+        // idx_timestamp）。聚合靠时间窗走 idx_timestamp。
+        (
+            "idx_request_logs_session",
+            "request_logs",
+            "session_key, timestamp",
+        ),
         ("idx_token_usage_date", "token_usage", "date"),
         (
             "idx_token_usage_key_date",
@@ -225,6 +234,7 @@ impl Repository {
     /// 调用方（AsyncLogger 通道内保序，先 flush 缓冲中的占位 INSERT）在
     /// 流终止点以本方法收尾。无匹配行（占位被 gate 拒发等）时静默成功——
     /// 日志面失败不失败请求。
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_stream_usage(
         &self,
         request_id: &str,
@@ -232,15 +242,19 @@ impl Repository {
         prompt_tokens: i64,
         completion_tokens: i64,
         total_tokens: i64,
+        cache_read_tokens: Option<i64>,
+        cache_write_tokens: Option<i64>,
     ) -> Result<(), DbError> {
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
-        let sql = "UPDATE request_logs SET response = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ? WHERE request_id = ?";
-        let params: [sea_orm::Value; 5] = [
+        let sql = "UPDATE request_logs SET response = ?, prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ? WHERE request_id = ?";
+        let params: [sea_orm::Value; 7] = [
             response.into(),
             prompt_tokens.into(),
             completion_tokens.into(),
             total_tokens.into(),
+            cache_read_tokens.into(),
+            cache_write_tokens.into(),
             request_id.into(),
         ];
         let stmt = raw_statement(conn.get_database_backend(), sql, params);
@@ -296,8 +310,9 @@ impl Repository {
                 abstract_model, messages, actual_vendor, actual_model,
                 routing_strategy, status_code, response, error_message,
                 prompt_tokens, completion_tokens, total_tokens, duration_ms,
-                cost_usd
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cost_usd, session_key, context_window_tokens,
+                cache_read_tokens, cache_write_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#;
         let params: Vec<Value> = vec![
             log.request_id.clone().into(),
@@ -317,6 +332,10 @@ impl Repository {
             log.total_tokens.into(),
             log.duration_ms.into(),
             log.cost_usd.into(),
+            log.session_key.clone().into(),
+            log.context_window_tokens.into(),
+            log.cache_read_tokens.into(),
+            log.cache_write_tokens.into(),
         ];
         (SQL.to_string(), params)
     }
@@ -521,6 +540,153 @@ impl Repository {
             .collect())
     }
 
+    /// 会话聚合（`GET /admin/sessions`）：按 `session_key` 分组，
+    /// NULL 会话排除（无归属语义）。标题取该会话首条 `messages` 前 80 字符。
+    /// 聚合只统计 `since_ts` 之后的行：`request_logs` 无保留策略，全史聚合是
+    /// 线性全表扫（百万行级秒级）；时间窗让查询走 `idx_timestamp`。
+    pub async fn query_sessions(
+        &self,
+        since_ts: i64,
+        limit: u32,
+    ) -> Result<Vec<SessionRow>, DbError> {
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let sql = format!(
+            "SELECT session_key, \
+             {cnt} AS request_count, \
+             {p} AS prompt_tokens, {c} AS completion_tokens, \
+             {cr} AS cache_read_tokens, {cw} AS cache_write_tokens, \
+             SUM(COALESCE(cost_usd, 0)) AS total_cost, \
+             MIN(timestamp) AS first_at, MAX(timestamp) AS last_at \
+             FROM request_logs WHERE session_key IS NOT NULL AND status_code = 200 \
+             AND timestamp >= ? \
+             GROUP BY session_key ORDER BY last_at DESC LIMIT ?",
+            cnt = count_expr(backend),
+            p = sum_expr(backend, "prompt_tokens"),
+            c = sum_expr(backend, "completion_tokens"),
+            cr = sum_expr(backend, "cache_read_tokens"),
+            cw = sum_expr(backend, "cache_write_tokens"),
+        );
+        let stmt = raw_statement(
+            backend,
+            &sql,
+            vec![since_ts.into(), i64::from(limit).into()],
+        );
+        let rows = conn.query_all_raw(stmt).await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows.iter() {
+            let session_key: String = row.try_get("", "session_key").unwrap_or_default();
+            let first_at: i64 = row.try_get("", "first_at").unwrap_or_default();
+            // 标题：该会话首条消息摘要（会话起点那一行）
+            // 标题行 = 聚合已算出的 first_at 那一行，按 (session_key, timestamp)
+            // 精确命中——走复合索引，无需临时排序；错误上浮而非静默置空。
+            let title_stmt = raw_statement(
+                backend,
+                // 不截断 messages：JSON 被切开后无法解析，`session_title` 会
+                // 退化成原始 JSON 前缀（含 system 提示词），比传输开销更糟。
+                // ORDER BY id 消歧：timestamp 是秒级，同秒多请求时否则取到
+                // 哪条由存储层决定。
+                "SELECT messages FROM request_logs \
+                 WHERE session_key = ? AND timestamp = ? ORDER BY id ASC LIMIT 1",
+                vec![session_key.clone().into(), first_at.into()],
+            );
+            let title = conn
+                .query_all_raw(title_stmt)
+                .await?
+                .first()
+                .and_then(|r| r.try_get::<Option<String>>("", "messages").ok())
+                .flatten()
+                .map(|m| session_title(&m))
+                .unwrap_or_default();
+            out.push(SessionRow {
+                session_key,
+                request_count: row.try_get("", "request_count").unwrap_or_default(),
+                prompt_tokens: row.try_get("", "prompt_tokens").unwrap_or_default(),
+                completion_tokens: row.try_get("", "completion_tokens").unwrap_or_default(),
+                cache_read_tokens: row.try_get("", "cache_read_tokens").unwrap_or_default(),
+                cache_write_tokens: row.try_get("", "cache_write_tokens").unwrap_or_default(),
+                total_cost: row.try_get("", "total_cost").unwrap_or_default(),
+                first_at,
+                last_at: row.try_get("", "last_at").unwrap_or_default(),
+                title,
+            });
+        }
+        Ok(out)
+    }
+
+    /// 上下文利用率分桶（`GET /admin/context-stats`）：按模型聚合。
+    /// 占用率分母为 `context_window_tokens`，分子为输入侧 token
+    ///（prompt + cache_read + cache_write，均为占窗的输入部分）。
+    /// 窗口未登记的模型行不参与（分母缺失）。
+    pub async fn query_context_stats(&self, since_ts: i64) -> Result<Vec<ContextStatRow>, DbError> {
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        // 子查询先投影出 input_tokens / window_tokens，外层桶表达式只做比较
+        // （原实现把 COALESCE 组合按桶内联 9 次，实测 1M 行多付 42%）。
+        let sql = format!(
+            "SELECT model, \
+             {cnt} AS request_count, \
+             {inp} AS input_tokens, \
+             {cr} AS cache_read_tokens, \
+             MAX(window_tokens) AS window_tokens, \
+             {b0} AS b0, {b1} AS b1, {b2} AS b2, {b3} AS b3, {b4} AS b4 \
+             FROM ( \
+                 SELECT actual_model AS model, \
+                        {INPUT_TOKENS_EXPR} AS input_tokens, \
+                        COALESCE(cache_read_tokens, 0) AS cache_read_tokens, \
+                        context_window_tokens AS window_tokens \
+                 FROM request_logs \
+                 WHERE context_window_tokens IS NOT NULL AND status_code = 200 \
+                   AND timestamp >= ? \
+             ) AS base \
+             GROUP BY model ORDER BY model",
+            cnt = count_expr(backend),
+            inp = sum_expr(backend, "input_tokens"),
+            cr = sum_expr(backend, "cache_read_tokens"),
+            b0 = bucket_sum_expr(backend, 0),
+            b1 = bucket_sum_expr(backend, 1),
+            b2 = bucket_sum_expr(backend, 2),
+            b3 = bucket_sum_expr(backend, 3),
+            b4 = bucket_sum_expr(backend, 4),
+        );
+        let stmt = raw_statement(backend, &sql, vec![since_ts.into()]);
+        let rows = conn.query_all_raw(stmt).await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let request_count: i64 = row.try_get("", "request_count").unwrap_or_default();
+                let input_tokens: i64 = row.try_get("", "input_tokens").unwrap_or_default();
+                let cache_read: i64 = row.try_get("", "cache_read_tokens").unwrap_or_default();
+                let window: i64 = row.try_get("", "window_tokens").unwrap_or(1);
+                let denom = request_count.max(1) as f64;
+                ContextStatRow {
+                    model: row.try_get("", "model").unwrap_or_default(),
+                    request_count,
+                    avg_occupancy: if window > 0 {
+                        (input_tokens as f64 / denom) / window as f64
+                    } else {
+                        0.0
+                    },
+                    cache_read_share: if input_tokens > 0 {
+                        cache_read as f64 / input_tokens as f64
+                    } else {
+                        0.0
+                    },
+                    bucket_counts: [
+                        row.try_get("", "b0").unwrap_or_default(),
+                        row.try_get("", "b1").unwrap_or_default(),
+                        row.try_get("", "b2").unwrap_or_default(),
+                        row.try_get("", "b3").unwrap_or_default(),
+                        row.try_get("", "b4").unwrap_or_default(),
+                    ],
+                }
+            })
+            .collect())
+    }
+
     /// CostTracker 启动恢复聚合：按 `(vendor, model)` 分组对四档成本求和，
     /// 窗口 = 最近 `window_hours` 小时（date/hour 联合下界；cutoff 由本地
     /// 时钟计算后参数化，规避跨后端时间函数方言差）。空窗口返回空集。
@@ -574,6 +740,139 @@ impl Repository {
 /// 整数聚合列投影（纯函数）：`SUM(bigint)` 在 postgres 是 `numeric`、在
 /// mysql 是 `decimal`，与 i64 解码不兼容（`unwrap_or_default` 静默归 0），
 /// 故按后端显式 CAST 回整数类型；sqlite 的 SUM 保持整数类型，原样即可。
+/// 会话标题：从请求日志的 `messages` 摘要提取首条用户消息前 80 字符。
+/// `messages` 可能是 JSON 数组（openai/anthropic 形状）或截断后的非
+/// JSON 文本；两种形态都要产出可读标题，不能因解析失败留空。
+fn session_title(messages: &str) -> String {
+    const LIMIT: usize = 80;
+    let text = serde_json::from_str::<serde_json::Value>(messages)
+        .ok()
+        .and_then(|value| {
+            let array = value.as_array()?;
+            // 只取 user 消息：system 消息常含运营方指令/路由提示，
+            // 作为会话标题外露会泄漏内部配置。
+            array
+                .iter()
+                .filter(|item| item.get("role").and_then(|r| r.as_str()) == Some("user"))
+                .find_map(|item| {
+                    let content = item.get("content")?;
+                    if let Some(text) = content.as_str() {
+                        return Some(text.to_string());
+                    }
+                    content.as_array().and_then(|blocks| {
+                        blocks.iter().find_map(|block| {
+                            block
+                                .get("text")
+                                .and_then(|t| t.as_str())
+                                .map(str::to_string)
+                        })
+                    })
+                })
+        })
+        .unwrap_or_else(|| messages.to_string());
+    let trimmed: String = text.chars().take(LIMIT).collect();
+    trimmed.replace('\n', " ").trim().to_string()
+}
+
+/// 输入侧 token 表达式（占窗部分）。
+///
+/// 口径约束：`request_logs` 只存 `actual_vendor`（id），不存协议类型，查询侧
+/// 无法区分 Inclusive（OpenAI/Gemini：`prompt_tokens` 已含 `cache_read`）与
+/// Exclusive（Anthropic：`prompt_tokens` 不含）。为让两种语义都**不重复
+/// 计数**，分子取 `prompt + cache_write`：
+/// - Inclusive：`prompt` 已含 `cache_read`，再加 `cache_write` 即真实入窗量；
+/// - Exclusive：少计 `cache_read`，故该协议的占用率是**下界**（已文档披露）。
+///
+/// 选择不重复计数而非上界：重复计数会让占用率虚高、分桶误报；下界只是
+/// 保守。`cache_read_tokens` 列仍保留上游原值，`cache_read_share` 不受影响。
+const INPUT_TOKENS_EXPR: &str = "(COALESCE(prompt_tokens, 0) + COALESCE(cache_write_tokens, 0))";
+
+/// 桶表达式用到的预投影列名（子查询内已算好，外层只比较）。
+const BUCKET_INPUT_COL: &str = "input_tokens";
+const BUCKET_WINDOW_COL: &str = "window_tokens";
+
+/// 五分位桶求和（`idx` 0..4 对应 <20% / 20-40% / 40-60% / 60-80% / >=80%）。
+/// PG/MySQL 的 `SUM(CASE ...)` 返回 numeric/decimal，必须 CAST 回整数，
+/// 否则按 i64 解码失败会被静默吞成 0（见 `int_sum_expr` 的注释）。
+fn bucket_sum_expr(backend: DatabaseBackend, idx: u8) -> String {
+    // 桶 i 覆盖 [i*20%, (i+1)*20%)：以 `expr*5` 与 `window*(i+1)` 比较。
+    let lower = if idx == 0 {
+        String::new()
+    } else {
+        format!("{BUCKET_INPUT_COL} * 5 >= {BUCKET_WINDOW_COL} * {idx}")
+    };
+    let upper = if idx == 4 {
+        String::new()
+    } else {
+        format!("{BUCKET_INPUT_COL} * 5 < {BUCKET_WINDOW_COL} * {}", idx + 1)
+    };
+    let cond = match (lower.is_empty(), upper.is_empty()) {
+        (true, false) => upper,
+        (false, true) => lower,
+        (false, false) => format!("{lower} AND {upper}"),
+        (true, true) => unreachable!("bucket 0 与 4 各有一侧条件"),
+    };
+    format!(
+        "CAST(SUM(CASE WHEN {cond} THEN 1 ELSE 0 END) AS {})",
+        match backend {
+            DatabaseBackend::Postgres => "BIGINT",
+            DatabaseBackend::MySql => "SIGNED",
+            _ => "INTEGER",
+        }
+    )
+}
+
+/// 计数表达式：MySQL 的 `COUNT(*)` 返回 `BIGINT UNSIGNED`，与 `i64` 解码
+/// 不兼容（sqlx 的 int 兼容检查要求非 UNSIGNED），须 CAST 成 SIGNED。
+fn count_expr(backend: DatabaseBackend) -> String {
+    match backend {
+        DatabaseBackend::MySql => "CAST(COUNT(*) AS SIGNED)".to_string(),
+        _ => "COUNT(*)".to_string(),
+    }
+}
+
+/// 求和表达式（不含别名，供模板自行拼 `AS`）：PG/MySQL 的 SUM 返回
+/// numeric/decimal，需 CAST 回整数；sqlite 原生整数。
+fn sum_expr(backend: DatabaseBackend, column: &str) -> String {
+    match backend {
+        DatabaseBackend::Postgres => format!("CAST(SUM({column}) AS BIGINT)"),
+        DatabaseBackend::MySql => format!("CAST(SUM({column}) AS SIGNED)"),
+        _ => format!("SUM({column})"),
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::session_title;
+
+    #[test]
+    fn session_title_prefers_first_user_message() {
+        let messages = r#"[{"role":"system","content":"SECRET SYSTEM PROMPT"},{"role":"user","content":"hello there"}]"#;
+        assert_eq!(session_title(messages), "hello there", "必须跳过 system");
+    }
+
+    /// 超长消息截 80 字符（按字符而非字节）。
+    #[test]
+    fn session_title_truncates_to_80_chars() {
+        let long = "字".repeat(200);
+        let messages = format!(r#"[{{"role":"user","content":"{long}"}}]"#);
+        assert_eq!(session_title(&messages).chars().count(), 80);
+    }
+
+    /// 非 JSON（被截断的旧行）走原文回退，不 panic。
+    #[test]
+    fn session_title_falls_back_to_raw_text() {
+        assert_eq!(session_title("plain text prefix"), "plain text prefix");
+    }
+
+    /// 多模态内容取首个 text 块。
+    #[test]
+    fn session_title_reads_first_text_block() {
+        let messages = r#"[{"role":"user","content":[{"type":"image"},{"type":"text","text":"describe this"}]}]"#;
+        assert_eq!(session_title(messages), "describe this");
+    }
+}
+
 fn int_sum_expr(backend: DatabaseBackend, column: &str) -> String {
     match backend {
         DatabaseBackend::Postgres => format!("CAST(SUM({column}) AS BIGINT) AS {column}"),
@@ -620,6 +919,18 @@ fn map_request_log(row: &QueryResult) -> RequestLog {
             .try_get::<Option<i64>>("", "duration_ms")
             .unwrap_or(None),
         cost_usd: row.try_get::<Option<f64>>("", "cost_usd").unwrap_or(None),
+        session_key: row
+            .try_get::<Option<String>>("", "session_key")
+            .unwrap_or(None),
+        context_window_tokens: row
+            .try_get::<Option<i64>>("", "context_window_tokens")
+            .unwrap_or(None),
+        cache_read_tokens: row
+            .try_get::<Option<i64>>("", "cache_read_tokens")
+            .unwrap_or(None),
+        cache_write_tokens: row
+            .try_get::<Option<i64>>("", "cache_write_tokens")
+            .unwrap_or(None),
     }
 }
 
@@ -771,6 +1082,10 @@ mod schema_tests {
                     "total_tokens",
                     "duration_ms",
                     "cost_usd",
+                    "session_key",
+                    "context_window_tokens",
+                    "cache_read_tokens",
+                    "cache_write_tokens",
                 ],
             ),
             (

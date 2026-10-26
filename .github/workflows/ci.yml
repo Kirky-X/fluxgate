@@ -165,6 +165,10 @@ jobs:
       # 口径（full + db-sqlite，mockito 自包含）
       - name: Run tests
         run: cargo test --workspace
+      # otlp / masking 等非默认特性不进 full：默认口径的 cargo test 不会
+      # 编译它们，模块里的缺陷会静默合入。此步单独编译并跑这些特性的测试。
+      - name: Run feature-gated tests (otlp)
+        run: cargo test --features otlp,db-sqlite
 
   #-----------------------------------------------------------------------------
   # 三平台编译（跨平台约束的 CI 落点）

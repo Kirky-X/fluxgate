@@ -34,7 +34,11 @@ CREATE TABLE IF NOT EXISTS request_logs (
     completion_tokens BIGINT,
     total_tokens BIGINT,
     duration_ms BIGINT,
-    cost_usd DOUBLE DEFAULT 0.0
+    cost_usd DOUBLE DEFAULT 0.0,
+    session_key VARCHAR(255),
+    context_window_tokens BIGINT,
+    cache_read_tokens BIGINT,
+    cache_write_tokens BIGINT
 ) ENGINE = InnoDB;
 
 -- Token 消耗统计表

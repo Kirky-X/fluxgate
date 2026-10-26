@@ -30,6 +30,8 @@
   - [GET /admin/logs/search](#get-adminlogssearch)
   - [GET /admin/stats/tokens](#get-adminstatstokens)
   - [GET /admin/cost](#get-admincost)
+  - [GET /admin/sessions](#get-adminsessions)
+  - [GET /admin/context-stats](#get-admincontext-stats)
   - [GET /admin/metrics](#get-adminmetrics)
   - [GET /admin/vendors](#get-adminvendors)
   - [GET /admin/vendors/:id/status](#get-adminvendorsidstatus)
@@ -791,7 +793,7 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 ]
 ```
 
-> `cost_usd` 字段当前恒为 `null`：请求路径构造日志时未写入成本（成本计算仅进内存指标，见 [GET /admin/stats/tokens](#get-adminstatstokens) 注记）。
+> `cost_usd` 按 `[[model_catalog]]` 四档求和 × 目录单价落库（rerank 按每千文档价）；未登记单价写 `0`、无 usage 写 `null`。分账聚合见 [GET /admin/cost](#get-admincost)。
 
 **错误码**: `database_error`(500)
 
@@ -935,6 +937,76 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
   -H "Authorization: Bearer $API_KEY" \
   -H "x-fluxgate-cost-key: $FILTER_KEY"
 ```
+
+---
+
+### GET /admin/sessions
+
+按会话聚合成本与 token（`[usage_insights]` 开启时可用；关闭返回 404）。
+
+**查询参数**
+
+| 参数 | 必填 | 说明 |
+|:-----|:-----|:-----|
+| `limit` | 否 | 返回会话数上限，缺省 50、上限 500 |
+| `window_hours` | 否 | 回看小时数，缺省 168（7 天）、上限 8760 |
+
+**响应**
+
+```json
+{
+  "limit": 20,
+  "window_hours": 168,
+  "rows": [
+    {
+      "session_key": "sess-abc",
+      "request_count": 3,
+      "prompt_tokens": 600,
+      "completion_tokens": 30,
+      "cache_read_tokens": 60,
+      "cache_write_tokens": 6,
+      "total_cost": 1.5,
+      "first_at": 1761436800,
+      "last_at": 1761436802,
+      "title": "first message from user"
+    }
+  ]
+}
+```
+
+> **口径**：只统计 `status_code = 200` 的请求；`session_key` 为 `NULL` 的行不参与
+>（无会话语义）。`title` 取该会话首条 `role = "user"` 消息的前 80 字符。
+> 关闭 `[usage_insights]` 时返回 404（`error.type = "not_found"`）。
+
+---
+
+### GET /admin/context-stats
+
+按模型聚合上下文窗口占用率、缓存读份额与五桶分布。
+
+**查询参数**：`window_hours`（同上，缺省 168）。
+
+**响应**
+
+```json
+{
+  "window_hours": 168,
+  "rows": [
+    {
+      "model": "claude-sonnet-4",
+      "request_count": 5,
+      "avg_occupancy": 0.64,
+      "cache_read_share": 0.5,
+      "bucket_counts": [1, 0, 1, 1, 2]
+    }
+  ]
+}
+```
+
+> **口径**：占用率 = `(prompt + cache_write) / context_window`——不计 `cache_read`
+> 以避免 OpenAI/Gemini（Inclusive，prompt 已含缓存读）重复计数；Anthropic
+>（Exclusive）因此是下界。`bucket_counts` 五桶边界为 20%/40%/60%/80%。
+> `cache_read_share` 在 Exclusive 协议下可 >1。目录未登记的模型（无窗口）不参与。
 
 ---
 

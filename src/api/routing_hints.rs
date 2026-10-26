@@ -12,6 +12,12 @@ use sha2::{Digest, Sha256};
 const FALLBACK_HASH_INPUT_BYTES: usize = 2048;
 /// 兜底会话键的 hex 截断长度（64 bit，碰撞面与键长度平衡）
 const FALLBACK_HASH_HEX_LEN: usize = 16;
+
+/// `X-Session-Id` 头部值长度上限。跨后端契约：MySQL 列为 `VARCHAR(255)`，
+/// PG b-tree 索引条目上限约 2704 字节；超长值会让整批日志写入失败并被
+/// 丢弃（`async_logger` 的批回滚语义）。超限值**截断**而非丢弃——会话
+/// 归属仍可近似成立，且不破坏既有请求。
+const SESSION_KEY_MAX_BYTES: usize = 255;
 /// `anthropic-beta` 头值长度上限（字节）
 const ANTHROPIC_BETA_MAX_LEN: usize = 4096;
 
@@ -54,7 +60,7 @@ impl RoutingHints {
                 .get("x-session-id")
                 .and_then(|v| v.to_str().ok())
                 .filter(|s| !s.is_empty())
-                .map(String::from),
+                .map(truncate_session_key),
             preferred_weight: headers
                 .get("x-weight")
                 .and_then(|v| v.to_str().ok())
@@ -107,6 +113,19 @@ fn validate_anthropic_beta(value: &str) -> Option<String> {
 /// messages 前缀兜底会话键 — 同前缀的对话粘同一 vendor。
 /// 输入为 `serde_json::to_string(messages[0])` 的前 2KB（字符边界安全
 /// 截断），SHA256 hex 截前 16 字符。
+/// 截断会话键到 [`SESSION_KEY_MAX_BYTES`]（按 UTF-8 字符边界安全截断）。
+fn truncate_session_key(raw: &str) -> String {
+    if raw.len() <= SESSION_KEY_MAX_BYTES {
+        return raw.to_string();
+    }
+    let mut take = SESSION_KEY_MAX_BYTES;
+    while take > 0 && !raw.is_char_boundary(take) {
+        take -= 1;
+    }
+    tracing::warn!("session key header exceeds {SESSION_KEY_MAX_BYTES} bytes; truncated to {take}");
+    raw[..take].to_string()
+}
+
 pub fn fallback_session_key(body: &Value) -> Option<String> {
     let first = body.get("messages")?.get(0)?;
     let serialized = serde_json::to_string(first).ok()?;
@@ -125,6 +144,24 @@ pub fn fallback_session_key(body: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
+
+    /// 超长会话键截到 255 字节（直接测截断函数——HeaderMap 自身会拒收
+    /// 超长头值，无法经头部路径构造该用例）。
+    #[test]
+    fn truncates_overlong_session_key() {
+        let long = "a".repeat(400);
+        let key = super::truncate_session_key(&long);
+        assert_eq!(key.len(), SESSION_KEY_MAX_BYTES, "必须截到上限");
+
+        // 多字节边界：200 个汉字 = 600 字节，截断点必须落在字符边界
+        let cjk = "字".repeat(200);
+        let key = super::truncate_session_key(&cjk);
+        assert!(key.len() <= SESSION_KEY_MAX_BYTES);
+        assert!(key.chars().all(|c| c == '字'), "不得产生半个字符");
+
+        // 未超限原样返回
+        assert_eq!(super::truncate_session_key("short"), "short");
+    }
 
     #[test]
     fn session_key_from_header() {

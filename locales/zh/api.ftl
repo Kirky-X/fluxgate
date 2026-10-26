@@ -120,3 +120,8 @@ api-gemini-schema-ref-unsupported = Gemini responseSchema 的 $ref 必须指向 
 api-gemini-native-vendor-mismatch = X-Vendor "{ $vendor }" 不是 Gemini 原生厂商
 router-gemini-no-native-vendor = 模型 "{ $model }" 无 Gemini 原生厂商：请声明 type_ = "gemini" 并启用厂商/模型
 middleware-gemini-unauthorized = Gemini 请求缺少有效的 API key
+
+usage-insights-disabled = 会话/上下文统计已关闭；启用 [usage_insights] 后可用
+config-otlp-endpoint-invalid = OTLP 端点不是合法 URL：{ $value }
+config-otlp-endpoint-scheme = OTLP 端点 scheme 必须是 http 或 https，实际 "{ $value }"
+config-otlp-endpoint-userinfo = OTLP 端点不得内嵌凭证（userinfo）

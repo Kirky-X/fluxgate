@@ -68,6 +68,11 @@ logging = ["dep:inklog"]
 # sdk：HTTP 客户端 SDK（src/sdk，调用已部署网关的 Rust 客户端）；reqwest 复用 vendor-management 的 optional 依赖。
 # eventsource-stream 仅做 SSE 事件分帧，url 供 base URL 拼接。
 sdk = ["dep:reqwest", "dep:eventsource-stream", "dep:url"]
+# OTLP 指标导出（usage-observability）：合规敏感面按需启用，不进 full——
+# 对外导出指标/成本流需部署方显式开启（delta spec otlp-export R-otlp-003 双门控的编译半边）。
+# cost-tracking / sdforge-integration 为其编译前提：桥接读 sdforge /metrics 渲染文本
+# （单一真源）+ CostTracker 快照。
+otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "cost-tracking", "sdforge-integration"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
@@ -155,6 +160,14 @@ subtle = { version = "2.6", default-features = false, features = ["std"], option
 cocoon = { version = "0.5", default-features = false, features = ["std", "getrandom", "thiserror"], optional = true }
 secrecy = { version = "0.10", default-features = false, optional = true }
 
+# OTLP 指标导出（otlp feature，usage-observability）：/metrics 文本 + CostTracker 快照
+# 桥接为 SdkMeterProvider http-proto 推送。仅 metrics 面（免 trace/logs proto 生成代码之外的
+# API 面）；http-proto 自带 otlp 内部 trace/metrics 面（proto 生成不可拆）。reqwest 与主图
+# 同 0.13 收敛单构建；rustls TLS 令 otlp 单独组合也具备 https 端点能力。
+opentelemetry = { version = "0.33", default-features = false, features = ["metrics"], optional = true }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["metrics"], optional = true }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
+
 
 [dev-dependencies]
 # retry 预算测试用 paused clock（start_paused）；特性与主 entries 联合（test-util 叠加在 rt/sync/time 上）
@@ -172,6 +185,9 @@ http-body = { version = "1", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 # mockito 关默认：default = color（colored 彩色终端输出）+ parking_lot，均非测试断言所需
 mockito = { version = "1", default-features = false }
+# OTLP 桥测试用 InMemory recorder：sdk 的 testing 面（resolver v2 下仅并入测试目标，
+# 正常构建不含）；metrics 面与主 optional 条目联合去重
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["metrics", "testing"] }
 # 测试需注入 limiteron MockClock（假时钟驱动熔断超时 / 限流窗口重置）；MockClock 仅在 test-clock feature 下公开。
 limiteron = { version = "0.3.0-rc.8", default-features = false, features = ["test-clock"] }
 # Criterion 组件级基准（透传/转换/路由决策）。只留 cargo_bench_support；裁掉 plotters（HTML 图）与 rayon（单机基线，单线程统计数值等价）。

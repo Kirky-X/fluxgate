@@ -462,6 +462,8 @@ mod tests {
     fn sample_config(vendor_id: &str) -> Config {
         Config {
             rate_limit: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
             server: ServerConfig {
                 host: "127.0.0.1".into(),

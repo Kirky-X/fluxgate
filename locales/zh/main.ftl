@@ -60,3 +60,6 @@ main-semantic-cache-disabled = 语义缓存已停用：嵌入器加载失败
 main-semantic-cache-feature-missing = [cache.semantic].enabled 需要 semantic-cache feature；已旁路该层
 # 难度定档分类器（[routing.difficulty]）：laya 加载失败 → F3 常驻纯规则降级。
 main-difficulty-classifier-disabled = 定档分类器已停用：laya 加载失败；已进入纯规则模式
+main-otlp-bridge-started = OTLP 指标桥已启动（endpoint: { $endpoint }）
+main-otlp-bridge-build-failed = OTLP 指标桥构建失败，停用导出: { $error }
+main-otlp-teardown-failed = OTLP 指标桥停机收尾失败: { $error }

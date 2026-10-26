@@ -181,6 +181,8 @@ impl crate::storage::RequestLogSink for Database {
         prompt_tokens: i64,
         completion_tokens: i64,
         total_tokens: i64,
+        cache_read_tokens: Option<i64>,
+        cache_write_tokens: Option<i64>,
     ) -> Result<(), crate::error::GateError> {
         self.repository()
             .update_stream_usage(
@@ -189,6 +191,8 @@ impl crate::storage::RequestLogSink for Database {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
             )
             .await
             .map_err(|e| crate::error::GateError::Config {
@@ -218,6 +222,31 @@ impl crate::storage::RequestLogSink for Database {
             .await
             .map_err(|e| crate::error::GateError::Config {
                 message: format!("request log search failed: {e}"),
+            })
+    }
+
+    async fn query_sessions(
+        &self,
+        since_ts: i64,
+        limit: u32,
+    ) -> Result<Vec<crate::storage::SessionRow>, crate::error::GateError> {
+        self.repository()
+            .query_sessions(since_ts, limit)
+            .await
+            .map_err(|e| crate::error::GateError::Config {
+                message: format!("session aggregate query failed: {e}"),
+            })
+    }
+
+    async fn query_context_stats(
+        &self,
+        since_ts: i64,
+    ) -> Result<Vec<crate::storage::ContextStatRow>, crate::error::GateError> {
+        self.repository()
+            .query_context_stats(since_ts)
+            .await
+            .map_err(|e| crate::error::GateError::Config {
+                message: format!("context stats query failed: {e}"),
             })
     }
 }

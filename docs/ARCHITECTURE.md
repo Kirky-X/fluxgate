@@ -95,7 +95,7 @@ flowchart TB
 | `src/middleware/` | 认证中间件与拥塞感知准入中间件 |
 | `src/protocol/` | OpenAI/Anthropic/Responses/Gemini 统一中间表示、协议转换器、SSE 分帧编码 |
 | `src/router/` | 路由决策核心：加权打分、LinUCB、会话亲和 |
-| `src/utils/` | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器 |
+| `src/utils/` | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器、OTLP 指标桥（`otlp.rs`，feature `otlp`） |
 | `src/vendor/` | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价 |
 | `src/error/mod.rs` / `src/error/gate.rs` | `FluxgateError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale） |
 | `src/lib.rs` | 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/storage/vendor/router 路由半边 + api/server/database 应用面） |
@@ -168,7 +168,7 @@ flowchart TB
 | `src/config/` | `mod.rs`：`Config` 结构体（19 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
 | `src/middleware/` | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`lexcompress.rs`：词法压缩（N2，`X-Compress: 1` 触发的确定性剪枝）；`mod.rs`：中间件组织 |
 | `src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`responses/`：Responses wire 类型、入站/出站转换与语义化 SSE 编解码；`gemini/`：Gemini wire 类型、双向转换、JSON Schema 清洗与 SSE 编解码；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3 ） |
-| `src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器 |
+| `src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器；`otlp.rs`（feature `otlp`）：exposition 文本解析 + `OtlpBridge` 周期推送到 OTLP/HTTP-Proto，单一真源为 `sdforge::metrics::global_registry().render()`（与 `/metrics` 同源），导出失败 fail-open 计数 |
 | `src/i18n/` | `catalog.rs`：Fluent 双束编译期内嵌（`OnceLock` 静态缓存）；`locale.rs`：语言检测链与全局 locale 上下文；`mod.rs`：`t()`/`t_args()` 查找门面 |
 | `src/infrastructure/` | `di.rs`：`AsyncKit` 四模块拓扑序组装与 `verify_kit` |
 
@@ -462,7 +462,7 @@ flowchart LR
 
 ### 配置结构
 
-`Config` 顶层 19 段（`src/config/mod.rs:1065-1126`）：
+`Config` 顶层 23 段（`src/config/mod.rs:1065-1126`）：
 
 | 段 | 说明 | 段 | 说明 |
 |---|---|---|---|

@@ -115,6 +115,9 @@ difficulty-laya-decide-failed = laya decide failed: { $error }
 difficulty-laya-request-rejected = decision request rejected: { $error }
 config-responses-retention-hours-out-of-range = [responses] retention_hours out of range: { $value } (valid range: 1-8760 hours)
 config-metrics-cost-restore-window-hours-out-of-range = [metrics] cost_restore_window_hours out of range: { $value } (valid range: 1-8760 hours)
+config-otlp-interval-secs-out-of-range = [otlp] interval_secs out of range: { $value } (valid range: 1-86400 seconds)
+config-otlp-timeout-secs-out-of-range = [otlp] timeout_secs out of range: { $value } (valid range: 1-300 seconds)
+config-otlp-endpoint-required = [otlp] endpoint is required when enabled = true (e.g. http://localhost:4318/v1/metrics)
 config-responses-max-response-bytes-out-of-range = [responses] max_response_bytes out of range: { $value } (valid range: 1024-16777216 bytes)
 config-responses-max-background-jobs-out-of-range = [responses] max_background_jobs out of range: { $value } (valid range: 1-256)
 config-vendor-api-style-unknown = [vendors] api_style of vendor { $vendor } is invalid: "{ $value }" (valid values: chat / responses)

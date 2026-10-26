@@ -18,7 +18,7 @@ pub mod readiness;
 mod request_cost;
 pub mod rerank;
 
-pub(crate) use request_cost::request_cost_usd;
+pub(crate) use request_cost::{request_context_columns, request_cost_usd, ContextColumns};
 pub mod response_cache;
 pub mod responses;
 pub mod route_difficulty_explain;
@@ -749,6 +749,8 @@ mod fallback_guard_tests {
     async fn make_state(vendors: Vec<VendorConfig>, retry: RetrySection) -> Arc<ApiState> {
         let config = Config {
             rate_limit: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
@@ -1072,6 +1074,8 @@ mod cooldown_retry_after {
     ) -> Arc<ApiState> {
         let config = Config {
             rate_limit: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),

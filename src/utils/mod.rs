@@ -15,6 +15,11 @@ pub mod tokens;
 #[cfg(feature = "cost-tracking")]
 pub mod cost_tracker;
 
+// OTLP 桥（usage-observability）：otlp feature 隐含 cost-tracking 与
+// sdforge-integration（文本真源 + 成本快照为其编译前提），见 Cargo.toml 特性注释。
+#[cfg(feature = "otlp")]
+pub mod otlp;
+
 #[cfg(feature = "vendor-management")]
 pub use metrics::{GlobalMetrics, MetricsSnapshot, VendorMetrics};
 pub use retry::{extract_status_code, ErrorCategory};

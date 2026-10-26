@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use crate::api::request_cost_usd;
 use crate::api::RoutingHints;
+use crate::api::{request_context_columns, request_cost_usd};
 use crate::database::RequestLog;
 use crate::error::GateError;
 use crate::i18n::t_args;
@@ -807,6 +807,7 @@ async fn on_dispatch_failure(
         body,
         duration_ms,
         &error,
+        ctx.session_key.as_deref(),
     )
     .await;
     error
@@ -998,6 +999,7 @@ async fn log_stream_dispatch(
         duration_ms,
         200,
         None,
+        ctx.session_key.as_deref(),
     )
     .await;
 }
@@ -1022,6 +1024,7 @@ async fn log_success_dispatch(
         duration_ms,
         200,
         None,
+        ctx.session_key.as_deref(),
     )
     .await;
     // 分账落库（hash 透传 + cache 两类 + 四档单价）。
@@ -1049,6 +1052,7 @@ async fn log_request(
     duration_ms: i64,
     status_code: i32,
     error_message: Option<String>,
+    session_key: Option<&str>,
 ) {
     // LinUCB 奖励回传 — 与落库记账同点（本函数收敛成功/失败
     // 两路，`response: None` = 失败）。门控（接线 + selection 热读）在
@@ -1109,6 +1113,18 @@ async fn log_request(
     // `record_keyed_usage` 记账：hash 透传 + cache 两类 + 四档单价）。
     // 此处保留 usage 提取（RequestLog 落库仍需 prompt/completion/total）。
 
+    // 单次读锁绑定，成本与观测两处共用同一份目录（不深克隆整表）。
+    let ctx_columns = {
+        let cfg = state.config.read();
+        request_context_columns(
+            cfg.usage_insights.enabled,
+            &cfg.model_catalog,
+            &decision.model.model_id,
+            response,
+            session_key,
+        )
+    };
+
     let log = RequestLog {
         id: None,
         request_id: request_id.to_string(),
@@ -1138,6 +1154,10 @@ async fn log_request(
                 response_value,
             )
         }),
+        session_key: ctx_columns.session_key,
+        context_window_tokens: ctx_columns.context_window_tokens,
+        cache_read_tokens: ctx_columns.cache_read_tokens,
+        cache_write_tokens: ctx_columns.cache_write_tokens,
     };
 
     // logger 未接线 = 降级为不落日志（不回退同步直写）
@@ -1162,6 +1182,7 @@ async fn log_failure(
     request: &Value,
     duration_ms: i64,
     error: &FluxgateError,
+    session_key: Option<&str>,
 ) {
     log_request(
         state,
@@ -1173,6 +1194,7 @@ async fn log_failure(
         duration_ms,
         crate::api::status_code_for_error(error),
         Some(error.to_string()),
+        session_key,
     )
     .await;
 }

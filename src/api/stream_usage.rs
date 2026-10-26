@@ -290,6 +290,17 @@ impl StreamUsageRecorder {
         };
         handle.spawn(async move {
             let response = usage_response_value(inner.protocol, &usage);
+            // `[usage_insights]` 门与写侧同源：关闭时缓存两列必须写 NULL，
+            // 否则占位行的 NULL 会被本 UPDATE 覆盖回非 NULL。
+            let insights = inner.state.config.read().usage_insights.enabled;
+            let (cache_read, cache_write) = if insights {
+                (
+                    Some(usage.cache_read as i64),
+                    Some(usage.cache_creation as i64),
+                )
+            } else {
+                (None, None)
+            };
             if let Some(logger) = inner.state.logger.as_ref() {
                 if let Err(e) = logger
                     .update_stream_usage(
@@ -298,6 +309,8 @@ impl StreamUsageRecorder {
                         usage.prompt as i64,
                         usage.completion as i64,
                         (usage.prompt + usage.completion) as i64,
+                        cache_read,
+                        cache_write,
                     )
                     .await
                 {

@@ -115,6 +115,8 @@ mod vendor_fallback_integration {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
         }
     }

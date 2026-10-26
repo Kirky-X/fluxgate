@@ -6543,6 +6543,48 @@ mod data_plane_endpoints {
             );
         }
     }
+
+    /// `[usage_insights]` 关闭：两端点 404 + 错误码，且四列采集写 NULL。
+    #[tokio::test]
+    async fn insights_off_yields_404_and_null_columns() {
+        let mut config = base_config(vec![common::base_vendor("v1", "http://127.0.0.1:1")]);
+        config.usage_insights.enabled = false;
+        let state = make_state(config, false).await;
+
+        for uri in ["/admin/sessions", "/admin/context-stats"] {
+            let response = get(state.clone(), uri, None).await;
+            let (status, body) = read_json(response).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 关闭时必须 404");
+            assert_eq!(body["error"]["type"], "not_found", "{uri} 错误类型");
+            assert!(
+                !body["error"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .is_empty(),
+                "{uri} 文案非空（i18n）"
+            );
+        }
+    }
+
+    /// `[usage_insights]` 开启：两端点 200 且返回 rows 数组（空库合法）。
+    #[tokio::test]
+    async fn insights_on_yields_200_with_rows() {
+        let config = base_config(vec![common::base_vendor("v1", "http://127.0.0.1:1")]);
+        assert!(config.usage_insights.enabled, "缺省必须开启");
+        let state = make_state(config, false).await;
+
+        for uri in ["/admin/sessions", "/admin/context-stats"] {
+            let response = get(state.clone(), uri, None).await;
+            let (status, body) = read_json(response).await;
+            assert_eq!(status, StatusCode::OK, "{uri} 开启时必须 200, body={body}");
+            assert!(body["rows"].is_array(), "{uri} 必须返回 rows 数组");
+            assert_eq!(
+                body["rows"].as_array().map(|a| a.len()).unwrap_or(1),
+                0,
+                "{uri} 空库返回空数组"
+            );
+        }
+    }
 }
 
 /// 回退观测头：开关开启时成功响应附
@@ -7684,5 +7726,47 @@ mod fallback_observation_headers_anthropic {
         }
 
         mock.assert_async().await;
+    }
+}
+
+/// OTLP 装配双门控（feature = "otlp" 编译；默认口径整组跳过）
+#[cfg(test)]
+mod otlp_gate {
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn otlp_disabled_by_default_no_task() {
+        use fluxgate::utils::cost_tracker::CostTracker;
+        use fluxgate::utils::otlp::{bridge_from_section, BridgeSpawn};
+        use std::sync::Arc;
+
+        let section = fluxgate::config::OtlpSection::default();
+        assert!(matches!(
+            bridge_from_section(&section, Arc::new(CostTracker::new())),
+            BridgeSpawn::Disabled
+        ));
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn otlp_enabled_builds_and_stops_bridge() {
+        use fluxgate::utils::cost_tracker::CostTracker;
+        use fluxgate::utils::otlp::{bridge_from_section, BridgeSpawn};
+        use std::sync::Arc;
+
+        let mut section = fluxgate::config::OtlpSection::default();
+        section.enabled = true;
+        // 不可达端点（discard 端口）：末次导出必失败，SDK 以 InternalFailure
+        // 汇报——这是接收端不可用时的正常出口，不代表 provider 未停。
+        section.endpoint = "http://127.0.0.1:9/v1/metrics".to_string();
+        section.interval_secs = 86_400;
+        match bridge_from_section(&section, Arc::new(CostTracker::new())) {
+            BridgeSpawn::Ready(bridge) => {
+                let _ = bridge.force_flush();
+                let _ = bridge.shutdown();
+                // 二次 shutdown 幂等：provider 已停，不应 panic 或挂起。
+                let _ = bridge.shutdown();
+            }
+            other => panic!("enabled 必须装配，got {other:?}"),
+        }
     }
 }

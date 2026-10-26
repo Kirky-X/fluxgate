@@ -28,6 +28,12 @@ pub(crate) struct Assembly {
     pub(crate) hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
     /// 健康探针后台任务句柄（常驻；mode 每周期热读，off = no-op；随停机 abort）。
     pub(crate) probe_handle: Option<tokio::task::JoinHandle<()>>,
+    /// OTLP 桥（feature = "otlp" 且 [otlp].enabled 时装配；None = 禁用）。
+    #[cfg(feature = "otlp")]
+    pub(crate) otlp_bridge: Option<Arc<crate::utils::otlp::OtlpBridge>>,
+    /// OTLP 桥轮询任务句柄（随停机 abort）。
+    #[cfg(feature = "otlp")]
+    pub(crate) otlp_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// 初始化日志系统。
@@ -134,6 +140,40 @@ pub(crate) async fn assemble(
         let window_hours = config_manager.read().metrics.cost_restore_window_hours;
         restore_cost_tracker(&vendor_manager, &database.pool, &db_url, window_hours).await;
     }
+
+    // OTLP 指标桥（feature = "otlp" + [otlp].enabled 双门控）：启动期一次性
+    // 装配；exporter 构建失败 fail-open（warn 后停用，服务不受影响）。
+    #[cfg(feature = "otlp")]
+    let (otlp_bridge, otlp_task) = {
+        match crate::utils::otlp::bridge_from_section(
+            &config_manager.read().otlp,
+            vendor_manager.cost_tracker().clone(),
+        ) {
+            crate::utils::otlp::BridgeSpawn::Disabled => (None, None),
+            crate::utils::otlp::BridgeSpawn::Failed(e) => {
+                tracing::warn!(
+                    "{}",
+                    t_args("main-otlp-bridge-build-failed", &[("error", e)])
+                );
+                (None, None)
+            }
+            crate::utils::otlp::BridgeSpawn::Ready(bridge) => {
+                let task =
+                    tokio::spawn(run_otlp_bridge_loop(bridge.clone(), config_manager.clone()));
+                tracing::info!(
+                    "{}",
+                    t_args(
+                        "main-otlp-bridge-started",
+                        &[(
+                            "endpoint",
+                            redact_endpoint(&config_manager.read().otlp.endpoint)
+                        )]
+                    )
+                );
+                (Some(bridge), Some(task))
+            }
+        }
+    };
 
     // 嵌入兼容组 pin 表（进程内存）：与 Router 共享；配置应用成功（落盘写回
     // 或热载桥接）后清空重新粘着——旧配置时代的组划分/维度基准一并失效。
@@ -435,7 +475,52 @@ pub(crate) async fn assemble(
         pa_shutdown,
         hot_reloader,
         probe_handle,
+        #[cfg(feature = "otlp")]
+        otlp_bridge,
+        #[cfg(feature = "otlp")]
+        otlp_task,
     })
+}
+
+/// 启动日志用的端点脱敏：去掉 userinfo 与 query（凭证可能藏在两者中）。
+#[cfg(feature = "otlp")]
+fn redact_endpoint(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(mut parsed) => {
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            parsed.set_query(None);
+            parsed.to_string()
+        }
+        Err(_) => "<invalid endpoint>".to_string(),
+    }
+}
+
+/// OTLP 桥轮询环（feature = "otlp"）：启动立即首拉（store 先于首次采集），
+/// 之后按 interval 周期；`[otlp].enabled` 热读（false 跳过推送；启动期
+/// disabled 不建任务，事后开启需重启进程）。
+#[cfg(feature = "otlp")]
+async fn run_otlp_bridge_loop(
+    bridge: Arc<crate::utils::otlp::OtlpBridge>,
+    config_manager: Arc<crate::config::ConfigManager>,
+) {
+    use tokio::time::MissedTickBehavior;
+
+    let period = std::time::Duration::from_secs(config_manager.read().otlp.interval_secs.max(1));
+    let mut ticker = tokio::time::interval(period);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    bridge.poll_once();
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        if !config_manager.read().otlp.enabled {
+            // 运行期关闭必须同时清空 store：否则 PeriodicReader 仍按周期把
+            // 上一轮残留样本发出去——「导出总开关」不能只挡采集不挡发送。
+            bridge.clear_series();
+            continue;
+        }
+        bridge.poll_once();
+    }
 }
 
 /// 注册「配置应用成功 → 清空嵌入 pin」钩子（提炼自 assemble 的接缝，

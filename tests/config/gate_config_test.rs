@@ -361,6 +361,8 @@ mod tests {
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
         }
     }
@@ -831,5 +833,91 @@ concurrency = { requests_per_second = 10 }
         let mut config = create_test_config();
         config.model_catalog = (0..1024usize).map(build_entry).collect();
         validate_config(&config).expect("exactly 1024 entries must pass");
+    }
+}
+
+/// `[otlp]` 段：缺省值与边界校验（usage-observability T004）
+#[cfg(test)]
+mod otlp_config {
+    use crate::common;
+    use fluxgate::config::{validate_config, OtlpSection};
+
+    #[test]
+    fn test_otlp_section_defaults() {
+        let otlp = OtlpSection::default();
+        assert!(!otlp.enabled, "缺段/缺字段必须禁用（双门控运行时半边）");
+        assert!(otlp.endpoint.is_empty());
+        assert_eq!(otlp.interval_secs, 60);
+        assert_eq!(otlp.timeout_secs, 10);
+
+        let config = common::test_config(vec![]);
+        assert_eq!(config.otlp, otlp, "Config 缺段走同一 Default");
+        assert!(validate_config(&config).is_ok(), "缺省段合法");
+    }
+
+    #[test]
+    fn test_otlp_interval_secs_out_of_range_rejected() {
+        let mut config = common::test_config(vec![]);
+        config.otlp.interval_secs = 0;
+        assert!(validate_config(&config).is_err(), "0 必须拒绝");
+        config.otlp.interval_secs = 86_401;
+        assert!(validate_config(&config).is_err(), "超上限必须拒绝");
+        config.otlp.interval_secs = 1;
+        assert!(validate_config(&config).is_ok(), "下边界合法");
+        config.otlp.interval_secs = 86_400;
+        assert!(validate_config(&config).is_ok(), "上边界合法");
+    }
+
+    #[test]
+    fn test_otlp_timeout_secs_out_of_range_rejected() {
+        let mut config = common::test_config(vec![]);
+        config.otlp.timeout_secs = 0;
+        assert!(validate_config(&config).is_err(), "0 必须拒绝");
+        config.otlp.timeout_secs = 301;
+        assert!(validate_config(&config).is_err(), "超上限必须拒绝");
+        config.otlp.timeout_secs = 300;
+        assert!(validate_config(&config).is_ok(), "上边界合法");
+    }
+
+    #[test]
+    fn test_otlp_enabled_requires_endpoint() {
+        let mut config = common::test_config(vec![]);
+        config.otlp.enabled = true;
+        config.otlp.endpoint = String::new();
+        assert!(validate_config(&config).is_err(), "enabled 空端点必须拒绝");
+        config.otlp.endpoint = "  ".to_string();
+        assert!(validate_config(&config).is_err(), "纯空白端点必须拒绝");
+        config.otlp.endpoint = "http://localhost:4318/v1/metrics".to_string();
+        assert!(validate_config(&config).is_ok(), "enabled + 端点合法");
+
+        let mut config = common::test_config(vec![]);
+        config.otlp.enabled = false;
+        config.otlp.endpoint = String::new();
+        assert!(
+            validate_config(&config).is_ok(),
+            "disabled 不校验 endpoint（运行时半边关着即可）"
+        );
+    }
+
+    /// `[usage_insights]`：缺省开启（内部统计零外部面），缺段与显式同值。
+    #[test]
+    fn test_usage_insights_defaults_enabled() {
+        let insights = fluxgate::config::UsageInsightsSection::default();
+        assert!(insights.enabled, "缺省必须开启：纯内部统计无对外面");
+
+        let config = common::test_config(vec![]);
+        assert_eq!(config.usage_insights, insights, "Config 缺段走同一 Default");
+        assert!(validate_config(&config).is_ok(), "缺省段合法");
+    }
+
+    /// 关闭不影响配置合法性（运行期门，非启动期校验）。
+    #[test]
+    fn test_usage_insights_disabled_is_valid() {
+        let mut config = common::test_config(vec![]);
+        config.usage_insights.enabled = false;
+        assert!(
+            validate_config(&config).is_ok(),
+            "关闭是运行期开关，不拒绝启动"
+        );
     }
 }

@@ -1312,6 +1312,40 @@ pub struct Config {
     /// `[metrics]` 段 — 观测装配参数。缺段时全默认（恢复窗口 24h）。
     #[serde(default)]
     pub metrics: MetricsSection,
+    /// `[otlp]` 段 — OTLP 指标导出（`feature = "otlp"` 编译门 + enabled
+    /// 运行时门，缺段/缺 feature 均禁用）。热读段。
+    #[serde(default)]
+    pub otlp: OtlpSection,
+    /// `[usage_insights]` 段 — 会话/上下文维度统计开关（热读）。
+    /// 关闭时四列写 NULL 且两端点 404。
+    #[serde(default)]
+    pub usage_insights: UsageInsightsSection,
+}
+
+/// `[usage_insights]` 段：会话与上下文利用率统计。
+/// - `enabled`：采集与查询总开关（热读，缺省 true——内部统计零外部面）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct UsageInsightsSection {
+    #[serde(default = "loader::default_usage_insights_enabled")]
+    pub enabled: bool,
+}
+
+/// `[otlp]` 段：OTLP 指标导出参数。
+/// - `enabled`：导出总开关（热读）
+/// - `endpoint`：OTLP/HTTP 端点（enabled 时必填，如
+///   `http://localhost:4318/v1/metrics`）
+/// - `interval_secs`：推送周期（1..=86400，缺省 60）
+/// - `timeout_secs`：单次导出超时（1..=300，缺省 10）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct OtlpSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default = "loader::default_otlp_interval_secs")]
+    pub interval_secs: u64,
+    #[serde(default = "loader::default_otlp_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 /// `[metrics]` 段：观测装配参数。

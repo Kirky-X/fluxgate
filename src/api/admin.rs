@@ -167,6 +167,86 @@ pub async fn cost_usage(
     })))
 }
 
+/// 会话查询参数：`limit` 缺省 50、上限 500（越界按边界收窄，不报错——
+/// admin 只读面不做请求校验）。
+#[derive(serde::Deserialize)]
+pub struct SessionsQuery {
+    pub limit: Option<u32>,
+    /// 回看窗口（小时）。缺省 168（7 天）——全史聚合在无保留策略的表上是
+    /// 线性全表扫，窗口让查询走 `idx_timestamp`。
+    pub window_hours: Option<u64>,
+}
+
+/// 回看窗口缺省 7 天；上限 8760（1 年）。
+const INSIGHTS_WINDOW_HOURS_DEFAULT: u64 = 168;
+const INSIGHTS_WINDOW_HOURS_MAX: u64 = 8760;
+
+/// 窗口小时 → Unix 秒下界。
+fn insights_since_ts(window_hours: u64) -> i64 {
+    let hours = window_hours.min(INSIGHTS_WINDOW_HOURS_MAX) as i64;
+    chrono::Utc::now().timestamp() - hours * 3600
+}
+
+/// `[usage_insights].enabled` 运行时门：关闭时端点 404，采集侧四列写 NULL。
+/// 返回 `Err(Response)` 供 handler 早退（不引入新错误变体，`GateError` 冻结）。
+fn insights_disabled_response() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({
+            "error": {
+                "type": "not_found",
+                "message": t("usage-insights-disabled"),
+            }
+        })),
+    )
+        .into_response()
+}
+
+/// GET /admin/sessions — 按会话聚合成本/token/请求数与首末时间，
+/// 标题取首条用户消息前 80 字符。NULL 会话不参与（无归属）。
+#[axum::debug_handler]
+pub async fn sessions(
+    State(state): State<Arc<ApiState>>,
+    Query(params): Query<SessionsQuery>,
+) -> Result<axum::response::Response, FluxgateError> {
+    use axum::response::IntoResponse;
+    if !state.config.read().usage_insights.enabled {
+        return Ok(insights_disabled_response());
+    }
+    // 会话聚合的重查询：默认 50，上限 500（比通用 admin 列表更保守）。
+    let limit = params.limit.unwrap_or(50).min(500);
+    let window_hours = params.window_hours.unwrap_or(INSIGHTS_WINDOW_HOURS_DEFAULT);
+    let since_ts = insights_since_ts(window_hours);
+    let rows = state.database.query_sessions(since_ts, limit).await?;
+    Ok(axum::Json(serde_json::json!({
+        "limit": limit,
+        "window_hours": window_hours.min(INSIGHTS_WINDOW_HOURS_MAX),
+        "rows": rows,
+    }))
+    .into_response())
+}
+
+/// GET /admin/context-stats — 按模型聚合上下文占用率、缓存读份额与五桶分布。
+#[axum::debug_handler]
+pub async fn context_stats(
+    State(state): State<Arc<ApiState>>,
+    Query(params): Query<SessionsQuery>,
+) -> Result<axum::response::Response, FluxgateError> {
+    use axum::response::IntoResponse;
+    if !state.config.read().usage_insights.enabled {
+        return Ok(insights_disabled_response());
+    }
+    let window_hours = params.window_hours.unwrap_or(INSIGHTS_WINDOW_HOURS_DEFAULT);
+    let since_ts = insights_since_ts(window_hours);
+    let rows = state.database.query_context_stats(since_ts).await?;
+    Ok(axum::Json(serde_json::json!({
+        "window_hours": window_hours.min(INSIGHTS_WINDOW_HOURS_MAX),
+        "rows": rows,
+    }))
+    .into_response())
+}
+
 /// 全局指标快照：请求计数、错误率、平均延迟、各厂商细分、缓存命中计数，
 /// 及日志背压/secret gate 丢弃计数
 #[axum::debug_handler]
@@ -351,6 +431,14 @@ pub async fn update_config(
     }
     if old.grpc != config.grpc {
         restart_required.push("grpc");
+    }
+    // OTLP：endpoint/interval/timeout 在 bootstrap 一次性构建 exporter 与
+    // reader 周期，仅 enabled 是真热读；其余字段变更必须显式告知需重启。
+    if old.otlp.endpoint != config.otlp.endpoint
+        || old.otlp.interval_secs != config.otlp.interval_secs
+        || old.otlp.timeout_secs != config.otlp.timeout_secs
+    {
+        restart_required.push("otlp");
     }
     if old.rate_limit != config.rate_limit {
         restart_required.push("rate_limit");

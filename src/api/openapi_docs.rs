@@ -285,6 +285,20 @@ submit_route!(
     &["admin"]
 );
 submit_route!(
+    "/admin/sessions",
+    "GET",
+    "Session aggregates",
+    "Session-level aggregates: cost, tokens, request count, first/last timestamps and a title from the first user message. Returns 404 when [usage_insights] is disabled.",
+    &["admin"]
+);
+submit_route!(
+    "/admin/context-stats",
+    "GET",
+    "Context utilisation stats",
+    "Per-model context-window occupancy, cache-read share and five-bucket distribution. Returns 404 when [usage_insights] is disabled.",
+    &["admin"]
+);
+submit_route!(
     "/admin/metrics",
     "GET",
     "Operational metrics",

@@ -31,6 +31,19 @@ pub struct RequestLog {
     pub total_tokens: Option<i32>,
     pub duration_ms: Option<i64>,
     pub cost_usd: Option<f64>,
+    /// 会话键（`X-Session-Id` 或协议字段提取）。`[usage_insights]` 关或无
+    /// 会话语义时为 None，落库 NULL。
+    #[serde(default)]
+    pub session_key: Option<String>,
+    /// 模型上下文窗口大小（取自 `[[model_catalog]]`）。目录未登记为 None。
+    #[serde(default)]
+    pub context_window_tokens: Option<i64>,
+    /// 上游报告的缓存读 token（跨协议统一口径）。无 usage 时为 None。
+    #[serde(default)]
+    pub cache_read_tokens: Option<i64>,
+    /// 上游报告的缓存写 token。无 usage 时为 None。
+    #[serde(default)]
+    pub cache_write_tokens: Option<i64>,
 }
 
 /// 日志查询过滤（admin /admin/logs、/admin/logs/search）。
@@ -85,6 +98,41 @@ pub struct CostUsageRow {
     pub cache_read_cost: f64,
     pub cache_creation_cost: f64,
     pub total_cost: f64,
+}
+
+/// 会话聚合行（`GET /admin/sessions`）：按 `session_key` 分组，
+/// NULL 会话不参与聚合（无会话语义，无法归属）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRow {
+    pub session_key: String,
+    pub request_count: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub total_cost: f64,
+    /// 首条请求时间（会话起点）
+    pub first_at: i64,
+    /// 末条请求时间（会话活跃终点）
+    pub last_at: i64,
+    /// 会话标题：首条用户消息前 80 字符
+    pub title: String,
+}
+
+/// 上下文利用率分桶行（`GET /admin/context-stats`）：按模型聚合，
+/// 占用率 = `(prompt + cache_write) / context_window`（分母口径见
+/// `repository::INPUT_TOKENS_EXPR`：不计 cache_read 以避免 Inclusive 协议重复计数）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextStatRow {
+    pub model: String,
+    pub request_count: i64,
+    /// 平均占用率（0.0 起；>1.0 表示超出窗口）
+    pub avg_occupancy: f64,
+    /// 缓存读占输入 token 的份额。Exclusive 协议（Anthropic）下可 >1
+    ///（分母 `prompt + cache_write` 不含 cache_read）
+    pub cache_read_share: f64,
+    /// 五桶计数：<20% / 20-40% / 40-60% / 60-80% / >=80%
+    pub bucket_counts: [i64; 5],
 }
 
 /// 分账写入项：调用方透传请求方 key 摘要与四类用量及分项成本
@@ -146,9 +194,10 @@ pub trait RequestLogSink: Send + Sync {
         Err(unsupported_query())
     }
 
-    /// 流式占位行补写：按 request_id 回填 usage 响应体与 token 三列。
+    /// 流式占位行补写：按 request_id 回填 usage 响应体、token 三列与缓存两列。
     /// 管道实现（AsyncLogger）经通道保序（先 flush 占位 INSERT 再 UPDATE）；
     /// 直写实现直接 UPDATE；纯内存 fake 默认无操作。
+    #[allow(clippy::too_many_arguments)]
     async fn update_stream_usage(
         &self,
         _request_id: &str,
@@ -156,8 +205,26 @@ pub trait RequestLogSink: Send + Sync {
         _prompt_tokens: i64,
         _completion_tokens: i64,
         _total_tokens: i64,
+        _cache_read_tokens: Option<i64>,
+        _cache_write_tokens: Option<i64>,
     ) -> Result<(), GateError> {
         Ok(())
+    }
+
+    /// admin 读：按 `session_key` 聚合会话（`[usage_insights]` 门在调用方）。
+    /// `since_ts` 是 Unix 秒下界——`request_logs` 无保留策略，全史聚合是线性
+    /// 全表扫；带窗后走 `idx_timestamp`。管道前沿默认不支持。
+    async fn query_sessions(
+        &self,
+        _since_ts: i64,
+        _limit: u32,
+    ) -> Result<Vec<SessionRow>, GateError> {
+        Err(unsupported_query())
+    }
+
+    /// admin 读：按模型聚合上下文利用率（`since_ts` 同上）。管道前沿默认不支持。
+    async fn query_context_stats(&self, _since_ts: i64) -> Result<Vec<ContextStatRow>, GateError> {
+        Err(unsupported_query())
     }
 }
 
@@ -346,6 +413,10 @@ mod tests {
             total_tokens: Some(30),
             duration_ms: Some(5),
             cost_usd: None,
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 

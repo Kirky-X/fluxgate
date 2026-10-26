@@ -120,6 +120,46 @@ struct AdminActionResponse {
     message: String,
 }
 
+/// 会话聚合条目 — 对齐网关 `GET /admin/sessions` 的 `rows[]`。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct SessionInfo {
+    pub session_key: String,
+    pub request_count: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub total_cost: f64,
+    pub first_at: i64,
+    pub last_at: i64,
+    /// 首条用户消息前 80 字符
+    pub title: String,
+}
+
+/// 会话列表响应（含服务端生效的 limit）。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct SessionsResponse {
+    pub limit: u32,
+    pub rows: Vec<SessionInfo>,
+}
+
+/// 上下文利用率条目 — 对齐网关 `GET /admin/context-stats` 的 `rows[]`。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ContextStatInfo {
+    pub model: String,
+    pub request_count: i64,
+    pub avg_occupancy: f64,
+    pub cache_read_share: f64,
+    /// 五桶：<20% / 20-40% / 40-60% / 60-80% / >=80%
+    pub bucket_counts: [i64; 5],
+}
+
+/// 上下文统计响应。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ContextStatsResponse {
+    pub rows: Vec<ContextStatInfo>,
+}
+
 /// 目录条目模型 URL — `model_id` 经 `path_segments_mut.push` 自动
 /// 百分号编码（审查 MEDIUM：字符串 join 对 `../` 类输入产生路径穿越，
 /// `push` 将段内 `/` 编码为 `%2F`，穿越Neutral 化）。
@@ -220,6 +260,56 @@ impl FluxgateClient {
         Ok(resp.json().await?)
     }
 
+    /// GET /admin/sessions — 会话级聚合（成本/token/请求数/首末时间/标题）。
+    ///
+    /// `[usage_insights].enabled=false` 时网关返回 404，映射
+    /// [`FluxgateSdkError::Api`]；`limit` 缺省由服务端取 50、上限 500。
+    pub async fn list_sessions(
+        &self,
+        limit: Option<u32>,
+    ) -> Result<SessionsResponse, FluxgateSdkError> {
+        let mut url =
+            self.base_url
+                .join("admin/sessions")
+                .map_err(|e| FluxgateSdkError::Config {
+                    message: format!("invalid URL: {e}"),
+                })?;
+        if let Some(limit) = limit {
+            url.query_pairs_mut()
+                .append_pair("limit", &limit.to_string());
+        }
+
+        let request = self
+            .http
+            .get(url)
+            .bearer_auth(&self.api_key)
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
+
+        Ok(resp.json().await?)
+    }
+
+    /// GET /admin/context-stats — 按模型聚合上下文占用率与缓存份额。
+    pub async fn context_stats(&self) -> Result<ContextStatsResponse, FluxgateSdkError> {
+        let url =
+            self.base_url
+                .join("admin/context-stats")
+                .map_err(|e| FluxgateSdkError::Config {
+                    message: format!("invalid URL: {e}"),
+                })?;
+
+        let request = self
+            .http
+            .get(url)
+            .bearer_auth(&self.api_key)
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
+
+        Ok(resp.json().await?)
+    }
+
     /// GET /api/v1/health — 服务健康状态（JSON 健康面在 /api/v1/health，
     /// 非 /admin/health）
     pub async fn health(&self) -> Result<HealthStatus, FluxgateSdkError> {
@@ -265,6 +355,8 @@ pub(crate) mod sdk_routes {
         ("PUT", "admin/models/{id}"),
         ("DELETE", "admin/models/{id}"),
         ("GET", "admin/vendors"),
+        ("GET", "admin/sessions"),
+        ("GET", "admin/context-stats"),
         ("GET", "api/v1/health"),
     ];
 }

@@ -821,6 +821,17 @@ async fn log_request(
         .and_then(crate::protocol::parse_usage_detailed)
         .map(|(prompt, completion, _, _)| (Some(prompt as i32), Some(completion as i32)))
         .unwrap_or((None, None));
+    let ctx_columns = {
+        let cfg = state.config.read();
+        crate::api::request_context_columns(
+            cfg.usage_insights.enabled,
+            &cfg.model_catalog,
+            &decision.model.model_id,
+            response,
+            ctx.session_key.as_deref(),
+        )
+    };
+
     let log = RequestLog {
         id: None,
         request_id: ctx.request_id.clone(),
@@ -847,6 +858,10 @@ async fn log_request(
                 response_value,
             )
         }),
+        session_key: ctx_columns.session_key,
+        context_window_tokens: ctx_columns.context_window_tokens,
+        cache_read_tokens: ctx_columns.cache_read_tokens,
+        cache_write_tokens: ctx_columns.cache_write_tokens,
     };
     if let Some(logger) = state.logger.as_ref() {
         if let Err(error) = logger.log(log).await {

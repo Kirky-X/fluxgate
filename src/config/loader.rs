@@ -148,6 +148,7 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_difficulty(config)?;
     warn_identical_difficulty_tiers(config);
     validate_metrics(config)?;
+    validate_otlp(config)?;
     Ok(())
 }
 
@@ -699,6 +700,109 @@ impl Default for crate::config::MetricsSection {
     }
 }
 
+/// `[otlp]` 段缺省值：推送周期 60s、单次超时 10s（serde default 路径引用；
+/// mod.rs 规则 14 禁实现函数，默认值落在本实现文件）。
+pub fn default_otlp_interval_secs() -> u64 {
+    60
+}
+
+pub fn default_otlp_timeout_secs() -> u64 {
+    10
+}
+
+/// `[usage_insights]` 缺省开：纯内部统计、零出站、零新依赖，默认采集
+/// 不改变任何响应面（关闭时四列写 NULL、两端点 404）。
+pub fn default_usage_insights_enabled() -> bool {
+    true
+}
+
+impl Default for crate::config::UsageInsightsSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_usage_insights_enabled(),
+        }
+    }
+}
+
+impl Default for crate::config::OtlpSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            interval_secs: default_otlp_interval_secs(),
+            timeout_secs: default_otlp_timeout_secs(),
+        }
+    }
+}
+
+/// `[otlp]` 段边界校验：推送周期 1..=86400s（1s..1d）、超时 1..=300s、
+/// enabled 时 endpoint 必填。enabled=false 不校验 endpoint（双门控的运行时
+/// 半边关着即可，留空合法）。
+fn validate_otlp(config: &Config) -> Result<(), GateError> {
+    let otlp = &config.otlp;
+    if !(1..=86400).contains(&otlp.interval_secs) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-otlp-interval-secs-out-of-range",
+                &[("value", otlp.interval_secs.to_string())],
+            ),
+        });
+    }
+    if !(1..=300).contains(&otlp.timeout_secs) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-otlp-timeout-secs-out-of-range",
+                &[("value", otlp.timeout_secs.to_string())],
+            ),
+        });
+    }
+    if otlp.enabled {
+        let endpoint = otlp.endpoint.trim();
+        if endpoint.is_empty() {
+            return Err(GateError::Config {
+                message: t_args("config-otlp-endpoint-required", &[]),
+            });
+        }
+        // 只接受 http/https：其它 scheme（file:/ftp:）在 OTLP builder 内部
+        // 才报错，配置期就拒掉更早暴露；同时禁止 userinfo（凭证会随启动
+        // 日志外泄）。此处按字符串判定而非 `url::Url`——`url` 是 optional
+        // 依赖（仅 database/sdk 启用），config 层无条件编译，引用它会打断
+        // `--no-default-features` 构建。
+        let (scheme, rest) = endpoint
+            .split_once("://")
+            .ok_or_else(|| GateError::Config {
+                message: t_args(
+                    "config-otlp-endpoint-invalid",
+                    &[("value", endpoint.to_string())],
+                ),
+            })?;
+        if !matches!(scheme, "http" | "https") {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-otlp-endpoint-scheme",
+                    &[("value", scheme.to_string())],
+                ),
+            });
+        }
+        // authority 段 = 首个 `/` 之前；含 `@` 即 userinfo。
+        let authority = rest.split('/').next().unwrap_or_default();
+        if authority.contains('@') {
+            return Err(GateError::Config {
+                message: t_args("config-otlp-endpoint-userinfo", &[]),
+            });
+        }
+        if authority.is_empty() {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-otlp-endpoint-invalid",
+                    &[("value", endpoint.to_string())],
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// `[metrics]` 段边界校验：成本恢复窗口 1..=8760 小时（1h..1y）。
 /// 越界一律配置错误并点名字段与原值（加载与热载同入口）。
 fn validate_metrics(config: &Config) -> Result<(), GateError> {
@@ -1146,6 +1250,8 @@ mod tests {
     fn config_with(quota_enabled: bool, auth: Option<crate::config::AuthSection>) -> Config {
         Config {
             rate_limit: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".into(),

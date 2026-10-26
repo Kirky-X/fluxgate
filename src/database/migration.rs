@@ -16,8 +16,8 @@ use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
 use sea_orm::DatabaseBackend;
 use std::path::PathBuf;
 
-/// 核心表迁移最新版本（V4：response_store Responses 有状态表）。
-pub(crate) const CORE_SCHEMA_VERSION: u32 = 4;
+/// 核心表迁移最新版本（V5：request_logs 会话/上下文四列 + 会话索引）。
+pub(crate) const CORE_SCHEMA_VERSION: u32 = 5;
 
 /// V1 UP（sqlite，FROZEN；含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
@@ -416,6 +416,56 @@ const DOWN_V4: &str = r#"
 DROP TABLE IF EXISTS response_store;
 "#;
 
+/// V5 UP（sqlite）：request_logs 会话与上下文观测四列。
+/// 全部可空——未开 `[usage_insights]` 或请求无会话键/目录未登记时写 NULL，
+/// 存量行天然为 NULL 无需回填。
+const UP_V5_SQLITE: &str = r#"
+ALTER TABLE request_logs ADD COLUMN session_key TEXT;
+ALTER TABLE request_logs ADD COLUMN context_window_tokens INTEGER;
+ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER;
+ALTER TABLE request_logs ADD COLUMN cache_write_tokens INTEGER;
+CREATE INDEX IF NOT EXISTS idx_request_logs_session ON request_logs(session_key, timestamp);
+"#;
+
+/// V5 UP（postgres）：同列集，BIGINT 承接 token 计数。
+const UP_V5_POSTGRES: &str = r#"
+ALTER TABLE request_logs ADD COLUMN session_key TEXT;
+ALTER TABLE request_logs ADD COLUMN context_window_tokens BIGINT;
+ALTER TABLE request_logs ADD COLUMN cache_read_tokens BIGINT;
+ALTER TABLE request_logs ADD COLUMN cache_write_tokens BIGINT;
+CREATE INDEX IF NOT EXISTS idx_request_logs_session ON request_logs(session_key, timestamp);
+"#;
+
+/// V5 UP（mysql）：session_key 走 VARCHAR(255) 控索引键长。索引不在此建——
+/// MySQL 不支持 `CREATE INDEX IF NOT EXISTS`，统一由
+/// `repository::ensure_indexes_mysql` 探针幂等创建（与其余索引同路）。
+const UP_V5_MYSQL: &str = r#"
+ALTER TABLE request_logs ADD COLUMN session_key VARCHAR(255);
+ALTER TABLE request_logs ADD COLUMN context_window_tokens BIGINT;
+ALTER TABLE request_logs ADD COLUMN cache_read_tokens BIGINT;
+ALTER TABLE request_logs ADD COLUMN cache_write_tokens BIGINT;
+"#;
+
+/// V5 DOWN（sqlite/postgres）：先删索引再删列——SQLite 的 DROP COLUMN 在
+/// 存在引用该列的索引时报 `no such column`，索引不会随列隐式消失。
+const DOWN_V5: &str = r#"
+DROP INDEX IF EXISTS idx_request_logs_session;
+ALTER TABLE request_logs DROP COLUMN session_key;
+ALTER TABLE request_logs DROP COLUMN context_window_tokens;
+ALTER TABLE request_logs DROP COLUMN cache_read_tokens;
+ALTER TABLE request_logs DROP COLUMN cache_write_tokens;
+"#;
+
+/// V5 DOWN（mysql）：MySQL 的 `DROP INDEX` 不支持 `IF EXISTS` 且必须带
+/// `ON tbl`，故走 `ALTER TABLE ... DROP INDEX`（与 DOWN_V2_MYSQL 同形）。
+const DOWN_V5_MYSQL: &str = r#"
+ALTER TABLE request_logs DROP INDEX idx_request_logs_session;
+ALTER TABLE request_logs DROP COLUMN session_key;
+ALTER TABLE request_logs DROP COLUMN context_window_tokens;
+ALTER TABLE request_logs DROP COLUMN cache_read_tokens;
+ALTER TABLE request_logs DROP COLUMN cache_write_tokens;
+"#;
+
 /// V1 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
 const DOWN_COMMON: &str = r#"
 DROP TABLE IF EXISTS model_stats;
@@ -455,6 +505,9 @@ pub(crate) fn core_migration_file(
         (4, DatabaseBackend::Sqlite) => UP_V4_SQLITE,
         (4, DatabaseBackend::Postgres) => UP_V4_POSTGRES,
         (4, DatabaseBackend::MySql) => UP_V4_MYSQL,
+        (5, DatabaseBackend::Sqlite) => UP_V5_SQLITE,
+        (5, DatabaseBackend::Postgres) => UP_V5_POSTGRES,
+        (5, DatabaseBackend::MySql) => UP_V5_MYSQL,
         _ => {
             return Err(DbError::Config(format!(
                 "no core migration v{version} for {label}"
@@ -465,6 +518,10 @@ pub(crate) fn core_migration_file(
         1 => DOWN_COMMON,
         3 => DOWN_V3,
         4 => DOWN_V4,
+        5 => match backend {
+            DatabaseBackend::MySql => DOWN_V5_MYSQL,
+            _ => DOWN_V5,
+        },
         2 => match backend {
             DatabaseBackend::Sqlite => DOWN_V2_SQLITE,
             DatabaseBackend::Postgres => DOWN_V2_POSTGRES,
@@ -831,6 +888,10 @@ mod live_tests {
             total_tokens: Some(7),
             duration_ms: Some(12),
             cost_usd: Some(0.0001),
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 
@@ -1201,5 +1262,43 @@ mod live_tests {
         .expect("ro connect");
         let err = init_schema(&ro).await.expect_err("只读库必须 fail-fast");
         assert!(!err.to_string().is_empty(), "错误须可输出");
+    }
+
+    /// V5：request_logs 四列 + 会话索引存在；重跑 init_schema 幂等
+    ///（列已存在时 ALTER 不得二次执行——版本历史短路）。
+    #[tokio::test]
+    async fn v5_adds_session_and_context_columns_idempotently() {
+        let pool = memory_pool().await;
+        init_schema(&pool).await.expect("首次迁移");
+        init_schema(&pool).await.expect("重跑幂等");
+
+        let session = pool.get_session("admin").await.expect("session");
+        let stmt = sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA table_info(request_logs)".to_string(),
+        );
+        let names: std::collections::HashSet<String> = session
+            .connection()
+            .expect("conn")
+            .query_all_raw(stmt)
+            .await
+            .expect("pragma")
+            .iter()
+            .filter_map(|row| row.try_get::<String>("", "name").ok())
+            .collect();
+        drop(session);
+        for col in [
+            "session_key",
+            "context_window_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+        ] {
+            assert!(names.iter().any(|n| n == col), "V5 必须补列 {col}");
+        }
+        assert_eq!(
+            applied_versions(&pool).await,
+            all_core_versions(),
+            "V5 已记账"
+        );
     }
 }

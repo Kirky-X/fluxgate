@@ -587,6 +587,29 @@ max_background_jobs = 16
 [metrics]
 cost_restore_window_hours = 24
 
+# 🔄 热读 —— OTLP 指标导出（feature = "otlp"）。双门控：编译期 feature +
+# 运行时 enabled（默认 false）。开启后把 /metrics 文本（RED 指标）解析桥接
+# 为 OTLP http-proto 推送（fluxgate.<原名> 前缀 + label 透传），并导出
+# CostTracker 成本快照（fluxgate.cost_usd_total / fluxgate.cost_usd）。
+# - enabled: 导出总开关（热读；启动后才开启需重启进程生效——后台任务仅在
+#   启动期拉起）。
+# - endpoint: OTLP/HTTP 端点（enabled 时必填；需 feature=otlp 编译）。
+# - interval_secs: 推送周期（1-86400 秒，默认 60）。
+# - timeout_secs: 单次导出超时（1-300 秒，默认 10）。
+[otlp]
+enabled = false
+endpoint = "http://localhost:4318/v1/metrics"
+interval_secs = 60
+timeout_secs = 10
+
+# 🔥 热读 —— 会话/上下文利用率统计 — 内部统计，零出站、零新依赖
+# 开启时 request_logs 落 session_key/context_window_tokens/cache_read_tokens/
+# cache_write_tokens 四列，并提供 GET /admin/sessions 与 GET /admin/context-stats。
+# 关闭时四列写 NULL（历史行不受影响）且两端点返回 404。
+# 缺省 true：纯内部统计，不改变任何响应面。
+[usage_insights]
+enabled = true
+
 # ❌ 需重启 —— gRPC Server（feature = "grpc"）— sdforge grpc 门面
 #（sdforge.v1.SdForgeService）。GrpcServerConfig 固化于服务器构造，更新后需
 # 重启进程生效。本段缺席或 enabled = false 时 gRPC 服务器完全禁用（不监听

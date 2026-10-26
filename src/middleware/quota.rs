@@ -1322,6 +1322,8 @@ mod tests {
     fn quota_enabled_config(enabled: bool) -> crate::config::Config {
         crate::config::Config {
             rate_limit: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),

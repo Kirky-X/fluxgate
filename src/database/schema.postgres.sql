@@ -26,7 +26,11 @@ CREATE TABLE IF NOT EXISTS request_logs (
     completion_tokens BIGINT,
     total_tokens BIGINT,
     duration_ms BIGINT,
-    cost_usd DOUBLE PRECISION DEFAULT 0.0
+    cost_usd DOUBLE PRECISION DEFAULT 0.0,
+    session_key TEXT,
+    context_window_tokens BIGINT,
+    cache_read_tokens BIGINT,
+    cache_write_tokens BIGINT
 );
 
 -- Token 消耗统计表
@@ -77,6 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_timestamp ON request_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_vendor ON request_logs(actual_vendor);
 CREATE INDEX IF NOT EXISTS idx_model ON request_logs(abstract_model);
 CREATE INDEX IF NOT EXISTS idx_request_id ON request_logs(request_id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_session ON request_logs(session_key, timestamp);
 
 -- 密钥保密柜（key-vault，V3）：payload BYTEA 存 cocoon 密文。
 CREATE TABLE IF NOT EXISTS vault_keys (

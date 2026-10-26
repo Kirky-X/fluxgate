@@ -163,6 +163,8 @@ enum LogCommand {
         prompt_tokens: i64,
         completion_tokens: i64,
         total_tokens: i64,
+        cache_read_tokens: Option<i64>,
+        cache_write_tokens: Option<i64>,
     },
     /// 关闭日志写入器
     Shutdown,
@@ -235,6 +237,7 @@ impl AsyncLogger {
 
     /// 流式占位行补写（非阻塞 push，同 [`AsyncLogger::log`] 的背压/关闭
     /// 姿态；通道满即丢弃并计数——与占位 INSERT 同一背压档位）
+    #[allow(clippy::too_many_arguments)]
     pub fn update_stream_usage(
         &self,
         request_id: &str,
@@ -242,6 +245,8 @@ impl AsyncLogger {
         prompt_tokens: i64,
         completion_tokens: i64,
         total_tokens: i64,
+        cache_read_tokens: Option<i64>,
+        cache_write_tokens: Option<i64>,
     ) -> Result<(), FluxgateError> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(FluxgateError::Database {
@@ -254,6 +259,8 @@ impl AsyncLogger {
             prompt_tokens,
             completion_tokens,
             total_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
         }) {
             Ok(()) => Ok(()),
             Err(async_channel::TrySendError::Full(_)) => {
@@ -370,6 +377,8 @@ impl AsyncLogger {
                             prompt_tokens,
                             completion_tokens,
                             total_tokens,
+                            cache_read_tokens,
+                            cache_write_tokens,
                         }) => {
                             // 占位 INSERT 可能仍在缓冲未 flush——先刷再更
                             Self::flush_buffer(&repository, &mut buffer).await;
@@ -380,6 +389,8 @@ impl AsyncLogger {
                                     prompt_tokens,
                                     completion_tokens,
                                     total_tokens,
+                                    cache_read_tokens,
+                                    cache_write_tokens,
                                 )
                                 .await
                             {
@@ -420,6 +431,11 @@ impl AsyncLogger {
         if let Some(error_message) = log.error_message.take() {
             log.error_message = Some(redact_text(masker, &error_message)?);
         }
+        // session_key 不经 masker：它是会话标识符而非内容。走脱敏有两个
+        // 实际危害——①替换标记比原值长（IPv6 规则可把 14 字节撑到 273），
+        // 越过 MySQL VARCHAR(255) 会让整批日志回滚丢弃；②熵扫描把互不
+        // 相同的随机会话键统一替换成同一标记，/admin/sessions 会把无关
+        // 会话合并成一行。长度已由 `truncate_session_key` 在入口约束。
         Ok(log)
     }
 
@@ -464,6 +480,7 @@ impl AsyncLoggerHandle {
     }
 
     /// 流式占位行补写透传（同 [`AsyncLogger::update_stream_usage`]）
+    #[allow(clippy::too_many_arguments)]
     pub fn update_stream_usage(
         &self,
         request_id: &str,
@@ -471,6 +488,8 @@ impl AsyncLoggerHandle {
         prompt_tokens: i64,
         completion_tokens: i64,
         total_tokens: i64,
+        cache_read_tokens: Option<i64>,
+        cache_write_tokens: Option<i64>,
     ) -> Result<(), FluxgateError> {
         self.inner.update_stream_usage(
             request_id,
@@ -478,6 +497,8 @@ impl AsyncLoggerHandle {
             prompt_tokens,
             completion_tokens,
             total_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
         )
     }
 
@@ -513,6 +534,8 @@ impl crate::storage::RequestLogSink for AsyncLoggerHandle {
         prompt_tokens: i64,
         completion_tokens: i64,
         total_tokens: i64,
+        cache_read_tokens: Option<i64>,
+        cache_write_tokens: Option<i64>,
     ) -> Result<(), crate::error::GateError> {
         AsyncLoggerHandle::update_stream_usage(
             self,
@@ -521,6 +544,8 @@ impl crate::storage::RequestLogSink for AsyncLoggerHandle {
             prompt_tokens,
             completion_tokens,
             total_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
         )
         .map_err(|e| crate::error::GateError::Config {
             message: format!("async stream usage update failed: {e}"),
@@ -597,6 +622,10 @@ mod tests {
             total_tokens: Some(15),
             duration_ms: Some(120),
             cost_usd: Some(0.001),
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 

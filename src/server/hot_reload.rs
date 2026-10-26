@@ -105,6 +105,12 @@ fn changed_sections(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.health != new.health {
         sections.push("health");
     }
+    if old.otlp != new.otlp {
+        sections.push("otlp");
+    }
+    if old.usage_insights != new.usage_insights {
+        sections.push("usage_insights");
+    }
     // 以下段变更走拒绝路径，正常提交不出现；列出仅为日志完备
     if old.vendors != new.vendors {
         sections.push("vendors");
@@ -260,6 +266,8 @@ mod tests {
             quota: Default::default(),
             grpc: None,
             rate_limit: Default::default(),
+            otlp: Default::default(),
+            usage_insights: Default::default(),
             metrics: Default::default(),
         }
     }
@@ -636,6 +644,7 @@ concurrency = { requests_per_second = 1 }
                 "health",
                 Box::new(|c: &mut Config| c.health.mode = "all".into()),
             ),
+            ("otlp", Box::new(|c: &mut Config| c.otlp.enabled = true)),
             ("server", Box::new(|c: &mut Config| c.server.port = 9999)),
             (
                 "database",

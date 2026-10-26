@@ -118,6 +118,8 @@ pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
         docs: Default::default(),
         lexcompress: Default::default(),
         responses: Default::default(),
+        otlp: Default::default(),
+        usage_insights: Default::default(),
         metrics: Default::default(),
     }
 }

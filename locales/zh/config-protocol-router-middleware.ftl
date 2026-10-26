@@ -115,6 +115,9 @@ difficulty-laya-decide-failed = laya 决策失败：{ $error }
 difficulty-laya-request-rejected = 决策请求被拒：{ $error }
 config-responses-retention-hours-out-of-range = [responses] retention_hours 越界: { $value }（合法范围: 1-8760 小时）
 config-metrics-cost-restore-window-hours-out-of-range = [metrics] cost_restore_window_hours 越界: { $value }（合法范围: 1-8760 小时）
+config-otlp-interval-secs-out-of-range = [otlp] interval_secs 越界: { $value }（合法范围: 1-86400 秒）
+config-otlp-timeout-secs-out-of-range = [otlp] timeout_secs 越界: { $value }（合法范围: 1-300 秒）
+config-otlp-endpoint-required = [otlp] enabled = true 时 endpoint 必填（如 http://localhost:4318/v1/metrics）
 config-responses-max-response-bytes-out-of-range = [responses] max_response_bytes 越界: { $value }（合法范围: 1024-16777216 字节）
 config-responses-max-background-jobs-out-of-range = [responses] max_background_jobs 越界: { $value }（合法范围: 1-256）
 config-vendor-api-style-unknown = [vendors] 厂商 { $vendor } 的 api_style 非法: "{ $value }"（合法值: chat / responses）

@@ -95,6 +95,8 @@ fn make_config() -> Config {
         lexcompress: Default::default(),
         responses: Default::default(),
         rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
+        otlp: Default::default(),
+        usage_insights: Default::default(),
         metrics: Default::default(),
     }
 }

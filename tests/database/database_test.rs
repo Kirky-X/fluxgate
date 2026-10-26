@@ -72,6 +72,10 @@ mod tests {
             total_tokens: Some(150),
             duration_ms: Some(150),
             cost_usd: None,
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         };
 
         let result = repository.log_request(&log).await;
@@ -106,6 +110,10 @@ mod tests {
                 total_tokens: Some(150),
                 duration_ms: Some(150),
                 cost_usd: None,
+                session_key: None,
+                context_window_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -152,6 +160,10 @@ mod tests {
                 total_tokens: Some(150),
                 duration_ms: Some(150),
                 cost_usd: None,
+                session_key: None,
+                context_window_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -204,6 +216,10 @@ mod tests {
                 total_tokens: Some(150),
                 duration_ms: Some(150),
                 cost_usd: None,
+                session_key: None,
+                context_window_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -243,6 +259,10 @@ mod tests {
                 total_tokens: Some(150),
                 duration_ms: Some(150),
                 cost_usd: None,
+                session_key: None,
+                context_window_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -346,6 +366,10 @@ mod tests {
                 total_tokens: Some(150),
                 duration_ms: Some(150),
                 cost_usd: None,
+                session_key: None,
+                context_window_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             };
 
             handles.push(tokio::spawn(async move { repo.log_request(&log).await }));
@@ -394,6 +418,10 @@ mod tests {
             total_tokens: Some(300),
             duration_ms: Some(100),
             cost_usd: None,
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         };
 
         assert_eq!(log.request_id, "test-id");
@@ -455,6 +483,10 @@ mod tests {
             total_tokens: Some(0),
             duration_ms: Some(5000),
             cost_usd: None,
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         };
 
         assert_eq!(log.status_code, Some(429));
@@ -507,6 +539,10 @@ mod tests {
                 total_tokens: Some(150),
                 duration_ms: Some(150),
                 cost_usd: None,
+                session_key: None,
+                context_window_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             };
 
             let result = repository.log_request(&log).await;
@@ -595,6 +631,10 @@ mod batch_tx {
             total_tokens: Some(15),
             duration_ms: Some(20),
             cost_usd: None,
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 
@@ -892,6 +932,10 @@ mod repository_gap {
             total_tokens: Some(2),
             duration_ms: Some(5),
             cost_usd: Some(0.5),
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 
@@ -1062,6 +1106,10 @@ mod async_logger_gap {
             total_tokens: Some(15),
             duration_ms: Some(120),
             cost_usd: Some(0.001),
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 
@@ -1225,6 +1273,10 @@ mod database_gap {
             total_tokens: None,
             duration_ms: None,
             cost_usd: None,
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 
@@ -1458,5 +1510,262 @@ mod cost_ledger {
         assert_eq!(row.total_tokens, 14 + 6 + 2);
         assert!((row.cost_usd_sum - 0.26).abs() < 1e-9);
         assert_eq!(row.cache_read_tokens, 2);
+    }
+}
+
+/// 会话/上下文四列落库面（V5 列 + 写入路径）。
+#[cfg(test)]
+mod usage_observability_columns {
+    use dbnexus::{DbConfig, DbPool};
+    use fluxgate::database::{Repository, RequestLog};
+    use fluxgate::storage::LogFilter;
+
+    async fn pool() -> DbPool {
+        let config = DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        };
+        DbPool::with_config(config).await.expect("pool")
+    }
+
+    /// 会话聚合：3 会话 7 请求，成本/token/首末时间聚合正确，
+    /// 标题取首条用户消息并截断 80 字符；NULL 会话不参与。
+    #[tokio::test]
+    async fn sessions_group_by_with_cost_and_title() {
+        let pool = pool().await;
+        let repo = Repository::new(pool);
+        repo.initialize().await.expect("schema");
+
+        let long_title = "x".repeat(200);
+        let rows: Vec<(&str, i64, &str, i64, i64)> = vec![
+            // (session, ts, title, prompt, cache_read)
+            ("s-a", 100, "first a", 100, 10),
+            ("s-a", 101, "later a", 200, 20),
+            ("s-a", 102, "later a2", 300, 30),
+            ("s-b", 200, long_title.as_str(), 400, 40),
+            ("s-b", 201, "later b", 500, 50),
+            ("s-c", 300, "first c", 600, 60),
+            ("s-c", 301, "later c", 700, 70),
+        ];
+        for (session, ts, title, prompt, cache_read) in rows {
+            let log = RequestLog {
+                id: None,
+                request_id: format!("{session}-{ts}"),
+                timestamp: ts,
+                endpoint: "/v1/chat/completions".to_string(),
+                input_format: "openai".to_string(),
+                abstract_model: Some("m".to_string()),
+                messages: format!(r#"[{{"role":"user","content":"{title}"}}]"#),
+                actual_vendor: "v".to_string(),
+                actual_model: "m".to_string(),
+                routing_strategy: "weighted".to_string(),
+                status_code: Some(200),
+                response: None,
+                error_message: None,
+                prompt_tokens: Some(prompt as i32),
+                completion_tokens: Some(1),
+                total_tokens: Some(prompt as i32 + 1),
+                duration_ms: Some(1),
+                cost_usd: Some(0.5),
+                session_key: Some(session.to_string()),
+                context_window_tokens: Some(1000),
+                cache_read_tokens: Some(cache_read),
+                cache_write_tokens: Some(1),
+            };
+            repo.log_request(&log).await.expect("write");
+        }
+        // NULL 会话：不参与聚合
+        let mut orphan = RequestLog {
+            id: None,
+            request_id: "orphan".to_string(),
+            timestamp: 999,
+            endpoint: "/v1/chat/completions".to_string(),
+            input_format: "openai".to_string(),
+            abstract_model: Some("m".to_string()),
+            messages: "[]".to_string(),
+            actual_vendor: "v".to_string(),
+            actual_model: "m".to_string(),
+            routing_strategy: "weighted".to_string(),
+            status_code: Some(200),
+            response: None,
+            error_message: None,
+            prompt_tokens: Some(1),
+            completion_tokens: Some(1),
+            total_tokens: Some(2),
+            duration_ms: Some(1),
+            cost_usd: Some(1.0),
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        orphan.session_key = None;
+        repo.log_request(&orphan).await.expect("write orphan");
+
+        let sessions = repo.query_sessions(0, 50).await.expect("sessions");
+        assert_eq!(sessions.len(), 3, "三个会话，NULL 会话排除");
+
+        let a = sessions.iter().find(|s| s.session_key == "s-a").unwrap();
+        assert_eq!(a.request_count, 3);
+        assert_eq!(a.prompt_tokens, 600);
+        assert_eq!(a.cache_read_tokens, 60);
+        assert!((a.total_cost - 1.5).abs() < 1e-9);
+        assert_eq!(a.first_at, 100, "首条时间");
+        assert_eq!(a.last_at, 102, "末条时间");
+        assert_eq!(a.title, "first a", "标题取首条用户消息");
+
+        let b = sessions.iter().find(|s| s.session_key == "s-b").unwrap();
+        assert_eq!(b.request_count, 2);
+        assert_eq!(
+            b.title.chars().count(),
+            80,
+            "超长标题截断 80 字符，实际 {}",
+            b.title.chars().count()
+        );
+
+        // limit 生效：上限取前 1 条（按 last_at DESC）
+        let one = repo.query_sessions(0, 1).await.expect("limit");
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].session_key, "s-c", "last_at 最新优先");
+    }
+
+    /// 上下文分桶：占用率 10/40/60/90/120% 五行 → 按 20/40/60/80% 边界
+    /// 落桶（b0<20%、b1 20-40%、b2 40-60%、b3 60-80%、b4>=80%）。
+    /// 分子口径为 `prompt + cache_write`（不含 cache_read，见
+    /// `INPUT_TOKENS_EXPR` 注释），故构造时把目标入窗量全放 prompt。
+    #[tokio::test]
+    async fn context_stats_buckets_and_cache_share() {
+        let pool = pool().await;
+        let repo = Repository::new(pool);
+        repo.initialize().await.expect("schema");
+
+        // window=1000：input=100 → 10%，400 → 40%，600 → 60%，900 → 90%，1200 → 120%
+        for (i, input) in [100i64, 400, 600, 900, 1200].into_iter().enumerate() {
+            let log = RequestLog {
+                id: None,
+                request_id: format!("ctx-{i}"),
+                timestamp: 100 + i as i64,
+                endpoint: "/v1/chat/completions".to_string(),
+                input_format: "openai".to_string(),
+                abstract_model: Some("ctx-m".to_string()),
+                messages: "[]".to_string(),
+                actual_vendor: "v".to_string(),
+                actual_model: "ctx-m".to_string(),
+                routing_strategy: "weighted".to_string(),
+                status_code: Some(200),
+                response: None,
+                error_message: None,
+                // 分子 = prompt + cache_write；把目标入窗量全放 prompt，
+                // cache_read 单独给值以验证它不参与分子。
+                prompt_tokens: Some(input as i32),
+                completion_tokens: Some(1),
+                total_tokens: Some((input + 1) as i32),
+                duration_ms: Some(1),
+                cost_usd: Some(0.0),
+                session_key: Some(format!("s-{i}")),
+                context_window_tokens: Some(1000),
+                cache_read_tokens: Some(50),
+                cache_write_tokens: Some(0),
+            };
+            repo.log_request(&log).await.expect("write");
+        }
+
+        let stats = repo.query_context_stats(0).await.expect("stats");
+        assert_eq!(stats.len(), 1, "单模型一行");
+        let row = &stats[0];
+        assert_eq!(row.model, "ctx-m");
+        assert_eq!(row.request_count, 5);
+        assert_eq!(
+            row.bucket_counts,
+            [1, 0, 1, 1, 2],
+            "按 20/40/60/80% 边界：10%→b0、40%→b2、60%→b3、90%+120%→b4，实际 {:?}",
+            row.bucket_counts
+        );
+        assert!(
+            (row.avg_occupancy - 0.64).abs() < 1e-9,
+            "平均占用率 (100+400+600+900+1200)/5/1000 = 0.64，实际 {}",
+            row.avg_occupancy
+        );
+        // 缓存份额 = cache_read / input_tokens；input 总量 100+400+600+900+1200 = 3200
+        let expected_share = 250.0 / 3200.0;
+        assert!(
+            (row.cache_read_share - expected_share).abs() < 1e-9,
+            "缓存读份额 = 5×50/3200，实际 {}",
+            row.cache_read_share
+        );
+    }
+
+    /// 会话与上下文四列：有值原样落库、无值为 NULL；查询回读一致。
+    #[tokio::test]
+    async fn request_log_session_and_context_columns_roundtrip() {
+        let pool = pool().await;
+        let repo = Repository::new(pool);
+        repo.initialize().await.expect("schema");
+
+        let build = |request_id: &str, ts: i64| RequestLog {
+            id: None,
+            request_id: request_id.to_string(),
+            timestamp: ts,
+            endpoint: "/v1/chat/completions".to_string(),
+            input_format: "openai".to_string(),
+            abstract_model: Some("gpt-4".to_string()),
+            messages: "{}".to_string(),
+            actual_vendor: "openai_main".to_string(),
+            actual_model: "gpt-4".to_string(),
+            routing_strategy: "direct".to_string(),
+            status_code: Some(200),
+            response: None,
+            error_message: None,
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            total_tokens: Some(15),
+            duration_ms: Some(20),
+            cost_usd: None,
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+
+        let mut with_session = build("req-session", 1_700_000_000);
+        with_session.session_key = Some("sess-abc".to_string());
+        with_session.context_window_tokens = Some(200_000);
+        with_session.cache_read_tokens = Some(1024);
+        with_session.cache_write_tokens = Some(256);
+        repo.log_request(&with_session).await.expect("写有值行");
+
+        let without = build("req-null", 1_700_000_001);
+        repo.log_request(&without).await.expect("写无值行");
+
+        let rows = repo
+            .query_logs(&LogFilter {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .expect("query");
+        let hit = rows
+            .iter()
+            .find(|r| r.request_id == "req-session")
+            .expect("有值行可读");
+        assert_eq!(hit.session_key.as_deref(), Some("sess-abc"));
+        assert_eq!(hit.context_window_tokens, Some(200_000));
+        assert_eq!(hit.cache_read_tokens, Some(1024));
+        assert_eq!(hit.cache_write_tokens, Some(256));
+
+        let miss = rows
+            .iter()
+            .find(|r| r.request_id == "req-null")
+            .expect("无值行可读");
+        assert!(miss.session_key.is_none(), "无会话键必须 NULL");
+        assert!(miss.context_window_tokens.is_none(), "未登记目录必须 NULL");
+        assert!(miss.cache_read_tokens.is_none());
+        assert!(miss.cache_write_tokens.is_none());
     }
 }

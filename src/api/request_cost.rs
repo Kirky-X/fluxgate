@@ -35,3 +35,47 @@ pub(crate) fn request_cost_usd(
     crate::vendor::cost::estimate_cost_from_catalog(catalog, model_id, &usage, semantics)
         .map(|estimate| estimate.total_cost)
 }
+
+/// 会话/上下文观测列（`session_key` + usage 派生的三列）。
+///
+/// 与 [`request_cost_usd`] 同源取 usage（`parse_usage_detailed`）与目录条目
+///（`lookup_pricing_entry`），保证「成本列非空」与「缓存列非空」口径一致。
+/// 一次解析、一次查找，避免热路径重复遍历与整目录克隆。
+///
+/// `enabled=false`（`[usage_insights]` 关）时全部返回 `None`——采集门与
+/// 查询门同源，关闭后不写库（与文档承诺一致）。
+pub(crate) fn request_context_columns(
+    enabled: bool,
+    catalog: &[ModelCatalogEntry],
+    model_id: &str,
+    response: Option<&serde_json::Value>,
+    session_key: Option<&str>,
+) -> ContextColumns {
+    if !enabled {
+        return ContextColumns::default();
+    }
+    let window = crate::vendor::cost::lookup_pricing_entry(catalog, model_id)
+        .map(|entry| entry.context_window.min(i64::MAX as u64) as i64);
+    // 缓存列保留上游原值，不在此处归一：归零会永久丢失 Inclusive 协议的
+    // 命中量（`cache_read_share` 对其恒 0，且无法回溯）。占用率口径的
+    // Inclusive/Exclusive 折中见 `repository::INPUT_TOKENS_EXPR`。
+    let (cache_read, cache_write) = response
+        .and_then(crate::protocol::parse_usage_detailed)
+        .map(|(_, _, read, write)| (Some(read as i64), Some(write as i64)))
+        .unwrap_or((None, None));
+    ContextColumns {
+        session_key: session_key.map(str::to_string),
+        context_window_tokens: window,
+        cache_read_tokens: cache_read,
+        cache_write_tokens: cache_write,
+    }
+}
+
+/// [`request_context_columns`] 的输出：直接展开进 `RequestLog` 的四列。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ContextColumns {
+    pub session_key: Option<String>,
+    pub context_window_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+}

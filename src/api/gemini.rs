@@ -7,6 +7,7 @@
 //! 等不可降级字段触发原生直通（仅 `type_ = "gemini"` 厂商）。协议纯函数在
 //! [`crate::protocol::gemini`]。
 
+use crate::api::request_cost_usd;
 use crate::api::RoutingHints;
 use crate::config::{ModelTask, VendorProtocol};
 use crate::database::RequestLog;
@@ -838,7 +839,14 @@ async fn log_request(
         completion_tokens: completion,
         total_tokens: prompt.zip(completion).map(|(p, c)| p + c),
         duration_ms: Some(ctx.start_time.elapsed().as_millis() as i64),
-        cost_usd: None,
+        cost_usd: response.and_then(|response_value| {
+            request_cost_usd(
+                &state.config.read().model_catalog,
+                &decision.vendor.type_,
+                &decision.model.model_id,
+                response_value,
+            )
+        }),
     };
     if let Some(logger) = state.logger.as_ref() {
         if let Err(error) = logger.log(log).await {

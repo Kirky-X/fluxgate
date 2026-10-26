@@ -15,7 +15,10 @@ pub mod health;
 pub mod models;
 pub mod openapi_docs;
 pub mod readiness;
+mod request_cost;
 pub mod rerank;
+
+pub(crate) use request_cost::request_cost_usd;
 pub mod response_cache;
 pub mod responses;
 pub mod route_difficulty_explain;

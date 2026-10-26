@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
+use crate::api::request_cost_usd;
 use crate::api::RoutingHints;
 use crate::config::VendorProtocol;
 use crate::database::RequestLog;
@@ -1130,7 +1131,14 @@ async fn log_chat_request(
         completion_tokens,
         total_tokens,
         duration_ms: Some(duration_ms),
-        cost_usd: None,
+        cost_usd: response.and_then(|response_value| {
+            request_cost_usd(
+                &state.config.read().model_catalog,
+                &decision.vendor.type_,
+                &decision.model.model_id,
+                response_value,
+            )
+        }),
     };
 
     // logger 未接线 = 降级为不落日志（不回退同步直写）
@@ -1450,7 +1458,14 @@ async fn push_embeddings_log(
         completion_tokens,
         total_tokens,
         duration_ms: Some(duration_ms),
-        cost_usd: None,
+        cost_usd: response.and_then(|response_value| {
+            request_cost_usd(
+                &state.config.read().model_catalog,
+                &decision.vendor.type_,
+                &decision.model.model_id,
+                response_value,
+            )
+        }),
     };
 
     if let Some(logger) = state.logger.as_ref() {
@@ -1460,5 +1475,66 @@ async fn push_embeddings_log(
                 t_args("api-log-push-rejected", &[("error", e.to_string())])
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod request_cost_tests {
+    use crate::config::{ModelCatalogEntry, PricingCurrency};
+
+    fn catalog_entry(model_id: &str) -> ModelCatalogEntry {
+        ModelCatalogEntry {
+            model_id: model_id.into(),
+            context_window: 200_000,
+            rerank_price_per_1k_docs: 0.0,
+            input_price: 3.0,
+            output_price: 15.0,
+            cache_read_price: 0.3,
+            cache_creation_price: 3.75,
+            currency: PricingCurrency::Usd,
+            max_output_tokens: Some(8192),
+            supports_tools: true,
+            supports_thinking: true,
+            cache_breakpoints: None,
+            long_context_input_price: 0.0,
+            long_context_threshold_tokens: 0,
+        }
+    }
+
+    /// 逐请求成本：固定用量 + 目录单价 → cost_usd = 四档求和（openai
+    /// Inclusive 语义：基数 = prompt − cache 档）。
+    #[test]
+    fn request_cost_usd_sums_four_tiers() {
+        let catalog = vec![catalog_entry("gpt-test")];
+        let response = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 500_000,
+                "prompt_tokens_details": { "cached_tokens": 200_000 }
+            }
+        });
+        // 基数 0.8M×3 + 输出 0.5M×15 + cache read 0.2M×0.3 + write 0×3.75 = 9.96
+        let cost = crate::api::request_cost_usd(&catalog, "openai", "gpt-test", &response)
+            .expect("登记单价必须产出成本");
+        assert!((cost - 9.96).abs() < 1e-9, "四档求和应为 9.96，实际 {cost}");
+    }
+
+    /// 无 usage（失败/空响应）→ None（不写成本）；未登记单价 → Some(0.0)。
+    #[test]
+    fn request_cost_usd_none_without_usage_zero_when_unpriced() {
+        let catalog = vec![catalog_entry("gpt-test")];
+        assert!(
+            crate::api::request_cost_usd(&catalog, "openai", "gpt-test", &serde_json::json!({}))
+                .is_none(),
+            "无 usage 必须 None"
+        );
+        let cost = crate::api::request_cost_usd(
+            &catalog,
+            "openai",
+            "unknown-model",
+            &serde_json::json!({"usage": {"prompt_tokens": 100, "completion_tokens": 10}}),
+        )
+        .expect("未登记单价必须 0 而非 None");
+        assert!(cost == 0.0, "未登记单价必须写 0，实际 {cost}");
     }
 }

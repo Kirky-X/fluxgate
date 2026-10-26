@@ -412,3 +412,202 @@ mod tests {
         );
     }
 }
+
+/// DB 级落库用例。feature 门控与 `src/api/mod.rs` 测试模块同集——本模块
+/// 依赖 database（dbnexus/Repository/AsyncLogger）与 web-server（ApiState）。
+#[cfg(all(
+    test,
+    feature = "resilience",
+    feature = "database",
+    feature = "web-server"
+))]
+mod rerank_cost_db_tests {
+    use super::*;
+    use crate::config::{
+        ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, ModelCatalogEntry, ModelConfig,
+        RateLimitConfig, RetrySection, RoutingSection, ServerConfig, VendorConfig,
+    };
+    use crate::database::{AsyncLogger, AsyncLoggerHandle, Database, LogFilter, Repository};
+    use crate::protocol::{AnthropicConverter, OpenAIConverter};
+    use crate::router::RoutingStrategy;
+    use crate::storage::RequestLogSink;
+    use crate::vendor::VendorManager;
+    use dbnexus::{DbConfig, DbPool};
+    use std::time::Duration;
+
+    fn rerank_vendor() -> VendorConfig {
+        VendorConfig {
+            timeout_ms: 60_000,
+            stream_ttft_ms: 60_000,
+            stream_idle_ms: 30_000,
+            chat_path: None,
+            api_style: None,
+            id: "rerank-vendor".to_string(),
+            name: "Rerank Vendor".to_string(),
+            type_: "rerank".to_string(),
+            api_key_env: String::new(),
+            api_key_envs: Vec::new(),
+            extra_headers: Default::default(),
+            api_base: String::new(),
+            enabled: true,
+            priority: 1,
+            models: vec![ModelConfig {
+                model_id: "rerank-v3".to_string(),
+                abstract_id: None,
+                weight: 1.0,
+                enabled: true,
+                dimensions: None,
+                compat_group: None,
+                model_type: Some("rerank".to_string()),
+            }],
+            rate_limit: RateLimitConfig::Token {
+                max_tokens: 1_000_000,
+                window_hours: Some(1),
+                sliding: false,
+            },
+            concurrency: ConcurrencyConfig {
+                requests_per_second: 100,
+                max_concurrent_requests: None,
+                token_weighted: false,
+                token_ticket_min: 1,
+                token_ticket_max: 16384,
+                token_ticket_default: 4096,
+            },
+            supports_batch: false,
+            anthropic_version: None,
+            forward_beta_headers: false,
+            send_nonstandard_params: false,
+        }
+    }
+
+    async fn make_state() -> (Arc<ApiState>, Arc<Repository>) {
+        let config = Config {
+            rate_limit: Default::default(),
+            metrics: Default::default(),
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            database: DatabaseConfig {
+                path: ":memory:".into(),
+                pool_size: 1,
+                url: String::new(),
+            },
+            vendors: vec![rerank_vendor()],
+            global_model: None,
+            pricing: vec![],
+            model_catalog: vec![ModelCatalogEntry {
+                model_id: "rerank-v3".into(),
+                context_window: 128_000,
+                rerank_price_per_1k_docs: 2.0,
+                ..Default::default()
+            }],
+            auth: None,
+            cors: None,
+            retry: RetrySection::default(),
+            routing: RoutingSection::default(),
+            cache: crate::config::CacheSection::default(),
+            admission: Default::default(),
+            health: Default::default(),
+            quota: Default::default(),
+            grpc: None,
+            resilience: crate::config::ResilienceSection::default(),
+            docs: Default::default(),
+            lexcompress: Default::default(),
+            responses: Default::default(),
+        };
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let router = Arc::new(crate::router::Router::new(
+            config_manager.clone(),
+            vendor_manager.clone(),
+        ));
+
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("memory db pool");
+        let repository = Arc::new(Repository::new(pool.clone()));
+        repository.initialize().await.expect("schema init");
+        let logger: Arc<dyn RequestLogSink> = Arc::new(AsyncLoggerHandle::new(AsyncLogger::new(
+            repository.clone(),
+            1024,
+            Duration::from_millis(200),
+        )));
+        let database: Arc<dyn RequestLogSink> = Arc::new(Database {
+            pool,
+            repository: repository.clone(),
+        });
+        let state = Arc::new(ApiState {
+            config: config_manager,
+            vendor_manager,
+            router,
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database,
+            logger: Some(logger),
+            pre_aggregator: None,
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+            difficulty: None,
+            responses: None,
+        });
+        (state, repository)
+    }
+
+    #[tokio::test]
+    async fn rerank_log_cost_usd_matches_catalog_price_per_1k_docs() {
+        let (state, repository) = make_state().await;
+        let vendor = rerank_vendor();
+        let decision = RoutingDecision {
+            vendor: vendor.clone(),
+            model: vendor.models[0].clone(),
+            strategy: RoutingStrategy::Direct,
+        };
+        let request = RerankRequest {
+            model: "rerank-v3".into(),
+            query: "q".into(),
+            documents: vec!["d0".into(), "d1".into(), "d2".into()],
+            top_n: 3,
+            return_documents: false,
+            instruction: None,
+        };
+
+        push_rerank_log(
+            &state,
+            "req-rerank-cost",
+            &request,
+            &decision,
+            None,
+            10,
+            200,
+            None,
+        )
+        .await;
+        if let Some(logger) = state.logger.as_ref() {
+            logger.shutdown().await.expect("logger shutdown");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let logs = repository
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("query logs");
+        assert_eq!(logs.len(), 1, "rerank 请求日志恰一条");
+        let cost = logs[0].cost_usd.expect("cost_usd 必须落库");
+        assert!(
+            (cost - 0.006).abs() < 1e-9,
+            "目录 2.0/千文档 × 3 文档 = 0.006，实际 {cost}"
+        );
+    }
+}

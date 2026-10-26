@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
+use crate::api::request_cost_usd;
 use crate::api::RoutingHints;
 use crate::database::RequestLog;
 use crate::error::GateError;
@@ -1129,7 +1130,14 @@ async fn log_request(
         completion_tokens,
         total_tokens,
         duration_ms: Some(duration_ms),
-        cost_usd: None,
+        cost_usd: response.and_then(|response_value| {
+            request_cost_usd(
+                &state.config.read().model_catalog,
+                &decision.vendor.type_,
+                &decision.model.model_id,
+                response_value,
+            )
+        }),
     };
 
     // logger 未接线 = 降级为不落日志（不回退同步直写）

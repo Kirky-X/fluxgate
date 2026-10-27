@@ -746,11 +746,14 @@ pub enum AffinityMode {
     /// 现行为：执行成功即粘 1h、命中续期（行为冻结，零回归）
     Legacy,
     /// 按响应缓存价值判定：worth ≥ `cache_worth_tokens` 才粘，TTL = vendor
-    /// `cache_ttl_secs`；低于阈值不写不删（既有记录自然过期）
+    /// `cache_ttl_secs`；低于阈值不写不删（既有记录按写入时 TTL 过期）。
+    /// 读路径不续期（TTL 只由 settle 设定）
     Auto,
-    /// 会话内连续请求粘 `turn_gap_secs`（tool result 回传窗口近似）
+    /// 会话内连续请求粘 `turn_gap_secs`（tool result 回传窗口近似）；
+    /// 读路径不续期
     Turn,
-    /// 不写亲和 + 查询短路
+    /// 不写亲和 + 查询短路（路由 `affinity_hit` 与解释端点都按本变体门控，
+    /// 存量绑定立即不再生效）
     Off,
 }
 

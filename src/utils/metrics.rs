@@ -199,9 +199,9 @@ pub struct GlobalMetrics {
     /// Gemini 观测双计数：请求 / 上游失败
     gemini_requests_total: AtomicU64,
     gemini_upstream_failures_total: AtomicU64,
-    /// 缓存经济学亲和四计数（[routing.affinity]，legacy 模式全 0）：
-    /// 价值粘性写入 / 该写未写（threshold-skip 漂移）/ 落盘通道满丢弃 /
-    /// 启动恢复条数
+    /// 缓存经济学亲和四计数（[routing.affinity]）：
+    /// 粘性写入（legacy/auto/turn 成功结算都 +1，`off` 不写）/ 该写未写
+    ///（auto 下 threshold-skip）/ 落盘通道满丢弃 / 启动恢复条数
     affinity_stick_total: AtomicU64,
     affinity_drift_total: AtomicU64,
     affinity_persist_drop_total: AtomicU64,
@@ -650,7 +650,7 @@ impl GlobalMetrics {
         self.affinity_misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// 缓存经济学亲和：写入粘性（auto 值得粘 / turn 粘住）
+    /// 缓存经济学亲和：写入粘性（legacy/auto/turn 成功结算都计入；`off` 不写）
     pub fn record_affinity_stick(&self) {
         self.affinity_stick_total.fetch_add(1, Ordering::Relaxed);
     }
@@ -1125,7 +1125,7 @@ pub struct MetricsSnapshot {
     pub gemini_requests_total: u64,
     /// Gemini 上游失败累计
     pub gemini_upstream_failures_total: u64,
-    /// 缓存经济学亲和：写入粘性累计（auto 值得粘 / turn 粘住）
+    /// 缓存经济学亲和：写入粘性累计（legacy/auto/turn 成功结算都计入）
     pub affinity_stick_total: u64,
     /// 该写未写累计（auto 下 worth 低于门限 —— 会话回到路由池）
     pub affinity_drift_total: u64,

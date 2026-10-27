@@ -408,6 +408,141 @@ async fn settled_ttl_follows_mode() {
     );
 }
 
+/// auto 结算后的短 TTL 经一次**路由命中**不得被顶回表级 1h（C-1 回归）。
+///
+/// 这里用 `lookup_for_mode` 复现路由器读路径的语义（router.rs 的
+/// `affinity_hit` 就是它），断言 settle→路由读之后剩余 TTL 仍 ≈ vendor
+/// `cache_ttl_secs`。现有 `settled_ttl_follows_mode` 只在续期前取值，
+/// 测不到这条。
+#[tokio::test]
+async fn auto_settle_ttl_survives_route_lookup() {
+    let (writer, table) = build_writer("auto").await;
+    writer
+        .settle(
+            None,
+            Some("s"),
+            &vendor("v1", 300, false),
+            CacheUsage {
+                prompt_tokens: 0,
+                cache_read_tokens: 4_000,
+                cache_creation_tokens: 0,
+            },
+        )
+        .await;
+    let after_settle = table.remaining_ttl(None, "s").await.expect("已粘住");
+    assert!(
+        after_settle <= Duration::from_secs(300),
+        "settle 后 TTL 必须取 vendor cache_ttl_secs=300（实测 {after_settle:?}）"
+    );
+
+    // 模拟路由读：auto 模式走 peek（不续期）
+    for _ in 0..3 {
+        assert_eq!(
+            table
+                .lookup_for_mode(AffinityMode::Auto, None, "s")
+                .await
+                .as_deref(),
+            Some("v1"),
+            "auto 命中必须返回绑定 vendor"
+        );
+    }
+    let after_route = table.remaining_ttl(None, "s").await.expect("仍粘住");
+    assert!(
+        after_route <= Duration::from_secs(300),
+        "路由命中不得把 auto 的 TTL 顶回表级 1h（实测 {after_route:?}）"
+    );
+}
+
+/// legacy 结算不得绕过首绑定收敛：租户隔离开启时 settle 走 `bind_if_absent`，
+/// 后到的结算不覆盖已收敛的绑定（M-1 回归）。
+#[tokio::test]
+async fn legacy_settle_respects_tenant_scoped_first_binding() {
+    let config = crate::config::Config {
+        rate_limit: Default::default(),
+        server: crate::config::ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+        },
+        database: crate::config::DatabaseConfig {
+            path: ":memory:".into(),
+            pool_size: 1,
+            url: String::new(),
+        },
+        vendors: vec![],
+        global_model: None,
+        pricing: vec![],
+        model_catalog: Vec::new(),
+        auth: None,
+        cors: None,
+        retry: Default::default(),
+        routing: crate::config::RoutingSection {
+            affinity: section("legacy"),
+            affinity_tenant_scoped: true,
+            ..Default::default()
+        },
+        cache: Default::default(),
+        admission: Default::default(),
+        health: Default::default(),
+        quota: Default::default(),
+        grpc: None,
+        resilience: Default::default(),
+        docs: Default::default(),
+        lexcompress: Default::default(),
+        responses: Default::default(),
+        otlp: Default::default(),
+        usage_insights: Default::default(),
+        metrics: Default::default(),
+    };
+    let config = Arc::new(ConfigManager::new(config));
+    let table = Arc::new(AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL));
+    let writer = AffinityWriter::new(
+        config,
+        table.clone(),
+        Arc::new(AffinityStickTable::new()),
+        None,
+        Arc::new(crate::utils::metrics::GlobalMetrics::new()),
+    );
+
+    // 并发首绑定已由 API 层收敛到 v-a（bind_if_absent 胜出者）
+    assert!(
+        table.bind_if_absent(Some("tenant-a"), "s", "v-a").await,
+        "首绑定应写入"
+    );
+    // 后到的 settle 报的是另一个 vendor（竞态/换路），不得改写绑定
+    let d = writer
+        .settle(
+            Some("tenant-a"),
+            Some("s"),
+            &vendor("v-b", 300, false),
+            CacheUsage::default(),
+        )
+        .await;
+    assert_eq!(d.outcome, AffinityOutcome::LegacyStuck);
+    assert_eq!(
+        table.peek(Some("tenant-a"), "s").await.as_deref(),
+        Some("v-a"),
+        "legacy settle 不得覆盖首绑定收敛结果"
+    );
+}
+
+/// off 模式：既有绑定在查询侧立即失效（止损阀，H-1 回归）。
+#[tokio::test]
+async fn off_mode_query_short_circuits_existing_bindings() {
+    let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
+    table.bind(None, "s", "v-a").await;
+    assert_eq!(
+        table.lookup_for_mode(AffinityMode::Off, None, "s").await,
+        None,
+        "off 模式必须查询短路（存量绑定不得继续生效）"
+    );
+    // 键本身不被 off 读路径删除（写侧才是唯一删除点）
+    assert_eq!(
+        table.peek(None, "s").await.as_deref(),
+        Some("v-a"),
+        "查询短路不得顺带删除绑定"
+    );
+}
+
 /// 粘性记账表：同键覆盖（保留最后写入的行）
 #[test]
 fn stick_table_overwrites_same_key() {
@@ -535,68 +670,55 @@ fn worth_saturates_instead_of_overflowing() {
     assert_eq!(usage.worth(false), u64::MAX);
 }
 
-// ── T003：lookup_with_reason 三态 ─────────────────────────────────────
+// ── 亲和读路径的模式分派（TTL 续期语义）─────────────────────────────
 
-/// 绑定后命中（三态：hit）+ 未绑定 miss + 沿用薄包装的 `lookup`。
+/// 与模式分派读对照的旧 `lookup`：legacy 语义（命中续期）在表层保持可用。
 #[tokio::test]
-async fn lookup_reports_hit_and_miss_and_disabled() {
-    use crate::router::affinity::AffinityLookup;
+async fn lookup_still_reports_hit_and_miss() {
     let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
 
-    // 未绑定 = Miss（不是 Disabled——表是接线的）
-    let miss = table.lookup_with_reason(None, "s").await;
-    assert_eq!(miss, AffinityLookup::MISS, "无绑定是 miss 而非 disabled");
-    assert_eq!(miss.reason(), "miss");
-    assert_eq!(table.lookup(None, "s").await, None);
-
+    assert_eq!(table.lookup(None, "s").await, None, "无绑定是 miss");
     table.bind(None, "s", "vendor-a").await;
-    let hit = table.lookup_with_reason(None, "s").await;
-    assert!(!hit.disabled);
-    assert_eq!(hit.vendor_id.as_deref(), Some("vendor-a"));
-    assert_eq!(hit.reason(), "hit");
-    // 薄包装 `lookup` 与三态口同值（调用方零改动契约）
-    assert_eq!(table.lookup(None, "s").await.as_deref(), Some("vendor-a"));
-
-    // 未接线 = Disabled（解释面必须能与「没绑定」区分）
-    let disabled = AffinityLookup::DISABLED;
-    assert!(disabled.disabled);
-    assert_eq!(disabled.reason(), "disabled");
-    assert_eq!(disabled.vendor_id, None);
+    assert_eq!(
+        table.lookup(None, "s").await.as_deref(),
+        Some("vendor-a"),
+        "命中返回绑定 vendor"
+    );
 }
 
-/// 命中仍续期（活跃会话粘住语义不因切到三态口而丢失）
+/// legacy 命中的续期语义由 `lookup`/`lookup_for_mode(Legacy)` 承担；
+/// `auto`/`turn` 走 peek（不续期）——见 `affinity.rs` 的模式分派单测。
 #[tokio::test]
-async fn lookup_with_reason_renews_ttl_like_lookup() {
+async fn legacy_lookup_keeps_renewing_active_sessions() {
     let table = AffinityTable::with_memory_backend(Duration::from_millis(500));
     table.bind(None, "hot", "vendor-a").await;
     for _ in 0..3 {
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let hit = table.lookup_with_reason(None, "hot").await;
-        assert_eq!(hit.vendor_id.as_deref(), Some("vendor-a"), "命中必须续期");
+        assert_eq!(
+            table.lookup(None, "hot").await.as_deref(),
+            Some("vendor-a"),
+            "legacy 活跃会话命中必须续期"
+        );
     }
 }
 
-/// 独占键空间：租户维度命中不影响 legacy 键（三态口与 `lookup` 同键规则）
+/// 独占键空间：租户维度命中不影响 legacy 键（与 `lookup` 同键规则）
 #[tokio::test]
-async fn lookup_with_reason_respects_tenant_scope() {
+async fn scoped_keys_are_isolated() {
     let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
     table.bind(Some("tenant-a"), "s", "vendor-a").await;
     assert_eq!(
-        table
-            .lookup_with_reason(Some("tenant-a"), "s")
-            .await
-            .vendor_id
-            .as_deref(),
+        table.peek(Some("tenant-a"), "s").await.as_deref(),
         Some("vendor-a")
     );
     assert_eq!(
-        table.lookup_with_reason(Some("tenant-b"), "s").await,
-        crate::router::affinity::AffinityLookup::MISS,
+        table.peek(Some("tenant-b"), "s").await,
+        None,
         "他租户不得命中"
     );
     assert_eq!(
-        table.lookup_with_reason(None, "s").await,
-        crate::router::affinity::AffinityLookup::MISS,
+        table.peek(None, "s").await,
+        None,
         "legacy 键空间与租户键互不可见"
     );
 }

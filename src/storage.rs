@@ -339,6 +339,12 @@ pub trait AffinityStickSink: Send + Sync {
         0
     }
 
+    /// 落库失败的批次数（直写实现恒 0）——与通道丢弃分列：前者是背压，
+    /// 后者是 UPSERT 失败整批丢弃。
+    fn flush_failures(&self) -> u64 {
+        0
+    }
+
     /// 读取未过期的前 `limit` 条（按 `expires_at` 降序，最新写入优先），
     /// 供启动恢复灌回内存亲和表。管道前沿不支持读（恢复走存储后端）。
     async fn read_unexpired(

@@ -129,40 +129,52 @@ fn truncate_session_key(raw: &str) -> String {
 /// 亲和决策解释块（`POST /admin/route/explain` 的 `affinity` 字段；
 /// R-affinity-004）。纯只读：`peek` 不续期、stick 记账只读，不改任何状态。
 ///
-/// - `decision`：`hit` / `miss` / `disabled` 三态机器码——亲和未接线
-///   （off 模式或表未装配）报 `disabled`，与「没绑定」区分开
-/// - `worth_tokens` / `ttl_secs`：最后一次 settle 的粘性记账；无记账
-///   （legacy 模式 / 未结算）为 `null`
+/// `decision` 四态机器码（由调用方区分「没接线」与「这次请求没带会话」）：
+/// - `hit`：绑定存在（带 `vendor`）
+/// - `miss`：表已接线、给了会话键，但没有绑定
+/// - `no_session`：表已接线、模式未关，但请求没带 `session_id`
+/// - `disabled`：亲和未接线——`[routing.affinity] mode = "off"` 或亲和表未装配
+///
+/// `worth_tokens` / `ttl_secs`：最后一次 settle 的粘性记账（且其 vendor 与
+/// 当前绑定一致）；无记账（legacy 模式 / 未结算 / 记账行已换 vendor）为
+/// `null`。`ttl_secs` 是**绑定键**的剩余存活秒数（与 `peek` 同源），不是记账
+/// 快照——记账行的 `expires_at` 不会随读路径变化。
+///
+/// `tenant`：`affinity_tenant_scoped` 开启时由调用方传 API key 摘要（与路由
+/// 同源）；关闭时一律 legacy 键空间。
 pub async fn affinity_decision_block(
     state: &crate::api::state::ApiState,
     session_id: Option<&str>,
+    tenant: Option<&str>,
 ) -> Value {
     use crate::config::AffinityMode;
     let mode = AffinityMode::from_section(&state.config.read().routing.affinity);
     let (decision, worth, ttl) = match (state.affinity.as_ref(), session_id) {
         (Some(table), Some(session)) if mode != AffinityMode::Off => {
-            // 解释面没有请求方 key 上下文：tenant_scoped 开启时亲和键带
-            // api_key_hash，explain 只拿得到 session_id——该形态下绑定
-            // 不可定位，如实查 legacy 键空间（与 bind 的 None 侧同键），
-            // 不虚构命中
-            let tenant: Option<&str> = None;
-            let bound = table.peek(tenant, session).await;
-            let stick = state
-                .affinity_writer
-                .as_ref()
-                .and_then(|w| w.last_stick_for(tenant, session));
-            match bound {
-                Some(vendor) => (
-                    serde_json::json!({"decision": "hit", "vendor": vendor}),
-                    stick.map(|(w, _)| w),
-                    stick.map(|(_, t)| t),
-                ),
-                None => (
-                    serde_json::json!({"decision": "miss"}),
-                    stick.map(|(w, _)| w),
-                    stick.map(|(_, t)| t),
-                ),
+            match table.peek(tenant, session).await {
+                Some(vendor) => {
+                    // TTL 取亲和表侧的真实剩余（不是记账行快照）
+                    let ttl = table
+                        .remaining_ttl(tenant, session)
+                        .await
+                        .map(|d| d.as_secs());
+                    // 记账只在 vendor 与当前绑定一致时回填——记账表按（租户,
+                    // 会话）唯一，绑定可能在两次记账之间换过 vendor
+                    let worth = state
+                        .affinity_writer
+                        .as_ref()
+                        .and_then(|w| w.last_stick_for(tenant, session, &vendor));
+                    (
+                        serde_json::json!({"decision": "hit", "vendor": vendor}),
+                        worth,
+                        ttl,
+                    )
+                }
+                None => (serde_json::json!({"decision": "miss"}), None, None),
             }
+        }
+        (Some(_), None) if mode != AffinityMode::Off => {
+            (serde_json::json!({"decision": "no_session"}), None, None)
         }
         _ => (serde_json::json!({"decision": "disabled"}), None, None),
     };

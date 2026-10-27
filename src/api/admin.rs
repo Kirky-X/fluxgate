@@ -262,6 +262,13 @@ pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
         .as_ref()
         .map(|w| w.dropped_sticks())
         .unwrap_or(0));
+    // 落库失败批次累计（UPSERT 失败整批丢弃）：与通道丢弃分列——一个是被
+    // 背压丢弃，一个是写库失败，运维处置完全不同
+    value["affinity_flush_failures"] = serde_json::json!(state
+        .affinity_writer
+        .as_ref()
+        .map(|w| w.flush_failures())
+        .unwrap_or(0));
     value["secret_scan_dropped"] = serde_json::json!(state
         .logger
         .as_ref()

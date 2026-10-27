@@ -4,8 +4,16 @@
 //! 会话/前缀亲和表 — oxcache 承载存储。
 //!
 //! 键 `affinity:{session_key}`；`affinity_tenant_scoped` 开启时带租户维度
-//! `affinity:{api_key_hash}:{session_key}`。值 = vendor_id，命中即续期 TTL
-//! （活跃会话粘住、闲置到点过期）；存取出错静默降级为无亲和。
+//! `affinity:{api_key_hash}:{session_key}`。值 = vendor_id；存取出错静默
+//! 降级为无亲和。
+//!
+//! 续期策略按模式分流（TTL 语义的来源不同，读路径不得互相覆盖）：
+//! - `legacy` 读走 [`AffinityTable::lookup`]——命中即续期表级 1h（活跃会话
+//!   粘住，行为冻结）；
+//! - `auto`/`turn` 读走 [`AffinityTable::peek`]——不续期；TTL 只由写入方按
+//!   上游缓存存活时长（`cache_ttl_secs`）/ `turn_gap_secs` 设定，低于阈值的
+//!   结算不重写 TTL，既有记录按写入时的 TTL 自然过期；
+//! - 路由解释端点一律走 `peek`（诊断不得改状态）。
 
 use crate::config::AffinityMode;
 // 粘性行契约单源在 `storage`（落盘与恢复共用）；此处 re-export 供 router 半边复用
@@ -31,16 +39,6 @@ pub const DEFAULT_AFFINITY_TTL: Duration = Duration::from_secs(3600);
 pub(crate) const MAX_TRACKED_STICKS: usize = 4096;
 /// 淘汰扫描步长（累计这么多次记账做一次最旧项清理，摊还 O(1)）
 pub(crate) const EVICT_SCAN_INTERVAL: u64 = 256;
-
-/// 亲和查询态（三态：`Hit { vendor_id }` / `MISS` / `DISABLED`）。
-/// 常量与 `hit()` / `reason()` 落在 `affinity_settle.rs`（规则14）
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AffinityLookup {
-    /// 命中时的绑定 vendor；未命中/未接线恒 None
-    pub vendor_id: Option<String>,
-    /// 亲和未接线（`off` 模式或表未装配）
-    pub disabled: bool,
-}
 
 /// 会话 → 上次成功服务的 vendor 的亲和表
 #[derive(Clone)]
@@ -70,34 +68,42 @@ impl AffinityTable {
         }
     }
 
-    /// 查询会话绑定的 vendor_id；命中即续期 TTL（活跃续期语义）。
+    /// 查询会话绑定的 vendor_id，按亲和模式决定是否续期：
+    ///
+    /// - `legacy`：命中即把 TTL 刷回表级周期（活跃会话粘住，行为冻结）；
+    /// - `auto`/`turn`：命中**不续期**——这两模式的 TTL 由写入方按
+    ///   `cache_ttl_secs` / `turn_gap_secs` 决定，读路径续成表级 1h 会让
+    ///   「随上游缓存失效而漂移」的语义失效；
+    /// - `off`：查询短路，恒 None（止损阀要能立刻关掉存量绑定）。
+    ///
     /// 未绑定或存取出错返回 None。
-    pub async fn lookup(&self, tenant: Option<&str>, session_key: &str) -> Option<String> {
-        self.lookup_with_reason(tenant, session_key).await.vendor_id
-    }
-
-    /// 查询 + 命中原因（路由解释端点消费）。命中仍按现行为续期 TTL；
-    /// 亲和表未接线 / 无会话键时返回 `Disabled`（与 `None` 区分开——
-    /// 「没接线」和「没绑定」是两回事，解释面必须能分辨）。
-    pub async fn lookup_with_reason(
+    pub async fn lookup_for_mode(
         &self,
+        mode: AffinityMode,
         tenant: Option<&str>,
         session_key: &str,
-    ) -> AffinityLookup {
+    ) -> Option<String> {
+        match mode {
+            AffinityMode::Off => None,
+            // legacy 的活跃续期语义
+            AffinityMode::Legacy => self.lookup(tenant, session_key).await,
+            AffinityMode::Auto | AffinityMode::Turn => self.peek(tenant, session_key).await,
+        }
+    }
+
+    /// 查询会话绑定的 vendor_id；命中即续期 TTL（legacy 活跃续期语义）。
+    /// 未绑定或存取出错返回 None。
+    pub async fn lookup(&self, tenant: Option<&str>, session_key: &str) -> Option<String> {
         let key = Self::key(tenant, session_key);
         match self.backend.get(&key).await {
             Ok(Some(value)) => {
                 // 活跃续期：命中即重置 TTL；键恰在此刻被逐出时 expire 返回
                 // false，无碍本次命中（下次请求自然 miss 重新绑定）
                 let _ = self.backend.expire(&key, self.ttl).await;
-                match String::from_utf8(value) {
-                    Ok(vendor_id) => AffinityLookup::hit(vendor_id),
-                    // 值非 UTF-8（非本进程写入或存储损坏）：按未绑定处理
-                    Err(_) => AffinityLookup::MISS,
-                }
+                String::from_utf8(value).ok()
             }
-            // 存储出错同 lookup 的静默无亲和降级：报 Miss（不谎报命中）
-            Ok(None) | Err(_) => AffinityLookup::MISS,
+            // 存储出错同 lookup 的静默无亲和降级（不谎报命中）
+            Ok(None) | Err(_) => None,
         }
     }
 
@@ -158,8 +164,9 @@ impl AffinityTable {
         let _ = self.backend.delete(&Self::key(tenant, session_key)).await;
     }
 
-    /// 只读窥视（不续期）：路由解释端点专用——`lookup` 的命中续期是副作用，
-    /// 解释面必须纯只读（不改亲和状态）。未绑定 / 存取出错返回 None。
+    /// 只读窥视（不续期）：`auto`/`turn` 的路由读与解释端点共用——这两模式的
+    /// TTL 只由写入方设定，读路径不得续期；解释面必须纯只读（不改亲和状态）。
+    /// 未绑定 / 存取出错返回 None。
     pub async fn peek(&self, tenant: Option<&str>, session_key: &str) -> Option<String> {
         let value = self
             .backend
@@ -176,10 +183,11 @@ impl AffinityTable {
         self.backend.ttl(&key).await.ok()?
     }
 
-    /// 带 TTL 的绑定（缓存经济学模式专用）：TTL 随上游缓存存活时长
-    /// （`cache_ttl_secs`）或会话连续窗口（`turn_gap_secs`）变化，不能用
-    /// 表级固定 TTL 的 [`Self::bind`]。语义按现行为：无条件 set（重复绑定
-    /// 覆盖——与失败迁移重绑定 `bind` 同款，首绑定收敛只对 legacy 生效）。
+    /// 带 TTL 的绑定（缓存经济学 `auto`/`turn` 专用）：TTL 随上游缓存存活
+    /// 时长（`cache_ttl_secs`）或会话连续窗口（`turn_gap_secs`）变化，不能用
+    /// 表级固定 TTL 的 [`Self::bind`]。语义：无条件 set（重复绑定覆盖）——
+    /// 每次结算都是一份新的「该粘多久」判定，后续结算覆盖前一份；首绑定
+    /// 收敛只属于 legacy（[`Self::bind_if_absent`]）。
     pub async fn bind_for(
         &self,
         tenant: Option<&str>,
@@ -296,6 +304,104 @@ mod tests {
                 "活跃会话每次命中续期 TTL，不得过期"
             );
         }
+    }
+
+    /// peek 不续期：与 `lookup` 对偶的不变式（`auto`/`turn` 的路由读与
+    /// 解释端点依赖它——续期会让上游缓存失效后仍粘住旧 vendor）。
+    #[tokio::test]
+    async fn peek_does_not_renew_ttl() {
+        let table = AffinityTable::with_memory_backend(Duration::from_millis(600));
+        table.bind(None, "peek", "vendor-a").await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let before = table
+            .remaining_ttl(None, "peek")
+            .await
+            .expect("绑定应仍存活");
+        assert_eq!(
+            table.peek(None, "peek").await.as_deref(),
+            Some("vendor-a"),
+            "peek 必须命中"
+        );
+        let after = table
+            .remaining_ttl(None, "peek")
+            .await
+            .expect("peek 后绑定仍存活");
+        assert!(
+            after <= before,
+            "peek 不得续期：before={before:?} after={after:?}"
+        );
+    }
+
+    /// 模式分流的读语义：legacy 续期、auto/turn 不续期、off 查询短路。
+    #[tokio::test]
+    async fn lookup_for_mode_branches_by_mode() {
+        use crate::config::AffinityMode;
+
+        // legacy：命中续期到表级 TTL
+        let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
+        table
+            .bind_for(None, "s", "vendor-a", Duration::from_secs(1))
+            .await;
+        assert_eq!(
+            table
+                .lookup_for_mode(AffinityMode::Legacy, None, "s")
+                .await
+                .as_deref(),
+            Some("vendor-a")
+        );
+        let renewed = table.remaining_ttl(None, "s").await.expect("仍存活");
+        assert!(
+            renewed > Duration::from_secs(3000),
+            "legacy 读续期到表级 1h（实测 {renewed:?}）"
+        );
+
+        // auto：命中但不续期（保留写入方的短 TTL）
+        let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
+        table
+            .bind_for(None, "s", "vendor-a", Duration::from_secs(300))
+            .await;
+        assert_eq!(
+            table
+                .lookup_for_mode(AffinityMode::Auto, None, "s")
+                .await
+                .as_deref(),
+            Some("vendor-a")
+        );
+        let kept = table.remaining_ttl(None, "s").await.expect("仍存活");
+        assert!(
+            kept <= Duration::from_secs(300),
+            "auto 读不得续期到表级 TTL（实测 {kept:?}）"
+        );
+
+        // turn 同 auto
+        let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
+        table
+            .bind_for(None, "s", "vendor-a", Duration::from_secs(120))
+            .await;
+        assert_eq!(
+            table
+                .lookup_for_mode(AffinityMode::Turn, None, "s")
+                .await
+                .as_deref(),
+            Some("vendor-a")
+        );
+        let kept = table.remaining_ttl(None, "s").await.expect("仍存活");
+        assert!(
+            kept <= Duration::from_secs(120),
+            "turn 读不得续期到表级 TTL（实测 {kept:?}）"
+        );
+
+        // off：查询短路（存量绑定也不可见）
+        let table = AffinityTable::with_memory_backend(DEFAULT_AFFINITY_TTL);
+        table.bind(None, "s", "vendor-a").await;
+        assert_eq!(
+            table.lookup_for_mode(AffinityMode::Off, None, "s").await,
+            None,
+            "off 模式必须查询短路"
+        );
+        let ttl_before = table.remaining_ttl(None, "s").await.expect("键仍存在");
+        assert!(ttl_before > Duration::from_secs(3000));
     }
 
     /// 键前缀隔离：亲和键带 `affinity:` 前缀，与裸键空间不冲突

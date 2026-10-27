@@ -10,8 +10,8 @@ pub mod embedding_pin;
 pub mod router;
 
 pub use affinity::{
-    AffinityDecision, AffinityLookup, AffinityOutcome, AffinityStickTable, AffinityTable,
-    CacheUsage, DEFAULT_AFFINITY_TTL,
+    AffinityDecision, AffinityOutcome, AffinityStickTable, AffinityTable, CacheUsage,
+    DEFAULT_AFFINITY_TTL,
 };
 pub use affinity_settle::{decide as decide_affinity, AffinityWriter};
 pub use difficulty::{CachedDecision, DecisionCache, DifficultyRouter, TierDecision, TierPath};

@@ -11,8 +11,8 @@
 //! 不交给模型。
 
 use super::affinity::{
-    AffinityDecision, AffinityLookup, AffinityOutcome, AffinityStickTable, AffinityTable,
-    CacheUsage, DEFAULT_AFFINITY_TTL, EVICT_SCAN_INTERVAL, MAX_TRACKED_STICKS,
+    AffinityDecision, AffinityOutcome, AffinityStickTable, AffinityTable, CacheUsage,
+    DEFAULT_AFFINITY_TTL, EVICT_SCAN_INTERVAL, MAX_TRACKED_STICKS,
 };
 use crate::config::{
     loader::default_vendor_cache_ttl_secs, AffinityMode, AffinitySection, ConfigManager,
@@ -23,39 +23,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-
-/// 亲和查询态三态常量与机器码（`affinity.rs` 的结构体在此取得行为）
-impl AffinityLookup {
-    /// 未命中（无绑定，或绑定值不可解析）—— 与「未接线」区分开
-    pub const MISS: AffinityLookup = AffinityLookup {
-        vendor_id: None,
-        disabled: false,
-    };
-    /// 亲和未接线（`off` 模式或亲和表未装配）
-    pub const DISABLED: AffinityLookup = AffinityLookup {
-        vendor_id: None,
-        disabled: true,
-    };
-
-    /// 命中构造
-    pub fn hit(vendor_id: String) -> Self {
-        Self {
-            vendor_id: Some(vendor_id),
-            disabled: false,
-        }
-    }
-
-    /// 机器码（解释端点输出口径；合法值集单源于本文件）
-    pub fn reason(&self) -> &'static str {
-        if self.disabled {
-            "disabled"
-        } else if self.vendor_id.is_some() {
-            "hit"
-        } else {
-            "miss"
-        }
-    }
-}
 
 /// 亲和判定结果的机器码与谓词
 impl AffinityOutcome {
@@ -183,6 +150,17 @@ pub fn decide(
     usage: CacheUsage,
 ) -> AffinityDecision {
     let mode = AffinityMode::from_section(section);
+    decide_for_mode(mode, section, vendor, usage)
+}
+
+/// [`decide`] 的模式已解析形态：热路径（settle）每次响应已解析过一次 mode，
+/// 不在此重复 trim/比较；与 [`decide`] 同源（同一实现），口径不会漂移。
+fn decide_for_mode(
+    mode: AffinityMode,
+    section: &AffinitySection,
+    vendor: Option<&VendorConfig>,
+    usage: CacheUsage,
+) -> AffinityDecision {
     match mode {
         AffinityMode::Legacy => AffinityDecision {
             mode,
@@ -264,6 +242,12 @@ impl AffinityWriter {
     ///
     /// 亲和表未接线或无会话键时返回 `inert` 决策（零副作用，不算命中）。
     /// 亲和是优化非承诺：落盘投递失败不影响已生效的内存粘性。
+    ///
+    /// 写入语义按模式分流：
+    /// - `legacy`：与派发成功点的 [`crate::api::bind_session_affinity`] 同语义
+    ///   （租户隔离开启时首绑定收敛 `bind_if_absent`，否则无条件 `bind`），
+    ///   不绕过并发首绑定的收敛结果；
+    /// - `auto`/`turn`：`bind_for` 无条件覆盖（每次结算是一份新的粘持判定）。
     pub async fn settle(
         &self,
         tenant: Option<&str>,
@@ -275,12 +259,14 @@ impl AffinityWriter {
         // 使用，克隆整段会每请求多一次 String 分配（热路径）
         let config = self.config.read();
         let section = &config.routing.affinity;
+        // 租户隔离开关决定 legacy 的写入语义（首绑定收敛仅在该形态成立）
+        let tenant_scoped = config.routing.affinity_tenant_scoped;
         let mode = AffinityMode::from_section(section);
         let Some(session) = session_key else {
             return AffinityDecision::inert(mode);
         };
         self.sync_sink_drops();
-        let decision = decide(section, Some(vendor), usage);
+        let decision = decide_for_mode(mode, section, Some(vendor), usage);
         if !decision.outcome.stuck() {
             // 该写未写（auto 下 worth 低于门限）= 会话回到路由池的漂移
             if decision.outcome == AffinityOutcome::BelowThreshold {
@@ -289,34 +275,33 @@ impl AffinityWriter {
             return decision;
         }
         self.metrics.record_affinity_stick();
+        if decision.outcome == AffinityOutcome::LegacyStuck {
+            // legacy 现行为：与 `bind_session_affinity` 同源，避免第二条
+            // 无条件 set 推翻并发首绑定的收敛结果
+            if tenant_scoped {
+                self.table.bind_if_absent(tenant, session, &vendor.id).await;
+            } else {
+                self.table.bind(tenant, session, &vendor.id).await;
+            }
+            return decision;
+        }
         // TTL 下限 1s：0 会让记录写完即过期、等于永不粘（配置侧已拒绝 0，
         // 此处兜住手构配置与单位换算的边界）
         let ttl = Duration::from_secs(decision.ttl_secs.max(1));
         self.table.bind_for(tenant, session, &vendor.id, ttl).await;
         // 落盘只对 auto/turn 记账（legacy 维持现状：不落盘，避免改既有语义）
-        if matches!(
-            decision.outcome,
-            AffinityOutcome::Stuck | AffinityOutcome::TurnStuck
-        ) {
-            let stick = AffinityStick {
-                tenant: tenant.unwrap_or_default().to_string(),
-                session_key: session.to_string(),
-                vendor_id: vendor.id.clone(),
-                worth_tokens: decision.worth_tokens.min(i64::MAX as u64) as i64,
-                expires_at: chrono::Utc::now().timestamp() + decision.ttl_secs as i64,
-            };
-            self.sticks.record(stick.clone());
-            if let Some(sink) = self.sink.as_ref() {
-                sink.record(stick);
-            }
+        let stick = AffinityStick {
+            tenant: tenant.unwrap_or_default().to_string(),
+            session_key: session.to_string(),
+            vendor_id: vendor.id.clone(),
+            worth_tokens: decision.worth_tokens.min(i64::MAX as u64) as i64,
+            expires_at: chrono::Utc::now().timestamp() + decision.ttl_secs as i64,
+        };
+        self.sticks.record(stick.clone());
+        if let Some(sink) = self.sink.as_ref() {
+            sink.record(stick);
         }
         decision
-    }
-
-    /// 只算不写：无会话键（或需在写入前预读决策）时按当前配置求值。
-    /// 与 [`Self::settle`] 同源（同一 `decide`），口径不会漂移。
-    pub fn decide_for(&self, vendor: &VendorConfig, usage: CacheUsage) -> AffinityDecision {
-        decide(&self.config.read().routing.affinity, Some(vendor), usage)
     }
 
     /// 粘性记账表句柄（启动恢复与落盘读取的注入点）
@@ -330,33 +315,50 @@ impl AffinityWriter {
         self.sink.as_ref().map(|s| s.dropped_sticks()).unwrap_or(0)
     }
 
-    /// 会话最后一次粘性记账 `(worth_tokens, ttl_secs)`；无记账（legacy 模式
-    /// / 尚未 settle）返回 None——解释端点的 worth_tokens/ttl_secs 来源。
-    pub fn last_stick_for(&self, tenant: Option<&str>, session_key: &str) -> Option<(u64, u64)> {
+    /// 落库失败的批次数（未接线 / 实现不暴露时为 0）。与通道丢弃分列——
+    /// 一个是被背压丢掉，一个是 UPSERT 失败整批丢弃。
+    pub fn flush_failures(&self) -> u64 {
+        self.sink.as_ref().map(|s| s.flush_failures()).unwrap_or(0)
+    }
+
+    /// 会话最后一次粘性记账的缓存价值（`worth_tokens`）；无记账（legacy 模式
+    /// / 尚未 settle）返回 None——解释端点的 `worth_tokens` 来源。
+    ///
+    /// 只在记账行的 vendor 与当前绑定一致时可用（调用方传入绑定 vendor）：
+    /// 记账表按（租户, 会话）唯一，绑定可能在两次记账之间换过 vendor。
+    /// 记账行的 `expires_at` 是 settle 当时的快照，不随读路径变化——解释端的
+    /// TTL 一律取亲和表侧的真实剩余（[`AffinityTable::remaining_ttl`]）。
+    pub fn last_stick_for(
+        &self,
+        tenant: Option<&str>,
+        session_key: &str,
+        bound_vendor: &str,
+    ) -> Option<u64> {
         let key = format!("{}\n{}", tenant.unwrap_or_default(), session_key);
         self.sticks
             .sticks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
-            .map(|(_, stick)| {
-                let ttl = (stick.expires_at - chrono::Utc::now().timestamp()).max(0);
-                (stick.worth_tokens.max(0) as u64, ttl as u64)
-            })
+            .filter(|(_, stick)| stick.vendor_id == bound_vendor)
+            .map(|(_, stick)| stick.worth_tokens.max(0) as u64)
     }
 
     /// 把通道丢弃计数差值采样进 metrics（settle 打点；`record` 路径本身
-    /// 无 metrics 句柄，这里按单调计数对账，不重不漏）
+    /// 无 metrics 句柄，这里按单调计数对账）。
+    ///
+    /// 并发 settle 共享本句柄：`fetch_max` 是 CAS 推进——并发者只有把
+    /// `sampled` 推到更高值的那一个拿到旧值记账，其余拿到相同旧值与新值
+    /// （差 0），不会重复记账。
     fn sync_sink_drops(&self) {
         let Some(sink) = self.sink.as_ref() else {
             return;
         };
         let total = sink.dropped_sticks();
-        let sampled = self.sampled_sink_drops.load(Ordering::Relaxed);
-        if total > sampled {
-            self.metrics.record_affinity_persist_drop(total - sampled);
+        let previous = self.sampled_sink_drops.fetch_max(total, Ordering::Relaxed);
+        if total > previous {
+            self.metrics.record_affinity_persist_drop(total - previous);
         }
-        self.sampled_sink_drops.store(total, Ordering::Relaxed);
     }
 }
 

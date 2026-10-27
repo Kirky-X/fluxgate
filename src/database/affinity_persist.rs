@@ -69,11 +69,6 @@ impl AffinityPersister {
         }
     }
 
-    /// 落库失败的批次数（UPSERT 批失败——与通道丢弃分列，原因不同）
-    pub fn flush_failures(&self) -> u64 {
-        self.flush_failures.load(Ordering::Relaxed)
-    }
-
     /// 优雅关闭：先置 closed 标志（后续投递直接计入丢弃，不塞进已死通道）
     /// → 发 Shutdown → 后台任务补最终 flush 后退出。
     pub async fn shutdown(&self) -> Result<(), GateError> {
@@ -130,6 +125,10 @@ impl crate::storage::AffinityStickSink for AffinityPersister {
 
     fn dropped_sticks(&self) -> u64 {
         self.dropped_sticks.load(Ordering::Relaxed)
+    }
+
+    fn flush_failures(&self) -> u64 {
+        self.flush_failures.load(Ordering::Relaxed)
     }
 
     /// 读取未过期的前 `limit` 条（按 `expires_at` 降序——最新写入优先，

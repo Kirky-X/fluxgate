@@ -8,13 +8,14 @@
 use crate::error::{FluxgateError, GateError};
 use crate::i18n::{t, t_args};
 use crate::ApiState;
-use axum::{extract::State, Json};
+use axum::{extract::State, http::HeaderMap, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 #[axum::debug_handler]
 pub async fn route_explain(
     State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, FluxgateError> {
     let model = body.get("model").and_then(Value::as_str).ok_or_else(|| {
@@ -23,8 +24,18 @@ pub async fn route_explain(
         })
     })?;
     let session_id = body.get("session_id").and_then(Value::as_str);
+    // 租户维度与路由同源（api_key_hash）：`affinity_tenant_scoped` 开启时
+    // 亲和键带它；否则查 legacy 键空间。认证关闭时 digest 归 anonymous，
+    // 与 bind/settle 侧的 None 判等由 `affinity_tenant_scoped` 门统一。
+    let tenant = state
+        .config
+        .read()
+        .routing
+        .affinity_tenant_scoped
+        .then(|| crate::utils::tenant::api_key_digest(&headers));
+    let tenant = tenant.as_deref();
 
-    let assessments = state.router.explain_route(model, session_id).await;
+    let assessments = state.router.explain_route(model, session_id, tenant).await;
     if assessments.is_empty() {
         return Err(FluxgateError::from(GateError::Validation {
             field: t_args(
@@ -74,6 +85,9 @@ pub async fn route_explain(
         "model": model,
         "candidates": candidates,
         // 亲和决策块（R-affinity-004）：解释点只读，不续期不改状态
-        "affinity": crate::api::routing_hints::affinity_decision_block(&state, session_id).await,
+        "affinity": crate::api::routing_hints::affinity_decision_block(
+            &state, session_id, tenant
+        )
+        .await,
     })))
 }

@@ -727,12 +727,18 @@ impl crate::config::AffinityMode {
     /// None，由校验侧持原值点名拒绝。
     pub fn parse(raw: &str) -> Option<Self> {
         use crate::config::AffinityMode;
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "legacy" => Some(AffinityMode::Legacy),
-            "auto" => Some(AffinityMode::Auto),
-            "turn" => Some(AffinityMode::Turn),
-            "off" => Some(AffinityMode::Off),
-            _ => None,
+        // 热路径（每响应 settle + 每请求路由）调用：比较不分配
+        let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("legacy") {
+            Some(AffinityMode::Legacy)
+        } else if raw.eq_ignore_ascii_case("auto") {
+            Some(AffinityMode::Auto)
+        } else if raw.eq_ignore_ascii_case("turn") {
+            Some(AffinityMode::Turn)
+        } else if raw.eq_ignore_ascii_case("off") {
+            Some(AffinityMode::Off)
+        } else {
+            None
         }
     }
 

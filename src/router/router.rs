@@ -696,10 +696,16 @@ impl Router {
     /// cooling_down → affinity_bound_elsewhere → queue_over_limit → weight_zero
     /// → eligible；限流窗口耗尽先于状态判定（区分「配额耗尽」与「错误驱动冷却」）。
     /// `model` 无任何 vendor 服务时返回空；`session_key=None` 跳过亲和判定。
+    ///
+    /// 亲和读取一律 [`AffinityTable::peek`]（不续期）——诊断端点不得改变被
+    /// 诊断对象的状态；亲和未启用（`mode = "off"`）时不做排他。
+    /// `tenant` 必须与路由同源（`affinity_tenant_scoped` 开启时传 API key
+    /// 摘要），否则查的是 legacy 键空间、租户隔离部署下恒 miss。
     pub async fn explain_route(
         &self,
         model: &str,
         session_key: Option<&str>,
+        tenant: Option<&str>,
     ) -> Vec<CandidateAssessment> {
         let config = self.config.read();
         let vendors: Vec<VendorConfig> = config.vendors.clone();
@@ -727,11 +733,21 @@ impl Router {
             return Vec::new();
         }
 
-        // 亲和绑定：只读 lookup 不计量；hard 模式才构成排他（soft 为 boost）
-        let affinity_hard = !routing.affinity_mode.trim().eq_ignore_ascii_case("soft");
+        // 亲和绑定：只读 peek 不续期（诊断不得改状态）；hard 模式才构成排他
+        //（soft 为 boost）。`mode = "off"` 时查询短路——止损阀必须立即生效，
+        // 存量绑定不得继续排他。
+        let affinity_mode = crate::config::AffinityMode::from_section(&routing.affinity);
+        let affinity_hard = affinity_mode != crate::config::AffinityMode::Off
+            && !routing.affinity_mode.trim().eq_ignore_ascii_case("soft");
+        // 亲和键租户维度与路由同源（关闭时一律 legacy 键）
+        let affinity_tenant = if routing.affinity_tenant_scoped {
+            tenant
+        } else {
+            None
+        };
         let bound_vendor: Option<String> = if affinity_hard {
             match (self.affinity.as_ref(), session_key) {
-                (Some(table), Some(session)) => table.lookup(None, session).await,
+                (Some(table), Some(session)) => table.peek(affinity_tenant, session).await,
                 _ => None,
             }
         } else {
@@ -1365,7 +1381,13 @@ impl Router {
 
     /// 会话亲和命中：返回命中 vendor_id（hard 模式由调用方在合格集合内直接选中，soft 为 boost；集合外绝不强选）。
     /// 记账：命中且在集合 → affinity_hits；命中但不可用 → 清旧键 + miss；
-    /// 无绑定/未接线/无 session_key → miss 或不计
+    /// 无绑定/未接线/无 session_key → miss 或不计。
+    ///
+    /// 读取语义按 `[routing.affinity].mode` 分流（[`AffinityTable::lookup_for_mode`]）：
+    /// `off` 查询短路（存量绑定立即失效，与写侧同语义）；`legacy` 命中续期；
+    /// `auto`/`turn` 命中不续期（TTL 只由 settle 按 `cache_ttl_secs` /
+    /// `turn_gap_secs` 设定）。`off` 短路不计 miss——亲和整体未启用，不是
+    /// 「查了没中」。
     async fn affinity_hit(
         &self,
         candidates: &[(VendorConfig, ModelConfig)],
@@ -1374,9 +1396,13 @@ impl Router {
     ) -> Option<String> {
         let affinity = self.affinity.as_ref()?;
         let session = session_key?;
+        let mode = crate::config::AffinityMode::from_section(&self.config.read().routing.affinity);
+        if mode == crate::config::AffinityMode::Off {
+            return None;
+        }
         let metrics = self.vendor_manager.metrics();
 
-        match affinity.lookup(tenant, session).await {
+        match affinity.lookup_for_mode(mode, tenant, session).await {
             Some(vendor_id) => {
                 if candidates.iter().any(|(v, _)| v.id == vendor_id) {
                     metrics.record_affinity_hit();

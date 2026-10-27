@@ -189,8 +189,9 @@ async fn readyz_reflects_component_health() {
     );
 }
 
-/// /admin/metrics 暴露缓存经济学亲和四计数（T008）：字段存在且可累加。
-/// settle/恢复打点经 GlobalMetrics；通道丢弃另有通道侧精确读数。
+/// /admin/metrics 暴露缓存经济学亲和计数与两个丢失去向（T008）：字段存在
+/// 且可累加。settle/恢复打点经 GlobalMetrics；通道丢弃与落库失败各有
+/// 精确出口（两者原因不同，运维处置不同）。
 #[tokio::test]
 async fn admin_metrics_exposes_affinity_counters() {
     let (app, _, _) = build_app().await;
@@ -206,6 +207,7 @@ async fn admin_metrics_exposes_affinity_counters() {
         "affinity_persist_drop_total",
         "affinity_restored_count",
         "affinity_persist_dropped",
+        "affinity_flush_failures",
     ] {
         assert!(
             json.get(field).is_some_and(|v| v.is_u64()),

@@ -1714,8 +1714,11 @@ mod cooldown_improvements {
     /// 过 allow_request_weight 门控（此前绕过：X-Model + X-Weight 在门控
     /// 关闭时仍覆盖 model.weight 参与轮盘赌）。判别场景：model.weight
     /// 1.0/5.0 不等权 + X-Weight 3.0 —— 门控正确（忽略头）→ 权重
-    /// 0.85/2.45（heavy ≈74%）；绕过（bug）→ 双双覆盖为 3.0（各 50%）。
-    /// 200 次统计断言（阈值 130：正确侧 ~4.7σ，bug 侧检出率 >99.99%）。
+    /// 0.85/2.45（heavy ≈73.7%）；绕过（bug）→ 双双覆盖为 3.0（各 50%）。
+    ///
+    /// 2000 次统计断言：正确侧均值 1474、σ≈19.7，阈值 1300 在 −8.8σ
+    /// （满载并行下也不会误报）；bug 侧均值 1000、σ≈22.4，阈值在 +13σ
+    /// （检出率 ≈1）。样本量与阈值的余量按「误报可忽略、漏报仍灵敏」取。
     #[tokio::test]
     async fn hints_model_branch_respects_request_weight_gate_off() {
         let (router, _) = make_router(make_config(
@@ -1727,8 +1730,9 @@ mod cooldown_improvements {
         ))
         .await;
 
+        const SAMPLES: usize = 2000;
         let mut heavy = 0usize;
-        for _ in 0..200 {
+        for _ in 0..SAMPLES {
             let d = router
                 .route_with_hints(
                     "shared-model",
@@ -1747,8 +1751,8 @@ mod cooldown_improvements {
             }
         }
         assert!(
-            heavy > 130,
-            "门控关时 X-Weight 必须被忽略（配置权重 5.0 侧应占 ~74%），实际 {heavy}/200"
+            heavy > 1300,
+            "门控关时 X-Weight 必须被忽略（配置权重 5.0 侧应占 ~74%），实际 {heavy}/{SAMPLES}"
         );
     }
 
@@ -2061,6 +2065,40 @@ mod soft_affinity {
         assert_eq!(
             d.vendor.id, "vendor-a",
             "默认关闭时 tenant 参数被忽略，legacy 键命中（现状）"
+        );
+    }
+
+    /// `[routing.affinity].mode = "off"` 必须是查询短路：存量绑定立即失效，
+    /// 候选排他随之消失（止损阀要能热切关掉亲和，H-1 回归）。
+    #[tokio::test]
+    async fn off_mode_ignores_existing_bindings_and_exclusion() {
+        let mut config = make_config("hard", 1.0, false);
+        config.routing.affinity.mode = "off".into();
+        // 绑定 vendor-a 且把它的权重压到几乎为 0：若 off 未短路，命中
+        // vendor-a 是唯一可能
+        config.vendors[0].models[0].weight = 0.0001;
+        let (router, table) = make_affinity_router(config);
+        table.bind(None, "sess-off", "vendor-a").await;
+
+        let mut picked_b = 0;
+        for _ in 0..40 {
+            let d = router
+                .route_with_session("shared-model", Some("sess-off"))
+                .await
+                .expect("off 模式路由");
+            if d.vendor.id == "vendor-b" {
+                picked_b += 1;
+            }
+        }
+        assert!(
+            picked_b > 0,
+            "off 模式必须查询短路：绑定 vendor-a 权重被压到 0.0001 仍应能漂到 vendor-b（实际 {picked_b}/40）"
+        );
+        // 查询短路不删除绑定本身（写侧才是唯一删除点）
+        assert_eq!(
+            table.peek(None, "sess-off").await.as_deref(),
+            Some("vendor-a"),
+            "off 查询短路不得顺带删除绑定"
         );
     }
 }

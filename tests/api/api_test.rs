@@ -7289,8 +7289,20 @@ mod route_explain {
             router = router.with_affinity(table);
         }
 
+        // 缓存经济学写入器与亲和表同源（生产 bootstrap 同款接线）：解释块的
+        // worth_tokens / ttl_secs 来自它的粘性记账，未接线时这两个字段无从产生
+        let affinity_writer = affinity.as_ref().map(|table| {
+            Arc::new(fluxgate::router::affinity_settle::AffinityWriter::new(
+                config_manager.clone(),
+                table.clone(),
+                Arc::new(fluxgate::router::affinity::AffinityStickTable::new()),
+                None,
+                vendor_manager.metrics().clone(),
+            ))
+        });
+
         Arc::new(ApiState {
-            affinity_writer: None,
+            affinity_writer,
             config: config_manager,
             vendor_manager,
             router: Arc::new(router),
@@ -7755,7 +7767,7 @@ mod route_explain {
         );
     }
 
-    // ── 亲和决策块（R-affinity-004：hit / miss / disabled 三态）────
+    // ── 亲和决策块（R-affinity-004：hit / miss / no_session / disabled）────
 
     /// hit：绑定存在 → decision=hit + vendor；miss：无绑定；disabled：
     /// 亲和未接线。worth_tokens/ttl_secs 无 sticky 记账时为 null。
@@ -7806,6 +7818,14 @@ mod route_explain {
             body["affinity"]["worth_tokens"].is_null(),
             "无 sticky 记账（legacy 绑定）worth 必须为 null"
         );
+        // ttl_secs 取绑定键的真实剩余 TTL（不续期），不是记账快照
+        let ttl = body["affinity"]["ttl_secs"]
+            .as_u64()
+            .expect("绑定的剩余 TTL 必须可读");
+        assert!(
+            (3000..=3600).contains(&ttl),
+            "ttl_secs 必须是绑定键的剩余存活秒数（实测 {ttl}）"
+        );
 
         let (status, body) = read_json(
             post_explain(
@@ -7820,6 +7840,185 @@ mod route_explain {
         assert_eq!(
             body["affinity"]["decision"], "miss",
             "无绑定是 miss 非 disabled"
+        );
+    }
+
+    /// 缺 `session_id` 与「亲和未接线」必须区分：前者报 no_session，
+    /// 后者才是 disabled（否则调用方会把「没带会话」误诊成「没接线」）。
+    #[tokio::test]
+    async fn explain_affinity_block_reports_no_session_separately() {
+        let table = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let state = make_state(
+            vec![vendor_with_models("ns-a", true, &["gpt-4"])],
+            Wire {
+                affinity: Some(table),
+                auth: false,
+                routing: None,
+            },
+        )
+        .await;
+
+        let (status, body) =
+            read_json(post_explain(state, None, json!({"model": "gpt-4"})).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["affinity"]["decision"], "no_session",
+            "表已接线但请求没带 session_id：不得报 disabled"
+        );
+        assert!(body["affinity"]["worth_tokens"].is_null());
+        assert!(body["affinity"]["ttl_secs"].is_null());
+    }
+
+    /// 解释端点纯只读：调用前后绑定键的剩余 TTL 不得回升。
+    #[tokio::test]
+    async fn explain_does_not_renew_affinity_ttl() {
+        let table = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let state = make_state(
+            vec![vendor_with_models("ro-ttl", true, &["gpt-4"])],
+            Wire {
+                affinity: Some(table.clone()),
+                auth: false,
+                routing: None,
+            },
+        )
+        .await;
+        // 预置一个短 TTL 绑定：任何续期都会把它刷回 3600s
+        table
+            .bind_for(None, "sess-ttl", "ro-ttl", Duration::from_secs(600))
+            .await;
+        let before = table
+            .remaining_ttl(None, "sess-ttl")
+            .await
+            .expect("绑定应存活");
+
+        let (status, body) = read_json(
+            post_explain(
+                state,
+                None,
+                json!({"model": "gpt-4", "session_id": "sess-ttl"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["affinity"]["decision"], "hit");
+
+        let after = table
+            .remaining_ttl(None, "sess-ttl")
+            .await
+            .expect("绑定应存活");
+        assert!(
+            after <= before,
+            "解释端点不得续期：before={before:?} after={after:?}"
+        );
+    }
+
+    /// `affinity_tenant_scoped` 开启时解释块用与路由同源的租户键，
+    /// 已绑定会话必须报 hit（否则隔离部署下解释面恒 miss）。
+    #[tokio::test]
+    async fn explain_affinity_block_resolves_tenant_scoped_binding() {
+        let table = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let mut routing = common::test_config(vec![]).routing;
+        routing.affinity_tenant_scoped = true;
+        let state = make_state(
+            vec![vendor_with_models("ts-a", true, &["gpt-4"])],
+            Wire {
+                affinity: Some(table.clone()),
+                auth: false,
+                routing: Some(routing),
+            },
+        )
+        .await;
+        // 认证关闭时租户摘要归 anonymous（与路由/绑定同源），绑定写在该键空间
+        let tenant = fluxgate::utils::tenant::api_key_digest(&axum::http::HeaderMap::new());
+        table.bind(Some(&tenant), "sess-ts", "ts-a").await;
+
+        let (status, body) = read_json(
+            post_explain(
+                state,
+                None,
+                json!({"model": "gpt-4", "session_id": "sess-ts"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["affinity"]["decision"], "hit",
+            "租户隔离部署下解释块必须定位到本租户绑定: {body}"
+        );
+        assert_eq!(body["affinity"]["vendor"], "ts-a");
+        // 候选排他也必须按同一租户键生效
+        let item = row(&body, "ts-a");
+        assert_eq!(item["decision"], "eligible");
+    }
+
+    /// 命中且写完粘性记账：解释块回填 worth_tokens 与绑定剩余 TTL
+    /// （`last_stick_for` 的 Some 分支——旧测试全走无 writer 的 None 分支）。
+    #[tokio::test]
+    async fn explain_affinity_block_reports_stick_worth_and_ttl() {
+        let table = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let mut routing = common::test_config(vec![]).routing;
+        routing.affinity.mode = "auto".into();
+        routing.affinity.cache_worth_tokens = 1024;
+        let config = {
+            let mut config = common::test_config(vec![vendor_with_models("w-a", true, &["gpt-4"])]);
+            config.routing = routing;
+            config
+        };
+        let state = make_state(
+            config.vendors.clone(),
+            Wire {
+                affinity: Some(table.clone()),
+                auth: false,
+                routing: Some(config.routing.clone()),
+            },
+        )
+        .await;
+        let writer = state.affinity_writer.as_ref().expect("writer wired");
+        let vendor = config.vendors[0].clone();
+        writer
+            .settle(
+                None,
+                Some("sess-worth"),
+                &vendor,
+                fluxgate::router::affinity::CacheUsage {
+                    prompt_tokens: 0,
+                    cache_read_tokens: 5_000,
+                    cache_creation_tokens: 0,
+                },
+            )
+            .await;
+
+        let (status, body) = read_json(
+            post_explain(
+                state,
+                None,
+                json!({"model": "gpt-4", "session_id": "sess-worth"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["affinity"]["decision"], "hit");
+        assert_eq!(
+            body["affinity"]["worth_tokens"], 5_000,
+            "粘性记账的缓存价值必须回填: {body}"
+        );
+        let ttl = body["affinity"]["ttl_secs"]
+            .as_u64()
+            .expect("ttl_secs 必须可读");
+        assert!(
+            ttl <= 300 && ttl > 0,
+            "ttl_secs 取绑定剩余 TTL（auto 为 vendor cache_ttl_secs=300，实测 {ttl}）"
         );
     }
 

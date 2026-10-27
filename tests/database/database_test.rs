@@ -1906,3 +1906,116 @@ mod affinity_sticks {
         assert!(rows.is_empty());
     }
 }
+
+/// V6 建表与 UPSERT 的**服务端方言**运行时验证（postgres / mysql）。
+///
+/// 上面 `affinity_sticks` 模块全走 `sqlite::memory:`；三方言建表与
+/// `ON CONFLICT` / `ON DUPLICATE KEY UPDATE` 此前只有纯函数字符串断言。
+/// 本用例要求环境变量 `FLUXGATE_TEST_DB_URL` 指向被测实例（无则 `#[ignore]`
+/// 跳过；CI 的 `server-backend` 作业注入该变量后以 `-- --ignored` 运行）。
+///
+/// 单函数串行完成全部断言：服务端实例是共享的，多测试并行会互相看到对方的行。
+#[cfg(test)]
+mod affinity_sticks_server {
+    use fluxgate::storage::AffinityStick;
+
+    fn server_url() -> String {
+        std::env::var("FLUXGATE_TEST_DB_URL")
+            .expect("本用例需要 FLUXGATE_TEST_DB_URL 指向 postgres/mysql 实例")
+    }
+
+    fn stick(tenant: &str, session: &str, vendor: &str, expires_at: i64) -> AffinityStick {
+        AffinityStick {
+            tenant: tenant.into(),
+            session_key: session.into(),
+            vendor_id: vendor.into(),
+            worth_tokens: 2_048,
+            expires_at,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "需要 FLUXGATE_TEST_DB_URL 指向 postgres/mysql 实例（CI server-backend 作业注入）"]
+    async fn v6_and_upsert_run_on_server_backend() {
+        let url = server_url();
+        assert!(
+            url.starts_with("postgres://")
+                || url.starts_with("postgresql://")
+                || url.starts_with("mysql://"),
+            "FLUXGATE_TEST_DB_URL 必须指向 postgres:// 或 mysql://（实际 {url}）"
+        );
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: url.clone(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("连接被测服务端实例");
+        let repo = fluxgate::database::Repository::new(pool);
+
+        // ① 建表迁移在真实方言上可重入（V6 DDL + 索引创建）
+        repo.initialize().await.expect("首次迁移");
+        repo.initialize().await.expect("重跑幂等");
+
+        // ② 清场：服务端实例是共享的，先删掉本模块可能遗留的行
+        repo.purge_expired_affinity_sticks(i64::MAX)
+            .await
+            .expect("清场");
+
+        // ③ UPSERT 冲突路径：同 (tenant, session) 覆盖，租户行独立
+        repo.upsert_affinity_sticks(&[
+            stick("", "s1", "v-a", 100),
+            stick("", "s1", "v-b", 200),
+            stick("tenant-a", "s1", "v-c", 300),
+        ])
+        .await
+        .expect("服务端方言 UPSERT");
+        let rows = repo.read_affinity_sticks(0, 10).await.expect("read");
+        assert_eq!(rows.len(), 2, "legacy 覆盖为单行 + 租户行独立");
+        let legacy = rows
+            .iter()
+            .find(|r| r.tenant.is_empty())
+            .expect("legacy 行");
+        assert_eq!(
+            legacy.vendor_id, "v-b",
+            "ON CONFLICT / ON DUPLICATE KEY 必须覆盖"
+        );
+        assert_eq!(legacy.expires_at, 200);
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.tenant == "tenant-a")
+                .expect("租户行")
+                .vendor_id,
+            "v-c"
+        );
+
+        // ④ 未过期读取：过期排除 + 降序 + LIMIT 下推
+        //（先清场：③ 的遗留行 expires_at=100/200/300 会落进本步的读取集）
+        repo.purge_expired_affinity_sticks(i64::MAX)
+            .await
+            .expect("清场");
+        let batch: Vec<AffinityStick> = (0..5)
+            .map(|i| stick("", &format!("s{i}"), "v-a", 1_700_000_000 + i))
+            .chain(std::iter::once(stick("", "expired", "v-b", 50)))
+            .collect();
+        repo.upsert_affinity_sticks(&batch).await.expect("UPSERT");
+        let fresh = repo.read_affinity_sticks(100, 10).await.expect("read");
+        assert_eq!(fresh.len(), 5, "过期行不入恢复集");
+        assert_eq!(fresh[0].expires_at, 1_700_000_004, "降序：最新优先");
+        let limited = repo.read_affinity_sticks(100, 2).await.expect("read");
+        assert_eq!(limited.len(), 2, "LIMIT 下推");
+
+        // ⑤ 过期清理
+        let purged = repo
+            .purge_expired_affinity_sticks(1_000)
+            .await
+            .expect("purge");
+        assert!(purged >= 1, "过期行必须被删除（实际 {purged}）");
+    }
+}

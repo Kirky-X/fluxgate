@@ -914,6 +914,24 @@ mod otlp_config {
         assert!(validate_config(&config).is_ok(), "缺省段合法");
     }
 
+    /// 关闭不影响配置合法性（运行期门，非启动期校验）。
+    #[test]
+    fn test_usage_insights_disabled_is_valid() {
+        let mut config = common::test_config(vec![]);
+        config.usage_insights.enabled = false;
+        assert!(
+            validate_config(&config).is_ok(),
+            "关闭是运行期开关，不拒绝启动"
+        );
+    }
+}
+
+/// `[routing.affinity]` 段：缺省值 / 非法 mode 点名拒绝 / vendor TTL 边界。
+#[cfg(test)]
+mod affinity_config {
+    use crate::common;
+    use fluxgate::config::validate_config;
+
     /// `[routing.affinity]`：缺省 legacy（现行为冻结）+ 阈值/窗口缺省值；
     /// 非法 mode 点名拒绝；vendor cache_ttl_secs 越界拒绝（边界含端点）。
     #[test]
@@ -963,16 +981,5 @@ mod otlp_config {
         assert!(validate_config(&config).is_ok(), "下边界合法");
         config.vendors[0].cache_ttl_secs = 3_600;
         assert!(validate_config(&config).is_ok(), "1h 缓存部署合法");
-    }
-
-    /// 关闭不影响配置合法性（运行期门，非启动期校验）。
-    #[test]
-    fn test_usage_insights_disabled_is_valid() {
-        let mut config = common::test_config(vec![]);
-        config.usage_insights.enabled = false;
-        assert!(
-            validate_config(&config).is_ok(),
-            "关闭是运行期开关，不拒绝启动"
-        );
     }
 }

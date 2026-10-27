@@ -27,7 +27,24 @@ config-catalog-price-invalid = model catalog entry { $model } has invalid { $fie
 config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) is below the 100ms floor: a too-short window flips the circuit straight from Open to Half-Open, degrading failure recovery into a probe storm
 config-quota-window-too-small = quota.window_secs ({ $value }s) must be at least 1: a zero window flips on every access and the quota never fills
 middleware-quota-exceeded = Quota exceeded, please retry later
+middleware-quota-window-reset = window "{ $id }" resets in { $secs }s
+middleware-quota-ledger-flush-failed = quota ledger batch persist failed (dropped { $count } rows): { $error }
+middleware-quota-ledger-channel-closed = quota ledger persist channel closed: { $error }
 middleware-quota-body-too-large = Request body exceeds the quota adjudication limit (4 MiB)
+config-quota-window-id-empty = [[quota.windows]] entry has an empty id — window ids key the ledger rows and metric labels, so a blank id would collapse windows together
+config-quota-window-id-duplicate = [[quota.windows]] declares duplicate id "{ $id }": window ids must be unique (they key the ledger rows)
+config-quota-window-scope-unknown = [[quota.windows]] window "{ $id }" has invalid scope "{ $value }" (valid values: api_key / global)
+config-quota-rolling-secs-too-small = [[{ $section }]] "{ $id }" is period=rolling but rolling_secs is 0: a zero window flips on every access and the limit never fills
+config-quota-period-unknown = [[{ $section }]] "{ $id }" has invalid period "{ $value }" (valid values: rolling / calendar)
+config-quota-period-mixed = [[{ $section }]] "{ $id }" mixes both period forms: set rolling_secs for period=rolling, or calendar for period=calendar — not both
+config-quota-calendar-unknown = [[{ $section }]] "{ $id }" has invalid calendar "{ $value }" (valid values: daily / weekly / monthly)
+config-quota-tz-offset-out-of-range = [[{ $section }]] "{ $id }" tz_offset_secs ({ $value }s) is outside ±86400s: an offset beyond one day would overlap adjacent calendar windows
+config-quota-window-fields-conflict = [quota].window_secs ({ $value }s) is ignored because [[quota.windows]] is non-empty; the window array wins — remove the legacy field to silence this warning
+config-vendor-budget-id-empty = [[vendor_budgets]] entry has an empty vendor_id — the budget would silently never apply
+config-vendor-budget-id-duplicate = [[vendor_budgets]] declares duplicate vendor_id "{ $vendor }"
+config-vendor-budget-unknown-vendor = [[vendor_budgets]] vendor_id "{ $vendor }" does not match any [[vendors]] id: a misspelled budget entry would silently never apply
+config-vendor-budget-empty-limits = [[vendor_budgets]] vendor "{ $vendor }" sets both tokens_limit and cost_limit_millicents to 0: declare at least one dimension or drop the entry
+config-quota-factor-mode-unknown = routing.quota_factor.mode "{ $value }" is invalid (valid values: off / smart / pace)
 # quota.enabled 开而 [auth] 关/缺段的组合告警：tenant 键取自客户端自报头（L9）
 config-quota-without-auth = [quota].enabled is on but [auth] is disabled or absent: quota tenant keys come from client-supplied headers without verification, so billing control can be bypassed with forged headers (isolate /admin and data planes, or enable auth)
 # $details 为固定序条目明细：位置 + 规则结论（本仓库形态契约或 confers

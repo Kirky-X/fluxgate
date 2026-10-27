@@ -126,3 +126,17 @@ CREATE TABLE IF NOT EXISTS affinity_sticks (
     PRIMARY KEY (tenant, session_key)
 );
 CREATE INDEX IF NOT EXISTS idx_affinity_sticks_expires ON affinity_sticks(expires_at);
+
+-- 多窗预算账本（V7，quota-aware-routing）：[[quota.windows]] 多窗判定与
+-- [[vendor_budgets]] 记账的持久化面。结算 UPSERT + 30s 周期 flush，重启
+-- 仅恢复未过期窗（window_start + 周期 ≥ now）。api_key_hash 承载三类键：
+-- 租户摘要 / __global__（scope=global 窗）/ __vendor__:{id}（vendor 预算）。
+CREATE TABLE IF NOT EXISTS quota_ledger (
+    api_key_hash TEXT NOT NULL,
+    window_id TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    cost_used_millicents INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (api_key_hash, window_id, window_start)
+);

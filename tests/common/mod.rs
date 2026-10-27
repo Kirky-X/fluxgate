@@ -121,6 +121,7 @@ pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
         lexcompress: Default::default(),
         responses: Default::default(),
         otlp: Default::default(),
+        vendor_budgets: Vec::new(),
         usage_insights: Default::default(),
         metrics: Default::default(),
     }

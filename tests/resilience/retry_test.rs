@@ -82,6 +82,7 @@ mod vendor_fallback_integration {
     fn make_config(vendors: Vec<VendorConfig>) -> Config {
         Config {
             rate_limit: Default::default(),
+            vendor_budgets: Vec::new(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,

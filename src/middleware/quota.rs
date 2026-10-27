@@ -10,7 +10,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use axum::{
     body::Body,
@@ -20,8 +19,10 @@ use axum::{
 };
 use serde_json::Value;
 
-use crate::config::{Config, ConfigManager, ModelCatalogEntry, PricingConfig};
-use crate::i18n::t;
+use crate::config::{
+    effective_quota_windows, Config, ConfigManager, ModelCatalogEntry, PricingConfig,
+};
+use crate::i18n::{t, t_args};
 use crate::protocol::sse_frame::{reframe_passthrough_stream_with_usage, ReframeObservation};
 use crate::utils::tenant::api_key_digest;
 use crate::utils::tokens::estimate_messages_tokens_with;
@@ -352,21 +353,248 @@ pub fn extract_usage_tokens(body: &Value) -> Option<(u64, u64)> {
     Some((prompt as u64, completion as u64))
 }
 
-/// per-key 固定窗口账本（token/成本双维度；翻转惰性，读-判-写同一临界区）。
-#[derive(Debug, Default)]
-struct KeyWindow {
+/// 窗口周期两形态（[`crate::config::QuotaWindowConfig`] 的 period/calendar
+/// 两字段编译产物）：rolling 从窗内首次用量起算（起点由状态承载）；calendar
+/// 对齐自然边界（日 00:00、ISO 周一、自然月 1 日），时区用配置声明的
+/// `tz_offset_secs`（默认 0=UTC）。数学自实现（chrono 无时区特性依赖）：
+/// 只在 Unix 秒上做欧几里得除法 + 民用日换算（Hinnant 算法）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Period {
+    /// 固定长度滚动窗（秒）
+    Rolling(u64),
+    /// 自然日窗（本地 00:00 对齐）
+    Daily,
+    /// ISO 周窗（本地周一 00:00 对齐；ISO 周恒 7 天）
+    Weekly,
+    /// 自然月窗（本地 1 日 00:00 对齐；长度随月份 28-31 天变长）
+    Monthly,
+}
+
+/// 一天的秒数
+const DAY_SECS: i64 = 86_400;
+
+impl Period {
+    /// 从窗口配置编译（`period` + `calendar` 两字段；validate 已保证闭集，
+    /// 此处 None = 手构配置的运行期兜底）。rolling 窗长取 `rolling_secs`；
+    /// 两形态混用返回 None（与 validate 的互斥拒绝对称，不静默择一）。
+    pub fn from_config(period: &str, calendar: &str, rolling_secs: u64) -> Option<Self> {
+        let calendar = calendar.trim();
+        match period.trim() {
+            "rolling" if calendar.is_empty() => Some(Period::Rolling(rolling_secs)),
+            "calendar" => match calendar {
+                "daily" => Some(Period::Daily),
+                "weekly" => Some(Period::Weekly),
+                "monthly" => Some(Period::Monthly),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// 包含 `now` 的自然窗起点（Unix 秒，已含 tz 偏移回卷）；rolling 返回
+    /// `None`——其起点 = 窗内首次用量时刻，由 [`WindowState`] 状态承载。
+    pub fn window_start(&self, now_secs: i64, tz_offset_secs: i64) -> Option<i64> {
+        let shifted = now_secs + tz_offset_secs;
+        let start_shifted = match self {
+            Period::Rolling(_) => return None,
+            Period::Daily => shifted.div_euclid(DAY_SECS) * DAY_SECS,
+            Period::Weekly => {
+                let days = shifted.div_euclid(DAY_SECS);
+                // 1970-01-01 为周四：days + 3 ≡ 0 当且仅当周一（ISO 周起点）
+                (days - (days + 3).rem_euclid(7)) * DAY_SECS
+            }
+            Period::Monthly => {
+                let days = shifted.div_euclid(DAY_SECS);
+                let (year, month, _) = civil_from_days(days);
+                days_from_civil(year, month, 1) * DAY_SECS
+            }
+        };
+        Some(start_shifted - tz_offset_secs)
+    }
+
+    /// `start`（本窗起点，Unix 秒）起的窗在 `now` 是否已翻转。
+    pub fn is_expired(&self, start_secs: i64, now_secs: i64) -> bool {
+        now_secs >= self.reset_at(start_secs)
+    }
+
+    /// `start` 起窗的重置时刻 = 下一窗起点（Unix 秒）。rolling 长度固定；
+    /// monthly 按「下个自然月 1 日」 civil 换算（28-31 天变长）。
+    pub fn reset_at(&self, start_secs: i64) -> i64 {
+        match *self {
+            Period::Rolling(secs) => start_secs + secs.max(1) as i64,
+            Period::Daily => start_secs + DAY_SECS,
+            Period::Weekly => start_secs + 7 * DAY_SECS,
+            Period::Monthly => {
+                let days = start_secs.div_euclid(DAY_SECS);
+                let (year, month, _) = civil_from_days(days);
+                let (next_y, next_m) = if month == 12 {
+                    (year + 1, 1)
+                } else {
+                    (year, month + 1)
+                };
+                days_from_civil(next_y, next_m, 1) * DAY_SECS
+            }
+        }
+    }
+
+    /// 窗长（秒；monthly 依起点变长）。pace 因子的 `budget/period` 分母。
+    pub fn period_secs(&self, start_secs: i64) -> i64 {
+        match *self {
+            Period::Monthly => self.reset_at(start_secs) - start_secs,
+            Period::Rolling(secs) => secs.max(1) as i64,
+            Period::Daily => DAY_SECS,
+            Period::Weekly => 7 * DAY_SECS,
+        }
+    }
+}
+
+/// 民用日期 → Unix 天数（Hinnant days_from_civil；proleptic Gregorian）。
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let m = month as i64;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Unix 天数 → 民用日期（Hinnant civil_from_days）。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// 单窗运行时判定面（热配置逐请求解析产物）：账本按 (账本键, window id) 存态。
+/// `tokens_limit`/`cost_limit_millicents` 为已回填的生效限额（0 = 该维度不判）。
+#[derive(Debug, Clone)]
+pub struct RuntimeWindow {
+    pub id: String,
+    /// scope=global：全体请求共享 [`GLOBAL_LEDGER_KEY`] 账本键
+    pub global: bool,
+    pub period: Period,
+    pub tz_offset_secs: i64,
+    pub tokens_limit: u64,
+    pub cost_limit_millicents: u64,
+}
+
+/// scope=global 窗的共享账本键（design 决策 3：全局窗行以固定键落账本）
+pub const GLOBAL_LEDGER_KEY: &str = "__global__";
+
+/// vendor 预算行的账本键（design 决策 4：key=`__vendor__:{vendor_id}`）
+pub fn vendor_ledger_key(vendor_id: &str) -> String {
+    format!("__vendor__:{vendor_id}")
+}
+
+/// vendor 预算行的窗口 id（design 决策 4：window_id=`vendor:{vendor_id}`）
+pub fn vendor_window_id(vendor_id: &str) -> String {
+    format!("vendor:{vendor_id}")
+}
+
+impl RuntimeWindow {
+    /// 账本键：global 窗共享固定键，api_key 窗随租户摘要。
+    fn ledger_key<'a>(&self, tenant: &'a str) -> &'a str {
+        if self.global {
+            GLOBAL_LEDGER_KEY
+        } else {
+            tenant
+        }
+    }
+}
+
+/// 单窗状态：used 为已预扣+已结算的窗口占用（预扣即预留，结算按差额
+/// 修正——与历史 KeyWindow 同一 delta 语义，多窗只是按 id 分桶）；
+/// `window_start` 为 Unix 秒（rolling=窗内首次用量；calendar=对齐边界）。
+/// period/tz 随写入定格，热更换新窗集时同 id 窗在下次访问自然接管。
+#[derive(Debug, Clone)]
+struct WindowState {
+    period: Period,
+    tz_offset_secs: i64,
     token_used: u64,
     cost_used: u64,
-    window_start: Option<Instant>,
+    window_start: Option<i64>,
 }
 
-/// 配额账本（`ApiState.quota` 承载，中间件与回补钩共享同一实例）。
+impl WindowState {
+    fn new(window: &RuntimeWindow) -> Self {
+        Self {
+            period: window.period,
+            tz_offset_secs: window.tz_offset_secs,
+            token_used: 0,
+            cost_used: 0,
+            window_start: None,
+        }
+    }
+}
+
+/// 429 拒绝详情：`retry_after_secs` = 受拒窗中最晚重置秒数（所有窗须同时
+/// 有余，最早可成功重试时刻 = 最晚重置的受拒窗——proposal「取最远重置窗」）；
+/// `windows` 列全部生效窗（脱敏：仅 window id 与重置秒数，R-quota-001 约束）。
+#[derive(Debug, Clone)]
+pub struct QuotaRefusal {
+    pub retry_after_secs: u64,
+    pub windows: Vec<WindowRemainder>,
+    /// 受拒窗 id 集（`quota_window_refused_total{window_id}` 打分标签）
+    pub refused_ids: Vec<String>,
+}
+
+/// 单窗重置余量（429 响应体逐窗行；不含 key 信息）
+#[derive(Debug, Clone)]
+pub struct WindowRemainder {
+    pub id: String,
+    pub reset_secs: u64,
+}
+
+/// 429 多窗拒绝响应体：摘要行 + 逐窗重置秒数（i18n；脱敏 = 仅 id 与秒数）。
+pub(crate) fn refusal_body(refusal: &QuotaRefusal) -> String {
+    let mut body = t("middleware-quota-exceeded").to_string();
+    for window in &refusal.windows {
+        body.push('\n');
+        body.push_str(&t_args(
+            "middleware-quota-window-reset",
+            &[
+                ("id", window.id.to_string()),
+                ("secs", window.reset_secs.to_string()),
+            ],
+        ));
+    }
+    body
+}
+
+/// 配额账本（`ApiState.quota` 承载，中间件与回补钩共享同一实例）：
+/// 账本键（租户摘要 / `__global__`）→ 窗口 id → 状态。一 key 多窗并存，
+/// 每窗独立判定（R-quota-001）。另承载 vendor 预算记账态（T006，与租户
+/// 窗口同构）与落盘句柄（T005，结算 UPSERT + 周期 flush 的生产侧）。
 #[derive(Debug, Default)]
 pub struct QuotaState {
-    ledgers: Mutex<HashMap<String, KeyWindow>>,
+    ledgers: Mutex<HashMap<String, HashMap<String, WindowState>>>,
+    /// vendor 预算记账态：vendor_id → window_id → 状态（usage 结算点累计，
+    /// 无预扣预留语义——预算按实际用量记账）
+    vendor_budgets: Mutex<HashMap<String, HashMap<String, WindowState>>>,
+    /// 落盘句柄（bootstrap 装配；未接线 = 纯内存态，行为与历史一致）
+    ledger: Mutex<Option<Arc<crate::middleware::quota_persist::QuotaLedgerPersister>>>,
 }
 
-/// 高基数 key 内存约束（与 limiteron `QuotaLimiter` 10k 同级）。
+/// 手工 Debug（Repository 无 Debug）：只暴露计数面，不暴露内部结构。
+impl std::fmt::Debug for crate::middleware::quota_persist::QuotaLedgerPersister {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuotaLedgerPersister")
+            .field("flush_failures", &self.flush_failures())
+            .finish()
+    }
+}
+
+/// 高基数 key 内存约束（与 limiteron `QuotaLimiter` 10k 同级；按账本键数计，
+/// 每 key 窗口数由配置面决定、不受请求输入影响）。
 const QUOTA_MAX_TRACKED_KEYS: usize = 10_000;
 
 impl QuotaState {
@@ -374,96 +602,455 @@ impl QuotaState {
         Self::default()
     }
 
-    /// 窗口是否翻转（`None` 起点恒翻转；`window_secs` 由调用方热读传入）。
-    fn flipped(window_start: Option<Instant>, now: Instant, window_secs: u64) -> bool {
-        match window_start {
-            None => true,
-            Some(start) => now.duration_since(start) >= Duration::from_secs(window_secs.max(1)),
+    /// 单窗在 `now` 的生效起点：calendar 由 now 对齐（确定性边界）；rolling
+    /// 惰性起算——窗内首次用量即起点，未过期保持原起点（与历史
+    /// `flipped(None) → 以 now 起算` 同口径）。
+    fn effective_start(window: &RuntimeWindow, state_start: Option<i64>, now: i64) -> i64 {
+        match window.period {
+            Period::Rolling(_) => match state_start {
+                Some(start) if !window.period.is_expired(start, now) => start,
+                _ => now,
+            },
+            _ => window
+                .period
+                .window_start(now, window.tz_offset_secs)
+                .unwrap_or(now),
         }
     }
 
-    /// 账本淘汰（consume/recompense 共用谓词）：超上限时仅保留未翻转窗口。
-    fn evict_if_over_cap(guard: &mut HashMap<String, KeyWindow>, now: Instant, window_secs: u64) {
+    /// 翻转惰性收敛：起点不一致（首触 / 已过期 / 热更换周期）即重置占用。
+    /// 返回生效起点。
+    fn flip_if_needed(window: &RuntimeWindow, state: &mut WindowState, now: i64) -> i64 {
+        let start = Self::effective_start(window, state.window_start, now);
+        if state.window_start != Some(start) {
+            state.token_used = 0;
+            state.cost_used = 0;
+            state.window_start = Some(start);
+            state.period = window.period;
+            state.tz_offset_secs = window.tz_offset_secs;
+        }
+        start
+    }
+
+    /// 账本淘汰（consume/recompense 共用谓词）：超上限时仅保留存在未翻转
+    /// 窗的账本键（翻转判定用状态定格的 period，与写入期同一口径）。
+    fn evict_if_over_cap(guard: &mut HashMap<String, HashMap<String, WindowState>>, now: i64) {
         if guard.len() > QUOTA_MAX_TRACKED_KEYS {
-            guard.retain(|_, w| !Self::flipped(w.window_start, now, window_secs));
+            guard.retain(|_, windows| {
+                windows.values().any(|s| {
+                    s.window_start
+                        .is_none_or(|start| !s.period.is_expired(start, now))
+                })
+            });
         }
     }
 
-    /// 预扣（入口）：任一维度超限即拒（不落账），返回窗口剩余秒（≥1）；
-    /// 两限额均为 0 → 直接放行（不建账）。
+    /// 预扣（入口）：任一窗任一维度超限即拒（不落账），拒绝详情含逐窗重置
+    /// 秒数与 Retry-After；无生效窗或零预扣直接放行（不建账）。
     pub fn consume(
         &self,
-        key: &str,
-        token_quota: u64,
-        cost_quota: u64,
+        tenant: &str,
+        windows: &[RuntimeWindow],
         pre_tokens: u64,
         pre_cost: u64,
-        window_secs: u64,
-    ) -> Result<(), u64> {
-        if token_quota == 0 && cost_quota == 0 {
+    ) -> Result<(), QuotaRefusal> {
+        if windows.is_empty() || (pre_tokens == 0 && pre_cost == 0) {
             return Ok(());
         }
-        if pre_tokens == 0 && pre_cost == 0 {
-            return Ok(());
-        }
+        let now = chrono::Utc::now().timestamp();
         let mut guard = self.ledgers.lock().unwrap_or_else(|p| p.into_inner());
-        let now = Instant::now();
-        Self::evict_if_over_cap(&mut guard, now, window_secs);
-        let window = guard.entry(key.to_string()).or_default();
-        if Self::flipped(window.window_start, now, window_secs) {
-            window.token_used = 0;
-            window.cost_used = 0;
-            window.window_start = Some(now);
+        Self::evict_if_over_cap(&mut guard, now);
+        // 第一遍：翻转收敛 + 逐窗判定（拒绝路径零预留写入）
+        let mut remainders = Vec::with_capacity(windows.len());
+        let mut refused_max_reset = 0u64;
+        let mut refused = false;
+        let mut refused_ids = Vec::new();
+        for window in windows {
+            let state = guard
+                .entry(window.ledger_key(tenant).to_string())
+                .or_default()
+                .entry(window.id.clone())
+                .or_insert_with(|| WindowState::new(window));
+            let start = Self::flip_if_needed(window, state, now);
+            let reset_secs = (window.period.reset_at(start).saturating_sub(now)).max(1) as u64;
+            let token_over = window.tokens_limit > 0
+                && pre_tokens > window.tokens_limit.saturating_sub(state.token_used);
+            let cost_over = window.cost_limit_millicents > 0
+                && pre_cost > window.cost_limit_millicents.saturating_sub(state.cost_used);
+            if token_over || cost_over {
+                refused = true;
+                refused_ids.push(window.id.clone());
+                refused_max_reset = refused_max_reset.max(reset_secs);
+            }
+            remainders.push(WindowRemainder {
+                id: window.id.clone(),
+                reset_secs,
+            });
         }
-        let remaining_secs = (Duration::from_secs(window_secs.max(1))
-            .saturating_sub(now.duration_since(window.window_start.unwrap_or(now))))
-        .as_secs()
-        .max(1);
-        let token_over =
-            token_quota > 0 && pre_tokens > token_quota.saturating_sub(window.token_used);
-        let cost_over = cost_quota > 0 && pre_cost > cost_quota.saturating_sub(window.cost_used);
-        if token_over || cost_over {
-            return Err(remaining_secs);
+        if refused {
+            return Err(QuotaRefusal {
+                retry_after_secs: refused_max_reset,
+                windows: remainders,
+                refused_ids,
+            });
         }
-        window.token_used = window.token_used.saturating_add(pre_tokens);
-        window.cost_used = window.cost_used.saturating_add(pre_cost);
+        // 第二遍：全部通过后统一落预扣（同一临界区内，判定与写入原子）
+        for window in windows {
+            let state = guard
+                .get_mut(window.ledger_key(tenant))
+                .and_then(|map| map.get_mut(&window.id));
+            if let Some(state) = state {
+                state.token_used = state.token_used.saturating_add(pre_tokens);
+                state.cost_used = state.cost_used.saturating_add(pre_cost);
+            }
+        }
         Ok(())
     }
 
-    /// 回补（响应后/流结束后）：按实际结算差额（可负向返还、超预估追扣）。
-    /// **无账不建**：未落账时无差额可回，新建账只会把正向差额虚记进干净窗口。
-    /// 饱和钳 0（回补不跨窗口追溯）。淘汰与 [`Self::consume`] 同谓词。
+    /// 回补（响应后/流结束后）：按实际结算差额修正各窗占用（可负向返还、
+    /// 超预估追扣）。**无账不建**：窗无状态时跳过（未落账无差额可回）。
+    /// 翻转后差额照历史口径落入新窗（饱和钳 0）。淘汰与 [`Self::consume`]
+    /// 同谓词。落盘句柄在位时逐结算窗 UPSERT 入队（设计决策 3：结算即落库）。
     pub fn recompense(
         &self,
-        key: &str,
+        tenant: &str,
+        windows: &[RuntimeWindow],
         pre_tokens: u64,
         pre_cost: u64,
         actual_tokens: u64,
         actual_cost: u64,
-        window_secs: u64,
     ) {
-        let mut guard = self.ledgers.lock().unwrap_or_else(|p| p.into_inner());
-        let now = Instant::now();
-        Self::evict_if_over_cap(&mut guard, now, window_secs);
-        let Some(window) = guard.get_mut(key) else {
+        if windows.is_empty() {
             return;
-        };
-        if Self::flipped(window.window_start, now, window_secs) {
-            window.token_used = 0;
-            window.cost_used = 0;
-            window.window_start = Some(now);
         }
+        let now = chrono::Utc::now().timestamp();
+        let mut guard = self.ledgers.lock().unwrap_or_else(|p| p.into_inner());
+        Self::evict_if_over_cap(&mut guard, now);
         let token_delta = actual_tokens as i128 - pre_tokens as i128;
         let cost_delta = actual_cost as i128 - pre_cost as i128;
-        window.token_used = (window.token_used as i128 + token_delta).max(0) as u64;
-        window.cost_used = (window.cost_used as i128 + cost_delta).max(0) as u64;
+        let mut settled: Vec<(&str, &str, i64, u64, u64)> = Vec::new();
+        for window in windows {
+            let Some(map) = guard.get_mut(window.ledger_key(tenant)) else {
+                continue;
+            };
+            let Some(state) = map.get_mut(&window.id) else {
+                continue;
+            };
+            Self::flip_if_needed(window, state, now);
+            state.token_used = (state.token_used as i128 + token_delta).max(0) as u64;
+            state.cost_used = (state.cost_used as i128 + cost_delta).max(0) as u64;
+            if let Some(start) = state.window_start {
+                settled.push((
+                    window.ledger_key(tenant),
+                    window.id.as_str(),
+                    start,
+                    state.token_used,
+                    state.cost_used,
+                ));
+            }
+        }
+        drop(guard);
+        self.enqueue_ledger_rows(settled, now);
     }
 
-    /// 窗口用量快照（单测断言用）。
+    /// vendor 预算记账（usage 结算点，T006）：实际用量累计进该 vendor 的
+    /// 各预算窗（无预扣预留——按实际记账）；无预算 vendor 零开销早退。
+    /// 落盘句柄在位时同路入队（window_id=`vendor:{id}`）。
+    pub fn record_vendor_usage(&self, config: &Config, vendor_id: &str, tokens: u64, cost: u64) {
+        if config.vendor_budgets.is_empty() {
+            return;
+        }
+        let windows = resolve_vendor_budget_windows(config, vendor_id);
+        if windows.is_empty() {
+            return;
+        }
+        let now = chrono::Utc::now().timestamp();
+        let mut guard = self
+            .vendor_budgets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut recorded: Vec<(&str, &str, i64, u64, u64)> = Vec::new();
+        for window in &windows {
+            let state = guard
+                .entry(vendor_id.to_string())
+                .or_default()
+                .entry(vendor_window_id(vendor_id))
+                .or_insert_with(|| WindowState::new(window));
+            Self::flip_if_needed(window, state, now);
+            state.token_used = state.token_used.saturating_add(tokens);
+            state.cost_used = state.cost_used.saturating_add(cost);
+            if let Some(start) = state.window_start {
+                recorded.push((
+                    vendor_id,
+                    vendor_id,
+                    start,
+                    state.token_used,
+                    state.cost_used,
+                ));
+            }
+        }
+        drop(guard);
+        // 账本行键特殊：key=__vendor__:{id}、window_id=vendor:{id}
+        let persister = self
+            .ledger
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(persister) = persister {
+            let rows = recorded
+                .into_iter()
+                .map(
+                    |(_, _, start, token_used, cost_used)| crate::database::QuotaLedgerRow {
+                        api_key_hash: vendor_ledger_key(vendor_id),
+                        window_id: vendor_window_id(vendor_id),
+                        window_start: start,
+                        tokens_used: token_used as i64,
+                        cost_used_millicents: cost_used as i64,
+                        updated_at: now,
+                    },
+                )
+                .collect();
+            persister.write(rows);
+        }
+    }
+
+    /// 启动恢复（design 决策 3）：仅恢复仍处活动期的窗（window_start + 周期
+    /// ≥ now），过期行跳过；周期语义按当前配置解释（账本不存周期事实）。
+    /// 返回恢复窗数。租户 / `__global__` / `__vendor__:{id}` 三类作用域行同路。
+    pub fn restore_from_ledger(
+        &self,
+        rows: &[crate::database::QuotaLedgerRow],
+        config: &Config,
+    ) -> usize {
+        let now = chrono::Utc::now().timestamp();
+        let windows = effective_quota_windows(&config.quota);
+        let mut restored = 0usize;
+        {
+            let mut guard = self.ledgers.lock().unwrap_or_else(|p| p.into_inner());
+            for row in rows {
+                if row.tokens_used < 0 || row.cost_used_millicents < 0 {
+                    continue;
+                }
+                if row.api_key_hash.starts_with("__vendor__:") {
+                    continue;
+                }
+                let Some(window) = windows.iter().find(|w| w.id == row.window_id) else {
+                    continue;
+                };
+                let Some(period) =
+                    Period::from_config(&window.period, &window.calendar, window.rolling_secs)
+                else {
+                    continue;
+                };
+                if period.is_expired(row.window_start, now) {
+                    continue;
+                }
+                let state = guard
+                    .entry(row.api_key_hash.clone())
+                    .or_default()
+                    .entry(row.window_id.clone())
+                    .or_insert_with(|| WindowState {
+                        period,
+                        tz_offset_secs: window.tz_offset_secs,
+                        token_used: 0,
+                        cost_used: 0,
+                        window_start: None,
+                    });
+                state.token_used = row.tokens_used as u64;
+                state.cost_used = row.cost_used_millicents as u64;
+                state.window_start = Some(row.window_start);
+                restored += 1;
+            }
+        }
+        let mut vendors = self
+            .vendor_budgets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for row in rows {
+            let Some(vendor_id) = row.api_key_hash.strip_prefix("__vendor__:") else {
+                continue;
+            };
+            let Some(budget) = config
+                .vendor_budgets
+                .iter()
+                .find(|b| b.vendor_id.trim() == vendor_id)
+            else {
+                continue;
+            };
+            let Some(period) =
+                Period::from_config(&budget.period, &budget.calendar, budget.rolling_secs)
+            else {
+                continue;
+            };
+            if period.is_expired(row.window_start, now) {
+                continue;
+            }
+            let state = vendors
+                .entry(vendor_id.to_string())
+                .or_default()
+                .entry(vendor_window_id(vendor_id))
+                .or_insert_with(|| WindowState {
+                    period,
+                    tz_offset_secs: budget.tz_offset_secs,
+                    token_used: 0,
+                    cost_used: 0,
+                    window_start: None,
+                });
+            state.token_used = row.tokens_used.max(0) as u64;
+            state.cost_used = row.cost_used_millicents.max(0) as u64;
+            state.window_start = Some(row.window_start);
+            restored += 1;
+        }
+        restored
+    }
+
+    /// 账本全量快照（30s 周期 flush 的生产侧；design 决策 3）：租户/global
+    /// 窗 + vendor 预算窗的当前占用（used 为已结算事实，预扣不入快照）。
+    pub fn ledger_snapshot(&self) -> Vec<crate::database::QuotaLedgerRow> {
+        let now = chrono::Utc::now().timestamp();
+        let mut rows = Vec::new();
+        {
+            let guard = self.ledgers.lock().unwrap_or_else(|p| p.into_inner());
+            for (key, windows) in guard.iter() {
+                for (id, state) in windows {
+                    if let Some(start) = state.window_start {
+                        rows.push(crate::database::QuotaLedgerRow {
+                            api_key_hash: key.clone(),
+                            window_id: id.clone(),
+                            window_start: start,
+                            tokens_used: state.token_used as i64,
+                            cost_used_millicents: state.cost_used as i64,
+                            updated_at: now,
+                        });
+                    }
+                }
+            }
+        }
+        let vendors = self
+            .vendor_budgets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for (vendor_id, windows) in vendors.iter() {
+            for state in windows.values() {
+                if let Some(start) = state.window_start {
+                    rows.push(crate::database::QuotaLedgerRow {
+                        api_key_hash: vendor_ledger_key(vendor_id),
+                        window_id: vendor_window_id(vendor_id),
+                        window_start: start,
+                        tokens_used: state.token_used as i64,
+                        cost_used_millicents: state.cost_used as i64,
+                        updated_at: now,
+                    });
+                }
+            }
+        }
+        rows
+    }
+
+    /// admin 账本读侧（`GET /admin/quota/ledger` 单点）：内存态逐窗快照，
+    /// 含作用域分类与重置时刻。未起算窗不列（无事实可读）。
+    pub fn ledger_entries(&self) -> Vec<QuotaLedgerEntry> {
+        let now = chrono::Utc::now().timestamp();
+        let mut entries = Vec::new();
+        {
+            let guard = self.ledgers.lock().unwrap_or_else(|p| p.into_inner());
+            for (key, windows) in guard.iter() {
+                for (id, state) in windows {
+                    let Some(start) = state.window_start else {
+                        continue;
+                    };
+                    let scope = if key == GLOBAL_LEDGER_KEY {
+                        "global"
+                    } else {
+                        "tenant"
+                    };
+                    entries.push(QuotaLedgerEntry {
+                        api_key_hash: key.clone(),
+                        window_id: id.clone(),
+                        scope: scope.to_string(),
+                        window_start: start,
+                        tokens_used: state.token_used,
+                        cost_used_millicents: state.cost_used,
+                        reset_at: state.period.reset_at(start),
+                    });
+                }
+            }
+        }
+        let vendors = self
+            .vendor_budgets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for (vendor_id, windows) in vendors.iter() {
+            for state in windows.values() {
+                let Some(start) = state.window_start else {
+                    continue;
+                };
+                entries.push(QuotaLedgerEntry {
+                    api_key_hash: vendor_ledger_key(vendor_id),
+                    window_id: vendor_window_id(vendor_id),
+                    scope: "vendor".to_string(),
+                    window_start: start,
+                    tokens_used: state.token_used,
+                    cost_used_millicents: state.cost_used,
+                    reset_at: state.period.reset_at(start),
+                });
+            }
+        }
+        let _ = now;
+        entries
+    }
+
+    /// 接线落盘句柄（bootstrap 装配点；幂等——后写覆盖）。
+    pub fn set_ledger_persister(
+        &self,
+        persister: Arc<crate::middleware::quota_persist::QuotaLedgerPersister>,
+    ) {
+        *self.ledger.lock().unwrap_or_else(|p| p.into_inner()) = Some(persister);
+    }
+
+    /// 结算窗行入队落盘（recompense 专用：租户/global 键语义）。
+    fn enqueue_ledger_rows(&self, settled: Vec<(&str, &str, i64, u64, u64)>, now: i64) {
+        let persister = self
+            .ledger
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(persister) = persister {
+            let rows = settled
+                .into_iter()
+                .map(|(key, window_id, start, token_used, cost_used)| {
+                    crate::database::QuotaLedgerRow {
+                        api_key_hash: key.to_string(),
+                        window_id: window_id.to_string(),
+                        window_start: start,
+                        tokens_used: token_used as i64,
+                        cost_used_millicents: cost_used as i64,
+                        updated_at: now,
+                    }
+                })
+                .collect();
+            persister.write(rows);
+        }
+    }
+
+    /// 窗口用量快照（单测断言用）：指定账本键下单窗的 (token, cost) 占用。
     #[cfg(test)]
-    pub fn snapshot(&self, key: &str) -> (u64, u64) {
+    pub fn snapshot(&self, key: &str, window_id: &str) -> (u64, u64) {
         let guard = self.ledgers.lock().unwrap_or_else(|p| p.into_inner());
-        match guard.get(key) {
+        match guard.get(key).and_then(|map| map.get(window_id)) {
+            Some(w) => (w.token_used, w.cost_used),
+            None => (0, 0),
+        }
+    }
+
+    /// vendor 预算窗占用快照（单测断言用）。
+    #[cfg(test)]
+    pub fn vendor_snapshot(&self, vendor_id: &str, window_id: &str) -> (u64, u64) {
+        let guard = self
+            .vendor_budgets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match guard.get(vendor_id).and_then(|map| map.get(window_id)) {
             Some(w) => (w.token_used, w.cost_used),
             None => (0, 0),
         }
@@ -476,10 +1063,200 @@ impl QuotaState {
     }
 }
 
-/// per-key 限额解析（热配置现读）：digest 匹配 `[[auth.keys]]` 条目 →
+/// vendor 预算运行时窗解析（热配置逐结算单点）：`[[vendor_budgets]]` 中
+/// 该 vendor 的条目 → RuntimeWindow（id=`vendor:{id}`；无预算 → 空集）。
+fn resolve_vendor_budget_windows(config: &Config, vendor_id: &str) -> Vec<RuntimeWindow> {
+    config
+        .vendor_budgets
+        .iter()
+        .filter(|b| b.vendor_id.trim() == vendor_id)
+        .filter_map(|b| {
+            Period::from_config(&b.period, &b.calendar, b.rolling_secs).map(|period| {
+                RuntimeWindow {
+                    id: vendor_window_id(vendor_id),
+                    global: false,
+                    period,
+                    tz_offset_secs: b.tz_offset_secs,
+                    tokens_limit: b.tokens_limit,
+                    cost_limit_millicents: b.cost_limit_millicents,
+                }
+            })
+        })
+        .collect()
+}
+
+/// admin 账本读侧条目（`GET /admin/quota/ledger` 的 rows 形态）：内存态
+/// 快照 + 周期语义（reset_at 由状态定格的 period 计算，账本表不存周期）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuotaLedgerEntry {
+    /// 租户摘要 / `__global__` / `__vendor__:{id}`
+    pub api_key_hash: String,
+    pub window_id: String,
+    /// 作用域：`tenant` / `global` / `vendor`
+    pub scope: String,
+    pub window_start: i64,
+    pub tokens_used: u64,
+    pub cost_used_millicents: u64,
+    /// 重置时刻（Unix 秒）
+    pub reset_at: i64,
+}
+
+/// vendor 预算读侧视图（router 第 6 因子与 admin 端点共用）：预算窗的
+/// 占用/限额/重置/消耗率一次性快照。语义方法（depleted/normalized_reset/
+/// pace_ratio）为确定性纯函数——路由打分不做隐藏 IO。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VendorBudgetView {
+    pub tokens_used: u64,
+    pub tokens_limit: u64,
+    pub cost_used: u64,
+    pub cost_limit: u64,
+    /// 距重置秒数（≥0）
+    pub reset_secs: u64,
+    /// 窗长秒数（pace 的 budget/period 分母）
+    pub period_secs: u64,
+    /// 窗已流逝秒数（pace 的 used/elapsed 分母）
+    pub elapsed_secs: u64,
+    /// 窗尚未起算（rolling 无状态）——smart 无重置压力（不加工成）
+    pub not_started: bool,
+}
+
+impl VendorBudgetView {
+    /// 预算耗尽：任一已判维度 used ≥ limit（R-vbr-002 摘除判据）
+    pub fn depleted(&self) -> bool {
+        (self.tokens_limit > 0 && self.tokens_used >= self.tokens_limit)
+            || (self.cost_limit > 0 && self.cost_used >= self.cost_limit)
+    }
+
+    /// smart 归一化重置时刻 ∈ [0,1]：reset_secs / period_secs（0 = 即将
+    /// 重置 → 加成最大；1 = 无压力）。窗未起算（rolling 无状态）→ 1.0。
+    pub fn normalized_reset(&self) -> f64 {
+        if self.not_started {
+            return 1.0;
+        }
+        (self.reset_secs as f64 / self.period_secs.max(1) as f64).clamp(0.0, 1.0)
+    }
+
+    /// pace 消耗率比 = max_维度 (used/elapsed) / (limit/period)：>1.1 超带、
+    /// <0.9 欠带（R-vbr-003）。elapsed=0（窗首秒/未起算）→ 0.0（满额待花）。
+    pub fn pace_ratio(&self) -> f64 {
+        if self.elapsed_secs == 0 {
+            return 0.0;
+        }
+        let elapsed = self.elapsed_secs as f64;
+        let period = self.period_secs.max(1) as f64;
+        let mut ratio = 0.0f64;
+        if self.tokens_limit > 0 {
+            let token_rate = self.tokens_used as f64 / elapsed;
+            let token_budget = self.tokens_limit as f64 / period;
+            if token_budget > 0.0 {
+                ratio = ratio.max(token_rate / token_budget);
+            }
+        }
+        if self.cost_limit > 0 {
+            let cost_rate = self.cost_used as f64 / elapsed;
+            let cost_budget = self.cost_limit as f64 / period;
+            if cost_budget > 0.0 {
+                ratio = ratio.max(cost_rate / cost_budget);
+            }
+        }
+        ratio
+    }
+}
+
+impl QuotaState {
+    /// vendor 预算读侧视图（router 打分/admin 出口共用单点）；未配置预算
+    /// 返回 None（vendor 不参与该因子）。
+    pub fn vendor_budget_view(&self, config: &Config, vendor_id: &str) -> Option<VendorBudgetView> {
+        let windows = resolve_vendor_budget_windows(config, vendor_id);
+        let window = windows.first()?;
+        let now = chrono::Utc::now().timestamp();
+        let guard = self
+            .vendor_budgets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let state = guard.get(vendor_id).and_then(|map| map.get(&window.id));
+        let (tokens_used, cost_used, start) = match state {
+            Some(state) => (state.token_used, state.cost_used, state.window_start),
+            None => (0, 0, None),
+        };
+        let (reset_secs, period_secs, elapsed_secs, not_started) = match start {
+            Some(start) => (
+                window.period.reset_at(start).saturating_sub(now).max(0) as u64,
+                window.period.period_secs(start).max(1) as u64,
+                (now - start).max(0) as u64,
+                false,
+            ),
+            None => match window.period {
+                // calendar 窗起点与用量无关——对齐边界即窗起点
+                Period::Daily | Period::Weekly | Period::Monthly => {
+                    let start = window
+                        .period
+                        .window_start(now, window.tz_offset_secs)
+                        .unwrap_or(now);
+                    (
+                        window.period.reset_at(start).saturating_sub(now).max(0) as u64,
+                        window.period.period_secs(start).max(1) as u64,
+                        (now - start).max(0) as u64,
+                        false,
+                    )
+                }
+                Period::Rolling(secs) => (secs.max(1), secs.max(1), 0, true),
+            },
+        };
+        Some(VendorBudgetView {
+            tokens_used,
+            tokens_limit: window.tokens_limit,
+            cost_used,
+            cost_limit: window.cost_limit_millicents,
+            reset_secs,
+            period_secs,
+            elapsed_secs,
+            not_started,
+        })
+    }
+}
+
+/// 生效窗口解析（热配置逐请求单点）：`effective_quota_windows` 旧字段编译
+/// → 每窗限额回填（0 = 落回 [[auth.keys]] 的 per-key 限额）→ 双零窗剔除。
+/// 全部窗被剔除返回空 vec（调用方三级早退）。
+pub fn resolve_windows(snapshot: &Config, tenant: &str) -> Vec<RuntimeWindow> {
+    let (tenant_tokens, tenant_cost) = quotas_for(snapshot, tenant);
+    let mut resolved = Vec::new();
+    for window in effective_quota_windows(&snapshot.quota) {
+        let tokens_limit = if window.tokens_limit > 0 {
+            window.tokens_limit
+        } else {
+            tenant_tokens
+        };
+        let cost_limit_millicents = if window.cost_limit_millicents > 0 {
+            window.cost_limit_millicents
+        } else {
+            tenant_cost
+        };
+        if tokens_limit == 0 && cost_limit_millicents == 0 {
+            continue;
+        }
+        let Some(period) =
+            Period::from_config(&window.period, &window.calendar, window.rolling_secs)
+        else {
+            continue;
+        };
+        resolved.push(RuntimeWindow {
+            id: window.id,
+            global: window.scope.trim() == "global",
+            period,
+            tz_offset_secs: window.tz_offset_secs,
+            tokens_limit,
+            cost_limit_millicents,
+        });
+    }
+    resolved
+}
+
+/// per-key 限额解析（配置快照现读）：digest 匹配 `[[auth.keys]]` 条目 →
 /// (token_quota, cost_quota)；未声明 → (0,0) 不限。
-fn quotas_for(config_manager: &ConfigManager, tenant: &str) -> (u64, u64) {
-    match config_manager.read().auth.as_ref() {
+fn quotas_for(config: &Config, tenant: &str) -> (u64, u64) {
+    match config.auth.as_ref() {
         Some(auth) => match auth.keys.iter().find(|k| k.hash == tenant) {
             Some(entry) => (entry.token_quota, entry.cost_quota_millicents),
             None => (0, 0),
@@ -488,23 +1265,26 @@ fn quotas_for(config_manager: &ConfigManager, tenant: &str) -> (u64, u64) {
     }
 }
 
-/// 配额中间件注入面（最小接口）：只携带判限所需两项数据，经 `from_fn_with_state` 注入。
+/// 配额中间件注入面（最小接口）：只携带判限所需数据，经 `from_fn_with_state` 注入。
 #[derive(Clone)]
 pub struct QuotaGate {
     pub config: Arc<ConfigManager>,
     pub quota: Option<Arc<QuotaState>>,
+    /// 指标句柄（429 多窗拒绝逐窗打分；None = 无观测，判限不受影响）
+    pub metrics: Option<Arc<crate::utils::metrics::GlobalMetrics>>,
 }
 
-/// 配额适用性判定产物：账本句柄 + 配置快照（`Arc<Config>` 共享，零深拷贝）+ 双限额。
+/// 配额适用性判定产物：账本句柄 + 配置快照（`Arc<Config>` 共享，零深拷贝）
+/// + 生效窗口集（限额已回填）。
 struct QuotaLease {
     quota: Arc<QuotaState>,
     config: Arc<Config>,
-    token_quota: u64,
-    cost_quota: u64,
+    windows: Vec<RuntimeWindow>,
 }
 
 /// 配额适用性三级判定（入口/透传流/转换流共用单点）：未接线 /
-/// `[quota].enabled = false` / 该租户双限额为 0 → `None`（调用方零行为直通）。
+/// `[quota].enabled = false` / 生效窗集为空（全部窗不判或该租户无限额）
+/// → `None`（调用方零行为直通）。
 fn quota_applies(
     config_manager: &Arc<ConfigManager>,
     quota: Option<&Arc<QuotaState>>,
@@ -515,15 +1295,14 @@ fn quota_applies(
     if !snapshot.quota.enabled {
         return None;
     }
-    let (token_quota, cost_quota) = quotas_for(config_manager, tenant);
-    if token_quota == 0 && cost_quota == 0 {
+    let windows = resolve_windows(&snapshot, tenant);
+    if windows.is_empty() {
         return None;
     }
     Some(QuotaLease {
         quota: quota.clone(),
         config: snapshot,
-        token_quota,
-        cost_quota,
+        windows,
     })
 }
 
@@ -561,12 +1340,10 @@ pub async fn quota_middleware(
     let QuotaLease {
         quota,
         config: snapshot,
-        token_quota,
-        cost_quota,
+        windows,
     } = lease;
     // `snapshot` 为 Arc<Config>（非锁守卫）：持至本请求结束，判限全程零深拷贝。
     let cpt = snapshot.quota.est_chars_per_token.max(1);
-    let window_secs = snapshot.quota.window_secs.max(1);
 
     // 受限租户才缓冲与解析（handler 经 Json 提取器自行解析，不跨层传递已解析体）。
     let body_bytes = match axum::body::to_bytes(body, MAX_QUOTA_BODY_BYTES).await {
@@ -607,14 +1384,7 @@ pub async fn quota_middleware(
     }
     let (pre_tokens, pre_cost) =
         precharge_for(&parsed, &snapshot.model_catalog, &snapshot.pricing, cpt);
-    match quota.consume(
-        &tenant,
-        token_quota,
-        cost_quota,
-        pre_tokens,
-        pre_cost,
-        window_secs,
-    ) {
+    match quota.consume(&tenant, &windows, pre_tokens, pre_cost) {
         // 预扣成功：body 原样重装交 handler。
         Ok(()) => {
             next.run(Request::from_parts(
@@ -623,12 +1393,22 @@ pub async fn quota_middleware(
             ))
             .await
         }
-        Err(retry_secs) => (
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            [("Retry-After", retry_secs.max(1).to_string())],
-            t("middleware-quota-exceeded"),
-        )
-            .into_response(),
+        Err(refusal) => {
+            if let Some(metrics) = &gate.metrics {
+                for id in &refusal.refused_ids {
+                    metrics.record_quota_window_refused(id);
+                }
+            }
+            (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [
+                    ("retry-after", refusal.retry_after_secs.max(1).to_string()),
+                    ("content-type", "text/plain; charset=utf-8".to_string()),
+                ],
+                refusal_body(&refusal),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -654,21 +1434,28 @@ pub fn settle_nonstream(
             metrics.record_vendor_cache(vendor_id, cache_read as u64, prompt as u64);
         }
     }
-    let Some(lease) = quota_applies(config, quota, tenant) else {
+    let Some(state) = quota else {
         return;
     };
-    let quota = lease.quota;
-    let snapshot = lease.config;
+    // 结算适用性（快路径保持零解析）：租户配额窗非空 或 vendor 预算在位
+    // 才需要解析 usage 与计价；二者皆无 → 零账面直通。
+    let snapshot = config.read();
+    let has_vendor_budgets = !snapshot.vendor_budgets.is_empty();
+    let tenant_windows = if snapshot.quota.enabled {
+        resolve_windows(&snapshot, tenant)
+    } else {
+        Vec::new()
+    };
+    if tenant_windows.is_empty() && !has_vendor_budgets {
+        return;
+    }
     let Some((prompt, completion, cache_read, cache_creation)) =
         crate::protocol::parse_usage_detailed(response_body)
     else {
         return;
     };
     let cpt = snapshot.quota.est_chars_per_token.max(1);
-    let window_secs = snapshot.quota.window_secs.max(1);
     let model = body.get("model").and_then(Value::as_str).unwrap_or("");
-    let (pre_tokens, pre_cost) =
-        precharge_for(body, &snapshot.model_catalog, &snapshot.pricing, cpt);
     let actual_tokens = (prompt as u64).saturating_add(completion as u64);
     let actual_cost = actual_cost_millicents(&UsageCostInput {
         prompt_tokens: prompt as u64,
@@ -680,14 +1467,23 @@ pub fn settle_nonstream(
         model,
         vendor_type,
     });
-    quota.recompense(
-        tenant,
-        pre_tokens,
-        pre_cost,
-        actual_tokens,
-        actual_cost,
-        window_secs,
-    );
+    // vendor 预算记账（与租户回补同点；vendor 维度约束独立于租户限额——
+    // 无预算 vendor 在 record_vendor_usage 内零开销早退）
+    if has_vendor_budgets {
+        state.record_vendor_usage(&snapshot, vendor_id, actual_tokens, actual_cost);
+    }
+    if !tenant_windows.is_empty() {
+        let (pre_tokens, pre_cost) =
+            precharge_for(body, &snapshot.model_catalog, &snapshot.pricing, cpt);
+        state.recompense(
+            tenant,
+            &tenant_windows,
+            pre_tokens,
+            pre_cost,
+            actual_tokens,
+            actual_cost,
+        );
+    }
 }
 
 /// 缓存 HIT 结算：命中无上游往返、实际用量为 0，以 0 结算回补预扣；
@@ -703,17 +1499,17 @@ pub fn settle_nonstream_cached(
     };
     let snapshot = lease.config;
     let cpt = snapshot.quota.est_chars_per_token.max(1);
-    let window_secs = snapshot.quota.window_secs.max(1);
     let (pre_tokens, pre_cost) =
         precharge_for(body, &snapshot.model_catalog, &snapshot.pricing, cpt);
     lease
         .quota
-        .recompense(tenant, pre_tokens, pre_cost, 0, 0, window_secs);
+        .recompense(tenant, &lease.windows, pre_tokens, pre_cost, 0, 0);
 }
 
 /// 结算上下文（转换流）：账本句柄、租户与预扣口径一次构造，上下文不持有请求体
-///（整段对话不在流存活期常驻内存）。`for_request` 内置三级早退——不适用返回
-/// `None`，调用方零包装直通。
+///（整段对话不在流存活期常驻内存）。`for_request` 内置早退——不适用返回
+/// `None`，调用方零包装直通。适用性 = 租户配额窗非空 或 vendor 预算在位
+///（后者让无限额租户的流同样构建 ctx，预算记账不漏流式用量）。
 pub struct SettlementCtx {
     quota: Arc<QuotaState>,
     tenant: String,
@@ -724,6 +1520,11 @@ pub struct SettlementCtx {
     /// 配置快照共享（`Arc<Config>` 引用，零深拷贝；热更换新快照不影响
     /// 已建立流的结算口径）。
     config: Arc<Config>,
+    /// 生效窗口集（构造期快照解析产物；与预扣口径同生命周期；空 = 租户
+    /// 配额不适用，仅 vendor 预算记账）
+    windows: Vec<RuntimeWindow>,
+    /// vendor 预算在位（流结束记账开关）
+    record_vendor: bool,
     pre_tokens: u64,
     pre_cost: u64,
 }
@@ -738,11 +1539,17 @@ impl SettlementCtx {
         vendor_id: &str,
         metrics: Option<Arc<crate::utils::metrics::GlobalMetrics>>,
     ) -> Option<Self> {
-        let QuotaLease {
-            quota,
-            config: snapshot,
-            ..
-        } = quota_applies(config, quota, tenant)?;
+        let quota = quota?;
+        let snapshot = config.read();
+        let has_vendor_budgets = !snapshot.vendor_budgets.is_empty();
+        let windows = if snapshot.quota.enabled {
+            resolve_windows(&snapshot, tenant)
+        } else {
+            Vec::new()
+        };
+        if windows.is_empty() && !has_vendor_budgets {
+            return None;
+        }
         let (pre_tokens, pre_cost) = precharge_for(
             body,
             &snapshot.model_catalog,
@@ -750,7 +1557,7 @@ impl SettlementCtx {
             snapshot.quota.est_chars_per_token.max(1),
         );
         Some(Self {
-            quota,
+            quota: quota.clone(),
             vendor_id: vendor_id.to_string(),
             metrics,
             tenant: tenant.to_string(),
@@ -760,7 +1567,9 @@ impl SettlementCtx {
                 .unwrap_or_default()
                 .to_string(),
             vendor_type: vendor_type.to_string(),
+            record_vendor: has_vendor_budgets,
             config: snapshot,
+            windows,
             pre_tokens,
             pre_cost,
         })
@@ -826,14 +1635,25 @@ where
                 model: &ctx.model,
                 vendor_type: &ctx.vendor_type,
             });
-            ctx.quota.recompense(
-                &ctx.tenant,
-                ctx.pre_tokens,
-                ctx.pre_cost,
-                (prompt as u64).saturating_add(completion as u64),
-                actual_cost,
-                ctx.config.quota.window_secs.max(1),
-            );
+            let actual_tokens = (prompt as u64).saturating_add(completion as u64);
+            if ctx.record_vendor {
+                ctx.quota.record_vendor_usage(
+                    &ctx.config,
+                    &ctx.vendor_id,
+                    actual_tokens,
+                    actual_cost,
+                );
+            }
+            if !ctx.windows.is_empty() {
+                ctx.quota.recompense(
+                    &ctx.tenant,
+                    &ctx.windows,
+                    ctx.pre_tokens,
+                    ctx.pre_cost,
+                    actual_tokens,
+                    actual_cost,
+                );
+            }
         }
     }
 }
@@ -905,7 +1725,10 @@ struct PassthroughSettler {
     tenant: String,
     model: String,
     vendor_type: String,
+    vendor_id: String,
     config: Arc<Config>,
+    windows: Vec<RuntimeWindow>,
+    record_vendor: bool,
     pre_tokens: u64,
     pre_cost: u64,
     usage: Option<(u64, u64, u64, u64)>,
@@ -946,30 +1769,44 @@ impl PassthroughSettler {
         });
         // `actual_tokens` 与转换流同口径 = prompt + completion（cache 两档不
         // 并入 token 窗基数）。
-        self.quota.recompense(
-            &self.tenant,
-            self.pre_tokens,
-            self.pre_cost,
-            prompt.saturating_add(completion),
-            actual_cost,
-            self.config.quota.window_secs.max(1),
-        );
+        let actual_tokens = prompt.saturating_add(completion);
+        if self.record_vendor {
+            self.quota.record_vendor_usage(
+                &self.config,
+                &self.vendor_id,
+                actual_tokens,
+                actual_cost,
+            );
+        }
+        if !self.windows.is_empty() {
+            self.quota.recompense(
+                &self.tenant,
+                &self.windows,
+                self.pre_tokens,
+                self.pre_cost,
+                actual_tokens,
+                actual_cost,
+            );
+        }
     }
 }
 
-/// 透传流响应体装配：仅当配额适用（已接线、`[quota].enabled` 且该 tenant
-/// 任一限额 > 0，判定单点 `quota_applies`）时挂配额结算；其余形态零结算。
-/// 两种形态都用带观测的 reframe（逐字节同输出）——调用方观测回调
-/// `observe` 在两种形态下都按帧收到事件（用量记账与配额结算共用同一趟分帧）。
+/// 透传流响应体装配：仅当结算适用（已接线，且「租户配额窗非空」或「vendor
+/// 预算在位」，判定与 [`SettlementCtx::for_request`] 同口径）时挂配额/预算
+/// 结算；其余形态零结算。两种形态都用带观测的 reframe（逐字节同输出）——
+/// 调用方观测回调 `observe` 在两种形态下都按帧收到事件（用量记账与配额
+/// 结算共用同一趟分帧）。
 ///
 /// 上游错误类型仅需 `Display`（与 reframe 同一约束），输出统一为
 /// `Result<Bytes, std::io::Error>` 供 `Body::from_stream` 使用。
+#[allow(clippy::too_many_arguments)] // 结算参数面：config/quota/tenant/body/vendor_type/vendor_id 与观测回调缺一不可
 pub fn passthrough_stream_body<S, E, O>(
     config: &Arc<ConfigManager>,
     quota: Option<&Arc<QuotaState>>,
     tenant: &str,
     body: &Value,
     vendor_type: &str,
+    vendor_id: &str,
     stream: S,
     observe: O,
 ) -> Body
@@ -979,15 +1816,26 @@ where
     O: FnMut(&ReframeObservation) + Send + 'static,
 {
     let mut observe = observe;
-    // 三级早退单点：未接线 / 关闭 / 无限额 → 无配额结算，仅调用方观测。
-    let Some(lease) = quota_applies(config, quota, tenant) else {
+    // 早退单点：未接线 / 结算不适用（无租户窗且无预算）→ 无结算，仅调用方观测。
+    let Some(state) = quota else {
         return Body::from_stream(reframe_passthrough_stream_with_usage(
             stream,
             move |observation| observe(&observation),
         ));
     };
-    let quota = lease.quota;
-    let snapshot = lease.config;
+    let snapshot = config.read();
+    let has_vendor_budgets = !snapshot.vendor_budgets.is_empty();
+    let windows = if snapshot.quota.enabled {
+        resolve_windows(&snapshot, tenant)
+    } else {
+        Vec::new()
+    };
+    if windows.is_empty() && !has_vendor_budgets {
+        return Body::from_stream(reframe_passthrough_stream_with_usage(
+            stream,
+            move |observation| observe(&observation),
+        ));
+    }
     let (pre_tokens, pre_cost) = precharge_for(
         body,
         &snapshot.model_catalog,
@@ -995,7 +1843,7 @@ where
         snapshot.quota.est_chars_per_token.max(1),
     );
     let settler = Arc::new(Mutex::new(PassthroughSettler {
-        quota,
+        quota: state.clone(),
         tenant: tenant.to_string(),
         model: body
             .get("model")
@@ -1003,7 +1851,10 @@ where
             .unwrap_or("")
             .to_string(),
         vendor_type: vendor_type.to_string(),
+        vendor_id: vendor_id.to_string(),
         config: snapshot,
+        windows,
+        record_vendor: has_vendor_budgets,
         pre_tokens,
         pre_cost,
         usage: None,
@@ -1024,6 +1875,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone as _;
 
     fn pricing() -> Vec<PricingConfig> {
         vec![crate::config::PricingConfig {
@@ -1237,28 +2089,223 @@ mod tests {
         assert_eq!(merged, (120, 44, 60, 30), "output 取末值且其余档不回退");
     }
 
+    /// rolling 窗起点不可由 now 推导（= 窗内首次用量时刻，状态承载）；
+    /// 重置时刻 = 起点 + 窗长；翻转判定含端点（now == reset_at 即翻）。
+    #[test]
+    fn rolling_window_starts_on_first_use() {
+        let period = Period::Rolling(3600);
+        assert!(
+            period.window_start(1_770_000_000, 0).is_none(),
+            "rolling 起点由首次用量状态承载，不由 now 推导"
+        );
+        let start = 1_770_000_000;
+        assert_eq!(period.reset_at(start), start + 3600);
+        assert!(!period.is_expired(start, start + 3599));
+        assert!(period.is_expired(start, start + 3600), "端点即翻转");
+        assert_eq!(period.period_secs(start), 3600);
+        // 0 秒窗兜底 ≥1（与旧 window_secs.max(1) 同口径）
+        assert_eq!(Period::Rolling(0).period_secs(start), 1);
+    }
+
+    /// calendar 日窗对齐 UTC 00:00；tz 偏移把边界卷到本地零点
+    ///（+8h：本地 2026-01-15 00:00 = UTC 2026-01-14 16:00）。
+    #[test]
+    fn calendar_daily_aligns_utc_midnight() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 1, 15, 10, 30, 0)
+            .unwrap()
+            .timestamp();
+        let start = Period::Daily.window_start(now, 0).expect("daily 有起点");
+        assert_eq!(
+            chrono::DateTime::from_timestamp(start, 0)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-01-15T00:00:00+00:00"
+        );
+        // 窗内任意时刻同起点；重置 = 次日零点
+        assert_eq!(
+            Period::Daily.window_start(now + 3600, 0),
+            Some(start),
+            "同日内起点稳定"
+        );
+        assert_eq!(Period::Daily.reset_at(start), start + DAY_SECS);
+        // tz 偏移 +8h：本地日界 = UTC 前一日 16:00
+        let start_tz = Period::Daily
+            .window_start(now, 8 * 3600)
+            .expect("daily 有起点");
+        assert_eq!(
+            chrono::DateTime::from_timestamp(start_tz, 0)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-01-14T16:00:00+00:00"
+        );
+        // 负偏移 -5h：本地日界 = UTC 当日 05:00
+        let start_neg = Period::Daily.window_start(now, -5 * 3600).unwrap();
+        assert_eq!(
+            chrono::DateTime::from_timestamp(start_neg, 0)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-01-15T05:00:00+00:00"
+        );
+    }
+
+    /// calendar 周窗对齐 ISO 周一 00:00（2026-01-05 为周一；周三正午落在
+    /// 当周一窗），跨年边界取整周。
+    #[test]
+    fn calendar_weekly_aligns_iso_monday() {
+        let wednesday_noon = chrono::Utc
+            .with_ymd_and_hms(2026, 1, 7, 12, 0, 0)
+            .unwrap()
+            .timestamp();
+        let start = Period::Weekly
+            .window_start(wednesday_noon, 0)
+            .expect("weekly 有起点");
+        assert_eq!(
+            chrono::DateTime::from_timestamp(start, 0)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-01-05T00:00:00+00:00",
+            "周三正午的周窗起点必须是本周一"
+        );
+        assert_eq!(Period::Weekly.reset_at(start), start + 7 * DAY_SECS);
+        // 周一 00:00 本身即起点（含端点）；周日深夜同窗
+        let monday = chrono::Utc
+            .with_ymd_and_hms(2026, 1, 5, 0, 0, 0)
+            .unwrap()
+            .timestamp();
+        assert_eq!(Period::Weekly.window_start(monday, 0), Some(start));
+        let sunday = chrono::Utc
+            .with_ymd_and_hms(2026, 1, 11, 23, 59, 59)
+            .unwrap()
+            .timestamp();
+        assert_eq!(Period::Weekly.window_start(sunday, 0), Some(start));
+        assert_eq!(
+            Period::Weekly.window_start(sunday + 1, 0).unwrap(),
+            start + 7 * DAY_SECS,
+            "周一 00:00 起翻入下窗"
+        );
+    }
+
+    /// calendar 月窗对齐自然月 1 日 00:00；重置 = 下月 1 日（28-31 天变长，
+    /// 含闰年 2 月）；tz 偏移同日窗卷动。
+    #[test]
+    fn calendar_monthly_aligns_first_day_and_variable_length() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 3, 15, 8, 0, 0)
+            .unwrap()
+            .timestamp();
+        let start = Period::Monthly
+            .window_start(now, 0)
+            .expect("monthly 有起点");
+        assert_eq!(
+            chrono::DateTime::from_timestamp(start, 0)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-03-01T00:00:00+00:00"
+        );
+        // 3 月 31 天
+        assert_eq!(Period::Monthly.reset_at(start) - start, 31 * DAY_SECS);
+        assert_eq!(
+            chrono::DateTime::from_timestamp(Period::Monthly.reset_at(start), 0)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-04-01T00:00:00+00:00"
+        );
+        // 非闰年 2 月 28 天；跨年 12 月 → 1 月
+        let feb = chrono::Utc
+            .with_ymd_and_hms(2026, 2, 10, 0, 0, 0)
+            .unwrap()
+            .timestamp();
+        let feb_start = Period::Monthly.window_start(feb, 0).unwrap();
+        assert_eq!(
+            Period::Monthly.reset_at(feb_start) - feb_start,
+            28 * DAY_SECS
+        );
+        let dec = chrono::Utc
+            .with_ymd_and_hms(2026, 12, 31, 23, 0, 0)
+            .unwrap()
+            .timestamp();
+        let dec_start = Period::Monthly.window_start(dec, 0).unwrap();
+        assert_eq!(
+            chrono::DateTime::from_timestamp(Period::Monthly.reset_at(dec_start), 0)
+                .unwrap()
+                .to_rfc3339(),
+            "2027-01-01T00:00:00+00:00",
+            "跨年月窗正常翻入 1 月"
+        );
+        // 闰年 2 月 29 天
+        let leap_feb = chrono::Utc
+            .with_ymd_and_hms(2028, 2, 10, 0, 0, 0)
+            .unwrap()
+            .timestamp();
+        let leap_start = Period::Monthly.window_start(leap_feb, 0).unwrap();
+        assert_eq!(
+            Period::Monthly.reset_at(leap_start) - leap_start,
+            29 * DAY_SECS
+        );
+    }
+
+    /// 配置编译单点：period/calendar/rolling_secs 三字段 → Period；
+    /// 非法组合 None（validate 已拒，此处仅手构兜底）。
+    #[test]
+    fn period_from_config_covers_both_forms() {
+        assert_eq!(
+            Period::from_config("rolling", "", 1800),
+            Some(Period::Rolling(1800))
+        );
+        assert_eq!(
+            Period::from_config("calendar", "daily", 0),
+            Some(Period::Daily)
+        );
+        assert_eq!(
+            Period::from_config("calendar", "weekly", 0),
+            Some(Period::Weekly)
+        );
+        assert_eq!(
+            Period::from_config("calendar", "monthly", 0),
+            Some(Period::Monthly)
+        );
+        assert_eq!(Period::from_config("rolling", "daily", 60), None);
+        assert_eq!(Period::from_config("hourly", "", 60), None);
+        assert_eq!(Period::from_config("calendar", "yearly", 0), None);
+    }
+
+    /// 旧单窗 API 形状的测试辅助：单 rolling 窗（与旧 window_secs 热读等价）。
+    fn legacy_windows(token_quota: u64, cost_quota: u64, window_secs: u64) -> Vec<RuntimeWindow> {
+        vec![RuntimeWindow {
+            id: "default".into(),
+            global: false,
+            period: Period::Rolling(window_secs),
+            tz_offset_secs: 0,
+            tokens_limit: token_quota,
+            cost_limit_millicents: cost_quota,
+        }]
+    }
+
     /// 回补返还：实际低于预估时余额返还。
     #[test]
     fn recompense_refunds_difference() {
         let quota = QuotaState::new();
+        let windows = legacy_windows(100, 0, 3600);
         // 限额 100 token：预扣 60 通过。
-        quota.consume("k", 100, 0, 60, 0, 3600).expect("首次预扣");
-        assert_eq!(quota.snapshot("k"), (60, 0));
+        quota.consume("k", &windows, 60, 0).expect("首次预扣");
+        assert_eq!(quota.snapshot("k", "default"), (60, 0));
         // 实际仅 10 → 回补返还 50。
-        quota.recompense("k", 60, 0, 10, 0, 3600);
-        assert_eq!(quota.snapshot("k"), (10, 0));
+        quota.recompense("k", &windows, 60, 0, 10, 0);
+        assert_eq!(quota.snapshot("k", "default"), (10, 0));
         // 实际超预估时追扣。
-        quota.recompense("k", 10, 0, 30, 0, 3600);
-        assert_eq!(quota.snapshot("k"), (30, 0));
+        quota.recompense("k", &windows, 10, 0, 30, 0);
+        assert_eq!(quota.snapshot("k", "default"), (30, 0));
     }
 
     /// 回补不建账：无账可回时保持账本为空，正向差额不得虚记进干净窗口。
     #[test]
     fn recompense_without_ledger_does_not_create_account() {
         let quota = QuotaState::new();
-        quota.recompense("ghost", 60, 0, 10, 0, 3600);
+        let windows = legacy_windows(60, 0, 3600);
+        quota.recompense("ghost", &windows, 60, 0, 10, 0);
         assert_eq!(quota.tracked_keys(), 0, "无账不得新建");
-        assert_eq!(quota.snapshot("ghost"), (0, 0));
+        assert_eq!(quota.snapshot("ghost", "default"), (0, 0));
     }
 
     /// 回补触发淘汰：超上限时惰性清理已翻转窗口（与 consume 同谓词）。
@@ -1268,13 +2315,13 @@ mod tests {
         // 灌满上限 + 1（淘汰谓词严格大于）——窗口 1s，随后全部翻转。
         for i in 0..=QUOTA_MAX_TRACKED_KEYS {
             quota
-                .consume(&format!("k{i}"), 100, 0, 1, 0, 1)
+                .consume(&format!("k{i}"), &legacy_windows(100, 0, 1), 1, 0)
                 .expect("fill");
         }
         assert_eq!(quota.tracked_keys(), QUOTA_MAX_TRACKED_KEYS + 1);
         std::thread::sleep(std::time::Duration::from_millis(1_100));
         // 无账 key 上的回补也要先执行淘汰（谓词同一），且不建账。
-        quota.recompense("overflow", 0, 0, 0, 0, 1);
+        quota.recompense("overflow", &legacy_windows(0, 0, 1), 0, 0, 0, 0);
         assert!(
             quota.tracked_keys() <= QUOTA_MAX_TRACKED_KEYS,
             "超上限必须淘汰已翻转窗口"
@@ -1286,9 +2333,197 @@ mod tests {
     #[test]
     fn over_quota_rejected_without_ledger_pollution() {
         let quota = QuotaState::new();
-        quota.consume("k", 100, 0, 60, 0, 3600).expect("首次");
-        assert!(quota.consume("k", 100, 0, 60, 0, 3600).is_err());
-        assert_eq!(quota.snapshot("k"), (60, 0), "拒收不得落账");
+        let windows = legacy_windows(100, 0, 3600);
+        quota.consume("k", &windows, 60, 0).expect("首次");
+        assert!(quota.consume("k", &windows, 60, 0).is_err());
+        assert_eq!(quota.snapshot("k", "default"), (60, 0), "拒收不得落账");
+    }
+
+    // ---- 多窗准入（quota-aware-routing T003 / R-quota-001）----
+
+    /// 双 calendar 窗运行时面：daily 限额 tokens_limit_a、weekly 限额 b。
+    fn calendar_windows(daily_limit: u64, weekly_limit: u64) -> Vec<RuntimeWindow> {
+        vec![
+            RuntimeWindow {
+                id: "daily".into(),
+                global: false,
+                period: Period::Daily,
+                tz_offset_secs: 0,
+                tokens_limit: daily_limit,
+                cost_limit_millicents: 0,
+            },
+            RuntimeWindow {
+                id: "weekly".into(),
+                global: false,
+                period: Period::Weekly,
+                tz_offset_secs: 0,
+                tokens_limit: weekly_limit,
+                cost_limit_millicents: 0,
+            },
+        ]
+    }
+
+    /// 日窗有余 / 周窗尽 → 拒；Retry-After = 周窗重置秒数（受拒窗最晚重置
+    /// = 最早可成功重试时刻）；响应体列两窗剩余；受拒请求零落账。
+    #[test]
+    fn any_window_short_refuses_with_min_retry_after() {
+        let quota = QuotaState::new();
+        let windows = calendar_windows(5_000, 2_000);
+        // 首扣 1500：日窗余 3500、周窗余 500，两窗均放行。
+        quota
+            .consume("k", &windows, 1500, 0)
+            .expect("首扣两窗均有余");
+        assert_eq!(quota.snapshot("k", "daily"), (1500, 0));
+        assert_eq!(quota.snapshot("k", "weekly"), (1500, 0));
+        // 二扣 800：日窗余 3500 有余、周窗余 500 不足 → 拒。
+        let refusal = quota.consume("k", &windows, 800, 0).expect_err("周窗尽");
+        assert_eq!(
+            refusal.retry_after_secs,
+            refusal
+                .windows
+                .iter()
+                .find(|w| w.id == "weekly")
+                .expect("响应必须列周窗")
+                .reset_secs,
+            "Retry-After = 受拒窗（周窗）重置秒数"
+        );
+        assert!(
+            refusal.retry_after_secs > 0 && refusal.retry_after_secs <= 7 * DAY_SECS as u64,
+            "周窗重置秒数在 (0, 7d] 内"
+        );
+        let ids: Vec<&str> = refusal.windows.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["daily", "weekly"],
+            "响应列两窗剩余（脱敏仅 id+秒数）"
+        );
+        // 受拒零落账：周窗占用保持 1500。
+        assert_eq!(quota.snapshot("k", "weekly"), (1500, 0));
+        assert_eq!(quota.snapshot("k", "daily"), (1500, 0));
+        // 429 响应体（i18n 文案）列两窗 id 与秒数。
+        let body = refusal_body(&refusal);
+        assert!(body.contains("daily"), "响应体列日窗: {body}");
+        assert!(body.contains("weekly"), "响应体列周窗: {body}");
+    }
+
+    /// 全窗有余 → 放行，预扣落各窗。
+    #[test]
+    fn all_windows_pass_admits() {
+        let quota = QuotaState::new();
+        let windows = calendar_windows(5_000, 2_000);
+        quota.consume("k", &windows, 1200, 0).expect("两窗均有余");
+        assert_eq!(quota.snapshot("k", "daily"), (1200, 0));
+        assert_eq!(quota.snapshot("k", "weekly"), (1200, 0));
+    }
+
+    /// 结算逐窗差额修正：实际 300 → 两窗同降至 300（预扣 1500 中 1200 返还）。
+    #[test]
+    fn recompense_settles_every_window_independently() {
+        let quota = QuotaState::new();
+        let windows = calendar_windows(5_000, 2_000);
+        quota.consume("k", &windows, 1500, 0).expect("预扣");
+        quota.recompense("k", &windows, 1500, 0, 300, 0);
+        assert_eq!(quota.snapshot("k", "daily"), (300, 0), "日窗逐窗结算");
+        assert_eq!(quota.snapshot("k", "weekly"), (300, 0), "周窗逐窗结算");
+    }
+
+    /// scope=global 窗全体请求共享同一账本键（`__global__`），与 api_key 窗
+    /// 互不串账（R-quota-001 / design 决策 3）。
+    #[test]
+    fn global_window_shares_state_across_tenants() {
+        let quota = QuotaState::new();
+        let windows = vec![RuntimeWindow {
+            id: "fleet".into(),
+            global: true,
+            period: Period::Rolling(3600),
+            tz_offset_secs: 0,
+            tokens_limit: 1000,
+            cost_limit_millicents: 0,
+        }];
+        quota.consume("tenant-a", &windows, 600, 0).expect("a 扣");
+        quota
+            .consume("tenant-b", &windows, 600, 0)
+            .expect_err("b 撞同一全局窗");
+        assert_eq!(
+            quota.snapshot(GLOBAL_LEDGER_KEY, "fleet"),
+            (600, 0),
+            "全局窗共享占用，b 的受拒不落账"
+        );
+        assert_eq!(quota.tracked_keys(), 1, "全局窗只建一个账本键");
+    }
+
+    // ---- vendor 预算记账（quota-aware-routing T006 / R-vbr-001）----
+
+    /// vendor 预算配置（单 vendor rolling token 预算）。
+    fn vendor_budget_config() -> crate::config::Config {
+        let mut config = quota_enabled_config(true);
+        config.vendor_budgets = vec![crate::config::VendorBudgetConfig {
+            vendor_id: "budgeted".into(),
+            tokens_limit: 10_000,
+            cost_limit_millicents: 0,
+            period: "rolling".into(),
+            rolling_secs: 3600,
+            ..Default::default()
+        }];
+        config
+    }
+
+    /// 结算累计进 VendorBudgetState；无预算 vendor 不参与（R-vbr-001）。
+    #[test]
+    fn usage_settles_into_vendor_budget_state() {
+        let config = Arc::new(ConfigManager::new(vendor_budget_config()));
+        let quota = Arc::new(QuotaState::new());
+        let snapshot = config.read();
+
+        // 有预算 vendor：usage 结算点累计
+        quota.record_vendor_usage(&snapshot, "budgeted", 1200, 30);
+        assert_eq!(
+            quota.vendor_snapshot("budgeted", &vendor_window_id("budgeted")),
+            (1200, 30),
+            "结算累计进预算态"
+        );
+        quota.record_vendor_usage(&snapshot, "budgeted", 300, 0);
+        assert_eq!(
+            quota.vendor_snapshot("budgeted", &vendor_window_id("budgeted")),
+            (1500, 30),
+            "多次结算累加"
+        );
+
+        // 无预算 vendor：零参与（不建账）
+        quota.record_vendor_usage(&snapshot, "plain", 500, 5);
+        assert_eq!(
+            quota.vendor_snapshot("plain", &vendor_window_id("plain")),
+            (0, 0),
+            "无预算 vendor 不参与"
+        );
+    }
+
+    /// settle_nonstream 在租户配额不适用（无限额租户）时仍记 vendor 预算——
+    /// 预算是 vendor 维度约束，独立于租户限额（快路径仅在两者皆无时保持零解析）。
+    #[test]
+    fn settle_nonstream_records_vendor_budget_without_tenant_quota() {
+        // 租户无限额（auth.keys 未命中）→ tenant_windows 空；vendor 有预算。
+        let config = Arc::new(ConfigManager::new(vendor_budget_config()));
+        let quota = Arc::new(QuotaState::new());
+        let body = chat_body("hello!", 10);
+        let response = serde_json::json!({
+            "usage": {"prompt_tokens": 50, "completion_tokens": 20}
+        });
+        settle_nonstream(
+            &config,
+            Some(&quota),
+            "unknown-tenant",
+            &body,
+            &response,
+            "openai",
+            "budgeted",
+            None,
+        );
+        let (tokens, cost) = quota.vendor_snapshot("budgeted", &vendor_window_id("budgeted"));
+        assert_eq!(tokens, 70, "实际 usage（50+20）进预算态");
+        assert!(cost > 0, "成本维度按实际计价累计: {cost}");
+        // 租户窗不建账（无限额租户）
+        assert_eq!(quota.tracked_keys(), 0, "无限额租户零账面");
     }
 
     /// usage 双形态提取；无 usage → None（保持预扣）。提数委派
@@ -1323,6 +2558,7 @@ mod tests {
         crate::config::Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
@@ -1367,7 +2603,7 @@ mod tests {
         }
     }
 
-    /// 三级早退单点：适用（Some）/ 双限额 0 / enabled=false / 未接线（None）。
+    /// 三级早退单点：适用（Some）/ 生效窗集空 / enabled=false / 未接线（None）。
     #[test]
     fn quota_applies_three_level_gate() {
         let config = Arc::new(ConfigManager::new(quota_enabled_config(true)));
@@ -1375,8 +2611,13 @@ mod tests {
 
         let applied = quota_applies(&config, Some(&quota), "tenant-digest");
         assert!(
-            applied.is_some_and(|lease| lease.token_quota == 1_000_000 && lease.cost_quota == 0),
-            "已启用 + 租户有限额 → 适用，限额随快照返回"
+            applied.is_some_and(|lease| {
+                lease.windows.len() == 1
+                    && lease.windows[0].id == "default"
+                    && lease.windows[0].tokens_limit == 1_000_000
+                    && lease.windows[0].cost_limit_millicents == 0
+            }),
+            "已启用 + 租户有限额 → 适用，限额回填进生效窗"
         );
 
         assert!(
@@ -1433,13 +2674,21 @@ mod tests {
         let body = chat_body("hello!", 10);
         let (pre_tokens, pre_cost) = precharge_for(&body, &[], &pricing(), 4);
         quota
-            .consume("tenant-digest", 1_000_000, 0, pre_tokens, pre_cost, 3600)
+            .consume(
+                "tenant-digest",
+                &legacy_windows(1_000_000, 0, 3600),
+                pre_tokens,
+                pre_cost,
+            )
             .expect("入口预扣");
-        assert_eq!(quota.snapshot("tenant-digest"), (pre_tokens, pre_cost));
+        assert_eq!(
+            quota.snapshot("tenant-digest", "default"),
+            (pre_tokens, pre_cost)
+        );
 
         settle_nonstream_cached(&config, Some(&quota), "tenant-digest", &body);
         assert_eq!(
-            quota.snapshot("tenant-digest"),
+            quota.snapshot("tenant-digest", "default"),
             (0, 0),
             "HIT 以实际用量 0 结算，预扣全额回补"
         );
@@ -1483,9 +2732,17 @@ mod tests {
         });
         let (pre_tokens, pre_cost) = precharge_for(&body, &[], &pricing(), 4);
         quota
-            .consume("tenant-digest", 1_000_000, 0, pre_tokens, pre_cost, 3600)
+            .consume(
+                "tenant-digest",
+                &legacy_windows(1_000_000, 0, 3600),
+                pre_tokens,
+                pre_cost,
+            )
             .expect("入口预扣");
-        assert_eq!(quota.snapshot("tenant-digest"), (pre_tokens, pre_cost));
+        assert_eq!(
+            quota.snapshot("tenant-digest", "default"),
+            (pre_tokens, pre_cost)
+        );
 
         let response = serde_json::json!({
             "usageMetadata": {
@@ -1504,7 +2761,7 @@ mod tests {
             "v",
             None,
         );
-        let (tokens, cost) = quota.snapshot("tenant-digest");
+        let (tokens, cost) = quota.snapshot("tenant-digest", "default");
         assert_eq!(tokens, 3, "按实际 prompt+completion 结算");
         assert!(
             cost <= pre_cost,

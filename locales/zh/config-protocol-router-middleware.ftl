@@ -27,7 +27,24 @@ config-catalog-price-invalid = 模型目录条目 { $model } 的 { $field } = { 
 config-circuit-open-timeout-too-small = resilience.circuit_open_timeout_ms ({ $value }ms) 低于下限 100ms：窗口过短会使熔断 Open 态立即转入半开，故障期退化为探针风暴
 config-quota-window-too-small = quota.window_secs（{ $value }s）须 ≥1：0 窗口每次访问即翻转，配额永不满
 middleware-quota-exceeded = 配额已耗尽，请稍后重试
+middleware-quota-window-reset = 窗口「{ $id }」{ $secs }s 后重置
+middleware-quota-ledger-flush-failed = 配额账本批落库失败（丢弃 { $count } 行）：{ $error }
+middleware-quota-ledger-channel-closed = 配额账本落盘通道已关闭：{ $error }
 middleware-quota-body-too-large = 请求体超过配额判限处理上限（4 MiB）
+config-quota-window-id-empty = [[quota.windows]] 条目 id 为空——窗口 id 是账本行键与指标标签，空 id 会把多窗塌缩为同一窗
+config-quota-window-id-duplicate = [[quota.windows]] 声明了重复 id「{ $id }」：窗口 id 必须唯一（它是账本行键）
+config-quota-window-scope-unknown = [[quota.windows]] 窗口「{ $id }」的 scope「{ $value }」非法（合法值：api_key / global）
+config-quota-rolling-secs-too-small = [[{ $section }]]「{ $id }」为 period=rolling 但 rolling_secs 为 0：0 窗口每次访问即翻转，限额永不满
+config-quota-period-unknown = [[{ $section }]]「{ $id }」的 period「{ $value }」非法（合法值：rolling / calendar）
+config-quota-period-mixed = [[{ $section }]]「{ $id }」混用了两种周期形态：period=rolling 填 rolling_secs，period=calendar 填 calendar——二者不可同时给
+config-quota-calendar-unknown = [[{ $section }]]「{ $id }」的 calendar「{ $value }」非法（合法值：daily / weekly / monthly）
+config-quota-tz-offset-out-of-range = [[{ $section }]]「{ $id }」的 tz_offset_secs（{ $value }s）超出 ±86400s：偏移超过一天会与相邻日历窗重叠
+config-quota-window-fields-conflict = [quota].window_secs（{ $value }s）已被忽略，因为 [[quota.windows]] 非空：窗口数组优先——移除旧字段可消除本告警
+config-vendor-budget-id-empty = [[vendor_budgets]] 条目 vendor_id 为空——预算会静默永不生效
+config-vendor-budget-id-duplicate = [[vendor_budgets]] 声明了重复 vendor_id「{ $vendor }」
+config-vendor-budget-unknown-vendor = [[vendor_budgets]] vendor_id「{ $vendor }」与任何 [[vendors]] id 都对不上：错拼的预算条目会静默永不生效
+config-vendor-budget-empty-limits = [[vendor_budgets]] vendor「{ $vendor }」的 tokens_limit 与 cost_limit_millicents 同时为 0：至少声明一个维度，或删掉该条目
+config-quota-factor-mode-unknown = routing.quota_factor.mode「{ $value }」非法（合法值：off / smart / pace）
 # quota.enabled 开而 [auth] 关/缺段的组合告警：租户键取自客户端自报头（L9）
 config-quota-without-auth = [quota].enabled 已开启但 [auth] 关闭或缺段：配额租户键取自未经校验的客户端自报头，计费控制可被伪造头旁路（请以反代/网络层隔离管理面，或开启认证）
 # $details 为固定序条目明细：位置 + 规则结论（本仓库形态契约或 confers

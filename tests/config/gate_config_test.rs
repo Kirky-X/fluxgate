@@ -366,6 +366,7 @@ mod tests {
             lexcompress: Default::default(),
             responses: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
         }
@@ -981,5 +982,259 @@ mod affinity_config {
         assert!(validate_config(&config).is_ok(), "下边界合法");
         config.vendors[0].cache_ttl_secs = 3_600;
         assert!(validate_config(&config).is_ok(), "1h 缓存部署合法");
+    }
+}
+
+/// `[[quota.windows]]` / `[[vendor_budgets]]` / `[routing.quota_factor]`：
+/// 旧单窗字段兼容映射、数组优先、闭集与数值域校验、因子模式闭集。
+#[cfg(test)]
+mod quota_windows_config {
+    use crate::common;
+    use fluxgate::config::validate_config;
+
+    use fluxgate::config::{QuotaSection, QuotaWindowConfig};
+
+    /// 只配旧字段（无 `[[quota.windows]]`）：生效窗口编译为 `id="default"`
+    /// 的 rolling 窗，行为与历史逐位一致（R-quota-001 兼容验收）。
+    #[test]
+    fn test_legacy_single_window_maps_to_default() {
+        let mut config = common::test_config(vec![]);
+        config.quota = QuotaSection {
+            window_secs: 1800,
+            ..Default::default()
+        };
+        assert!(config.quota.windows.is_empty());
+        let effective = fluxgate::config::effective_quota_windows(&config.quota);
+        assert_eq!(effective.len(), 1, "旧字段编译为单窗");
+        assert_eq!(effective[0].id, "default");
+        assert_eq!(effective[0].rolling_secs, 1800, "window_secs 原值继承");
+        assert_eq!(effective[0].period, "rolling");
+        assert!(validate_config(&config).is_ok(), "只配旧字段必须合法");
+    }
+
+    /// 两形态并存：`[[quota.windows]]` 优先、旧 `window_secs` 忽略
+    ///（加载期 WARN，这里断言生效集为数组原样）。
+    #[test]
+    fn test_windows_array_takes_precedence_over_legacy_fields() {
+        let mut config = common::test_config(vec![]);
+        config.quota.window_secs = 1800;
+        config.quota.windows = vec![
+            QuotaWindowConfig {
+                id: "daily".into(),
+                period: "calendar".into(),
+                calendar: "daily".into(),
+                tokens_limit: 100_000,
+                ..Default::default()
+            },
+            QuotaWindowConfig {
+                id: "weekly".into(),
+                period: "calendar".into(),
+                calendar: "weekly".into(),
+                tokens_limit: 700_000,
+                ..Default::default()
+            },
+        ];
+        let effective = fluxgate::config::effective_quota_windows(&config.quota);
+        assert_eq!(
+            effective, config.quota.windows,
+            "数组非空时原样生效（旧字段忽略）"
+        );
+        assert!(validate_config(&config).is_ok());
+    }
+
+    /// 合法多窗（rolling + calendar 混排、global 作用域）放行。
+    #[test]
+    fn test_valid_windows_pass() {
+        let mut config = common::test_config(vec![]);
+        config.quota.windows = vec![
+            QuotaWindowConfig {
+                id: "burst".into(),
+                rolling_secs: 300,
+                tokens_limit: 10_000,
+                ..Default::default()
+            },
+            QuotaWindowConfig {
+                id: "fleet".into(),
+                scope: "global".into(),
+                period: "calendar".into(),
+                calendar: "monthly".into(),
+                tz_offset_secs: 8 * 3600,
+                cost_limit_millicents: 5_000_000,
+                ..Default::default()
+            },
+        ];
+        assert!(validate_config(&config).is_ok());
+    }
+
+    /// id 空 / 重复：窗口 id 是账本行键与指标标签，二者都拒绝。
+    #[test]
+    fn test_window_id_empty_and_duplicate_rejected() {
+        let mut config = common::test_config(vec![]);
+        config.quota.windows = vec![QuotaWindowConfig {
+            id: "  ".into(),
+            rolling_secs: 60,
+            tokens_limit: 1,
+            ..Default::default()
+        }];
+        let err = validate_config(&config).expect_err("空 id 必须拒绝");
+        assert!(err.to_string().contains("quota.windows"), "{err}");
+
+        config.quota.windows = vec![
+            QuotaWindowConfig {
+                id: "daily".into(),
+                rolling_secs: 60,
+                tokens_limit: 1,
+                ..Default::default()
+            },
+            QuotaWindowConfig {
+                id: "daily".into(),
+                rolling_secs: 120,
+                tokens_limit: 1,
+                ..Default::default()
+            },
+        ];
+        let err = validate_config(&config).expect_err("重复 id 必须拒绝");
+        assert!(err.to_string().contains("daily"), "错误回显冲突 id: {err}");
+    }
+
+    /// scope / period / calendar 闭集与两形态互斥逐一点名拒绝。
+    #[test]
+    fn test_window_period_and_scope_closed_sets() {
+        let base = || QuotaWindowConfig {
+            id: "w".into(),
+            rolling_secs: 60,
+            tokens_limit: 1,
+            ..Default::default()
+        };
+        let mut config = common::test_config(vec![]);
+
+        config.quota.windows = vec![QuotaWindowConfig {
+            scope: "tenant".into(),
+            ..base()
+        }];
+        let err = validate_config(&config).expect_err("非法 scope 必须拒绝");
+        assert!(err.to_string().contains("tenant"), "{err}");
+
+        config.quota.windows = vec![QuotaWindowConfig {
+            period: "hourly".into(),
+            ..base()
+        }];
+        let err = validate_config(&config).expect_err("非法 period 必须拒绝");
+        assert!(err.to_string().contains("hourly"), "{err}");
+
+        config.quota.windows = vec![QuotaWindowConfig {
+            rolling_secs: 0,
+            ..base()
+        }];
+        assert!(validate_config(&config).is_err(), "rolling_secs=0 必须拒绝");
+
+        config.quota.windows = vec![QuotaWindowConfig {
+            rolling_secs: 60,
+            calendar: "daily".into(),
+            ..base()
+        }];
+        let err = validate_config(&config).expect_err("两形态同配必须拒绝");
+        assert!(err.to_string().contains("w"), "{err}");
+
+        config.quota.windows = vec![QuotaWindowConfig {
+            rolling_secs: 0,
+            period: "calendar".into(),
+            calendar: "yearly".into(),
+            ..base()
+        }];
+        let err = validate_config(&config).expect_err("非法 calendar 必须拒绝");
+        assert!(err.to_string().contains("yearly"), "{err}");
+
+        config.quota.windows = vec![QuotaWindowConfig {
+            rolling_secs: 0,
+            period: "calendar".into(),
+            calendar: "daily".into(),
+            tz_offset_secs: 86_401,
+            ..base()
+        }];
+        assert!(
+            validate_config(&config).is_err(),
+            "tz_offset_secs 超 ±86400 必须拒绝"
+        );
+    }
+
+    /// `[[vendor_budgets]]`：vendor_id 必须对得上 `[[vendors]]`、去重、
+    /// 双限额零拒绝、周期闭集同源；合法条目放行。
+    #[test]
+    fn test_vendor_budgets_validation() {
+        let budget = || fluxgate::config::VendorBudgetConfig {
+            vendor_id: "v1".into(),
+            tokens_limit: 1_000_000,
+            period: "calendar".into(),
+            calendar: "weekly".into(),
+            ..Default::default()
+        };
+
+        let mut config = common::test_config(vec![common::base_vendor("v1", "")]);
+        config.vendor_budgets = vec![budget()];
+        assert!(validate_config(&config).is_ok(), "合法预算放行");
+
+        config.vendor_budgets = vec![fluxgate::config::VendorBudgetConfig {
+            vendor_id: "ghost".into(),
+            tokens_limit: 1,
+            rolling_secs: 60,
+            ..Default::default()
+        }];
+        let err = validate_config(&config).expect_err("未知 vendor 必须拒绝");
+        assert!(err.to_string().contains("ghost"), "{err}");
+
+        config.vendor_budgets = vec![budget(), budget()];
+        let err = validate_config(&config).expect_err("重复 vendor_id 必须拒绝");
+        assert!(err.to_string().contains("v1"), "{err}");
+
+        config.vendor_budgets = vec![fluxgate::config::VendorBudgetConfig {
+            vendor_id: "v1".into(),
+            rolling_secs: 60,
+            ..Default::default()
+        }];
+        assert!(
+            validate_config(&config).is_err(),
+            "双限额同时为 0 必须拒绝（空转段）"
+        );
+
+        config.vendor_budgets = vec![fluxgate::config::VendorBudgetConfig {
+            vendor_id: "v1".into(),
+            tokens_limit: 1,
+            period: "calendar".into(),
+            calendar: "solar".into(),
+            ..Default::default()
+        }];
+        let err = validate_config(&config).expect_err("预算周期闭集同 quota.windows");
+        assert!(err.to_string().contains("solar"), "{err}");
+    }
+
+    /// `[routing.quota_factor]`：缺省 off（零参与）、w_quota 同温标；
+    /// 非法 mode 点名拒绝；合法值大小写不敏感。
+    #[test]
+    fn test_quota_factor_section_defaults_and_closed_set() {
+        let section = fluxgate::config::QuotaFactorSection::default();
+        assert_eq!(section.mode, "off", "缺段必须 off（零回归）");
+        assert!((section.w_quota - 0.3).abs() < 1e-9);
+
+        let config = common::test_config(vec![]);
+        assert_eq!(
+            config.routing.quota_factor, section,
+            "Config 缺段走同一 Default"
+        );
+        assert!(validate_config(&config).is_ok(), "缺省段合法");
+
+        let mut bad = common::test_config(vec![]);
+        bad.routing.quota_factor.mode = "fastest".into();
+        let err = validate_config(&bad).expect_err("未知 mode 必须点名拒绝");
+        assert!(err.to_string().contains("fastest"), "{err}");
+
+        for mode in ["off", "smart", "pace", "SMART", " Pace "] {
+            let mut ok = common::test_config(vec![]);
+            ok.routing.quota_factor.mode = mode.into();
+            assert!(
+                validate_config(&ok).is_ok(),
+                "合法值 {mode} 必须放行（大小写不敏感 + trim）"
+            );
+        }
     }
 }

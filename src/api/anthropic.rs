@@ -247,6 +247,7 @@ async fn chat_passthrough_stream(
         &ctx.api_key_hash,
         body,
         &decision.vendor.type_,
+        &decision.vendor.id,
         stream_response,
         move |observation| match observation {
             crate::api::sse::ReframeObservation::Frame {

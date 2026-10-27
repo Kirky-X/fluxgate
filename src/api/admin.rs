@@ -282,6 +282,68 @@ pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
     Ok(Json(value))
 }
 
+/// GET /admin/quota/ledger?key={digest} — 配额账本读侧（quota-aware-routing）：
+/// 逐窗 used/重置时刻/作用域（tenant/global/vendor）。`key` 可选过滤租户
+/// 摘要（脱敏口径：digest 本就是不可逆摘要，无 key 原文）；账本未接线或
+/// `[quota]` 关闭时空 rows（账本态是运行事实，不视作 404 错误）。
+pub async fn quota_ledger(
+    State(state): State<Arc<ApiState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, FluxgateError> {
+    let Some(quota) = state.quota.as_ref() else {
+        return Ok(Json(serde_json::json!({ "rows": [] })));
+    };
+    let key = params.get("key").map(|k| k.trim());
+    let rows: Vec<Value> = quota
+        .ledger_entries()
+        .into_iter()
+        .filter(|entry| key.is_none_or(|k| entry.api_key_hash == k))
+        .map(|entry| {
+            serde_json::json!({
+                "api_key_hash": entry.api_key_hash,
+                "window_id": entry.window_id,
+                "scope": entry.scope,
+                "window_start": entry.window_start,
+                "tokens_used": entry.tokens_used,
+                "cost_used_millicents": entry.cost_used_millicents,
+                "reset_at": entry.reset_at,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "rows": rows })))
+}
+
+/// GET /admin/vendor-budgets — vendor 预算状态（quota-aware-routing）：
+/// 声明限额 × 实际占用 × 消耗率比（pace 口径）× 重置时刻。预算段未配置
+/// 时返回配置面空 rows（只读端点，无副作用）。
+pub async fn vendor_budgets(
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<Value>, FluxgateError> {
+    let snapshot = state.config.read();
+    let rows: Vec<Value> = snapshot
+        .vendor_budgets
+        .iter()
+        .map(|budget| {
+            let view = state
+                .quota
+                .as_ref()
+                .and_then(|quota| quota.vendor_budget_view(&snapshot, &budget.vendor_id));
+            serde_json::json!({
+                "vendor_id": budget.vendor_id,
+                "tokens_limit": budget.tokens_limit,
+                "cost_limit_millicents": budget.cost_limit_millicents,
+                "tokens_used": view.as_ref().map(|v| v.tokens_used).unwrap_or(0),
+                "cost_used_millicents": view.as_ref().map(|v| v.cost_used).unwrap_or(0),
+                "pace_ratio": view.as_ref().map(|v| v.pace_ratio()).unwrap_or(0.0),
+                "depleted": view.as_ref().map(|v| v.depleted()).unwrap_or(false),
+                "reset_secs": view.as_ref().map(|v| v.reset_secs).unwrap_or(0),
+                "period_secs": view.as_ref().map(|v| v.period_secs).unwrap_or(0),
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "rows": rows })))
+}
+
 #[axum::debug_handler]
 pub async fn vendors(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, FluxgateError> {
     let statuses = state.vendor_manager.get_all_status();

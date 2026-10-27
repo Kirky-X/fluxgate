@@ -46,6 +46,9 @@ pub struct Router {
     /// 嵌入兼容组 pin 表。None = 未接线，`route_embedding` 回退历史
     /// `route` 行为（chat 路径完全不读本字段）
     embedding_pin: Option<Arc<EmbeddingPin>>,
+    /// 配额账本句柄（quota-aware-routing 第 6 因子的预算读侧）。None =
+    /// 因子整体旁路（mode 热读再叠加一层开关；双关默认 = 零参与）
+    quota_state: Option<Arc<crate::middleware::quota::QuotaState>>,
 }
 
 impl Router {
@@ -58,7 +61,18 @@ impl Router {
             sla_no_pricing_warned: Arc::new(AtomicBool::new(false)),
             bandit: None,
             embedding_pin: None,
+            quota_state: None,
         }
+    }
+
+    /// 接线配额账本（builder）：vendor 预算读侧（第 6 因子）。未接线时
+    /// 配额因子整体旁路（与 mode=off 等效）。
+    pub fn with_quota_state(
+        mut self,
+        quota_state: Arc<crate::middleware::quota::QuotaState>,
+    ) -> Self {
+        self.quota_state = Some(quota_state);
+        self
     }
 
     /// 接线 LinUCB 状态（builder）。未接线时 linucb 档回退 weighted
@@ -891,8 +905,14 @@ impl Router {
                     let queue_len = self.queue_len_for(&vendor, &routing.load_signal);
                     let window = self.vendor_manager.get_window_info(&vendor.id).await;
                     let ewma = self.vendor_manager.metrics().vendor_ewma(&vendor.id);
-                    let factors =
-                        compute_weight_breakdown(eff, queue_len, window.as_ref(), &routing, ewma);
+                    let factors = compute_weight_breakdown(
+                        eff,
+                        queue_len,
+                        window.as_ref(),
+                        &routing,
+                        ewma,
+                        None,
+                    );
                     let base = factors.total;
                     let weight = final_by_vendor
                         .get(vendor.id.as_str())
@@ -1559,6 +1579,9 @@ impl Router {
     /// 四级权重回退链：请求级权重（X-Weight）→ model.weight →
     /// 容量自动权重（仅 weight<=0，limit 归一 (0,1]）→ 均匀兜底 1.0。
     /// tenant 供 SLA 取 Q；sla_v=0（默认）时该打分项旁路。
+    /// 配额感知因子（quota-aware-routing）：mode=smart 先摘预算耗尽候选
+    ///（全员耗尽保留全部并计数），重置最快者得第 6 加法项；mode=pace 按消耗
+    /// 率带乘性升降权；mode=off / 未接线账本 → 零查询零副作用。
     pub async fn calculate_weights_overridden(
         &self,
         candidates: Vec<(VendorConfig, ModelConfig)>,
@@ -1566,6 +1589,8 @@ impl Router {
         tenant: Option<&str>,
         ctx: Option<RouteCtx>,
     ) -> Vec<(f64, (VendorConfig, ModelConfig))> {
+        // smart 候选过滤（T007）：off/pace/未接线时原样返回
+        let candidates = self.quota_factor_filter(candidates).await;
         // 容量权重（第 3 级）：仅无请求级覆盖时计算
         let mut capacity: HashMap<String, f64> = HashMap::new();
         if request_weight.is_none() {
@@ -1581,6 +1606,9 @@ impl Router {
             Vec::new()
         };
 
+        // 配额因子打分上下文（T007/T008）：一次性快照，集合内可比
+        let (quota_scores, pace_multipliers) = self.quota_factor_contexts(&candidates).await;
+
         let mut weighted = Vec::with_capacity(candidates.len());
         // SLA 打分上下文：sla_v=0（默认）零开销旁路；候选集级预收集
         //（缺价中位数、同一 Q/ŝ 快照）保证集合内可比
@@ -1591,7 +1619,13 @@ impl Router {
             let effective_model_weight = request_weight.unwrap_or_else(|| {
                 resolve_effective_model_weight(model.weight, capacity.get(&vendor.id).copied())
             });
-            let mut weight = self.calculate_weight(&vendor, effective_model_weight).await;
+            let mut weight = self
+                .calculate_weight(
+                    &vendor,
+                    effective_model_weight,
+                    quota_scores.get(i).and_then(|s| s.as_ref()),
+                )
+                .await;
             // SLA 惩罚乘在权重链末端，与失败率降权、亲和 boost 独立乘法叠加
             if let Some(sla) = &sla {
                 let (cost, satisfaction) = sla.entries[i];
@@ -1607,9 +1641,93 @@ impl Router {
                     weight *= *factor;
                 }
             }
+            // pace 消耗率带乘性修正（乘法链末端，与价格因子同型）
+            if let Some(Some(factor)) = pace_multipliers.get(i) {
+                weight *= *factor;
+            }
             weighted.push((weight, (vendor, model)));
         }
         weighted
+    }
+
+    /// smart 候选过滤（T007 / R-vbr-002）：预算耗尽 vendor 摘出候选；全员
+    /// 耗尽保留全部并对每个 vendor 计 `quota_factor_depleted_total`。mode
+    /// ≠ smart 或账本未接线时零开销原样返回。
+    async fn quota_factor_filter(
+        &self,
+        candidates: Vec<(VendorConfig, ModelConfig)>,
+    ) -> Vec<(VendorConfig, ModelConfig)> {
+        let Some(state) = &self.quota_state else {
+            return candidates;
+        };
+        let mode =
+            crate::config::QuotaFactorMode::from_section(&self.config.read().routing.quota_factor);
+        if mode != crate::config::QuotaFactorMode::Smart {
+            return candidates;
+        }
+        let snapshot = self.config.read();
+        let views: Vec<Option<crate::middleware::quota::VendorBudgetView>> = candidates
+            .iter()
+            .map(|(vendor, _)| state.vendor_budget_view(&snapshot, &vendor.id))
+            .collect();
+        drop(snapshot);
+        let any_alive = views
+            .iter()
+            .any(|view| !view.as_ref().is_some_and(|b| b.depleted()));
+        if any_alive {
+            candidates
+                .into_iter()
+                .zip(views)
+                .filter(|(_, view)| !view.as_ref().is_some_and(|b| b.depleted()))
+                .map(|(candidate, _)| candidate)
+                .collect()
+        } else {
+            // 全员耗尽兜底：保留全部 + 逐 vendor 计数
+            let metrics = self.vendor_manager.metrics();
+            for (vendor, _) in &candidates {
+                metrics.record_quota_factor_depleted(&vendor.id);
+            }
+            candidates
+        }
+    }
+
+    /// 配额因子打分上下文（一次性快照）：smart → 每候选重置归一化分；
+    /// pace → 每候选消耗率带乘性因子。off / 未接线 → 双空（零查询）。
+    async fn quota_factor_contexts(
+        &self,
+        candidates: &[(VendorConfig, ModelConfig)],
+    ) -> (Vec<Option<QuotaFactorScore>>, Vec<Option<f64>>) {
+        let Some(state) = &self.quota_state else {
+            return (Vec::new(), Vec::new());
+        };
+        let snapshot = self.config.read();
+        let mode = crate::config::QuotaFactorMode::from_section(&snapshot.routing.quota_factor);
+        let views: Vec<Option<crate::middleware::quota::VendorBudgetView>> = candidates
+            .iter()
+            .map(|(vendor, _)| state.vendor_budget_view(&snapshot, &vendor.id))
+            .collect();
+        drop(snapshot);
+        match mode {
+            crate::config::QuotaFactorMode::Smart => (
+                views
+                    .into_iter()
+                    .map(|view| {
+                        view.filter(|b| !b.not_started).map(|b| QuotaFactorScore {
+                            normalized_reset: b.normalized_reset(),
+                        })
+                    })
+                    .collect(),
+                Vec::new(),
+            ),
+            crate::config::QuotaFactorMode::Pace => (
+                Vec::new(),
+                views
+                    .into_iter()
+                    .map(|view| view.map(|b| quota_pace_multiplier(b.pace_ratio())))
+                    .collect(),
+            ),
+            crate::config::QuotaFactorMode::Off => (Vec::new(), Vec::new()),
+        }
     }
 
     /// 价格因子：单价 p = (input_price + output_price) / 2（每 1M tokens，
@@ -1844,7 +1962,12 @@ impl Router {
         })
     }
 
-    async fn calculate_weight(&self, vendor: &VendorConfig, effective_model_weight: f64) -> f64 {
+    async fn calculate_weight(
+        &self,
+        vendor: &VendorConfig,
+        effective_model_weight: f64,
+        quota: Option<&QuotaFactorScore>,
+    ) -> f64 {
         // 系数热读：POST /admin/config 更新后立即生效
         let routing = self.config.read().routing.clone();
         // 负载维输入按 [routing].load_signal 单选
@@ -1858,6 +1981,7 @@ impl Router {
             window.as_ref(),
             &routing,
             ewma,
+            quota,
         );
         // 失败率软降权（门控默认关）
         self.failure_rate_penalty(&vendor.id, weight).await
@@ -2229,26 +2353,30 @@ pub fn sla_median_cost(mut prices: Vec<f64>) -> Option<f64> {
 }
 
 /// 路由权重：w_model×model.weight + w_queue×queue_factor +
-/// w_window×window_factor + w_latency×latency_factor + w_error×error_factor。
-/// 各因子语义见 compute_weight_breakdown；纯因子加权，不含温度平滑
-///（平滑由 weighted_select_with 恰好应用一次）。pub 供确定性测试与调试
+/// w_window×window_factor + w_latency×latency_factor + w_error×error_factor
+///（+ w_quota×quota_factor，mode=smart 时）。各因子语义见
+/// compute_weight_breakdown；纯因子加权，不含温度平滑（平滑由
+/// weighted_select_with 恰好应用一次）。pub 供确定性测试与调试
 pub fn compute_weight(
     model_weight: f64,
     queue_len: usize,
     window: Option<&WindowInfo>,
     routing: &crate::config::RoutingSection,
     ewma: Option<(f64, f64)>,
+    quota: Option<&QuotaFactorScore>,
 ) -> f64 {
-    compute_weight_breakdown(model_weight, queue_len, window, routing, ewma).total
+    compute_weight_breakdown(model_weight, queue_len, window, routing, ewma, quota).total
 }
 
-/// 5 因子权重分解：compute_weight 加法项的逐项贡献 + 合成（total）
+/// 6 因子权重分解：compute_weight 加法项的逐项贡献 + 合成（total）。
+/// quota 加法项仅 mode=smart 时非零（pace 走乘性链，见 quota_pace_multiplier）。
 pub fn compute_weight_breakdown(
     model_weight: f64,
     queue_len: usize,
     window: Option<&WindowInfo>,
     routing: &crate::config::RoutingSection,
     ewma: Option<(f64, f64)>,
+    quota: Option<&QuotaFactorScore>,
 ) -> WeightBreakdown {
     let model_component = model_weight * routing.w_model;
     let queue_factor = queue_factor_from_len(queue_len);
@@ -2261,16 +2389,31 @@ pub fn compute_weight_breakdown(
         ),
         None => (0.5, 1.0),
     };
+    // 第 6 因子（quota-aware-routing）：mode=smart 时 w_quota × 重置最快加成
+    let quota_component = match quota {
+        Some(score)
+            if crate::config::QuotaFactorMode::from_section(&routing.quota_factor)
+                == crate::config::QuotaFactorMode::Smart =>
+        {
+            routing.quota_factor.w_quota * (1.0 - score.normalized_reset.clamp(0.0, 1.0))
+        }
+        _ => 0.0,
+    };
     let breakdown = WeightBreakdown {
         model: model_component,
         queue: queue_factor * routing.w_queue,
         window: window_factor * routing.w_window,
         latency: latency_factor * routing.w_latency,
         error: error_factor * routing.w_error,
+        quota: quota_component,
         total: 0.0,
     };
-    let weight =
-        breakdown.model + breakdown.queue + breakdown.window + breakdown.latency + breakdown.error;
+    let weight = breakdown.model
+        + breakdown.queue
+        + breakdown.window
+        + breakdown.latency
+        + breakdown.error
+        + breakdown.quota;
     WeightBreakdown {
         total: if weight.is_finite() && weight > 0.0 {
             weight
@@ -2281,7 +2424,7 @@ pub fn compute_weight_breakdown(
     }
 }
 
-/// 5 因子权重分解（`compute_weight` 加法项逐项贡献 + 合成 total）。
+/// 6 因子权重分解（`compute_weight` 加法项逐项贡献 + 合成 total）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeightBreakdown {
     pub model: f64,
@@ -2289,7 +2432,32 @@ pub struct WeightBreakdown {
     pub window: f64,
     pub latency: f64,
     pub error: f64,
+    /// 配额因子加法项（mode=smart：w_quota × (1 − normalized_reset)；
+    /// off/pace 恒 0）
+    pub quota: f64,
     pub total: f64,
+}
+
+/// smart 因子的每候选打分输入（重置最快加成；quota-aware-routing T007）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuotaFactorScore {
+    /// reset_secs / period_secs ∈ [0,1]（0 = 即将重置 → 加成最大）
+    pub normalized_reset: f64,
+}
+
+/// pace 因子的乘性修正（R-vbr-003 确定性纯函数）：消耗率比 > 1.1 → 降权
+/// ×0.5；< 0.9 → 升权 ×1.2；带内不变 ×1.0。非有限值按带内处理。
+pub fn quota_pace_multiplier(pace_ratio: f64) -> f64 {
+    if !pace_ratio.is_finite() {
+        return 1.0;
+    }
+    if pace_ratio > 1.1 {
+        0.5
+    } else if pace_ratio < 0.9 {
+        1.2
+    } else {
+        1.0
+    }
 }
 
 fn routing_pair_enabled(router: &Router) -> bool {
@@ -2519,6 +2687,7 @@ mod tests {
             queue_len,
             window,
             &RoutingSection::default(),
+            None,
             None,
         )
     }

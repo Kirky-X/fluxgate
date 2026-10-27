@@ -420,6 +420,56 @@ pub(crate) async fn assemble(
         }
     };
 
+    // 配额账本 + 落盘接线（quota-aware-routing T005）：结算 UPSERT +
+    // 30s 周期全量 flush + 启动恢复活动窗。repository 恢复读取失败不静默
+    // ——ERROR 留痕后按空账本启动（预算约束短暂放松，与 flush 误差同性质）。
+    let quota_state = Arc::new(crate::middleware::quota::QuotaState::new());
+    {
+        let persister = Arc::new(crate::middleware::quota_persist::QuotaLedgerPersister::new(
+            database.repository.clone(),
+            crate::middleware::quota_persist::DEFAULT_LEDGER_SLOTS,
+            crate::middleware::quota_persist::DEFAULT_LEDGER_FLUSH_INTERVAL,
+            Some(vendor_manager.metrics().clone()),
+        ));
+        match database.repository.read_quota_ledger().await {
+            Ok(rows) => {
+                let restored = quota_state.restore_from_ledger(&rows, &config_manager.read());
+                if restored > 0 {
+                    tracing::info!(
+                        "{}",
+                        t_args(
+                            "main-quota-ledger-restored",
+                            &[("count", restored.to_string())]
+                        )
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    "{}",
+                    t_args(
+                        "main-quota-ledger-restore-failed",
+                        &[("error", e.to_string())]
+                    )
+                );
+            }
+        }
+        quota_state.set_ledger_persister(persister.clone());
+        // 30s 全量 flush 循环：内存态权威，快照周期落库（崩溃回退 ≤30s）
+        let flush_state = quota_state.clone();
+        let flush_persister = persister;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(
+                crate::middleware::quota_persist::DEFAULT_LEDGER_FLUSH_INTERVAL,
+            );
+            ticker.tick().await; // 首个 tick 立即完成——消费掉
+            loop {
+                ticker.tick().await;
+                flush_persister.write(flush_state.ledger_snapshot());
+            }
+        });
+    }
+
     let api_state = Arc::new(ApiState {
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
@@ -427,7 +477,8 @@ pub(crate) async fn assemble(
             router
                 .with_affinity(affinity_table.clone())
                 .with_bandit(bandit_state.clone())
-                .with_embedding_pin(embedding_pin),
+                .with_embedding_pin(embedding_pin)
+                .with_quota_state(quota_state.clone()),
         ),
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
@@ -439,7 +490,9 @@ pub(crate) async fn assemble(
         response_cache: Some(response_cache),
         bandit: Some(bandit_state),
         // 配额账本：中间件入口预扣与回补钩共享同一实例（enabled=false 时零判限）。
-        quota: Some(Arc::new(crate::middleware::quota::QuotaState::new())),
+        // 落盘接线（quota-aware-routing）：结算 UPSERT + 30s 全量 flush +
+        // 启动恢复活动窗——repository 未接线（无 database 特性）时纯内存态。
+        quota: Some(quota_state.clone()),
         // 难度定档：enabled=false / 分类器未接线时为 None（历史行为）
         difficulty: difficulty_router,
         // Responses 有状态：存储接 Repository（端点开关/保留期请求期热读）

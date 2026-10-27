@@ -206,6 +206,11 @@ pub struct GlobalMetrics {
     affinity_drift_total: AtomicU64,
     affinity_persist_drop_total: AtomicU64,
     affinity_restored_count: AtomicU64,
+    /// 配额观测（quota-aware-routing）：逐窗拒绝 / 逐 vendor 耗尽兜底
+    ///（labeled，进程内 HashMap 承载）与账本落库失败批次
+    quota_window_refused_total: RwLock<HashMap<String, AtomicU64>>,
+    quota_factor_depleted_total: RwLock<HashMap<String, AtomicU64>>,
+    quota_ledger_flush_fail_total: AtomicU64,
 }
 
 impl GlobalMetrics {
@@ -253,6 +258,9 @@ impl GlobalMetrics {
             affinity_drift_total: AtomicU64::new(0),
             affinity_persist_drop_total: AtomicU64::new(0),
             affinity_restored_count: AtomicU64::new(0),
+            quota_window_refused_total: RwLock::new(HashMap::new()),
+            quota_factor_depleted_total: RwLock::new(HashMap::new()),
+            quota_ledger_flush_fail_total: AtomicU64::new(0),
         }
     }
 
@@ -672,6 +680,60 @@ impl GlobalMetrics {
             .fetch_add(count, Ordering::Relaxed);
     }
 
+    // 配额观测（quota-aware-routing，中间件/落盘/路由因子写、admin/快照读）
+
+    /// 多窗拒绝逐窗计数：429 拒绝时对每个受拒窗 `+1`
+    ///（标签 = window id；labeled counter，进程内 HashMap 承载）
+    pub fn record_quota_window_refused(&self, window_id: &str) {
+        self.quota_window_refused_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(window_id.to_string())
+            .or_default()
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 配额因子全耗尽兜底计数：mode=smart 下候选全员耗尽保留全部时对每个
+    /// vendor `+1`（标签 = vendor id）
+    pub fn record_quota_factor_depleted(&self, vendor_id: &str) {
+        self.quota_factor_depleted_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(vendor_id.to_string())
+            .or_default()
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 账本落库失败批次数（flush 失败计数不阻塞；write-behind 尽力而为）
+    pub fn record_quota_ledger_flush_fail(&self) {
+        self.quota_ledger_flush_fail_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 逐窗拒绝计数快照（/admin/metrics 出口）
+    pub fn quota_window_refused(&self) -> Vec<(String, u64)> {
+        self.quota_window_refused_total
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(id, c)| (id.clone(), c.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// 逐 vendor 耗尽兜底计数快照（/admin/metrics 出口）
+    pub fn quota_factor_depleted(&self) -> Vec<(String, u64)> {
+        self.quota_factor_depleted_total
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(id, c)| (id.clone(), c.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    pub fn quota_ledger_flush_failures(&self) -> u64 {
+        self.quota_ledger_flush_fail_total.load(Ordering::Relaxed)
+    }
+
     /// 亲和命中率 = hits / (hits + misses)；无样本返回 0.0
     pub fn affinity_hit_rate(&self) -> f64 {
         let hits = self.affinity_hits.load(Ordering::Relaxed);
@@ -899,6 +961,9 @@ impl GlobalMetrics {
             affinity_drift_total: self.affinity_drift_total.load(Ordering::Relaxed),
             affinity_persist_drop_total: self.affinity_persist_drop_total.load(Ordering::Relaxed),
             affinity_restored_count: self.affinity_restored_count.load(Ordering::Relaxed),
+            quota_window_refused_total: self.quota_window_refused(),
+            quota_factor_depleted_total: self.quota_factor_depleted(),
+            quota_ledger_flush_fail_total: self.quota_ledger_flush_failures(),
         }
     }
 
@@ -963,6 +1028,16 @@ impl GlobalMetrics {
         self.affinity_drift_total.store(0, Ordering::Relaxed);
         self.affinity_persist_drop_total.store(0, Ordering::Relaxed);
         self.affinity_restored_count.store(0, Ordering::Relaxed);
+        self.quota_window_refused_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.quota_factor_depleted_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.quota_ledger_flush_fail_total
+            .store(0, Ordering::Relaxed);
         self.gemini_upstream_failures_total
             .store(0, Ordering::Relaxed);
     }
@@ -1133,6 +1208,11 @@ pub struct MetricsSnapshot {
     pub affinity_persist_drop_total: u64,
     /// 启动恢复灌回的粘性条数
     pub affinity_restored_count: u64,
+    /// 配额观测（quota-aware-routing）：逐窗拒绝 / 逐 vendor 耗尽兜底 /
+    /// 账本落库失败批次
+    pub quota_window_refused_total: Vec<(String, u64)>,
+    pub quota_factor_depleted_total: Vec<(String, u64)>,
+    pub quota_ledger_flush_fail_total: u64,
 }
 
 /// 难度定档观测子块（/admin/metrics 快照字段）

@@ -170,7 +170,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 | `routing` / `retry` / `resilience` | 路由系数与选择算法、重试策略、韧性覆盖面（含 `[routing.difficulty]` 难度定档子段） | ✅ |
 | `cache` / `rate_limit` / `admission` | 响应缓存、入站限流、拥塞准入 | cache/admission ✅ / rate_limit ❌ |
 | `model_catalog` / `pricing` | 模型能力目录（四档单价为计价正源）/ SLA 因子与未登记模型的配额回退档 | ✅ |
-| `health` / `quota` | 主动健康探针（默认 off）、成本/token 维度配额（默认关） | ✅ 均热读 |
+| `health` / `quota` | 主动健康探针（默认 off）、成本/token 配额 + `[[quota.windows]]` 多窗预算 + `[[vendor_budgets]]` 声明式预算（均默认关） | ✅ 均热读 |
 | `lexcompress` | 词法压缩（`X-Compress: 1` 且单条消息超阈值时生效，默认关） | ✅ 热读 |
 | `grpc` / `docs` | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用） | ❌ 需重启 |
 

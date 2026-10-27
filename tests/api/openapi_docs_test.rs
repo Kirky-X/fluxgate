@@ -50,6 +50,7 @@ fn make_config(docs_enabled: bool) -> Config {
         lexcompress: Default::default(),
         responses: Default::default(),
         otlp: Default::default(),
+        vendor_budgets: Vec::new(),
         usage_insights: Default::default(),
         metrics: Default::default(),
     }

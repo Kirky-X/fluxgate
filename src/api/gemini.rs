@@ -341,6 +341,7 @@ async fn native_stream(
         &ctx.api_key_hash,
         &accounting,
         "gemini",
+        &decision.vendor.id,
         upstream,
         move |observation| match observation {
             crate::api::sse::ReframeObservation::Frame {

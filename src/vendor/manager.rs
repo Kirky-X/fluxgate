@@ -3358,6 +3358,7 @@ mod tests {
         Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {

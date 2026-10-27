@@ -102,6 +102,7 @@ fn make_anthropic_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig 
 fn make_config(vendors: Vec<VendorConfig>, circuit_open_timeout_ms: u64) -> Config {
     Config {
         rate_limit: Default::default(),
+        vendor_budgets: Vec::new(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,

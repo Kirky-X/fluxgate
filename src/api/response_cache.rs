@@ -684,6 +684,7 @@ mod tests {
         let config = crate::config::ConfigManager::new(crate::config::Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
@@ -762,6 +763,7 @@ mod tests {
         let config = crate::config::ConfigManager::new(crate::config::Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
@@ -840,6 +842,7 @@ mod ttl_load_linking_tests {
         Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
@@ -961,6 +964,7 @@ mod single_flight_and_sentinel_tests {
         let config = Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
@@ -1113,6 +1117,7 @@ mod get_or_flow_tests {
         let config = Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {

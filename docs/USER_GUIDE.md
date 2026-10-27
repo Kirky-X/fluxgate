@@ -29,11 +29,11 @@
 
 ### 环境要求
 
-| 项目 | 要求 | 说明 |
-|:-----|:-----|:-----|
-| Rust | 1.97.1+（MSRV） | 下限由根 `Cargo.toml` 的 `rust-version` 声明（与 7 个兄弟库一致）；`.github/workflows/ci.yml` 按 MSRV（`RUST_VERSION: '1.97'`）跑 build/clippy，`docker/Dockerfile` 用当前受支持 stable（1.99） |
-| 自研库 | 7 个，由 cargo 自动拉取 | `confers` / `dbnexus` / `inklog` / `limiteron` / `oxcache` / `sdforge` / `trait-kit`（crates.io registry 版本声明在根 `Cargo.toml`，校验和锁定在 `Cargo.lock`；无需同级目录） |
-| 上游密钥 | 按厂商注入环境变量 | 各 `[[vendors]]` 条目的 `api_key_env` 指定的环境变量（如 `OPENAI_API_KEY`） |
+| 项目     | 要求                    | 说明                                                                                                                                                                                            |
+| :------- | :---------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust     | 1.97.1+（MSRV）         | 下限由根 `Cargo.toml` 的 `rust-version` 声明（与 7 个兄弟库一致）；`.github/workflows/ci.yml` 按 MSRV（`RUST_VERSION: '1.97'`）跑 build/clippy，`docker/Dockerfile` 用当前受支持 stable（1.99） |
+| 自研库   | 7 个，由 cargo 自动拉取 | `confers` / `dbnexus` / `inklog` / `limiteron` / `oxcache` / `sdforge` / `trait-kit`（crates.io registry 版本声明在根 `Cargo.toml`，校验和锁定在 `Cargo.lock`；无需同级目录）                   |
+| 上游密钥 | 按厂商注入环境变量      | 各 `[[vendors]]` 条目的 `api_key_env` 指定的环境变量（如 `OPENAI_API_KEY`）                                                                                                                     |
 
 ### 编译与启动
 
@@ -61,7 +61,7 @@ curl http://127.0.0.1:8080/api/v1/health
 正常响应：
 
 ```json
-{"status": "ok", "version": "0.1.0", "timestamp": "..."}
+{ "status": "ok", "version": "0.1.0", "timestamp": "..." }
 ```
 
 数据面端点可用性（需认证；模型列表始终现算、不缓存）：
@@ -98,18 +98,18 @@ echo -n "your-key" | sha256sum
 
 ### [auth] 段
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `enabled` | `true`（段存在时） | 认证开关；**整个 `[auth]` 段缺省 = 认证禁用**（`auth: Option<AuthSection>`，`None` 直接放行） |
-| `api_keys` | 空 | 合法 key 的 SHA256 hex 摘要列表 |
-| `[[auth.keys]]` | 空 | key 档位表（配合 `[admission]` 拥塞准入） |
-| `[auth.header]` | `name = "Authorization"` / `prefix = "Bearer"` | 保留段结构，防热更写回时抹段 |
+| 字段            | 默认值                                         | 说明                                                                                          |
+| :-------------- | :--------------------------------------------- | :-------------------------------------------------------------------------------------------- |
+| `enabled`       | `true`（段存在时）                             | 认证开关；**整个 `[auth]` 段缺省 = 认证禁用**（`auth: Option<AuthSection>`，`None` 直接放行） |
+| `api_keys`      | 空                                             | 合法 key 的 SHA256 hex 摘要列表                                                               |
+| `[[auth.keys]]` | 空                                             | key 档位表（配合 `[admission]` 拥塞准入）                                                     |
+| `[auth.header]` | `name = "Authorization"` / `prefix = "Bearer"` | 保留段结构，防热更写回时抹段                                                                  |
 
 ### [[auth.keys]] 档位
 
-| 字段 | 说明 |
-|:-----|:-----|
-| `hash` | key 的 SHA256 hex 摘要（与 `api_keys` 同形态） |
+| 字段   | 说明                                                                |
+| :----- | :------------------------------------------------------------------ |
+| `hash` | key 的 SHA256 hex 摘要（与 `api_keys` 同形态）                      |
 | `tier` | `dedicated` / `guaranteed` / `elastic` / `spot`，**默认 `elastic`** |
 
 未在 `keys` 中声明的 key（含 `api_keys` 列表全部）一律落 `elastic` 档。档位仅在 `[admission]` 拥塞准入开启时参与优先级判定（见[入站限流与准入](#-入站限流与准入-ratelimit--admission)）。
@@ -136,39 +136,39 @@ tier = "dedicated"
 
 ### [[vendors]] 全字段
 
-| 字段 | 类型 | 默认值 | 说明 |
-|:-----|:-----|:-------|:-----|
-| `id` | String | 必填 | 厂商唯一标识；**不得为空白**；**跨条目去重校验**（按 ASCII 大小写不敏感），重复导致配置加载失败（`src/config/loader.rs`） |
-| `name` | String | 必填 | 显示名 |
-| `type_` | String | 必填（TOML 键名 `type`） | 协议方向：`"anthropic"` 走 Anthropic 面，`"gemini"` 走 Gemini 原生面（`/v1beta/models/{model}:{action}` + `x-goog-api-key`），`"rerank"` 走重排面，其余值按 OpenAI 兼容面处理（代码不校验取值；模型能力档对未知类型回落 ollama 保守档） |
-| `api_key_env` | String | 必填 | 存放上游密钥的环境变量名 |
-| `api_key_envs` | 数组 | 空 | 多 key 池的额外环境变量名（与 `api_key_env` 合并去重，本列表在前；缺名 env 跳过并告警，池上限见 `key_pool::MAX_KEY_POOL`） |
-| `extra_headers` | 表 | 空 | 出站自定义头（静态值，热生效；与网关已设头冲突时跳过并记 warn） |
-| `api_base` | String | `""` | 上游 API 基地址 |
-| `api_style` | String | 缺省（`chat`） | 端点风格：`chat`（`chat/completions`）或 `responses`（OpenAI Responses `/responses`，仅 `type_ = "openai"` 合法）；与 `chat_path` 互斥 |
-| `enabled` | bool | `true` | 厂商开关 |
-| `priority` | u8 | `1` | fallback 优先级，**数值越小优先级越高**（1 = primary） |
-| `models` | 数组 | 空 | 模型列表，见下 |
-| `rate_limit` | 表 | 必填 | 厂商级配额，三形态，见下 |
-| `concurrency` | 表 | 见下 | 并发控制 |
-| `timeout_ms` | u64 | `60000` | 出站单次尝试总超时（毫秒），`0` = 不限时 |
-| `stream_ttft_ms` | u64 | `60000` | 流式首包（响应头）超时（毫秒），`0` = 不限时 |
-| `stream_idle_ms` | u64 | `30000` | 流式相邻 chunk 间 idle 超时（毫秒），`0` = 不限时 |
-| `cache_ttl_secs` | u64 | `300` | 上游前缀缓存存活时长（秒，合法范围 1–86400）：`[routing.affinity] mode = "auto"` 判定值得粘时以此作为粘持 TTL；1h 缓存部署配 `3600` |
-| `silent_cache` | bool | `false` | 沉默缓存厂商标记：usage 不报 cache 列的上游（OpenAI 前缀缓存、Gemini 隐式缓存）置 `true`，auto 模式把 `prompt_tokens` 当写入值计入缓存价值，否则这类厂商 worth 恒 0、永不粘 |
+| 字段             | 类型   | 默认值                   | 说明                                                                                                                                                                                                                                    |
+| :--------------- | :----- | :----------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`             | String | 必填                     | 厂商唯一标识；**不得为空白**；**跨条目去重校验**（按 ASCII 大小写不敏感），重复导致配置加载失败（`src/config/loader.rs`）                                                                                                               |
+| `name`           | String | 必填                     | 显示名                                                                                                                                                                                                                                  |
+| `type_`          | String | 必填（TOML 键名 `type`） | 协议方向：`"anthropic"` 走 Anthropic 面，`"gemini"` 走 Gemini 原生面（`/v1beta/models/{model}:{action}` + `x-goog-api-key`），`"rerank"` 走重排面，其余值按 OpenAI 兼容面处理（代码不校验取值；模型能力档对未知类型回落 ollama 保守档） |
+| `api_key_env`    | String | 必填                     | 存放上游密钥的环境变量名                                                                                                                                                                                                                |
+| `api_key_envs`   | 数组   | 空                       | 多 key 池的额外环境变量名（与 `api_key_env` 合并去重，本列表在前；缺名 env 跳过并告警，池上限见 `key_pool::MAX_KEY_POOL`）                                                                                                              |
+| `extra_headers`  | 表     | 空                       | 出站自定义头（静态值，热生效；与网关已设头冲突时跳过并记 warn）                                                                                                                                                                         |
+| `api_base`       | String | `""`                     | 上游 API 基地址                                                                                                                                                                                                                         |
+| `api_style`      | String | 缺省（`chat`）           | 端点风格：`chat`（`chat/completions`）或 `responses`（OpenAI Responses `/responses`，仅 `type_ = "openai"` 合法）；与 `chat_path` 互斥                                                                                                  |
+| `enabled`        | bool   | `true`                   | 厂商开关                                                                                                                                                                                                                                |
+| `priority`       | u8     | `1`                      | fallback 优先级，**数值越小优先级越高**（1 = primary）                                                                                                                                                                                  |
+| `models`         | 数组   | 空                       | 模型列表，见下                                                                                                                                                                                                                          |
+| `rate_limit`     | 表     | 必填                     | 厂商级配额，三形态，见下                                                                                                                                                                                                                |
+| `concurrency`    | 表     | 见下                     | 并发控制                                                                                                                                                                                                                                |
+| `timeout_ms`     | u64    | `60000`                  | 出站单次尝试总超时（毫秒），`0` = 不限时                                                                                                                                                                                                |
+| `stream_ttft_ms` | u64    | `60000`                  | 流式首包（响应头）超时（毫秒），`0` = 不限时                                                                                                                                                                                            |
+| `stream_idle_ms` | u64    | `30000`                  | 流式相邻 chunk 间 idle 超时（毫秒），`0` = 不限时                                                                                                                                                                                       |
+| `cache_ttl_secs` | u64    | `300`                    | 上游前缀缓存存活时长（秒，合法范围 1–86400）：`[routing.affinity] mode = "auto"` 判定值得粘时以此作为粘持 TTL；1h 缓存部署配 `3600`                                                                                                     |
+| `silent_cache`   | bool   | `false`                  | 沉默缓存厂商标记：usage 不报 cache 列的上游（OpenAI 前缀缓存、Gemini 隐式缓存）置 `true`，auto 模式把 `prompt_tokens` 当写入值计入缓存价值，否则这类厂商 worth 恒 0、永不粘                                                             |
 
 配置定义见 `src/config/mod.rs`（`VendorConfig`）。
 
 ### models 子项
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `model_id` | 必填 | 上游真实模型名（同 vendor 内去重校验，按 ASCII 大小写不敏感；不得为空白） |
-| `abstract_id` | 无 | 抽象模型名（路由的逻辑标识，可多厂商映射同一抽象名；客户端按此请求，`GET /v1/models` 亦列此名——声明后裸 `model_id` 不再是请求名，限定形式 `vendor.model_id` 仍可路由；ID 匹配大小写不敏感；声明后不得为空白） |
-| `weight` | `1.0` | 路由权重（通常 0.0–2.0） |
-| `enabled` | `true` | 模型开关 |
-| `dimensions` | 无 | 嵌入向量维度（声明该字段 = 嵌入条目）。仅用于同 `compat_group` 内一致性校验与响应维度守门基准，不影响路由选择 |
-| `compat_group` | 无 | 嵌入兼容组名（声明任一嵌入字段 = 嵌入条目）。同组条目 = 同一向量空间、故障时允许组内迁移；未声明 = 单例组（不与其他厂商互换） |
+| 字段           | 默认值 | 说明                                                                                                                                                                                                          |
+| :------------- | :----- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `model_id`     | 必填   | 上游真实模型名（同 vendor 内去重校验，按 ASCII 大小写不敏感；不得为空白）                                                                                                                                     |
+| `abstract_id`  | 无     | 抽象模型名（路由的逻辑标识，可多厂商映射同一抽象名；客户端按此请求，`GET /v1/models` 亦列此名——声明后裸 `model_id` 不再是请求名，限定形式 `vendor.model_id` 仍可路由；ID 匹配大小写不敏感；声明后不得为空白） |
+| `weight`       | `1.0`  | 路由权重（通常 0.0–2.0）                                                                                                                                                                                      |
+| `enabled`      | `true` | 模型开关                                                                                                                                                                                                      |
+| `dimensions`   | 无     | 嵌入向量维度（声明该字段 = 嵌入条目）。仅用于同 `compat_group` 内一致性校验与响应维度守门基准，不影响路由选择                                                                                                 |
+| `compat_group` | 无     | 嵌入兼容组名（声明任一嵌入字段 = 嵌入条目）。同组条目 = 同一向量空间、故障时允许组内迁移；未声明 = 单例组（不与其他厂商互换）                                                                                 |
 
 #### 嵌入兼容组路由（`POST /v1/embeddings`）
 
@@ -180,22 +180,22 @@ pin 可经 `POST /admin/embedding-pins/{abstract_id}/reset` 重置；配置热�
 
 ### rate_limit 三形态（tagged enum，键 `type`）
 
-| 形态 | 字段 | 说明 |
-|:-----|:-----|:-----|
-| `time_window` | `start` / `end` | 固定时间段放行 |
-| `interval` | `hours`、`sliding`（默认 `false`） | 每 N 小时一个窗口；`sliding = true` 切换滑动窗口（消除固定窗口翻越点的瞬时双花） |
-| `token` | `max_tokens`、`window_hours`（默认 `24`）、`sliding`（默认 `false`） | token 配额窗口 |
+| 形态          | 字段                                                                 | 说明                                                                             |
+| :------------ | :------------------------------------------------------------------- | :------------------------------------------------------------------------------- |
+| `time_window` | `start` / `end`                                                      | 固定时间段放行                                                                   |
+| `interval`    | `hours`、`sliding`（默认 `false`）                                   | 每 N 小时一个窗口；`sliding = true` 切换滑动窗口（消除固定窗口翻越点的瞬时双花） |
+| `token`       | `max_tokens`、`window_hours`（默认 `24`）、`sliding`（默认 `false`） | token 配额窗口                                                                   |
 
 ### concurrency 子项
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `requests_per_second` | `1` | 出站令牌桶速率 |
-| `max_concurrent_requests` | 无（`None`） | 最大并发在途数（含流式）；缺省用队列容量（100） |
-| `token_weighted` | `false` | token 加权并发票据开关（agentic 长会话按预估 token 占票） |
-| `token_ticket_min` | `1` | 单请求票据下限 |
-| `token_ticket_max` | `16384` | 单请求票据上限（逃逸阀） |
-| `token_ticket_default` | `4096` | 请求未声明 `max_tokens` 时的计费兜底 |
+| 字段                      | 默认值       | 说明                                                      |
+| :------------------------ | :----------- | :-------------------------------------------------------- |
+| `requests_per_second`     | `1`          | 出站令牌桶速率                                            |
+| `max_concurrent_requests` | 无（`None`） | 最大并发在途数（含流式）；缺省用队列容量（100）           |
+| `token_weighted`          | `false`      | token 加权并发票据开关（agentic 长会话按预估 token 占票） |
+| `token_ticket_min`        | `1`          | 单请求票据下限                                            |
+| `token_ticket_max`        | `16384`      | 单请求票据上限（逃逸阀）                                  |
+| `token_ticket_default`    | `4096`       | 请求未声明 `max_tokens` 时的计费兜底                      |
 
 > ⚠️ `concurrency` 在 vendor 实例构造期消费，属**需重启生效**段（见[配置热更新](#-配置热更新操作指南)）。
 
@@ -203,10 +203,10 @@ pin 可经 `POST /admin/embedding-pins/{abstract_id}/reset` 重置；配置热�
 
 全局池是 `model = "auto"` 的选路目标（抽象/直连两级都未命中时才尝试）。池成员 = 全部启用 vendor 的启用模型，按候选加权打分选择。
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `enabled` | `true` | auto 档开关（每请求热读）。`false` 时 `model = "auto"` 以 `validation_error`(400) 拒绝，全局池不参与选路；显式模型名与 `X-Vendor`/`X-Model` 提示（均为显式指定）不受影响。缺 `[global_model]` 段 = 启用（沿用历史兜底） |
-| `strategy` | `"weighted"` | 全局池策略档位声明；当前选路统一由 `[routing]`（加权 / `selection` 档）决定，该字段暂无独立消费者，保留档位语义 |
+| 字段       | 默认值       | 说明                                                                                                                                                                                                                    |
+| :--------- | :----------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`  | `true`       | auto 档开关（每请求热读）。`false` 时 `model = "auto"` 以 `validation_error`(400) 拒绝，全局池不参与选路；显式模型名与 `X-Vendor`/`X-Model` 提示（均为显式指定）不受影响。缺 `[global_model]` 段 = 启用（沿用历史兜底） |
+| `strategy` | `"weighted"` | 全局池策略档位声明；当前选路统一由 `[routing]`（加权 / `selection` 档）决定，该字段暂无独立消费者，保留档位语义                                                                                                         |
 
 > ⚠️ `global_model` 段无热重载点：直接改 `config.toml` 被结构门拒绝（旧快照继续服务），需重启进程；`POST /admin/models/global` 的写入在当前进程内即时生效（开关每请求热读）。
 
@@ -227,36 +227,36 @@ flowchart TB
 
 ### [routing] 字段与默认值
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `w_model` | `0.4` | 配置权重维系数 |
-| `w_queue` | `0.3` | 负载维系数（输入由 `load_signal` 决定） |
-| `w_window` | `0.3` | Token 预算 / 窗口维系数 |
-| `w_latency` | `0.0` | EWMA 延迟因子系数（`0` = 关闭） |
-| `w_error` | `0.0` | EWMA 错误率因子系数（`0` = 关闭） |
-| `price_factor_enabled` | `true` | 价格因子开关：开启时对合格集中每个候选按「最低单价 / 该候选单价」乘性修正权重（weight ×= min_p/p，压低高价候选），默认开启 |
-| `price_factor_mode` | `"nominal"` | 价格因子单价口径：`nominal`（(input+output)/2，与历史一致）/ `cache_expected`（`cache_read_price > 0` 的条目改用 (cache_read+output)/2，配合前缀亲和表达缓存友好偏好）；未知值按 `nominal` |
-| `latency_ref_ms` | `1000.0` | 延迟因子参考值：厂商 EWMA 等于该值时因子 0.5 |
-| `temperature` | `1.0` | 温度平滑指数；`>1` 压平差距，`<1` 放大差距，必须 `>0` |
-| `selection` | `"weighted"` | 选择算法：`weighted`（轮盘赌）/ `power_of_two`（Po2C 实验）/ `linucb`（bandit 档，未接线时回退 weighted）；未知值按 `weighted` |
-| `load_signal` | `"queue"` | 负载维输入档：`queue`（队列深度）/ `in_flight`（在途请求数）/ `in_flight_relative`（在途相对化）；单选不叠加，未知值按 `queue` |
-| `ewma_tau_ms` | `10000` | Peak-EWMA 时间常数 τ（毫秒） |
-| `latency_buffer` | `0.0` | min+buffer 候选集缓冲（`>0` 时先取 EWMA ≤ 最低×(1+buffer) 的集合再均匀随机）；`0` = 关闭 |
-| `allow_request_weight` | `false` | `X-Weight` 请求级权重开关（默认忽略该头） |
-| `fail_open_when_all_cooling` | `false` | 全候选冷却时回落「忽略状态但 enabled」的候选集（有意冒险，仅建议有兜底容量的部署开启） |
-| `retry_after_hint` | `false` | 换路耗尽且全部原因为 Throttled 时返回 `429 + Retry-After` 头 |
-| `affinity_mode` | `"hard"` | 会话亲和：`hard`（命中即返回）/ `soft`（命中软化为权重乘子）；未知值按 `hard` |
-| `affinity_boost_factor` | `1.0` | soft 模式命中权重乘子基准（权重 ×(1+该值)） |
-| `affinity_tenant_scoped` | `false` | 亲和键租户隔离（`affinity:{api_key_hash}:{session_key}`，防跨租户劫持） |
-| `sla_v` | `0.0` | SLA/满意度虚拟队列打分强度（`0` = 关闭） |
-| `sla_alpha` | `0.95` | 目标服务水平 α（[0,1]） |
-| `lps_delta` | `0.0` | LPS 排队论延迟前瞻软约束强度（`0` = 关闭） |
-| `lps_deadline_gate` | `false` | LPS 硬约束门控（按 `x-deadline-ms` 头筛可行集） |
-| `default_deadline_ms` | `10000.0` | 未携带 deadline 头时的默认截止（毫秒） |
-| `ucb_alpha` | `1.0` | LinUCB 探索参数（仅 `selection = "linucb"` 时被咨询） |
-| `prefix_affinity` | 子段 `[routing.prefix_affinity]`：`enabled = false`、`prefix_chars = 512` | 前缀亲和 PoTC（默认关）：开启后稳定前缀哈希出 2 个带内候选、按平滑权重择优；`prefix_chars` 为前缀键截取的首条 user content 头部字符数 |
-| `affinity` | 子段 `[routing.affinity]`：`mode = "legacy"`、`cache_worth_tokens = 1024`、`turn_gap_secs = 120` | 缓存经济学亲和（默认 legacy = 现行为逐位不变）：`legacy` 成功即粘 1h；`auto` 按响应缓存价值判定（`worth = cache_read + cache_creation +（vendor silent_cache 时加 prompt_tokens）≥ cache_worth_tokens` 才粘，TTL 取该 vendor `cache_ttl_secs`；低于阈值不写也不删既有记录）；`turn` 会话内连续请求粘 `turn_gap_secs`；`off` 不写 + 查询短路（存量绑定立即不再生效、也不被删除）。仅 auto/turn 落 `affinity_sticks` 表并在启动恢复（未过期 top 512） |
-| `difficulty` | 子段 `[routing.difficulty]`：`enabled = false` 完全旁路（其余默认 `w_clf = 0.6`、`w_rule = 0.4`、`score_low = 0.35`、`score_high = 0.65`、`mid_band_policy = "strong"`） | 难度定档（默认关）：`groups` 命中的请求按规则计分 + 分类概率融合切 low/mid/high 三档并改写目标抽象模型名；`w_clf > 0` 需 `difficulty-classifier` feature；`lexicon` 子段可整体覆盖 hard/easy 词表、数学符号、问号与代码围栏标记（缺省 = 内置默认），`scoring` 子段为规则计分权重/封顶（缺省 = 历史常量）；`classifier` 子段为 vecboost laya 运行参数 |
+| 字段                         | 默认值                                                                                                                                                                   | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| :--------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `w_model`                    | `0.4`                                                                                                                                                                    | 配置权重维系数                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `w_queue`                    | `0.3`                                                                                                                                                                    | 负载维系数（输入由 `load_signal` 决定）                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `w_window`                   | `0.3`                                                                                                                                                                    | Token 预算 / 窗口维系数                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `w_latency`                  | `0.0`                                                                                                                                                                    | EWMA 延迟因子系数（`0` = 关闭）                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `w_error`                    | `0.0`                                                                                                                                                                    | EWMA 错误率因子系数（`0` = 关闭）                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `price_factor_enabled`       | `true`                                                                                                                                                                   | 价格因子开关：开启时对合格集中每个候选按「最低单价 / 该候选单价」乘性修正权重（weight ×= min_p/p，压低高价候选），默认开启                                                                                                                                                                                                                                                                                                                          |
+| `price_factor_mode`          | `"nominal"`                                                                                                                                                              | 价格因子单价口径：`nominal`（(input+output)/2，与历史一致）/ `cache_expected`（`cache_read_price > 0` 的条目改用 (cache_read+output)/2，配合前缀亲和表达缓存友好偏好）；未知值按 `nominal`                                                                                                                                                                                                                                                          |
+| `latency_ref_ms`             | `1000.0`                                                                                                                                                                 | 延迟因子参考值：厂商 EWMA 等于该值时因子 0.5                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `temperature`                | `1.0`                                                                                                                                                                    | 温度平滑指数；`>1` 压平差距，`<1` 放大差距，必须 `>0`                                                                                                                                                                                                                                                                                                                                                                                               |
+| `selection`                  | `"weighted"`                                                                                                                                                             | 选择算法：`weighted`（轮盘赌）/ `power_of_two`（Po2C 实验）/ `linucb`（bandit 档，未接线时回退 weighted）；未知值按 `weighted`                                                                                                                                                                                                                                                                                                                      |
+| `load_signal`                | `"queue"`                                                                                                                                                                | 负载维输入档：`queue`（队列深度）/ `in_flight`（在途请求数）/ `in_flight_relative`（在途相对化）；单选不叠加，未知值按 `queue`                                                                                                                                                                                                                                                                                                                      |
+| `ewma_tau_ms`                | `10000`                                                                                                                                                                  | Peak-EWMA 时间常数 τ（毫秒）                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `latency_buffer`             | `0.0`                                                                                                                                                                    | min+buffer 候选集缓冲（`>0` 时先取 EWMA ≤ 最低×(1+buffer) 的集合再均匀随机）；`0` = 关闭                                                                                                                                                                                                                                                                                                                                                            |
+| `allow_request_weight`       | `false`                                                                                                                                                                  | `X-Weight` 请求级权重开关（默认忽略该头）                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `fail_open_when_all_cooling` | `false`                                                                                                                                                                  | 全候选冷却时回落「忽略状态但 enabled」的候选集（有意冒险，仅建议有兜底容量的部署开启）                                                                                                                                                                                                                                                                                                                                                              |
+| `retry_after_hint`           | `false`                                                                                                                                                                  | 换路耗尽且全部原因为 Throttled 时返回 `429 + Retry-After` 头                                                                                                                                                                                                                                                                                                                                                                                        |
+| `affinity_mode`              | `"hard"`                                                                                                                                                                 | 会话亲和：`hard`（命中即返回）/ `soft`（命中软化为权重乘子）；未知值按 `hard`                                                                                                                                                                                                                                                                                                                                                                       |
+| `affinity_boost_factor`      | `1.0`                                                                                                                                                                    | soft 模式命中权重乘子基准（权重 ×(1+该值)）                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `affinity_tenant_scoped`     | `false`                                                                                                                                                                  | 亲和键租户隔离（`affinity:{api_key_hash}:{session_key}`，防跨租户劫持）                                                                                                                                                                                                                                                                                                                                                                             |
+| `sla_v`                      | `0.0`                                                                                                                                                                    | SLA/满意度虚拟队列打分强度（`0` = 关闭）                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `sla_alpha`                  | `0.95`                                                                                                                                                                   | 目标服务水平 α（[0,1]）                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `lps_delta`                  | `0.0`                                                                                                                                                                    | LPS 排队论延迟前瞻软约束强度（`0` = 关闭）                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `lps_deadline_gate`          | `false`                                                                                                                                                                  | LPS 硬约束门控（按 `x-deadline-ms` 头筛可行集）                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `default_deadline_ms`        | `10000.0`                                                                                                                                                                | 未携带 deadline 头时的默认截止（毫秒）                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `ucb_alpha`                  | `1.0`                                                                                                                                                                    | LinUCB 探索参数（仅 `selection = "linucb"` 时被咨询）                                                                                                                                                                                                                                                                                                                                                                                               |
+| `prefix_affinity`            | 子段 `[routing.prefix_affinity]`：`enabled = false`、`prefix_chars = 512`                                                                                                | 前缀亲和 PoTC（默认关）：开启后稳定前缀哈希出 2 个带内候选、按平滑权重择优；`prefix_chars` 为前缀键截取的首条 user content 头部字符数                                                                                                                                                                                                                                                                                                               |
+| `affinity`                   | 子段 `[routing.affinity]`：`mode = "legacy"`、`cache_worth_tokens = 1024`、`turn_gap_secs = 120`                                                                         | 缓存经济学亲和（默认 legacy = 现行为逐位不变）：`legacy` 成功即粘 1h；`auto` 按响应缓存价值判定（`worth = cache_read + cache_creation +（vendor silent_cache 时加 prompt_tokens）≥ cache_worth_tokens` 才粘，TTL 取该 vendor `cache_ttl_secs`；低于阈值不写也不删既有记录）；`turn` 会话内连续请求粘 `turn_gap_secs`；`off` 不写 + 查询短路（存量绑定立即不再生效、也不被删除）。仅 auto/turn 落 `affinity_sticks` 表并在启动恢复（未过期 top 512） |
+| `difficulty`                 | 子段 `[routing.difficulty]`：`enabled = false` 完全旁路（其余默认 `w_clf = 0.6`、`w_rule = 0.4`、`score_low = 0.35`、`score_high = 0.65`、`mid_band_policy = "strong"`） | 难度定档（默认关）：`groups` 命中的请求按规则计分 + 分类概率融合切 low/mid/high 三档并改写目标抽象模型名；`w_clf > 0` 需 `difficulty-classifier` feature；`lexicon` 子段可整体覆盖 hard/easy 词表、数学符号、问号与代码围栏标记（缺省 = 内置默认），`scoring` 子段为规则计分权重/封顶（缺省 = 历史常量）；`classifier` 子段为 vecboost laya 运行参数                                                                                                |
 
 ### 会话亲和
 
@@ -273,11 +273,11 @@ flowchart TB
 
 三套开箱即用的系数组合（`RoutingSection::preset`）：
 
-| 预设 | w_model | w_queue | w_window | 特点 |
-|:-----|:-------:|:-------:|:--------:|:-----|
-| `quality` | 0.7 | 0.2 | 0.1 | 偏模型配置权重 |
-| `latency` | 0.2 | 0.2 | 0.2 | 额外开 `w_latency = 0.4`、`latency_ref_ms = 500` |
-| `cost` | 0.2 | 0.2 | 0.6 | 偏窗口预算（Token 余额 ≈ 成本预算代理） |
+| 预设      | w_model | w_queue | w_window | 特点                                             |
+| :-------- | :-----: | :-----: | :------: | :----------------------------------------------- |
+| `quality` |   0.7   |   0.2   |   0.1    | 偏模型配置权重                                   |
+| `latency` |   0.2   |   0.2   |   0.2    | 额外开 `w_latency = 0.4`、`latency_ref_ms = 500` |
+| `cost`    |   0.2   |   0.2   |   0.6    | 偏窗口预算（Token 余额 ≈ 成本预算代理）          |
 
 ---
 
@@ -308,14 +308,14 @@ weight = 1.0
 
 ### 入站端点
 
-| 端点 | 说明 |
-|---|---|
-| `POST /v1beta/models/{model}:generateContent` | 非流式对话 |
-| `POST /v1beta/models/{model}:streamGenerateContent` | 流式 SSE（无 `[DONE]`） |
-| `POST /v1beta/models/{model}:countTokens` | 本地估算 |
-| `POST /v1beta/models/{model}:embedContent` | 单条嵌入（转 OpenAI 形状） |
-| `POST /v1beta/models/{model}:batchEmbedContents` | 批量嵌入 |
-| `GET /v1beta/models` / `GET /v1beta/models/{model}` | 模型清单/详情 |
+| 端点                                                | 说明                       |
+| --------------------------------------------------- | -------------------------- |
+| `POST /v1beta/models/{model}:generateContent`       | 非流式对话                 |
+| `POST /v1beta/models/{model}:streamGenerateContent` | 流式 SSE（无 `[DONE]`）    |
+| `POST /v1beta/models/{model}:countTokens`           | 本地估算                   |
+| `POST /v1beta/models/{model}:embedContent`          | 单条嵌入（转 OpenAI 形状） |
+| `POST /v1beta/models/{model}:batchEmbedContents`    | 批量嵌入                   |
+| `GET /v1beta/models` / `GET /v1beta/models/{model}` | 模型清单/详情              |
 
 认证：Google SDK 默认发送 `x-goog-api-key`；网关也接受 `/v1beta/` 路径上的 `?key=`（建议仅在 SDK 无法定制请求头时使用，并确保反向代理不记录 query）。
 
@@ -340,14 +340,14 @@ weight = 1.0
 
 ### [responses] 字段与默认值
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `enabled` | `true` | 端点总开关（热读）；`false` 时四个端点一律 404 |
-| `store_enabled` | `true` | 是否允许落库；`false` 时 `store=true` 请求按 `store=false` 降级并回显 |
-| `retention_hours` | `720` | 存储保留时长（1–8760 小时） |
-| `max_response_bytes` | `1048576` | 单列 JSON 上限（1 KiB–16 MiB），超限拒绝写入 |
-| `background_enabled` | `true` | 后台任务开关 |
-| `max_background_jobs` | `16` | 后台并发上限（1–256，热读）；超限 429 |
+| 字段                  | 默认值    | 说明                                                                  |
+| :-------------------- | :-------- | :-------------------------------------------------------------------- |
+| `enabled`             | `true`    | 端点总开关（热读）；`false` 时四个端点一律 404                        |
+| `store_enabled`       | `true`    | 是否允许落库；`false` 时 `store=true` 请求按 `store=false` 降级并回显 |
+| `retention_hours`     | `720`     | 存储保留时长（1–8760 小时）                                           |
+| `max_response_bytes`  | `1048576` | 单列 JSON 上限（1 KiB–16 MiB），超限拒绝写入                          |
+| `background_enabled`  | `true`    | 后台任务开关                                                          |
+| `max_background_jobs` | `16`      | 后台并发上限（1–256，热读）；超限 429                                 |
 
 ### 有状态语义
 
@@ -376,30 +376,30 @@ api_base = "https://api.openai.com/v1"
 
 ### [retry] 出站重试
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `max_retries` | `3` | 单 vendor 内最大重试次数（不含首次调用） |
-| `retryable_status_codes` | `[429, 500, 502, 503]` | 触发重试的状态码集合（429 指数退避，5xx 固定间隔） |
-| `initial_delay_ms` | `1000` | 首次重试前延迟（毫秒） |
-| `factor` | `2.0` | 指数退避乘数 |
-| `max_delay_ms` | `16000` | 单次等待上限（毫秒） |
-| `jitter` | `0.2` | 退避抖动比例（0.0–1.0） |
-| `spread_jitter` | `1.0` | Retry-After / 5xx 固定间隔的同步惊群展宽：延迟 = base + U(0, spread_jitter)×base；`0.0` 回滚旧行为 |
-| `max_total_attempts` | `8` | 跨 vendor 总尝试预算（防 vendor 数 × 重试数爆炸） |
-| `retry_budget_secs` | `0` | 单请求重试总时间预算（秒）；`0` = 不限时 |
-| `amplification_gate` | `false` | 重试放大守门器（失败率逼近临界时收紧总尝试为 1） |
+| 字段                     | 默认值                 | 说明                                                                                               |
+| :----------------------- | :--------------------- | :------------------------------------------------------------------------------------------------- |
+| `max_retries`            | `3`                    | 单 vendor 内最大重试次数（不含首次调用）                                                           |
+| `retryable_status_codes` | `[429, 500, 502, 503]` | 触发重试的状态码集合（429 指数退避，5xx 固定间隔）                                                 |
+| `initial_delay_ms`       | `1000`                 | 首次重试前延迟（毫秒）                                                                             |
+| `factor`                 | `2.0`                  | 指数退避乘数                                                                                       |
+| `max_delay_ms`           | `16000`                | 单次等待上限（毫秒）                                                                               |
+| `jitter`                 | `0.2`                  | 退避抖动比例（0.0–1.0）                                                                            |
+| `spread_jitter`          | `1.0`                  | Retry-After / 5xx 固定间隔的同步惊群展宽：延迟 = base + U(0, spread_jitter)×base；`0.0` 回滚旧行为 |
+| `max_total_attempts`     | `8`                    | 跨 vendor 总尝试预算（防 vendor 数 × 重试数爆炸）                                                  |
+| `retry_budget_secs`      | `0`                    | 单请求重试总时间预算（秒）；`0` = 不限时                                                           |
+| `amplification_gate`     | `false`                | 重试放大守门器（失败率逼近临界时收紧总尝试为 1）                                                   |
 
 重试策略每请求从热配置现读，热更立即生效。
 
 ### [resilience] 韧性覆盖面
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `cover_all_paths` | `false` | 熔断 / 重试 / 换路是否覆盖透传与流式路径（关闭时仅转换非流式有换路 fallback） |
-| `failure_rate_gate` | `false` | 失败率软降权开关（超阈厂商权重打折不剔除） |
-| `failure_rate_min_samples` | `5` | 触发软降权的最小窗口样本数（防小样本误杀） |
-| `failure_rate_threshold` | `0.5` | 失败率阈值（(0,1]） |
-| `failure_rate_penalty` | `0.1` | 软降权乘子（权重 ×penalty） |
+| 字段                       | 默认值  | 说明                                                                          |
+| :------------------------- | :------ | :---------------------------------------------------------------------------- |
+| `cover_all_paths`          | `false` | 熔断 / 重试 / 换路是否覆盖透传与流式路径（关闭时仅转换非流式有换路 fallback） |
+| `failure_rate_gate`        | `false` | 失败率软降权开关（超阈厂商权重打折不剔除）                                    |
+| `failure_rate_min_samples` | `5`     | 触发软降权的最小窗口样本数（防小样本误杀）                                    |
+| `failure_rate_threshold`   | `0.5`   | 失败率阈值（(0,1]）                                                           |
+| `failure_rate_penalty`     | `0.1`   | 软降权乘子（权重 ×penalty）                                                   |
 
 ### 熔断器行为
 
@@ -413,19 +413,19 @@ per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开�
 
 ### [cache] 字段与默认值
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `enabled` | `false` | 默认关闭（TTL 内响应陈旧是产品语义，上线由运维显式打开） |
-| `ttl_secs` | `300` | 基础 TTL（秒） |
-| `ttl_load_linked` | `false` | TTL 负载联动开关（开启后 TTL 随延迟 / 流量放大） |
-| `w_l` | `0.0` | 负载联动延迟项权重 |
-| `w_q` | `0.0` | 负载联动流量份额项权重 |
-| `beta_max` | `1.5` | 负载放大上限（配置 <1 按 1 处理，只放大不缩短） |
-| `l_target` | `1000.0` | 延迟目标（毫秒，ewma_e2e_ms 口径） |
-| `q_target` | `0.5` | 流量份额目标（0..1） |
-| `[[cache.categories]]` | 空 | 按模型前缀的 TTL 类别乘数表 |
-| `ttl_jitter` | `0.0` | TTL 抖动系数（>0 时写入 TTL 按 `ttl×(1±factor)` 对称抖动，同批键过期不齐峰） |
-| `null_cache_ttl_secs` | `60` | 空响应负缓存窗口秒数（Null 响应写哨兵，窗口内直接命中不再穿透上游） |
+| 字段                   | 默认值   | 说明                                                                         |
+| :--------------------- | :------- | :--------------------------------------------------------------------------- |
+| `enabled`              | `false`  | 默认关闭（TTL 内响应陈旧是产品语义，上线由运维显式打开）                     |
+| `ttl_secs`             | `300`    | 基础 TTL（秒）                                                               |
+| `ttl_load_linked`      | `false`  | TTL 负载联动开关（开启后 TTL 随延迟 / 流量放大）                             |
+| `w_l`                  | `0.0`    | 负载联动延迟项权重                                                           |
+| `w_q`                  | `0.0`    | 负载联动流量份额项权重                                                       |
+| `beta_max`             | `1.5`    | 负载放大上限（配置 <1 按 1 处理，只放大不缩短）                              |
+| `l_target`             | `1000.0` | 延迟目标（毫秒，ewma_e2e_ms 口径）                                           |
+| `q_target`             | `0.5`    | 流量份额目标（0..1）                                                         |
+| `[[cache.categories]]` | 空       | 按模型前缀的 TTL 类别乘数表                                                  |
+| `ttl_jitter`           | `0.0`    | TTL 抖动系数（>0 时写入 TTL 按 `ttl×(1±factor)` 对称抖动，同批键过期不齐峰） |
+| `null_cache_ttl_secs`  | `60`     | 空响应负缓存窗口秒数（Null 响应写哨兵，窗口内直接命中不再穿透上游）          |
 
 ### 缓存门控与跳过
 
@@ -453,13 +453,13 @@ multiplier = 2.0
 
 限流规则经 `[[rate_limit.rules]]` 声明，Router 构造期消费（**restart-required**，见 `src/api/router_builder.rs`）：
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `id` | 必填 | 规则标识（观测 / 日志维度） |
-| `path` | 无 | 端点路径前缀（前缀匹配，如 `/v1/chat/completions`）；**缺省 = 全局规则**（tower 全局层 `GlobalRateLimitLayer` + `QuotaLimiter`，按已验证 API key 的 SHA256 摘要分桶） |
-| `per_tenant` | `true` | 按租户（调用方 API key 摘要）分桶；`false` 退化为规则级单桶 |
-| `window_secs` | 必填 | 滑动窗口时长（秒，`0` 按 1s 兜底） |
-| `max_requests` | 必填 | 窗口内最大请求数 |
+| 字段           | 默认值 | 说明                                                                                                                                                                  |
+| :------------- | :----- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`           | 必填   | 规则标识（观测 / 日志维度）                                                                                                                                           |
+| `path`         | 无     | 端点路径前缀（前缀匹配，如 `/v1/chat/completions`）；**缺省 = 全局规则**（tower 全局层 `GlobalRateLimitLayer` + `QuotaLimiter`，按已验证 API key 的 SHA256 摘要分桶） |
+| `per_tenant`   | `true` | 按租户（调用方 API key 摘要）分桶；`false` 退化为规则级单桶                                                                                                           |
+| `window_secs`  | 必填   | 滑动窗口时长（秒，`0` 按 1s 兜底）                                                                                                                                    |
+| `max_requests` | 必填   | 窗口内最大请求数                                                                                                                                                      |
 
 ```toml
 [[rate_limit.rules]]
@@ -486,13 +486,13 @@ max_requests = 100
 
 网关并发占用率（Σ 在途 / Σ 并发上限）达到阈值时，新请求按档位优先级与「当前在途最小档」比较，低者直接 `429 + Retry-After`（不排队）。判定在限流之后、handler 之前（`src/middleware/admission.rs`）。
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `enabled` | `false` | 默认完全关闭（判定旁路）；热读开关，热更立即生效 |
-| `congestion_threshold` | `0.9` | 拥塞阈值（占用率 ≥ 该值视为拥塞） |
-| `alpha_slo` | `2.0` | SLO 缺口系数（预留，当前无数据源） |
-| `alpha_burst` | `1.0` | burst EWMA（到达速率）压制系数 |
-| `alpha_debt` | `4.0` | debt EWMA（被 shed 频度）压制系数 |
+| 字段                   | 默认值  | 说明                                             |
+| :--------------------- | :------ | :----------------------------------------------- |
+| `enabled`              | `false` | 默认完全关闭（判定旁路）；热读开关，热更立即生效 |
+| `congestion_threshold` | `0.9`   | 拥塞阈值（占用率 ≥ 该值视为拥塞）                |
+| `alpha_slo`            | `2.0`   | SLO 缺口系数（预留，当前无数据源）               |
+| `alpha_burst`          | `1.0`   | burst EWMA（到达速率）压制系数                   |
+| `alpha_debt`           | `4.0`   | debt EWMA（被 shed 频度）压制系数                |
 
 准入优先级基准来自 **`[[auth.keys]]` 的 `tier` 档位**（`dedicated` > `guaranteed` > `elastic` > `spot`，见 `src/config/mod.rs` 的 `AuthTier`），未声明的 key 落 `elastic` 档。
 
@@ -502,12 +502,12 @@ max_requests = 100
 
 ### 定价与成本（`[[model_catalog]]` 为计价正源，`[[pricing]]` 为辅助档）
 
-| 字段 | 说明 |
-|:-----|:-----|
-| `vendor_id` | 厂商 ID（须与 `[[vendors]].id` 匹配） |
-| `model_id` | 模型 ID |
-| `input_per_1k_tokens` | 输入单价（USD / 1k tokens） |
-| `output_per_1k_tokens` | 输出单价（USD / 1k tokens） |
+| 字段                   | 说明                                  |
+| :--------------------- | :------------------------------------ |
+| `vendor_id`            | 厂商 ID（须与 `[[vendors]].id` 匹配） |
+| `model_id`             | 模型 ID                               |
+| `input_per_1k_tokens`  | 输入单价（USD / 1k tokens）           |
+| `output_per_1k_tokens` | 输出单价（USD / 1k tokens）           |
 
 成本公式：`(prompt/1000)×input + (completion/1000)×output`，按 `(vendor_id, model_id)` 精确匹配查找（`src/vendor/cost.rs`）。
 
@@ -548,8 +548,8 @@ curl "http://127.0.0.1:8080/admin/cost?group_by=vendor" \
 
 按会话聚合成本与按模型聚合上下文占用率的内部统计（零出站、零新依赖）。
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
+| 字段      | 默认值 | 说明                     |
+| :-------- | :----- | :----------------------- |
 | `enabled` | `true` | 采集与查询总开关（热读） |
 
 开启时 `request_logs` 落四列：`session_key`（会话键）、`context_window_tokens`（目录登记的
@@ -570,7 +570,7 @@ curl "http://127.0.0.1:8080/admin/context-stats" -H "Authorization: Bearer $API_
 >
 > **占用率口径**：上下文占用率 = `(prompt + cache_write) / context_window`。
 > `request_logs` 不存协议类型，查询侧无法区分缓存语义：OpenAI/Gemini
->（Inclusive，prompt 已含缓存读）精确；Anthropic（Exclusive，prompt 不含）
+> （Inclusive，prompt 已含缓存读）精确；Anthropic（Exclusive，prompt 不含）
 > 为**下界**。选择下界而非重复计数，避免占用率虚高误报。
 > `cache_read_share = cache_read / (prompt + cache_write)` 在 Exclusive 协议下
 > 可大于 1（prompt 不含缓存读），读取方需按此理解。
@@ -583,12 +583,12 @@ curl "http://127.0.0.1:8080/admin/context-stats" -H "Authorization: Bearer $API_
 把网关自身的 Prometheus `/metrics` 指标与成本计数周期推送到外部可观测栈（OTLP/HTTP-Proto）。
 **编译门 `feature = "otlp"` + 运行时门 `[otlp].enabled`，双门控默认关**（不进 `full` 构建）。
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `enabled` | `false` | 导出总开关（热读；启动期关闭则不建任务，事后开启需重启） |
-| `endpoint` | `""` | OTLP/HTTP 端点（`enabled` 时必填，如 `http://localhost:4318/v1/metrics`） |
-| `interval_secs` | `60` | 推送周期（1..=86400） |
-| `timeout_secs` | `10` | 单次导出超时（1..=300） |
+| 字段            | 默认值  | 说明                                                                      |
+| :-------------- | :------ | :------------------------------------------------------------------------ |
+| `enabled`       | `false` | 导出总开关（热读；启动期关闭则不建任务，事后开启需重启）                  |
+| `endpoint`      | `""`    | OTLP/HTTP 端点（`enabled` 时必填，如 `http://localhost:4318/v1/metrics`） |
+| `interval_secs` | `60`    | 推送周期（1..=86400）                                                     |
+| `timeout_secs`  | `10`    | 单次导出超时（1..=300）                                                   |
 
 指标名前缀 `fluxgate.`；histogram 分解为 `_bucket`/`_sum`/`_count` 三序列，`le` 标签原样保留。
 成本面额外导出 `fluxgate.cost_usd_total{vendor,model}`（counter）与 `fluxgate.cost_usd{vendor,model}`（gauge）。
@@ -601,11 +601,11 @@ curl "http://127.0.0.1:8080/admin/context-stats" -H "Authorization: Bearer $API_
 按调用方 API key 的固定窗口配额，与 `[rate_limit]`（请求数）、`[admission]`（拥塞 shed）**相互独立、叠加生效**：
 执行序 `auth → quota → rate_limit → admission`，任一触发即拒（`429 + Retry-After`），三方文案可区分触发闸门。
 
-| 字段 | 默认值 | 说明 |
-|:-----|:-------|:-----|
-| `enabled` | `false` | 默认零判限；热读 |
-| `window_secs` | `3600` | 固定窗口长度（`0` 非法，validate 拒绝）；热读 |
-| `est_chars_per_token` | `4` | 预扣输入 token 估算常数（与 `count_tokens` 同口径）；热读 |
+| 字段                  | 默认值  | 说明                                                      |
+| :-------------------- | :------ | :-------------------------------------------------------- |
+| `enabled`             | `false` | 默认零判限；热读                                          |
+| `window_secs`         | `3600`  | 固定窗口长度（`0` 非法，validate 拒绝）；热读             |
+| `est_chars_per_token` | `4`     | 预扣输入 token 估算常数（与 `count_tokens` 同口径）；热读 |
 
 > 配额余量的响应头暴露（`X-RateLimit-*` 形态）为本特性规格的明文 Out of Scope，
 > 不提供配置位（余量可经 `POST /admin/cost` 侧查询对账）。
@@ -620,14 +620,14 @@ per-key 限额放 `[[auth.keys]]`：`token_quota`（input+output 合计，`0` = 
 **预扣-回补**：入口按 `预估输入 token×输入单价 + max_tokens×输出单价` 预扣（cache 两档不参与预估），
 响应/流结束后按实际 usage 回补差额（低于预估返还、超预估追扣）。结算覆盖面：
 
-| 形态 | 是否回补 |
-|:-----|:---------|
-| 非流式（透传与转换） | ✅ 响应后 |
-| 转换流式（入站协议 ≠ 出站协议） | ✅ 流结束后（取 `usage` 尾帧，含 cache 两档） |
-| **透传流式**（入站协议 = 出站协议） | ✅ 正常收束后（逐帧观测 `message_start`/`message_delta` 或 OpenAI `usage` 尾帧） |
-| 透传流断流 / `event: error` 终止 | ❌ 不回补（保持预扣） |
-| OpenAI 透传流不带 `stream_options.include_usage` | ❌ 无 usage 可解析 → 不回补 |
-| 入口被拒（配额超限 / 限流 / 准入 shed）与上游失败 | ❌ 预扣不返还 |
+| 形态                                              | 是否回补                                                                         |
+| :------------------------------------------------ | :------------------------------------------------------------------------------- |
+| 非流式（透传与转换）                              | ✅ 响应后                                                                        |
+| 转换流式（入站协议 ≠ 出站协议）                   | ✅ 流结束后（取 `usage` 尾帧，含 cache 两档）                                    |
+| **透传流式**（入站协议 = 出站协议）               | ✅ 正常收束后（逐帧观测 `message_start`/`message_delta` 或 OpenAI `usage` 尾帧） |
+| 透传流断流 / `event: error` 终止                  | ❌ 不回补（保持预扣）                                                            |
+| OpenAI 透传流不带 `stream_options.include_usage`  | ❌ 无 usage 可解析 → 不回补                                                      |
+| 入口被拒（配额超限 / 限流 / 准入 shed）与上游失败 | ❌ 预扣不返还                                                                    |
 
 > 未受限的形态（`enabled = false`、或该 key 双限额均为 `0`）**不挂帧观测包装**，透传响应字节与
 > 未引入本特性时逐字节一致。
@@ -649,27 +649,104 @@ token_quota = 200_000            # 每小时 20 万 token
 cost_quota_millicents = 500_000  # 每小时 5 USD
 ```
 
+### 多窗口预算 `[[quota.windows]]`（订阅式双限额）
+
+一 key 多窗并存、每窗独立判定，任一窗不足即 `429`。`429` 响应体为
+「摘要行 + 逐窗重置秒数」（脱敏：仅 window id 与秒数，不含 key 信息），
+`Retry-After` 取受拒窗中最晚重置者（所有窗须同时有余，最早可成功重试时刻）。
+
+| 字段                    | 默认值    | 说明                                                                                                          |
+| :---------------------- | :-------- | :------------------------------------------------------------------------------------------------------------ |
+| `id`                    | （必填）  | 窗口唯一标识（账本行键与指标标签 `quota_window_refused_total{window_id}`）；空/重复启动即拒                   |
+| `scope`                 | `api_key` | `api_key` 按租户判定 / `global` 全体请求共享一窗                                                              |
+| `period`                | `rolling` | `rolling`（配 `rolling_secs`，从窗内首次用量起算）/ `calendar`（配 `calendar`）                               |
+| `calendar`              | （空）    | `daily`（自然日 00:00）/ `weekly`（ISO 周一）/ `monthly`（自然月 1 日）；与 `rolling_secs` 互斥，同配启动即拒 |
+| `tz_offset_secs`        | `0`       | calendar 时区偏移（±86400 内；默认 0 = UTC；+8h 即东八区自然边界）                                            |
+| `tokens_limit`          | `0`       | token 限额；`0` = 落回 `[[auth.keys]]` 的 per-key `token_quota`                                               |
+| `cost_limit_millicents` | `0`       | 成本限额；`0` = 落回 per-key `cost_quota_millicents`（双零 = 该窗不判）                                       |
+
+```toml
+[[quota.windows]]
+id = "daily"
+period = "calendar"
+calendar = "daily"
+tokens_limit = 1_000_000
+
+[[quota.windows]]
+id = "weekly"
+period = "calendar"
+calendar = "weekly"
+tokens_limit = 7_000_000
+cost_limit_millicents = 50_000_000
+```
+
+**向后兼容**：`[[quota.windows]]` 为空时旧 `window_secs` 编译为 `id="default"`
+的 rolling 窗，行为与历史逐位一致；两处并存时窗口数组优先、旧字段忽略（加载
+期 WARN 留痕）。
+
+**账本持久化**：`quota_ledger` 表（迁移 V7，主键 `(api_key_hash, window_id,
+window_start)`）——结算即 UPSERT + 每 30s 全量 flush；启动恢复仅恢复未过期窗
+（`window_start + 周期 ≥ now`）。内存态始终权威（每请求零 DB 往返），
+⚠️ 崩溃回退窗口 ≤30s：重启后已用量最多回退 30s——预算是约束不是计费，
+请勿以账本做计费对账。`scope=global` 行以固定键 `__global__` 落库，
+vendor 预算行以 `__vendor__:{id}` 落库。
+
+### vendor 声明式预算 `[[vendor_budgets]]` 与配额因子 `[routing.quota_factor]`
+
+`[[vendor_budgets]]` 声明上游 vendor 的预算（网关按实际 usage 结算记账，
+非上游余额轮询）；`[routing.quota_factor]` 把预算消耗接入路由打分：
+
+| 配置                                                        | 默认     | 说明                                                                       |
+| :---------------------------------------------------------- | :------- | :------------------------------------------------------------------------- |
+| `[[vendor_budgets]].vendor_id`                              | （必填） | 必须对得上某个 `[[vendors]]` id（错拼启动即拒）；每 vendor 一条            |
+| `[[vendor_budgets]].tokens_limit` / `cost_limit_millicents` | `0`      | 至少声明一个维度（双零启动即拒）；`period` 语法与 `[[quota.windows]]` 同源 |
+| `[routing.quota_factor].mode`                               | `off`    | `off` 零参与 / `smart` / `pace`；热读                                      |
+| `[routing.quota_factor].w_quota`                            | `0.3`    | 第 6 因子系数（与 `w_model`/`w_queue` 同温标；仅 smart 被咨询）            |
+
+- **smart**：预算耗尽的 vendor 摘出候选（全员耗尽保留全部并计
+  `quota_factor_depleted_total{vendor}`）；其余按「重置最快」加成：
+  `w_quota × (1 − reset_secs/period_secs)` 进第 6 因子加权。
+- **pace**：消耗率比 `used/elapsed` 对 `budget/period`——超带（>1.1）降权
+  ×0.5、欠带（<0.9）升权 ×1.2、带内不变（线性带；十分位分带为后续演进项）。
+- 未配置预算的 vendor 不参与该因子；`mode=off`（默认）零查询零评分副作用。
+
+查询面：`GET /admin/quota/ledger?key=<租户摘要>`（逐窗 used/重置/作用域）、
+`GET /admin/vendor-budgets`（限额 × 占用 × 消耗率比 × 重置倒计时）；Rust SDK
+`quota_ledger()` / `vendor_budgets()` 同步两方法。
+
+```toml
+[[vendor_budgets]]
+vendor_id = "openai-main"
+tokens_limit = 50_000_000
+period = "calendar"
+calendar = "monthly"
+
+[routing.quota_factor]
+mode = "smart"
+w_quota = 0.3
+```
+
 ---
 
 ## 🔄 配置热更新操作指南
 
 ### 操作入口
 
-| 端点 | 说明 |
-|:-----|:-----|
-| `GET /admin/config` | 读取当前生效配置 |
-| `POST /admin/config` | **全量覆盖**更新（body 为完整 Config JSON/TOML 结构，不是增量 patch） |
-| `POST /admin/models/global` | 原子 RMW 更新全局模型策略（路径 id 约定为 `global`） |
+| 端点                        | 说明                                                                                                                                         |
+| :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /admin/config`         | 读取当前生效配置                                                                                                                             |
+| `POST /admin/config`        | **全量覆盖**更新（body 为完整 Config JSON/TOML 结构，不是增量 patch）                                                                        |
+| `POST /admin/models/global` | 原子 RMW 更新全局模型策略（路径 id 约定为 `global`）                                                                                         |
 | `POST /admin/route/explain` | 路由解释（只读）：`{model, session_id?}` → 逐候选 `{decision, reason_code}` + 入选者 5 因子权重分解与 selection 档位；不发上游请求、不改状态 |
 
 RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落盘，并发互斥不丢更新（`src/api/admin.rs`）。
 
 ### 热生效段 vs 需重启段
 
-| 类别 | 段 | 生效方式 |
-|:-----|:---|:---------|
-| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读） | `POST /admin/config` 后下一请求即用新值 |
-| 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑）、`cache.semantic`（语义层 bootstrap 装配一次） | 修改后须重启进程 |
+| 类别   | 段                                                                                                                                                                                                                                                         | 生效方式                                |
+| :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------- |
+| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读）                                            | `POST /admin/config` 后下一请求即用新值 |
+| 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑）、`cache.semantic`（语义层 bootstrap 装配一次） | 修改后须重启进程                        |
 
 > ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组检测 `server` / `cors` / `rate_limit` / `database` / `grpc` / `global_model` / `cache.semantic` / `docs.enabled` / `routing.difficulty.enabled`（`src/api/admin.rs:333-395`），另在 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键变更时加入对应键名（分类器 bootstrap 装配一次，热更后惰性直到重启）。数组之外仍有两类需重启面：vendor `concurrency` 与 `vendors` 拓扑——改这些段后请自行安排重启。
 
@@ -729,14 +806,14 @@ flowchart TB
 
 ### docker-compose 要点
 
-| 项 | 值 |
-|:---|:---|
-| 服务名 / 镜像 | `app` / `fluxgate:${FLUXGATE_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签） |
-| 端口 | `8080:8080` |
-| 数据挂载 | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 不入库（`.gitignore` 已列），compose 启动前必须先 `cp config.example.toml config.toml`，否则挂载缺文件） |
-| 资源限制 | `cpus: '2.00'` / `memory: 512M`（预留 `0.50` / `128M`） |
-| 重启策略 | `unless-stopped` |
-| 密钥注入 | 环境变量（如 `OPENAI_API_KEY=${OPENAI_API_KEY}`） |
+| 项            | 值                                                                                                                                                                                                               |
+| :------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 服务名 / 镜像 | `app` / `fluxgate:${FLUXGATE_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签）                                                                                                           |
+| 端口          | `8080:8080`                                                                                                                                                                                                      |
+| 数据挂载      | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 不入库（`.gitignore` 已列），compose 启动前必须先 `cp config.example.toml config.toml`，否则挂载缺文件） |
+| 资源限制      | `cpus: '2.00'` / `memory: 512M`（预留 `0.50` / `128M`）                                                                                                                                                          |
+| 重启策略      | `unless-stopped`                                                                                                                                                                                                 |
+| 密钥注入      | 环境变量（如 `OPENAI_API_KEY=${OPENAI_API_KEY}`）                                                                                                                                                                |
 
 ### ✅ 健康检查路径
 
@@ -744,7 +821,15 @@ flowchart TB
 
 ```yaml
 healthcheck:
-  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+  test:
+    [
+      "CMD",
+      "wget",
+      "--no-verbose",
+      "--tries=1",
+      "--spider",
+      "http://localhost:8080/api/v1/health",
+    ]
   interval: 30s
   timeout: 10s
   retries: 3
@@ -759,15 +844,15 @@ healthcheck:
 
 ### 管理端点一览
 
-| 端点 | 说明 |
-|:-----|:-----|
+| 端点                                                          | 说明                                                                                                                                                  |
+| :------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断）。时间过滤为闭区间 `[start_time, end_time]`，两端含边界（Unix 秒，`src/database/repository.rs`） |
-| `GET /admin/logs/search?vendor=<关键词>&limit=` | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs:54`） |
-| `GET /admin/stats/tokens?vendor=` | 小时级 Token 用量统计（`token_usage` 预聚合表） |
-| `GET /admin/metrics` | 全局指标快照：请求计数、错误率、平均延迟、各厂商细分，含 `dropped_logs`（日志通道背压丢弃计数） |
-| `GET /admin/vendors` | 全部厂商状态与队列长度 |
-| `GET /admin/vendors/{id}/status` | 单厂商状态 |
-| `POST /admin/vendors/{id}/reset` | 清空该厂商 key 池黑名单、轮换游标与冷却状态；未知 vendor 400 `validation_error`（`src/api/admin.rs:241-256` → `reset_key_pool_state`） |
+| `GET /admin/logs/search?vendor=<关键词>&limit=`               | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs:54`）                            |
+| `GET /admin/stats/tokens?vendor=`                             | 小时级 Token 用量统计（`token_usage` 预聚合表）                                                                                                       |
+| `GET /admin/metrics`                                          | 全局指标快照：请求计数、错误率、平均延迟、各厂商细分，含 `dropped_logs`（日志通道背压丢弃计数）                                                       |
+| `GET /admin/vendors`                                          | 全部厂商状态与队列长度                                                                                                                                |
+| `GET /admin/vendors/{id}/status`                              | 单厂商状态                                                                                                                                            |
+| `POST /admin/vendors/{id}/reset`                              | 清空该厂商 key 池黑名单、轮换游标与冷却状态；未知 vendor 400 `validation_error`（`src/api/admin.rs:241-256` → `reset_key_pool_state`）                |
 
 ### 日志语言
 
@@ -775,12 +860,12 @@ healthcheck:
 
 ### 故障排查速查
 
-| 现象 | 处置 |
-|:-----|:-----|
-| 容器 unhealthy | 检查 healthcheck 是否指向 `/api/v1/health`（见 Docker 一节） |
-| 配置改了没生效 | 对照热生效段表；`rate_limit` / `concurrency` / `database` 需重启 |
-| 成本统计恒 0 | 核对 `[[model_catalog]]` 是否登记了实际路由到的 (vendor_id, model_id) |
-| 更多怪癖 | 见 [FAQ](./FAQ.md) |
+| 现象           | 处置                                                                  |
+| :------------- | :-------------------------------------------------------------------- |
+| 容器 unhealthy | 检查 healthcheck 是否指向 `/api/v1/health`（见 Docker 一节）          |
+| 配置改了没生效 | 对照热生效段表；`rate_limit` / `concurrency` / `database` 需重启      |
+| 成本统计恒 0   | 核对 `[[model_catalog]]` 是否登记了实际路由到的 (vendor_id, model_id) |
+| 更多怪癖       | 见 [FAQ](./FAQ.md)                                                    |
 
 ---
 
@@ -800,14 +885,14 @@ max_connections = 1000
 # http2_keepalive_timeout_secs = 10
 ```
 
-| 项 | 说明 |
-|:---|:-----|
-| 启用方式 | `cargo build --features grpc`（或在 `full` 之上追加）；本段缺席或 `enabled = false` 时完全不监听，行为与历史版本逐位一致 |
-| 服务面 | sdforge `sdforge.v1.SdForgeService` 门面：`GetInfo`（免认证）/ `Call` / `CallStream`（JSON over gRPC，`#[forge(grpc_method = "...")]` 声明的 handler 经 inventory 自动注册） |
-| 认证 | Call/CallStream 逐调用校验 `[auth]` 段 SHA256 摘要（`x-api-key` metadata 或 `authorization: Bearer <key>`，常量时间比较）；`[auth]` 缺段或禁用时放行。**与 HTTP 的差异**：gRPC 无 `/health` 式 method 白名单（GetInfo 免认证是 sdforge 门面现状，其余一律要求 key） |
-| 优雅停机 | Ctrl+C/SIGTERM 一次触发：HTTP 与 gRPC 并行排空 in-flight（gRPC 排空上限 30s），完成后统一 flush 日志管道 |
-| TLS | 不经 sdforge 终结（明文监听），与 `[server]` 同策略——由外部反代承担 |
-| 热更新 | `[grpc]` 段为**建站期消费**（固化于服务器构造），更新后需重启进程 |
+| 项       | 说明                                                                                                                                                                                                                                                                |
+| :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 启用方式 | `cargo build --features grpc`（或在 `full` 之上追加）；本段缺席或 `enabled = false` 时完全不监听，行为与历史版本逐位一致                                                                                                                                            |
+| 服务面   | sdforge `sdforge.v1.SdForgeService` 门面：`GetInfo`（免认证）/ `Call` / `CallStream`（JSON over gRPC，`#[forge(grpc_method = "...")]` 声明的 handler 经 inventory 自动注册）                                                                                        |
+| 认证     | Call/CallStream 逐调用校验 `[auth]` 段 SHA256 摘要（`x-api-key` metadata 或 `authorization: Bearer <key>`，常量时间比较）；`[auth]` 缺段或禁用时放行。**与 HTTP 的差异**：gRPC 无 `/health` 式 method 白名单（GetInfo 免认证是 sdforge 门面现状，其余一律要求 key） |
+| 优雅停机 | Ctrl+C/SIGTERM 一次触发：HTTP 与 gRPC 并行排空 in-flight（gRPC 排空上限 30s），完成后统一 flush 日志管道                                                                                                                                                            |
+| TLS      | 不经 sdforge 终结（明文监听），与 `[server]` 同策略——由外部反代承担                                                                                                                                                                                                 |
+| 热更新   | `[grpc]` 段为**建站期消费**（固化于服务器构造），更新后需重启进程                                                                                                                                                                                                   |
 
 **gRPC 客户端调用示例**（任意 tonic 客户端，以 sdforge 生成的门面 client 为例）：
 
@@ -832,12 +917,12 @@ let response = client.call(request).await?;   // CallResponse.data 为 handler J
 
 SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `full` 已含），通过 Rust 接口与已部署网关交互（HTTP 客户端，非进程内直连）：
 
-| 项 | 内容 |
-|:---|:-----|
-| 启用方式 | `fluxgate = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` + `url` 随该 feature 引入） |
-| 模块 | `chat` / `embed` / `stream` / `client`（`FluxgateClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error` |
+| 项       | 内容                                                                                                                                                                                                                                                                                                                                                         |
+| :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 启用方式 | `fluxgate = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` + `url` 随该 feature 引入）                                                                                                                                                                                                                                                            |
+| 模块     | `chat` / `embed` / `stream` / `client`（`FluxgateClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error`                                                                                                                                                                                                                                        |
 | 类型导出 | `ChatMessage`（多模态 `ChatContent::Parts` / tool_calls）/ `ChatRequest`（tools / tool_choice / vendor_extensions / penalties）/ `ChatResponse`（结构化 finish_reason + 含 cache_read 的 usage + tool_calls）/ `EmbedRequest` / `EmbedResponse` / `ChatStream`（tool_calls 增量片段 + usage 尾帧）/ 目录 CRUD（`ModelCatalogInfo` / `ModelCatalogUpsert`）等 |
-| 示例 | 见 [README「作为库依赖」](../README.md#-作为库依赖) |
+| 示例     | 见 [README「作为库依赖」](../README.md#-作为库依赖)                                                                                                                                                                                                                                                                                                          |
 
 > **SDK 对齐说明**（SDK ↔ 网关零失配，路径/形状以路由表为准）：admin 面
 > `models()` 走 `GET /admin/models`（模型能力目录）、`health()` 走
@@ -854,10 +939,10 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 
 ## 🎯 延伸阅读
 
-| 文档 | 说明 |
-|:-----|:-----|
-| [FAQ](./FAQ.md) | 常见问题与真实怪癖解答 |
-| [API 参考](./API_REFERENCE.md) | 端点与请求/响应格式 |
-| [架构文档](./ARCHITECTURE.md) | 内部机制与模块设计 |
-| [安全文档](./SECURITY.md) | 安全策略 |
-| [README](../README.md) | 项目总览与特性清单 |
+| 文档                           | 说明                   |
+| :----------------------------- | :--------------------- |
+| [FAQ](./FAQ.md)                | 常见问题与真实怪癖解答 |
+| [API 参考](./API_REFERENCE.md) | 端点与请求/响应格式    |
+| [架构文档](./ARCHITECTURE.md)  | 内部机制与模块设计     |
+| [安全文档](./SECURITY.md)      | 安全策略               |
+| [README](../README.md)         | 项目总览与特性清单     |

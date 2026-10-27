@@ -68,6 +68,7 @@ fn collector() -> &'static SpanCollector {
 
 fn make_config() -> Config {
     Config {
+        vendor_budgets: Vec::new(),
         server: fluxgate::config::ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,

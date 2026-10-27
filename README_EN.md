@@ -171,7 +171,7 @@ Runtime configuration is a single `config.toml` (**not committed** — `.gitigno
 | `routing` / `retry` / `resilience` | Routing coefficients & selection algorithm, retry policy, resilience coverage | ✅ |
 | `cache` / `rate_limit` / `admission` | Response cache, inbound rate limiting, congestion admission | cache/admission ✅ / rate_limit ❌ |
 | `model_catalog` / `pricing` | Model capability catalog (its four-tier prices are the costing source of truth) / SLA factor and quota fallback tier | ✅ |
-| `health` / `quota` | Active health probes (default off), cost/token quota (default off) | ✅ both hot-read |
+| `health` / `quota` | Active health probes (default off), cost/token quota + `[[quota.windows]]` multi-window budgets + `[[vendor_budgets]]` declarative budgets (all default off) | ✅ both hot-read |
 | `lexcompress` | Lexical compression (applies on `X-Compress: 1` when a message exceeds the threshold, default off) | ✅ hot-read |
 | `grpc` / `docs` | gRPC facade, OpenAPI/Swagger UI surface (both opt-in) | ❌ restart required |
 

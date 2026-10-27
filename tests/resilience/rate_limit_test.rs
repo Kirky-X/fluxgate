@@ -95,6 +95,7 @@ fn make_config(rules: Vec<RateLimitRule>) -> Config {
 
 fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Config {
     Config {
+        vendor_budgets: Vec::new(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,

@@ -168,6 +168,7 @@ fn quota_config_full(
         enabled: true,
         window_secs,
         est_chars_per_token: EST_CHARS_PER_TOKEN,
+        windows: Vec::new(),
     };
     config.pricing = pricing;
     config
@@ -751,7 +752,14 @@ async fn stacked_gates_tight_quota_rejects_with_quota_message() {
         read_text(post_chat_app(&app, chat_body(false)).await).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(has_retry_after, "配额 429 必须带 Retry-After");
-    assert_eq!(text.trim(), t("middleware-quota-exceeded"), "体: {text}");
+    // quota-aware-routing 起 429 体为「摘要行 + 逐窗重置秒数」（R-quota-001
+    // 约束：响应体列窗 id 与剩余秒数）；拒因判定收紧为首行摘要等价——
+    // 原整体等值断言与多窗响应体契约冲突，按新契约收窄判定面。
+    assert_eq!(
+        text.lines().next().unwrap_or("").trim(),
+        t("middleware-quota-exceeded"),
+        "体首行摘要: {text}"
+    );
     assert_ne!(
         text.trim(),
         t("router-rate-limit-exceeded"),
@@ -1470,4 +1478,99 @@ async fn quota_windows_are_isolated_per_key() {
     }
 
     mock.assert_async().await;
+}
+
+/// 重启恢复端到端（quota-aware-routing）：进程 A 预扣+结算 → 账本落库 →
+/// 进程 B（新 QuotaState）启动恢复 → 已用量不清零、判定继续生效
+///（R-quota-003 验收：重启后已用量不清零）。
+#[tokio::test]
+async fn ledger_survives_restart_and_keeps_adjudicating() {
+    use fluxgate::middleware::quota::QuotaState;
+    use fluxgate::middleware::quota_persist::QuotaLedgerPersister;
+
+    let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+        url: "sqlite::memory:".to_string(),
+        pool_config: dbnexus::PoolConfig {
+            max_connections: 1,
+            min_connections: 1,
+            ..Default::default()
+        },
+        admin_role: "admin".to_string(),
+        ..Default::default()
+    })
+    .await
+    .expect("memory pool");
+    let repository = std::sync::Arc::new(fluxgate::database::Repository::new(pool));
+    repository.initialize().await.expect("init schema");
+
+    // 进程 A：quota 配置（旧单窗语义 = default rolling 3600；租户限额经
+    // 窗口显式声明，恢复读取与配置解耦）。
+    let mut config = quota_config_full(vec![], 0, 0, 3600, Vec::new());
+    config.quota.windows = vec![fluxgate::config::QuotaWindowConfig {
+        id: "default".into(),
+        rolling_secs: 3600,
+        tokens_limit: 1_000,
+        ..Default::default()
+    }];
+
+    let state_a = QuotaState::new();
+    let persister_a = std::sync::Arc::new(QuotaLedgerPersister::new(
+        repository.clone(),
+        fluxgate::middleware::quota_persist::DEFAULT_LEDGER_SLOTS,
+        fluxgate::middleware::quota_persist::DEFAULT_LEDGER_FLUSH_INTERVAL,
+        None,
+    ));
+    state_a.set_ledger_persister(persister_a.clone());
+
+    // 预扣 800 → 结算实际 600（窗内已用 600）。
+    let windows = fluxgate::middleware::quota::resolve_windows(&config, "tenant-digest");
+    assert_eq!(windows.len(), 1, "单窗生效");
+    state_a
+        .consume("tenant-digest", &windows, 800, 0)
+        .expect("进程 A 预扣");
+    state_a.recompense("tenant-digest", &windows, 800, 0, 600, 0);
+
+    // 全量快照落库（30s flush 的确定性替身）。
+    persister_a
+        .flush_now(&state_a.ledger_snapshot())
+        .await
+        .expect("进程 A 落库");
+    persister_a.shutdown().await.expect("persister shutdown");
+    let rows = repository.read_quota_ledger().await.expect("read ledger");
+    assert_eq!(rows.len(), 1, "一窗一行");
+    assert_eq!(rows[0].tokens_used, 600);
+
+    // 进程 B（重启）：启动恢复 → 已用量不清零。
+    let state_b = QuotaState::new();
+    let restored = state_b.restore_from_ledger(&rows, &config);
+    assert_eq!(restored, 1, "活动窗恢复");
+    let view = state_b
+        .ledger_entries()
+        .into_iter()
+        .find(|e| e.api_key_hash == "tenant-digest" && e.window_id == "default")
+        .expect("恢复窗在册");
+    assert_eq!(
+        (view.tokens_used, view.cost_used_millicents),
+        (600, 0),
+        "重启后已用量保持"
+    );
+
+    // 判定继续生效：窗内余量 400，扣 401 拒、扣 400 过。
+    let windows_b = fluxgate::middleware::quota::resolve_windows(&config, "tenant-digest");
+    let refusal = state_b
+        .consume("tenant-digest", &windows_b, 401, 0)
+        .expect_err("恢复后余量不足必须拒");
+    assert!(
+        refusal.retry_after_secs > 0 && refusal.retry_after_secs <= 3600,
+        "Retry-After 在 rolling 窗重置秒数范围内"
+    );
+    state_b
+        .consume("tenant-digest", &windows_b, 400, 0)
+        .expect("余量内放行");
+    let view = state_b
+        .ledger_entries()
+        .into_iter()
+        .find(|e| e.api_key_hash == "tenant-digest" && e.window_id == "default")
+        .expect("窗仍在册");
+    assert_eq!(view.tokens_used, 1000, "放行后占用 = 限额");
 }

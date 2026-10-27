@@ -35,6 +35,8 @@ fn sdk_admin_routes_are_subset_of_server_route_table() {
         ".route(\"/admin/vendors\", get(admin::vendors))",
         ".route(\"/admin/sessions\", get(admin::sessions))",
         ".route(\"/admin/context-stats\", get(admin::context_stats))",
+        ".route(\"/admin/quota/ledger\", get(admin::quota_ledger))",
+        ".route(\"/admin/vendor-budgets\", get(admin::vendor_budgets))",
     ];
     for pattern in &expected {
         assert!(
@@ -58,7 +60,9 @@ fn sdk_admin_routes_are_subset_of_server_route_table() {
             ("GET", "admin/models")
             | ("GET", "admin/vendors")
             | ("GET", "admin/sessions")
-            | ("GET", "admin/context-stats") => {
+            | ("GET", "admin/context-stats")
+            | ("GET", "admin/quota/ledger")
+            | ("GET", "admin/vendor-budgets") => {
                 // 已由 expected 精确模式覆盖
             }
             ("GET", "api/v1/health") => {
@@ -490,4 +494,73 @@ async fn insights_disabled_404_maps_to_api_error() {
         }
         other => panic!("应映射 Api(404)，实际: {other:?}"),
     }
+}
+
+/// GET /admin/quota/ledger — 网关真实 rows 形状（逐窗 used/重置/作用域；
+/// key 过滤走 query pair）
+#[tokio::test]
+async fn quota_ledger_returns_rows_shape() {
+    let mut server = mockito::Server::new_async().await;
+
+    server
+        .mock("GET", "/admin/quota/ledger")
+        .match_query(mockito::Matcher::UrlEncoded(
+            "key".into(),
+            "tenant-digest".into(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"rows":[
+                {"api_key_hash":"tenant-digest","window_id":"daily","scope":"tenant",
+                 "window_start":1770000000,"tokens_used":1200,
+                 "cost_used_millicents":40,"reset_at":1770086400},
+                {"api_key_hash":"__global__","window_id":"fleet","scope":"global",
+                 "window_start":1770000000,"tokens_used":0,
+                 "cost_used_millicents":0,"reset_at":1770086400}
+            ]}"#,
+        )
+        .create();
+
+    let client = build_client(&server.url());
+    let ledger = client.quota_ledger(Some("tenant-digest")).await.unwrap();
+    assert_eq!(ledger.rows.len(), 2);
+    assert_eq!(ledger.rows[0].window_id, "daily");
+    assert_eq!(ledger.rows[0].scope, "tenant");
+    assert_eq!(ledger.rows[0].tokens_used, 1200);
+    assert_eq!(ledger.rows[0].reset_at, 1_770_086_400);
+    assert_eq!(ledger.rows[1].api_key_hash, "__global__");
+    assert_eq!(ledger.rows[1].scope, "global");
+}
+
+/// GET /admin/vendor-budgets — 网关真实 rows 形状（限额 × 占用 × 消耗率
+/// × 重置倒计时）
+#[tokio::test]
+async fn vendor_budgets_returns_rows_shape() {
+    let mut server = mockito::Server::new_async().await;
+
+    server
+        .mock("GET", "/admin/vendor-budgets")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"rows":[
+                {"vendor_id":"openai_main","tokens_limit":50000000,
+                 "cost_limit_millicents":0,"tokens_used":1200,
+                 "cost_used_millicents":0,"pace_ratio":0.4,
+                 "depleted":false,"reset_secs":3500,"period_secs":3600}
+            ]}"#,
+        )
+        .create();
+
+    let client = build_client(&server.url());
+    let budgets = client.vendor_budgets().await.unwrap();
+    assert_eq!(budgets.rows.len(), 1);
+    let row = &budgets.rows[0];
+    assert_eq!(row.vendor_id, "openai_main");
+    assert_eq!(row.tokens_limit, 50_000_000);
+    assert_eq!(row.tokens_used, 1200);
+    assert!((row.pace_ratio - 0.4).abs() < 1e-9);
+    assert!(!row.depleted);
+    assert_eq!(row.reset_secs, 3500);
 }

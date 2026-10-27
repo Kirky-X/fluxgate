@@ -107,6 +107,7 @@ async fn build_writer(mode: &str) -> (AffinityWriter, Arc<AffinityTable>) {
         lexcompress: Default::default(),
         responses: Default::default(),
         otlp: Default::default(),
+        vendor_budgets: Vec::new(),
         usage_insights: Default::default(),
         metrics: Default::default(),
     };
@@ -490,6 +491,7 @@ async fn legacy_settle_respects_tenant_scoped_first_binding() {
         lexcompress: Default::default(),
         responses: Default::default(),
         otlp: Default::default(),
+        vendor_budgets: Vec::new(),
         usage_insights: Default::default(),
         metrics: Default::default(),
     };
@@ -603,6 +605,7 @@ async fn sink_receives_sticks_for_auto_and_turn_only() {
             lexcompress: Default::default(),
             responses: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
         };

@@ -368,6 +368,20 @@ mode = "legacy"
 cache_worth_tokens = 1024
 turn_gap_secs = 120
 
+# 配额感知路由因子（`[routing.quota_factor]`，**默认 off = 零参与**）。
+# ✅ 热生效（字段热读）。把 `[[vendor_budgets]]` 的预算消耗位面接进路由：
+# - mode:
+#   - "off"（默认）：不参与——零查询、零评分副作用。
+#   - "smart"：预算耗尽的 vendor 摘出候选（全员耗尽保留全部并计数）；
+#     其余按「重置最快」加成进第 6 因子加权。
+#   - "pace"：消耗率带（used/elapsed 对 budget/period）超 1.1 降权 ×0.5、
+#     低于 0.9 升权 ×1.2、带内不变。
+# - w_quota: 第 6 因子系数，默认 0.3（与 w_model/w_queue/w_window 同温标；
+#   仅 mode ≠ "off" 时被咨询）。
+[routing.quota_factor]
+mode = "off"
+w_quota = 0.3
+
 # 难度定档（`[routing.difficulty]`，默认关——缺段 = enabled=false 完全旁路，
 # 行为与历史逐位一致）。✅ 热生效（字段热读）
 # 启用模板（按需取消注释；整段缺省即默认行为）：
@@ -506,6 +520,58 @@ probe_strategy = "free"
 enabled = false
 window_secs = 3600
 est_chars_per_token = 4
+
+# ✅ 热生效 —— 多窗口预算（`[[quota.windows]]`，可选；默认空 = 旧单窗语义）
+#
+# 一 key 多窗并存、每窗独立判定，任一窗不足即 429 + Retry-After（取受拒窗中
+# 最晚重置者）；响应体列出各窗重置秒数（仅 window id 与秒数，不含 key 信息）。
+# 非空时旧 `window_secs` 被忽略（启动 WARN 留痕）；为空时旧字段编译为
+# `id="default"` 的 rolling 窗，行为与历史逐位一致。账本落 `quota_ledger`
+# 表（每 30s 全量 flush + 结算即 UPSERT，重启仅恢复未过期窗——崩溃回退
+# ≤30s，预算是约束不是计费）。
+# - id: 窗口唯一标识（账本行键与指标标签 quota_window_refused_total{window_id}）
+# - scope: "api_key"（默认，按租户判定）/ "global"（全体请求共享一窗）
+# - period: "rolling"（配 rolling_secs，从窗内首次用量起算）
+#           / "calendar"（配 calendar=daily|weekly|monthly 之一 +
+#           tz_offset_secs 时区偏移，默认 0=UTC；对齐自然边界：日 00:00、
+#           ISO 周一、自然月 1 日）
+# - tokens_limit / cost_limit_millicents: 双维度限额；0 = 该维度落回
+#   [[auth.keys]] 的 per-key 限额（双零 = 该窗不判）
+# 启用模板（按需取消注释）：
+#[[quota.windows]]
+#id = "daily"
+#period = "calendar"
+#calendar = "daily"
+#tokens_limit = 1_000_000
+#
+#[[quota.windows]]
+#id = "weekly"
+#period = "calendar"
+#calendar = "weekly"
+#tokens_limit = 7_000_000
+#cost_limit_millicents = 50_000_000
+#
+#[[quota.windows]]
+#id = "fleet"
+#scope = "global"
+#rolling_secs = 86_400
+#cost_limit_millicents = 200_000_000
+
+# ✅ 热生效 —— vendor 声明式预算（`[[vendor_budgets]]`，可选；默认空）
+#
+# 网关按实际 usage 结算记账（非上游余额轮询），配合 [routing.quota_factor]
+# 把预算消耗接入路由：耗尽 vendor 摘出候选（mode=smart）/ 消耗率带升降权
+# （mode=pace）。未配置预算的 vendor 不参与该因子。记账行落 `quota_ledger`
+#（window_id="vendor:{id}"），重启恢复未过期窗。
+# - vendor_id: 必须对得上某个 [[vendors]] id（错拼条目启动即拒）
+# - tokens_limit / cost_limit_millicents: 至少声明一个维度（双零启动即拒）
+# - period 语法与 [[quota.windows]] 同源
+# 启用模板（按需取消注释）：
+#[[vendor_budgets]]
+#vendor_id = "openai-main"
+#tokens_limit = 50_000_000
+#period = "calendar"
+#calendar = "monthly"
 
 # ✅ 热生效 —— 拥塞感知优先级准入（准入每请求从热配置现读）
 #

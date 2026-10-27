@@ -113,6 +113,50 @@ pub struct HealthStatus {
     pub timestamp: String,
 }
 
+/// 配额账本条目 — 对齐网关 `GET /admin/quota/ledger` 的 `rows[]`
+///（quota-aware-routing：多窗预算账本读侧）。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct QuotaLedgerInfo {
+    /// 租户摘要 / `__global__` / `__vendor__:{id}`
+    pub api_key_hash: String,
+    pub window_id: String,
+    /// `tenant` | `global` | `vendor`
+    pub scope: String,
+    pub window_start: i64,
+    pub tokens_used: i64,
+    pub cost_used_millicents: i64,
+    /// 重置时刻（Unix 秒）
+    pub reset_at: i64,
+}
+
+/// 配额账本响应。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct QuotaLedgerResponse {
+    pub rows: Vec<QuotaLedgerInfo>,
+}
+
+/// vendor 预算状态条目 — 对齐网关 `GET /admin/vendor-budgets` 的 `rows[]`。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct VendorBudgetInfo {
+    pub vendor_id: String,
+    pub tokens_limit: i64,
+    pub cost_limit_millicents: i64,
+    pub tokens_used: i64,
+    pub cost_used_millicents: i64,
+    /// 消耗率比（pace 口径：>1.1 超带 / <0.9 欠带）
+    pub pace_ratio: f64,
+    pub depleted: bool,
+    /// 距重置秒数 / 窗长秒数
+    pub reset_secs: u64,
+    pub period_secs: u64,
+}
+
+/// vendor 预算状态响应。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct VendorBudgetsResponse {
+    pub rows: Vec<VendorBudgetInfo>,
+}
+
 #[derive(Deserialize)]
 struct AdminActionResponse {
     success: bool,
@@ -331,6 +375,53 @@ impl FluxgateClient {
         Ok(resp.json().await?)
     }
 
+    /// GET /admin/quota/ledger — 配额账本读侧（逐窗 used/重置/作用域）。
+    /// `key` 可选过滤租户摘要；网关未接线账本时返回空 rows。
+    pub async fn quota_ledger(
+        &self,
+        key: Option<&str>,
+    ) -> Result<QuotaLedgerResponse, FluxgateSdkError> {
+        let mut url =
+            self.base_url
+                .join("admin/quota/ledger")
+                .map_err(|e| FluxgateSdkError::Config {
+                    message: format!("invalid URL: {e}"),
+                })?;
+        if let Some(key) = key {
+            url.query_pairs_mut().append_pair("key", key);
+        }
+
+        let request = self
+            .http
+            .get(url)
+            .bearer_auth(&self.api_key)
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
+
+        Ok(resp.json().await?)
+    }
+
+    /// GET /admin/vendor-budgets — vendor 预算状态（占用/消耗率/重置倒计时）。
+    pub async fn vendor_budgets(&self) -> Result<VendorBudgetsResponse, FluxgateSdkError> {
+        let url =
+            self.base_url
+                .join("admin/vendor-budgets")
+                .map_err(|e| FluxgateSdkError::Config {
+                    message: format!("invalid URL: {e}"),
+                })?;
+
+        let request = self
+            .http
+            .get(url)
+            .bearer_auth(&self.api_key)
+            .timeout(self.effective_timeout);
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
+
+        Ok(resp.json().await?)
+    }
+
     /// admin 写路径的 success 断言（2xx 由重试层
     /// [`send_with_retry`] 保证；`success=false` → Protocol 错误显性）。
     async fn assert_admin_ok(resp: reqwest::Response) -> Result<(), FluxgateSdkError> {
@@ -357,6 +448,8 @@ pub(crate) mod sdk_routes {
         ("GET", "admin/vendors"),
         ("GET", "admin/sessions"),
         ("GET", "admin/context-stats"),
+        ("GET", "admin/quota/ledger"),
+        ("GET", "admin/vendor-budgets"),
         ("GET", "api/v1/health"),
     ];
 }

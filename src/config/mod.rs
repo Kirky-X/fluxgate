@@ -9,7 +9,7 @@ pub mod loader;
 pub mod manager;
 pub mod model_catalog;
 
-pub use loader::{parse_config_content, validate_config};
+pub use loader::{effective_quota_windows, parse_config_content, validate_config};
 pub use manager::ConfigManager;
 pub use model_catalog::{
     capabilities_for, flavor_default_capabilities, ModelCapabilities, ModelCatalogEntry,
@@ -683,6 +683,9 @@ pub struct RoutingSection {
     /// 前缀亲和 PoTC 子段（默认关）
     #[serde(default)]
     pub prefix_affinity: PrefixAffinitySection,
+    /// 配额感知路由因子（`[routing.quota_factor]`）：默认 mode=off 零参与
+    #[serde(default)]
+    pub quota_factor: QuotaFactorSection,
     /// 缓存经济学亲和子段（`[routing.affinity]`）：默认 legacy = 成功即粘
     /// 1h（现行为逐位不变）
     #[serde(default)]
@@ -902,6 +905,7 @@ impl Default for RoutingSection {
             difficulty: DifficultySection::default(),
             price_factor_mode: default_price_factor_mode(),
             prefix_affinity: PrefixAffinitySection::default(),
+            quota_factor: QuotaFactorSection::default(),
             affinity: AffinitySection::default(),
             rerank_score_normalization: default_rerank_score_normalization(),
         }
@@ -1346,6 +1350,10 @@ pub struct Config {
     ///（零判限）。Section 字段落地防热更抹段。
     #[serde(default)]
     pub quota: QuotaSection,
+    /// `[[vendor_budgets]]` 段 — vendor 声明式预算（配额感知路由因子的
+    /// 记账面）。空 vec = 无预算登记，该 vendor 不参与因子。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vendor_budgets: Vec<VendorBudgetConfig>,
     /// `[grpc]` 段 — gRPC 服务器（`feature = "grpc"`）。None = 配置中无该段，
     /// gRPC 服务器禁用（不监听 gRPC 端口）
     #[serde(default)]
@@ -1528,7 +1536,9 @@ impl Default for HealthSection {
 /// `[quota]` 段：成本与 token 维度配额（预扣-回补）。enabled 默认 false
 ///（零判限）；window_secs 固定窗口（默认 3600，0 非法）；est_chars_per_token
 /// 输入估算常数（默认 4）。per-key 限额放 [[auth.keys]]（0 = 不限）；
-/// 窗口账本为进程内存（单实例、重启清零）
+/// 窗口账本 `[[quota.windows]]` 非空时按数组生效（旧 window_secs 忽略并
+/// WARN），为空时旧字段编译为 `id="default"` 单窗（行为与历史逐位一致）。
+/// 生效窗口集见 `QuotaSection::effective_windows`（实现在 loader，规则14）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct QuotaSection {
     #[serde(default)]
@@ -1537,6 +1547,88 @@ pub struct QuotaSection {
     pub window_secs: u64,
     #[serde(default = "default_est_chars_per_token")]
     pub est_chars_per_token: u64,
+    /// `[[quota.windows]]`：多窗口预算（一 key 多窗并存，每窗独立判定）。
+    /// 空 = 走旧单窗字段（`window_secs`）；非空 = 旧字段忽略（加载期 WARN）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<QuotaWindowConfig>,
+}
+
+/// `[[quota.windows]]` 单窗：`id` 唯一标识（账本行键与指标标签）、
+/// `scope` 作用域（api_key 按租户 / global 全局聚合）、周期两形态
+///（period=rolling 配 `rolling_secs`；period=calendar 配
+/// `calendar`=daily|weekly|monthly + `tz_offset_secs` 时区偏移）、
+/// 双维度限额（0 = 落回 [[auth.keys]] 的 per-key 限额，双零即该窗不判）。
+/// 闭集与数值域经 validate_quota_windows 在加载与热更两处校验。
+/// Default 实现在 loader（scope/period 与 serde 缺省单源：api_key/rolling）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct QuotaWindowConfig {
+    pub id: String,
+    #[serde(default = "loader::default_quota_window_scope")]
+    pub scope: String,
+    #[serde(default = "loader::default_quota_period")]
+    pub period: String,
+    #[serde(default)]
+    pub rolling_secs: u64,
+    #[serde(default)]
+    pub calendar: String,
+    #[serde(default)]
+    pub tz_offset_secs: i64,
+    #[serde(default)]
+    pub tokens_limit: u64,
+    #[serde(default)]
+    pub cost_limit_millicents: u64,
+}
+
+/// `[[vendor_budgets]]` 单 vendor 声明式预算：网关按实际用量记账，
+/// `period` 两形态与 [`QuotaWindowConfig`] 同源（rolling_secs / calendar +
+/// tz_offset_secs）。记账行落 `quota_ledger`（window_id=`vendor:{id}`）；
+/// 未配置预算的 vendor 不参与配额因子。闭集与数值域经
+/// validate_vendor_budgets 校验。Default 实现在 loader（period 与 serde
+/// 缺省单源：rolling）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct VendorBudgetConfig {
+    pub vendor_id: String,
+    #[serde(default)]
+    pub tokens_limit: u64,
+    #[serde(default)]
+    pub cost_limit_millicents: u64,
+    #[serde(default = "loader::default_quota_period")]
+    pub period: String,
+    #[serde(default)]
+    pub rolling_secs: u64,
+    #[serde(default)]
+    pub calendar: String,
+    #[serde(default)]
+    pub tz_offset_secs: i64,
+}
+
+/// `[routing.quota_factor]` 配额感知路由因子：`mode` 闭集 off（默认，
+/// 零参与）/ smart（耗尽 vendor 摘出候选 + 重置最快者加成）/
+/// pace（消耗率带内升降权）；`w_quota` 为第 6 因子系数，与 w_model/w_queue/
+/// w_window 同温标（默认 0.3，仅 mode≠off 时被咨询）。合法值集单源
+/// `QuotaFactorMode::parse`（实现在 loader）；
+/// 字段热读（POST /admin/config 立即生效）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct QuotaFactorSection {
+    #[serde(default = "loader::default_quota_factor_mode")]
+    pub mode: String,
+    #[serde(default = "loader::default_quota_factor_weight")]
+    pub w_quota: f64,
+}
+
+/// 配额因子模式闭集（`[routing.quota_factor].mode` 的合法值集）。字段保持
+/// `String` 而非 serde 枚举：非法值由 loader 以原值点名拒绝（与既有段
+/// 同口径）。方法实现在 `loader`（规则14）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaFactorMode {
+    /// 不参与（默认）：零查询、零评分副作用
+    Off,
+    /// 预算耗尽 vendor 摘出候选（全员耗尽保留全部并计数）；其余按
+    /// 「重置最快」加成进第 6 因子加权
+    Smart,
+    /// 消耗率带：used/elapsed 对 budget/period 超 1.1 降权 ×0.5、
+    /// 低于 0.9 升权 ×1.2、带内不变
+    Pace,
 }
 
 fn default_quota_window_secs() -> u64 {
@@ -1547,15 +1639,8 @@ fn default_est_chars_per_token() -> u64 {
     4
 }
 
-impl Default for QuotaSection {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            window_secs: default_quota_window_secs(),
-            est_chars_per_token: default_est_chars_per_token(),
-        }
-    }
-}
+// 窗口属性由 loader 的 `effective_quota_windows` 派生（规则14：实现函数
+// 落在 loader）；本文件只承载结构体定义。
 
 /// 单条定价配置 — vendor + model 维度的输入/输出 token 单价（每 1k tokens，USD）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

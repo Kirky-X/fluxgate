@@ -16,8 +16,8 @@ use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
 use sea_orm::DatabaseBackend;
 use std::path::PathBuf;
 
-/// 核心表迁移最新版本（V6：affinity_sticks 会话粘性落盘表）。
-pub(crate) const CORE_SCHEMA_VERSION: u32 = 6;
+/// 核心表迁移最新版本（V7：quota_ledger 多窗预算账本）。
+pub(crate) const CORE_SCHEMA_VERSION: u32 = 7;
 
 /// V1 UP（sqlite，FROZEN；含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
@@ -515,6 +515,57 @@ const DOWN_V6: &str = r#"
 DROP TABLE IF EXISTS affinity_sticks;
 "#;
 
+/// V7 UP（sqlite）：quota_ledger 多窗预算账本（quota-aware-routing）。
+/// 复合主键 (api_key_hash, window_id, window_start) —— window_start 为
+/// Unix 秒：rolling 窗起点 = 窗内首次用量、calendar 窗 = 对齐边界，同一
+/// window_id 的每个周期实例各占一行；结算 UPSERT 覆盖 + 30s 周期 flush。
+/// api_key_hash 承载三类键：租户摘要 / `__global__`（scope=global 窗）/
+/// `__vendor__:{id}`（vendor 预算）。
+const UP_V7_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS quota_ledger (
+    api_key_hash TEXT NOT NULL,
+    window_id TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    cost_used_millicents INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (api_key_hash, window_id, window_start)
+);
+"#;
+
+/// V7 UP（postgres）：token/时间计数 BIGINT 承接。
+const UP_V7_POSTGRES: &str = r#"
+CREATE TABLE IF NOT EXISTS quota_ledger (
+    api_key_hash TEXT NOT NULL,
+    window_id TEXT NOT NULL,
+    window_start BIGINT NOT NULL,
+    tokens_used BIGINT NOT NULL DEFAULT 0,
+    cost_used_millicents BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY (api_key_hash, window_id, window_start)
+);
+"#;
+
+/// V7 UP（mysql）：键列 VARCHAR 控复合主键长度（64 + 128 + 8 = 200 字节，
+/// 远低于 3072 上限，与 affinity_sticks/response_store 同款）；索引无需
+/// 运行时探针——主键即覆盖 (api_key_hash, window_id) 前缀查询。
+const UP_V7_MYSQL: &str = r#"
+CREATE TABLE IF NOT EXISTS quota_ledger (
+    api_key_hash VARCHAR(64) NOT NULL,
+    window_id VARCHAR(128) NOT NULL,
+    window_start BIGINT NOT NULL,
+    tokens_used BIGINT NOT NULL DEFAULT 0,
+    cost_used_millicents BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY (api_key_hash, window_id, window_start)
+) ENGINE = InnoDB;
+"#;
+
+/// V7 DOWN（三后端通用：DROP TABLE 隐式带走索引）。
+const DOWN_V7: &str = r#"
+DROP TABLE IF EXISTS quota_ledger;
+"#;
+
 /// V1 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
 const DOWN_COMMON: &str = r#"
 DROP TABLE IF EXISTS model_stats;
@@ -560,6 +611,9 @@ pub(crate) fn core_migration_file(
         (6, DatabaseBackend::Sqlite) => UP_V6_SQLITE,
         (6, DatabaseBackend::Postgres) => UP_V6_POSTGRES,
         (6, DatabaseBackend::MySql) => UP_V6_MYSQL,
+        (7, DatabaseBackend::Sqlite) => UP_V7_SQLITE,
+        (7, DatabaseBackend::Postgres) => UP_V7_POSTGRES,
+        (7, DatabaseBackend::MySql) => UP_V7_MYSQL,
         _ => {
             return Err(DbError::Config(format!(
                 "no core migration v{version} for {label}"
@@ -575,6 +629,7 @@ pub(crate) fn core_migration_file(
             _ => DOWN_V5,
         },
         6 => DOWN_V6,
+        7 => DOWN_V7,
         2 => match backend {
             DatabaseBackend::Sqlite => DOWN_V2_SQLITE,
             DatabaseBackend::Postgres => DOWN_V2_POSTGRES,

@@ -23,6 +23,7 @@ use tower::ServiceExt;
 
 fn make_config() -> Config {
     Config {
+        vendor_budgets: Vec::new(),
         server: fluxgate::config::ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
@@ -266,5 +267,113 @@ async fn metrics_serves_prometheus_text_after_traffic() {
     assert!(
         text.contains("route=\"/v1/chat/completions\""),
         "RED series for the request must be present"
+    );
+}
+
+/// /admin/metrics 暴露配额观测三计数（quota-aware-routing）：一次 429 后
+/// `quota_window_refused_total` 逐窗计数非空、`quota_ledger_flush_fail_total`
+/// 字段在位。与亲和计数同出口（GlobalMetrics 快照 → JSON）。
+#[tokio::test]
+async fn admin_metrics_exposes_quota_counters() {
+    // 配置 quota：租户限额 1 token（首请求即 429，触发受拒计数）。
+    // 装配前注入（ConfigManager::new 无路径，update_config 拒绝持久化）。
+    let mut config = make_config();
+    let good_key_digest =
+        "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303".to_string();
+    config.auth = Some(fluxgate::config::AuthSection {
+        enabled: true,
+        api_keys: vec![good_key_digest.clone()],
+        header: Default::default(),
+        keys: vec![fluxgate::config::AuthKeyEntry {
+            hash: good_key_digest,
+            tier: fluxgate::config::AuthTier::Elastic,
+            token_quota: 1,
+            cost_quota_millicents: 0,
+        }],
+    });
+    config.quota.enabled = true;
+
+    let config_manager = Arc::new(ConfigManager::new(config));
+    let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+    let pool = memory_pool().await;
+    let database = Arc::new(Database {
+        pool: pool.clone(),
+        repository: Arc::new(fluxgate::database::Repository::new(pool.clone())),
+    });
+    let router = Arc::new(fluxgate::router::Router::new(
+        config_manager.clone(),
+        vendor_manager.clone(),
+    ));
+    let state = Arc::new(ApiState {
+        affinity_writer: None,
+        config: config_manager,
+        vendor_manager,
+        router,
+        openai_converter: Arc::new(OpenAIConverter::new()),
+        anthropic_converter: Arc::new(AnthropicConverter::new()),
+        database,
+        logger: None,
+        pre_aggregator: None,
+        affinity: None,
+        response_cache: None,
+        bandit: None,
+        quota: Some(Arc::new(fluxgate::middleware::quota::QuotaState::new())),
+        difficulty: None,
+        responses: None,
+    });
+    let app = create_router(state.clone()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", "Bearer test-good-key")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "限额 1 token 首请求即 429"
+    );
+
+    // auth 已启用：admin 面带合法 key 读取（与业务面同 key）
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/metrics")
+                .header("authorization", "Bearer test-good-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let refused = json
+        .get("quota_window_refused_total")
+        .and_then(|v| v.as_array())
+        .expect("quota_window_refused_total 字段在位（labeled 数组）");
+    assert!(
+        refused
+            .iter()
+            .any(|e| e[0] == serde_json::json!("default") && e[1].as_u64().unwrap_or(0) >= 1),
+        "受拒窗（default）必须计数 ≥1: {refused:?}"
+    );
+    assert!(
+        json.get("quota_ledger_flush_fail_total")
+            .is_some_and(|v| v.is_u64()),
+        "/admin/metrics 缺 quota_ledger_flush_fail_total"
     );
 }

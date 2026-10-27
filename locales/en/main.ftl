@@ -16,6 +16,8 @@ main-di-container-built = AsyncKit DI container built: 4/4 modules resolved
 main-response-cache-enabled = Response cache enabled (recId=12, [cache].enabled=true)
 main-response-cache-disabled = Response cache disabled (recId=12, [cache].enabled=false)
 main-global-state-initialized = Global state initialized
+main-quota-ledger-restored = quota ledger restored { $count } active window(s)
+main-quota-ledger-restore-failed = quota ledger restore read failed; starting with empty budgets: { $error }
 main-starting-server = Starting server: { $addr }
 main-server-listening = Server listening on { $addr } (sdforge powered)
 main-press-ctrl-c = Press Ctrl+C to initiate graceful shutdown

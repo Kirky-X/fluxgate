@@ -85,92 +85,92 @@ flowchart TB
 
 ### 顶层目录
 
-| 目录 / 文件 | 职责 |
-|---|---|
-| `src/api/` | HTTP 接入层：协议端点、中间件编排、请求处理主循环、运维端点 |
-| `src/config/` | 配置结构体定义、文件加载校验、热更新事务写与快照回滚 |
-| `src/database/` | SQLite 持久化：异步批量日志、Token 小时预聚合、仓储与增量迁移 |
-| `src/i18n/` | Fluent 国际化：编译期内嵌双束消息目录与语言检测链 |
-| `src/infrastructure/` | 基于 trait-kit `AsyncKit` 的依赖注入组装 |
-| `src/middleware/` | 认证中间件与拥塞感知准入中间件 |
-| `src/protocol/` | OpenAI/Anthropic/Responses/Gemini 统一中间表示、协议转换器、SSE 分帧编码 |
-| `src/router/` | 路由决策核心：加权打分、LinUCB、会话亲和 |
-| `src/utils/` | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器、OTLP 指标桥（`otlp.rs`，feature `otlp`） |
-| `src/vendor/` | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价 |
-| `src/error/mod.rs` / `src/error/gate.rs` | `FluxgateError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale） |
-| `src/lib.rs` | 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/storage/vendor/router 路由半边 + api/server/database 应用面） |
-| `src/main.rs` | 二进制薄入口：仅解析 CLI 配置路径参数；装配链在 `src/server/bootstrap.rs`，建站与路由合并、serve 在 `src/server/http.rs` |
+| 目录 / 文件                              | 职责                                                                                                                                     |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/api/`                               | HTTP 接入层：协议端点、中间件编排、请求处理主循环、运维端点                                                                              |
+| `src/config/`                            | 配置结构体定义、文件加载校验、热更新事务写与快照回滚                                                                                     |
+| `src/database/`                          | SQLite 持久化：异步批量日志、Token 小时预聚合、仓储与增量迁移                                                                            |
+| `src/i18n/`                              | Fluent 国际化：编译期内嵌双束消息目录与语言检测链                                                                                        |
+| `src/infrastructure/`                    | 基于 trait-kit `AsyncKit` 的依赖注入组装                                                                                                 |
+| `src/middleware/`                        | 认证中间件与拥塞感知准入中间件                                                                                                           |
+| `src/protocol/`                          | OpenAI/Anthropic/Responses/Gemini 统一中间表示、协议转换器、SSE 分帧编码                                                                 |
+| `src/router/`                            | 路由决策核心：加权打分、LinUCB、会话亲和                                                                                                 |
+| `src/utils/`                             | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器、OTLP 指标桥（`otlp.rs`，feature `otlp`）                                        |
+| `src/vendor/`                            | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价                                                                                |
+| `src/error/mod.rs` / `src/error/gate.rs` | `FluxgateError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale）              |
+| `src/lib.rs`                             | 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/storage/vendor/router 路由半边 + api/server/database 应用面） |
+| `src/main.rs`                            | 二进制薄入口：仅解析 CLI 配置路径参数；装配链在 `src/server/bootstrap.rs`，建站与路由合并、serve 在 `src/server/http.rs`                 |
 
 ### src/api/
 
-| 文件 | 职责 |
-|---|---|
-| `api/mod.rs` | 业务路由组装与请求处理主循环：换路重试循环、亲和 bind/clear 编排（`src/api/mod.rs:48-98`、`src/api/mod.rs:526-730`） |
-| `api/router_builder.rs` | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:724-776`）；admission 准入判定挂载（`src/api/router_builder.rs:478-554`） |
-| `api/completions.rs` | `POST /v1/chat/completions`、`POST /v1/embeddings` 端点 |
-| `api/gemini.rs` | Gemini 原生端点（`/v1beta/models/{model}:{action}`）：IR 路由/原生直通/Embeddings/countTokens/模型清单与 Gemini 错误体 |
-| `api/rerank.rs` | `POST /v1/rerank` 端点：能力过滤路由、Cohere 形状转换与日志摘要（不含 query/documents 原文） |
-| `api/responses.rs` | `POST /v1/responses` 与检索/删除/取消/input_tokens：IR 与原生双路径、语义化 SSE、`response_store` 状态回放与后台任务 |
-| `api/anthropic.rs` | `POST /v1/messages` 端点 |
-| `api/health.rs` | `/health` 健康检查端点 |
-| `api/admin.rs` | `/admin/*` 运维端点 handler（日志查询、指标、厂商状态、配置热更新、模型管理） |
-| `api/state.rs` | `ApiState` 应用状态聚合；LinUCB 奖励回传（`src/api/state.rs:75-100`） |
-| `api/global_state.rs` | sdforge 宏 handler 的全局状态持有（`OnceCell` 持有 `ApiState`，弥补宏不支持 axum State 提取器） |
-| `api/routing_hints.rs` | 从请求头提取四个路由提示（X-Vendor / X-Model / X-Session-Id / X-Weight）；会话键缺失时兜底哈希 |
-| `api/response_cache.rs` | recId=12 精确响应缓存，存储落地 oxcache（见[响应缓存](#-响应缓存)） |
-| `api/sse.rs` | SSE 编码器与增量分帧器门面（实源 `src/protocol/sse_frame.rs`，此处 re-export 保持引用路径） |
-| `api/models.rs` | `GET /v1/models` OpenAI 兼容模型列表（模型目录 ∪ vendor 模型去重，不进缓存） |
-| `api/count_tokens.rs` | `POST /v1/messages/count_tokens` Anthropic 兼容 token 计数（近似估算，不引 tokenizer） |
-| `api/readiness.rs` | 就绪探针：真实组件检查经 sdforge `AsyncReadinessCheck` 注册，`/readyz` 聚合（200/503） |
-| `api/openapi_docs.rs` | OpenAPI 文档面：主 REST 端点经 sdforge inventory 注册进全局 spec；文档路由由 `[docs].enabled` 开关挂载（默认 false = 404） |
-| `api/route_explain.rs` | `POST /admin/route/explain` 路由可解释性：逐候选 decision / reason_code（纯只读） |
-| `api/route_difficulty_explain.rs` | `POST /admin/route/difficulty-explain` 难度定档解释端点（只读，零计量副作用） |
-| `api/semantic_cache.rs` | 语义响应缓存（O4，`semantic-cache` feature 门控）：精确 miss 后按 api_key_hash 租户隔离的嵌入相似检索层 |
-| `api/vault.rs` | 密钥保密柜管理面（key-vault）：`/admin/vault/keys*` 录入/掩码列表/删除，put/remove 后即时重注 inline key pool |
+| 文件                              | 职责                                                                                                                                         |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api/mod.rs`                      | 业务路由组装与请求处理主循环：换路重试循环、亲和 bind/clear 编排（`src/api/mod.rs:48-98`、`src/api/mod.rs:526-730`）                         |
+| `api/router_builder.rs`           | axum Router 构建、中间件管线与端点注册（`src/api/router_builder.rs:724-776`）；admission 准入判定挂载（`src/api/router_builder.rs:478-554`） |
+| `api/completions.rs`              | `POST /v1/chat/completions`、`POST /v1/embeddings` 端点                                                                                      |
+| `api/gemini.rs`                   | Gemini 原生端点（`/v1beta/models/{model}:{action}`）：IR 路由/原生直通/Embeddings/countTokens/模型清单与 Gemini 错误体                       |
+| `api/rerank.rs`                   | `POST /v1/rerank` 端点：能力过滤路由、Cohere 形状转换与日志摘要（不含 query/documents 原文）                                                 |
+| `api/responses.rs`                | `POST /v1/responses` 与检索/删除/取消/input_tokens：IR 与原生双路径、语义化 SSE、`response_store` 状态回放与后台任务                         |
+| `api/anthropic.rs`                | `POST /v1/messages` 端点                                                                                                                     |
+| `api/health.rs`                   | `/health` 健康检查端点                                                                                                                       |
+| `api/admin.rs`                    | `/admin/*` 运维端点 handler（日志查询、指标、厂商状态、配置热更新、模型管理）                                                                |
+| `api/state.rs`                    | `ApiState` 应用状态聚合；LinUCB 奖励回传（`src/api/state.rs:75-100`）                                                                        |
+| `api/global_state.rs`             | sdforge 宏 handler 的全局状态持有（`OnceCell` 持有 `ApiState`，弥补宏不支持 axum State 提取器）                                              |
+| `api/routing_hints.rs`            | 从请求头提取四个路由提示（X-Vendor / X-Model / X-Session-Id / X-Weight）；会话键缺失时兜底哈希                                               |
+| `api/response_cache.rs`           | recId=12 精确响应缓存，存储落地 oxcache（见[响应缓存](#-响应缓存)）                                                                          |
+| `api/sse.rs`                      | SSE 编码器与增量分帧器门面（实源 `src/protocol/sse_frame.rs`，此处 re-export 保持引用路径）                                                  |
+| `api/models.rs`                   | `GET /v1/models` OpenAI 兼容模型列表（模型目录 ∪ vendor 模型去重，不进缓存）                                                                 |
+| `api/count_tokens.rs`             | `POST /v1/messages/count_tokens` Anthropic 兼容 token 计数（近似估算，不引 tokenizer）                                                       |
+| `api/readiness.rs`                | 就绪探针：真实组件检查经 sdforge `AsyncReadinessCheck` 注册，`/readyz` 聚合（200/503）                                                       |
+| `api/openapi_docs.rs`             | OpenAPI 文档面：主 REST 端点经 sdforge inventory 注册进全局 spec；文档路由由 `[docs].enabled` 开关挂载（默认 false = 404）                   |
+| `api/route_explain.rs`            | `POST /admin/route/explain` 路由可解释性：逐候选 decision / reason_code（纯只读）                                                            |
+| `api/route_difficulty_explain.rs` | `POST /admin/route/difficulty-explain` 难度定档解释端点（只读，零计量副作用）                                                                |
+| `api/semantic_cache.rs`           | 语义响应缓存（O4，`semantic-cache` feature 门控）：精确 miss 后按 api_key_hash 租户隔离的嵌入相似检索层                                      |
+| `api/vault.rs`                    | 密钥保密柜管理面（key-vault）：`/admin/vault/keys*` 录入/掩码列表/删除，put/remove 后即时重注 inline key pool                                |
 
 ### src/router/
 
-| 文件 | 职责 |
-|---|---|
-| `router/mod.rs` | 模块组织与 re-export |
-| `router/router.rs` | 路由决策核心：三级决策顺序、`compute_weight` 加权打分、选择层（温度平滑/轮盘赌/PoTC）、SLA/LPS 增强因子、回退链构建 |
-| `router/bandit.rs` | recId=15 LinUCB contextual bandit（selection 第三档） |
-| `router/affinity.rs` / `router/affinity_settle.rs` | recId=11 会话/前缀亲和表（oxcache 承载存储）+ 缓存经济学 settle 决策与粘性记账 |
+| 文件                                               | 职责                                                                                                                |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `router/mod.rs`                                    | 模块组织与 re-export                                                                                                |
+| `router/router.rs`                                 | 路由决策核心：三级决策顺序、`compute_weight` 加权打分、选择层（温度平滑/轮盘赌/PoTC）、SLA/LPS 增强因子、回退链构建 |
+| `router/bandit.rs`                                 | recId=15 LinUCB contextual bandit（selection 第三档）                                                               |
+| `router/affinity.rs` / `router/affinity_settle.rs` | recId=11 会话/前缀亲和表（oxcache 承载存储）+ 缓存经济学 settle 决策与粘性记账                                      |
 
 ### src/vendor/
 
-| 文件 | 职责 |
-|---|---|
-| `vendor/manager.rs` | `VendorManager` 请求执行编排：熔断包裹、重试循环、定价热读、厂商状态维护 |
-| `vendor/pool.rs` | `ConnectionPool`：单 `reqwest::Client` + `tokio::sync::Semaphore` 并发上限，permit drop 自动释放 |
-| `vendor/queue.rs` | `VendorQueue` 厂商请求队列（`PendingRequest`），queue_factor 负载信号的数据源 |
-| `vendor/rate_limiter.rs` | `TokenBucket`/`ConcurrencyLimiter`（limiteron 包装器）+ 时段门控统一判定（recId=13，含跨午夜窗口） |
-| `vendor/status.rs` | `VendorStatus`/`VendorState`：原子状态机与错误计数（Available/Unavailable 等） |
-| `vendor/cost.rs` | `CostCalculator`：(vendor_id, model_id) 维度定价表查找与 USD 计算 |
-| `vendor/key_pool.rs` | 多 key 池：逐 env 名解析、轮转游标与指纹观测 |
-| `vendor/resilience/fallback.rs` | `FallbackChain`：按 priority 升序链式回退 |
+| 文件                             | 职责                                                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `vendor/manager.rs`              | `VendorManager` 请求执行编排：熔断包裹、重试循环、定价热读、厂商状态维护                             |
+| `vendor/pool.rs`                 | `ConnectionPool`：单 `reqwest::Client` + `tokio::sync::Semaphore` 并发上限，permit drop 自动释放     |
+| `vendor/queue.rs`                | `VendorQueue` 厂商请求队列（`PendingRequest`），queue_factor 负载信号的数据源                        |
+| `vendor/rate_limiter.rs`         | `TokenBucket`/`ConcurrencyLimiter`（limiteron 包装器）+ 时段门控统一判定（recId=13，含跨午夜窗口）   |
+| `vendor/status.rs`               | `VendorStatus`/`VendorState`：原子状态机与错误计数（Available/Unavailable 等）                       |
+| `vendor/cost.rs`                 | `CostCalculator`：(vendor_id, model_id) 维度定价表查找与 USD 计算                                    |
+| `vendor/key_pool.rs`             | 多 key 池：逐 env 名解析、轮转游标与指纹观测                                                         |
+| `vendor/resilience/fallback.rs`  | `FallbackChain`：按 priority 升序链式回退                                                            |
 | `vendor/resilience/error_map.rs` | `GateErrorClassifier`：实现 limiteron `FailureClassifier<GateError>`（业务错误直通熔断器，无损穿透） |
 
 ### src/database/
 
-| 文件 | 职责 |
-|---|---|
-| `database/database.rs` | `Database`：连接建立（path + pool_size）与 repository 句柄 |
-| `database/migration.rs` | 版本化迁移：V1 FROZEN + V2/V3 迁移（sqlite/postgres/mysql 三方言，当前 `CORE_SCHEMA_VERSION = 3`）经 dbnexus `MigrationExecutor` 执行（UP 建表 + DOWN 回滚）；`schema.*.sql` 退为可读文档，一致性由守卫测试锁定 |
-| `database/repository.rs` | 仓储：dbnexus 会话防御链上的参数化批量 INSERT（`execute_with_params` + 单事务批量） |
-| `database/async_logger.rs` | recId=9 背压语义异步日志写入器：`try_send` 满即丢弃计数，绝不阻塞响应路径；落库前经 inklog secret gate 脱敏 |
-| `database/pre_aggregator.rs` | Token 使用预聚合器：按小时聚合，减少数据库查询压力 |
+| 文件                         | 职责                                                                                                                                                                                                            |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `database/database.rs`       | `Database`：连接建立（path + pool_size）与 repository 句柄                                                                                                                                                      |
+| `database/migration.rs`      | 版本化迁移：V1 FROZEN + V2/V3 迁移（sqlite/postgres/mysql 三方言，当前 `CORE_SCHEMA_VERSION = 3`）经 dbnexus `MigrationExecutor` 执行（UP 建表 + DOWN 回滚）；`schema.*.sql` 退为可读文档，一致性由守卫测试锁定 |
+| `database/repository.rs`     | 仓储：dbnexus 会话防御链上的参数化批量 INSERT（`execute_with_params` + 单事务批量）                                                                                                                             |
+| `database/async_logger.rs`   | recId=9 背压语义异步日志写入器：`try_send` 满即丢弃计数，绝不阻塞响应路径；落库前经 inklog secret gate 脱敏                                                                                                     |
+| `database/pre_aggregator.rs` | Token 使用预聚合器：按小时聚合，减少数据库查询压力                                                                                                                                                              |
 
 ### 其余小模块
 
-| 目录 | 文件与职责 |
-|---|---|
-| `src/config/` | `mod.rs`：`Config` 结构体（19 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录 |
-| `src/middleware/` | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`lexcompress.rs`：词法压缩（N2，`X-Compress: 1` 触发的确定性剪枝）；`mod.rs`：中间件组织 |
-| `src/protocol/` | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`responses/`：Responses wire 类型、入站/出站转换与语义化 SSE 编解码；`gemini/`：Gemini wire 类型、双向转换、JSON Schema 清洗与 SSE 编解码；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3 ） |
-| `src/utils/` | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器；`otlp.rs`（feature `otlp`）：exposition 文本解析 + `OtlpBridge` 周期推送到 OTLP/HTTP-Proto，单一真源为 `sdforge::metrics::global_registry().render()`（与 `/metrics` 同源），导出失败 fail-open 计数 |
-| `src/i18n/` | `catalog.rs`：Fluent 双束编译期内嵌（`OnceLock` 静态缓存）；`locale.rs`：语言检测链与全局 locale 上下文；`mod.rs`：`t()`/`t_args()` 查找门面 |
-| `src/infrastructure/` | `di.rs`：`AsyncKit` 四模块拓扑序组装与 `verify_kit` |
+| 目录                  | 文件与职责                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/config/`         | `mod.rs`：`Config` 结构体（19 段）；`loader.rs`：`ConfigLoader`（confers 加载 + AnnotatedValue 剥壳为裸 serde_json）与 `validate_config`（按 section 拆分：vendor 条目 / env 告警 / model_catalog / resilience 熔断窗口 + 管理面密钥校验）；`manager.rs`：`ConfigManager` 热更新事务写 + `SnapshotManager` 快照；`model_catalog.rs`：`[[model_catalog]]` 模型能力目录            |
+| `src/middleware/`     | `auth.rs`：SHA256 摘要 + 常量时间比较认证；`admission.rs`：recId=16 拥塞感知优先级准入；`lexcompress.rs`：词法压缩（N2，`X-Compress: 1` 触发的确定性剪枝）；`mod.rs`：中间件组织                                                                                                                                                                                                 |
+| `src/protocol/`       | `unified.rs`：统一请求结构与流式 chunk；`openai_converter.rs`/`anthropic_converter.rs`：双向协议转换（含 Anthropic 流式编码器）；`responses/`：Responses wire 类型、入站/出站转换与语义化 SSE 编解码；`gemini/`：Gemini wire 类型、双向转换、JSON Schema 清洗与 SSE 编解码；`embedding_converter.rs`：embedding 请求转换；`sse_frame.rs`：SSE 编码与上游增量分帧实源（recId=3 ） |
+| `src/utils/`          | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器；`otlp.rs`（feature `otlp`）：exposition 文本解析 + `OtlpBridge` 周期推送到 OTLP/HTTP-Proto，单一真源为 `sdforge::metrics::global_registry().render()`（与 `/metrics` 同源），导出失败 fail-open 计数                       |
+| `src/i18n/`           | `catalog.rs`：Fluent 双束编译期内嵌（`OnceLock` 静态缓存）；`locale.rs`：语言检测链与全局 locale 上下文；`mod.rs`：`t()`/`t_args()` 查找门面                                                                                                                                                                                                                                     |
+| `src/infrastructure/` | `di.rs`：`AsyncKit` 四模块拓扑序组装与 `verify_kit`                                                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -264,23 +264,23 @@ weight = w_model·model.weight + w_queue·queue_factor
        + w_error·error_factor
 ```
 
-| 因子 | 含义 | 取值 |
-|---|---|---|
-| `model.weight` | 模型配置静态权重 | 配置值；非有限/≤0 归零保护 |
-| `queue_factor` | 厂商队列空闲度 | 队列长度 0 → 1.0；≥100 → 0.0（`src/router/router.rs` 的 `queue_factor`） |
-| `window_factor` | 时段预算健康度 | 无窗口 0.5（中性）；预算耗尽 0；剩余 <300s 减半（`src/router/router.rs` 的 `window_factor`） |
-| `latency_factor` | EWMA 延迟得分 | `ref/(ref+ewma_ms)`；无数据 0.5（`src/router/router.rs` 的 `latency_factor`） |
-| `error_factor` | 错误率得分 | `1−ewma_err`；无数据 1.0（`src/router/router.rs` 的 `error_factor`） |
+| 因子             | 含义             | 取值                                                                                         |
+| ---------------- | ---------------- | -------------------------------------------------------------------------------------------- |
+| `model.weight`   | 模型配置静态权重 | 配置值；非有限/≤0 归零保护                                                                   |
+| `queue_factor`   | 厂商队列空闲度   | 队列长度 0 → 1.0；≥100 → 0.0（`src/router/router.rs` 的 `queue_factor`）                     |
+| `window_factor`  | 时段预算健康度   | 无窗口 0.5（中性）；预算耗尽 0；剩余 <300s 减半（`src/router/router.rs` 的 `window_factor`） |
+| `latency_factor` | EWMA 延迟得分    | `ref/(ref+ewma_ms)`；无数据 0.5（`src/router/router.rs` 的 `latency_factor`）                |
+| `error_factor`   | 错误率得分       | `1−ewma_err`；无数据 1.0（`src/router/router.rs` 的 `error_factor`）                         |
 
 默认系数（`src/config/mod.rs` 的 `RoutingSection` 默认值）：
 
-| 系数 | 默认值 | 说明 |
-|---|---|---|
-| `w_model` | 0.4 | 静态权重主导 |
-| `w_queue` | 0.3 | 队列负载 |
-| `w_window` | 0.3 | 时段预算 |
-| `w_latency` | 0 | 默认关闭 |
-| `w_error` | 0 | 默认关闭 |
+| 系数        | 默认值 | 说明         |
+| ----------- | ------ | ------------ |
+| `w_model`   | 0.4    | 静态权重主导 |
+| `w_queue`   | 0.3    | 队列负载     |
+| `w_window`  | 0.3    | 时段预算     |
+| `w_latency` | 0      | 默认关闭     |
+| `w_error`   | 0      | 默认关闭     |
 
 系数均带非有限/≤0 归零保护，异常配置不会污染打分。
 
@@ -297,22 +297,22 @@ weight = w_model·model.weight + w_queue·queue_factor
 
 打分之后的选择（`src/router/router.rs` 的选择层）：
 
-| 机制 | 行为 | 开关 |
-|---|---|---|
-| 温度平滑 | `w^(1/T)` 压平/放大权重分布 | `[routing].temperature` |
-| 轮盘赌 | 按平滑后权重随机；total ≤ 0 时均匀随机 | 默认路径 |
-| Power-of-Two-Choices | 随机取两候选，按 EWMA 延迟择优 | `[routing].selection == "power_of_two"`（`src/router/router.rs` 的 `power_of_two_pick`） |
-| min+buffer 候选集 | 仅保留最低延迟加 buffer 余量内的候选 | `[routing].latency_buffer > 0`（`src/router/router.rs` 的 `min_buffer_pick`） |
+| 机制                 | 行为                                   | 开关                                                                                     |
+| -------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 温度平滑             | `w^(1/T)` 压平/放大权重分布            | `[routing].temperature`                                                                  |
+| 轮盘赌               | 按平滑后权重随机；total ≤ 0 时均匀随机 | 默认路径                                                                                 |
+| Power-of-Two-Choices | 随机取两候选，按 EWMA 延迟择优         | `[routing].selection == "power_of_two"`（`src/router/router.rs` 的 `power_of_two_pick`） |
+| min+buffer 候选集    | 仅保留最低延迟加 buffer 余量内的候选   | `[routing].latency_buffer > 0`（`src/router/router.rs` 的 `min_buffer_pick`）            |
 
 负载信号单选（`[routing].load_signal`，`src/router/router.rs`）：`"queue"`（默认）/ `"in_flight"` / `"in_flight_relative"` 三选一，决定 queue 维负载从哪个信号读取。
 
 ### 可选增强因子
 
-| 机制 | recId | 开关 | 行为 |
-|---|---|---|---|
-| SLA 虚拟队列打分 | 14 | `sla_v > 0` | 惩罚因子乘权重，对偶变量随违约更新，以租户 hash（或 `"global"`）为键（`src/router/router.rs` 的 SLA 对偶变量更新） |
-| LPS 排队论前瞻 | 17 | 默认关 | 软约束因子 + `x-deadline-ms` 头硬约束门控（超期候选直接排除）（`src/router/router.rs` 的 `lps_penalty_context` / `lps_deadline_filter`） |
-| 失败率软降权 | — | `[resilience].failure_rate_gate` | 错误率超阈值的候选权重 ×0.1（`src/router/router.rs` 的失败率软降权） |
+| 机制             | recId | 开关                             | 行为                                                                                                                                     |
+| ---------------- | ----- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| SLA 虚拟队列打分 | 14    | `sla_v > 0`                      | 惩罚因子乘权重，对偶变量随违约更新，以租户 hash（或 `"global"`）为键（`src/router/router.rs` 的 SLA 对偶变量更新）                       |
+| LPS 排队论前瞻   | 17    | 默认关                           | 软约束因子 + `x-deadline-ms` 头硬约束门控（超期候选直接排除）（`src/router/router.rs` 的 `lps_penalty_context` / `lps_deadline_filter`） |
+| 失败率软降权     | —     | `[resilience].failure_rate_gate` | 错误率超阈值的候选权重 ×0.1（`src/router/router.rs` 的失败率软降权）                                                                     |
 
 ### 会话亲和（recId=11）
 
@@ -340,6 +340,26 @@ flowchart LR
 - write-behind 通道满丢弃计数进 `affinity_persist_drop_total`（亲和是优化非承诺，丢不阻塞请求）；落库失败整批丢弃并计数 + warn，不重试——两个计数器分列出口：`affinity_persist_dropped`（通道侧精确）与 `affinity_flush_failures`（UPSERT 失败批次）；
 - 启动恢复只对 auto/turn 执行（legacy 不落盘、off 短路），失败仅 warn 不阻断启动（`src/server/affinity_restore.rs`）；
 - 观测四计数：`affinity_stick_total`（写入粘性：legacy/auto/turn 成功结算都计入）/ `affinity_drift_total`（threshold-skip）/ `affinity_persist_drop_total` / `affinity_restored_count`，经 `/admin/metrics` 暴露；路由解释端点输出 `affinity {decision, worth_tokens, ttl_secs}`（`src/api/routing_hints.rs` 的 `affinity_decision_block`，纯只读 peek 不续期；`ttl_secs` 取绑定键剩余 TTL，`decision` 四态区分 `disabled` 与 `no_session`）。
+
+### 配额账本落盘（quota_ledger，quota-aware-routing）
+
+`quota_ledger` 表（迁移 V7，复合主键 `(api_key_hash, window_id, window_start)`，三方言建表单源 `src/database/migration.rs`）——多窗预算（`[[quota.windows]]`）与 vendor 预算（`[[vendor_budgets]]`）的持久化面：
+
+```mermaid
+flowchart LR
+    C["consume（入口预扣）"] --> M["QuotaState 内存态<br/>租户/`__global__` → 窗口 id → 占用"]
+    R["recompense / record_vendor_usage<br/>（usage 结算点）"] -->|"结算行 try_send"| CH["async-channel 1024 槽<br/>QuotaLedgerPersister"]
+    FL["30s 周期 ticker<br/>（bootstrap 装配）"] -->|"全量快照"| CH
+    CH --> DB[("quota_ledger 表<br/>UPSERT 三方言")]
+    DB -->|"启动恢复<br/>仅 window_start+周期 ≥ now"| M
+    M -->|"路由第 6 因子<br/>smart/pace（mode 热读）"| RT["Router 打分"]
+    M --> ADM["GET /admin/quota/ledger<br/>GET /admin/vendor-budgets"]
+```
+
+- **内存权威**：判定走内存快路径（每请求零 DB 往返）；落盘是约束的尽力而为——结算即 UPSERT + 30s 全量 flush，崩溃回退窗口 ≤30s（预算是约束不是计费）；
+- **三类作用域行同表同路**：租户窗按摘要键、`scope=global` 窗固定键 `__global__`、vendor 预算键 `__vendor__:{id}`（window_id=`vendor:{id}`）；启动恢复仅取未过期窗（活动期由当前配置周期解释，账本不存周期事实）；
+- **失败不阻塞**：落库失败计数 + warn（`quota_ledger_flush_fail_total`，内存态不受影响）；恢复读取失败 ERROR 留痕后按空账本启动；
+- **路由因子**：mode=smart 耗尽 vendor 摘出候选（全员耗尽保留全部并计 `quota_factor_depleted_total{vendor}`）+ 重置最快加成进第 6 加法项；mode=pace 消耗率带乘性升降权（×0.5/×1.2）；429 多窗拒绝逐窗计数 `quota_window_refused_total{window_id}`。
 
 ### 路由提示
 
@@ -390,12 +410,12 @@ flowchart TB
 
 `limiteron::circuit` 三态机（手写版本已删除，统一委托 limiteron）。生产配置 `gate_circuit_config()`（`src/vendor/manager.rs:135-145`）：
 
-| 参数 | 值 | 设计理由 |
-|---|---|---|
-| `failure_threshold` | 5 | 连续失败 5 次打开 |
-| half-open 恢复条件 | 成功 3 次 | 探测确认后闭合 |
-| open 持续时间 | 30s | 常规冷却窗口 |
-| slow_call 判定 | 60s / 100% | 防止 LLM 长调用被误判为失败 |
+| 参数                | 值         | 设计理由                    |
+| ------------------- | ---------- | --------------------------- |
+| `failure_threshold` | 5          | 连续失败 5 次打开           |
+| half-open 恢复条件  | 成功 3 次  | 探测确认后闭合              |
+| open 持续时间       | 30s        | 常规冷却窗口                |
+| slow_call 判定      | 60s / 100% | 防止 LLM 长调用被误判为失败 |
 
 ```mermaid
 stateDiagram-v2
@@ -410,13 +430,13 @@ stateDiagram-v2
 
 延迟计算委托 `limiteron::retry::delay_for_attempt`，按错误类别分类（`src/utils/retry.rs:146` 的延迟选择函数、`src/vendor/manager.rs` 的错误分类消费）：
 
-| 错误类别 | 延迟策略 |
-|---|---|
-| 429 + Retry-After 头 | 按头等待，全范围展宽 jitter（最高优先） |
-| 429 无头 | 指数退避：1s × factor 2.0，封顶 16s，jitter 0.2 |
-| 5xx | [1s, 1s + spread) 区间随机 |
-| 网络错误 | 500ms × attempt |
-| 400 / 401 / 403 / 404 | 不重试，标记厂商 Unavailable |
+| 错误类别              | 延迟策略                                        |
+| --------------------- | ----------------------------------------------- |
+| 429 + Retry-After 头  | 按头等待，全范围展宽 jitter（最高优先）         |
+| 429 无头              | 指数退避：1s × factor 2.0，封顶 16s，jitter 0.2 |
+| 5xx                   | [1s, 1s + spread) 区间随机                      |
+| 网络错误              | 500ms × attempt                                 |
+| 400 / 401 / 403 / 404 | 不重试，标记厂商 Unavailable                    |
 
 可重试状态码集合默认 `[429, 500, 502, 503]`。
 
@@ -432,10 +452,10 @@ stateDiagram-v2
 
 ## 💰 成本追踪
 
-| 组件 | 文件 | 职责 |
-|---|---|---|
-| `CostCalculator` | `src/vendor/cost.rs` | 定价表来自热配置 `[[pricing]]`，按 `(prompt/1000)×in_price + (completion/1000)×out_price` 计算 USD；`(vendor_id, model_id)` 未命中计 0.0；每请求现读热配置，定价修改即时生效（`src/vendor/manager.rs` 的定价热读点） |
-| `CostTracker` | `src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径；`restore_from_db(pool, window_hours)` 启动恢复（按 `(vendor, model)` 聚合 `token_usage` 最近窗口回填内存视图，装配期先恢复再对外服务） |
+| 组件             | 文件                        | 职责                                                                                                                                                                                                                                                                             |
+| ---------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CostCalculator` | `src/vendor/cost.rs`        | 定价表来自热配置 `[[pricing]]`，按 `(prompt/1000)×in_price + (completion/1000)×out_price` 计算 USD；`(vendor_id, model_id)` 未命中计 0.0；每请求现读热配置，定价修改即时生效（`src/vendor/manager.rs` 的定价热读点）                                                             |
+| `CostTracker`    | `src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径；`restore_from_db(pool, window_hours)` 启动恢复（按 `(vendor, model)` 聚合 `token_usage` 最近窗口回填内存视图，装配期先恢复再对外服务） |
 
 **成本落库与内存边界（如实标注）**：成本分账已落库——`token_usage` 表按 `(vendor, model, api_key_hash, date, hour)` UPSERT，写入 `input_cost` / `output_cost` / `cache_read_cost` / `cache_creation_cost` 四档成本列（`src/database/pre_aggregator.rs`，单价取 `[[model_catalog]]` 四档，未登记记 0），并可由 `GET /admin/cost` 按 vendor/model 分组聚合查询。逐请求成本同步落库——`request_logs.cost_usd` 在日志写入路径经 `src/api/request_cost.rs` 的 `request_cost_usd` 计算：响应 usage 四档求和 × 目录单价（chat/embeddings/anthropic/gemini/responses 五入口共用，cache 语义单源 `prompt_cache_semantics`，与分账同口径；rerank 按每千文档价）；五入口无 usage（失败/空响应/流式成功——流式 usage 走预聚合分账，日志无 usage 响应体）记 `None`，未登记单价记 0。rerank 沿用既有口径：请求日志 `cost_usd` 失败路径（能力不匹配/上游失败）同样按公式写计算值，而 `token_usage` 分账失败不入账——两套口径并行，`/admin/cost` 聚合不含失败请求成本。进程内 `CostTracker`（`by_vendor`/`by_model`）启动时自 `token_usage` 按窗口恢复（`[metrics].cost_restore_window_hours`，默认 24，范围 1–8760；DB 未接线或内存库 warn 跳过）——恢复窗口之外的历史用量不进入实时内存视图。
 
@@ -447,13 +467,13 @@ stateDiagram-v2
 
 SQLite，5 张表（迁移 V1↔V3 定义于 `src/database/migration.rs`（当前 `CORE_SCHEMA_VERSION = 3`），`schema.*.sql` 为同源可读文档）：
 
-| 表 | 用途 | 状态 |
-|---|---|---|
-| `request_logs` | 请求日志（含 `cost_usd REAL DEFAULT 0.0` 列） | 读写 |
-| `token_usage` | Token 用量小时聚合 | 读写 |
-| `vendor_status` | 厂商状态持久化 | 仅有 schema，无读写路径 |
-| `model_stats` | 模型统计 | 仅有 schema，无读写路径 |
-| `vault_keys` | 密钥保密柜（cocoon 密文 + 掩码/指纹列，V3 迁移建表） | 读写 |
+| 表              | 用途                                                 | 状态                    |
+| --------------- | ---------------------------------------------------- | ----------------------- |
+| `request_logs`  | 请求日志（含 `cost_usd REAL DEFAULT 0.0` 列）        | 读写                    |
+| `token_usage`   | Token 用量小时聚合                                   | 读写                    |
+| `vendor_status` | 厂商状态持久化                                       | 仅有 schema，无读写路径 |
+| `model_stats`   | 模型统计                                             | 仅有 schema，无读写路径 |
+| `vault_keys`    | 密钥保密柜（cocoon 密文 + 掩码/指纹列，V3 迁移建表） | 读写                    |
 
 表结构经 dbnexus `MigrationExecutor` 版本化管理：启动装配链执行 V1/V2/V3 迁移（UP 建表 + 索引，DOWN 对应回滚），迁移历史记录于 dbnexus 默认历史表；存量库（表已存在、历史为空）由基线化检查兼容，不重复建表。三方言（sqlite/postgres/mysql）各有 FROZEN V1，与对应 `schema.*.sql` 文档的一致性由守卫测试锁定。
 
@@ -481,18 +501,18 @@ flowchart LR
 
 `Config` 顶层 23 段（`src/config/mod.rs:1065-1126`）：
 
-| 段 | 说明 | 段 | 说明 |
-|---|---|---|---|
-| `server` | 监听地址端口 | `routing` | 路由策略参数 |
-| `database` | SQLite 路径与池大小 | `cache` | 响应缓存开关 |
-| `vendors` | 厂商与模型清单 | `rate_limit` | 限流规则 |
-| `global_model`（Option） | 全局模型池 | `resilience` | 熔断/回退/软降权 |
-| `pricing` | `[[pricing]]` 定价表 | `admission` | 拥塞准入 |
-| `auth`（Option） | API key 与档位 | `retry` | 重试与换路预算 |
-| `cors`（Option） | 跨域 | `model_catalog` | `[[model_catalog]]` 模型能力/定价目录（空目录时序列化省略） |
-| `health` | 主动健康探针（默认 off） | `quota` | 成本/token 维度配额（默认关） |
-| `grpc`（Option） | gRPC 服务器（缺段/禁用 = 不监听） | `docs` | OpenAPI 文档面开关（默认关 = 路由不存在） |
-| `lexcompress` | 词法压缩（X-Compress 触发，默认 off） | | |
+| 段                       | 说明                                  | 段              | 说明                                                                            |
+| ------------------------ | ------------------------------------- | --------------- | ------------------------------------------------------------------------------- |
+| `server`                 | 监听地址端口                          | `routing`       | 路由策略参数                                                                    |
+| `database`               | SQLite 路径与池大小                   | `cache`         | 响应缓存开关                                                                    |
+| `vendors`                | 厂商与模型清单                        | `rate_limit`    | 限流规则                                                                        |
+| `global_model`（Option） | 全局模型池                            | `resilience`    | 熔断/回退/软降权                                                                |
+| `pricing`                | `[[pricing]]` 定价表                  | `admission`     | 拥塞准入                                                                        |
+| `auth`（Option）         | API key 与档位                        | `retry`         | 重试与换路预算                                                                  |
+| `cors`（Option）         | 跨域                                  | `model_catalog` | `[[model_catalog]]` 模型能力/定价目录（空目录时序列化省略）                     |
+| `health`                 | 主动健康探针（默认 off）              | `quota`         | 成本/token 配额 + `[[quota.windows]]` 多窗预算 + `[[vendor_budgets]]`（默认关） |
+| `grpc`（Option）         | gRPC 服务器（缺段/禁用 = 不监听）     | `docs`          | OpenAPI 文档面开关（默认关 = 路由不存在）                                       |
+| `lexcompress`            | 词法压缩（X-Compress 触发，默认 off） |                 |                                                                                 |
 
 **硬约束**：所有配置段必须进 `Config` 结构体——persist 是全量写回磁盘，结构体里没有的段会在写回时从文件中消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。
 
@@ -518,9 +538,9 @@ flowchart LR
 
 ### `/admin/config` 热更新边界
 
-| 类别 | 段 |
-|---|---|
-| 热生效 | `routing`、`retry`、`resilience`、`admission`、`auth`、`cache`（精确缓存）、`quota`、`health`、`pricing`、`lexcompress`、`global_model`（经 admin 写入路径）、`vendors`（enabled 与权重） |
+| 类别   | 段                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 热生效 | `routing`、`retry`、`resilience`、`admission`、`auth`、`cache`（精确缓存）、`quota`、`health`、`pricing`、`lexcompress`、`global_model`（经 admin 写入路径）、`vendors`（enabled 与权重）                                                                                                                                                                                              |
 | 需重启 | `server`、`cors`、`rate_limit`（tower 层构造期构建）、`database`、`grpc`、`global_model`、`docs.enabled`（路由建站期挂载）、`cache.semantic`（语义层 bootstrap 装配）、`routing.difficulty.enabled` 与 `routing.difficulty.classifier` 的 `model_path`/`engine`/`cache_ttl_secs`（以上经 POST 响应 `restart_required` 数组显式提示）、vendor concurrency、`vendors` 拓扑（不在数组内） |
 
 ---
@@ -580,16 +600,16 @@ flowchart LR
 
 `src/i18n/` + `locales/`：
 
-| 设计点 | 实现 |
-|---|---|
-| 消息格式 | Fluent（`.ftl`），en/zh 双束共 10 个文件 |
-| 部署形态 | 编译期 `include_str!` 内嵌，产物无需携带磁盘 `locales/` 目录；新增 ftl 必须登记 `EMBEDDED_LOCALES`，守卫测试兜底 |
-| 运行时结构 | `fluent_bundle::concurrent::FluentBundle` 双束，`OnceLock` 静态缓存，Send+Sync |
-| 语言检测链 | `FLUXGATE_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → `sys-locale` → `"en"`（强制顺序，显式读取保证 Windows/边缘环境确定性） |
-| 查找回退 | 当前语言 → en → 键名 |
+| 设计点     | 实现                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 消息格式   | Fluent（`.ftl`），en/zh 双束共 10 个文件                                                                                              |
+| 部署形态   | 编译期 `include_str!` 内嵌，产物无需携带磁盘 `locales/` 目录；新增 ftl 必须登记 `EMBEDDED_LOCALES`，守卫测试兜底                      |
+| 运行时结构 | `fluent_bundle::concurrent::FluentBundle` 双束，`OnceLock` 静态缓存，Send+Sync                                                        |
+| 语言检测链 | `FLUXGATE_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → `sys-locale` → `"en"`（强制顺序，显式读取保证 Windows/边缘环境确定性）          |
+| 查找回退   | 当前语言 → en → 键名                                                                                                                  |
 | 语言作用域 | 进程级：检测链启动定一次，`set_locale` 覆盖位仅供 SDK 嵌入式调用（服务端无 HTTP 入口、不进配置热更新，无 Accept-Language 请求级协商） |
-| 覆盖范围 | 全部业务消息（错误 `user_message()`、admin 响应与日志文案）；OpenAPI/健康描述等框架面串除外（见下） |
-| 本地化格式 | 刻意不用 Fluent `NUMBER()/DATETIME()` 与 ICU：API 输出数值/日期保持机器可读（ISO 8601、微美元整数），本地化渲染归客户端 |
+| 覆盖范围   | 全部业务消息（错误 `user_message()`、admin 响应与日志文案）；OpenAPI/健康描述等框架面串除外（见下）                                   |
+| 本地化格式 | 刻意不用 Fluent `NUMBER()/DATETIME()` 与 ICU：API 输出数值/日期保持机器可读（ISO 8601、微美元整数），本地化渲染归客户端               |
 
 错误展示走双轨（`src/error/mod.rs`）：`#[error]` Display 恒英文规范串（供日志与错误链），HTTP 响应体用 `user_message()` 返回随 locale 的 FTL 文案。
 
@@ -617,15 +637,15 @@ flowchart LR
 
 根 `Cargo.toml` 以 registry 版本集成 7 个兄弟库（版本号在 `[dependencies]`、校验和锁在 `Cargo.lock`）。迁移期曾以 path 依赖 + `[patch.crates-io]` 统一身份（保证传递依赖收敛到同一份源码），该形态随全量切 registry 移除：
 
-| 兄弟库 | 在 Fluxgate 中的角色 |
-|---|---|
-| `confers` | 配置加载（loader）与热更新（`DynamicField`） |
-| `dbnexus` | 数据库基础层 |
-| `inklog` | 日志（`LoggerManager`） |
+| 兄弟库      | 在 Fluxgate 中的角色                                      |
+| ----------- | --------------------------------------------------------- |
+| `confers`   | 配置加载（loader）与热更新（`DynamicField`）              |
+| `dbnexus`   | 数据库基础层                                              |
+| `inklog`    | 日志（`LoggerManager`）                                   |
 | `limiteron` | 熔断（circuit）、重试（retry）、限流（Governor/limiters） |
-| `oxcache` | 缓存后端（响应缓存、会话亲和表） |
-| `sdforge` | HTTP 服务宏框架（`#[forge]` handler） |
-| `trait-kit` | `AsyncKit` 依赖注入容器 |
+| `oxcache`   | 缓存后端（响应缓存、会话亲和表）                          |
+| `sdforge`   | HTTP 服务宏框架（`#[forge]` handler）                     |
+| `trait-kit` | `AsyncKit` 依赖注入容器                                   |
 
 ### Feature 门控
 
@@ -659,10 +679,10 @@ database → logging：async_logger（DB sink）无条件消费 inklog；inklog 
 
 ## 📚 文档导航
 
-| 文档 | 说明 |
-|:-----|:-----|
-| [用户指南](./USER_GUIDE.md) | 安装、配置与日常使用 |
+| 文档                           | 说明                     |
+| :----------------------------- | :----------------------- |
+| [用户指南](./USER_GUIDE.md)    | 安装、配置与日常使用     |
 | [API 参考](./API_REFERENCE.md) | HTTP 端点与请求/响应格式 |
-| [安全文档](./SECURITY.md) | 认证、隔离与安全设计 |
-| [FAQ](./FAQ.md) | 常见问题解答 |
-| [更新日志](./CHANGELOG.md) | 版本变更记录 |
+| [安全文档](./SECURITY.md)      | 认证、隔离与安全设计     |
+| [FAQ](./FAQ.md)                | 常见问题解答             |
+| [更新日志](./CHANGELOG.md)     | 版本变更记录             |

@@ -306,6 +306,20 @@ submit_route!(
     &["admin"]
 );
 submit_route!(
+    "/admin/quota/ledger",
+    "GET",
+    "Quota ledger",
+    "Per-window quota usage snapshot (tokens/cost used, reset time, scope: tenant/global/vendor). Optional `key` query filters by tenant digest.",
+    &["admin"]
+);
+submit_route!(
+    "/admin/vendor-budgets",
+    "GET",
+    "Vendor budgets",
+    "Declared vendor budgets with live usage, pace consumption ratio and reset countdown.",
+    &["admin"]
+);
+submit_route!(
     "/admin/vendors",
     "GET",
     "List vendors",

@@ -16,6 +16,8 @@ main-di-container-built = AsyncKit DI 容器构建完成：4/4 个模块全部�
 main-response-cache-enabled = 响应缓存已启用（recId=12，[cache].enabled=true）
 main-response-cache-disabled = 响应缓存已停用（recId=12，[cache].enabled=false）
 main-global-state-initialized = 全局状态初始化完成
+main-quota-ledger-restored = 配额账本已恢复 { $count } 个活动窗
+main-quota-ledger-restore-failed = 配额账本恢复读取失败，按空账本启动：{ $error }
 main-starting-server = 正在启动服务器：{ $addr }
 main-server-listening = 服务器监听于 { $addr }（由 sdforge 驱动）
 main-press-ctrl-c = 按 Ctrl+C 触发优雅停机

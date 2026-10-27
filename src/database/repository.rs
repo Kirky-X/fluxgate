@@ -756,6 +756,70 @@ impl Repository {
         Ok(result.rows_affected())
     }
 
+    /// quota_ledger 批量 UPSERT（quota-aware-routing V7）：复合主键
+    /// (api_key_hash, window_id, window_start) 冲突时覆盖用量与 updated_at。
+    /// 空切片短路（无 SQL 往返）；六列全部参数化绑定。
+    pub async fn upsert_quota_ledger(
+        &self,
+        rows: &[crate::database::quota_ledger::QuotaLedgerRow],
+    ) -> Result<(), DbError> {
+        use crate::database::quota_ledger::QuotaLedgerRow;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let sql = crate::database::quota_ledger::upsert_quota_ledger_sql(backend);
+        for QuotaLedgerRow {
+            api_key_hash,
+            window_id,
+            window_start,
+            tokens_used,
+            cost_used_millicents,
+            updated_at,
+        } in rows
+        {
+            let values = vec![
+                Value::from(api_key_hash.clone()),
+                Value::from(window_id.clone()),
+                Value::from(*window_start),
+                Value::from(*tokens_used),
+                Value::from(*cost_used_millicents),
+                Value::from(*updated_at),
+            ];
+            let stmt = raw_statement(backend, sql, values);
+            conn.execute_raw(stmt).await?;
+        }
+        Ok(())
+    }
+
+    /// quota_ledger 全量读取（启动恢复读侧）：活动期判定在内存侧按配置
+    /// 周期解释（账本不存周期事实），此处不滤——见
+    /// [`crate::database::quota_ledger::read_quota_ledger_sql`]。
+    pub async fn read_quota_ledger(
+        &self,
+    ) -> Result<Vec<crate::database::quota_ledger::QuotaLedgerRow>, DbError> {
+        use crate::database::quota_ledger::QuotaLedgerRow;
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let sql = crate::database::quota_ledger::read_quota_ledger_sql(backend);
+        let stmt = raw_statement(backend, sql, vec![]);
+        let rows = conn.query_all_raw(stmt).await?;
+        Ok(rows
+            .iter()
+            .map(|row| QuotaLedgerRow {
+                api_key_hash: row.try_get("", "api_key_hash").unwrap_or_default(),
+                window_id: row.try_get("", "window_id").unwrap_or_default(),
+                window_start: row.try_get("", "window_start").unwrap_or_default(),
+                tokens_used: row.try_get("", "tokens_used").unwrap_or_default(),
+                cost_used_millicents: row.try_get("", "cost_used_millicents").unwrap_or_default(),
+                updated_at: row.try_get("", "updated_at").unwrap_or_default(),
+            })
+            .collect())
+    }
+
     /// CostTracker 启动恢复聚合：按 `(vendor, model)` 分组对四档成本求和，
     /// 窗口 = 最近 `window_hours` 小时（date/hour 联合下界；cutoff 由本地
     /// 时钟计算后参数化，规避跨后端时间函数方言差）。空窗口返回空集。

@@ -15,6 +15,7 @@ pub mod database;
 mod dialect;
 pub mod migration;
 pub mod pre_aggregator;
+pub mod quota_ledger;
 pub mod repository;
 pub mod response_store;
 
@@ -23,6 +24,7 @@ pub use async_logger::{AsyncLogger, AsyncLoggerHandle};
 pub use database::{redact_db_url, resolve_database_url, Database};
 pub(crate) use dialect::raw_statement;
 pub use pre_aggregator::{TokenPreAggregator, TokenPreAggregatorHandle};
+pub use quota_ledger::QuotaLedgerRow;
 pub use repository::Repository;
 
 // 请求日志与用量契约（RequestLog/LogFilter/TokenUsageRow）已上收

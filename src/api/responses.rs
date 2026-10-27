@@ -531,6 +531,7 @@ async fn native_response(
             &ctx.api_key_hash,
             body,
             &decision.vendor.type_,
+            &decision.vendor.id,
             observed,
             move |observation| match observation {
                 crate::api::sse::ReframeObservation::Frame {

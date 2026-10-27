@@ -250,6 +250,7 @@ pub fn routing_config() -> Config {
 
     Config {
         rate_limit: Default::default(),
+        vendor_budgets: Vec::new(),
         server: ServerConfig {
             host: "127.0.0.1".into(),
             port: 0,

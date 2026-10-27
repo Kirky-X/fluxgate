@@ -277,6 +277,7 @@ mod tests {
 
         let disabled_config = Config {
             rate_limit: Default::default(),
+            vendor_budgets: Vec::new(),
             server: config.server.clone(),
             database: config.database.clone(),
             vendors,
@@ -318,6 +319,7 @@ mod tests {
 
         let disabled_config = Config {
             rate_limit: Default::default(),
+            vendor_budgets: Vec::new(),
             server: config.server.clone(),
             database: config.database.clone(),
             vendors,
@@ -702,11 +704,11 @@ mod scheduling_weight {
         // idle = 1.0×0.4 + 1.0×0.3 + 0.5×0.3 = 0.85；busy = 0.4 + 0 + 0.15 = 0.55
         let weighted = vec![
             (
-                compute_weight(1.0, 0, None, &RoutingSection::default(), None),
+                compute_weight(1.0, 0, None, &RoutingSection::default(), None, None),
                 (idle, idle_model),
             ),
             (
-                compute_weight(1.0, 100, None, &RoutingSection::default(), None),
+                compute_weight(1.0, 100, None, &RoutingSection::default(), None, None),
                 (busy, busy_model),
             ),
         ];
@@ -766,9 +768,9 @@ mod scheduling_weight {
             used_tokens: 100,
             window_end: None,
         };
-        let w_full = compute_weight(1.0, 0, None, &routing, None);
-        let w_queued = compute_weight(1.0, 100, None, &routing, None);
-        let w_exhausted = compute_weight(1.0, 0, Some(&exhausted), &routing, None);
+        let w_full = compute_weight(1.0, 0, None, &routing, None, None);
+        let w_queued = compute_weight(1.0, 100, None, &routing, None, None);
+        let w_exhausted = compute_weight(1.0, 0, Some(&exhausted), &routing, None, None);
         assert!((w_full - 1.0).abs() < 1e-9);
         assert!(
             (w_queued - w_full).abs() < 1e-9 && (w_exhausted - w_full).abs() < 1e-9,
@@ -785,8 +787,8 @@ mod scheduling_weight {
             ..RoutingSection::default()
         };
         // (ewma_latency_ms, ewma_error_rate)：延迟相同，错误率 1.0 vs 0.0
-        let failing = compute_weight(1.0, 0, None, &routing, Some((100.0, 1.0)));
-        let healthy = compute_weight(1.0, 0, None, &routing, Some((100.0, 0.0)));
+        let failing = compute_weight(1.0, 0, None, &routing, Some((100.0, 1.0)), None);
+        let healthy = compute_weight(1.0, 0, None, &routing, Some((100.0, 0.0)), None);
         assert!(
             failing < healthy,
             "全错误 vendor 权重必须更低: failing={failing} healthy={healthy}"
@@ -795,10 +797,22 @@ mod scheduling_weight {
         assert!((failing - (0.4 + 0.3 + 0.15)).abs() < 1e-9);
 
         // 默认 w_error=0：错误率不影响权重（行为不变约束）
-        let default_failing =
-            compute_weight(1.0, 0, None, &RoutingSection::default(), Some((100.0, 1.0)));
-        let default_healthy =
-            compute_weight(1.0, 0, None, &RoutingSection::default(), Some((100.0, 0.0)));
+        let default_failing = compute_weight(
+            1.0,
+            0,
+            None,
+            &RoutingSection::default(),
+            Some((100.0, 1.0)),
+            None,
+        );
+        let default_healthy = compute_weight(
+            1.0,
+            0,
+            None,
+            &RoutingSection::default(),
+            Some((100.0, 0.0)),
+            None,
+        );
         assert_eq!(default_failing, default_healthy);
     }
 
@@ -810,9 +824,9 @@ mod scheduling_weight {
             w_latency: 0.3,
             ..RoutingSection::default()
         };
-        let fast = compute_weight(1.0, 0, None, &routing, Some((100.0, 0.0)));
-        let at_ref = compute_weight(1.0, 0, None, &routing, Some((1000.0, 0.0)));
-        let slow = compute_weight(1.0, 0, None, &routing, Some((10_000.0, 0.0)));
+        let fast = compute_weight(1.0, 0, None, &routing, Some((100.0, 0.0)), None);
+        let at_ref = compute_weight(1.0, 0, None, &routing, Some((1000.0, 0.0)), None);
+        let slow = compute_weight(1.0, 0, None, &routing, Some((10_000.0, 0.0)), None);
         // ref/(ref+ewma)：100ms→0.909、1000ms→0.5、10s→0.09
         assert!(fast > at_ref && at_ref > slow, "低延迟必须得分高");
         assert!(
@@ -823,8 +837,8 @@ mod scheduling_weight {
         // 默认关闭：有/无 EWMA 数据权重一致
         let neutral_default = RoutingSection::default();
         assert_eq!(
-            compute_weight(1.0, 0, None, &neutral_default, Some((5.0, 0.9))),
-            compute_weight(1.0, 0, None, &neutral_default, None)
+            compute_weight(1.0, 0, None, &neutral_default, Some((5.0, 0.9)), None),
+            compute_weight(1.0, 0, None, &neutral_default, None, None)
         );
     }
 
@@ -852,8 +866,8 @@ mod scheduling_weight {
 
         // compute_weight 是纯因子加权：无平滑
         let routing = flat_cm.read().routing.clone();
-        let raw_light = compute_weight(1.0, 0, None, &routing, None);
-        let raw_heavy = compute_weight(4.0, 0, None, &routing, None);
+        let raw_light = compute_weight(1.0, 0, None, &routing, None, None);
+        let raw_heavy = compute_weight(4.0, 0, None, &routing, None, None);
         assert!(
             ((raw_light - 0.85).abs() < 1e-9) && ((raw_heavy - 2.05).abs() < 1e-9),
             "compute_weight 必须返回未平滑加权和: {raw_light} / {raw_heavy}"
@@ -4142,7 +4156,7 @@ mod route_gap_coverage {
             latency_ref_ms: 0.0,
             ..Default::default()
         };
-        let w = compute_weight(1.0, 0, None, &routing, Some((100.0, 0.0)));
+        let w = compute_weight(1.0, 0, None, &routing, Some((100.0, 0.0)), None);
         // model 0.4 + queue 0.3 + window 0.15 + latency 0.5×0.3 + error 0 = 1.0
         //（若非法 ref 未走中性分支，factor=0/(0+100)=0 → 权重 0.85）
         assert!(
@@ -4879,5 +4893,259 @@ mod embedding_compat_group {
             error.to_string().contains("gemini"),
             "错误必须点名 gemini: {error}"
         );
+    }
+}
+
+/// 配额感知路由因子（quota-aware-routing，R-vbr-002/003）：
+/// smart 耗尽摘除 / 全耗尽兜底 / 快重置加成；pace 速率带升降权。
+/// 预算态经 `restore_from_ledger` 注入受控的窗口起点与用量（生产启动路径）。
+#[cfg(test)]
+mod quota_factor {
+    use crate::common;
+    use fluxgate::config::{
+        Config, ModelConfig, QuotaFactorSection, QuotaWindowConfig, VendorBudgetConfig,
+    };
+    use fluxgate::database::QuotaLedgerRow;
+    use fluxgate::middleware::quota::QuotaState;
+    use fluxgate::router::Router;
+    use fluxgate::vendor::VendorManager;
+    use std::sync::Arc;
+
+    fn vendor(id: &str) -> fluxgate::config::VendorConfig {
+        let mut v = common::base_vendor(id, String::new());
+        v.models = vec![ModelConfig {
+            model_id: "shared-model".into(),
+            abstract_id: Some("shared-model".into()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        }];
+        v.concurrency.requests_per_second = 100;
+        v
+    }
+
+    fn factor_config(mode: &str, w_quota: f64) -> Config {
+        let mut config = common::test_config(vec![vendor("fresh"), vendor("soon"), vendor("gone")]);
+        config.routing.quota_factor = QuotaFactorSection {
+            mode: mode.into(),
+            w_quota,
+        };
+        // 三 vendor 同预算：rolling 3600s、1000 token
+        config.vendor_budgets = vec!["fresh", "soon", "gone"]
+            .into_iter()
+            .map(|id| VendorBudgetConfig {
+                vendor_id: id.into(),
+                tokens_limit: 1000,
+                period: "rolling".into(),
+                rolling_secs: 3600,
+                ..Default::default()
+            })
+            .collect();
+        config
+    }
+
+    fn ledger_row(vendor: &str, start_offset_secs: i64, used: i64) -> QuotaLedgerRow {
+        QuotaLedgerRow {
+            api_key_hash: format!("__vendor__:{vendor}"),
+            window_id: format!("vendor:{vendor}"),
+            window_start: chrono::Utc::now().timestamp() - start_offset_secs,
+            tokens_used: used,
+            cost_used_millicents: 0,
+            updated_at: chrono::Utc::now().timestamp(),
+        }
+    }
+
+    fn seeded_state(rows: Vec<QuotaLedgerRow>) -> Arc<QuotaState> {
+        let state = Arc::new(QuotaState::new());
+        let config = factor_config("smart", 1.0);
+        let restored = state.restore_from_ledger(&rows, &config);
+        assert_eq!(restored, rows.len(), "全部注入行必须恢复（rolling 未过期）");
+        state
+    }
+
+    async fn weights_of(config: &Config, state: Option<Arc<QuotaState>>) -> Vec<(String, f64)> {
+        weights_with_metrics(config, state).await.0
+    }
+
+    async fn weights_with_metrics(
+        config: &Config,
+        state: Option<Arc<QuotaState>>,
+    ) -> (
+        Vec<(String, f64)>,
+        Arc<fluxgate::utils::metrics::GlobalMetrics>,
+    ) {
+        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let mut router = Router::new(cm.clone(), vm.clone());
+        if let Some(state) = state {
+            router = router.with_quota_state(state);
+        }
+        let candidates = vec!["fresh", "soon", "gone"]
+            .into_iter()
+            .map(|id| {
+                let vendor = config.vendors.iter().find(|v| v.id == id).unwrap();
+                let model = vendor.models[0].clone();
+                (vendor.clone(), model)
+            })
+            .collect();
+        let weights = router
+            .calculate_weights(candidates)
+            .await
+            .into_iter()
+            .map(|(w, (v, _))| (v.id, w))
+            .collect();
+        (weights, vm.metrics().clone())
+    }
+
+    /// smart 因子（R-vbr-002）：预算耗尽 vendor 被摘出候选；重置最快者
+    /// 权重升；全员耗尽保留全部；mode=off 零参与。
+    #[tokio::test]
+    async fn depleted_vendor_excluded_and_reset_soonest_scored_up() {
+        // soon：起点 -3500s（重置剩 ~100s → normalized ≈ 0.03 → 加成 ≈ w_quota）
+        // fresh：起点 -100s（重置剩 ~3500s → normalized ≈ 0.97 → 加成 ≈ 0）
+        let state = seeded_state(vec![
+            ledger_row("soon", 3500, 100),
+            ledger_row("fresh", 100, 100),
+        ]);
+        let config = factor_config("smart", 1.0);
+        let weights = weights_of(&config, Some(state.clone())).await;
+        let soon = weights.iter().find(|(id, _)| id == "soon").unwrap().1;
+        let fresh = weights.iter().find(|(id, _)| id == "fresh").unwrap().1;
+        assert!(
+            soon > fresh,
+            "重置最快者必须得分更高：soon={soon} fresh={fresh}"
+        );
+        assert!(
+            (soon - fresh - 1.0).abs() < 0.15,
+            "重置最快者必须高出 ≈ w_quota×(1-normalized)：soon={soon} fresh={fresh}"
+        );
+
+        // gone 耗尽（used ≥ limit）→ 摘出；soon/fresh 有余 → 保留
+        let state = seeded_state(vec![
+            ledger_row("gone", 100, 1000),
+            ledger_row("soon", 3500, 100),
+            ledger_row("fresh", 100, 100),
+        ]);
+        let weights = weights_of(&config, Some(state)).await;
+        assert!(
+            !weights.iter().any(|(id, _)| id == "gone"),
+            "预算耗尽 vendor 必须摘出候选: {weights:?}"
+        );
+        assert_eq!(weights.len(), 2, "有余 vendor 保留");
+
+        // 全员耗尽兜底：保留全部（不空选）+ 逐 vendor 计 quota_factor_depleted_total
+        let state = seeded_state(vec![
+            ledger_row("gone", 100, 1000),
+            ledger_row("soon", 3500, 1000),
+            ledger_row("fresh", 100, 1000),
+        ]);
+        let (weights, metrics) = weights_with_metrics(&config, Some(state.clone())).await;
+        assert_eq!(weights.len(), 3, "全员耗尽保留全部（兜底不空选）");
+        let depleted: Vec<(String, u64)> = metrics.quota_factor_depleted();
+        for id in ["gone", "soon", "fresh"] {
+            assert!(
+                depleted.iter().any(|(v, c)| v == id && *c >= 1),
+                "兜底必须逐 vendor 计数: {depleted:?}"
+            );
+        }
+
+        // mode=off：因子零参与——耗尽 vendor 照常入选、无加成差
+        let off_config = factor_config("off", 1.0);
+        let off_state = seeded_state(vec![ledger_row("gone", 100, 1000)]);
+        let weights = weights_of(&off_config, Some(off_state)).await;
+        assert_eq!(weights.len(), 3, "mode=off 零参与（耗尽不摘除）");
+        assert_eq!(
+            weights.iter().find(|(id, _)| id == "gone").unwrap().1,
+            weights.iter().find(|(id, _)| id == "fresh").unwrap().1,
+            "mode=off 无加成差"
+        );
+    }
+
+    /// pace 因子（R-vbr-003）：消耗率带——rate 比 >1.1 降权 ×0.5、<0.9
+    /// 升权 ×1.2、带内不变；mode=off 时因子零参与。
+    #[tokio::test]
+    async fn over_pace_vendor_deweight_under_pace_upweight() {
+        // budget rate = 1000/3600 ≈ 0.278 tok/s
+        // over：elapsed 90s 用 100 → rate 1.11 → 比 4.0（>1.1）→ ×0.5
+        // band：elapsed 90s 用 25 → rate 0.278 → 比 1.0（带内）→ ×1.0
+        // under：elapsed 900s 用 5 → rate 0.0056 → 比 0.02（<0.9）→ ×1.2
+        let state = seeded_state(vec![
+            ledger_row("fresh", 90, 100),
+            ledger_row("soon", 90, 25),
+            ledger_row("gone", 900, 5),
+        ]);
+        let config = factor_config("pace", 1.0);
+        let weights = weights_of(&config, Some(state)).await;
+        let over = weights.iter().find(|(id, _)| id == "fresh").unwrap().1;
+        let band = weights.iter().find(|(id, _)| id == "soon").unwrap().1;
+        let under = weights.iter().find(|(id, _)| id == "gone").unwrap().1;
+        assert!(
+            ((over / band) - 0.5).abs() < 1e-6,
+            "超带 ×0.5: over={over} band={band}"
+        );
+        assert!(
+            ((under / band) - 1.2).abs() < 1e-6,
+            "欠带 ×1.2: under={under} band={band}"
+        );
+
+        // mode=off：零参与——三 vendor 同权重（budget 态在但因子不消费）
+        let off_config = factor_config("off", 1.0);
+        let off_state = seeded_state(vec![
+            ledger_row("fresh", 90, 100),
+            ledger_row("soon", 90, 25),
+            ledger_row("gone", 900, 5),
+        ]);
+        let weights = weights_of(&off_config, Some(off_state)).await;
+        let w = weights[0].1;
+        assert!(
+            weights.iter().all(|(_, x)| (x - w).abs() < 1e-9),
+            "mode=off 零参与（同权重）: {weights:?}"
+        );
+    }
+
+    /// 限额回填语义（多窗准入伴生）：窗口限额 0 落回 per-key；显式限额
+    /// 独立于租户（生效窗解析产物断言）。
+    #[test]
+    fn window_limits_fall_back_to_per_key_quota() {
+        use fluxgate::config::{AuthKeyEntry, AuthSection, AuthTier, QuotaSection};
+
+        let mut config = common::test_config(vec![]);
+        config.auth = Some(AuthSection {
+            enabled: true,
+            api_keys: vec![],
+            header: Default::default(),
+            keys: vec![AuthKeyEntry {
+                hash: "tenant".into(),
+                tier: AuthTier::Elastic,
+                token_quota: 500,
+                cost_quota_millicents: 700,
+            }],
+        });
+        config.quota = QuotaSection {
+            enabled: true,
+            windows: vec![
+                QuotaWindowConfig {
+                    id: "inherit".into(),
+                    rolling_secs: 60,
+                    ..Default::default()
+                },
+                QuotaWindowConfig {
+                    id: "explicit".into(),
+                    rolling_secs: 60,
+                    tokens_limit: 9000,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let resolved = fluxgate::middleware::quota::resolve_windows(&config, "tenant");
+        let inherit = resolved.iter().find(|w| w.id == "inherit").unwrap();
+        assert_eq!(inherit.tokens_limit, 500, "0 限额落回 per-key");
+        assert_eq!(inherit.cost_limit_millicents, 700);
+        let explicit = resolved.iter().find(|w| w.id == "explicit").unwrap();
+        assert_eq!(explicit.tokens_limit, 9000, "显式限额独立于租户");
+        assert_eq!(explicit.cost_limit_millicents, 700, "未声明维度仍回填");
     }
 }

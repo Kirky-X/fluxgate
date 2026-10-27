@@ -2019,3 +2019,166 @@ mod affinity_sticks_server {
         assert!(purged >= 1, "过期行必须被删除（实际 {purged}）");
     }
 }
+
+/// quota_ledger（quota-aware-routing V7）：建表幂等 + UPSERT 覆盖（PK 三列
+/// 去重）+ 全量读取（启动恢复读侧）。
+#[cfg(test)]
+mod quota_ledger {
+    use fluxgate::database::QuotaLedgerRow;
+
+    async fn pool() -> dbnexus::DbPool {
+        dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+    }
+
+    fn row(key: &str, window: &str, start: i64, tokens: i64, cost: i64) -> QuotaLedgerRow {
+        QuotaLedgerRow {
+            api_key_hash: key.into(),
+            window_id: window.into(),
+            window_start: start,
+            tokens_used: tokens,
+            cost_used_millicents: cost,
+            updated_at: 1_770_000_000,
+        }
+    }
+
+    /// 迁移建表 + 重跑幂等（V7 表可写可读，三列复合主键 UPSERT 覆盖）。
+    #[tokio::test]
+    async fn v7_migration_creates_quota_ledger_idempotently() {
+        let pool = pool().await;
+        let repo = fluxgate::database::Repository::new(pool);
+        repo.initialize().await.expect("首次迁移");
+        repo.initialize().await.expect("重跑幂等");
+
+        // 同 (key, window, window_start) 二次写入覆盖不重复；不同 window_start
+        // 各占一行（每周期实例一行）。
+        repo.upsert_quota_ledger(&[row("k1", "daily", 1_770_000_000, 100, 40)])
+            .await
+            .expect("首次 UPSERT");
+        repo.upsert_quota_ledger(&[row("k1", "daily", 1_770_000_000, 250, 90)])
+            .await
+            .expect("覆盖 UPSERT");
+        repo.upsert_quota_ledger(&[
+            row("k1", "daily", 1_770_086_400, 10, 0),
+            row("__global__", "fleet", 1_770_000_000, 7, 3),
+        ])
+        .await
+        .expect("跨周期与全局键");
+
+        let mut rows = repo.read_quota_ledger().await.expect("read");
+        rows.sort_by(|a, b| {
+            (a.api_key_hash.as_str(), a.window_start)
+                .cmp(&(b.api_key_hash.as_str(), b.window_start))
+        });
+        assert_eq!(rows.len(), 3, "PK 三列去重：2 周期实例 + 1 全局行");
+        let overwritten = rows
+            .iter()
+            .find(|r| r.api_key_hash == "k1" && r.window_start == 1_770_000_000)
+            .expect("k1 当期行");
+        assert_eq!(overwritten.tokens_used, 250, "同 PK 覆盖为最后写入");
+        assert_eq!(overwritten.cost_used_millicents, 90);
+        let next_period = rows
+            .iter()
+            .find(|r| r.api_key_hash == "k1" && r.window_start == 1_770_086_400)
+            .expect("k1 下周期行");
+        assert_eq!(next_period.tokens_used, 10, "不同周期实例独立行");
+        let global = rows
+            .iter()
+            .find(|r| r.api_key_hash == "__global__")
+            .expect("全局行");
+        assert_eq!(global.window_id, "fleet", "global 作用域行同表同路");
+    }
+
+    /// 空批 UPSERT 短路（无 SQL 往返）。
+    #[tokio::test]
+    async fn empty_upsert_is_noop() {
+        let pool = pool().await;
+        let repo = fluxgate::database::Repository::new(pool);
+        repo.initialize().await.expect("init");
+        repo.upsert_quota_ledger(&[]).await.expect("空批必须 Ok");
+        assert!(
+            repo.read_quota_ledger().await.expect("read").is_empty(),
+            "空批不产行"
+        );
+    }
+}
+
+/// V7 建表与 UPSERT 的**服务端方言**运行时验证（postgres / mysql）——与
+/// affinity_sticks_server 同约定：`FLUXGATE_TEST_DB_URL` 指向被测实例，
+/// CI server-backend 作业以 `-- --ignored` 运行；单函数串行防并行互染。
+#[cfg(test)]
+mod quota_ledger_server {
+    use fluxgate::database::QuotaLedgerRow;
+
+    #[tokio::test]
+    #[ignore = "需要 FLUXGATE_TEST_DB_URL 指向 postgres/mysql 实例（CI server-backend 作业注入）"]
+    async fn v7_and_upsert_run_on_server_backend() {
+        let url = std::env::var("FLUXGATE_TEST_DB_URL")
+            .expect("本用例需要 FLUXGATE_TEST_DB_URL 指向 postgres/mysql 实例");
+        assert!(
+            url.starts_with("postgres://")
+                || url.starts_with("postgresql://")
+                || url.starts_with("mysql://"),
+            "FLUXGATE_TEST_DB_URL 必须指向 postgres:// 或 mysql://（实际 {url}）"
+        );
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: url.clone(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("连接被测服务端实例");
+        let repo = fluxgate::database::Repository::new(pool);
+        // ① 建表迁移在真实方言上可重入（V7 DDL）
+        repo.initialize().await.expect("首次迁移");
+        repo.initialize().await.expect("重跑幂等");
+
+        // ② 三列复合主键 UPSERT 在真实方言上覆盖去重（ON CONFLICT /
+        //    ON DUPLICATE KEY 两路 SQL 由 upsert_quota_ledger_sql 按后端选择）
+        let mk = |start: i64, tokens: i64| QuotaLedgerRow {
+            api_key_hash: "server-dialect".into(),
+            window_id: "daily".into(),
+            window_start: start,
+            tokens_used: tokens,
+            cost_used_millicents: 0,
+            updated_at: 1_770_000_000,
+        };
+        repo.upsert_quota_ledger(&[mk(1_770_000_000, 100)])
+            .await
+            .expect("UPSERT");
+        repo.upsert_quota_ledger(&[mk(1_770_000_000, 220)])
+            .await
+            .expect("覆盖 UPSERT");
+        let rows = repo.read_quota_ledger().await.expect("read");
+        let mine: Vec<&QuotaLedgerRow> = rows
+            .iter()
+            .filter(|r| r.api_key_hash == "server-dialect")
+            .collect();
+        assert_eq!(mine.len(), 1, "同 PK 必须覆盖为单行");
+        assert_eq!(mine[0].tokens_used, 220, "覆盖为最后写入");
+
+        // ③ 清场（共享实例不留测试行）
+        repo.upsert_quota_ledger(&[QuotaLedgerRow {
+            tokens_used: 0,
+            ..mk(1_770_000_000, 0)
+        }])
+        .await
+        .expect("清场覆盖");
+    }
+}

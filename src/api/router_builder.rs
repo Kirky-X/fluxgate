@@ -552,6 +552,42 @@ async fn admission_middleware(
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
     #[cfg(feature = "vault")]
+    const TEMPLATES: [&str; 33] = [
+        "/v1/chat/completions",
+        "/v1/embeddings",
+        "/v1/rerank",
+        "/v1/responses",
+        "/v1/responses/input_tokens",
+        "/v1/responses/{id}",
+        "/v1/responses/{id}/cancel",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1beta/models",
+        "/v1beta/models/{id}",
+        "/v1/models",
+        "/admin/route/explain",
+        "/admin/logs",
+        "/admin/logs/search",
+        "/admin/stats/tokens",
+        "/admin/cost",
+        "/admin/sessions",
+        "/admin/context-stats",
+        "/admin/metrics",
+        "/admin/quota/ledger",
+        "/admin/vendor-budgets",
+        "/admin/vendors",
+        "/admin/vendors/{id}/status",
+        "/admin/vendors/{id}/reset",
+        "/admin/embedding-pins",
+        "/admin/embedding-pins/{id}/reset",
+        "/admin/config",
+        "/admin/models",
+        "/admin/models/{id}",
+        "/admin/vault/keys",
+        "/admin/vault/keys/{id}",
+        "/api/v1/health",
+    ];
+    #[cfg(not(feature = "vault"))]
     const TEMPLATES: [&str; 31] = [
         "/v1/chat/completions",
         "/v1/embeddings",
@@ -573,40 +609,8 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/admin/sessions",
         "/admin/context-stats",
         "/admin/metrics",
-        "/admin/vendors",
-        "/admin/vendors/{id}/status",
-        "/admin/vendors/{id}/reset",
-        "/admin/embedding-pins",
-        "/admin/embedding-pins/{id}/reset",
-        "/admin/config",
-        "/admin/models",
-        "/admin/models/{id}",
-        "/admin/vault/keys",
-        "/admin/vault/keys/{id}",
-        "/api/v1/health",
-    ];
-    #[cfg(not(feature = "vault"))]
-    const TEMPLATES: [&str; 29] = [
-        "/v1/chat/completions",
-        "/v1/embeddings",
-        "/v1/rerank",
-        "/v1/responses",
-        "/v1/responses/input_tokens",
-        "/v1/responses/{id}",
-        "/v1/responses/{id}/cancel",
-        "/v1/messages",
-        "/v1/messages/count_tokens",
-        "/v1beta/models",
-        "/v1beta/models/{id}",
-        "/v1/models",
-        "/admin/route/explain",
-        "/admin/logs",
-        "/admin/logs/search",
-        "/admin/stats/tokens",
-        "/admin/cost",
-        "/admin/sessions",
-        "/admin/context-stats",
-        "/admin/metrics",
+        "/admin/quota/ledger",
+        "/admin/vendor-budgets",
         "/admin/vendors",
         "/admin/vendors/{id}/status",
         "/admin/vendors/{id}/reset",
@@ -781,6 +785,8 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route("/admin/sessions", get(admin::sessions))
         .route("/admin/context-stats", get(admin::context_stats))
         .route("/admin/metrics", get(admin::metrics))
+        .route("/admin/quota/ledger", get(admin::quota_ledger))
+        .route("/admin/vendor-budgets", get(admin::vendor_budgets))
         .route("/admin/vendors", get(admin::vendors))
         .route("/admin/vendors/{id}/status", get(admin::vendor_status))
         .route("/admin/vendors/{id}/reset", post(admin::reset_vendor))
@@ -857,6 +863,7 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
             QuotaGate {
                 config: state.config.clone(),
                 quota: state.quota.clone(),
+                metrics: Some(state.vendor_manager.metrics().clone()),
             },
             quota_middleware,
         ))
@@ -882,6 +889,7 @@ mod tests {
         crate::config::Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {

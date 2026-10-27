@@ -145,6 +145,10 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_resilience_circuit(config)?;
     validate_quota_window(config)?;
     warn_quota_without_auth(config);
+    validate_quota_windows(config)?;
+    validate_vendor_budgets(config)?;
+    validate_quota_factor(config)?;
+    warn_quota_window_fields_conflict(config);
     validate_difficulty(config)?;
     warn_identical_difficulty_tiers(config);
     validate_metrics(config)?;
@@ -784,6 +788,144 @@ pub fn default_usage_insights_enabled() -> bool {
     true
 }
 
+/// `[[quota.windows]]` 缺省值（serde default 路径引用；mod.rs 规则 14 禁
+/// 实现函数，默认值落在本实现文件）：scope=api_key、period=rolling、
+/// calendar 空串。限额与 rolling_secs 默认 0 = 由校验/判定侧解释。
+pub fn default_quota_window_scope() -> String {
+    "api_key".to_string()
+}
+
+pub fn default_quota_period() -> String {
+    "rolling".to_string()
+}
+
+impl Default for crate::config::QuotaWindowConfig {
+    /// Rust 侧手构缺省与 serde 缺省单源：scope=api_key、period=rolling。
+    /// （derive Default 会给空串，validate 会拒——构造面缺省必须是合法缺省。）
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            scope: default_quota_window_scope(),
+            period: default_quota_period(),
+            rolling_secs: 0,
+            calendar: String::new(),
+            tz_offset_secs: 0,
+            tokens_limit: 0,
+            cost_limit_millicents: 0,
+        }
+    }
+}
+
+impl Default for crate::config::VendorBudgetConfig {
+    /// 同 [`Default for QuotaWindowConfig`]：period=rolling 单源。
+    fn default() -> Self {
+        Self {
+            vendor_id: String::new(),
+            tokens_limit: 0,
+            cost_limit_millicents: 0,
+            period: default_quota_period(),
+            rolling_secs: 0,
+            calendar: String::new(),
+            tz_offset_secs: 0,
+        }
+    }
+}
+
+/// 旧单窗字段缺省：3600s 固定窗口 + 4 字符/token 估算（与历史一致）。
+pub fn default_quota_window_secs() -> u64 {
+    3600
+}
+
+pub fn default_est_chars_per_token() -> u64 {
+    4
+}
+
+impl Default for crate::config::QuotaSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            window_secs: default_quota_window_secs(),
+            est_chars_per_token: default_est_chars_per_token(),
+            windows: Vec::new(),
+        }
+    }
+}
+
+/// `[routing.quota_factor]` 缺省值：mode=off（零参与）、w_quota=0.3——
+/// 与 w_model/w_queue/w_window 同温标，仅 mode≠off 时被咨询。
+pub fn default_quota_factor_mode() -> String {
+    "off".to_string()
+}
+
+pub fn default_quota_factor_weight() -> f64 {
+    0.3
+}
+
+impl Default for crate::config::QuotaFactorSection {
+    fn default() -> Self {
+        Self {
+            mode: default_quota_factor_mode(),
+            w_quota: default_quota_factor_weight(),
+        }
+    }
+}
+
+impl crate::config::QuotaFactorMode {
+    /// 大小写不敏感 + trim 解析（与 [`crate::config::AffinityMode::parse`]
+    /// 同口径）；未知值 None，由校验侧持原值点名拒绝。
+    pub fn parse(raw: &str) -> Option<Self> {
+        use crate::config::QuotaFactorMode;
+        let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("off") {
+            Some(QuotaFactorMode::Off)
+        } else if raw.eq_ignore_ascii_case("smart") {
+            Some(QuotaFactorMode::Smart)
+        } else if raw.eq_ignore_ascii_case("pace") {
+            Some(QuotaFactorMode::Pace)
+        } else {
+            None
+        }
+    }
+
+    /// 生效模式：未知值按 `Off`（回滚阀——配置期已拒绝非法值，此处仅作
+    /// 手构配置的运行期兜底）。
+    pub fn from_section(section: &crate::config::QuotaFactorSection) -> Self {
+        Self::parse(&section.mode).unwrap_or(Self::Off)
+    }
+
+    /// 机器码（与指标标签/解释块同口径；合法值集单源于本文件）。
+    pub fn as_str(self) -> &'static str {
+        use crate::config::QuotaFactorMode;
+        match self {
+            QuotaFactorMode::Off => "off",
+            QuotaFactorMode::Smart => "smart",
+            QuotaFactorMode::Pace => "pace",
+        }
+    }
+}
+
+/// 生效配额窗口集（热读单点）：`[[quota.windows]]` 非空时原样返回（旧
+/// `window_secs` 忽略），为空时把旧单窗字段编译为 `id="default"` 的
+/// rolling 窗——旧配置行为逐位不变。两处并存时由调用方在加载期 WARN
+///（`warn_quota_window_fields_conflict`）。
+pub fn effective_quota_windows(
+    quota: &crate::config::QuotaSection,
+) -> Vec<crate::config::QuotaWindowConfig> {
+    if !quota.windows.is_empty() {
+        return quota.windows.clone();
+    }
+    vec![crate::config::QuotaWindowConfig {
+        id: "default".to_string(),
+        scope: default_quota_window_scope(),
+        period: default_quota_period(),
+        rolling_secs: quota.window_secs,
+        calendar: String::new(),
+        tz_offset_secs: 0,
+        tokens_limit: 0,
+        cost_limit_millicents: 0,
+    }]
+}
+
 impl Default for crate::config::UsageInsightsSection {
     fn default() -> Self {
         Self {
@@ -1228,6 +1370,211 @@ fn quota_without_auth(config: &Config) -> bool {
     config.quota.enabled && !config.auth.as_ref().is_some_and(|auth| auth.enabled)
 }
 
+/// `[[quota.windows]]` 校验：id 非空去重、scope/period 闭集、rolling 周期
+/// ≥1s（0 窗口每次访问即翻转、配额永不满，与 `window_secs` 同款拒绝）、
+/// calendar 形态要求 daily|weekly|monthly 且 rolling_secs 必须为 0（两形态
+/// 互斥，同配会让窗口起点语义二义）；数值域 tokens_limit / tz_offset_secs
+/// 合法性。enabled=false 时同样校验（段缺省即空 vec，零成本）。
+fn validate_quota_windows(config: &Config) -> Result<(), GateError> {
+    let mut seen: Vec<&str> = Vec::new();
+    for window in &config.quota.windows {
+        let id = window.id.trim();
+        if id.is_empty() {
+            return Err(GateError::Config {
+                message: t("config-quota-window-id-empty"),
+            });
+        }
+        if seen.contains(&id) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-quota-window-id-duplicate",
+                    &[("id", id.to_string())],
+                ),
+            });
+        }
+        seen.push(id);
+        if !matches!(window.scope.trim(), "api_key" | "global") {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-quota-window-scope-unknown",
+                    &[("id", id.to_string()), ("value", window.scope.clone())],
+                ),
+            });
+        }
+        validate_quota_period(
+            "quota_window",
+            id,
+            &window.period,
+            window.rolling_secs,
+            &window.calendar,
+            window.tz_offset_secs,
+        )?;
+    }
+    Ok(())
+}
+
+/// 周期两形态校验（`[[quota.windows]]` 与 `[[vendor_budgets]]` 共用单点——
+/// 两段周期语法同源，故 i18n 键也共用、由 `$section` 区分来源）：rolling
+/// 要求 `rolling_secs ≥ 1` 且 calendar 留空；calendar 要求
+/// daily|weekly|monthly 且 `rolling_secs == 0`（两形态互斥，同配会让窗口
+/// 起点语义二义）。tz_offset_secs 限 ±24h（偏移超过一天会与相邻日历窗重叠）。
+fn validate_quota_period(
+    section: &str,
+    id: &str,
+    period: &str,
+    rolling_secs: u64,
+    calendar: &str,
+    tz_offset_secs: i64,
+) -> Result<(), GateError> {
+    let period = period.trim();
+    match period {
+        "rolling" => {
+            if rolling_secs == 0 {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-quota-rolling-secs-too-small",
+                        &[("section", section.to_string()), ("id", id.to_string())],
+                    ),
+                });
+            }
+            if !calendar.trim().is_empty() {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-quota-period-mixed",
+                        &[("section", section.to_string()), ("id", id.to_string())],
+                    ),
+                });
+            }
+        }
+        "calendar" => {
+            if rolling_secs != 0 {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-quota-period-mixed",
+                        &[("section", section.to_string()), ("id", id.to_string())],
+                    ),
+                });
+            }
+            if !matches!(calendar.trim(), "daily" | "weekly" | "monthly") {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-quota-calendar-unknown",
+                        &[
+                            ("section", section.to_string()),
+                            ("id", id.to_string()),
+                            ("value", calendar.trim().to_string()),
+                        ],
+                    ),
+                });
+            }
+        }
+        _ => {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-quota-period-unknown",
+                    &[
+                        ("section", section.to_string()),
+                        ("id", id.to_string()),
+                        ("value", period.to_string()),
+                    ],
+                ),
+            });
+        }
+    }
+    if !(-86_400..=86_400).contains(&tz_offset_secs) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-quota-tz-offset-out-of-range",
+                &[
+                    ("section", section.to_string()),
+                    ("id", id.to_string()),
+                    ("value", tz_offset_secs.to_string()),
+                ],
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// `[[vendor_budgets]]` 校验：vendor_id 非空且与 `[[vendors]]` 对得上（错拼
+/// 预算段静默失效是运维事故）、去重、周期两形态同 [`validate_quota_period`]；
+/// 双限额均 0 = 该段空转，拒绝（声明式预算必须至少一个维度）。
+fn validate_vendor_budgets(config: &Config) -> Result<(), GateError> {
+    let mut seen: Vec<&str> = Vec::new();
+    for budget in &config.vendor_budgets {
+        let vendor_id = budget.vendor_id.trim();
+        if vendor_id.is_empty() {
+            return Err(GateError::Config {
+                message: t("config-vendor-budget-id-empty"),
+            });
+        }
+        if seen.contains(&vendor_id) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-vendor-budget-id-duplicate",
+                    &[("vendor", vendor_id.to_string())],
+                ),
+            });
+        }
+        seen.push(vendor_id);
+        if !config.vendors.iter().any(|v| v.id == vendor_id) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-vendor-budget-unknown-vendor",
+                    &[("vendor", vendor_id.to_string())],
+                ),
+            });
+        }
+        if budget.tokens_limit == 0 && budget.cost_limit_millicents == 0 {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-vendor-budget-empty-limits",
+                    &[("vendor", vendor_id.to_string())],
+                ),
+            });
+        }
+        validate_quota_period(
+            "vendor_budget",
+            vendor_id,
+            &budget.period,
+            budget.rolling_secs,
+            &budget.calendar,
+            budget.tz_offset_secs,
+        )?;
+    }
+    Ok(())
+}
+
+/// `[routing.quota_factor].mode` 闭集校验（off/smart/pace，大小写不敏感 +
+/// trim；与 [`crate::config::QuotaFactorMode::parse`] 单源）。非法值以原值
+/// 点名拒绝——热读回滚阀 `from_section` 只兜手构配置，加载面必须刚性拒绝。
+fn validate_quota_factor(config: &Config) -> Result<(), GateError> {
+    let section = &config.routing.quota_factor;
+    if crate::config::QuotaFactorMode::parse(&section.mode).is_none() {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-quota-factor-mode-unknown",
+                &[("value", section.mode.trim().to_string())],
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// 两窗口配置形态并存告警：`[[quota.windows]]` 非空时旧 `window_secs` 被
+/// 忽略（生效集见 [`effective_quota_windows`]）——显性留痕，不静默忽略。
+fn warn_quota_window_fields_conflict(config: &Config) {
+    if !config.quota.windows.is_empty() && config.quota.window_secs != default_quota_window_secs() {
+        tracing::warn!(
+            "{}",
+            t_args(
+                "config-quota-window-fields-conflict",
+                &[("value", config.quota.window_secs.to_string())],
+            )
+        );
+    }
+}
+
 /// [auth] 段条目的 ConfigProvider 薄适配：管理面密钥逐条挂到合成键上，
 /// 供 JwtSecretValidator 按标量键读取
 struct AdminSecretProvider {
@@ -1349,6 +1696,7 @@ mod tests {
         Config {
             rate_limit: Default::default(),
             otlp: Default::default(),
+            vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {

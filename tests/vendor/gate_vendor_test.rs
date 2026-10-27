@@ -2281,6 +2281,7 @@ mod token_weighted_tickets {
         common::ensure_test_api_key();
         let config = fluxgate::config::Config {
             rate_limit: Default::default(),
+            vendor_budgets: Vec::new(),
             server: fluxgate::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,

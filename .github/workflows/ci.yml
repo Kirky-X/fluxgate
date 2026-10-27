@@ -6,8 +6,10 @@
 # 与 confers 基线的差异：
 #   - 自研 7 库经 crates.io registry 集成（版本写在 Cargo.toml、校验和锁在
 #     Cargo.lock），各 cargo 作业直接拉取，无兄弟库克隆步骤；
-#   - 本仓库无 Criterion 基准、无 deny.toml，故无 benchmarks 作业，
-#     security 作业仅跑 cargo audit（补 deny.toml 后再加 cargo deny check）；
+#   - 本仓库有 Criterion 基准（conversion / sse / routing / affinity，见
+#     docs/PERFORMANCE.md），但**不在 CI 跑**（时长与资源权衡，基线人工复跑
+#     对照）；deny.toml 存在，security 作业仍只跑 cargo audit——
+#     cargo deny check 的接入见该作业注释；
 #   - CodeQL 为停用态：私有仓未启用 GHAS，SARIF 上传必被 API 拒绝——workflow
 #     保留为 .github/workflows/codeql.yml.disabled，转 public / 启用 GHAS 后
 #     重命名启用；
@@ -169,6 +171,71 @@ jobs:
       # 编译它们，模块里的缺陷会静默合入。此步单独编译并跑这些特性的测试。
       - name: Run feature-gated tests (otlp)
         run: cargo test --features otlp,db-sqlite
+
+  #-----------------------------------------------------------------------------
+  # 服务端数据库后端的运行时验证（postgres / mysql）
+  # 默认 test 作业只接 sqlite；非默认后端的建表迁移与方言 UPSERT 此前只做
+  # 编译级 check（ON CONFLICT / ON DUPLICATE KEY UPDATE 从未真实执行）。
+  # 本作业起服务容器，用 FLUXGATE_TEST_DB_URL 驱动 database_test 里
+  # `affinity_sticks_server` 的 #[ignore] 用例。
+  #-----------------------------------------------------------------------------
+  server-backend:
+    name: Server backend (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: postgres
+            feature: db-postgres
+            image: postgres:16-alpine
+            url: postgres://postgres@localhost:5432/postgres
+            health_options: >-
+              --health-cmd "pg_isready -U postgres"
+              --health-interval 5s --health-timeout 5s --health-retries 10
+            ports: 5432:5432
+          - backend: mysql
+            feature: db-mysql
+            image: mysql:8.0
+            url: mysql://root@localhost:3306/fluxgate_test
+            health_options: >-
+              --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot"
+              --health-interval 5s --health-timeout 5s --health-retries 20
+            ports: 3306:3306
+    services:
+      db:
+        image: ${{ matrix.image }}
+        env:
+          # 一次性 CI 容器：免密本地认证（仓库内不引入任何口令字面量）
+          # 专用库：不往 mysql 系统库建表
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: fluxgate_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - ${{ matrix.ports }}
+        options: >-
+          ${{ matrix.health_options }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # 只跑服务端方言相关用例（迁移建表 / UPSERT 冲突 / 读取 / 清理）
+      - name: Run server-backend affinity tests
+        env:
+          FLUXGATE_TEST_DB_URL: ${{ matrix.url }}
+        run: |
+          cargo test -p fluxgate --no-default-features \
+            --features "full,${{ matrix.feature }}" \
+            --test database_test affinity_sticks_server -- --ignored --nocapture
 
   #-----------------------------------------------------------------------------
   # 三平台编译（跨平台约束的 CI 落点）

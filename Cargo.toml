@@ -399,7 +399,7 @@ path = "tests/routing/routing_benchmark_test.rs"
 name = "cache_cost_test"
 path = "tests/routing/cache_cost_test.rs"
 
-# Bench 注册表（autobenches = false）：name = 文件 stem；三条均 harness = false （criterion 自带 harness）
+# Bench 注册表（autobenches = false）：name = 文件 stem；各基准均 harness = false（criterion 自带 harness）
 
 [[bench]]
 name = "conversion"

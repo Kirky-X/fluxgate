@@ -255,14 +255,18 @@ flowchart TB
 | `default_deadline_ms` | `10000.0` | 未携带 deadline 头时的默认截止（毫秒） |
 | `ucb_alpha` | `1.0` | LinUCB 探索参数（仅 `selection = "linucb"` 时被咨询） |
 | `prefix_affinity` | 子段 `[routing.prefix_affinity]`：`enabled = false`、`prefix_chars = 512` | 前缀亲和 PoTC（默认关）：开启后稳定前缀哈希出 2 个带内候选、按平滑权重择优；`prefix_chars` 为前缀键截取的首条 user content 头部字符数 |
-| `affinity` | 子段 `[routing.affinity]`：`mode = "legacy"`、`cache_worth_tokens = 1024`、`turn_gap_secs = 120` | 缓存经济学亲和（默认 legacy = 现行为逐位不变）：`legacy` 成功即粘 1h；`auto` 按响应缓存价值判定（`worth = cache_read + cache_creation +（vendor silent_cache 时加 prompt_tokens）≥ cache_worth_tokens` 才粘，TTL 取该 vendor `cache_ttl_secs`；低于阈值不写也不删既有记录）；`turn` 会话内连续请求粘 `turn_gap_secs`；`off` 不写 + 查询短路。仅 auto/turn 落 `affinity_sticks` 表并在启动恢复（未过期 top 512） |
+| `affinity` | 子段 `[routing.affinity]`：`mode = "legacy"`、`cache_worth_tokens = 1024`、`turn_gap_secs = 120` | 缓存经济学亲和（默认 legacy = 现行为逐位不变）：`legacy` 成功即粘 1h；`auto` 按响应缓存价值判定（`worth = cache_read + cache_creation +（vendor silent_cache 时加 prompt_tokens）≥ cache_worth_tokens` 才粘，TTL 取该 vendor `cache_ttl_secs`；低于阈值不写也不删既有记录）；`turn` 会话内连续请求粘 `turn_gap_secs`；`off` 不写 + 查询短路（存量绑定立即不再生效、也不被删除）。仅 auto/turn 落 `affinity_sticks` 表并在启动恢复（未过期 top 512） |
 | `difficulty` | 子段 `[routing.difficulty]`：`enabled = false` 完全旁路（其余默认 `w_clf = 0.6`、`w_rule = 0.4`、`score_low = 0.35`、`score_high = 0.65`、`mid_band_policy = "strong"`） | 难度定档（默认关）：`groups` 命中的请求按规则计分 + 分类概率融合切 low/mid/high 三档并改写目标抽象模型名；`w_clf > 0` 需 `difficulty-classifier` feature；`lexicon` 子段可整体覆盖 hard/easy 词表、数学符号、问号与代码围栏标记（缺省 = 内置默认），`scoring` 子段为规则计分权重/封顶（缺省 = 历史常量）；`classifier` 子段为 vecboost laya 运行参数 |
 
 ### 会话亲和
 
 - 客户端经 **`X-Session-Id`** 头声明会话键；缺失时兜底 `sha256(messages[0] 序列化前 2KB)` 截断 hex（`src/api/routing_hints.rs`）。
 - `affinity_mode = "hard"`（默认）时命中绑定厂商必选；`"soft"` 时命中厂商权重乘 `(1 + affinity_boost_factor)` 后与其余候选照常竞争。
-- 缓存经济学亲和（`[routing.affinity]`，默认 `legacy` 零回归）：`auto` 模式在响应 usage 结算时判定值不值得粘——把「只写入 200 token 缓存的会话也粘 1h、锁死在次优厂商」的问题交给缓存价值阈值（默认 1024 token，对齐 magpie 实测）；`turn` 模式以 `turn_gap_secs`（默认 120s）近似 tool result 回传窗口。沉默缓存厂商（OpenAI 前缀缓存 / Gemini 隐式缓存，usage 不报 cache 列）配 `silent_cache = true`，把 `prompt_tokens` 当写入值计入缓存价值；TTL 经 `cache_ttl_secs` 对齐上游缓存部署（默认 300s，1h 缓存部署配 3600）。auto/turn 模式的粘性 write-behind 落 `affinity_sticks` 表，重启按剩余 TTL 恢复未过期 top 512。
+- 缓存经济学亲和（`[routing.affinity]`，默认 `legacy` 零回归）：`auto` 模式在响应 usage 结算时判定值不值得粘——把「只写入 200 token 缓存的会话也粘 1h、锁死在次优厂商」的问题交给缓存价值阈值（默认 1024 token，对齐 magpie 实测）；`turn` 模式以 `turn_gap_secs`（默认 120s）近似 tool result 回传窗口。沉默缓存厂商（OpenAI 前缀缓存 / Gemini 隐式缓存，usage 不报 cache 列）配 `silent_cache = true`，把 `prompt_tokens` 当写入值计入缓存价值；TTL 经 `cache_ttl_secs` 对齐上游缓存部署（默认 300s，1h 缓存部署配 3600）。
+- **TTL 只由写入方设定，读路径不续期**（`auto`/`turn`）：settle 写入该 vendor 的 `cache_ttl_secs`（或 `turn_gap_secs`）后，后续路由命中不再把它刷长——上游缓存失效后会话可自然回到路由池，这正是 `auto` 的意义。`legacy` 保持历史语义（表级 1h、命中续期）。低于阈值（`worth < cache_worth_tokens`）的结算既不写也不删：既有记录按它自己写入时的 TTL 过期。
+- 首绑定收敛只适用于 `legacy` + `affinity_tenant_scoped = true`（并发首请求经 SETNX 收敛到唯一胜出者，后续 settle 不覆盖）；`auto`/`turn` 每次结算是一份新的粘持判定，后一次覆盖前一次。
+- `off` 是止损阀：不写且查询短路——存量绑定立即不再生效（也不被删除，切回原模式即可恢复）。
+- auto/turn 模式的粘性 write-behind 落 `affinity_sticks` 表，重启按剩余 TTL 恢复未过期 top 512。
 
 ### 命名预设
 

@@ -350,13 +350,16 @@ prefix_chars = 512
 #   - "auto"：按响应缓存价值判定。worth = cache_read + cache_creation +
 #     （该 vendor silent_cache 时再加 prompt_tokens）；worth ≥
 #     cache_worth_tokens 才写亲和，TTL 取该 vendor 的 cache_ttl_secs；
-#     低于阈值**不写也不删**既有记录——既有记录按其 TTL 自然过期，避免
-#     中途撕裂 vendor 侧仍有值的缓存。
+#     低于阈值**不写也不删**既有记录——既有记录按其写入时的 TTL 自然过期，
+#     避免中途撕裂 vendor 侧仍有值的缓存。写入后**读路径不续期**：上游缓存
+#     失效即会话回路由池，这正是本模式的语义。
 #   - "turn"：会话内连续请求粘 turn_gap_secs（近似 tool result 回传窗口），
-#     不看 worth。
-#   - "off"：不写亲和 + 查询短路（亲和键恒 miss）。
+#     不看 worth；同样读路径不续期。
+#   - "off"：不写亲和 + 查询短路（路由与解释端点都按 off 门短路；存量绑定
+#     立即不再生效，也不被删除——切回原模式即恢复）。
 #   未知值被配置校验拒绝（不静默回落）。仅 auto / turn 模式把粘性落
-#   affinity_sticks 表并在启动时恢复。
+#   affinity_sticks 表并在启动时恢复。首绑定收敛仅适用于 legacy +
+#   affinity_tenant_scoped 开启的形态。
 # - cache_worth_tokens: auto 模式写亲和的缓存价值门限，默认 1024（对齐
 #   magpie 实测：低于此量级的前缀缓存不值得为它牺牲路由质量）。
 # - turn_gap_secs: turn 模式的粘持窗口（秒），默认 120。

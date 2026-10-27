@@ -428,7 +428,7 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 
 ## ⚡ 性能设计
 
-首轮 Criterion 组件级基线已发布（转换 / SSE 帧解析 / 路由决策路径，含 mean 与吞吐数据）：见 [⚡ 性能基线](docs/PERFORMANCE.md)。以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 arc-swap 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载（响应缓存的并发 single-flight 亦由 oxcache `get_or` 注册表/watch 唤醒承载，派发经 30s 超时钳制、leader 失败 follower 自愈回源）。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
+首轮 Criterion 组件级基线已发布（转换 / SSE 帧解析 / 路由决策路径 / 缓存经济学亲和，含 mean 与吞吐数据）：见 [⚡ 性能基线](docs/PERFORMANCE.md)。以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 arc-swap 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载（响应缓存的并发 single-flight 亦由 oxcache `get_or` 注册表/watch 唤醒承载，派发经 30s 超时钳制、leader 失败 follower 自愈回源）。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
 
 ---
 
@@ -460,7 +460,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 <tr><td align="center">✅</td><td>成本查询 API</td><td>成本分账落库（<code>token_usage</code> 四档成本列，V2 迁移）+ <code>/admin/cost</code> 聚合查询端点（预聚合表按 vendor/model 分组）+ 逐请求成本落库（<code>request_logs.cost_usd</code>：四档求和 × 目录单价，rerank 按每千文档价）；进程内 <code>CostTracker</code> 启动自 <code>token_usage</code> 恢复（<code>[metrics].cost_restore_window_hours</code>，默认 24h；内存库启动跳过、恢复失败 warn 继续）</td></tr>
 <tr><td align="center">✅</td><td>用量洞察与 OTLP</td><td>会话级成本聚合（<code>GET /admin/sessions</code>：成本/token/请求数/首末时间 + 首条消息 80 字符标题）与上下文利用率分析（<code>GET /admin/context-stats</code>：平均占用率、缓存份额、五桶分布），<code>[usage_insights]</code> 运行时开关（默认开，关闭时四列写 NULL 且端点 404）；<code>request_logs</code> 新增 <code>session_key</code>/<code>context_window_tokens</code>/<code>cache_read_tokens</code>/<code>cache_write_tokens</code> 四列（V5 迁移，三方言）；OTLP/HTTP-Proto 指标导出（<code>otlp</code> feature，不进 <code>full</code>，<code>[otlp]</code> 默认关，导出失败 fail-open 计数）</td></tr>
 <tr><td align="center">✅</td><td>Rust SDK</td><td>sdk 并入 <code>src/sdk</code>（<code>sdk</code> feature 门控，原 workspace 继承断裂已消除）：chat / stream / embed / admin</td></tr>
-<tr><td align="center">✅</td><td>性能基准</td><td>Criterion 组件级基线（转换 / SSE 帧解析 / 路由决策路径）已建立，首轮数据见 <a href="docs/PERFORMANCE.md">PERFORMANCE.md</a></td></tr>
+<tr><td align="center">✅</td><td>性能基准</td><td>Criterion 组件级基线（转换 / SSE 帧解析 / 路由决策路径 / 缓存经济学亲和）已建立，首轮数据见 <a href="docs/PERFORMANCE.md">PERFORMANCE.md</a></td></tr>
 <tr><td align="center">✅</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤已落 SQL（闭区间 <code>[start_time, end_time]</code>，两端含边界）</td></tr>
 </table>
 

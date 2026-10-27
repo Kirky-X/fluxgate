@@ -319,11 +319,11 @@ weight = w_model·model.weight + w_queue·queue_factor
 `src/router/affinity.rs`，存储走 oxcache `CacheBackend`，不手写 map：
 
 - 键 `affinity:{session_key}`；`tenant_scoped` 开启时带 `api_key_hash` 前缀，与响应缓存的 `resp:` 命名空间隔离；
-- TTL 默认 1 小时，命中即续期；
+- TTL 语义按模式分流：`legacy` 表级 1 小时、**命中即续期**；`auto`/`turn` 的 TTL 由写入方（settle）按上游缓存存活时长 / 连续窗口设定，**读路径不续期**（`peek`），既有记录按写入时的 TTL 自然过期；`off` 查询短路（存量绑定立即失效，写侧同时停止）；
 - **hard（默认）在合格集合内排他**：命中即选绑定 vendor；仅当绑定 vendor 不在本次合格集合中才回落加权选择（`soft` 模式全程为 boost）；
 - 只记录"上次成功服务的 vendor"——bind/clear 由 API 层在执行成功后调用（`src/api/mod.rs`）；
 - 命中率计入 `GlobalMetrics`；
-- **缓存经济学亲和**（`[routing.affinity]`，默认 `legacy` 冻结现行为）：settle 决策与粘性记账在 `src/router/affinity_settle.rs`——`legacy` 成功即粘 1h；`auto` 按响应缓存价值判定（`worth = cache_read + cache_creation +（vendor.silent_cache 时加 prompt_tokens）≥ cache_worth_tokens` 才粘，TTL 取 vendor `cache_ttl_secs`；低于阈值不写不删、既有记录自然过期）；`turn` 粘 `turn_gap_secs`；`off` 不写 + 查询短路。settle 点在 API 层响应 usage 结算处（`src/api/request_cost.rs` 的 `settle_api_affinity`，与 `record_keyed_usage` 同源取 usage），legacy 路径的 bind/clear/rebind 保持原样。
+- **缓存经济学亲和**（`[routing.affinity]`，默认 `legacy` 冻结现行为）：settle 决策与粘性记账在 `src/router/affinity_settle.rs`——`legacy` 成功即粘 1h（写入语义与 `bind_session_affinity` 同源：租户隔离开启时走 `bind_if_absent` 首绑定收敛，不绕过并发收敛结果）；`auto` 按响应缓存价值判定（`worth = cache_read + cache_creation +（vendor.silent_cache 时加 prompt_tokens）≥ cache_worth_tokens` 才粘，TTL 取 vendor `cache_ttl_secs`；低于阈值不写不删、既有记录按其写入 TTL 自然过期）；`turn` 粘 `turn_gap_secs`；`off` 不写 + 查询短路（路由 `affinity_hit` 与解释端点都按 `AffinityMode::Off` 门短路）。settle 点在 API 层响应 usage 结算处（`src/api/request_cost.rs` 的 `settle_api_affinity`，与 `record_keyed_usage` 同源取 usage），legacy 路径的 bind/clear/rebind 保持原样。
 
 #### 粘性落盘与启动恢复
 
@@ -337,9 +337,9 @@ flowchart LR
     S -.->|"粘性记账（有界 4096+256）"| ST["AffinityStickTable<br/>解释端点 worth/ttl 来源"]
 ```
 
-- write-behind 通道满丢弃计数进 `affinity_persist_drop_total`（亲和是优化非承诺，丢不阻塞请求）；落库失败整批丢弃并计数 + warn，不重试；
+- write-behind 通道满丢弃计数进 `affinity_persist_drop_total`（亲和是优化非承诺，丢不阻塞请求）；落库失败整批丢弃并计数 + warn，不重试——两个计数器分列出口：`affinity_persist_dropped`（通道侧精确）与 `affinity_flush_failures`（UPSERT 失败批次）；
 - 启动恢复只对 auto/turn 执行（legacy 不落盘、off 短路），失败仅 warn 不阻断启动（`src/server/affinity_restore.rs`）；
-- 观测四计数：`affinity_stick_total`（写入粘性）/ `affinity_drift_total`（threshold-skip）/ `affinity_persist_drop_total` / `affinity_restored_count`，经 `/admin/metrics` 暴露；路由解释端点输出 `affinity {decision, worth_tokens, ttl_secs}`（`src/api/routing_hints.rs` 的 `affinity_decision_block`，纯只读 peek 不续期）。
+- 观测四计数：`affinity_stick_total`（写入粘性：legacy/auto/turn 成功结算都计入）/ `affinity_drift_total`（threshold-skip）/ `affinity_persist_drop_total` / `affinity_restored_count`，经 `/admin/metrics` 暴露；路由解释端点输出 `affinity {decision, worth_tokens, ttl_secs}`（`src/api/routing_hints.rs` 的 `affinity_decision_block`，纯只读 peek 不续期；`ttl_secs` 取绑定键剩余 TTL，`decision` 四态区分 `disabled` 与 `no_session`）。
 
 ### 路由提示
 

@@ -174,18 +174,17 @@ pub async fn rerank(
         .metrics()
         .record_rerank(parsed.documents.len() as u64);
     record_rerank_usage(&state, &decision, &api_key_hash, parsed.documents.len()).await;
-    // 会话亲和软粘着：成功请求写回实际 vendor（失败路径不绑定）
-    if let (Some(affinity), Some(session_key)) = (state.affinity.as_ref(), session_key.as_deref()) {
-        let tenant = state
-            .config
-            .read()
-            .routing
-            .affinity_tenant_scoped
-            .then_some(api_key_hash.as_str());
-        affinity
-            .bind(tenant, session_key, &decision.vendor.id)
-            .await;
-    }
+    // 会话亲和软粘着：成功请求写回实际 vendor（失败路径不绑定）。复用
+    // [`crate::api::bind_session_affinity`] 的单点语义——legacy 才写
+    //（auto/turn 由 usage 结算点承接，rerank 无 usage 语义；off 不写），
+    // 租户隔离开启时走首绑定收敛
+    crate::api::bind_session_affinity(
+        &state,
+        &api_key_hash,
+        session_key.as_deref(),
+        &decision.vendor.id,
+    )
+    .await;
     Ok(Json(response))
 }
 

@@ -629,4 +629,74 @@ mod tests {
             "失败请求不得写入绑定"
         );
     }
+
+    /// 亲和模式门：rerank 的写回与 chat 同源——`off` 不写（off 的查询/写入
+    /// 短路对本端点同样成立），`auto`/`turn` 由 usage 结算点承接（rerank 无
+    /// usage 语义，不在此写 1h 无条件 set）。
+    #[tokio::test]
+    async fn rerank_affinity_write_respects_mode_gate() {
+        for (mode, expect_written) in [
+            ("legacy", true),
+            ("off", false),
+            ("auto", false),
+            ("turn", false),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let mock = server
+                .mock("POST", "/v1/rerank")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"results":[{"index":0,"relevance_score":0.5}]}"#)
+                .expect(1)
+                .create_async()
+                .await;
+            let (state, _repo) = make_state_with_config(
+                vec![rerank_vendor(
+                    "rr-prod",
+                    format!("{}/v1", server.url()),
+                    "m",
+                    "rerank-v3",
+                    1.0,
+                )],
+                Vec::new(),
+                |config| config.routing.affinity.mode = mode.into(),
+            )
+            .await;
+
+            let resp = app(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/rerank")
+                        .header("content-type", "application/json")
+                        .header("x-session-id", "sess-mode")
+                        .body(Body::from(
+                            serde_json::to_vec(
+                                &json!({"model": "rerank-v3", "query": "q", "documents": ["a"]}),
+                            )
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "模式 {mode} 下 rerank 应正常服务");
+            let bound = state
+                .affinity
+                .as_ref()
+                .expect("affinity wired")
+                .peek(None, "sess-mode")
+                .await;
+            if expect_written {
+                assert_eq!(
+                    bound.as_deref(),
+                    Some("rr-prod"),
+                    "legacy 必须写回绑定（实测 {bound:?}）"
+                );
+            } else {
+                assert_eq!(bound, None, "模式 {mode} 不得写亲和（实测 {bound:?}）");
+            }
+            mock.assert_async().await;
+        }
+    }
 }

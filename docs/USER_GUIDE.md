@@ -265,6 +265,7 @@ flowchart TB
 - 缓存经济学亲和（`[routing.affinity]`，默认 `legacy` 零回归）：`auto` 模式在响应 usage 结算时判定值不值得粘——把「只写入 200 token 缓存的会话也粘 1h、锁死在次优厂商」的问题交给缓存价值阈值（默认 1024 token，对齐 magpie 实测）；`turn` 模式以 `turn_gap_secs`（默认 120s）近似 tool result 回传窗口。沉默缓存厂商（OpenAI 前缀缓存 / Gemini 隐式缓存，usage 不报 cache 列）配 `silent_cache = true`，把 `prompt_tokens` 当写入值计入缓存价值；TTL 经 `cache_ttl_secs` 对齐上游缓存部署（默认 300s，1h 缓存部署配 3600）。
 - **TTL 只由写入方设定，读路径不续期**（`auto`/`turn`）：settle 写入该 vendor 的 `cache_ttl_secs`（或 `turn_gap_secs`）后，后续路由命中不再把它刷长——上游缓存失效后会话可自然回到路由池，这正是 `auto` 的意义。`legacy` 保持历史语义（表级 1h、命中续期）。低于阈值（`worth < cache_worth_tokens`）的结算既不写也不删：既有记录按它自己写入时的 TTL 过期。
 - 首绑定收敛只适用于 `legacy` + `affinity_tenant_scoped = true`（并发首请求经 SETNX 收敛到唯一胜出者，后续 settle 不覆盖）；`auto`/`turn` 每次结算是一份新的粘持判定，后一次覆盖前一次。
+- 写入侧的模式门同样覆盖 `/v1/rerank`：该端点无 usage 语义，回写与 chat 的 legacy 路径同源（`bind_session_affinity`）——`off` 不写、`auto`/`turn` 也不写（不引入 1h 无条件 set）。
 - `off` 是止损阀：不写且查询短路——存量绑定立即不再生效（也不被删除，切回原模式即可恢复）。
 - auto/turn 模式的粘性 write-behind 落 `affinity_sticks` 表，重启按剩余 TTL 恢复未过期 top 512。
 

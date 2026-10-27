@@ -321,7 +321,7 @@ weight = w_model·model.weight + w_queue·queue_factor
 - 键 `affinity:{session_key}`；`tenant_scoped` 开启时带 `api_key_hash` 前缀，与响应缓存的 `resp:` 命名空间隔离；
 - TTL 语义按模式分流：`legacy` 表级 1 小时、**命中即续期**；`auto`/`turn` 的 TTL 由写入方（settle）按上游缓存存活时长 / 连续窗口设定，**读路径不续期**（`peek`），既有记录按写入时的 TTL 自然过期；`off` 查询短路（存量绑定立即失效，写侧同时停止）；
 - **hard（默认）在合格集合内排他**：命中即选绑定 vendor；仅当绑定 vendor 不在本次合格集合中才回落加权选择（`soft` 模式全程为 boost）；
-- 只记录"上次成功服务的 vendor"——bind/clear 由 API 层在执行成功后调用（`src/api/mod.rs`）；
+- 只记录"上次成功服务的 vendor"——bind/clear 由 API 层在执行成功后调用（`src/api/mod.rs` 的 `bind_session_affinity`，rerank 端点复用同一单点；模式门统一在此，`off` 不写）；
 - 命中率计入 `GlobalMetrics`；
 - **缓存经济学亲和**（`[routing.affinity]`，默认 `legacy` 冻结现行为）：settle 决策与粘性记账在 `src/router/affinity_settle.rs`——`legacy` 成功即粘 1h（写入语义与 `bind_session_affinity` 同源：租户隔离开启时走 `bind_if_absent` 首绑定收敛，不绕过并发收敛结果）；`auto` 按响应缓存价值判定（`worth = cache_read + cache_creation +（vendor.silent_cache 时加 prompt_tokens）≥ cache_worth_tokens` 才粘，TTL 取 vendor `cache_ttl_secs`；低于阈值不写不删、既有记录按其写入 TTL 自然过期）；`turn` 粘 `turn_gap_secs`；`off` 不写 + 查询短路（路由 `affinity_hit` 与解释端点都按 `AffinityMode::Off` 门短路）。settle 点在 API 层响应 usage 结算处（`src/api/request_cost.rs` 的 `settle_api_affinity`，与 `record_keyed_usage` 同源取 usage），legacy 路径的 bind/clear/rebind 保持原样。
 

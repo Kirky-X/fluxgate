@@ -40,6 +40,8 @@ pub fn ensure_test_api_key() {
 /// 差异字段（api_key_env、权重、并发上限等）由调用点 struct-update 覆盖。
 pub fn base_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
     VendorConfig {
+        cache_ttl_secs: 300,
+        silent_cache: false,
         timeout_ms: 60_000,
         stream_ttft_ms: 60_000,
         stream_idle_ms: 30_000,

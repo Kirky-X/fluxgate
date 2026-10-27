@@ -89,6 +89,7 @@ async fn build_app() -> (Router, Arc<ApiState>, DbPool) {
         vendor_manager.metrics().clone(),
     ));
     let state = Arc::new(ApiState {
+        affinity_writer: None,
         config: config_manager,
         vendor_manager,
         router,

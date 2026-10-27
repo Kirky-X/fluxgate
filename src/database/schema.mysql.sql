@@ -116,3 +116,15 @@ CREATE TABLE IF NOT EXISTS response_store (
     output_items LONGTEXT NOT NULL,
     response_json LONGTEXT NOT NULL
 ) ENGINE = InnoDB;
+
+-- 会话粘性落盘表（V6，cache-economy-affinity）
+-- 键列走 VARCHAR 控索引键长（复合主键上限 3072 字节）；索引
+-- （idx_affinity_sticks_expires）由 ensure_indexes_mysql 运行时探针幂等创建。
+CREATE TABLE IF NOT EXISTS affinity_sticks (
+    tenant VARCHAR(64) NOT NULL DEFAULT '',
+    session_key VARCHAR(255) NOT NULL,
+    vendor_id VARCHAR(64) NOT NULL,
+    worth_tokens BIGINT NOT NULL DEFAULT 0,
+    expires_at BIGINT NOT NULL,
+    PRIMARY KEY (tenant, session_key)
+) ENGINE = InnoDB;

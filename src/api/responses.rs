@@ -522,6 +522,7 @@ async fn native_response(
             decision.vendor.type_.clone(),
             decision.model.model_id.clone(),
             ctx.api_key_hash.clone(),
+            ctx.session_key.clone(),
         );
         let observer = recorder.clone();
         let body_stream = crate::middleware::quota::passthrough_stream_body(

@@ -113,6 +113,16 @@ pub struct VendorConfig {
     /// 置 true 时原样发送（透传路径恒不触碰）
     #[serde(default)]
     pub send_nonstandard_params: bool,
+    /// 上游前缀缓存存活时长（秒）：`[routing.affinity] mode = "auto"` 判定
+    /// 值得粘时以此作为粘持 TTL。默认 300（5 分钟缓存部署）；1h 缓存部署
+    /// 配 3600
+    #[serde(default = "loader::default_vendor_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    /// 沉默缓存厂商：上游不在 usage 里报 cache_read/cache_creation
+    ///（OpenAI 前缀缓存、Gemini 隐式缓存等）。auto 模式把 prompt_tokens
+    /// 当写入值计入缓存价值，否则这类上游的 worth 恒 0、永不粘。默认 false
+    #[serde(default)]
+    pub silent_cache: bool,
 }
 
 impl VendorConfig {
@@ -673,6 +683,10 @@ pub struct RoutingSection {
     /// 前缀亲和 PoTC 子段（默认关）
     #[serde(default)]
     pub prefix_affinity: PrefixAffinitySection,
+    /// 缓存经济学亲和子段（`[routing.affinity]`）：默认 legacy = 成功即粘
+    /// 1h（现行为逐位不变）
+    #[serde(default)]
+    pub affinity: AffinitySection,
     /// 目标服务水平 α（`[0,1]`，默认 0.95）：α > ŝ 欠账累积、α < ŝ 衰减归 0；
     /// 非有限/越界钳 `[0,1]`
     #[serde(default = "default_sla_alpha")]
@@ -704,6 +718,40 @@ fn default_price_factor_enabled() -> bool {
 
 fn default_price_factor_mode() -> String {
     "nominal".to_string()
+}
+
+/// 缓存经济学亲和 `[routing.affinity]`（默认 `legacy` = 现行为逐位不变）。
+/// - `mode`：`legacy`（成功即粘 1h，行为冻结）/ `auto`（按响应缓存价值判定
+///   值不值得粘）/ `turn`（会话内连续请求粘 `turn_gap_secs`）/ `off`。
+///   未知值按 `legacy`（回滚阀）；合法值集单源 `AffinityMode::parse`
+///   （实现在 `loader`，规则14）
+/// - `cache_worth_tokens`：auto 模式写亲和的缓存价值门限
+/// - `turn_gap_secs`：turn 模式的粘持窗口（秒）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct AffinitySection {
+    #[serde(default = "loader::default_affinity_economy_mode")]
+    pub mode: String,
+    #[serde(default = "loader::default_affinity_cache_worth_tokens")]
+    pub cache_worth_tokens: u64,
+    #[serde(default = "loader::default_affinity_turn_gap_secs")]
+    pub turn_gap_secs: u64,
+}
+
+/// 缓存经济学亲和模式闭集（`[routing.affinity].mode` 的合法值集）。与
+/// [`ApiStyle`] 同构收益（合法值单源、防拼写）；字段保持 `String` 而非
+/// serde 枚举：非法值由 loader 以原值点名拒绝（与既有段同口径）。
+/// 方法实现在 `loader`（规则14）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AffinityMode {
+    /// 现行为：执行成功即粘 1h、命中续期（行为冻结，零回归）
+    Legacy,
+    /// 按响应缓存价值判定：worth ≥ `cache_worth_tokens` 才粘，TTL = vendor
+    /// `cache_ttl_secs`；低于阈值不写不删（既有记录自然过期）
+    Auto,
+    /// 会话内连续请求粘 `turn_gap_secs`（tool result 回传窗口近似）
+    Turn,
+    /// 不写亲和 + 查询短路
+    Off,
 }
 
 /// 前缀亲和 PoTC `[routing.prefix_affinity]`：稳定前缀哈希出 2 个带内候选、
@@ -851,6 +899,7 @@ impl Default for RoutingSection {
             difficulty: DifficultySection::default(),
             price_factor_mode: default_price_factor_mode(),
             prefix_affinity: PrefixAffinitySection::default(),
+            affinity: AffinitySection::default(),
             rerank_score_normalization: default_rerank_score_normalization(),
         }
     }
@@ -2161,6 +2210,8 @@ enabled = true
     fn vendor_config_style_and_protocol_helpers_match_legacy_semantics() {
         fn vendor(type_: &str, api_style: Option<&str>) -> VendorConfig {
             VendorConfig {
+                cache_ttl_secs: 300,
+                silent_cache: false,
                 id: "v".into(),
                 name: "v".into(),
                 type_: type_.into(),

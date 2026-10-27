@@ -123,6 +123,7 @@ async fn build_state() -> Arc<ApiState> {
         logger: None,
         pre_aggregator: None,
         affinity: None,
+        affinity_writer: None,
         response_cache: None,
         bandit: None,
         quota: None,

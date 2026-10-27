@@ -116,3 +116,14 @@ CREATE TABLE IF NOT EXISTS response_store (
 CREATE INDEX IF NOT EXISTS idx_response_store_tenant ON response_store(tenant_hash, created_at);
 CREATE INDEX IF NOT EXISTS idx_response_store_conversation ON response_store(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_response_store_expires ON response_store(expires_at);
+
+-- 会话粘性落盘表（V6，cache-economy-affinity）
+CREATE TABLE IF NOT EXISTS affinity_sticks (
+    tenant TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    vendor_id TEXT NOT NULL,
+    worth_tokens BIGINT NOT NULL DEFAULT 0,
+    expires_at BIGINT NOT NULL,
+    PRIMARY KEY (tenant, session_key)
+);
+CREATE INDEX IF NOT EXISTS idx_affinity_sticks_expires ON affinity_sticks(expires_at);

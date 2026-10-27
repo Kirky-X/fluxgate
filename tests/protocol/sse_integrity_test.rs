@@ -440,6 +440,7 @@ mod integration {
         ));
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,

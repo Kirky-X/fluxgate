@@ -111,3 +111,18 @@ CREATE TABLE IF NOT EXISTS response_store (
 CREATE INDEX IF NOT EXISTS idx_response_store_tenant ON response_store(tenant_hash, created_at);
 CREATE INDEX IF NOT EXISTS idx_response_store_conversation ON response_store(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_response_store_expires ON response_store(expires_at);
+
+-- 会话粘性落盘表（V6，cache-economy-affinity）：[routing.affinity] 为
+-- auto/turn 时，resp usage 结算后把「会话 → vendor」的粘性 write-behind
+-- 落库，重启按 expires_at 恢复未过期的前 512 条。
+-- 复合主键 (tenant, session_key) 与亲和键的租户隔离同构：同 session id
+-- 在不同租户下是两条独立粘性。
+CREATE TABLE IF NOT EXISTS affinity_sticks (
+    tenant TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    vendor_id TEXT NOT NULL,
+    worth_tokens INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant, session_key)
+);
+CREATE INDEX IF NOT EXISTS idx_affinity_sticks_expires ON affinity_sticks(expires_at);

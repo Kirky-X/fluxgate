@@ -18,7 +18,9 @@ pub mod readiness;
 mod request_cost;
 pub mod rerank;
 
-pub(crate) use request_cost::{request_context_columns, request_cost_usd, ContextColumns};
+pub(crate) use request_cost::{
+    request_context_columns, request_cost_usd, settle_api_affinity, ContextColumns,
+};
 pub mod response_cache;
 pub mod responses;
 pub mod route_difficulty_explain;
@@ -50,12 +52,23 @@ use std::time::Duration;
 
 /// 执行成功后回写会话亲和绑定（只记"上次成功服务的 vendor"）；未接线或
 /// 无会话键时 no-op。`affinity_tenant_scoped` 开：首绑定收敛；关：legacy 键无条件 set。
+///
+/// `legacy` 模式（默认）走本函数；`auto`/`turn`/`off` 由 usage 结算点的
+/// [`settle_api_affinity`] 承接（响应 usage 到达后才判定值不值得粘），
+/// 故此处在结算点已接管时不再重复写——防止 1h 无条件 set 覆盖掉按缓存
+/// TTL 算出的短粘性。
 pub(crate) async fn bind_session_affinity(
     state: &std::sync::Arc<ApiState>,
     api_key_hash: &str,
     session_key: Option<&str>,
     vendor_id: &str,
 ) {
+    // 非 legacy 模式的绑定由 usage 结算点（settle）负责
+    if crate::config::AffinityMode::from_section(&state.config.read().routing.affinity)
+        != crate::config::AffinityMode::Legacy
+    {
+        return;
+    }
     if let (Some(affinity), Some(session)) = (state.affinity.as_ref(), session_key) {
         if state.config.read().routing.affinity_tenant_scoped {
             affinity
@@ -67,6 +80,13 @@ pub(crate) async fn bind_session_affinity(
     }
 }
 
+/// 失败迁移重绑定的模式门（同 [`bind_session_affinity`]）：非 legacy 模式
+/// 由 settle 承接，避免 1h 无条件 set 覆盖按缓存 TTL 算出的短粘性。
+fn affinity_legacy_mode(state: &std::sync::Arc<ApiState>) -> bool {
+    crate::config::AffinityMode::from_section(&state.config.read().routing.affinity)
+        == crate::config::AffinityMode::Legacy
+}
+
 /// 失败迁移重绑定 — 换路成功后无条件 set 指向新成功 vendor；租户维度判定同 [`bind_session_affinity`]。
 pub(crate) async fn rebind_session_affinity(
     state: &std::sync::Arc<ApiState>,
@@ -74,6 +94,9 @@ pub(crate) async fn rebind_session_affinity(
     session_key: Option<&str>,
     vendor_id: &str,
 ) {
+    if !affinity_legacy_mode(state) {
+        return;
+    }
     if let (Some(affinity), Some(session)) = (state.affinity.as_ref(), session_key) {
         let tenant = state
             .config
@@ -91,6 +114,9 @@ pub(crate) async fn clear_session_affinity(
     api_key_hash: &str,
     session_key: Option<&str>,
 ) {
+    if !affinity_legacy_mode(state) {
+        return;
+    }
     if let (Some(affinity), Some(session)) = (state.affinity.as_ref(), session_key) {
         let tenant = state
             .config
@@ -702,6 +728,8 @@ mod fallback_guard_tests {
     fn make_vendor(id: &str, priority: u8, cap: Option<usize>) -> VendorConfig {
         std::env::set_var("FLUXGATE_TEST_KEY", "test-key-for-mockito");
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
@@ -821,6 +849,7 @@ mod fallback_guard_tests {
         let log_front: Option<Arc<dyn RequestLogSink>> = Some(logger);
         let usage_front: Option<Arc<dyn UsageSink>> = Some(pa);
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -1023,6 +1052,8 @@ mod cooldown_retry_after {
     fn make_vendor(id: &str, priority: u8, max_tokens: u64, api_base: &str) -> VendorConfig {
         std::env::set_var("FLUXGATE_TEST_KEY", "test-key-for-mockito");
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
@@ -1146,6 +1177,7 @@ mod cooldown_retry_after {
         let log_front: Option<Arc<dyn RequestLogSink>> = Some(logger);
         let usage_front: Option<Arc<dyn UsageSink>> = Some(pa);
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,

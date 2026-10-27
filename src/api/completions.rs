@@ -235,6 +235,7 @@ async fn chat_passthrough_stream(
         decision.vendor.type_.clone(),
         decision.model.model_id.clone(),
         ctx.api_key_hash.clone(),
+        ctx.session_key.clone(),
     );
     let observer = recorder.clone();
     let body_stream = crate::middleware::quota::passthrough_stream_body(
@@ -1051,6 +1052,16 @@ async fn log_success_dispatch(
         &decision.model.model_id,
         &ctx.api_key_hash,
         response,
+    )
+    .await;
+    // 缓存经济学亲和结算（auto/turn 判定值不值得粘；legacy 走派发成功点的
+    // `bind_session_affinity`）
+    crate::api::settle_api_affinity(
+        state,
+        &ctx.api_key_hash,
+        ctx.session_key.as_deref(),
+        &decision.vendor.id,
+        Some(response),
     )
     .await;
 }

@@ -287,6 +287,24 @@ pub(crate) async fn assemble(
         crate::router::affinity::DEFAULT_AFFINITY_TTL,
     ));
 
+    // 缓存经济学亲和（cache-economy-affinity）：粘性记账表 + write-behind
+    // 落盘管道。legacy 模式下 settle 不消费落盘通道（不落盘），管道仍装配
+    // 以便热切到 auto/turn 时立即生效。
+    let affinity_sticks = Arc::new(crate::router::affinity::AffinityStickTable::new());
+    let affinity_sink: Option<Arc<dyn crate::storage::AffinityStickSink>> =
+        Some(Arc::new(crate::database::AffinityPersister::new(
+            database.repository.clone(),
+            crate::database::affinity_persist::DEFAULT_SLOTS,
+            crate::database::affinity_persist::DEFAULT_FLUSH_INTERVAL,
+        )));
+    let affinity_writer = Arc::new(crate::router::affinity_settle::AffinityWriter::new(
+        config_manager.clone(),
+        affinity_table.clone(),
+        affinity_sticks.clone(),
+        affinity_sink.clone(),
+        vendor_manager.metrics().clone(),
+    ));
+
     // 精确响应缓存（oxcache memory）；enabled/TTL 由 [cache] 段热读，默认关闭。
     // O4 语义响应缓存层（semantic-cache feature + [cache.semantic].enabled；
     // BGE 加载失败 → 旁路 + ERROR 限频，精确缓存不受影响）
@@ -417,6 +435,7 @@ pub(crate) async fn assemble(
         logger: log_front,
         pre_aggregator: usage_front,
         affinity: Some(affinity_table.clone()),
+        affinity_writer: Some(affinity_writer.clone()),
         response_cache: Some(response_cache),
         bandit: Some(bandit_state),
         // 配额账本：中间件入口预扣与回补钩共享同一实例（enabled=false 时零判限）。
@@ -431,6 +450,21 @@ pub(crate) async fn assemble(
 
     crate::api::init_global_state(api_state.clone());
     tracing::info!("{}", t("main-global-state-initialized"));
+
+    // 会话粘性启动恢复（`[routing.affinity]` 为 auto/turn 时）：把未过期的
+    // 粘性按剩余 TTL 灌回内存亲和表，避免重启后刚建好的前缀缓存作废。
+    {
+        let mode =
+            crate::config::AffinityMode::from_section(&config_manager.read().routing.affinity);
+        crate::server::affinity_restore::restore_affinity_sticks(
+            mode,
+            &affinity_table,
+            &affinity_sticks,
+            affinity_sink.as_ref(),
+            vendor_manager.metrics(),
+        )
+        .await;
+    }
 
     // Responses 孤儿后台任务：进程重启后 queued/in_progress 不再有人推进，
     // 统一置 failed（失败只 warn，不阻断启动）。

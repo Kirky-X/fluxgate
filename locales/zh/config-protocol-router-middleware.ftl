@@ -126,3 +126,5 @@ config-vendor-api-style-chat-path-conflict = [vendors] 厂商 { $vendor } 不能
 config-vendor-gemini-chat-path-conflict = [vendors] type_ = "gemini" 的厂商 { $vendor } 不能声明 chat_path（路径由 model + action 构造）
 config-vendor-anthropic-version-invalid = [vendors] 厂商 { $vendor } 的 anthropic_version 非法: "{ $value }"（应为 YYYY-MM-DD）
 router-responses-no-native-vendor = 模型 "{ $model }" 无 Responses 原生候选：请为厂商声明 type_ = "openai" 且 api_style = "responses"，并确认厂商与模型均已启用
+config-affinity-mode-unknown = [routing.affinity] mode 非法: "{ $value }"（合法值: legacy / auto / turn / off）
+config-vendor-cache-ttl-secs-out-of-range = [vendors] 厂商 { $vendor } 的 cache_ttl_secs 越界: { $value }（合法范围: 1-86400 秒）

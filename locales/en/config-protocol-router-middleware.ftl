@@ -126,3 +126,5 @@ config-vendor-api-style-chat-path-conflict = [vendors] vendor { $vendor } cannot
 config-vendor-gemini-chat-path-conflict = [vendors] vendor { $vendor } with type_ = "gemini" cannot declare chat_path (path is built from model + action)
 config-vendor-anthropic-version-invalid = [vendors] anthropic_version of vendor { $vendor } is invalid: "{ $value }" (expected YYYY-MM-DD)
 router-responses-no-native-vendor = No native Responses vendor for model "{ $model }": declare type_ = "openai" and api_style = "responses" on the vendor, and make sure both vendor and model are enabled
+config-affinity-mode-unknown = [routing.affinity] mode is invalid: "{ $value }" (valid values: legacy / auto / turn / off)
+config-vendor-cache-ttl-secs-out-of-range = [vendors] cache_ttl_secs of vendor { $vendor } is out of range: { $value } (valid range: 1-86400 seconds)

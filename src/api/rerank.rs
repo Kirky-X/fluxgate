@@ -462,6 +462,8 @@ mod rerank_cost_db_tests {
 
     fn rerank_vendor() -> VendorConfig {
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
@@ -577,6 +579,7 @@ mod rerank_cost_db_tests {
             config: config_manager,
             vendor_manager,
             router,
+            affinity_writer: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,

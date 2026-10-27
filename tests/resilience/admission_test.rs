@@ -522,6 +522,7 @@ mod full_chain {
             vendor_manager.clone(),
         ));
         let state = Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager: vendor_manager.clone(),
             router,

@@ -33,6 +33,8 @@ mod vendor_fallback_integration {
     fn make_vendor(id: &str, priority: u8, api_base: String) -> VendorConfig {
         crate::common::ensure_test_api_key();
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
@@ -149,6 +151,7 @@ mod vendor_fallback_integration {
         ));
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,

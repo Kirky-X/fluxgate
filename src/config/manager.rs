@@ -475,6 +475,8 @@ mod tests {
                 url: String::new(),
             },
             vendors: vec![VendorConfig {
+                cache_ttl_secs: 300,
+                silent_cache: false,
                 id: vendor_id.to_string(),
                 name: "Test".into(),
                 type_: "openai".into(),

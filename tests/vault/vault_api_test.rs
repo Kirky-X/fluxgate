@@ -94,6 +94,7 @@ async fn setup(
     vendor_manager.set_vault(store.clone());
     let pool = memory_pool().await;
     let state = Arc::new(ApiState {
+        affinity_writer: None,
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
         router: Arc::new(fluxgate::router::Router::new(

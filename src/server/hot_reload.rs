@@ -289,6 +289,8 @@ mod tests {
         // 拓扑/构造段变更拒绝
         let mut topo = minimal_config();
         topo.vendors.push(crate::config::VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             id: "new-vendor".to_string(),
             name: "V".to_string(),
             type_: "openai".to_string(),

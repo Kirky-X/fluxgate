@@ -341,6 +341,30 @@ default_deadline_ms = 10000
 enabled = false
 prefix_chars = 512
 
+# 缓存经济学亲和（`[routing.affinity]`，**默认 legacy = 现行为逐位不变**）。
+# ✅ 热生效。针对两个经济性缺陷：粘性不看缓存价值（只写入 200 token 缓存的
+# 会话也粘 1h，把会话锁在次优 vendor 上）；粘性不落盘（重启后被 vendor
+# prompt cache 服务着的会话随机路由，刚建好的缓存作废）。
+# - mode:
+#   - "legacy"（默认）：执行成功即粘 1h、命中续期——现行为冻结，零回归。
+#   - "auto"：按响应缓存价值判定。worth = cache_read + cache_creation +
+#     （该 vendor silent_cache 时再加 prompt_tokens）；worth ≥
+#     cache_worth_tokens 才写亲和，TTL 取该 vendor 的 cache_ttl_secs；
+#     低于阈值**不写也不删**既有记录——既有记录按其 TTL 自然过期，避免
+#     中途撕裂 vendor 侧仍有值的缓存。
+#   - "turn"：会话内连续请求粘 turn_gap_secs（近似 tool result 回传窗口），
+#     不看 worth。
+#   - "off"：不写亲和 + 查询短路（亲和键恒 miss）。
+#   未知值被配置校验拒绝（不静默回落）。仅 auto / turn 模式把粘性落
+#   affinity_sticks 表并在启动时恢复。
+# - cache_worth_tokens: auto 模式写亲和的缓存价值门限，默认 1024（对齐
+#   magpie 实测：低于此量级的前缀缓存不值得为它牺牲路由质量）。
+# - turn_gap_secs: turn 模式的粘持窗口（秒），默认 120。
+[routing.affinity]
+mode = "legacy"
+cache_worth_tokens = 1024
+turn_gap_secs = 120
+
 # 难度定档（`[routing.difficulty]`，默认关——缺段 = enabled=false 完全旁路，
 # 行为与历史逐位一致）。✅ 热生效（字段热读）
 # 启用模板（按需取消注释；整段缺省即默认行为）：
@@ -675,6 +699,16 @@ priority = 1
 # 支持 batch 端点标记（X-Batch: 1 路由的过滤标记）：**默认 false**——标记且
 # 候选集含本厂商时收缩候选集（空集则忽略标记）。
 supports_batch = false
+# 缓存经济学（`[routing.affinity] mode = "auto"` 消费；✅ 热生效）：
+# - cache_ttl_secs：该上游前缀缓存的存活时长（秒），auto 模式判定「值得粘」
+#   时以此作为粘持 TTL。**默认 300**（5 分钟缓存部署）；部署 1h 缓存（如
+#   Anthropic extended cache）配 3600。合法范围 1-86400，越界拒绝加载。
+#   cache_ttl_secs = 300
+# - silent_cache：沉默缓存厂商标记，**默认 false**。无法在 usage 里区分缓存
+#   读写的上游（OpenAI 前缀缓存、Gemini 隐式缓存等）置 true——auto 模式把
+#   prompt_tokens 计入缓存价值，否则这类上游的 worth 恒 0、永不粘，前缀
+#   缓存完全拿不到粘性收益。
+#   silent_cache = false
 # chat 端点路径覆盖（如 Zhipu 类厂商用 "/chat/completions" 而非默认的
 # "/v1/chat/completions"）：设置后出站 URL = api_base + 该路径，跳过 /v1 自动
 # 拼接规则；None/缺省 = 走历史规则。示例（按需取消注释）：

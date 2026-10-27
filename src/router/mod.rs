@@ -2,13 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 pub mod affinity;
+pub mod affinity_settle;
 pub mod bandit;
 pub mod difficulty;
 pub mod embedding_pin;
 #[allow(clippy::module_inception)]
 pub mod router;
 
-pub use affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+pub use affinity::{
+    AffinityDecision, AffinityLookup, AffinityOutcome, AffinityStickTable, AffinityTable,
+    CacheUsage, DEFAULT_AFFINITY_TTL,
+};
+pub use affinity_settle::{decide as decide_affinity, AffinityWriter};
 pub use difficulty::{CachedDecision, DecisionCache, DifficultyRouter, TierDecision, TierPath};
 pub use embedding_pin::EmbeddingPin;
 pub use router::{

@@ -169,6 +169,7 @@ async fn build_app_with_vendors(rules: Vec<RateLimitRule>, vendors: Vec<VendorCo
         config: config_manager,
         vendor_manager,
         router,
+        affinity_writer: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database,
@@ -560,6 +561,7 @@ async fn auth_runs_before_rate_limit_layers() {
         vendor_manager.clone(),
     ));
     let state = Arc::new(ApiState {
+        affinity_writer: None,
         config: config_manager,
         vendor_manager,
         router,

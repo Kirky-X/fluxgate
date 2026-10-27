@@ -63,3 +63,6 @@ main-difficulty-classifier-disabled = 定档分类器已停用：laya 加载失�
 main-otlp-bridge-started = OTLP 指标桥已启动（endpoint: { $endpoint }）
 main-otlp-bridge-build-failed = OTLP 指标桥构建失败，停用导出: { $error }
 main-otlp-teardown-failed = OTLP 指标桥停机收尾失败: { $error }
+main-affinity-restored = 会话亲和已恢复：{ $count } 条粘性（上限 { $limit }）
+main-affinity-restore-failed = 会话亲和恢复失败：{ $error }
+main-affinity-restore-empty = 无未过期的会话粘性可恢复

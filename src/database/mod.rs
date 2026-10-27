@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod affinity_persist;
 pub mod async_logger;
 #[allow(clippy::module_inception)]
 pub mod database;
@@ -17,6 +18,7 @@ pub mod pre_aggregator;
 pub mod repository;
 pub mod response_store;
 
+pub use affinity_persist::AffinityPersister;
 pub use async_logger::{AsyncLogger, AsyncLoggerHandle};
 pub use database::{redact_db_url, resolve_database_url, Database};
 pub(crate) use dialect::raw_statement;

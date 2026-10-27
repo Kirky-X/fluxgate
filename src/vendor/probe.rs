@@ -465,6 +465,8 @@ mod tests {
 
     fn probe_config(api_base: &str, type_: &str) -> VendorConfig {
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             id: "v-probe".into(),
             name: "Probe".into(),
             type_: type_.into(),

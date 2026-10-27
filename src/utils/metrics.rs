@@ -199,6 +199,13 @@ pub struct GlobalMetrics {
     /// Gemini 观测双计数：请求 / 上游失败
     gemini_requests_total: AtomicU64,
     gemini_upstream_failures_total: AtomicU64,
+    /// 缓存经济学亲和四计数（[routing.affinity]，legacy 模式全 0）：
+    /// 价值粘性写入 / 该写未写（threshold-skip 漂移）/ 落盘通道满丢弃 /
+    /// 启动恢复条数
+    affinity_stick_total: AtomicU64,
+    affinity_drift_total: AtomicU64,
+    affinity_persist_drop_total: AtomicU64,
+    affinity_restored_count: AtomicU64,
 }
 
 impl GlobalMetrics {
@@ -242,6 +249,10 @@ impl GlobalMetrics {
             responses_background_jobs_total: AtomicU64::new(0),
             gemini_requests_total: AtomicU64::new(0),
             gemini_upstream_failures_total: AtomicU64::new(0),
+            affinity_stick_total: AtomicU64::new(0),
+            affinity_drift_total: AtomicU64::new(0),
+            affinity_persist_drop_total: AtomicU64::new(0),
+            affinity_restored_count: AtomicU64::new(0),
         }
     }
 
@@ -639,6 +650,28 @@ impl GlobalMetrics {
         self.affinity_misses.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// 缓存经济学亲和：写入粘性（auto 值得粘 / turn 粘住）
+    pub fn record_affinity_stick(&self) {
+        self.affinity_stick_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 该写未写（auto 下 worth 低于门限 → 会话回到路由池）
+    pub fn record_affinity_drift(&self) {
+        self.affinity_drift_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 粘性落盘通道满被丢弃的条数（亲和是优化非承诺，丢不阻塞请求）
+    pub fn record_affinity_persist_drop(&self, count: u64) {
+        self.affinity_persist_drop_total
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// 启动恢复灌回内存亲和表的条数
+    pub fn record_affinity_restored(&self, count: u64) {
+        self.affinity_restored_count
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
     /// 亲和命中率 = hits / (hits + misses)；无样本返回 0.0
     pub fn affinity_hit_rate(&self) -> f64 {
         let hits = self.affinity_hits.load(Ordering::Relaxed);
@@ -862,6 +895,10 @@ impl GlobalMetrics {
             gemini_upstream_failures_total: self
                 .gemini_upstream_failures_total
                 .load(Ordering::Relaxed),
+            affinity_stick_total: self.affinity_stick_total.load(Ordering::Relaxed),
+            affinity_drift_total: self.affinity_drift_total.load(Ordering::Relaxed),
+            affinity_persist_drop_total: self.affinity_persist_drop_total.load(Ordering::Relaxed),
+            affinity_restored_count: self.affinity_restored_count.load(Ordering::Relaxed),
         }
     }
 
@@ -922,6 +959,10 @@ impl GlobalMetrics {
         self.responses_background_jobs_total
             .store(0, Ordering::Relaxed);
         self.gemini_requests_total.store(0, Ordering::Relaxed);
+        self.affinity_stick_total.store(0, Ordering::Relaxed);
+        self.affinity_drift_total.store(0, Ordering::Relaxed);
+        self.affinity_persist_drop_total.store(0, Ordering::Relaxed);
+        self.affinity_restored_count.store(0, Ordering::Relaxed);
         self.gemini_upstream_failures_total
             .store(0, Ordering::Relaxed);
     }
@@ -1084,6 +1125,14 @@ pub struct MetricsSnapshot {
     pub gemini_requests_total: u64,
     /// Gemini 上游失败累计
     pub gemini_upstream_failures_total: u64,
+    /// 缓存经济学亲和：写入粘性累计（auto 值得粘 / turn 粘住）
+    pub affinity_stick_total: u64,
+    /// 该写未写累计（auto 下 worth 低于门限 —— 会话回到路由池）
+    pub affinity_drift_total: u64,
+    /// 粘性落盘通道满丢弃累计
+    pub affinity_persist_drop_total: u64,
+    /// 启动恢复灌回的粘性条数
+    pub affinity_restored_count: u64,
 }
 
 /// 难度定档观测子块（/admin/metrics 快照字段）

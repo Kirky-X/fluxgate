@@ -183,6 +183,9 @@ struct Inner {
     vendor_type: String,
     model_id: String,
     api_key_hash: String,
+    /// 会话键（`X-Session-Id`）：缓存经济学亲和结算在流终止点补写粘性时
+    /// 需要它定位会话；无会话键的请求不参与亲和。
+    session_key: Option<String>,
     usage: Mutex<Option<FrameUsage>>,
     settled: AtomicBool,
 }
@@ -199,6 +202,7 @@ impl StreamUsageRecorder {
         vendor_type: String,
         model_id: String,
         api_key_hash: String,
+        session_key: Option<String>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -209,6 +213,7 @@ impl StreamUsageRecorder {
                 vendor_type,
                 model_id,
                 api_key_hash,
+                session_key,
                 usage: Mutex::new(None),
                 settled: AtomicBool::new(false),
             }),
@@ -330,6 +335,16 @@ impl StreamUsageRecorder {
                 &response,
             )
             .await;
+            // 缓存经济学亲和结算（流终止补写点：usage 帧在此才到达，
+            // 与分账同点，共用同一份合成 usage）
+            crate::api::settle_api_affinity(
+                &inner.state,
+                &inner.api_key_hash,
+                inner.session_key.as_deref(),
+                &inner.vendor_id,
+                Some(&response),
+            )
+            .await;
         });
     }
 }
@@ -372,6 +387,9 @@ where
         vendor_type,
         model_id,
         api_key_hash,
+        // IR 转换流的会话键由调用方（handler）透传；本帮助函数只服务
+        // 无会话上下文的直传形态，故不参与亲和结算
+        None,
     );
     async_stream::stream! {
         let mut stream = Box::pin(stream);

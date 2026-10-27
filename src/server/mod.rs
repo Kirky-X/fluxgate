@@ -10,6 +10,7 @@
 pub use handle::ServerHandle;
 pub use http::{build_app, run};
 
+mod affinity_restore;
 mod bootstrap;
 mod handle;
 mod hot_reload;

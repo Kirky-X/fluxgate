@@ -128,6 +128,7 @@ async fn build_app() -> Router {
         config: config_manager,
         vendor_manager,
         router,
+        affinity_writer: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database,

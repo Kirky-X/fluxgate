@@ -2291,6 +2291,8 @@ mod token_weighted_tickets {
                 url: String::new(),
             },
             vendors: vec![fluxgate::config::VendorConfig {
+                cache_ttl_secs: 300,
+                silent_cache: false,
                 timeout_ms: 2_000,
                 stream_ttft_ms: 2_000,
                 stream_idle_ms: 2_000,

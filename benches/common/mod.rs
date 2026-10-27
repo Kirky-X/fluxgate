@@ -203,6 +203,8 @@ pub fn routing_config() -> Config {
         .iter()
         .enumerate()
         .map(|(i, weight)| VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,

@@ -89,7 +89,7 @@ async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> 
     // 无长度键规格的 TEXT 索引（1170 BLOB/TEXT column used in key specification
     // without a key length）；255 字符 = 1020 字节，在 3072 字节上限内，与
     // sqlite/postgres 的全列索引同语义（非唯一索引，等值/前缀查找等价）。
-    const INDEXES: [(&str, &str, &str); 10] = [
+    const INDEXES: [(&str, &str, &str); 11] = [
         ("idx_timestamp", "request_logs", "timestamp"),
         ("idx_vendor", "request_logs", "actual_vendor"),
         ("idx_model", "request_logs", "abstract_model(255)"),
@@ -120,6 +120,11 @@ async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> 
             "conversation_id, created_at",
         ),
         ("idx_response_store_expires", "response_store", "expires_at"),
+        (
+            "idx_affinity_sticks_expires",
+            "affinity_sticks",
+            "expires_at",
+        ),
     ];
     for (index, table, column) in INDEXES {
         let exists_sql = format!(
@@ -685,6 +690,70 @@ impl Repository {
                 }
             })
             .collect())
+    }
+
+    /// 会话粘性批量 UPSERT（`affinity_sticks`）：复合主键
+    /// (tenant, session_key) 冲突时覆盖 vendor_id / worth_tokens / expires_at。
+    /// 空切片短路（无 SQL 往返）；五列全部参数化绑定。
+    pub async fn upsert_affinity_sticks(
+        &self,
+        sticks: &[crate::storage::AffinityStick],
+    ) -> Result<(), DbError> {
+        if sticks.is_empty() {
+            return Ok(());
+        }
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let sql = crate::database::affinity_persist::upsert_affinity_sticks_sql(backend);
+        for stick in sticks {
+            let values = vec![
+                Value::from(stick.tenant.clone()),
+                Value::from(stick.session_key.clone()),
+                Value::from(stick.vendor_id.clone()),
+                Value::from(stick.worth_tokens),
+                Value::from(stick.expires_at),
+            ];
+            let stmt = raw_statement(backend, sql, values);
+            conn.execute_raw(stmt).await?;
+        }
+        Ok(())
+    }
+
+    /// 未过期粘性读取（启动恢复）：按 `expires_at` 降序取前 `limit` 条
+    ///（最新写入优先）；`LIMIT` 下推到 SQL，不把全表拉进内存。
+    pub async fn read_affinity_sticks(
+        &self,
+        now: i64,
+        limit: u32,
+    ) -> Result<Vec<crate::storage::AffinityStick>, DbError> {
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let sql = crate::database::affinity_persist::read_unexpired_sql(backend);
+        let stmt = raw_statement(backend, sql, vec![now.into(), i64::from(limit).into()]);
+        let rows = conn.query_all_raw(stmt).await?;
+        Ok(rows
+            .iter()
+            .map(|row| crate::storage::AffinityStick {
+                tenant: row.try_get("", "tenant").unwrap_or_default(),
+                session_key: row.try_get("", "session_key").unwrap_or_default(),
+                vendor_id: row.try_get("", "vendor_id").unwrap_or_default(),
+                worth_tokens: row.try_get("", "worth_tokens").unwrap_or_default(),
+                expires_at: row.try_get("", "expires_at").unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    /// 过期粘性清理（运维/测试）：删除 `expires_at <= now` 的行，返回删除数。
+    pub async fn purge_expired_affinity_sticks(&self, now: i64) -> Result<u64, DbError> {
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let sql = crate::database::affinity_persist::purge_expired_sql(backend);
+        let stmt = raw_statement(backend, sql, vec![now.into()]);
+        let result = conn.execute_raw(stmt).await?;
+        Ok(result.rows_affected())
     }
 
     /// CostTracker 启动恢复聚合：按 `(vendor, model)` 分组对四档成本求和，

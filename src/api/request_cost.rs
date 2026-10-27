@@ -71,6 +71,81 @@ pub(crate) fn request_context_columns(
     }
 }
 
+/// 缓存经济学亲和结算（`[routing.affinity]`）：响应 usage 结算时按模式
+/// 决定值不值得粘（R-affinity-002）。
+///
+/// 与 [`request_cost_usd`] 同源取 usage（同一 `parse_usage_detailed` 调用，
+/// 一次解析复用四档），保证「成本口径」与「粘性与否」看到同一份 usage。
+/// 绑定动作与 `legacy` 现行为互斥：本函数写亲和时不再走
+/// `bind_session_affinity`（后者是 legacy 的 1h 无条件 set）。
+pub(crate) async fn settle_api_affinity(
+    state: &crate::api::state::ApiState,
+    api_key_hash: &str,
+    session_key: Option<&str>,
+    vendor_id: &str,
+    response: Option<&serde_json::Value>,
+) -> Option<crate::router::affinity::AffinityDecision> {
+    let writer = state.affinity_writer.as_ref()?;
+    // 一次解析复用四档（与 request_cost_usd 同源，避免热路径重复遍历）
+    let (prompt, _completion, cache_read, cache_creation) = response
+        .and_then(crate::protocol::parse_usage_detailed)
+        .unwrap_or((0, 0, 0, 0));
+    let usage = crate::router::affinity::CacheUsage {
+        prompt_tokens: u64::from(prompt),
+        cache_read_tokens: u64::from(cache_read),
+        cache_creation_tokens: u64::from(cache_creation),
+    };
+    let tenant = state
+        .config
+        .read()
+        .routing
+        .affinity_tenant_scoped
+        .then_some(api_key_hash);
+    let vendor = state
+        .config
+        .read()
+        .vendors
+        .iter()
+        .find(|v| v.id == vendor_id)
+        .cloned();
+    let decision = match vendor {
+        Some(vendor) => writer.settle(tenant, session_key, &vendor, usage).await,
+        // 厂商配置已热删（竞态）：按缺省 vendor 级参数判定，不跳过粘性
+        None => {
+            let fallback = crate::config::VendorConfig {
+                id: vendor_id.to_string(),
+                name: vendor_id.to_string(),
+                type_: String::new(),
+                api_key_env: String::new(),
+                api_key_envs: Vec::new(),
+                extra_headers: Default::default(),
+                api_base: String::new(),
+                enabled: true,
+                priority: 1,
+                models: Vec::new(),
+                rate_limit: crate::config::RateLimitConfig::Interval {
+                    hours: 1,
+                    sliding: false,
+                },
+                concurrency: crate::config::ConcurrencyConfig::default(),
+                timeout_ms: 0,
+                stream_ttft_ms: 0,
+                stream_idle_ms: 0,
+                supports_batch: false,
+                chat_path: None,
+                api_style: None,
+                anthropic_version: None,
+                forward_beta_headers: false,
+                send_nonstandard_params: false,
+                cache_ttl_secs: crate::config::loader::default_vendor_cache_ttl_secs(),
+                silent_cache: false,
+            };
+            writer.settle(tenant, session_key, &fallback, usage).await
+        }
+    };
+    Some(decision)
+}
+
 /// [`request_context_columns`] 的输出：直接展开进 `RequestLog` 的四列。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ContextColumns {

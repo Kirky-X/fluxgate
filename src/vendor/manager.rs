@@ -3495,6 +3495,8 @@ mod tests {
 
     fn pool_vendor_config(env_a: &str, env_b: &str) -> VendorConfig {
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             id: "v-pool-test".into(),
             name: "Pool Test".into(),
             type_: "openai".into(),

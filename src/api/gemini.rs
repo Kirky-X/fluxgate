@@ -332,6 +332,7 @@ async fn native_stream(
         decision.vendor.type_.clone(),
         decision.model.model_id.clone(),
         ctx.api_key_hash.clone(),
+        ctx.session_key.clone(),
     );
     let observer = recorder.clone();
     let body_stream = crate::middleware::quota::passthrough_stream_body(
@@ -773,6 +774,16 @@ async fn settle_nonstream(
         &decision.model.model_id,
         &ctx.api_key_hash,
         response,
+    )
+    .await;
+    // 缓存经济学亲和结算（同 completions 口径；Gemini 的缓存读走
+    // usageMetadata.cachedContentTokenCount，已由 parse_usage_detailed 归一）
+    crate::api::settle_api_affinity(
+        state,
+        &ctx.api_key_hash,
+        ctx.session_key.as_deref(),
+        &decision.vendor.id,
+        Some(response),
     )
     .await;
     crate::middleware::quota::settle_nonstream(

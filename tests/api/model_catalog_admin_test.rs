@@ -83,6 +83,7 @@ async fn create_state() -> Arc<ApiState> {
     .unwrap();
 
     Arc::new(ApiState {
+        affinity_writer: None,
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
         router: Arc::new(Router::new(config_manager, vendor_manager)),
@@ -443,6 +444,7 @@ async fn reset_vendor_clears_blacklist_and_cooldown() {
     .await
     .unwrap();
     let state = Arc::new(ApiState {
+        affinity_writer: None,
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
         router: Arc::new(Router::new(config_manager, vendor_manager.clone())),
@@ -596,6 +598,7 @@ mod cost_endpoint {
         pre_aggregator.flush().await.expect("flush");
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager.clone(),
             vendor_manager: vendor_manager.clone(),
             router: Arc::new(Router::new(config_manager, vendor_manager)),

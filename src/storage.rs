@@ -323,6 +323,52 @@ pub trait ResponseStoreSink: Send + Sync {
     async fn mark_orphaned_responses_failed(&self) -> Result<u64, GateError>;
 }
 
+/// 会话粘性落盘缝（`affinity_sticks` 表）。
+///
+/// 粘性是优化非承诺：通道满即丢弃（计数见 `affinity_persist_drop_total`），
+/// 失败不阻塞请求也不回滚已生效的内存粘性。管道前沿（异步通道）与存储后端
+/// 实现同一 trait，与 request_logs 的缝同构。
+#[async_trait::async_trait]
+pub trait AffinityStickSink: Send + Sync {
+    /// 记录一次粘性（非阻塞 push，即返回——通道满丢弃并计数）—— 落库与
+    /// 批处理由实现承担。
+    fn record(&self, stick: AffinityStick);
+
+    /// 通道满被丢弃的粘性条数（直写实现恒 0）。
+    fn dropped_sticks(&self) -> u64 {
+        0
+    }
+
+    /// 读取未过期的前 `limit` 条（按 `expires_at` 降序，最新写入优先），
+    /// 供启动恢复灌回内存亲和表。管道前沿不支持读（恢复走存储后端）。
+    async fn read_unexpired(
+        &self,
+        _now: i64,
+        _limit: u32,
+    ) -> Result<Vec<AffinityStick>, GateError> {
+        Err(unsupported_affinity_query())
+    }
+
+    /// 过期粘性清理（运维/测试），返回删除数。管道前沿不支持。
+    async fn purge_expired(&self, _now: i64) -> Result<u64, GateError> {
+        Err(unsupported_affinity_query())
+    }
+}
+
+/// 会话粘性行（`affinity_sticks` 表契约，落盘与启动恢复共用）。
+///
+/// `expires_at` 是 UNIX 秒（过期时刻，非写入时刻）—— 恢复侧与当前时间
+/// 直接比较，避免存储重启时钟漂移语义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AffinityStick {
+    /// 租户 API key 摘要；空串 = legacy 亲和键（无租户维度）
+    pub tenant: String,
+    pub session_key: String,
+    pub vendor_id: String,
+    pub worth_tokens: i64,
+    pub expires_at: i64,
+}
+
 /// 成本分账分组维度（`GET /admin/cost?group_by=` 白名单）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CostGroupBy {
@@ -333,6 +379,12 @@ pub enum CostGroupBy {
 fn unsupported_query() -> GateError {
     GateError::Config {
         message: t("storage-log-query-unsupported"),
+    }
+}
+
+fn unsupported_affinity_query() -> GateError {
+    GateError::Config {
+        message: t("storage-affinity-sticks-unsupported"),
     }
 }
 

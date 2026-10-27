@@ -65,3 +65,7 @@ vault-master-key-hex-decode-failed = hex decode failed: { $error }
 vault-master-key-create-dir-failed = create key dir failed: { $error }
 vault-master-key-write-failed = write key file failed: { $error }
 vault-master-key-restrict-failed = restrict key file permissions failed: { $error }
+storage-affinity-sticks-unsupported = this AffinityStickSink implementation is a data-plane write front and does not support reads (boot restore goes through the storage backend implementation)
+database-affinity-persist-flush-failed = affinity stick batch persist failed (dropped { $count } sticks): { $error }
+database-affinity-persist-channel-closed = affinity stick persist channel closed: { $error }
+database-affinity-sticks-read-failed = affinity stick read failed: { $error }

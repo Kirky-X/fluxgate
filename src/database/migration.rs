@@ -16,8 +16,8 @@ use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
 use sea_orm::DatabaseBackend;
 use std::path::PathBuf;
 
-/// 核心表迁移最新版本（V5：request_logs 会话/上下文四列 + 会话索引）。
-pub(crate) const CORE_SCHEMA_VERSION: u32 = 5;
+/// 核心表迁移最新版本（V6：affinity_sticks 会话粘性落盘表）。
+pub(crate) const CORE_SCHEMA_VERSION: u32 = 6;
 
 /// V1 UP（sqlite，FROZEN；含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
@@ -466,6 +466,55 @@ ALTER TABLE request_logs DROP COLUMN cache_read_tokens;
 ALTER TABLE request_logs DROP COLUMN cache_write_tokens;
 "#;
 
+/// V6 UP（sqlite）：会话粘性落盘表（cache-economy-affinity）。
+/// `session_key` 与 `tenant` 组复合主键——同一会话在不同租户下是两条粘性
+/// （与亲和键的租户隔离同构）；`expires_at` 存 UNIX 秒（与 request_logs 的
+/// timestamp 同口径），恢复侧直接与当前时间比较。
+const UP_V6_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS affinity_sticks (
+    tenant TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    vendor_id TEXT NOT NULL,
+    worth_tokens INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant, session_key)
+);
+CREATE INDEX IF NOT EXISTS idx_affinity_sticks_expires ON affinity_sticks(expires_at);
+"#;
+
+/// V6 UP（postgres）：BIGINT 承接 token 计数与时间戳。
+const UP_V6_POSTGRES: &str = r#"
+CREATE TABLE IF NOT EXISTS affinity_sticks (
+    tenant TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    vendor_id TEXT NOT NULL,
+    worth_tokens BIGINT NOT NULL DEFAULT 0,
+    expires_at BIGINT NOT NULL,
+    PRIMARY KEY (tenant, session_key)
+);
+CREATE INDEX IF NOT EXISTS idx_affinity_sticks_expires ON affinity_sticks(expires_at);
+"#;
+
+/// V6 UP（mysql）：两个键列走 VARCHAR 控索引键长（复合主键上限 3072 字节，
+/// 与 response_store 同款）；索引不在此建——MySQL 不支持
+/// `CREATE INDEX IF NOT EXISTS`，统一由 `repository::ensure_indexes_mysql`
+/// 探针幂等创建。
+const UP_V6_MYSQL: &str = r#"
+CREATE TABLE IF NOT EXISTS affinity_sticks (
+    tenant VARCHAR(64) NOT NULL DEFAULT '',
+    session_key VARCHAR(255) NOT NULL,
+    vendor_id VARCHAR(64) NOT NULL,
+    worth_tokens BIGINT NOT NULL DEFAULT 0,
+    expires_at BIGINT NOT NULL,
+    PRIMARY KEY (tenant, session_key)
+) ENGINE = InnoDB;
+"#;
+
+/// V6 DOWN（三后端通用：DROP TABLE 隐式带走索引）。
+const DOWN_V6: &str = r#"
+DROP TABLE IF EXISTS affinity_sticks;
+"#;
+
 /// V1 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
 const DOWN_COMMON: &str = r#"
 DROP TABLE IF EXISTS model_stats;
@@ -508,6 +557,9 @@ pub(crate) fn core_migration_file(
         (5, DatabaseBackend::Sqlite) => UP_V5_SQLITE,
         (5, DatabaseBackend::Postgres) => UP_V5_POSTGRES,
         (5, DatabaseBackend::MySql) => UP_V5_MYSQL,
+        (6, DatabaseBackend::Sqlite) => UP_V6_SQLITE,
+        (6, DatabaseBackend::Postgres) => UP_V6_POSTGRES,
+        (6, DatabaseBackend::MySql) => UP_V6_MYSQL,
         _ => {
             return Err(DbError::Config(format!(
                 "no core migration v{version} for {label}"
@@ -522,6 +574,7 @@ pub(crate) fn core_migration_file(
             DatabaseBackend::MySql => DOWN_V5_MYSQL,
             _ => DOWN_V5,
         },
+        6 => DOWN_V6,
         2 => match backend {
             DatabaseBackend::Sqlite => DOWN_V2_SQLITE,
             DatabaseBackend::Postgres => DOWN_V2_POSTGRES,
@@ -760,6 +813,65 @@ mod content_tests {
                     assert!(reverted, "{backend:?} V2 DOWN 必须移除分账形态");
                 }
             }
+        }
+    }
+
+    /// V6 UP（三方言）：affinity_sticks 五列 + 复合主键 (tenant, session_key)；
+    /// 过期索引仅 sqlite/postgres 内联（mysql 走 ensure_indexes_mysql 运行时探针）。
+    #[test]
+    fn v6_up_creates_affinity_sticks_in_all_dialects() {
+        for (backend, with_index) in [
+            (DatabaseBackend::Sqlite, true),
+            (DatabaseBackend::Postgres, true),
+            (DatabaseBackend::MySql, false),
+        ] {
+            let file = core_migration_file(backend, 6).expect("三后端必有 V6");
+            assert_eq!(file.version(), 6);
+            // 只取 UP 段（DOWN 含 DROP TABLE，会污染子串断言）
+            let up = file.content().split("-- DOWN").next().unwrap_or_default();
+            assert!(
+                up.contains("CREATE TABLE IF NOT EXISTS affinity_sticks"),
+                "{backend:?} V6 缺 affinity_sticks"
+            );
+            for col in [
+                "tenant",
+                "session_key",
+                "vendor_id",
+                "worth_tokens",
+                "expires_at",
+            ] {
+                assert!(up.contains(col), "{backend:?} V6 缺列 {col}");
+            }
+            assert!(
+                up.contains("PRIMARY KEY (tenant, session_key)"),
+                "{backend:?} V6 复合主键必须是 (tenant, session_key)"
+            );
+            let present = up.contains("idx_affinity_sticks_expires");
+            assert_eq!(present, with_index, "{backend:?} V6 过期索引形态不符");
+            // mysql 的键列必须控长（复合主键上限 3072 字节）
+            if backend == DatabaseBackend::MySql {
+                assert!(
+                    up.contains("session_key VARCHAR(255)"),
+                    "mysql V6 session_key 必须是 VARCHAR(255)"
+                );
+            }
+        }
+    }
+
+    /// V6 DOWN 可提取且带 DROP TABLE（回滚路径不缺失）。
+    #[test]
+    fn v6_down_is_extractable_and_drops_table() {
+        for backend in [
+            DatabaseBackend::Sqlite,
+            DatabaseBackend::Postgres,
+            DatabaseBackend::MySql,
+        ] {
+            let file = core_migration_file(backend, 6).expect("三后端必有 V6");
+            let down = MigrationExecutor::extract_down_sql(file.content()).expect("必须有 DOWN 段");
+            assert!(
+                down.contains("DROP TABLE IF EXISTS affinity_sticks"),
+                "{backend:?} V6 DOWN 缺 affinity_sticks"
+            );
         }
     }
 
@@ -1262,6 +1374,45 @@ mod live_tests {
         .expect("ro connect");
         let err = init_schema(&ro).await.expect_err("只读库必须 fail-fast");
         assert!(!err.to_string().is_empty(), "错误须可输出");
+    }
+
+    /// V6：affinity_sticks 表建出（复合主键 + 过期索引）；重跑幂等，
+    /// 且粘性行可真实写入/覆盖（UPSERT 契约的前置）。
+    #[tokio::test]
+    async fn v6_creates_affinity_sticks_idempotently() {
+        let pool = memory_pool().await;
+        init_schema(&pool).await.expect("首次迁移");
+        init_schema(&pool).await.expect("重跑幂等");
+
+        let tables = table_names(&pool).await;
+        assert!(
+            tables.contains("affinity_sticks"),
+            "V6 必须建 affinity_sticks（实测 {tables:?}）"
+        );
+        assert_eq!(
+            applied_versions(&pool).await,
+            all_core_versions(),
+            "V6 已记账"
+        );
+        // DOWN 到 V6 之前：affinity_sticks 消失
+        let conn = {
+            let session = pool.get_session("admin").await.expect("session");
+            session.connection().expect("conn").clone()
+        };
+        let mut executor = MigrationExecutor::new(conn, DatabaseType::Sqlite);
+        executor.load_history().await.expect("history");
+        executor
+            .rollback_version(
+                6,
+                &core_migration_file(DatabaseBackend::Sqlite, 6).expect("V6"),
+            )
+            .await
+            .expect("rollback v6");
+        let tables = table_names(&pool).await;
+        assert!(
+            !tables.contains("affinity_sticks"),
+            "V6 DOWN 必须删表（实测 {tables:?}）"
+        );
     }
 
     /// V5：request_logs 四列 + 会话索引存在；重跑 init_schema 幂等

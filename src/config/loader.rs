@@ -149,6 +149,7 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     warn_identical_difficulty_tiers(config);
     validate_metrics(config)?;
     validate_otlp(config)?;
+    validate_affinity(config)?;
     Ok(())
 }
 
@@ -692,6 +693,67 @@ pub fn default_metrics_cost_restore_window_hours() -> u64 {
     24
 }
 
+/// `[routing.affinity]` 段缺省值：`mode = "legacy"` 冻结现行为（成功即粘
+/// 1h），`cache_worth_tokens = 1024`、`turn_gap_secs = 120`。
+pub fn default_affinity_economy_mode() -> String {
+    "legacy".to_string()
+}
+
+pub fn default_affinity_cache_worth_tokens() -> u64 {
+    1024
+}
+
+pub fn default_affinity_turn_gap_secs() -> u64 {
+    120
+}
+
+/// `[[vendors]] cache_ttl_secs` 缺省 300s（5 分钟缓存部署；1h 缓存部署配 3600）。
+pub fn default_vendor_cache_ttl_secs() -> u64 {
+    300
+}
+
+impl Default for crate::config::AffinitySection {
+    fn default() -> Self {
+        Self {
+            mode: default_affinity_economy_mode(),
+            cache_worth_tokens: default_affinity_cache_worth_tokens(),
+            turn_gap_secs: default_affinity_turn_gap_secs(),
+        }
+    }
+}
+
+impl crate::config::AffinityMode {
+    /// 大小写不敏感 + trim 解析（与 [`ApiStyle::parse`] 同口径）；未知值
+    /// None，由校验侧持原值点名拒绝。
+    pub fn parse(raw: &str) -> Option<Self> {
+        use crate::config::AffinityMode;
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "legacy" => Some(AffinityMode::Legacy),
+            "auto" => Some(AffinityMode::Auto),
+            "turn" => Some(AffinityMode::Turn),
+            "off" => Some(AffinityMode::Off),
+            _ => None,
+        }
+    }
+
+    /// 生效模式：未知值按 `Legacy`（回滚阀——配置期已拒绝非法值，此处仅
+    /// 作手构配置的运行期兜底）。
+    pub fn from_section(section: &crate::config::AffinitySection) -> Self {
+        Self::parse(&section.mode).unwrap_or(Self::Legacy)
+    }
+
+    /// 机器码（与解释端点/指标标签同口径；合法值集单源于本文件）。
+    pub fn as_str(self) -> &'static str {
+        use crate::config::AffinityMode;
+        match self {
+            AffinityMode::Legacy => "legacy",
+            AffinityMode::Auto => "auto",
+            AffinityMode::Turn => "turn",
+            AffinityMode::Off => "off",
+        }
+    }
+}
+
 impl Default for crate::config::MetricsSection {
     fn default() -> Self {
         Self {
@@ -796,6 +858,36 @@ fn validate_otlp(config: &Config) -> Result<(), GateError> {
                 message: t_args(
                     "config-otlp-endpoint-invalid",
                     &[("value", endpoint.to_string())],
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// `[routing.affinity].mode` 闭集校验 + `[[vendors]] cache_ttl_secs` 边界
+/// 校验（加载与热载同入口）。非法值点名原值；`cache_ttl_secs` 合法区间
+/// 1..=86400s（1s..1d）——0 会让粘持记录写完即过期、等于永不粘。
+fn validate_affinity(config: &Config) -> Result<(), GateError> {
+    use crate::config::AffinityMode;
+    let raw = config.routing.affinity.mode.trim();
+    if AffinityMode::parse(raw).is_none() {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-affinity-mode-unknown",
+                &[("value", raw.to_string())],
+            ),
+        });
+    }
+    for vendor in &config.vendors {
+        if !(1..=86400).contains(&vendor.cache_ttl_secs) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-vendor-cache-ttl-secs-out-of-range",
+                    &[
+                        ("vendor", vendor.id.clone()),
+                        ("value", vendor.cache_ttl_secs.to_string()),
+                    ],
                 ),
             });
         }

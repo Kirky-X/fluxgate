@@ -65,3 +65,7 @@ vault-master-key-hex-decode-failed = 十六进制解码失败：{ $error }
 vault-master-key-create-dir-failed = 创建密钥目录失败：{ $error }
 vault-master-key-write-failed = 写入密钥文件失败：{ $error }
 vault-master-key-restrict-failed = 收紧密钥文件权限失败：{ $error }
+storage-affinity-sticks-unsupported = 该 AffinityStickSink 实现是数据面写入前沿，不支持读取（启动恢复走存储后端实现）
+database-affinity-persist-flush-failed = 会话粘性批落库失败（丢弃 { $count } 条）：{ $error }
+database-affinity-persist-channel-closed = 会话粘性落盘通道已关闭：{ $error }
+database-affinity-sticks-read-failed = 会话粘性读取失败：{ $error }

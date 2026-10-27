@@ -213,6 +213,7 @@ async fn make_state_with_cache(config: Config, with_quota: bool) -> Arc<ApiState
         config: config_manager,
         vendor_manager,
         router,
+        affinity_writer: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database,
@@ -266,6 +267,7 @@ async fn make_state_inner(
     let quota = with_quota.then(|| Arc::new(fluxgate::middleware::quota::QuotaState::new()));
 
     Arc::new(ApiState {
+        affinity_writer: None,
         config: config_manager,
         vendor_manager,
         router,

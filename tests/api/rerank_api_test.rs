@@ -93,6 +93,7 @@ mod tests {
         repository.initialize().await.expect("schema");
 
         let state = Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager.clone(),
             vendor_manager: vendor_manager.clone(),
             router: Arc::new(NexusRouter::new(config_manager, vendor_manager)),

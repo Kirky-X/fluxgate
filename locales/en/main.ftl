@@ -63,3 +63,6 @@ main-difficulty-classifier-disabled = difficulty classifier disabled: laya load 
 main-otlp-bridge-started = OTLP metrics bridge started (endpoint: { $endpoint })
 main-otlp-bridge-build-failed = OTLP metrics bridge build failed, export disabled: { $error }
 main-otlp-teardown-failed = OTLP metrics bridge teardown failed: { $error }
+main-affinity-restored = session affinity restored: { $count } sticks (limit { $limit })
+main-affinity-restore-failed = session affinity restore failed: { $error }
+main-affinity-restore-empty = no unexpired session affinity sticks to restore

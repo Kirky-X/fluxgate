@@ -3,6 +3,7 @@
 
 use crate::protocol::ProtocolConverter;
 use crate::router::affinity::AffinityTable;
+use crate::router::affinity_settle::AffinityWriter;
 use crate::router::bandit::{linucb_features_from_body, BanditState};
 use crate::router::Router as RouterTrait;
 use crate::storage::{RequestLogSink, UsageSink};
@@ -31,6 +32,10 @@ pub struct ApiState {
     /// 会话亲和表（oxcache）— 路由 `route_with_session` 的
     /// boost 来源；None = 未接线（亲和关闭，路由行为与历史一致）。
     pub affinity: Option<Arc<AffinityTable>>,
+    /// 缓存经济学亲和写入器（`[routing.affinity]`）：响应 usage 结算点
+    /// 调 `settle`。None = 未接线（affinity 表未装配），此时 settle 是
+    /// no-op（legacy 路径的 `bind_session_affinity` 不受影响）。
+    pub affinity_writer: Option<Arc<AffinityWriter>>,
     /// 精确响应缓存（oxcache）— enabled 由 `[cache]` 段热读控制
     ///（默认关闭）；None = 未接线。
     pub response_cache: Option<Arc<ResponseCache>>,
@@ -61,6 +66,7 @@ impl std::fmt::Debug for ApiState {
             .field("logger", &self.logger.is_some())
             .field("pre_aggregator", &self.pre_aggregator.is_some())
             .field("affinity", &self.affinity.is_some())
+            .field("affinity_writer", &self.affinity_writer.is_some())
             .field("response_cache", &self.response_cache.is_some())
             .field("bandit", &self.bandit.is_some())
             .field("difficulty", &self.difficulty.is_some())

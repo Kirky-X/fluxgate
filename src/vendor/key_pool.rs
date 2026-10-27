@@ -593,6 +593,8 @@ mod tests {
 
     pub(super) fn vendor_config(api_key_env: &str, api_key_envs: &[&str]) -> VendorConfig {
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             id: "v-test".into(),
             name: "Test".into(),
             type_: "openai".into(),
@@ -914,6 +916,8 @@ mod inline_tests {
 
     fn inline_vendor_config(api_key_env: &str) -> VendorConfig {
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             id: "gate-0".into(),
             name: "Inline".into(),
             type_: "openai".into(),

@@ -103,6 +103,7 @@ mod endpoints {
         ));
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -430,6 +431,7 @@ mod integration {
         });
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -913,6 +915,7 @@ mod admin {
         let anthropic_converter: Arc<dyn ProtocolConverter> = Arc::new(AnthropicConverter::new());
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -1025,6 +1028,8 @@ mod admin {
     async fn test_admin_update_vendor_not_found() {
         let state = create_api_state().await;
         let vendor = VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
@@ -1416,6 +1421,7 @@ mod streaming_error_propagation {
         ));
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -1833,6 +1839,7 @@ mod logging_pipeline {
         ));
 
         let state = Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -2139,6 +2146,7 @@ mod logging_pipeline {
         ));
 
         let state = Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager.clone(),
             vendor_manager: vendor_manager.clone(),
             router: Arc::new(NexusRouter::new(config_manager, vendor_manager)),
@@ -2329,6 +2337,7 @@ mod embeddings_governance {
         repository.initialize().await.expect("schema");
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager.clone(),
             vendor_manager: vendor_manager.clone(),
             router: Arc::new(
@@ -2951,6 +2960,7 @@ mod response_cache_tests {
         ));
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager.clone(),
             vendor_manager,
             router,
@@ -3333,6 +3343,7 @@ mod linucb_reward_chain {
                 .with_bandit(bandit.clone()),
         );
         let state = Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -3480,6 +3491,7 @@ mod global_model_switch {
             repository: Arc::new(fluxgate::database::Repository::new(pool)),
         });
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager.clone(),
             vendor_manager: vendor_manager.clone(),
             router: Arc::new(Router::new(config_manager, vendor_manager)),
@@ -3691,6 +3703,17 @@ mod api_handler_coverage {
                 3600,
             )))
         });
+        // 缓存经济学亲和写入器（`[routing.affinity]`）：与亲和表同源；
+        // sticky 记账表 + 无落盘通道（内存态，断言走 affinity 表）
+        let affinity_writer = wire.affinity.then(|| {
+            Arc::new(fluxgate::router::affinity_settle::AffinityWriter::new(
+                config_manager.clone(),
+                affinity.clone().expect("affinity wired"),
+                Arc::new(fluxgate::router::affinity::AffinityStickTable::new()),
+                None,
+                vendor_manager.metrics().clone(),
+            ))
+        });
         let response_cache = wire.response_cache.then(|| {
             Arc::new(ResponseCache::new(
                 Arc::new(oxcache::backend::default_memory_backend()),
@@ -3719,6 +3742,7 @@ mod api_handler_coverage {
             logger,
             pre_aggregator,
             affinity,
+            affinity_writer,
             response_cache,
             bandit,
             quota: None,
@@ -5612,6 +5636,233 @@ mod api_handler_coverage {
         mock.assert_async().await;
     }
 
+    // ── 缓存经济学亲和（[routing.affinity] mode = "auto"）────────────
+
+    /// auto 模式阈值门（R-affinity-002 集成面）：
+    /// - 高 worth（usage cache_read=5000 ≥ 1024）→ 粘住 v-a；第二请求在
+    ///   v-b 也合格时仍命中 v-a（hard 亲和优先于加权选择）
+    /// - 低 worth（cache_read=200 < 1024）→ 不粘；v-a 退出合格集后
+    ///   第二请求自由漂到 v-b（会话回到路由池）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn affinity_mode_auto_threshold_gate() {
+        const HIGH_WORTH_JSON: &str = r#"{"id":"c1","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":6000,"completion_tokens":10,"total_tokens":6010,"prompt_tokens_details":{"cached_tokens":5000}}}"#;
+        const LOW_WORTH_JSON: &str = r#"{"id":"c2","object":"chat.completion","created":1700000000,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":10,"total_tokens":1010,"prompt_tokens_details":{"cached_tokens":200}}}"#;
+
+        // ── 高 worth：粘住 ──────────────────────────────────────────
+        let mut server_a = mockito::Server::new_async().await;
+        let high_a = server_a
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(HIGH_WORTH_JSON)
+            .expect(2)
+            .create_async()
+            .await;
+        let mut server_b = mockito::Server::new_async().await;
+        let high_b = server_b
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(HIGH_WORTH_JSON)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![
+            vendor(
+                "v-a",
+                "openai",
+                server_a.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            ),
+            vendor(
+                "v-b",
+                "openai",
+                server_b.url(),
+                2,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            ),
+        ]);
+        config.routing.affinity.mode = "auto".into();
+        config.routing.affinity.cache_worth_tokens = 1024;
+        config.vendors[0].cache_ttl_secs = 600;
+        let state = build_state(
+            config,
+            Wire {
+                affinity: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let first = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[("x-session-id", "sess-high")],
+        )
+        .await;
+        let status = first.status();
+        if status != 200 {
+            let body = axum::body::to_bytes(first.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            panic!(
+                "first request status {status}, body: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        let bound = state
+            .affinity
+            .as_ref()
+            .unwrap()
+            .lookup(None, "sess-high")
+            .await;
+        assert_eq!(
+            bound.as_deref(),
+            Some("v-a"),
+            "worth 5000 ≥ 1024 必须粘住首次服务的 v-a"
+        );
+        let snap = state.vendor_manager.metrics().snapshot();
+        assert_eq!(snap.affinity_stick_total, 1, "settle 写亲和必须打点");
+
+        // v-b 重新合格（热读 swap_memory）：hard 亲和仍强选 v-a
+        let mut config2 = state.config.get_config();
+        config2.vendors[1].enabled = true;
+        config2.vendors[1].models[0].enabled = true;
+        state.config.swap_memory(config2).expect("swap");
+
+        let second = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[("x-session-id", "sess-high")],
+        )
+        .await;
+        assert_eq!(second.status(), 200);
+        let still = state
+            .affinity
+            .as_ref()
+            .unwrap()
+            .lookup(None, "sess-high")
+            .await;
+        assert_eq!(still.as_deref(), Some("v-a"), "高 worth 会话粘住不漂移");
+        high_a.assert_async().await;
+        high_b.assert_async().await;
+
+        // ── 低 worth：不粘，可漂移 ─────────────────────────────────
+        let mut server_c = mockito::Server::new_async().await;
+        let low_a = server_c
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(LOW_WORTH_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+        let mut server_d = mockito::Server::new_async().await;
+        let low_b = server_d
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(LOW_WORTH_JSON)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut config = base_config(vec![
+            vendor(
+                "v-a",
+                "openai",
+                server_c.url(),
+                1,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            ),
+            vendor(
+                "v-b",
+                "openai",
+                server_d.url(),
+                2,
+                "gpt-4",
+                1.0,
+                1_000_000,
+                None,
+            ),
+        ]);
+        config.routing.affinity.mode = "auto".into();
+        // v-b 初始不合格：首请求必落 v-a
+        config.vendors[1].enabled = false;
+        let state = build_state(
+            config,
+            Wire {
+                affinity: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let first = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[("x-session-id", "sess-low")],
+        )
+        .await;
+        assert_eq!(first.status(), 200);
+        let bound = state
+            .affinity
+            .as_ref()
+            .unwrap()
+            .lookup(None, "sess-low")
+            .await;
+        assert!(bound.is_none(), "worth 200 < 1024 不得粘住（会话回路由池）");
+        assert_eq!(
+            state
+                .vendor_manager
+                .metrics()
+                .snapshot()
+                .affinity_drift_total,
+            1,
+            "低于阈值必须记漂移计数"
+        );
+
+        // v-a 退出合格集：无亲和束缚 → 第二请求自由漂到 v-b
+        let mut config2 = state.config.get_config();
+        config2.vendors[0].enabled = false;
+        config2.vendors[1].enabled = true;
+        state.config.swap_memory(config2).expect("swap");
+
+        let second = post_json(
+            state.clone(),
+            "/v1/chat/completions",
+            chat_body("gpt-4", false),
+            &[("x-session-id", "sess-low")],
+        )
+        .await;
+        let status = second.status();
+        if status != 200 {
+            let body = axum::body::to_bytes(second.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            panic!(
+                "low second status {status}, body: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        low_a.assert_async().await;
+        low_b.assert_async().await;
+    }
+
     // 大 payload 截断 / ApiState Debug / LinUCB 奖励守卫 / 全局状态
 
     /// >64KB 的 messages 落库截断：按 UTF-8 字符边界截断并附截断标记
@@ -6220,6 +6471,7 @@ mod data_plane_endpoints {
         });
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -6609,6 +6861,8 @@ mod fallback_observation_headers {
     fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         crate::common::ensure_test_api_key();
         VendorConfig {
+            cache_ttl_secs: 300,
+            silent_cache: false,
             timeout_ms: 60_000,
             stream_ttft_ms: 60_000,
             stream_idle_ms: 30_000,
@@ -6702,6 +6956,7 @@ mod fallback_observation_headers {
         ));
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router,
@@ -7013,6 +7268,7 @@ mod route_explain {
         }
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router: Arc::new(router),
@@ -7566,6 +7822,7 @@ mod fallback_observation_headers_anthropic {
             .with_affinity(affinity.clone());
 
         Arc::new(ApiState {
+            affinity_writer: None,
             config: config_manager,
             vendor_manager,
             router: Arc::new(router),

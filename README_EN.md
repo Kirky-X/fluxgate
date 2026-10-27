@@ -23,7 +23,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 <table style="width:100%; border-collapse: collapse">
 <tr>
 <td align="center" width="25%">🔄<br><b>Protocol conversion</b><br><span style="color:#64748B">OpenAI ↔ Anthropic · zero-copy passthrough</span></td>
-<td align="center" width="25%">🧭<br><b>Smart routing</b><br><span style="color:#64748B">5-factor weighting · cache-economy affinity · LinUCB</span></td>
+<td align="center" width="25%">🧭<br><b>Smart routing</b><br><span style="color:#64748B">6-factor weighting (optional quota factor) · cache-economy affinity · LinUCB</span></td>
 <td align="center" width="25%">🛡️<br><b>Resilience</b><br><span style="color:#64748B">circuit breaker · retry · fallback chain</span></td>
 <td align="center" width="25%">📊<br><b>Observability & cost</b><br><span style="color:#64748B">request logs · token pre-aggregation · cost tracking</span></td>
 </tr>
@@ -239,7 +239,7 @@ flowchart TB
         direction LR
         MW["Middleware chain<br/>auth (SHA256) · sliding-window limiter (token-bucket fallback) · admission"]
         Handler["API handlers<br/>routing hints · response cache"]
-        Router["Routing decision<br/>5-factor weighting · affinity · LinUCB"]
+        Router["Routing decision<br/>6-factor weighting (optional quota) · affinity · LinUCB"]
         Conv["Protocol conversion<br/>OpenAI ↔ Anthropic · zero-copy passthrough"]
         Vendor["VendorManager<br/>circuit · retry · pool · fallback"]
         MW --> Handler --> Router --> Conv --> Vendor
@@ -435,7 +435,7 @@ Please do not report security vulnerabilities through public issues. Use the Git
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">Status</th><th style="text-align:left">Area</th><th style="text-align:left">Items</th></tr>
 <tr><td align="center">✅</td><td>Core gateway</td><td>OpenAI / Anthropic / Responses / Gemini conversion, SSE streaming, zero-copy passthrough, 33 method endpoints (14 data-plane + 18 admin + 1 health)</td></tr>
-<tr><td align="center">✅</td><td>Smart routing</td><td>5-factor weighting + temperature smoothing, cache-economy session affinity (auto sticks by cache worth + persist/restore, legacy default), LinUCB, Power-of-Two, optional SLA / LPS layers; difficulty-tiered routing (rule + in-process decision-engine fusion behind the <code>difficulty-classifier</code> feature); cache-cost suite (prefix-affinity PoTC / semantic cache off by default, cache-aware price factor on by default)</td></tr>
+<tr><td align="center">✅</td><td>Smart routing</td><td>6-factor weighting (6th quota-budget factor, mode off by default) + temperature smoothing, cache-economy session affinity (auto sticks by cache worth + persist/restore, legacy default), LinUCB, Power-of-Two, optional SLA / LPS layers; difficulty-tiered routing (rule + in-process decision-engine fusion behind the <code>difficulty-classifier</code> feature); cache-cost suite (prefix-affinity PoTC / semantic cache off by default, cache-aware price factor on by default)</td></tr>
 <tr><td align="center">✅</td><td>Resilience</td><td>limiteron circuit / retry / fallback chain, congestion-aware admission, key tiers</td></tr>
 <tr><td align="center">✅</td><td>Observability & cost</td><td>Async logging, hourly token pre-aggregation, global metrics, four-tier `[[model_catalog]]` costing and cost breakdown</td></tr>
 <tr><td align="center">✅</td><td>Hot reload</td><td>confers DynamicField lock-free reads, transactional writes, snapshots with restart_required reporting</td></tr>

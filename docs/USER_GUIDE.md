@@ -661,9 +661,9 @@ cost_quota_millicents = 500_000  # 每小时 5 USD
 | `scope`                 | `api_key` | `api_key` 按租户判定 / `global` 全体请求共享一窗                                                              |
 | `period`                | `rolling` | `rolling`（配 `rolling_secs`，从窗内首次用量起算）/ `calendar`（配 `calendar`）                               |
 | `calendar`              | （空）    | `daily`（自然日 00:00）/ `weekly`（ISO 周一）/ `monthly`（自然月 1 日）；与 `rolling_secs` 互斥，同配启动即拒 |
-| `tz_offset_secs`        | `0`       | calendar 时区偏移（±86400 内；默认 0 = UTC；+8h 即东八区自然边界）                                            |
-| `tokens_limit`          | `0`       | token 限额；`0` = 落回 `[[auth.keys]]` 的 per-key `token_quota`                                               |
-| `cost_limit_millicents` | `0`       | 成本限额；`0` = 落回 per-key `cost_quota_millicents`（双零 = 该窗不判）                                       |
+| `tz_offset_secs`        | `0`       | calendar 时区偏移（±86400 内；默认 0 = UTC；+8h 即东八区自然边界，daily/weekly/monthly 三种月历窗一致按本地帧对齐） |
+| `tokens_limit`          | `0`       | token 限额；`0` = 落回 `[[auth.keys]]` 的 per-key `token_quota`（**仅 `scope=api_key`**）                     |
+| `cost_limit_millicents` | `0`       | 成本限额；`0` = 落回 per-key `cost_quota_millicents`（双零 = 该窗不判；**`scope=global` 不回填**——全局窗必须显式声明至少一个维度，双零启动即拒） |
 
 ```toml
 [[quota.windows]]
@@ -685,11 +685,22 @@ cost_limit_millicents = 50_000_000
 期 WARN 留痕）。
 
 **账本持久化**：`quota_ledger` 表（迁移 V7，主键 `(api_key_hash, window_id,
-window_start)`）——结算即 UPSERT + 每 30s 全量 flush；启动恢复仅恢复未过期窗
-（`window_start + 周期 ≥ now`）。内存态始终权威（每请求零 DB 往返），
-⚠️ 崩溃回退窗口 ≤30s：重启后已用量最多回退 30s——预算是约束不是计费，
-请勿以账本做计费对账。`scope=global` 行以固定键 `__global__` 落库，
+window_start)`）——结算即 UPSERT（单事务批量提交）+ 每 30s 全量 flush；启动
+恢复仅恢复未过期窗（`window_start + 周期 ≥ now`，读侧按「now − 配置最长窗」
+下界过滤）。内存态始终权威（每请求零 DB 往返），⚠️ 崩溃回退窗口 ≤30s：进程
+被 SIGKILL 等非优雅退出时已用量最多回退 30s——优雅停机（SIGTERM/Ctrl-C）在
+收尾阶段执行最终 flush 后再关停落盘器，**正常重启不丢账**。预算是约束不是
+计费，请勿以账本做计费对账。`scope=global` 行以固定键 `__global__` 落库，
 vendor 预算行以 `__vendor__:{id}` 落库。
+
+**保留清理**：过期周期行随 30s flush 循环低频清理（默认每小时一次），下界 =
+now − 配置最长窗（`[[quota.windows]]` + `[[vendor_budgets]]` 的最长周期，
+monthly 取 31 天上界；完全未配置兜底 31 天）——表增长有界，不会随历史周期
+无限累积。恢复读侧与清理共用同一下界推导（宁多留一行不误删活动行）。
+
+**已知语义边界**：零预扣请求（body 无 `model` 或预扣双零）不进窗，其响应
+usage 也不结算入窗（无账可回）——缺 `model` 的请求通常被下游 4xx，预算不
+因此放松。
 
 ### vendor 声明式预算 `[[vendor_budgets]]` 与配额因子 `[routing.quota_factor]`
 
@@ -737,7 +748,7 @@ w_quota = 0.3
 | `GET /admin/config`         | 读取当前生效配置                                                                                                                             |
 | `POST /admin/config`        | **全量覆盖**更新（body 为完整 Config JSON/TOML 结构，不是增量 patch）                                                                        |
 | `POST /admin/models/global` | 原子 RMW 更新全局模型策略（路径 id 约定为 `global`）                                                                                         |
-| `POST /admin/route/explain` | 路由解释（只读）：`{model, session_id?}` → 逐候选 `{decision, reason_code}` + 入选者 5 因子权重分解与 selection 档位；不发上游请求、不改状态 |
+| `POST /admin/route/explain` | 路由解释（只读）：`{model, session_id?}` → 逐候选 `{decision, reason_code}` + 入选者 6 因子权重分解与 selection 档位；不发上游请求、不改状态 |
 
 RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落盘，并发互斥不丢更新（`src/api/admin.rs`）。
 

@@ -1856,7 +1856,7 @@ curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
 | `model` | string | 是 | 模型名（未知模型返回 `validation_error`；`"auto"` 走全局模型池，`[global_model].enabled = false` 时该档关闭同样返回 `validation_error`(400)） |
 | `session_id` | string | 否 | 会话亲和键；缺省时跳过亲和判定 |
 
-**响应**: 逐候选 `{vendor, model, decision, reason_code, detail}`（入选者另附 `factors` 5 因子权重分解、`weight`/`base_weight`、`selection` 档位）：
+**响应**: 逐候选 `{vendor, model, decision, reason_code, detail}`（入选者另附 `factors` 6 因子权重分解、`weight`/`base_weight`、`selection` 档位）：
 
 ```json
 {
@@ -1878,7 +1878,7 @@ curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
 }
 ```
 
-`reason_code` 稳定机器码（不做 i18n）：`disabled`（vendor/模型未启用）| `cooling_down`（熔断/冷却中）| `throttled`（限流窗口耗尽）| `not_in_catalog`（该 vendor 不提供此模型）| `weight_zero`（合成权重为 0）| `affinity_bound_elsewhere`（会话亲和绑定他处，hard 模式排他）| `queue_over_limit`（队列饱和）| `eligible`（候选合格）。优先级：`not_in_catalog` → `disabled` → `throttled` → `cooling_down` → `affinity_bound_elsewhere` → `queue_over_limit` → `weight_zero` → `eligible`。
+`reason_code` 稳定机器码（不做 i18n）：`disabled`（vendor/模型未启用）| `cooling_down`（熔断/冷却中）| `throttled`（限流窗口耗尽）| `not_in_catalog`（该 vendor 不提供此模型）| `weight_zero`（合成权重为 0）| `affinity_bound_elsewhere`（会话亲和绑定他处，hard 模式排他）| `queue_over_limit`（队列饱和）| `quota_depleted`（vendor 预算耗尽，被 quota-aware smart 过滤摘除——其余厂商尚有预算时与生产路由同口径排除）| `eligible`（候选合格）。优先级：`not_in_catalog` → `disabled` → `throttled` → `cooling_down` → `affinity_bound_elsewhere` → `queue_over_limit` → `quota_depleted` → `weight_zero` → `eligible`。
 
 **`affinity` 决策块**（R-affinity-004；解释点纯只读，`peek` 不续期、不改任何状态）：
 

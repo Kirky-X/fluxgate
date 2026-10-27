@@ -89,7 +89,7 @@ Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 | `src/infrastructure/` | trait-kit AsyncKit DI 组装 | `di.rs` |
 | `src/middleware/` | 认证 / 拥塞准入中间件 | `auth.rs`、`admission.rs` |
 | `src/protocol/` | OpenAI ↔ Anthropic 协议转换 | `unified.rs`、`openai_converter.rs`、`anthropic_converter.rs`、`sse_frame.rs` |
-| `src/router/` | 路由调度 | `router.rs`（5 因子加权）、`affinity.rs`、`bandit.rs` |
+| `src/router/` | 路由调度 | `router.rs`（6 因子加权，第 6 项 quota 可选）、`affinity.rs`、`bandit.rs` |
 | `src/vendor/` | 厂商管理 | `manager.rs`、`rate_limiter.rs`、`pool.rs`、`queue.rs`、`key_pool.rs`、`resilience/`（FallbackChain + 错误映射） |
 | `src/utils/` | 成本追踪 / 全局指标 / 重试工具 | `cost_tracker.rs`、`metrics.rs`、`retry.rs` |
 | `src/error/mod.rs` / `src/error/gate.rs` | `FluxgateError` / `GateError` 统一错误（含 HTTP 映射） | — |

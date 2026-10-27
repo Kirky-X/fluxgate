@@ -527,16 +527,18 @@ est_chars_per_token = 4
 # 最晚重置者）；响应体列出各窗重置秒数（仅 window id 与秒数，不含 key 信息）。
 # 非空时旧 `window_secs` 被忽略（启动 WARN 留痕）；为空时旧字段编译为
 # `id="default"` 的 rolling 窗，行为与历史逐位一致。账本落 `quota_ledger`
-# 表（每 30s 全量 flush + 结算即 UPSERT，重启仅恢复未过期窗——崩溃回退
-# ≤30s，预算是约束不是计费）。
+# 表（每 30s 全量 flush + 结算即 UPSERT 单事务批量，重启仅恢复未过期窗——
+# 崩溃回退 ≤30s，优雅停机走最终 flush 正常重启不丢账；过期周期行每小时
+# 按配置最长窗下界清理，表增长有界；预算是约束不是计费）。
 # - id: 窗口唯一标识（账本行键与指标标签 quota_window_refused_total{window_id}）
 # - scope: "api_key"（默认，按租户判定）/ "global"（全体请求共享一窗）
 # - period: "rolling"（配 rolling_secs，从窗内首次用量起算）
 #           / "calendar"（配 calendar=daily|weekly|monthly 之一 +
 #           tz_offset_secs 时区偏移，默认 0=UTC；对齐自然边界：日 00:00、
 #           ISO 周一、自然月 1 日）
-# - tokens_limit / cost_limit_millicents: 双维度限额；0 = 该维度落回
-#   [[auth.keys]] 的 per-key 限额（双零 = 该窗不判）
+# - tokens_limit / cost_limit_millicents: 双维度限额；scope=api_key 时
+#   0 = 该维度落回 [[auth.keys]] 的 per-key 限额（双零 = 该窗不判）；
+#   scope=global 不回填——全局窗必须显式声明至少一个维度，双零启动即拒
 # 启用模板（按需取消注释）：
 #[[quota.windows]]
 #id = "daily"

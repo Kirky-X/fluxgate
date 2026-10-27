@@ -23,7 +23,7 @@
 <table style="width:100%; border-collapse: collapse">
 <tr>
 <td align="center" width="25%">🔄<br><b>协议互转</b><br><span style="color:#64748B">OpenAI ↔ Anthropic · 零拷贝透传</span></td>
-<td align="center" width="25%">🧭<br><b>智能路由</b><br><span style="color:#64748B">5 因子加权 · 缓存经济学亲和 · LinUCB</span></td>
+<td align="center" width="25%">🧭<br><b>智能路由</b><br><span style="color:#64748B">6 因子加权（第 6 项 quota 可选）· 缓存经济学亲和 · LinUCB</span></td>
 <td align="center" width="25%">🛡️<br><b>弹性容错</b><br><span style="color:#64748B">熔断 · 重试 · Fallback 链</span></td>
 <td align="center" width="25%">📊<br><b>可观测与成本</b><br><span style="color:#64748B">请求日志 · Token 预聚合 · 成本追踪</span></td>
 </tr>
@@ -65,7 +65,7 @@
 <table style="width:100%; border-collapse: collapse">
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔄 <b>协议互转</b><br><span style="color:#64748B">OpenAI Chat / Embeddings ↔ Anthropic Messages 双向转换，SSE 流式两端同支持；入站协议与目标厂商一致时零拷贝透传</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>智能路由</b><br><span style="color:#64748B">模型权重 × 队列 × 时间窗口（× 可选延迟 / 错误率）5 因子加权随机，温度平滑；可选 Power-of-Two-Choices、LinUCB 上下文老虎机、缓存经济学会话亲和（<code>[routing.affinity]</code>：auto 按缓存价值粘 / turn 会话窗口粘 / 落盘重启恢复，legacy 默认零回归）、SLA 虚拟队列与 LPS 排队论前瞻；难度定档（<code>[routing.difficulty]</code>，默认关）：规则计分 + vecboost laya 决策概率融合，按难度切 low/mid/high 三档改写目标模型——简单问题小模型、困难问题大模型</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🧭 <b>智能路由</b><br><span style="color:#64748B">模型权重 × 队列 × 时间窗口（× 可选延迟 / 错误率 / 配额预算）6 因子加权随机，温度平滑；可选 Power-of-Two-Choices、LinUCB 上下文老虎机、缓存经济学会话亲和（<code>[routing.affinity]</code>：auto 按缓存价值粘 / turn 会话窗口粘 / 落盘重启恢复，legacy 默认零回归）、SLA 虚拟队列与 LPS 排队论前瞻；难度定档（<code>[routing.difficulty]</code>，默认关）：规则计分 + vecboost laya 决策概率融合，按难度切 low/mid/high 三档改写目标模型——简单问题小模型、困难问题大模型</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🛡️ <b>弹性容错</b><br><span style="color:#64748B">limiteron 熔断器（5 次失败开 30s，慢调用 60s 阈值防误判）、按状态码分类重试（429 尊重 Retry-After 展宽、5xx 固定间隔 + 展宽）、priority 驱动的 Fallback 换路链（总尝试预算默认 8）</span></td>
@@ -258,7 +258,7 @@ flowchart TB
         direction LR
         MW["中间件管线<br/>auth（SHA256）· 滑动窗口限流（缺省令牌桶兜底）· 拥塞准入"]
         Handler["API 处理器<br/>路由提示提取 · 响应缓存"]
-        Router["路由决策<br/>5 因子加权 · 亲和 · LinUCB"]
+        Router["路由决策<br/>6 因子加权（quota 可选）· 亲和 · LinUCB"]
         Conv["协议转换<br/>OpenAI ↔ Anthropic · 零拷贝透传"]
         Vendor["VendorManager<br/>熔断 · 重试 · 连接池 · Fallback"]
         MW --> Handler --> Router --> Conv --> Vendor
@@ -452,7 +452,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
 <tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic / Responses / Gemini 协议互转、SSE 流式、零拷贝透传、33 个方法端点（数据面 14 + 管理 18 + 健康 1）</td></tr>
-<tr><td align="center">✅</td><td>智能路由</td><td>5 因子加权 + 温度平滑、缓存经济学会话亲和（auto 按缓存价值粘 + 落盘恢复，legacy 默认）、LinUCB、Power-of-Two、SLA / LPS 可选层；难度定档三档路由（规则 + 进程内决策引擎融合，<code>difficulty-classifier</code> feature 门控）；缓存成本套件（前缀亲和 PoTC / 语义缓存默认关，缓存价因子默认开）</td></tr>
+<tr><td align="center">✅</td><td>智能路由</td><td>6 因子加权（第 6 项配额预算因子，mode 默认 off）+ 温度平滑、缓存经济学会话亲和（auto 按缓存价值粘 + 落盘恢复，legacy 默认）、LinUCB、Power-of-Two、SLA / LPS 可选层；难度定档三档路由（规则 + 进程内决策引擎融合，<code>difficulty-classifier</code> feature 门控）；缓存成本套件（前缀亲和 PoTC / 语义缓存默认关，缓存价因子默认开）</td></tr>
 <tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
 <tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、`[[model_catalog]]` 四档计价与成本分账</td></tr>
 <tr><td align="center">✅</td><td>配置热更新</td><td>confers DynamicField 无锁热读、事务写路径、快照备份与 restart_required 提示</td></tr>

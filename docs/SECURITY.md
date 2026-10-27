@@ -31,7 +31,7 @@ flowchart LR
     C[客户端请求] --> A["认证层<br/>SHA256 摘要 + 常量时间比较<br/>src/middleware/auth.rs"]
     A --> RL["入站限流<br/>limiteron 全局规则 + 端点表<br/>src/api/router_builder.rs"]
     RL --> AD["拥塞准入<br/>档位优先级 shed（默认关）<br/>src/middleware/admission.rs"]
-    AD --> R["路由与协议转换<br/>5 因子加权选择<br/>src/router/"]
+    AD --> R["路由与协议转换<br/>6 因子加权选择<br/>src/router/"]
     R --> O["出站弹性边界<br/>熔断 / 重试 / FallbackChain<br/>src/vendor/"]
     O --> V[(上游 LLM 厂商)]
 ```
@@ -110,7 +110,8 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 `/admin/*`（配置读写、vendor 治理、日志/成本查询、路由解释）与数据面共用**单层 key 鉴权**
 （同一 `[auth]` 摘要表，无独立管理角色体系——管理角色体系超出本变更范围，如需 RBAC 级
 隔离请另行立项）。这意味着：**任何持有数据面 key 的调用方都能读写管理面**。新端点
-（`/admin/cost`、`/admin/route/explain`、`/admin/models` CRUD 等）扩大了暴露面，生产部署必须
+（`/admin/cost`、`/admin/route/explain`、`/admin/models` CRUD、`/admin/quota/ledger`、
+`/admin/vendor-budgets` 等）扩大了暴露面，生产部署必须
 以网络/反代层补偿：
 
 - 在反向代理（nginx/traefix 等）按路径隔离 `/admin/*`：仅管理网段/管理端口可达，或叠加

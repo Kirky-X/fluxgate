@@ -348,16 +348,19 @@ flowchart LR
 ```mermaid
 flowchart LR
     C["consume（入口预扣）"] --> M["QuotaState 内存态<br/>租户/`__global__` → 窗口 id → 占用"]
-    R["recompense / record_vendor_usage<br/>（usage 结算点）"] -->|"结算行 try_send"| CH["async-channel 1024 槽<br/>QuotaLedgerPersister"]
+    R["recompense / record_vendor_usage<br/>（usage 结算点）"] -->|"结算行 try_send"| CH["async-channel 1024 槽<br/>QuotaLedgerPersister<br/>（同键合流 drain）"]
     FL["30s 周期 ticker<br/>（bootstrap 装配）"] -->|"全量快照"| CH
-    CH --> DB[("quota_ledger 表<br/>UPSERT 三方言")]
-    DB -->|"启动恢复<br/>仅 window_start+周期 ≥ now"| M
+    FL -->|"每小时<br/>保留清理"| PG[("DELETE<br/>window_start &lt; 下界")]
+    CH -->|"单事务批量"| DB[("quota_ledger 表<br/>UPSERT 三方言")]
+    DB -->|"启动恢复<br/>下界过滤 + 仅未过期窗"| M
+    SD["优雅停机 DrainQueue"] -->|"快照直落 + 关停"| DB
     M -->|"路由第 6 因子<br/>smart/pace（mode 热读）"| RT["Router 打分"]
     M --> ADM["GET /admin/quota/ledger<br/>GET /admin/vendor-budgets"]
 ```
 
-- **内存权威**：判定走内存快路径（每请求零 DB 往返）；落盘是约束的尽力而为——结算即 UPSERT + 30s 全量 flush，崩溃回退窗口 ≤30s（预算是约束不是计费）；
-- **三类作用域行同表同路**：租户窗按摘要键、`scope=global` 窗固定键 `__global__`、vendor 预算键 `__vendor__:{id}`（window_id=`vendor:{id}`）；启动恢复仅取未过期窗（活动期由当前配置周期解释，账本不存周期事实）；
+- **内存权威**：判定走内存快路径（每请求零 DB 往返）；落盘是约束的尽力而为——结算即 UPSERT（消费端同键合流 + 单事务批量提交）+ 30s 全量 flush，非优雅退出的崩溃回退窗口 ≤30s（优雅停机走最终 flush，正常重启不丢账；预算是约束不是计费）；
+- **三类作用域行同表同路**：租户窗按摘要键、`scope=global` 窗固定键 `__global__`、vendor 预算键 `__vendor__:{id}`（window_id=`vendor:{id}`）；启动恢复仅取未过期窗（活动期由当前配置周期解释，账本不存周期事实），读侧按「now − 配置最长窗」下界过滤（与保留清理同参单源 [`crate::middleware::quota::ledger_retention_secs`]）；恢复灌回受 10k 键上限约束（超限跳过 + warn）；
+- **保留有界**：过期周期行随 flush 循环每小时清理（下界 = now − 配置最长窗，monthly 取 31 天上界、空配置兜底），表不随历史周期无限累积；
 - **失败不阻塞**：落库失败计数 + warn（`quota_ledger_flush_fail_total`，内存态不受影响）；恢复读取失败 ERROR 留痕后按空账本启动；
 - **路由因子**：mode=smart 耗尽 vendor 摘出候选（全员耗尽保留全部并计 `quota_factor_depleted_total{vendor}`）+ 重置最快加成进第 6 加法项；mode=pace 消耗率带乘性升降权（×0.5/×1.2）；429 多窗拒绝逐窗计数 `quota_window_refused_total{window_id}`。
 

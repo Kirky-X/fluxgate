@@ -255,6 +255,13 @@ pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
     let mut value = serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({}));
     value["dropped_logs"] =
         serde_json::json!(state.logger.as_ref().map(|l| l.dropped_logs()).unwrap_or(0));
+    // 粘性落盘通道的实时丢弃累计（快照里的 affinity_persist_drop_total 是
+    // settle 采样近似；本字段是通道侧精确读数，与日志丢弃同款双出口）
+    value["affinity_persist_dropped"] = serde_json::json!(state
+        .affinity_writer
+        .as_ref()
+        .map(|w| w.dropped_sticks())
+        .unwrap_or(0));
     value["secret_scan_dropped"] = serde_json::json!(state
         .logger
         .as_ref()

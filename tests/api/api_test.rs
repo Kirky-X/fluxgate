@@ -3725,10 +3725,16 @@ mod api_handler_coverage {
 
         let router = {
             let r = NexusRouter::new(config_manager.clone(), vendor_manager.clone());
-            if let Some(b) = bandit.clone() {
+            let r = if let Some(b) = bandit.clone() {
                 r.with_bandit(b)
             } else {
                 r
+            };
+            // 与生产 bootstrap 同款：亲和表接进路由（否则路由侧亲和永不
+            // 咨询——之前 hits/misses 恒 0 正是缺这行）
+            match affinity.clone() {
+                Some(table) => r.with_affinity(table),
+                None => r,
             }
         };
 
@@ -5693,6 +5699,10 @@ mod api_handler_coverage {
         config.routing.affinity.mode = "auto".into();
         config.routing.affinity.cache_worth_tokens = 1024;
         config.vendors[0].cache_ttl_secs = 600;
+        // 首请求固定落 v-a（v-b 暂不供 gpt-4，不出现在候选集——其出站实例
+        // 仍随 initialize 常在：启动后新登记的 vendor 无实例可路由）
+        config.vendors[1].models[0].model_id = "gpt-x".into();
+        config.vendors[1].models[0].abstract_id = Some("gpt-x".into());
         let state = build_state(
             config,
             Wire {
@@ -5735,8 +5745,8 @@ mod api_handler_coverage {
 
         // v-b 重新合格（热读 swap_memory）：hard 亲和仍强选 v-a
         let mut config2 = state.config.get_config();
-        config2.vendors[1].enabled = true;
-        config2.vendors[1].models[0].enabled = true;
+        config2.vendors[1].models[0].model_id = "gpt-4".into();
+        config2.vendors[1].models[0].abstract_id = Some("gpt-4".into());
         state.config.swap_memory(config2).expect("swap");
 
         let second = post_json(
@@ -5746,7 +5756,16 @@ mod api_handler_coverage {
             &[("x-session-id", "sess-high")],
         )
         .await;
-        assert_eq!(second.status(), 200);
+        let hs = second.status();
+        if hs != 200 {
+            let body = axum::body::to_bytes(second.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            panic!(
+                "high second status {hs}, body: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
         let still = state
             .affinity
             .as_ref()
@@ -5800,8 +5819,9 @@ mod api_handler_coverage {
             ),
         ]);
         config.routing.affinity.mode = "auto".into();
-        // v-b 初始不合格：首请求必落 v-a
-        config.vendors[1].enabled = false;
+        // v-b 暂不供 gpt-4：首请求必落 v-a（其实例仍常在）
+        config.vendors[1].models[0].model_id = "gpt-x".into();
+        config.vendors[1].models[0].abstract_id = Some("gpt-x".into());
         let state = build_state(
             config,
             Wire {
@@ -5838,8 +5858,10 @@ mod api_handler_coverage {
 
         // v-a 退出合格集：无亲和束缚 → 第二请求自由漂到 v-b
         let mut config2 = state.config.get_config();
-        config2.vendors[0].enabled = false;
-        config2.vendors[1].enabled = true;
+        config2.vendors[0].models[0].model_id = "gpt-x".into();
+        config2.vendors[0].models[0].abstract_id = Some("gpt-x".into());
+        config2.vendors[1].models[0].model_id = "gpt-4".into();
+        config2.vendors[1].models[0].abstract_id = Some("gpt-4".into());
         state.config.swap_memory(config2).expect("swap");
 
         let second = post_json(
@@ -7730,6 +7752,109 @@ mod route_explain {
             table.lookup(None, "sess-9").await.as_deref(),
             Some("ro-b"),
             "解释不得改写亲和绑定"
+        );
+    }
+
+    // ── 亲和决策块（R-affinity-004：hit / miss / disabled 三态）────
+
+    /// hit：绑定存在 → decision=hit + vendor；miss：无绑定；disabled：
+    /// 亲和未接线。worth_tokens/ttl_secs 无 sticky 记账时为 null。
+    #[tokio::test]
+    async fn explain_affinity_block_reports_hit_miss_disabled() {
+        // disabled：亲和表未接线
+        let state = make_state(vec![vendor_with_models("aff-a", true, &["gpt-4"])], plain()).await;
+        let (status, body) = read_json(
+            post_explain(state, None, json!({"model": "gpt-4", "session_id": "s1"})).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["affinity"]["decision"], "disabled",
+            "未接线必须 disabled"
+        );
+        assert!(body["affinity"]["worth_tokens"].is_null());
+        assert!(body["affinity"]["ttl_secs"].is_null());
+
+        // hit + miss：亲和表接线（同一次 explain 里两个 session）
+        let table = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let state = make_state(
+            vec![vendor_with_models("aff-a", true, &["gpt-4"])],
+            Wire {
+                affinity: Some(table.clone()),
+                auth: false,
+                routing: None,
+            },
+        )
+        .await;
+        table.bind(None, "sess-hit", "aff-a").await;
+
+        let (status, body) = read_json(
+            post_explain(
+                state.clone(),
+                None,
+                json!({"model": "gpt-4", "session_id": "sess-hit"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["affinity"]["decision"], "hit");
+        assert_eq!(body["affinity"]["vendor"], "aff-a");
+        assert!(
+            body["affinity"]["worth_tokens"].is_null(),
+            "无 sticky 记账（legacy 绑定）worth 必须为 null"
+        );
+
+        let (status, body) = read_json(
+            post_explain(
+                state,
+                None,
+                json!({"model": "gpt-4", "session_id": "sess-miss"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["affinity"]["decision"], "miss",
+            "无绑定是 miss 非 disabled"
+        );
+    }
+
+    /// off 模式：查询短路 → decision=disabled（表接线也报 disabled）。
+    #[tokio::test]
+    async fn explain_affinity_block_off_mode_is_disabled() {
+        let table = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
+            3600,
+        )));
+        let mut routing = common::test_config(vec![]).routing;
+        routing.affinity.mode = "off".into();
+        let state = make_state(
+            vec![vendor_with_models("aff-a", true, &["gpt-4"])],
+            Wire {
+                affinity: Some(table.clone()),
+                auth: false,
+                routing: Some(routing),
+            },
+        )
+        .await;
+        table.bind(None, "sess-off", "aff-a").await;
+
+        let (status, body) = read_json(
+            post_explain(
+                state,
+                None,
+                json!({"model": "gpt-4", "session_id": "sess-off"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["affinity"]["decision"], "disabled",
+            "off 模式查询短路必须报 disabled"
         );
     }
 }

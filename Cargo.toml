@@ -416,6 +416,11 @@ name = "routing"
 path = "benches/routing.rs"
 harness = false
 
+[[bench]]
+name = "affinity"
+path = "benches/affinity.rs"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true

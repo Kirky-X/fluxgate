@@ -1769,3 +1769,140 @@ mod usage_observability_columns {
         assert!(miss.cache_write_tokens.is_none());
     }
 }
+
+/// 会话粘性落盘（cache-economy-affinity V6）：建表幂等 + UPSERT 覆盖 +
+/// 未过期读取上限与租户隔离 + 过期清理。
+#[cfg(test)]
+mod affinity_sticks {
+    use fluxgate::storage::AffinityStick;
+
+    async fn pool() -> dbnexus::DbPool {
+        dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+    }
+
+    fn stick(tenant: &str, session: &str, vendor: &str, expires_at: i64) -> AffinityStick {
+        AffinityStick {
+            tenant: tenant.into(),
+            session_key: session.into(),
+            vendor_id: vendor.into(),
+            worth_tokens: 2_048,
+            expires_at,
+        }
+    }
+
+    /// 迁移建表 + 重跑幂等（V6 记账、affinity_sticks 可写可读）。
+    #[tokio::test]
+    async fn v6_migration_creates_affinity_sticks_idempotently() {
+        let pool = pool().await;
+        let repo = fluxgate::database::Repository::new(pool);
+        repo.initialize().await.expect("首次迁移");
+        repo.initialize().await.expect("重跑幂等");
+
+        repo.upsert_affinity_sticks(&[stick("", "s1", "v-a", 1_700_000_000)])
+            .await
+            .expect("UPSERT");
+        let rows = repo.read_affinity_sticks(0, 10).await.expect("read");
+        assert_eq!(rows.len(), 1, "V6 表必须可写可读");
+        assert_eq!(rows[0].vendor_id, "v-a");
+    }
+
+    /// UPSERT 覆盖：同 (tenant, session) 保留最后写入的 vendor；
+    /// 租户键与 legacy 键互不可见（复合主键）。
+    #[tokio::test]
+    async fn upsert_overwrites_and_tenant_scopes() {
+        let pool = pool().await;
+        let repo = fluxgate::database::Repository::new(pool);
+        repo.initialize().await.expect("init");
+
+        repo.upsert_affinity_sticks(&[
+            stick("", "s1", "v-a", 100),
+            stick("", "s1", "v-b", 200),
+            stick("tenant-a", "s1", "v-c", 300),
+        ])
+        .await
+        .expect("UPSERT");
+
+        let rows = repo.read_affinity_sticks(0, 10).await.expect("read");
+        assert_eq!(rows.len(), 2, "legacy 覆盖为单行 + 租户行独立");
+        let legacy = rows
+            .iter()
+            .find(|r| r.tenant.is_empty())
+            .expect("legacy 行");
+        assert_eq!(legacy.vendor_id, "v-b", "保留最后写入");
+        assert_eq!(legacy.expires_at, 200);
+        let tenant_row = rows
+            .iter()
+            .find(|r| r.tenant == "tenant-a")
+            .expect("租户行");
+        assert_eq!(tenant_row.vendor_id, "v-c");
+    }
+
+    /// 未过期读取：过期行排除、LIMIT 下推、按 expires_at 降序（最新优先）。
+    #[tokio::test]
+    async fn read_unexpired_orders_desc_and_limits() {
+        let pool = pool().await;
+        let repo = fluxgate::database::Repository::new(pool);
+        repo.initialize().await.expect("init");
+
+        let rows: Vec<AffinityStick> = (0..5)
+            .map(|i| stick("", &format!("s{i}"), "v-a", 1_700_000_000 + i))
+            .chain(std::iter::once(stick("", "expired", "v-b", 50)))
+            .collect();
+        repo.upsert_affinity_sticks(&rows).await.expect("UPSERT");
+
+        let fresh = repo.read_affinity_sticks(100, 10).await.expect("read");
+        assert_eq!(fresh.len(), 5, "过期行不入恢复集");
+        assert_eq!(fresh[0].expires_at, 1_700_000_004, "降序：最新优先");
+        assert_eq!(fresh.last().expect("非空").expires_at, 1_700_000_000);
+
+        let limited = repo.read_affinity_sticks(100, 2).await.expect("read");
+        assert_eq!(limited.len(), 2, "LIMIT 下推（top 512 恢复上限的机制）");
+        assert_eq!(limited[0].expires_at, 1_700_000_004);
+    }
+
+    /// 过期清理：删除 expires_at <= now 的行并返回删除数。
+    #[tokio::test]
+    async fn purge_expired_removes_only_stale_rows() {
+        let pool = pool().await;
+        let repo = fluxgate::database::Repository::new(pool);
+        repo.initialize().await.expect("init");
+
+        repo.upsert_affinity_sticks(&[
+            stick("", "old", "v-a", 100),
+            stick("", "fresh", "v-b", 1_700_000_000),
+        ])
+        .await
+        .expect("UPSERT");
+
+        let purged = repo
+            .purge_expired_affinity_sticks(1_000)
+            .await
+            .expect("purge");
+        assert_eq!(purged, 1, "只删过期行");
+        let rows = repo.read_affinity_sticks(0, 10).await.expect("read");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session_key, "fresh");
+    }
+
+    /// 空批 UPSERT 短路（无 SQL 往返）——write-behind flush_buffer 的空批路径。
+    #[tokio::test]
+    async fn empty_upsert_is_noop() {
+        let pool = pool().await;
+        let repo = fluxgate::database::Repository::new(pool);
+        repo.initialize().await.expect("init");
+        repo.upsert_affinity_sticks(&[]).await.expect("空批必须 Ok");
+        let rows = repo.read_affinity_sticks(0, 10).await.expect("read");
+        assert!(rows.is_empty());
+    }
+}

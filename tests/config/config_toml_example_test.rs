@@ -82,6 +82,31 @@ fn config_toml_example_parses() {
         content.contains("affinity_tenant_scoped"),
         "config.example.toml 示例缺 affinity_tenant_scoped 键"
     );
+    // 缓存经济学亲和（[routing.affinity]）：默认 legacy = 现行为逐位不变；
+    // 阈值/窗口对齐 magpie 实测（1024 / 120s）；vendor 两字段默认 300/false
+    assert_eq!(config.routing.affinity.mode, "legacy");
+    assert_eq!(config.routing.affinity.cache_worth_tokens, 1024);
+    assert_eq!(config.routing.affinity.turn_gap_secs, 120);
+    assert!(
+        content.contains("[routing.affinity]"),
+        "config.example.toml 示例缺 [routing.affinity] 段"
+    );
+    assert!(
+        content.contains("cache_worth_tokens"),
+        "config.example.toml 示例缺 cache_worth_tokens 键"
+    );
+    assert!(
+        content.contains("turn_gap_secs"),
+        "config.example.toml 示例缺 turn_gap_secs 键"
+    );
+    assert!(
+        content.contains("cache_ttl_secs = 300"),
+        "config.example.toml 示例缺 vendor cache_ttl_secs 注释示例"
+    );
+    assert!(
+        content.contains("silent_cache = false"),
+        "config.example.toml 示例缺 vendor silent_cache 注释示例"
+    );
     // SLA 虚拟队列打分项默认关（sla_v=0.0 → 惩罚因子不参与权重、
     // Q 不更新，路由行为与现状逐位一致；Po2C/latency_buffer 同款结构性
     // 锁定），sla_alpha 默认 0.95（目标服务水平）

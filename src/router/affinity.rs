@@ -158,6 +158,17 @@ impl AffinityTable {
         let _ = self.backend.delete(&Self::key(tenant, session_key)).await;
     }
 
+    /// 只读窥视（不续期）：路由解释端点专用——`lookup` 的命中续期是副作用，
+    /// 解释面必须纯只读（不改亲和状态）。未绑定 / 存取出错返回 None。
+    pub async fn peek(&self, tenant: Option<&str>, session_key: &str) -> Option<String> {
+        let value = self
+            .backend
+            .get(&Self::key(tenant, session_key))
+            .await
+            .ok()??;
+        String::from_utf8(value).ok()
+    }
+
     /// 键的剩余存活时长（秒级精度不足用 Duration）；未绑定 / 后端不支持
     /// TTL 查询返回 None。解释端点与 settle TTL 断言消费。
     pub async fn remaining_ttl(&self, tenant: Option<&str>, session_key: &str) -> Option<Duration> {

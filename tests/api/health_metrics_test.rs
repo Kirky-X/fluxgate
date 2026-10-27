@@ -189,6 +189,31 @@ async fn readyz_reflects_component_health() {
     );
 }
 
+/// /admin/metrics 暴露缓存经济学亲和四计数（T008）：字段存在且可累加。
+/// settle/恢复打点经 GlobalMetrics；通道丢弃另有通道侧精确读数。
+#[tokio::test]
+async fn admin_metrics_exposes_affinity_counters() {
+    let (app, _, _) = build_app().await;
+    let resp = get(app, "/admin/metrics").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    for field in [
+        "affinity_stick_total",
+        "affinity_drift_total",
+        "affinity_persist_drop_total",
+        "affinity_restored_count",
+        "affinity_persist_dropped",
+    ] {
+        assert!(
+            json.get(field).is_some_and(|v| v.is_u64()),
+            "/admin/metrics 缺亲和计数字段 {field}（实测 {json}）"
+        );
+    }
+}
+
 /// /metrics 为 Prometheus 文本（含 HELP/TYPE）；一次业务请求后出现
 /// RED 序列。探针与指标端点免认证（无 key 可达）。
 #[tokio::test]

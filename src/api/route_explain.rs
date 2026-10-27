@@ -73,5 +73,7 @@ pub async fn route_explain(
     Ok(Json(json!({
         "model": model,
         "candidates": candidates,
+        // 亲和决策块（R-affinity-004）：解释点只读，不续期不改状态
+        "affinity": crate::api::routing_hints::affinity_decision_block(&state, session_id).await,
     })))
 }

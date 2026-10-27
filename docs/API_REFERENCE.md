@@ -1050,6 +1050,10 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
   "affinity_hits": 420,
   "affinity_misses": 580,
   "affinity_hit_rate": 0.42,
+  "affinity_stick_total": 12,
+  "affinity_drift_total": 3,
+  "affinity_persist_drop_total": 0,
+  "affinity_restored_count": 8,
   "top1_share": 0.7,
   "share_entropy": 0.88,
   "dropped_logs": 0,
@@ -1085,6 +1089,10 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 | `vendors` | array | 各厂商细分指标 |
 | `affinity_hits` / `affinity_misses` | integer | 会话亲和命中 / 未命中次数 |
 | `affinity_hit_rate` | number | 亲和命中率（[0,1]，无样本为 0.0） |
+| `affinity_stick_total` | integer | 缓存经济学亲和写入粘性累计（`[routing.affinity]` auto 值得粘 / turn 粘住；legacy 恒 0） |
+| `affinity_drift_total` | integer | 该写未写累计（auto 下 worth 低于 `cache_worth_tokens`，会话回到路由池） |
+| `affinity_persist_drop_total` | integer | 粘性落盘通道满丢弃累计（settle 采样近似；`affinity_persist_dropped` 为通道侧精确读数） |
+| `affinity_restored_count` | integer | 启动恢复灌回内存亲和表的粘性条数 |
 | `top1_share` | number | 滑窗 top-1 厂商流量占比（[0,1]） |
 | `share_entropy` | number | 流量份额 Shannon 熵（归一 [0,1]） |
 | `dropped_logs` | integer | 日志通道满被丢弃的日志条数 |
@@ -1866,6 +1874,23 @@ curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
 ```
 
 `reason_code` 稳定机器码（不做 i18n）：`disabled`（vendor/模型未启用）| `cooling_down`（熔断/冷却中）| `throttled`（限流窗口耗尽）| `not_in_catalog`（该 vendor 不提供此模型）| `weight_zero`（合成权重为 0）| `affinity_bound_elsewhere`（会话亲和绑定他处，hard 模式排他）| `queue_over_limit`（队列饱和）| `eligible`（候选合格）。优先级：`not_in_catalog` → `disabled` → `throttled` → `cooling_down` → `affinity_bound_elsewhere` → `queue_over_limit` → `weight_zero` → `eligible`。
+
+**`affinity` 决策块**（R-affinity-004；解释点纯只读，`peek` 不续期、不改任何状态）：
+
+```json
+{
+  "model": "gpt-4",
+  "candidates": [],
+  "affinity": { "decision": "hit", "vendor": "openai", "worth_tokens": 5000, "ttl_secs": 421 }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|:-----|:-----|:-----|
+| `decision` | string | `hit`（绑定存在）/ `miss`（无绑定）/ `disabled`（亲和未接线——`[routing.affinity] mode = "off"` 或亲和表未装配） |
+| `vendor` | string | 仅 `hit` 时出现：绑定的厂商 ID |
+| `worth_tokens` | integer\|null | 最后一次 settle 的粘性记账缓存价值；无记账（legacy 模式 / 未结算）为 `null` |
+| `ttl_secs` | integer\|null | 粘性剩余存活秒数；无记账为 `null` |
 
 **错误码**: `validation_error`(400，`model` 缺失/非 string/未知模型)
 

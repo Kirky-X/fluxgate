@@ -20,6 +20,7 @@ use crate::config::{
 };
 use crate::storage::{AffinityStick, AffinityStickSink};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -226,7 +227,8 @@ pub fn decide(
     }
 }
 
-/// 缓存经济学亲和写入器（api 层 usage 结算点持有；Clone 廉价）。
+/// 缓存经济学亲和写入器（api 层 usage 结算点持有；Clone 廉价——内部全是
+/// Arc / 原子量，克隆共享同一份粘性与采样状态）。
 #[derive(Clone)]
 pub struct AffinityWriter {
     config: Arc<ConfigManager>,
@@ -235,6 +237,9 @@ pub struct AffinityWriter {
     /// 粘性落盘通道（auto/turn 投递）；None = 未接线，只内存粘不落盘
     sink: Option<Arc<dyn AffinityStickSink>>,
     metrics: Arc<crate::utils::metrics::GlobalMetrics>,
+    /// 已采样进 metrics 的通道丢弃累计（差值对账——丢弃只发生在有流量的
+    /// 时候，settle 采样点足够稠密；两次采样间的丢弃在下一次 settle 补记）
+    sampled_sink_drops: Arc<AtomicU64>,
 }
 
 impl AffinityWriter {
@@ -251,6 +256,7 @@ impl AffinityWriter {
             sticks,
             sink,
             metrics,
+            sampled_sink_drops: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -265,12 +271,16 @@ impl AffinityWriter {
         vendor: &VendorConfig,
         usage: CacheUsage,
     ) -> AffinityDecision {
-        let section = self.config.read().routing.affinity.clone();
-        let mode = AffinityMode::from_section(&section);
+        // 借用配置快照（Arc<Config> 不深拷贝）：section 只在本次 settle 内
+        // 使用，克隆整段会每请求多一次 String 分配（热路径）
+        let config = self.config.read();
+        let section = &config.routing.affinity;
+        let mode = AffinityMode::from_section(section);
         let Some(session) = session_key else {
             return AffinityDecision::inert(mode);
         };
-        let decision = decide(&section, Some(vendor), usage);
+        self.sync_sink_drops();
+        let decision = decide(section, Some(vendor), usage);
         if !decision.outcome.stuck() {
             // 该写未写（auto 下 worth 低于门限）= 会话回到路由池的漂移
             if decision.outcome == AffinityOutcome::BelowThreshold {
@@ -312,6 +322,41 @@ impl AffinityWriter {
     /// 粘性记账表句柄（启动恢复与落盘读取的注入点）
     pub fn stick_table(&self) -> &Arc<AffinityStickTable> {
         &self.sticks
+    }
+
+    /// 通道满丢弃的实时累计（未接线 = 0）。/admin/metrics 的精确读数出口
+    ///（metrics 快照里的 `affinity_persist_drop_total` 是 settle 采样近似）。
+    pub fn dropped_sticks(&self) -> u64 {
+        self.sink.as_ref().map(|s| s.dropped_sticks()).unwrap_or(0)
+    }
+
+    /// 会话最后一次粘性记账 `(worth_tokens, ttl_secs)`；无记账（legacy 模式
+    /// / 尚未 settle）返回 None——解释端点的 worth_tokens/ttl_secs 来源。
+    pub fn last_stick_for(&self, tenant: Option<&str>, session_key: &str) -> Option<(u64, u64)> {
+        let key = format!("{}\n{}", tenant.unwrap_or_default(), session_key);
+        self.sticks
+            .sticks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .map(|(_, stick)| {
+                let ttl = (stick.expires_at - chrono::Utc::now().timestamp()).max(0);
+                (stick.worth_tokens.max(0) as u64, ttl as u64)
+            })
+    }
+
+    /// 把通道丢弃计数差值采样进 metrics（settle 打点；`record` 路径本身
+    /// 无 metrics 句柄，这里按单调计数对账，不重不漏）
+    fn sync_sink_drops(&self) {
+        let Some(sink) = self.sink.as_ref() else {
+            return;
+        };
+        let total = sink.dropped_sticks();
+        let sampled = self.sampled_sink_drops.load(Ordering::Relaxed);
+        if total > sampled {
+            self.metrics.record_affinity_persist_drop(total - sampled);
+        }
+        self.sampled_sink_drops.store(total, Ordering::Relaxed);
     }
 }
 

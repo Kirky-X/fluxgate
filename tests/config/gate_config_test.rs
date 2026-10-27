@@ -914,6 +914,57 @@ mod otlp_config {
         assert!(validate_config(&config).is_ok(), "缺省段合法");
     }
 
+    /// `[routing.affinity]`：缺省 legacy（现行为冻结）+ 阈值/窗口缺省值；
+    /// 非法 mode 点名拒绝；vendor cache_ttl_secs 越界拒绝（边界含端点）。
+    #[test]
+    fn test_affinity_section_defaults() {
+        let section = fluxgate::config::AffinitySection::default();
+        assert_eq!(section.mode, "legacy", "缺段必须 legacy（零回归）");
+        assert_eq!(section.cache_worth_tokens, 1024);
+        assert_eq!(section.turn_gap_secs, 120);
+
+        let config = common::test_config(vec![]);
+        assert_eq!(
+            config.routing.affinity, section,
+            "Config 缺段走同一 Default"
+        );
+        assert!(validate_config(&config).is_ok(), "缺省段合法");
+    }
+
+    #[test]
+    fn test_affinity_mode_unknown_rejected() {
+        let mut config = common::test_config(vec![]);
+        config.routing.affinity.mode = "autoo".into();
+        let err = validate_config(&config).expect_err("未知 mode 必须点名拒绝");
+        assert!(
+            err.to_string().contains("autoo"),
+            "错误信息必须回显原值（脱敏口径下唯一可透出的配置枚举词）: {err}"
+        );
+        for mode in ["legacy", "auto", "turn", "off", "AUTO", " Off "] {
+            config.routing.affinity.mode = mode.into();
+            assert!(
+                validate_config(&config).is_ok(),
+                "合法值 {mode} 必须放行（大小写不敏感 + trim）"
+            );
+        }
+    }
+
+    #[test]
+    fn test_vendor_cache_ttl_secs_out_of_range_rejected() {
+        let mut config = common::test_config(vec![common::base_vendor("v1", "")]);
+        config.vendors[0].cache_ttl_secs = 0;
+        assert!(
+            validate_config(&config).is_err(),
+            "0 必须拒绝（写完即过期）"
+        );
+        config.vendors[0].cache_ttl_secs = 86_401;
+        assert!(validate_config(&config).is_err(), "超上限必须拒绝");
+        config.vendors[0].cache_ttl_secs = 1;
+        assert!(validate_config(&config).is_ok(), "下边界合法");
+        config.vendors[0].cache_ttl_secs = 3_600;
+        assert!(validate_config(&config).is_ok(), "1h 缓存部署合法");
+    }
+
     /// 关闭不影响配置合法性（运行期门，非启动期校验）。
     #[test]
     fn test_usage_insights_disabled_is_valid() {

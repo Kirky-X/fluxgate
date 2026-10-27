@@ -126,6 +126,52 @@ fn truncate_session_key(raw: &str) -> String {
     raw[..take].to_string()
 }
 
+/// 亲和决策解释块（`POST /admin/route/explain` 的 `affinity` 字段；
+/// R-affinity-004）。纯只读：`peek` 不续期、stick 记账只读，不改任何状态。
+///
+/// - `decision`：`hit` / `miss` / `disabled` 三态机器码——亲和未接线
+///   （off 模式或表未装配）报 `disabled`，与「没绑定」区分开
+/// - `worth_tokens` / `ttl_secs`：最后一次 settle 的粘性记账；无记账
+///   （legacy 模式 / 未结算）为 `null`
+pub async fn affinity_decision_block(
+    state: &crate::api::state::ApiState,
+    session_id: Option<&str>,
+) -> Value {
+    use crate::config::AffinityMode;
+    let mode = AffinityMode::from_section(&state.config.read().routing.affinity);
+    let (decision, worth, ttl) = match (state.affinity.as_ref(), session_id) {
+        (Some(table), Some(session)) if mode != AffinityMode::Off => {
+            // 解释面没有请求方 key 上下文：tenant_scoped 开启时亲和键带
+            // api_key_hash，explain 只拿得到 session_id——该形态下绑定
+            // 不可定位，如实查 legacy 键空间（与 bind 的 None 侧同键），
+            // 不虚构命中
+            let tenant: Option<&str> = None;
+            let bound = table.peek(tenant, session).await;
+            let stick = state
+                .affinity_writer
+                .as_ref()
+                .and_then(|w| w.last_stick_for(tenant, session));
+            match bound {
+                Some(vendor) => (
+                    serde_json::json!({"decision": "hit", "vendor": vendor}),
+                    stick.map(|(w, _)| w),
+                    stick.map(|(_, t)| t),
+                ),
+                None => (
+                    serde_json::json!({"decision": "miss"}),
+                    stick.map(|(w, _)| w),
+                    stick.map(|(_, t)| t),
+                ),
+            }
+        }
+        _ => (serde_json::json!({"decision": "disabled"}), None, None),
+    };
+    let mut block = decision;
+    block["worth_tokens"] = serde_json::json!(worth);
+    block["ttl_secs"] = serde_json::json!(ttl);
+    block
+}
+
 pub fn fallback_session_key(body: &Value) -> Option<String> {
     let first = body.get("messages")?.get(0)?;
     let serialized = serde_json::to_string(first).ok()?;

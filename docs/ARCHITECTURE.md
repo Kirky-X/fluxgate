@@ -135,7 +135,7 @@ flowchart TB
 | `router/mod.rs` | 模块组织与 re-export |
 | `router/router.rs` | 路由决策核心：三级决策顺序、`compute_weight` 加权打分、选择层（温度平滑/轮盘赌/PoTC）、SLA/LPS 增强因子、回退链构建 |
 | `router/bandit.rs` | recId=15 LinUCB contextual bandit（selection 第三档） |
-| `router/affinity.rs` | recId=11 会话/前缀亲和表，oxcache 承载存储 |
+| `router/affinity.rs` / `router/affinity_settle.rs` | recId=11 会话/前缀亲和表（oxcache 承载存储）+ 缓存经济学 settle 决策与粘性记账 |
 
 ### src/vendor/
 
@@ -321,8 +321,25 @@ weight = w_model·model.weight + w_queue·queue_factor
 - 键 `affinity:{session_key}`；`tenant_scoped` 开启时带 `api_key_hash` 前缀，与响应缓存的 `resp:` 命名空间隔离；
 - TTL 默认 1 小时，命中即续期；
 - **hard（默认）在合格集合内排他**：命中即选绑定 vendor；仅当绑定 vendor 不在本次合格集合中才回落加权选择（`soft` 模式全程为 boost）；
-- 只记录"上次成功服务的 vendor"——bind/clear 由 API 层在执行成功后调用（`src/api/mod.rs:48-98`）；
-- 命中率计入 `GlobalMetrics`。
+- 只记录"上次成功服务的 vendor"——bind/clear 由 API 层在执行成功后调用（`src/api/mod.rs`）；
+- 命中率计入 `GlobalMetrics`；
+- **缓存经济学亲和**（`[routing.affinity]`，默认 `legacy` 冻结现行为）：settle 决策与粘性记账在 `src/router/affinity_settle.rs`——`legacy` 成功即粘 1h；`auto` 按响应缓存价值判定（`worth = cache_read + cache_creation +（vendor.silent_cache 时加 prompt_tokens）≥ cache_worth_tokens` 才粘，TTL 取 vendor `cache_ttl_secs`；低于阈值不写不删、既有记录自然过期）；`turn` 粘 `turn_gap_secs`；`off` 不写 + 查询短路。settle 点在 API 层响应 usage 结算处（`src/api/request_cost.rs` 的 `settle_api_affinity`，与 `record_keyed_usage` 同源取 usage），legacy 路径的 bind/clear/rebind 保持原样。
+
+#### 粘性落盘与启动恢复
+
+`affinity_sticks` 表（迁移 V6，复合主键 `(tenant, session_key)`，三方言建表单源 `src/database/migration.rs`）：
+
+```mermaid
+flowchart LR
+    S["settle（api usage 结算点）<br/>auto/turn 且值得粘"] -->|"try_send 满即丢计数"| CH["async-channel 1024 槽<br/>AffinityPersister"]
+    CH -->|"批 100 条或 1s"| DB[("affinity_sticks 表<br/>UPSERT 三方言")]
+    DB -->|"启动恢复<br/>expires_at 降序 top 512"| R["内存亲和表<br/>按剩余 TTL 重建"]
+    S -.->|"粘性记账（有界 4096+256）"| ST["AffinityStickTable<br/>解释端点 worth/ttl 来源"]
+```
+
+- write-behind 通道满丢弃计数进 `affinity_persist_drop_total`（亲和是优化非承诺，丢不阻塞请求）；落库失败整批丢弃并计数 + warn，不重试；
+- 启动恢复只对 auto/turn 执行（legacy 不落盘、off 短路），失败仅 warn 不阻断启动（`src/server/affinity_restore.rs`）；
+- 观测四计数：`affinity_stick_total`（写入粘性）/ `affinity_drift_total`（threshold-skip）/ `affinity_persist_drop_total` / `affinity_restored_count`，经 `/admin/metrics` 暴露；路由解释端点输出 `affinity {decision, worth_tokens, ttl_secs}`（`src/api/routing_hints.rs` 的 `affinity_decision_block`，纯只读 peek 不续期）。
 
 ### 路由提示
 

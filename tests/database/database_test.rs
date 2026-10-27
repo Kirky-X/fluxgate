@@ -2075,7 +2075,7 @@ mod quota_ledger {
         .await
         .expect("跨周期与全局键");
 
-        let mut rows = repo.read_quota_ledger().await.expect("read");
+        let mut rows = repo.read_quota_ledger(0).await.expect("read");
         rows.sort_by(|a, b| {
             (a.api_key_hash.as_str(), a.window_start)
                 .cmp(&(b.api_key_hash.as_str(), b.window_start))
@@ -2107,7 +2107,7 @@ mod quota_ledger {
         repo.initialize().await.expect("init");
         repo.upsert_quota_ledger(&[]).await.expect("空批必须 Ok");
         assert!(
-            repo.read_quota_ledger().await.expect("read").is_empty(),
+            repo.read_quota_ledger(0).await.expect("read").is_empty(),
             "空批不产行"
         );
     }
@@ -2165,7 +2165,7 @@ mod quota_ledger_server {
         repo.upsert_quota_ledger(&[mk(1_770_000_000, 220)])
             .await
             .expect("覆盖 UPSERT");
-        let rows = repo.read_quota_ledger().await.expect("read");
+        let rows = repo.read_quota_ledger(0).await.expect("read");
         let mine: Vec<&QuotaLedgerRow> = rows
             .iter()
             .filter(|r| r.api_key_hash == "server-dialect")

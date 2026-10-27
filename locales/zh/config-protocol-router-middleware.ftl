@@ -6,6 +6,7 @@ config-file-not-found = 配置文件不存在: { $path }
 config-load-failed = 加载配置文件失败: { $error }
 config-parse-failed = 解析配置文件失败: { $error }
 config-duplicate-vendor-id = 厂商 ID 重复: { $vendor }
+config-vendor-id-too-long = 厂商 ID「{ $vendor }」超过 { $max } 字符：预算账本行键为 __vendor__:{id}，必须放进 quota_ledger.api_key_hash（VARCHAR(64)）
 config-duplicate-model-id = 厂商 { $vendor } 内的模型 ID 重复: { $model }
 config-vendor-id-empty = 厂商 ID 为空（仅空白字符）——路由查找键不得为空白
 config-model-id-empty = 厂商 { $vendor } 内的模型 ID 为空（仅空白字符）
@@ -34,6 +35,8 @@ middleware-quota-body-too-large = 请求体超过配额判限处理上限（4 Mi
 config-quota-window-id-empty = [[quota.windows]] 条目 id 为空——窗口 id 是账本行键与指标标签，空 id 会把多窗塌缩为同一窗
 config-quota-window-id-duplicate = [[quota.windows]] 声明了重复 id「{ $id }」：窗口 id 必须唯一（它是账本行键）
 config-quota-window-scope-unknown = [[quota.windows]] 窗口「{ $id }」的 scope「{ $value }」非法（合法值：api_key / global）
+config-quota-window-id-too-long = [[quota.windows]] id「{ $id }」超过 { $max } 字符：窗口 id 落入 quota_ledger.window_id（VARCHAR(128)），必须与账本表列宽对齐
+config-quota-window-global-empty-limits = [[quota.windows]] 窗口「{ $id }」为 scope=global 且双限额为 0：全局窗约束全体请求者，必须显式声明 tokens_limit 或 cost_limit_millicents（0 维度不按请求租户回填）
 config-quota-rolling-secs-too-small = [[{ $section }]]「{ $id }」为 period=rolling 但 rolling_secs 为 0：0 窗口每次访问即翻转，限额永不满
 config-quota-period-unknown = [[{ $section }]]「{ $id }」的 period「{ $value }」非法（合法值：rolling / calendar）
 config-quota-period-mixed = [[{ $section }]]「{ $id }」混用了两种周期形态：period=rolling 填 rolling_secs，period=calendar 填 calendar——二者不可同时给
@@ -88,6 +91,7 @@ router-explain-key-pool-exhausted = key 池耗尽（{ $n }/{ $n } 把 key 全部
 router-explain-affinity-bound-elsewhere = 会话亲和绑定于 '{ $bound }'（hard 模式排他）
 router-explain-queue-over-limit = 队列深度 { $queue_len } ≥ 饱和点 { $saturation }
 router-explain-weight-zero = 合成权重为 0（生产轮盘赌全零时仍均匀回退可能选中，仅诊断提示）
+router-explain-quota-depleted = 厂商预算已耗尽（被配额感知 smart 过滤摘除；其余厂商尚有预算）
 router-explain-eligible = 候选合格（selection={ $selection }）
 router-embedding-group-exhausted = 嵌入 pin 组 "{ $group }" 对模型 { $model } 已无可用厂商：给厂商声明 compat_group 可启用组内故障迁移，或 POST /admin/embedding-pins/{ $model }/reset 按权重重新粘着
 router-rerank-no-capable-vendor = 模型 "{ $model }" 无可用的 rerank 候选：请为厂商声明 type_ = "rerank" 且为条目声明 model_type = "rerank"，并确认厂商与模型均已启用

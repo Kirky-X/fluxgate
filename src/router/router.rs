@@ -874,7 +874,8 @@ impl Router {
             screens.push(Screen::Candidate(Box::new((vendor, model_entry))));
         }
 
-        // 合格对的生产精确权重（与路由同一方法）+ 5 因子分解。
+        // 合格对的生产精确权重（与路由同一方法）+ 6 因子分解（第 6 项 quota
+        // 与生产链同一快照单点，见 quota_factor_views）。
         let eligible: Vec<(VendorConfig, ModelConfig)> = screens
             .iter()
             .filter_map(|s| match s {
@@ -882,6 +883,25 @@ impl Router {
                 Screen::Excluded(_) => None,
             })
             .collect();
+        let (quota_mode, quota_views) = self.quota_factor_views(&eligible).await;
+        let (quota_scores, _pace_multipliers) = quota_factor_scores(quota_mode, &quota_views);
+        // smart 摘除集：生产路由在权重前已把预算耗尽 vendor 摘出候选——
+        // 解释块同样标记 excluded（reason=quota_depleted），不再显示 eligible
+        let depleted_ids: std::collections::HashSet<&str> = if quota_mode
+            == crate::config::QuotaFactorMode::Smart
+            && quota_views
+                .iter()
+                .any(|v| !v.as_ref().is_some_and(|b| b.depleted()))
+        {
+            eligible
+                .iter()
+                .zip(quota_views.iter())
+                .filter(|(_, view)| view.as_ref().is_some_and(|b| b.depleted()))
+                .map(|((v, _), _)| v.id.as_str())
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
         let finals = self
             .calculate_weights_overridden(eligible.clone(), None, None, None)
             .await;
@@ -893,11 +913,23 @@ impl Router {
 
         let selection = selection_tier(&routing);
         let mut out = Vec::with_capacity(screens.len());
+        let mut eligible_idx = 0usize;
         for screen in screens {
             match screen {
                 Screen::Excluded(assessment) => out.push(assessment),
                 Screen::Candidate(pair) => {
                     let (vendor, model_entry) = pair.as_ref().clone();
+                    let quota_idx = eligible_idx;
+                    eligible_idx += 1;
+                    if depleted_ids.contains(vendor.id.as_str()) {
+                        out.push(CandidateAssessment::excluded(
+                            vendor.id.clone(),
+                            model_entry.model_id.clone(),
+                            REASON_QUOTA_DEPLETED,
+                            t("router-explain-quota-depleted"),
+                        ));
+                        continue;
+                    }
                     let eff = resolve_effective_model_weight(
                         model_entry.weight,
                         capacity.get(&vendor.id).copied(),
@@ -911,7 +943,7 @@ impl Router {
                         window.as_ref(),
                         &routing,
                         ewma,
-                        None,
+                        quota_scores.get(quota_idx).and_then(|score| score.as_ref()),
                     );
                     let base = factors.total;
                     let weight = final_by_vendor
@@ -1589,8 +1621,12 @@ impl Router {
         tenant: Option<&str>,
         ctx: Option<RouteCtx>,
     ) -> Vec<(f64, (VendorConfig, ModelConfig))> {
-        // smart 候选过滤（T007）：off/pace/未接线时原样返回
-        let candidates = self.quota_factor_filter(candidates).await;
+        // 配额因子单次快照（T007/T008）：mode 判定一次 + 逐 vendor 视图一次，
+        // smart 过滤与第 6 因子打分共用；off/未接线零查询零分配
+        let (quota_mode, views) = self.quota_factor_views(&candidates).await;
+        let (candidates, views) = self
+            .apply_quota_filter(candidates, quota_mode, &views)
+            .await;
         // 容量权重（第 3 级）：仅无请求级覆盖时计算
         let mut capacity: HashMap<String, f64> = HashMap::new();
         if request_weight.is_none() {
@@ -1606,8 +1642,8 @@ impl Router {
             Vec::new()
         };
 
-        // 配额因子打分上下文（T007/T008）：一次性快照，集合内可比
-        let (quota_scores, pace_multipliers) = self.quota_factor_contexts(&candidates).await;
+        // 配额因子打分上下文（T007/T008）：过滤后的候选与视图同序对齐
+        let (quota_scores, pace_multipliers) = quota_factor_scores(quota_mode, &views);
 
         let mut weighted = Vec::with_capacity(candidates.len());
         // SLA 打分上下文：sla_v=0（默认）零开销旁路；候选集级预收集
@@ -1650,84 +1686,77 @@ impl Router {
         weighted
     }
 
-    /// smart 候选过滤（T007 / R-vbr-002）：预算耗尽 vendor 摘出候选；全员
-    /// 耗尽保留全部并对每个 vendor 计 `quota_factor_depleted_total`。mode
-    /// ≠ smart 或账本未接线时零开销原样返回。
-    async fn quota_factor_filter(
+    /// 配额因子单次快照（T007/T008）：mode 判定一次 + 逐 vendor 视图一次
+    ///（同 vendor 多 model 候选共享同一视图，互斥锁与 `Utc::now` 只付一次）。
+    /// off / 未接线 → 双空（调用方整链零查询零分配）；views 与 candidates
+    /// 同序对齐。
+    async fn quota_factor_views(
+        &self,
+        candidates: &[(VendorConfig, ModelConfig)],
+    ) -> (
+        crate::config::QuotaFactorMode,
+        Vec<Option<crate::middleware::quota::VendorBudgetView>>,
+    ) {
+        let Some(state) = &self.quota_state else {
+            return (crate::config::QuotaFactorMode::Off, Vec::new());
+        };
+        let snapshot = self.config.read();
+        let mode = crate::config::QuotaFactorMode::from_section(&snapshot.routing.quota_factor);
+        if mode == crate::config::QuotaFactorMode::Off {
+            return (mode, Vec::new());
+        }
+        let mut cache: HashMap<&str, Option<crate::middleware::quota::VendorBudgetView>> =
+            HashMap::new();
+        let views = candidates
+            .iter()
+            .map(|(vendor, _)| {
+                if let Some(view) = cache.get(vendor.id.as_str()) {
+                    return view.clone();
+                }
+                let view = state.vendor_budget_view(&snapshot, &vendor.id);
+                cache.insert(vendor.id.as_str(), view.clone());
+                view
+            })
+            .collect();
+        (mode, views)
+    }
+
+    /// smart 候选过滤（T007 / R-vbr-002）：预算耗尽 vendor 摘出候选（候选与
+    /// 视图同序收缩，产物直接供第 6 因子打分，免二次查询）；全员耗尽保留
+    /// 全部并对每个 vendor 计 `quota_factor_depleted_total`。非 smart 或
+    /// views 为空（off/未接线）→ 原样返回。
+    async fn apply_quota_filter(
         &self,
         candidates: Vec<(VendorConfig, ModelConfig)>,
-    ) -> Vec<(VendorConfig, ModelConfig)> {
-        let Some(state) = &self.quota_state else {
-            return candidates;
-        };
-        let mode =
-            crate::config::QuotaFactorMode::from_section(&self.config.read().routing.quota_factor);
-        if mode != crate::config::QuotaFactorMode::Smart {
-            return candidates;
+        mode: crate::config::QuotaFactorMode,
+        views: &[Option<crate::middleware::quota::VendorBudgetView>],
+    ) -> (
+        Vec<(VendorConfig, ModelConfig)>,
+        Vec<Option<crate::middleware::quota::VendorBudgetView>>,
+    ) {
+        if mode != crate::config::QuotaFactorMode::Smart || views.is_empty() {
+            return (candidates, views.to_vec());
         }
-        let snapshot = self.config.read();
-        let views: Vec<Option<crate::middleware::quota::VendorBudgetView>> = candidates
-            .iter()
-            .map(|(vendor, _)| state.vendor_budget_view(&snapshot, &vendor.id))
-            .collect();
-        drop(snapshot);
-        let any_alive = views
-            .iter()
-            .any(|view| !view.as_ref().is_some_and(|b| b.depleted()));
-        if any_alive {
-            candidates
-                .into_iter()
-                .zip(views)
-                .filter(|(_, view)| !view.as_ref().is_some_and(|b| b.depleted()))
-                .map(|(candidate, _)| candidate)
-                .collect()
-        } else {
+        let depleted = |view: &Option<crate::middleware::quota::VendorBudgetView>| {
+            view.as_ref().is_some_and(|b| b.depleted())
+        };
+        let any_alive = views.iter().any(|view| !depleted(view));
+        if !any_alive {
             // 全员耗尽兜底：保留全部 + 逐 vendor 计数
             let metrics = self.vendor_manager.metrics();
             for (vendor, _) in &candidates {
                 metrics.record_quota_factor_depleted(&vendor.id);
             }
-            candidates
+            let views = views.to_vec();
+            return (candidates, views);
         }
-    }
-
-    /// 配额因子打分上下文（一次性快照）：smart → 每候选重置归一化分；
-    /// pace → 每候选消耗率带乘性因子。off / 未接线 → 双空（零查询）。
-    async fn quota_factor_contexts(
-        &self,
-        candidates: &[(VendorConfig, ModelConfig)],
-    ) -> (Vec<Option<QuotaFactorScore>>, Vec<Option<f64>>) {
-        let Some(state) = &self.quota_state else {
-            return (Vec::new(), Vec::new());
-        };
-        let snapshot = self.config.read();
-        let mode = crate::config::QuotaFactorMode::from_section(&snapshot.routing.quota_factor);
-        let views: Vec<Option<crate::middleware::quota::VendorBudgetView>> = candidates
-            .iter()
-            .map(|(vendor, _)| state.vendor_budget_view(&snapshot, &vendor.id))
-            .collect();
-        drop(snapshot);
-        match mode {
-            crate::config::QuotaFactorMode::Smart => (
-                views
-                    .into_iter()
-                    .map(|view| {
-                        view.filter(|b| !b.not_started).map(|b| QuotaFactorScore {
-                            normalized_reset: b.normalized_reset(),
-                        })
-                    })
-                    .collect(),
-                Vec::new(),
-            ),
-            crate::config::QuotaFactorMode::Pace => (
-                Vec::new(),
-                views
-                    .into_iter()
-                    .map(|view| view.map(|b| quota_pace_multiplier(b.pace_ratio())))
-                    .collect(),
-            ),
-            crate::config::QuotaFactorMode::Off => (Vec::new(), Vec::new()),
-        }
+        let (candidates, views): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .zip(views.iter())
+            .filter(|(_, view)| !depleted(view))
+            .map(|(candidate, view)| (candidate, view.clone()))
+            .unzip();
+        (candidates, views)
     }
 
     /// 价格因子：单价 p = (input_price + output_price) / 2（每 1M tokens，
@@ -2460,6 +2489,38 @@ pub fn quota_pace_multiplier(pace_ratio: f64) -> f64 {
     }
 }
 
+/// 配额因子打分上下文（纯函数）：smart → 每候选重置归一化分（未起算窗不
+/// 加成）；pace → 每候选消耗率带乘性因子。off → 双空（零评分）。views 与
+/// 候选集同序对齐（[`Router::apply_quota_filter`] 产物直入，免二次查询）。
+fn quota_factor_scores(
+    mode: crate::config::QuotaFactorMode,
+    views: &[Option<crate::middleware::quota::VendorBudgetView>],
+) -> (Vec<Option<QuotaFactorScore>>, Vec<Option<f64>>) {
+    match mode {
+        crate::config::QuotaFactorMode::Smart => (
+            views
+                .iter()
+                .map(|view| {
+                    view.clone()
+                        .filter(|b| !b.not_started)
+                        .map(|b| QuotaFactorScore {
+                            normalized_reset: b.normalized_reset(),
+                        })
+                })
+                .collect(),
+            Vec::new(),
+        ),
+        crate::config::QuotaFactorMode::Pace => (
+            Vec::new(),
+            views
+                .iter()
+                .map(|view| view.clone().map(|b| quota_pace_multiplier(b.pace_ratio())))
+                .collect(),
+        ),
+        crate::config::QuotaFactorMode::Off => (Vec::new(), Vec::new()),
+    }
+}
+
 fn routing_pair_enabled(router: &Router) -> bool {
     router.config.read().routing.prefix_affinity.enabled
 }
@@ -2530,6 +2591,9 @@ pub const REASON_NOT_IN_CATALOG: &str = "not_in_catalog";
 pub const REASON_WEIGHT_ZERO: &str = "weight_zero";
 pub const REASON_AFFINITY_BOUND_ELSEWHERE: &str = "affinity_bound_elsewhere";
 pub const REASON_QUEUE_OVER_LIMIT: &str = "queue_over_limit";
+/// smart 因子摘除（R-vbr-002）：vendor 预算耗尽且非全员耗尽——生产路由
+/// 在权重前已摘出候选（解释块同口径，与真实路由一致）
+pub const REASON_QUOTA_DEPLETED: &str = "quota_depleted";
 pub const REASON_ELIGIBLE: &str = "eligible";
 
 /// 队列饱和点（queue_factor 归零点），达到即 queue_over_limit 诊断性排除

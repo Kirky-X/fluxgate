@@ -25,6 +25,8 @@ pub struct ServerHandle {
     hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
     /// 健康探针任务句柄（装配期按 [health].mode 启动；shutdown 首阶段 abort）。
     probe_handle: Option<tokio::task::JoinHandle<()>>,
+    /// 配额账本停机最终 flush 句柄（装配期注入；None = 账本未装配，收尾跳过）。
+    quota_ledger_teardown: crate::server::shutdown::QuotaLedgerTeardownHook,
     /// OTLP 桥（feature = "otlp" 且 [otlp].enabled 装配；shutdown 时 flush + 停 reader）。
     #[cfg(feature = "otlp")]
     otlp_bridge: Option<Arc<crate::utils::otlp::OtlpBridge>>,
@@ -54,6 +56,7 @@ impl ServerHandle {
             inklog_hook: std::sync::OnceLock::new(),
             hot_reloader: assembly.hot_reloader,
             probe_handle: assembly.probe_handle,
+            quota_ledger_teardown: assembly.quota_ledger_teardown,
             #[cfg(feature = "otlp")]
             otlp_bridge: assembly.otlp_bridge,
             #[cfg(feature = "otlp")]
@@ -128,6 +131,7 @@ impl ServerHandle {
             &self.pa_shutdown,
             self.inklog_hook.get().cloned().flatten(),
             otlp_teardown,
+            self.quota_ledger_teardown.clone(),
         );
         match coordinator.shutdown().await {
             Ok(result) if result.is_ok() => {}

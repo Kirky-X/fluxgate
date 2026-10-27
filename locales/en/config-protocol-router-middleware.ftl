@@ -6,6 +6,7 @@ config-file-not-found = Config file not found: { $path }
 config-load-failed = Failed to load config file: { $error }
 config-parse-failed = Failed to parse config file: { $error }
 config-duplicate-vendor-id = Duplicate vendor ID: { $vendor }
+config-vendor-id-too-long = Vendor ID "{ $vendor }" exceeds { $max } characters: ledger rows key vendor budgets as __vendor__:{id}, which must fit quota_ledger.api_key_hash (VARCHAR(64))
 config-duplicate-model-id = Duplicate model ID in vendor { $vendor }: { $model }
 config-vendor-id-empty = Vendor ID is empty (whitespace only) — routing lookup keys must not be blank
 config-model-id-empty = Model ID in vendor { $vendor } is empty (whitespace only)
@@ -34,6 +35,8 @@ middleware-quota-body-too-large = Request body exceeds the quota adjudication li
 config-quota-window-id-empty = [[quota.windows]] entry has an empty id — window ids key the ledger rows and metric labels, so a blank id would collapse windows together
 config-quota-window-id-duplicate = [[quota.windows]] declares duplicate id "{ $id }": window ids must be unique (they key the ledger rows)
 config-quota-window-scope-unknown = [[quota.windows]] window "{ $id }" has invalid scope "{ $value }" (valid values: api_key / global)
+config-quota-window-id-too-long = [[quota.windows]] id "{ $id }" exceeds { $max } characters: window ids are stored in quota_ledger.window_id (VARCHAR(128)) and must fit the ledger schema
+config-quota-window-global-empty-limits = [[quota.windows]] window "{ $id }" is scope=global with both limits at 0: fleet-wide windows apply to every requester and must declare an explicit tokens_limit or cost_limit_millicents (0 dimensions are not backfilled from the requesting tenant)
 config-quota-rolling-secs-too-small = [[{ $section }]] "{ $id }" is period=rolling but rolling_secs is 0: a zero window flips on every access and the limit never fills
 config-quota-period-unknown = [[{ $section }]] "{ $id }" has invalid period "{ $value }" (valid values: rolling / calendar)
 config-quota-period-mixed = [[{ $section }]] "{ $id }" mixes both period forms: set rolling_secs for period=rolling, or calendar for period=calendar — not both
@@ -88,6 +91,7 @@ router-explain-key-pool-exhausted = Key pool exhausted (all { $n }/{ $n } keys a
 router-explain-affinity-bound-elsewhere = Session affinity bound to '{ $bound }' (hard mode is exclusive)
 router-explain-queue-over-limit = Queue depth { $queue_len } ≥ saturation point { $saturation }
 router-explain-weight-zero = Composite weight is 0 (production roulette may still pick uniformly when all weights are zero; diagnostic only)
+router-explain-quota-depleted = Vendor budget depleted (excluded by the quota-aware smart filter; other vendors have budget left)
 router-explain-eligible = Eligible candidate (selection={ $selection })
 router-embedding-group-exhausted = Embedding pin group "{ $group }" has no available vendor for model { $model }: declare compat_group on the vendors to enable in-group failover, or POST /admin/embedding-pins/{ $model }/reset to re-pin by weight
 router-rerank-no-capable-vendor = No rerank-capable vendor for model "{ $model }": declare type_ = "rerank" on the vendor and model_type = "rerank" on the entry, and make sure both are enabled

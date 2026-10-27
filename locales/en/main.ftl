@@ -17,6 +17,11 @@ main-response-cache-enabled = Response cache enabled (recId=12, [cache].enabled=
 main-response-cache-disabled = Response cache disabled (recId=12, [cache].enabled=false)
 main-global-state-initialized = Global state initialized
 main-quota-ledger-restored = quota ledger restored { $count } active window(s)
+main-quota-ledger-restore-capped = quota ledger restore capped at { $cap } keys, { $skipped } row(s) skipped (tracked keys rebuild on demand, fail-open same as flush error)
+main-quota-ledger-purged = quota ledger retention purge removed { $count } expired row(s)
+main-quota-ledger-purge-failed = quota ledger retention purge failed: { $error }
+main-quota-ledger-final-flush = quota ledger final flush failed: { $error }
+main-quota-ledger-shutdown = quota ledger persister shutdown failed: { $error }
 main-quota-ledger-restore-failed = quota ledger restore read failed; starting with empty budgets: { $error }
 main-starting-server = Starting server: { $addr }
 main-server-listening = Server listening on { $addr } (sdforge powered)

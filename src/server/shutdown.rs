@@ -4,7 +4,7 @@
 //! 优雅停机编排：信号与排空走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子），
 //! 组件收尾序经 trait-kit `AsyncShutdownCoordinator` 显式化。收尾序（serve 排空后执行）：
 //! 1. `StopRequests` — AsyncLogger 关停补刷；
-//! 2. `DrainQueue` — pre-aggregator 停机位 + 最终 flush；
+//! 2. `DrainQueue` — pre-aggregator 停机位 + 最终 flush；配额账本快照直落 + 落盘器关停；
 //! 3. `CloseConnections` — inklog manager 关闭。
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use crate::database::{AsyncLoggerHandle, TokenPreAggregator};
 use crate::i18n::{t, t_args};
+use crate::middleware::quota::QuotaState;
+use crate::middleware::quota_persist::QuotaLedgerPersister;
 
 /// inklog 关闭钩子（`run` 注入 manager；嵌入式未注入时该阶段 no-op）。
 pub(crate) type InklogShutdownHook = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
@@ -19,6 +21,11 @@ pub(crate) type InklogShutdownHook = Arc<dyn Fn() -> Result<(), String> + Send +
 /// OTLP 停机收尾钩子（feature = "otlp" 且 [otlp].enabled 时装配；None = no-op）。
 /// force_flush + provider shutdown 为同步阻塞，钩子体内 spawn_blocking 执行。
 pub(crate) type OtlpTeardownHook = Option<Arc<dyn Fn() + Send + Sync>>;
+
+/// 配额账本停机收尾句柄（quota-aware-routing）：快照生产方 + 落盘器。
+/// 在位时 DrainQueue 阶段执行「内存快照 → 直落 UPSERT → persister 关停」，
+/// 干净重启不再吃 ≤30s 崩溃回退窗口；None = 账本未装配（该步 no-op）。
+pub(crate) type QuotaLedgerTeardownHook = Option<(Arc<QuotaState>, Arc<QuotaLedgerPersister>)>;
 
 /// 终止信号：sdforge 默认触发（SIGTERM/Ctrl-C，首个信号即决）。
 pub(crate) async fn shutdown_signal() {
@@ -36,6 +43,7 @@ pub(crate) fn build_teardown_coordinator(
     pa_shutdown: &Arc<AtomicBool>,
     inklog_hook: Option<InklogShutdownHook>,
     otlp_teardown: OtlpTeardownHook,
+    quota_ledger: QuotaLedgerTeardownHook,
 ) -> trait_kit::kit::shutdown::AsyncShutdownCoordinator {
     use trait_kit::kit::shutdown::{AsyncShutdownCoordinator, ShutdownPhase};
 
@@ -82,11 +90,13 @@ pub(crate) fn build_teardown_coordinator(
         let pre_aggregator = pre_aggregator.clone();
         let pa_shutdown = pa_shutdown.clone();
         let otlp_teardown = otlp_teardown.clone();
+        let quota_ledger = quota_ledger.clone();
         coordinator
             .register_hook(ShutdownPhase::DrainQueue, move || {
                 let pre_aggregator = pre_aggregator.clone();
                 let pa_shutdown = pa_shutdown.clone();
                 let otlp_teardown = otlp_teardown.clone();
+                let quota_ledger = quota_ledger.clone();
                 Box::pin(async move {
                     pa_shutdown.store(true, Ordering::Relaxed);
                     match tokio::time::timeout(HOOK_TIMEOUT, pre_aggregator.flush()).await {
@@ -115,6 +125,44 @@ pub(crate) fn build_teardown_coordinator(
                                 t_args(
                                     "main-teardown-hook-timeout",
                                     &[("phase", "OtlpFlush".to_string())]
+                                )
+                            );
+                        }
+                    }
+                    // 配额账本最终 flush（quota-aware-routing）：内存快照直落 +
+                    // 落盘器关停——30s ticker 随 closed 位退出，干净重启不再吃
+                    // ≤30s 回退窗口（UPSERT 幂等，与周期 flush 重叠无害）。
+                    if let Some((quota_state, persister)) = quota_ledger {
+                        let final_flush = async {
+                            let rows = quota_state.ledger_snapshot();
+                            if let Err(e) = persister.flush_now(&rows).await {
+                                tracing::warn!(
+                                    "{}",
+                                    t_args(
+                                        "main-quota-ledger-final-flush",
+                                        &[("error", e.to_string())]
+                                    )
+                                );
+                            }
+                            if let Err(e) = persister.shutdown().await {
+                                tracing::warn!(
+                                    "{}",
+                                    t_args(
+                                        "main-quota-ledger-shutdown",
+                                        &[("error", e.to_string())]
+                                    )
+                                );
+                            }
+                        };
+                        if tokio::time::timeout(HOOK_TIMEOUT, final_flush)
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                "{}",
+                                t_args(
+                                    "main-teardown-hook-timeout",
+                                    &[("phase", "QuotaLedgerFlush".to_string())]
                                 )
                             );
                         }
@@ -232,7 +280,7 @@ mod tests {
             .await;
 
         let coord =
-            build_teardown_coordinator(&logger, &aggregator, &pa_shutdown, Some(hook), None);
+            build_teardown_coordinator(&logger, &aggregator, &pa_shutdown, Some(hook), None, None);
         let result = coord.shutdown().await.expect("shutdown");
         assert!(result.is_ok(), "三阶段应全部按时完成");
 

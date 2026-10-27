@@ -520,6 +520,17 @@ fn validate_vendor_entries(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
+        if vendor.id.trim().chars().count() > VENDOR_ID_MAX_CHARS {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-vendor-id-too-long",
+                    &[
+                        ("vendor", vendor.id.clone()),
+                        ("max", VENDOR_ID_MAX_CHARS.to_string()),
+                    ],
+                ),
+            });
+        }
         // rerank 型无官方默认端点：api_base 必须显式声明（URL 构建侧同拒）
         if matches!(vendor.protocol(), VendorProtocol::Rerank) && vendor.api_base.trim().is_empty()
         {
@@ -1370,13 +1381,22 @@ fn quota_without_auth(config: &Config) -> bool {
     config.quota.enabled && !config.auth.as_ref().is_some_and(|auth| auth.enabled)
 }
 
+/// window id 长度上限（字符）：与 MySQL 方言 `quota_ledger.window_id
+/// VARCHAR(128)` 对齐——超长行每 flush 必败，配置面提前拒绝
+const QUOTA_WINDOW_ID_MAX_CHARS: usize = 128;
+/// vendor id 长度上限（字符）：账本行键 `__vendor__:{vendor_id}`（前缀
+/// 11 字符）须放进 MySQL 方言 `quota_ledger.api_key_hash VARCHAR(64)`
+const VENDOR_ID_MAX_CHARS: usize = 53;
+
 /// `[[quota.windows]]` 校验：id 非空去重、scope/period 闭集、rolling 周期
 /// ≥1s（0 窗口每次访问即翻转、配额永不满，与 `window_secs` 同款拒绝）、
 /// calendar 形态要求 daily|weekly|monthly 且 rolling_secs 必须为 0（两形态
 /// 互斥，同配会让窗口起点语义二义）；数值域 tokens_limit / tz_offset_secs
 /// 合法性。enabled=false 时同样校验（段缺省即空 vec，零成本）。
 fn validate_quota_windows(config: &Config) -> Result<(), GateError> {
-    let mut seen: Vec<&str> = Vec::new();
+    // 去重按 ASCII 大小写不敏感：window id 进指标标签与账本行键，仅差
+    // 大小写的重复条目会产生双标签/双行（与 vendor id 去重口径一致）
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for window in &config.quota.windows {
         let id = window.id.trim();
         if id.is_empty() {
@@ -1384,7 +1404,7 @@ fn validate_quota_windows(config: &Config) -> Result<(), GateError> {
                 message: t("config-quota-window-id-empty"),
             });
         }
-        if seen.contains(&id) {
+        if !seen.insert(id.to_ascii_lowercase()) {
             return Err(GateError::Config {
                 message: t_args(
                     "config-quota-window-id-duplicate",
@@ -1392,12 +1412,36 @@ fn validate_quota_windows(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
-        seen.push(id);
+        if id.chars().count() > QUOTA_WINDOW_ID_MAX_CHARS {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-quota-window-id-too-long",
+                    &[
+                        ("id", id.to_string()),
+                        ("max", QUOTA_WINDOW_ID_MAX_CHARS.to_string()),
+                    ],
+                ),
+            });
+        }
         if !matches!(window.scope.trim(), "api_key" | "global") {
             return Err(GateError::Config {
                 message: t_args(
                     "config-quota-window-scope-unknown",
                     &[("id", id.to_string()), ("value", window.scope.clone())],
+                ),
+            });
+        }
+        // scope=global 必须显式声明限额：全局窗按请求租户回填会让同一窗的
+        // 判定随请求者漂移（A 租户的 per-key 限额约束整个舰队）、无限额租户
+        // 整体绕过——舰队级约束必须配置面显式
+        if window.scope.trim() == "global"
+            && window.tokens_limit == 0
+            && window.cost_limit_millicents == 0
+        {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-quota-window-global-empty-limits",
+                    &[("id", id.to_string())],
                 ),
             });
         }

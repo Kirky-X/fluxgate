@@ -28,6 +28,12 @@ pub(crate) struct Assembly {
     pub(crate) hot_reloader: Option<confers::watcher::HotReloader<crate::config::Config>>,
     /// 健康探针后台任务句柄（常驻；mode 每周期热读，off = no-op；随停机 abort）。
     pub(crate) probe_handle: Option<tokio::task::JoinHandle<()>>,
+    /// 配额账本停机最终 flush 句柄（quota_state 快照生产方 + 落盘器；
+    /// None = 账本未装配，收尾该步 no-op）。
+    pub(crate) quota_ledger_teardown: Option<(
+        Arc<crate::middleware::quota::QuotaState>,
+        Arc<crate::middleware::quota_persist::QuotaLedgerPersister>,
+    )>,
     /// OTLP 桥（feature = "otlp" 且 [otlp].enabled 时装配；None = 禁用）。
     #[cfg(feature = "otlp")]
     pub(crate) otlp_bridge: Option<Arc<crate::utils::otlp::OtlpBridge>>,
@@ -420,18 +426,32 @@ pub(crate) async fn assemble(
         }
     };
 
-    // 配额账本 + 落盘接线（quota-aware-routing T005）：结算 UPSERT +
-    // 30s 周期全量 flush + 启动恢复活动窗。repository 恢复读取失败不静默
-    // ——ERROR 留痕后按空账本启动（预算约束短暂放松，与 flush 误差同性质）。
+    // 配额账本 + 落盘接线（quota-aware-routing T005）：结算 UPSERT（单事务
+    // 批量）+ 30s 周期全量 flush + 启动恢复活动窗 + 保留清理。repository
+    // 恢复读取失败不静默——ERROR 留痕后按空账本启动（预算约束短暂放松，
+    // 与 flush 误差同性质）。
     let quota_state = Arc::new(crate::middleware::quota::QuotaState::new());
+    // 停机最终 flush 句柄（快照生产方 + 落盘器；未装配 = None，收尾 no-op）
+    // 装配块内恒定赋值（无初值声明：装配路径唯一，None 形态不存在）
+    let quota_ledger_teardown: Option<(
+        Arc<crate::middleware::quota::QuotaState>,
+        Arc<crate::middleware::quota_persist::QuotaLedgerPersister>,
+    )>;
     {
         let persister = Arc::new(crate::middleware::quota_persist::QuotaLedgerPersister::new(
             database.repository.clone(),
             crate::middleware::quota_persist::DEFAULT_LEDGER_SLOTS,
-            crate::middleware::quota_persist::DEFAULT_LEDGER_FLUSH_INTERVAL,
             Some(vendor_manager.metrics().clone()),
         ));
-        match database.repository.read_quota_ledger().await {
+        // 恢复读下界 = now − 配置最长窗（SQL 层滤掉不可能仍活动的历史周期
+        // 行，恢复内存不随历史增长；与保留清理同参单源）。
+        let read_lower_bound = chrono::Utc::now().timestamp()
+            - crate::middleware::quota::ledger_retention_secs(&config_manager.read());
+        match database
+            .repository
+            .read_quota_ledger(read_lower_bound)
+            .await
+        {
             Ok(rows) => {
                 let restored = quota_state.restore_from_ledger(&rows, &config_manager.read());
                 if restored > 0 {
@@ -455,19 +475,57 @@ pub(crate) async fn assemble(
             }
         }
         quota_state.set_ledger_persister(persister.clone());
-        // 30s 全量 flush 循环：内存态权威，快照周期落库（崩溃回退 ≤30s）
+        // 30s 全量 flush 循环：内存态权威，快照周期落库（崩溃回退 ≤30s）；
+        // 保留清理随循环低频执行（默认每小时一次）——过期周期行按配置最长
+        // 窗下界删除，表增长有界。
         let flush_state = quota_state.clone();
-        let flush_persister = persister;
+        let flush_persister = persister.clone();
+        let flush_repo = database.repository.clone();
+        let flush_config = config_manager.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(
                 crate::middleware::quota_persist::DEFAULT_LEDGER_FLUSH_INTERVAL,
             );
             ticker.tick().await; // 首个 tick 立即完成——消费掉
+            let mut ticks: u64 = 0;
             loop {
                 ticker.tick().await;
+                // 优雅停机最终 flush（DrainQueue 钩）关停落盘器后本循环退出，
+                // 不再向已关闭通道投递快照（避免停机后失败计数噪声）
+                if flush_persister.is_closed() {
+                    break;
+                }
                 flush_persister.write(flush_state.ledger_snapshot());
+                ticks += 1;
+                if ticks.is_multiple_of(
+                    crate::middleware::quota_persist::DEFAULT_LEDGER_PURGE_EVERY_TICKS,
+                ) {
+                    let not_before = chrono::Utc::now().timestamp()
+                        - crate::middleware::quota::ledger_retention_secs(&flush_config.read());
+                    match flush_repo.purge_expired_quota_ledger(not_before).await {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            tracing::debug!(
+                                "{}",
+                                t_args("main-quota-ledger-purged", &[("count", n.to_string())])
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "{}",
+                                t_args(
+                                    "main-quota-ledger-purge-failed",
+                                    &[("error", e.to_string())]
+                                )
+                            );
+                        }
+                    }
+                }
             }
         });
+        // 优雅停机最终 flush 句柄（Assembly → ServerHandle → 收尾协调器）：
+        // 快照 + 直落 + persister shutdown，干净重启不再吃 ≤30s 回退窗口。
+        quota_ledger_teardown = Some((quota_state.clone(), persister));
     }
 
     let api_state = Arc::new(ApiState {
@@ -562,6 +620,7 @@ pub(crate) async fn assemble(
         pa_shutdown,
         hot_reloader,
         probe_handle,
+        quota_ledger_teardown,
         #[cfg(feature = "otlp")]
         otlp_bridge,
         #[cfg(feature = "otlp")]

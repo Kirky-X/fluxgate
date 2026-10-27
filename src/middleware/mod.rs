@@ -5,5 +5,6 @@ pub mod admission;
 pub mod auth;
 pub mod lexcompress;
 pub mod quota;
+pub mod quota_period;
 pub mod quota_persist;
 pub use auth::{auth_middleware, ApiAuthState};

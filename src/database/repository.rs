@@ -758,7 +758,9 @@ impl Repository {
 
     /// quota_ledger 批量 UPSERT（quota-aware-routing V7）：复合主键
     /// (api_key_hash, window_id, window_start) 冲突时覆盖用量与 updated_at。
-    /// 空切片短路（无 SQL 往返）；六列全部参数化绑定。
+    /// 空切片短路（无 SQL 往返）；六列全部参数化绑定；整批包单事务 commit
+    ///（N 次自动提交 fsync 合为 1，与 [`Self::log_requests_batch`] 同模式，
+    /// 单条失败回滚整批不留半写批次）。
     pub async fn upsert_quota_ledger(
         &self,
         rows: &[crate::database::quota_ledger::QuotaLedgerRow],
@@ -771,6 +773,7 @@ impl Repository {
         let conn = session.connection()?;
         let backend = conn.get_database_backend();
         let sql = crate::database::quota_ledger::upsert_quota_ledger_sql(backend);
+        let tx = conn.begin().await?;
         for QuotaLedgerRow {
             api_key_hash,
             window_id,
@@ -789,35 +792,57 @@ impl Repository {
                 Value::from(*updated_at),
             ];
             let stmt = raw_statement(backend, sql, values);
-            conn.execute_raw(stmt).await?;
+            if let Err(e) = tx.execute_raw(stmt).await {
+                let _ = tx.rollback().await;
+                return Err(e.into());
+            }
         }
+        tx.commit().await?;
         Ok(())
     }
 
-    /// quota_ledger 全量读取（启动恢复读侧）：活动期判定在内存侧按配置
-    /// 周期解释（账本不存周期事实），此处不滤——见
-    /// [`crate::database::quota_ledger::read_quota_ledger_sql`]。
+    /// quota_ledger 保留清理：删除 `window_start` 早于 `not_before` 下界的
+    /// 过期周期行，返回删除数。下界由
+    /// [`crate::middleware::quota::ledger_retention_secs`] 按配置最长窗推导
+    ///（宁多留一行不误删活动行），与启动恢复读侧同参单源。
+    pub async fn purge_expired_quota_ledger(&self, not_before: i64) -> Result<u64, DbError> {
+        let session = self.pool.get_session("admin").await?;
+        let conn = session.connection()?;
+        let backend = conn.get_database_backend();
+        let sql = crate::database::quota_ledger::purge_expired_quota_ledger_sql(backend);
+        let stmt = raw_statement(backend, sql, vec![not_before.into()]);
+        let result = conn.execute_raw(stmt).await?;
+        Ok(result.rows_affected())
+    }
+
+    /// quota_ledger 读取（启动恢复读侧）：`not_before` 为 `window_start`
+    /// 下界（不可能仍活动的历史周期行 SQL 层过滤，不拉进内存）；列映射
+    /// 错误显性上浮——列类型不符静默归零会让恢复账面失真，属必须暴露的
+    /// 读取故障。活动期精判在内存侧按配置周期解释（账本不存周期事实），
+    /// 见 [`crate::database::quota_ledger::read_quota_ledger_sql`]。
     pub async fn read_quota_ledger(
         &self,
+        not_before: i64,
     ) -> Result<Vec<crate::database::quota_ledger::QuotaLedgerRow>, DbError> {
         use crate::database::quota_ledger::QuotaLedgerRow;
         let session = self.pool.get_session("admin").await?;
         let conn = session.connection()?;
         let backend = conn.get_database_backend();
         let sql = crate::database::quota_ledger::read_quota_ledger_sql(backend);
-        let stmt = raw_statement(backend, sql, vec![]);
+        let stmt = raw_statement(backend, sql, vec![not_before.into()]);
         let rows = conn.query_all_raw(stmt).await?;
-        Ok(rows
-            .iter()
-            .map(|row| QuotaLedgerRow {
-                api_key_hash: row.try_get("", "api_key_hash").unwrap_or_default(),
-                window_id: row.try_get("", "window_id").unwrap_or_default(),
-                window_start: row.try_get("", "window_start").unwrap_or_default(),
-                tokens_used: row.try_get("", "tokens_used").unwrap_or_default(),
-                cost_used_millicents: row.try_get("", "cost_used_millicents").unwrap_or_default(),
-                updated_at: row.try_get("", "updated_at").unwrap_or_default(),
+        rows.iter()
+            .map(|row| {
+                Ok(QuotaLedgerRow {
+                    api_key_hash: row.try_get("", "api_key_hash")?,
+                    window_id: row.try_get("", "window_id")?,
+                    window_start: row.try_get("", "window_start")?,
+                    tokens_used: row.try_get("", "tokens_used")?,
+                    cost_used_millicents: row.try_get("", "cost_used_millicents")?,
+                    updated_at: row.try_get("", "updated_at")?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// CostTracker 启动恢复聚合：按 `(vendor, model)` 分组对四档成本求和，

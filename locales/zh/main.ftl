@@ -17,6 +17,11 @@ main-response-cache-enabled = 响应缓存已启用（recId=12，[cache].enabled
 main-response-cache-disabled = 响应缓存已停用（recId=12，[cache].enabled=false）
 main-global-state-initialized = 全局状态初始化完成
 main-quota-ledger-restored = 配额账本已恢复 { $count } 个活动窗
+main-quota-ledger-restore-capped = 配额账本恢复按 { $cap } 键上限截断，跳过 { $skipped } 行（被跳过键按需重建，与 flush 误差同性质 fail-open）
+main-quota-ledger-purged = 配额账本保留清理删除 { $count } 个过期周期行
+main-quota-ledger-purge-failed = 配额账本保留清理失败：{ $error }
+main-quota-ledger-final-flush = 配额账本停机最终 flush 失败：{ $error }
+main-quota-ledger-shutdown = 配额账本落盘器关停失败：{ $error }
 main-quota-ledger-restore-failed = 配额账本恢复读取失败，按空账本启动：{ $error }
 main-starting-server = 正在启动服务器：{ $addr }
 main-server-listening = 服务器监听于 { $addr }（由 sdforge 驱动）

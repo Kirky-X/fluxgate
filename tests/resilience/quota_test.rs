@@ -1517,7 +1517,6 @@ async fn ledger_survives_restart_and_keeps_adjudicating() {
     let persister_a = std::sync::Arc::new(QuotaLedgerPersister::new(
         repository.clone(),
         fluxgate::middleware::quota_persist::DEFAULT_LEDGER_SLOTS,
-        fluxgate::middleware::quota_persist::DEFAULT_LEDGER_FLUSH_INTERVAL,
         None,
     ));
     state_a.set_ledger_persister(persister_a.clone());
@@ -1536,7 +1535,7 @@ async fn ledger_survives_restart_and_keeps_adjudicating() {
         .await
         .expect("进程 A 落库");
     persister_a.shutdown().await.expect("persister shutdown");
-    let rows = repository.read_quota_ledger().await.expect("read ledger");
+    let rows = repository.read_quota_ledger(0).await.expect("read ledger");
     assert_eq!(rows.len(), 1, "一窗一行");
     assert_eq!(rows[0].tokens_used, 600);
 

@@ -13,8 +13,9 @@
 #   - CodeQL 为停用态：私有仓未启用 GHAS，SARIF 上传必被 API 拒绝——workflow
 #     保留为 .github/workflows/codeql.yml.disabled，转 public / 启用 GHAS 后
 #     重命名启用；
-#   - 特性组合：本作业只跑手写组合矩阵（default / 两后端 / 单特性三组合），
-#     逐特性全量矩阵在 feature-matrix.yml（每周定时 + 手动触发）；
+#   - 特性组合：本作业只跑手写组合矩阵（default / 两后端 / 单特性三组合 /
+#     nightly 全特性 web-search + subscription-vendor），逐特性全量矩阵在
+#     feature-matrix.yml（每周定时 + 手动触发）；
 #   - build / doc 按本仓特性面适配：`--all-features` 因 db-* 互斥不可用，
 #     build 改「默认 + 零特性」两口径，doc 只跑默认口径；
 #   - 无 docker 作业：镜像可独立构建（纯 registry 依赖，不取兄弟库源码），
@@ -173,6 +174,32 @@ jobs:
         run: cargo test --features otlp,db-sqlite
 
   #-----------------------------------------------------------------------------
+  # 全特性回归：不进 full 的合规敏感面（web-search / subscription-vendor）
+  # 默认 test/clippy 只编译 default 面，这些特性下的模块缺陷会静默合入
+  # （与上一作业单独补 otlp 同理，二者合起来覆盖全部「不进 full」特性）。
+  # schedule + workflow_dispatch 触发：不在 PR 门禁上加重编时长，nightly
+  # 兜底。default（full + db-sqlite）打底叠加两特性，与本地收口口径一致。
+  #-----------------------------------------------------------------------------
+  full-features:
+    name: Full features (web-search + subscription-vendor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # 只读 token 不落盘（.git/config）
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Run clippy (default + web-search + subscription-vendor)
+        run: cargo clippy --features "web-search,subscription-vendor" --all-targets -- -D warnings
+      - name: Run tests (default + web-search + subscription-vendor)
+        run: cargo test --features "web-search,subscription-vendor"
+
+  #-----------------------------------------------------------------------------
   # 服务端数据库后端的运行时验证（postgres / mysql）
   # 默认 test 作业只接 sqlite；非默认后端的建表迁移与方言 UPSERT 此前只做
   # 编译级 check（ON CONFLICT / ON DUPLICATE KEY UPDATE 从未真实执行）。
@@ -237,11 +264,13 @@ jobs:
       # （tests/guard/ignore_filter_guard.rs 机械校验）。此处先 --list 断言
       # 命中数 ≥2：libtest 过滤器零命中时输出 `0 passed` 且 exit 0，模块
       # 改名/移除后作业会静默虚通过，恰好复辟「方言 UPSERT 从未真实执行」。
+      # grep 零命中自身 exit 1，`|| true` 让 0 落进下方显式判空、给出可读报错
+      # （否则步骤先以裸 exit 1 中断，::error 提示永不触达）
       - name: Assert server filter matches expected tests
         run: |
           count=$(cargo test -p fluxgate --no-default-features \
             --features "full,${{ matrix.feature }}" \
-            --test database_test server -- --ignored --list | grep -c ': test$')
+            --test database_test server -- --ignored --list | grep -c ': test$' || true)
           echo "server filter matched: $count test(s)"
           if [ "$count" -lt 2 ]; then
             echo "::error::server 过滤器仅命中 ${count} 个用例（预期 ≥2），过滤器契约失效"

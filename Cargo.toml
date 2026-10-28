@@ -118,7 +118,7 @@ vecboost = { path = "../vecboost", default-features = false, optional = true }
 trait-kit = { version = "0.5.0-rc.10", default-features = false, features = ["async", "shutdown"], optional = true }
 
 # 服务框架门面。不声明 streaming：其流式分帧面本仓零引用，SSE 分帧由 src/protocol 自实现。
-sdforge = { version = "0.5.0-rc.8", default-features = false, features = ["http", "security", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
+sdforge = { version = "0.5.0-rc.9", default-features = false, features = ["http", "security", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
 
 # 序列化与核心（全部显式特性 + 关默认）
 serde = { version = "1", default-features = false, features = ["std", "derive"] }

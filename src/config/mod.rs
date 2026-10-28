@@ -8,6 +8,12 @@ use std::sync::OnceLock;
 pub mod loader;
 pub mod manager;
 pub mod model_catalog;
+/// 定价单位换算单点（catalog-sync 与后续 cost-replay 共享）
+pub mod unit;
+
+/// 模型目录自动同步（catalog-sync feature 门控；不进 full）
+#[cfg(feature = "catalog-sync")]
+pub mod catalog_sync;
 
 pub use loader::{effective_quota_windows, parse_config_content, validate_config};
 pub use manager::ConfigManager;
@@ -1299,6 +1305,31 @@ fn default_grpc_max_connections() -> usize {
     1000
 }
 
+/// `[catalog_sync]` 段：模型目录自动同步（catalog-sync feature 门控）参数。
+/// 双门控的运行时半边——缺段/缺字段 enabled=false 完全禁用；字段热读
+///（POST /admin/config 立即生效）。Default 实现与缺省函数落 `loader`
+///（规则 14 与 [`QuotaWindowConfig`] 同款：本文件只承载结构体定义）。
+/// - `source_url`：外部模型目录 JSON 源（默认 models.dev api.json）；
+///   enabled 时校验仅 HTTPS（loopback 放行 http 供嵌入式上游）
+/// - `interval_secs`：周期同步间隔（0 = 不挂周期任务，仅 admin 手动触发）
+/// - `timeout_secs`：单次拉取超时
+/// - `alias`：provider slug → vendor_id 映射表（缺省 slug 本身即 vendor_id）
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CatalogSyncSection {
+    /// 同步总开关（默认 false = 双门控关）
+    pub enabled: bool,
+    /// 外部目录源 URL（默认 models.dev 公开 JSON API）
+    pub source_url: String,
+    /// 周期同步间隔（秒；0 = 不周期）
+    pub interval_secs: u64,
+    /// 单次拉取超时（秒）
+    pub timeout_secs: u64,
+    /// provider slug → vendor_id 别名表（`[catalog_sync.alias]` 子表）
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub alias: HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
     pub server: ServerConfig,
@@ -1380,6 +1411,118 @@ pub struct Config {
     /// 关闭时四列写 NULL 且两端点 404。
     #[serde(default)]
     pub usage_insights: UsageInsightsSection,
+    /// `[catalog_sync]` 段 — 模型目录自动同步（catalog-sync feature 编译门 +
+    /// enabled 运行时门，缺段/缺 feature 均禁用）。热读段。字段语义见
+    /// [`CatalogSyncSection`]。
+    #[serde(default)]
+    pub catalog_sync: CatalogSyncSection,
+    /// `[subscription]` 段 — 订阅账号上游（`subscription-vendor` feature 编译
+    /// 门 + enabled 运行时门，缺段/缺 feature 均禁用）。热读段。字段语义见
+    /// [`SubscriptionSection`]。
+    #[serde(default)]
+    pub subscription: SubscriptionSection,
+    /// `[[subscription_accounts]]` 段 — 订阅账号静态声明（重启后把 vault 内
+    /// `sub:{id}` refresh token 重新绑定到 vendor 池）。空 vec = 无声明账号。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscription_accounts: Vec<SubscriptionAccountConfig>,
+    /// `[web_search]` 段 — 搜索注入与守护抓取（`web-search` feature 编译门 +
+    /// enabled 运行时门，缺段/缺 feature 均禁用：两端点 404）。热读段。
+    /// 字段语义见 [`WebSearchSection`]。
+    #[serde(default)]
+    pub web_search: WebSearchSection,
+    /// `[masking]` 段 — 出站请求掩码（`masking` feature 编译门 + enabled
+    /// 运行时门，缺段/缺 feature 均零行为）。热读段。字段语义见
+    /// [`MaskingSection`]。
+    #[serde(default)]
+    pub masking: MaskingSection,
+}
+
+/// `[masking]` 段：出站请求掩码（feature `masking`，不进 `full`）。
+/// enabled 默认 false（零行为）；字段热读——检测器按 words/rules 变更惰性
+/// 重建，在途请求用旧映射还原（TTL 24h 覆盖）。闭集与正则校验落 `loader`
+///（规则 14）；Default 实现亦落 `loader`。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct MaskingSection {
+    /// 掩码总开关（默认 false = 零行为）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 启用的种类集（配置串闭集：api_key/private_key/token/email/card/id/
+    /// custom）；空 = 全启用
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<String>,
+    /// kind → 动作（mask|warn|block；键同 kinds 闭集）；未配置种类缺省 mask
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub actions: std::collections::HashMap<String, String>,
+    /// 自定义词表（词面精确匹配；命中归 custom）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<String>,
+    /// 词表大小写不敏感（ASCII 折叠；默认 false）
+    #[serde(default)]
+    pub words_any_case: bool,
+    /// 自定义正则（命中归 custom；编译失败启动/热更拒绝）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
+    /// 白名单（条目精确值或值前缀；命中值跳过掩码）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+}
+
+/// `[web_search]` 段：搜索能力注入（/v1/search、/v1/fetch）。编译门是
+/// `web-search` feature（不进 full），本段 enabled 是运行时门，缺省 false =
+/// 两端点一律 404。providers 缺省空（fetch 不依赖 provider，仅 search 需要）。
+/// 字段热读。Default 实现落 `loader`（规则 14）。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct WebSearchSection {
+    /// 搜索/抓取端点总开关（默认 false）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 搜索源按数组顺序逐源尝试至首个成功
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<WebSearchProviderConfig>,
+}
+
+/// `[[web_search.providers]]` 单条搜索源。key 来源 vault 引用优先于 env
+///（明文不落配置）；`kind` 合法集 tavily|brave|exa|searxng（加载校验在
+/// loader，规则 14）；searxng 必须显式给 base_url（实例能力由部署方保证）。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct WebSearchProviderConfig {
+    /// 搜索源类型：tavily | brave | exa | searxng
+    pub kind: String,
+    /// 主 key 的 env 名（只存变量名，绝不存 key 原文）
+    #[serde(default)]
+    pub api_key_env: String,
+    /// 多 key 池补充 env 名列表，与 api_key_env 合并去重（本列表在前）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_key_envs: Vec<String>,
+    /// vault 键引用（`/admin/vault/keys` 录入条目 id）；优先于 env 源
+    #[serde(default)]
+    pub api_key_vault_ref: String,
+    /// 出站 base URL（缺省用该源的官方 API 地址；searxng 必填）
+    #[serde(default)]
+    pub base_url: String,
+}
+
+/// `[subscription]` 段：订阅账号上游总开关与 OAuth client 参数。编译门是
+/// `subscription-vendor` feature（不进 full），本段 enabled 是运行时门；
+/// 双门全开才有行为。字段热读。Default 实现落 `loader`（规则 14）。
+/// - `enabled`：订阅上游总开关（默认 false）
+/// - `client_id`：OAuth client id（Anthropic OAuth 应用；缺省空串 =
+///   未配置，authorize 请求点名拒绝）
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SubscriptionSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_id: String,
+}
+
+/// `[[subscription_accounts]]` 单条：订阅账号静态声明。`id` 即 vault 键
+/// `sub:{id}` 的账号段（授权回调把 refresh token 写到该键）；`vendor_id`
+/// 绑定服务请求的 `[[vendors]]` 条目（计入其出站凭证池轮换）。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SubscriptionAccountConfig {
+    pub id: String,
+    pub vendor_id: String,
 }
 
 /// `[usage_insights]` 段：会话与上下文利用率统计。

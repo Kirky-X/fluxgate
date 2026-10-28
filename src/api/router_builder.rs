@@ -552,7 +552,7 @@ async fn admission_middleware(
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
     #[cfg(feature = "vault")]
-    const TEMPLATES: [&str; 33] = [
+    const TEMPLATES: [&str; 34] = [
         "/v1/chat/completions",
         "/v1/embeddings",
         "/v1/rerank",
@@ -583,12 +583,15 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/admin/config",
         "/admin/models",
         "/admin/models/{id}",
+        // catalog-sync 路由模板（feature 关闭时路径不存在，归一表多一条
+        // 无害死条目；开表条件组合会随 feature 矩阵爆炸，故无条件收录）
+        "/admin/catalog/sync",
         "/admin/vault/keys",
         "/admin/vault/keys/{id}",
         "/api/v1/health",
     ];
     #[cfg(not(feature = "vault"))]
-    const TEMPLATES: [&str; 31] = [
+    const TEMPLATES: [&str; 32] = [
         "/v1/chat/completions",
         "/v1/embeddings",
         "/v1/rerank",
@@ -619,11 +622,27 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/admin/config",
         "/admin/models",
         "/admin/models/{id}",
+        "/admin/catalog/sync",
         "/api/v1/health",
     ];
     // 注：/readyz、/metrics 不在模板表——RED 记录跳过二者（基础设施自观察
     // 不计入），未知路径归 unmatched（见函数尾）。
+    // 订阅管理面模板（subscription-vendor feature 门控；与主表同匹配规则）
+    #[cfg(feature = "subscription-vendor")]
+    const SUBSCRIPTION_TEMPLATES: [&str; 4] = [
+        "/admin/subscription/authorize",
+        "/admin/subscription/callback",
+        "/admin/subscription/accounts",
+        "/admin/subscription/accounts/{id}",
+    ];
     if let Some(exact) = TEMPLATES
+        .iter()
+        .find(|t| !t.contains("{id}") && **t == path)
+    {
+        return exact;
+    }
+    #[cfg(feature = "subscription-vendor")]
+    if let Some(exact) = SUBSCRIPTION_TEMPLATES
         .iter()
         .find(|t| !t.contains("{id}") && **t == path)
     {
@@ -631,6 +650,20 @@ fn metrics_route_label(path: &str) -> &'static str {
     }
     let path_segs: Vec<&str> = path.split('/').collect();
     for template in TEMPLATES.iter().filter(|t| t.contains("{id}")) {
+        let template_segs: Vec<&str> = template.split('/').collect();
+        if template_segs.len() != path_segs.len() {
+            continue;
+        }
+        let matches = template_segs
+            .iter()
+            .zip(path_segs.iter())
+            .all(|(t, p)| *t == "{id}" || t == p);
+        if matches {
+            return template;
+        }
+    }
+    #[cfg(feature = "subscription-vendor")]
+    for template in SUBSCRIPTION_TEMPLATES.iter().filter(|t| t.contains("{id}")) {
         let template_segs: Vec<&str> = template.split('/').collect();
         if template_segs.len() != path_segs.len() {
             continue;
@@ -817,6 +850,13 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
             "/admin/route/difficulty-explain",
             post(route_difficulty_explain::route_difficulty_explain),
         );
+    // 目录自动同步（catalog-sync feature 门控；[catalog_sync].enabled
+    // 运行时门在 handler 内热读——关时 404）
+    #[cfg(feature = "catalog-sync")]
+    let router = router.route("/admin/catalog/sync", post(admin::catalog_sync));
+    // 出站掩码观测（feature `masking`）：24h 窗口元数据，随既有层叠受 auth 保护
+    #[cfg(feature = "masking")]
+    let router = router.route("/admin/masking/stats", get(admin::masking_stats));
     // 密钥保密柜（key-vault）：录入/掩码列表/删除，随既有层叠受 auth 保护
     #[cfg(feature = "vault")]
     let router = router
@@ -827,6 +867,36 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route(
             "/admin/vault/keys/{id}",
             axum::routing::delete(crate::api::vault::delete_key),
+        );
+    // 订阅账号管理面（subscription-vendor feature 门控；[subscription].enabled
+    // 运行时门在 handler 内热读——关时 404），随既有层叠受 auth 保护
+    #[cfg(feature = "subscription-vendor")]
+    let router = router
+        .route(
+            "/admin/subscription/authorize",
+            post(admin::subscription_admin::authorize),
+        )
+        .route(
+            "/admin/subscription/callback",
+            get(admin::subscription_admin::callback),
+        )
+        .route(
+            "/admin/subscription/accounts",
+            get(admin::subscription_admin::accounts),
+        )
+        .route(
+            "/admin/subscription/accounts/{id}",
+            axum::routing::delete(admin::subscription_admin::revoke),
+        );
+    // 搜索注入（web-search feature）：/v1/search、/v1/fetch 与 admin stats；
+    // enabled 运行时热读门在 handler 内（门关 404），随既有层叠受 auth 保护
+    #[cfg(feature = "web-search")]
+    let router = router
+        .route("/v1/search", post(crate::api::web_search::search))
+        .route("/v1/fetch", post(crate::api::web_search::fetch))
+        .route(
+            "/admin/web-search/stats",
+            get(crate::api::web_search::admin_stats),
         );
     // Prometheus 指标出口（/metrics）与就绪探针（/readyz）由
     // sdforge 站点（build_with_config）在合并侧自挂（同一 handler +
@@ -887,10 +957,15 @@ mod tests {
     /// 最小 Config（白名单/端点表单测；admission 默认关闭 = 判定旁路）
     fn min_config() -> crate::config::Config {
         crate::config::Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),

@@ -20,8 +20,10 @@ repos:
       - id: check-added-large-files
         args: ['--maxkb=1000']
       - id: detect-private-key
-        # 本仓无私钥测试夹具（上游凭证只存 api_key_env 环境变量名，
-        # 客户端 API Key 只存 SHA256 摘要），故无文件级排除
+        # masking 模块（不进 full）是 secret 形态**检测器**：测试面必须携带
+        # PEM 头样例（一行假正文 "MIIB"，零真实密钥材料）——排除检测器与
+        # 其测试目录；熵感知的 gitleaks/detect-secrets 仍全量覆盖
+        exclude: '^(src/masking/|tests/masking/)'
       - id: check-merge-conflict
         args: ['--assume-in-merge']
       - id: no-commit-to-branch

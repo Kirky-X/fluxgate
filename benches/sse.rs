@@ -58,5 +58,63 @@ fn bench_sse_parsing(c: &mut Criterion) {
     group.finish();
 }
 
+/// 流式回程还原吞吐对照（feature `masking` 门控编译）：掩码关 = 纯文本
+/// 透传基线；掩码开 = 同文本流经 `StreamRestorer`（尾部保持缓冲 +
+/// 占位符回填）。量化流式还原的每事件开销。
+#[cfg(feature = "masking")]
+fn bench_stream_restore(c: &mut Criterion) {
+    use fluxgate::masking::{MaskKind, PlaceholderRegistry, StreamRestorer};
+    use std::sync::Arc;
+
+    let mut group = c.benchmark_group("sse_masking");
+    // 模拟 SSE 文本增量流：20 字节 × 512 增量（占位符整段落在单个增量内）
+    let registry = Arc::new(PlaceholderRegistry::new());
+    let placeholder = registry.mask(MaskKind::ApiKey, "sk-bench-secret-0123456789abcdef");
+    let plain: Vec<String> = (0..512)
+        .map(|i| format!("plain delta {i:04} is here........"))
+        .collect();
+    let masked: Vec<String> = plain
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            if i % 16 == 0 {
+                format!("{d} {}", placeholder)
+            } else {
+                d.clone()
+            }
+        })
+        .collect();
+
+    group.throughput(Throughput::Bytes(
+        plain.iter().map(|d| d.len() as u64).sum::<u64>(),
+    ));
+    // 掩码关：透传基线（零还原语义）
+    group.bench_function("restore_off_passthrough", |b| {
+        b.iter(|| {
+            let mut total = 0usize;
+            for delta in &plain {
+                total += black_box(delta).len();
+            }
+            black_box(total)
+        })
+    });
+    // 掩码开：StreamRestorer 全量流（含占位符回填与 hold 缓冲）
+    group.bench_function("restore_on_placeholder_stream", |b| {
+        b.iter(|| {
+            let mut restorer = StreamRestorer::new(Arc::clone(&registry));
+            let mut total = 0usize;
+            for delta in &masked {
+                total += restorer.feed(black_box(delta)).len();
+            }
+            total += restorer.flush().len();
+            black_box(total)
+        })
+    });
+    group.finish();
+}
+
+#[cfg(feature = "masking")]
+criterion_group!(sse_benches, bench_sse_parsing, bench_stream_restore);
+#[cfg(not(feature = "masking"))]
 criterion_group!(sse_benches, bench_sse_parsing);
 criterion_main!(sse_benches);

@@ -90,6 +90,7 @@ pub fn base_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
 /// 其余段取 Default。端口、retry 上限、认证等由调用点覆盖。
 pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
     Config {
+        web_search: Default::default(),
         rate_limit: Default::default(),
         server: ServerConfig {
             host: "127.0.0.1".into(),
@@ -123,6 +124,10 @@ pub fn test_config(vendors: Vec<VendorConfig>) -> Config {
         otlp: Default::default(),
         vendor_budgets: Vec::new(),
         usage_insights: Default::default(),
+        catalog_sync: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
         metrics: Default::default(),
+        masking: Default::default(),
     }
 }

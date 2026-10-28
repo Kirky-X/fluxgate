@@ -2442,10 +2442,15 @@ mod tests {
     /// quota 开启 + 已知租户限额的配置（结算门控单测共用）。
     fn quota_enabled_config(enabled: bool) -> crate::config::Config {
         crate::config::Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "0.0.0.0".into(),

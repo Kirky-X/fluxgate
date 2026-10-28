@@ -369,10 +369,26 @@ pub struct VendorManager {
     /// 密钥保密柜（key-vault）：bootstrap 装配时 set 一次；API 管理面经此读写。
     #[cfg(feature = "vault")]
     vault: std::sync::RwLock<Option<Arc<dyn crate::vault::KeyStore>>>,
+    /// 订阅账号池（subscription-vendor）：bootstrap 装配时 set 一次；
+    /// 出站凭证选择与 admin 管理面经此读写。
+    #[cfg(feature = "subscription-vendor")]
+    subscription: std::sync::RwLock<Option<Arc<crate::vendor::subscription::pool::AccountPool>>>,
+    /// 出站掩码门（feature `masking`）：bootstrap 装配时 set 一次；
+    /// 四条出站路径（chat 非流式/流式、透传非流式/流式）发送前经此门。
+    #[cfg(feature = "masking")]
+    mask_gate: std::sync::RwLock<Option<Arc<crate::masking::MaskGate>>>,
 }
 
 /// TCP 连接建立超时 — Client 级共享常量（对端不响应时连接阶段不无限挂起）。
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 订阅账号池的穿参类型（执行链 process_dequeued → perform_http_request →
+/// execute_http_with_retry → policy 全是关联函数显式传参）：feature 开 =
+/// 池句柄，关 = 单元（调用点统一传 [`VendorManager::subscription_arg`]）。
+#[cfg(feature = "subscription-vendor")]
+pub(crate) type SubscriptionPoolArg = Option<Arc<crate::vendor::subscription::pool::AccountPool>>;
+#[cfg(not(feature = "subscription-vendor"))]
+pub(crate) type SubscriptionPoolArg = ();
 
 /// `execute_request` 外层的排队等待预算 — 覆盖「入队 → worker 取走 → 限流放行」段；
 /// 执行段由 `VendorConfig.timeout_ms`（per-attempt，从 send 起算）承担，两者解耦。
@@ -386,6 +402,10 @@ impl VendorManager {
             inline_key_pools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(feature = "vault")]
             vault: std::sync::RwLock::new(None),
+            #[cfg(feature = "subscription-vendor")]
+            subscription: std::sync::RwLock::new(None),
+            #[cfg(feature = "masking")]
+            mask_gate: std::sync::RwLock::new(None),
             // 连接阶段 10s 超时
             client: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
@@ -416,6 +436,183 @@ impl VendorManager {
     /// 全局指标访问器 — 用于 /admin/metrics 端点
     pub fn metrics(&self) -> &Arc<GlobalMetrics> {
         &self.metrics
+    }
+
+    /// 注入订阅账号池（subscription-vendor）：bootstrap 装配时 set 一次；
+    /// 重复注入以最后一次为准（测试面同用此入口）。
+    #[cfg(feature = "subscription-vendor")]
+    pub fn set_subscription_pool(&self, pool: Arc<crate::vendor::subscription::pool::AccountPool>) {
+        *self.subscription.write().unwrap_or_else(|p| p.into_inner()) = Some(pool);
+    }
+
+    /// 订阅账号池访问器；None = feature 关闭或装配未发生。
+    #[cfg(feature = "subscription-vendor")]
+    pub(crate) fn subscription_pool(
+        &self,
+    ) -> Option<Arc<crate::vendor::subscription::pool::AccountPool>> {
+        self.subscription
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// 订阅池穿参取值（调用点统一入口；feature 关 = 单元）。
+    #[allow(clippy::unused_unit)] // feature 关 = 单元形态（SubscriptionPoolArg = ()）
+    fn subscription_arg(&self) -> SubscriptionPoolArg {
+        #[cfg(feature = "subscription-vendor")]
+        {
+            self.subscription_pool()
+        }
+        #[cfg(not(feature = "subscription-vendor"))]
+        {
+            ()
+        }
+    }
+
+    /// 请求级凭证选择统一入口：`[subscription].enabled` 且账号池有可服务
+    /// 账号 → 订阅凭证（轮换 + 临期单飞刷新已内聚在池）；否则回落既有
+    /// key 池选择。订阅优先（design：订阅 Authorization 头优先 access token）。
+    async fn select_credential(
+        &self,
+        instance: &VendorInstance,
+        config: &VendorConfig,
+    ) -> RequestCredential {
+        Self::select_credential_with(&self.subscription_arg(), &self.config, instance, config).await
+    }
+
+    /// [`Self::select_credential`] 的穿参核（worker 链无 `&self`，池经参数下传）。
+    async fn select_credential_with(
+        #[cfg_attr(not(feature = "subscription-vendor"), allow(unused_variables))]
+        subscription: &SubscriptionPoolArg,
+        #[cfg_attr(not(feature = "subscription-vendor"), allow(unused_variables))]
+        config_manager: &ConfigManager,
+        instance: &VendorInstance,
+        config: &VendorConfig,
+    ) -> RequestCredential {
+        #[cfg(feature = "subscription-vendor")]
+        if let Some(pool) = subscription {
+            if config_manager.read().subscription.enabled {
+                if let Some((account_id, access_token)) =
+                    pool.credential_for(&instance.vendor_id).await
+                {
+                    return RequestCredential::Subscription {
+                        account_id,
+                        access_token,
+                    };
+                }
+            }
+        }
+        instance.select_request_key(config)
+    }
+
+    /// 凭证 → 带认证请求 builder 的唯一组装点：订阅账号走
+    /// `Authorization: Bearer`（订阅上游不走 x-api-key/key 池协议分派），
+    /// key 池命中 / legacy 回退走既有路径。
+    fn build_authed_for_credential(
+        client: &reqwest::Client,
+        config: &VendorConfig,
+        url: &str,
+        include_content_type: bool,
+        credential: &RequestCredential,
+    ) -> Result<reqwest::RequestBuilder, GateError> {
+        #[cfg(feature = "subscription-vendor")]
+        if let RequestCredential::Subscription { access_token, .. } = credential {
+            return Self::build_subscription_request(
+                client,
+                config,
+                url,
+                include_content_type,
+                access_token,
+            );
+        }
+        match credential.api_key() {
+            Some(api_key) => Self::build_authed_request_with_key(
+                client,
+                config,
+                url,
+                include_content_type,
+                api_key,
+            ),
+            None => Self::build_authed_request(client, config, url, include_content_type),
+        }
+    }
+
+    /// 订阅账号出站组装：`Authorization: Bearer <access token>`；anthropic
+    /// 型补 `anthropic-version`（OAuth 面不携带 x-api-key）。
+    #[cfg(feature = "subscription-vendor")]
+    fn build_subscription_request(
+        client: &reqwest::Client,
+        config: &VendorConfig,
+        url: &str,
+        include_content_type: bool,
+        access_token: &str,
+    ) -> Result<reqwest::RequestBuilder, GateError> {
+        let mut builder = client.post(url).header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {access_token}"),
+        );
+        if matches!(config.protocol(), VendorProtocol::Anthropic) {
+            builder = builder.header(
+                "anthropic-version",
+                config.anthropic_version.as_deref().unwrap_or("2023-06-01"),
+            );
+        }
+        if include_content_type {
+            builder = builder.header("content-type", "application/json");
+        }
+        Ok(Self::apply_extra_headers(builder, &config.extra_headers))
+    }
+
+    /// 上游 401 的订阅账号处置（subscription-vendor）：强制刷新一次（池内
+    /// 单飞 + 降级/摘除时序内聚），成功 → 以新 token 重发一次本请求；
+    /// 仍 401 → 账号降级并返回原 401 失败（调用方走既有 Fallback 换路）。
+    #[cfg(feature = "subscription-vendor")]
+    async fn subscription_retry_on_unauthorized(
+        result: Result<reqwest::Response, AttemptFailure>,
+        client: &reqwest::Client,
+        config: &VendorConfig,
+        url: &str,
+        credential: &RequestCredential,
+        options: &VendorCallOptions,
+        request_body: &Value,
+        instance: &VendorInstance,
+        pool: &Arc<crate::vendor::subscription::pool::AccountPool>,
+    ) -> Result<reqwest::Response, AttemptFailure> {
+        let Some(account_id) = credential.account_id().map(str::to_string) else {
+            return result;
+        };
+        let Err(AttemptFailure::Http { status: 401, .. }) = &result else {
+            return result;
+        };
+        let refreshed = match pool.refresh_on_unauthorized(&account_id).await {
+            Ok(token) => token,
+            Err(_) => return result,
+        };
+        tracing::warn!(
+            vendor = %config.id,
+            account = %account_id,
+            "{}",
+            crate::i18n::t("vendor-subscription-retry-after-refresh")
+        );
+        let retry_credential = RequestCredential::Subscription {
+            account_id: account_id.clone(),
+            access_token: refreshed,
+        };
+        let builder =
+            Self::build_authed_for_credential(client, config, url, true, &retry_credential)
+                .map_err(AttemptFailure::Fatal)?;
+        let builder = Self::inject_vendor_call_headers(
+            Self::apply_attempt_timeout(builder, config),
+            config,
+            options,
+        );
+        let retried =
+            Self::send_attempt(builder, request_body, config, instance, &retry_credential).await;
+        if matches!(&retried, Err(AttemptFailure::Http { status: 401, .. })) {
+            // 刷新成功仍 401：账号被上游拒绝 → 降级出池，请求走 Fallback
+            pool.degrade_account(&account_id);
+        }
+        retried
     }
 
     /// 注入编程式内联 key 池（见 [`PoolSnapshot`]）：实例未创建时登记到 side-table，
@@ -450,6 +647,24 @@ impl VendorManager {
     #[cfg(feature = "vault")]
     pub(crate) fn vault(&self) -> Option<Arc<dyn crate::vault::KeyStore>> {
         self.vault.read().unwrap().clone()
+    }
+
+    /// 装配出站掩码门（feature `masking`，bootstrap 一次）；重复 set 以最后一次为准。
+    #[cfg(feature = "masking")]
+    pub fn set_mask_gate(&self, gate: Arc<crate::masking::MaskGate>) {
+        *self.mask_gate.write().unwrap() = Some(gate);
+    }
+
+    /// 掩码门消费（出站路径）；None = `masking` feature 关闭或装配未发生。
+    #[cfg(feature = "masking")]
+    pub fn mask_gate(&self) -> Option<Arc<crate::masking::MaskGate>> {
+        self.mask_gate.read().unwrap().clone()
+    }
+
+    /// 掩码门生效判定：门已装配且 `[masking]`.enabled（热读）。
+    #[cfg(feature = "masking")]
+    fn masking_active(&self) -> bool {
+        self.mask_gate().is_some_and(|g| g.enabled())
     }
 
     /// `[routing].ewma_tau_ms` 热同步到 metrics（每次延迟道落账前刷新）。
@@ -650,6 +865,13 @@ impl VendorManager {
         // metrics 传入 worker — 转换路径（经队列）在 worker 内记账
         let metrics = self.metrics.clone();
 
+        #[cfg(feature = "subscription-vendor")]
+        let subscription = self.subscription_arg();
+        #[cfg(not(feature = "subscription-vendor"))]
+        #[allow(clippy::let_unit_value)]
+        let subscription = self.subscription_arg();
+        #[cfg(feature = "masking")]
+        let mask_gate = self.mask_gate();
         tokio::spawn(async move {
             Self::process_vendor_queue(
                 instance_clone,
@@ -660,6 +882,9 @@ impl VendorManager {
                 gemini,
                 config_manager,
                 metrics,
+                subscription,
+                #[cfg(feature = "masking")]
+                mask_gate,
             )
             .await;
         });
@@ -677,6 +902,8 @@ impl VendorManager {
         gemini: Arc<GeminiConverter>,
         config_manager: Arc<ConfigManager>,
         metrics: Arc<GlobalMetrics>,
+        subscription: SubscriptionPoolArg,
+        #[cfg(feature = "masking")] mask_gate: Option<Arc<crate::masking::MaskGate>>,
     ) {
         loop {
             // 先取请求再等 RPS 令牌：避免空闲期空烧令牌与突发期最长 100ms 轮询等待。
@@ -724,6 +951,9 @@ impl VendorManager {
                 }
             };
 
+            // subscription-vendor 关闭时 SubscriptionPoolArg = ()：clone 触发
+            // clone_on_copy、传参触发 unit_arg——单一 allow 面收敛
+            #[allow(clippy::clone_on_copy, clippy::unit_arg)]
             tokio::spawn(Self::process_dequeued(
                 instance.clone(),
                 client.clone(),
@@ -736,6 +966,9 @@ impl VendorManager {
                 config,
                 pending,
                 permit_result,
+                subscription.clone(),
+                #[cfg(feature = "masking")]
+                mask_gate.clone(),
             ));
         }
     }
@@ -755,15 +988,18 @@ impl VendorManager {
         config: VendorConfig,
         pending: PendingRequest,
         permit: ConcurrencyPermit,
+        subscription: SubscriptionPoolArg,
+        #[cfg(feature = "masking")] mask_gate: Option<Arc<crate::masking::MaskGate>>,
     ) {
         let _permit = permit;
 
         // [retry] 段每请求热读，配置更新后下一次重试循环即用新参数
         let retry_cfg = config_manager.read().retry.clone();
 
-        // 请求级凭证选择（池命中 → 当前 key；池空 → legacy）+ 按 (model, endpoint, 指纹)
+        // 请求级凭证选择（订阅账号优先 → 池命中 → legacy）+ 按 (model, endpoint, 指纹)
         // 选熔断器。key 在请求启动时固定，本请求所有重试尝试复用同一 key。
-        let credential = instance.select_request_key(&config);
+        let credential =
+            Self::select_credential_with(&subscription, &config_manager, &instance, &config).await;
         #[cfg(feature = "resilience")]
         let circuit_breaker = instance.circuit_breaker_for(
             &credential,
@@ -800,6 +1036,9 @@ impl VendorManager {
             &credential,
             cache_policy.as_ref(),
             &options,
+            subscription,
+            #[cfg(feature = "masking")]
+            mask_gate,
         )
         .await;
 
@@ -948,6 +1187,8 @@ impl VendorManager {
         credential: &RequestCredential,
         cache_policy: Option<&crate::config::model_catalog::CacheBreakpointPolicy>,
         options: &VendorCallOptions,
+        subscription: SubscriptionPoolArg,
+        #[cfg(feature = "masking")] mask_gate: Option<Arc<crate::masking::MaskGate>>,
     ) -> Result<UnifiedResponse, GateError> {
         let converter: &dyn ProtocolConverter =
             Self::converter_for(config, openai, anthropic, responses, gemini)?;
@@ -973,6 +1214,18 @@ impl VendorManager {
             request_body
         };
 
+        // 出站掩码（feature `masking` + `[masking]`.enabled 双门控）：协议
+        // 转换后的最终出站 body 一次性掩码（重试复用同一体）；Block/故障
+        // → GateError（400/503），原文绝不出站。回程凭据随体下发
+        #[cfg(feature = "masking")]
+        let (request_body, mask_ticket) = match mask_gate.as_deref() {
+            Some(gate) => gate.mask_body(request_body).map_err(GateError::from)?,
+            None => (
+                request_body,
+                std::sync::Arc::new(crate::masking::MaskTicket::new()),
+            ),
+        };
+
         // 执行带重试的请求（resilience feature 启用时由 CircuitBreaker 包装）
         Self::execute_http_with_retry(
             client,
@@ -987,6 +1240,11 @@ impl VendorManager {
             instance,
             credential,
             options,
+            subscription,
+            #[cfg(feature = "masking")]
+            mask_gate.as_deref(),
+            #[cfg(feature = "masking")]
+            &mask_ticket,
         )
         .await
     }
@@ -1377,12 +1635,16 @@ impl VendorManager {
         instance: &VendorInstance,
         credential: &RequestCredential,
         options: &VendorCallOptions,
+        subscription: SubscriptionPoolArg,
+        #[cfg(feature = "masking")] mask_gate: Option<&crate::masking::MaskGate>,
+        #[cfg(feature = "masking")] mask_ticket: &crate::masking::MaskTicket,
     ) -> Result<UnifiedResponse, GateError> {
         #[cfg(feature = "resilience")]
         {
             let vendor_id = config.id.clone();
             let result = circuit_breaker
                 .execute(|| async {
+                    #[allow(clippy::clone_on_copy)] // feature 关 = 单元穿参
                     Self::execute_http_with_retry_policy(
                         client,
                         config,
@@ -1394,6 +1656,11 @@ impl VendorManager {
                         instance,
                         credential,
                         options,
+                        subscription.clone(),
+                        #[cfg(feature = "masking")]
+                        mask_gate,
+                        #[cfg(feature = "masking")]
+                        mask_ticket,
                     )
                     .await
                 })
@@ -1402,7 +1669,6 @@ impl VendorManager {
         }
         #[cfg(not(feature = "resilience"))]
         {
-            let _ = retry_cfg;
             Self::execute_http_with_retry_policy(
                 client,
                 config,
@@ -1414,6 +1680,11 @@ impl VendorManager {
                 instance,
                 credential,
                 options,
+                subscription,
+                #[cfg(feature = "masking")]
+                mask_gate,
+                #[cfg(feature = "masking")]
+                mask_ticket,
             )
             .await
         }
@@ -1436,6 +1707,10 @@ impl VendorManager {
         instance: &VendorInstance,
         credential: &RequestCredential,
         options: &VendorCallOptions,
+        #[cfg_attr(not(feature = "subscription-vendor"), allow(unused_variables))]
+        subscription: SubscriptionPoolArg,
+        #[cfg(feature = "masking")] mask_gate: Option<&crate::masking::MaskGate>,
+        #[cfg(feature = "masking")] mask_ticket: &crate::masking::MaskTicket,
     ) -> Result<UnifiedResponse, GateError> {
         let url = Self::build_vendor_url_for_model(config, target_model, false, "generateContent")?;
         let policy = RetryDelayPolicy::from_config(retry_cfg);
@@ -1467,8 +1742,40 @@ impl VendorManager {
                     )?;
                     let response =
                         Self::send_attempt(builder, &request_body, config, instance, credential)
-                            .await?;
+                            .await;
+                    #[cfg(feature = "subscription-vendor")]
+                    let response = match &subscription {
+                        Some(pool) => {
+                            Self::subscription_retry_on_unauthorized(
+                                response,
+                                client,
+                                config,
+                                &url,
+                                credential,
+                                options,
+                                &request_body,
+                                instance,
+                                pool,
+                            )
+                            .await
+                        }
+                        None => response,
+                    };
+                    let response = response?;
                     let response_json = Self::read_attempt_json(response, config).await?;
+                    // 回程还原（feature `masking`）：占位符在 IR 转换前回填，
+                    // 只认本请求掩码登记过的占位符（跨请求/伪造形态原样
+                    // 透传）；UnifiedResponse 与客户端形态都携带原值
+                    #[cfg(feature = "masking")]
+                    let response_json = match mask_gate {
+                        Some(gate) => {
+                            let mut restored = response_json;
+                            gate.restore_body(&mut restored, mask_ticket)
+                                .map_err(|e| AttemptFailure::Fatal(GateError::from(e)))?;
+                            restored
+                        }
+                        None => response_json,
+                    };
                     let mut parsed = converter
                         .parse_response(response_json)
                         .map_err(AttemptFailure::Fatal)?;
@@ -1513,18 +1820,11 @@ impl VendorManager {
         credential: &RequestCredential,
         options: &VendorCallOptions,
     ) -> Result<reqwest::RequestBuilder, AttemptFailure> {
-        let builder = match credential.api_key() {
-            Some(api_key) => Self::apply_attempt_timeout(
-                Self::build_authed_request_with_key(client, config, url, true, api_key)
-                    .map_err(AttemptFailure::Fatal)?,
-                config,
-            ),
-            None => Self::apply_attempt_timeout(
-                Self::build_authed_request(client, config, url, true)
-                    .map_err(AttemptFailure::Fatal)?,
-                config,
-            ),
-        };
+        let builder = Self::apply_attempt_timeout(
+            Self::build_authed_for_credential(client, config, url, true, credential)
+                .map_err(AttemptFailure::Fatal)?,
+            config,
+        );
         Ok(Self::inject_vendor_call_headers(builder, config, options))
     }
 
@@ -1962,7 +2262,109 @@ impl VendorManager {
         Err(error)
     }
 
-    /// 流式单次派发 = send（含 TTFT 超时）→ 响应头状态校验，两条流式路径的公共派发段。
+    /// 流式原始发送（TTFT 超时包裹，响应头返回即止；builder 按引用克隆）。
+    /// 流式 TTFT 超时 — 包住 send 发起至响应头返回的段落，流建立前超时以
+    /// Err(Timeout) 返回。reqwest RequestBuilder 无 Clone，此处 body 尚未
+    /// 附加必为 Some。
+    async fn send_stream_raw(
+        vendor_id: &str,
+        config: &VendorConfig,
+        builder: &reqwest::RequestBuilder,
+        request_body: &Value,
+    ) -> Result<reqwest::Response, GateError> {
+        let not_cloneable = || GateError::Config {
+            message: crate::i18n::t_args(
+                "vendor-builder-not-cloneable",
+                &[("vendor", vendor_id.to_string())],
+            ),
+        };
+        if config.stream_ttft_ms > 0 {
+            let builder = builder.try_clone().ok_or_else(not_cloneable)?;
+            match timeout(
+                Duration::from_millis(config.stream_ttft_ms),
+                builder.json(request_body).send(),
+            )
+            .await
+            {
+                Ok(Ok(resp)) => Ok(resp),
+                Ok(Err(e)) => Err(Self::outbound_send_error(vendor_id, &e)),
+                Err(_) => Err(GateError::Timeout {
+                    vendor: vendor_id.to_string(),
+                }),
+            }
+        } else {
+            let builder = builder.try_clone().ok_or_else(not_cloneable)?;
+            builder
+                .json(request_body)
+                .send()
+                .await
+                .map_err(|_e| GateError::VendorUnavailable {
+                    vendor: vendor_id.to_string(),
+                })
+        }
+    }
+
+    /// 订阅 401 处置（原始响应版，流式/透传共用）：401 + 订阅凭证 → 池内
+    /// 强刷一次（单飞）→ 新 token 重发一次本请求；刷新失败或重发传输失败
+    /// → 返回原响应走既有非 2xx 映射；重发仍 401 → 账号降级出池。
+    #[cfg(feature = "subscription-vendor")]
+    async fn subscription_refresh_retry_response(
+        &self,
+        response: reqwest::Response,
+        config: &VendorConfig,
+        url: &str,
+        include_content_type: bool,
+        credential: &RequestCredential,
+        options: &VendorCallOptions,
+        request_body: &Value,
+    ) -> reqwest::Response {
+        let Some(account_id) = credential.account_id() else {
+            return response;
+        };
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return response;
+        }
+        let Some(pool) = self.subscription_pool() else {
+            return response;
+        };
+        let Ok(token) = pool.refresh_on_unauthorized(account_id).await else {
+            return response;
+        };
+        tracing::warn!(
+            vendor = %config.id,
+            account = %account_id,
+            "{}",
+            crate::i18n::t("vendor-subscription-retry-after-refresh")
+        );
+        let retry_credential = RequestCredential::Subscription {
+            account_id: account_id.to_string(),
+            access_token: token,
+        };
+        let Ok(builder) = Self::build_authed_for_credential(
+            &self.client,
+            config,
+            url,
+            include_content_type,
+            &retry_credential,
+        ) else {
+            return response;
+        };
+        let builder = Self::inject_vendor_call_headers(builder, config, options);
+        match builder.json(request_body).send().await {
+            Ok(retried) => {
+                if retried.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    // 刷新成功仍 401：账号被上游拒绝 → 降级出池，请求走 Fallback
+                    pool.degrade_account(account_id);
+                }
+                retried
+            }
+            // 重发传输失败：交回原 401 响应，走既有映射（不制造新失败形态）
+            Err(_) => response,
+        }
+    }
+
+    /// 流式单次派发 = send（含 TTFT 超时）→ 订阅 401 处置 → 响应头状态校验，
+    /// 两条流式路径的公共派发段。
     ///
     /// cover_all_paths 开启时由 per-vendor CircuitBreaker 包裹（Open 直接拒绝，失败计 CB
     /// 失败）；时长只计到响应头，流建立后的 chunk 传输不在 CB 调用内。
@@ -1971,52 +2373,37 @@ impl VendorManager {
         &self,
         vendor_id: &str,
         config: &VendorConfig,
+        #[cfg_attr(not(feature = "subscription-vendor"), allow(unused_variables))] url: &str,
+        #[cfg_attr(not(feature = "subscription-vendor"), allow(unused_variables))]
+        include_content_type: bool,
+        #[cfg_attr(not(feature = "subscription-vendor"), allow(unused_variables))]
+        options: &VendorCallOptions,
         credential: &RequestCredential,
         model: &str,
         builder: reqwest::RequestBuilder,
         request_body: &Value,
         start: Instant,
     ) -> Result<reqwest::Response, GateError> {
-        // 无 resilience 组合下 model/credential 不参与 CB 选路（仅签名统一）
+        // 无 resilience 组合下 model 不参与 CB 选路（仅签名统一）
         #[cfg(not(feature = "resilience"))]
-        let _ = (model, credential);
+        let _ = model;
         let send = || async {
-            let response = if config.stream_ttft_ms > 0 {
-                // 流式 TTFT 超时 — 包住 send 发起至响应头返回的段落，流建立前超时以
-                // Err(Timeout) 返回。reqwest RequestBuilder 无 Clone，此处 body 尚未附加必为 Some。
-                let builder = builder.try_clone().ok_or_else(|| GateError::Config {
-                    message: crate::i18n::t_args(
-                        "vendor-builder-not-cloneable",
-                        &[("vendor", vendor_id.to_string())],
-                    ),
-                })?;
-                match timeout(
-                    Duration::from_millis(config.stream_ttft_ms),
-                    builder.json(request_body).send(),
+            let response = Self::send_stream_raw(vendor_id, config, &builder, request_body).await?;
+            // 订阅 401 处置（自愈闭环下沉到流式/透传路径——响应头级判定）
+            #[cfg(feature = "subscription-vendor")]
+            let response = self
+                .subscription_refresh_retry_response(
+                    response,
+                    config,
+                    url,
+                    include_content_type,
+                    credential,
+                    options,
+                    request_body,
                 )
-                .await
-                {
-                    Ok(Ok(resp)) => resp,
-                    Ok(Err(e)) => return Err(Self::outbound_send_error(vendor_id, &e)),
-                    Err(_) => {
-                        return Err(GateError::Timeout {
-                            vendor: vendor_id.to_string(),
-                        })
-                    }
-                }
-            } else {
-                let builder = builder.try_clone().ok_or_else(|| GateError::Config {
-                    message: crate::i18n::t_args(
-                        "vendor-builder-not-cloneable",
-                        &[("vendor", vendor_id.to_string())],
-                    ),
-                })?;
-                builder.json(request_body).send().await.map_err(|_e| {
-                    GateError::VendorUnavailable {
-                        vendor: vendor_id.to_string(),
-                    }
-                })?
-            };
+                .await;
+            #[cfg(not(feature = "subscription-vendor"))]
+            let response = response;
             // 非 2xx 上游不得伪装成 SSE 流
             self.check_stream_status(vendor_id, start, response, credential)
                 .await
@@ -2095,8 +2482,8 @@ impl VendorManager {
             "streamGenerateContent",
         )?;
 
-        // 请求级凭证选择 — key 在请求启动时固定（池空回退 legacy 读 env）
-        let credential = instance.select_request_key(&config);
+        // 请求级凭证选择 — 订阅账号优先；key 在请求启动时固定（池空回退 legacy 读 env）
+        let credential = self.select_credential(&instance, &config).await;
 
         // converter 以 Arc 进流（parse_stream_frame 按 vendor 协议分派）
         let converter: Arc<dyn ProtocolConverter> = match config.protocol() {
@@ -2130,12 +2517,20 @@ impl VendorManager {
             converter.request_to_external(request)?
         };
 
-        let request_builder = match credential.api_key() {
-            Some(api_key) => {
-                Self::build_authed_request_with_key(&self.client, &config, &url, true, api_key)?
-            }
-            None => Self::build_authed_request(&self.client, &config, &url, true)?,
+        // 出站掩码（feature `masking` + `[masking]`.enabled 双门控）：最终
+        // 出站 body 发送前掩码；Block/故障 → GateError（400/503）。
+        // 回程凭据随体留存——IR 流还原只认本请求登记的占位符
+        #[cfg(feature = "masking")]
+        let (request_body, mask_ticket) = match self.mask_gate() {
+            Some(gate) => gate.mask_body(request_body).map_err(GateError::from)?,
+            None => (
+                request_body,
+                std::sync::Arc::new(crate::masking::MaskTicket::new()),
+            ),
         };
+
+        let request_builder =
+            Self::build_authed_for_credential(&self.client, &config, &url, true, &credential)?;
         let request_builder = Self::inject_vendor_call_headers(request_builder, &config, &options);
 
         let start = Instant::now();
@@ -2144,6 +2539,9 @@ impl VendorManager {
             .dispatch_stream_once(
                 vendor_id,
                 &config,
+                &url,
+                true,
+                &options,
                 &credential,
                 &request_model,
                 request_builder,
@@ -2168,8 +2566,113 @@ impl VendorManager {
         let idle = Duration::from_millis(config.stream_idle_ms);
         let byte_stream = Self::idle_timeout_byte_stream(response, permit, idle, vendor_id);
         let framed = Self::framed_ir_stream(byte_stream, vendor_id, converter);
+        // 回程还原（feature `masking`）：IR 流上逐 Content/ToolCall 增量回填
+        // 占位符——文本通道一实例、每 tool_call 索引一实例（arguments 为
+        // 未转义纯文本增量，同内容通道语义）；还原不可用 → 流以 Err 终止
+        //（fail-closed，不吐占位符）
+        #[cfg(feature = "masking")]
+        let framed: std::pin::Pin<
+            Box<dyn futures::Stream<Item = Result<crate::protocol::StreamChunk, GateError>> + Send>,
+        > = match self.mask_gate() {
+            Some(gate) => {
+                use futures::StreamExt;
+                let mut content = gate.stream_restorer_scoped(std::sync::Arc::clone(&mask_ticket));
+                let mut tools: std::collections::HashMap<u32, crate::masking::StreamRestorer> =
+                    std::collections::HashMap::new();
+                Box::pin(framed.map(move |item| {
+                    item.and_then(|chunk| {
+                        Self::restore_stream_chunk(
+                            &gate,
+                            &mask_ticket,
+                            &mut content,
+                            &mut tools,
+                            chunk,
+                        )
+                    })
+                }))
+            }
+            None => Box::pin(framed),
+        };
         let cooldown = Self::stream_cooldown(&instance);
         Ok(Self::guard_mid_stream_failure(instance, cooldown, framed))
+    }
+
+    /// 单个 IR 流块的占位符还原（feature `masking`）：Content 文本/
+    /// Reasoning/旧表示 ToolCalls 走文本通道实例，ToolCall.arguments 走
+    /// 按 index 独立实例；还原只认本请求登记的占位符（ticket 放行域）；
+    /// 其余块（Usage/Heartbeat）原样。
+    #[cfg(feature = "masking")]
+    fn restore_stream_chunk(
+        gate: &crate::masking::MaskGate,
+        ticket: &std::sync::Arc<crate::masking::MaskTicket>,
+        content: &mut crate::masking::StreamRestorer,
+        tools: &mut std::collections::HashMap<u32, crate::masking::StreamRestorer>,
+        chunk: crate::protocol::StreamChunk,
+    ) -> Result<crate::protocol::StreamChunk, GateError> {
+        use crate::masking::MaskError;
+        use crate::protocol::{MessageContent, StreamChunk as Ir};
+        let unavailable = |_: MaskError| GateError::MaskingUnavailable;
+        match chunk {
+            Ir::Content {
+                index,
+                mut delta,
+                finish_reason,
+                logprobs,
+            } => {
+                match &mut delta {
+                    MessageContent::Text(text) => {
+                        *text = gate.restore_delta(content, text).map_err(unavailable)?;
+                    }
+                    MessageContent::TextWithToolCalls {
+                        text,
+                        tool_calls,
+                        reasoning,
+                    } => {
+                        *text = gate.restore_delta(content, text).map_err(unavailable)?;
+                        if let Some(r) = reasoning.as_mut() {
+                            *r = gate.restore_delta(content, r).map_err(unavailable)?;
+                        }
+                        for call in tool_calls.iter_mut() {
+                            let args = &mut call.function.arguments;
+                            *args = gate.restore_delta(content, args).map_err(unavailable)?;
+                        }
+                    }
+                    MessageContent::Reasoning { text, .. } => {
+                        *text = gate.restore_delta(content, text).map_err(unavailable)?;
+                    }
+                    _ => {}
+                }
+                Ok(Ir::Content {
+                    index,
+                    delta,
+                    finish_reason,
+                    logprobs,
+                })
+            }
+            Ir::ToolCall {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                let arguments = match arguments {
+                    Some(args) => {
+                        let restorer = tools.entry(index).or_insert_with(|| {
+                            gate.stream_restorer_scoped(std::sync::Arc::clone(ticket))
+                        });
+                        Some(gate.restore_delta(restorer, &args).map_err(unavailable)?)
+                    }
+                    None => None,
+                };
+                Ok(Ir::ToolCall {
+                    index,
+                    id,
+                    name,
+                    arguments,
+                })
+            }
+            other => Ok(other),
+        }
     }
 
     /// 流中冷却时长 — 与 CB Open 冷却窗同源（实例构造期快照）。
@@ -2574,7 +3077,7 @@ impl VendorManager {
         let resolved = match instance {
             Some(instance) => {
                 let config = self.fresh_config(vendor_id)?;
-                Some((instance.select_request_key(&config), config))
+                Some((self.select_credential(&instance, &config).await, config))
             }
             None => None,
         };
@@ -2655,22 +3158,43 @@ impl VendorManager {
         let config = self.fresh_config(vendor_id)?;
         let url = Self::build_vendor_url_at(&config, path)?;
 
-        // 池命中用请求启动时固定的 key；legacy 回退读 env
-        let builder = match credential.api_key() {
-            Some(api_key) => {
-                Self::build_authed_request_with_key(&self.client, &config, &url, true, api_key)?
-            }
-            None => Self::build_authed_request(&self.client, &config, &url, true)?,
-        };
+        // 池命中用请求启动时固定的 key；legacy 回退读 env；订阅走 Bearer
+        let builder =
+            Self::build_authed_for_credential(&self.client, &config, &url, true, credential)?;
         let builder = Self::inject_vendor_call_headers(builder, &config, options);
         // per-attempt 总超时（从 send 起算；0=不限时）
         let builder = Self::apply_attempt_timeout(builder, &config);
+
+        // 出站掩码（feature `masking`）：透传非流式（含 rerank）发送前掩码；
+        // Block/故障 → GateError（400/503）。回程凭据留存
+        #[cfg(feature = "masking")]
+        let (request_body, mask_ticket) = match self.mask_gate() {
+            Some(gate) => gate.mask_body(request_body).map_err(GateError::from)?,
+            None => (
+                request_body,
+                std::sync::Arc::new(crate::masking::MaskTicket::new()),
+            ),
+        };
 
         let response = match builder.json(&request_body).send().await {
             Ok(resp) => resp,
             // 超时映射 Timeout（客户端可识别 504 语义）
             Err(e) => return Err(Self::outbound_send_error(vendor_id, &e)),
         };
+
+        // 订阅 401 处置（透传非流式自愈闭环）：强刷一次重发
+        #[cfg(feature = "subscription-vendor")]
+        let response = self
+            .subscription_refresh_retry_response(
+                response,
+                &config,
+                &url,
+                true,
+                credential,
+                options,
+                &request_body,
+            )
+            .await;
 
         if !response.status().is_success() {
             return Err(Self::handle_passthrough_non_success(
@@ -2682,6 +3206,18 @@ impl VendorManager {
         // per-attempt 超时在 body 读取阶段触发时映射 Timeout，
         // 与真正的解析失败区分
         let response_json: Value = Self::read_response_json(vendor_id, response).await?;
+        // 回程还原（feature `masking`）：客户端拿到原值形态（只认本请求
+        // 登记过的占位符）
+        #[cfg(feature = "masking")]
+        let response_json = match self.mask_gate() {
+            Some(gate) => {
+                let mut restored = response_json;
+                gate.restore_body(&mut restored, &mask_ticket)
+                    .map_err(GateError::from)?;
+                restored
+            }
+            None => response_json,
+        };
 
         // 更新 Token 使用统计（CAS 全有全无，不足则拒绝记账；语义见 helper）
         Self::account_response_tokens(&instance, vendor_id, &response_json).await;
@@ -2813,6 +3349,14 @@ impl VendorManager {
         path: Option<&str>,
         options: VendorCallOptions,
     ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
+        // 透传流是字节级纯中继：回程无法按 JSON 串语义正确还原占位符
+        //（原值含引号/换行时裸替换会破坏上游 JSON），掩码启用时按
+        // fail-closed 拒发（503 `masking-unavailable`，上游 0 请求）——
+        // 宁可拒绝不可原文出站；非流式透传走解析面还原，不受此限
+        #[cfg(feature = "masking")]
+        if self.masking_active() {
+            return Err(GateError::MaskingUnavailable);
+        }
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
@@ -2847,15 +3391,11 @@ impl VendorManager {
             None => Self::build_vendor_url(&config)?,
         };
 
-        // 请求级凭证选择 — key 在请求启动时固定（池空回退 legacy 读 env）
-        let credential = instance.select_request_key(&config);
+        // 请求级凭证选择 — 订阅账号优先；key 在请求启动时固定（池空回退 legacy 读 env）
+        let credential = self.select_credential(&instance, &config).await;
 
-        let builder = match credential.api_key() {
-            Some(api_key) => {
-                Self::build_authed_request_with_key(&self.client, &config, &url, false, api_key)?
-            }
-            None => Self::build_authed_request(&self.client, &config, &url, false)?,
-        };
+        let builder =
+            Self::build_authed_for_credential(&self.client, &config, &url, false, &credential)?;
         let builder = Self::inject_vendor_call_headers(builder, &config, &options);
         // per-key 熔断键的 model 段（透传 model 取自请求体，归一到配置模型身份）
         let raw_model = request_body
@@ -2870,6 +3410,9 @@ impl VendorManager {
             .dispatch_stream_once(
                 vendor_id,
                 &config,
+                &url,
+                false,
+                &options,
                 &credential,
                 &request_model,
                 builder,
@@ -3356,10 +3899,15 @@ mod tests {
         vendor.type_ = vendor_type.into();
         vendor.enabled = true;
         Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".into(),

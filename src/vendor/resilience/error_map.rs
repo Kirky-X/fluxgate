@@ -101,6 +101,9 @@ impl FailureClassifier<GateError> for GateErrorClassifier {
             GateError::Config { .. }
             | GateError::Routing { .. }
             | GateError::AllVendorsThrottled { .. } => true,
+            // 掩码门拒绝（fail-closed 503 / Block 400）：网关自身合规动作，
+            // 非 vendor 故障信号——不计 CB 失败
+            GateError::MaskingUnavailable | GateError::MaskingBlocked { .. } => false,
         }
     }
 }

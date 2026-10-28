@@ -96,7 +96,7 @@ flowchart TB
 | `src/protocol/`                          | OpenAI/Anthropic/Responses/Gemini 统一中间表示、协议转换器、SSE 分帧编码                                                                 |
 | `src/router/`                            | 路由决策核心：加权打分、LinUCB、会话亲和                                                                                                 |
 | `src/utils/`                             | 横切工具：全局指标（含 EWMA）、重试延迟策略、成本累积器、OTLP 指标桥（`otlp.rs`，feature `otlp`）                                        |
-| `src/vendor/`                            | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价                                                                                |
+| `src/vendor/`                            | 厂商执行层：VendorManager、连接池、队列、限流、弹性、定价、订阅账号池（`subscription-vendor` feature）                                  |
 | `src/error/mod.rs` / `src/error/gate.rs` | `FluxgateError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale）              |
 | `src/lib.rs`                             | 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/storage/vendor/router 路由半边 + api/server/database 应用面） |
 | `src/main.rs`                            | 二进制薄入口：仅解析 CLI 配置路径参数；装配链在 `src/server/bootstrap.rs`，建站与路由合并、serve 在 `src/server/http.rs`                 |
@@ -147,7 +147,8 @@ flowchart TB
 | `vendor/rate_limiter.rs`         | `TokenBucket`/`ConcurrencyLimiter`（limiteron 包装器）+ 时段门控统一判定（recId=13，含跨午夜窗口）   |
 | `vendor/status.rs`               | `VendorStatus`/`VendorState`：原子状态机与错误计数（Available/Unavailable 等）                       |
 | `vendor/cost.rs`                 | `CostCalculator`：(vendor_id, model_id) 维度定价表查找与 USD 计算                                    |
-| `vendor/key_pool.rs`             | 多 key 池：逐 env 名解析、轮转游标与指纹观测                                                         |
+| `vendor/key_pool.rs`             | 多 key 池：逐 env 名解析、轮转游标与指纹观测；`RequestCredential::Subscription` 臂（feature `subscription-vendor`）承载订阅账号凭证（Bearer 组装唯一入口 `build_authed_for_credential`，指纹恒 None → vendor 级熔断） |
+| `vendor/subscription/`           | 订阅账号上游（feature `subscription-vendor`，不进 `full`）：`mod.rs` 持 `SubscriptionProvider` trait 与类型；`anthropic.rs` 端点常量与 token 解析；`oauth.rs` PKCE 会话（state 10 分钟单次）；`pool.rs` 账号池（轮换 + 候选跳故障/临期单飞刷新/降级摘除时序/吊销扣减 gauge）；`store.rs` refresh token 的 vault 封装（键 `sub:{account_id}`，读最新条目容忍轮换中断窗）。装配在 `server/bootstrap.rs`（声明账号启动登记、池常在位）；401 单刷重发钩子覆盖非流式/流式/透传全路径（`manager.rs`） |
 | `vendor/resilience/fallback.rs`  | `FallbackChain`：按 priority 升序链式回退                                                            |
 | `vendor/resilience/error_map.rs` | `GateErrorClassifier`：实现 limiteron `FailureClassifier<GateError>`（业务错误直通熔断器，无损穿透） |
 
@@ -171,6 +172,7 @@ flowchart TB
 | `src/utils/`          | `metrics.rs`：`GlobalMetrics` 原子指标 + EWMA 平滑（α=0.2）；`retry.rs`：按错误类别分类的重试延迟策略；`cost_tracker.rs`：`CostTracker` 微美元累积器；`otlp.rs`（feature `otlp`）：exposition 文本解析 + `OtlpBridge` 周期推送到 OTLP/HTTP-Proto，单一真源为 `sdforge::metrics::global_registry().render()`（与 `/metrics` 同源），导出失败 fail-open 计数                       |
 | `src/i18n/`           | `catalog.rs`：Fluent 双束编译期内嵌（`OnceLock` 静态缓存）；`locale.rs`：语言检测链与全局 locale 上下文；`mod.rs`：`t()`/`t_args()` 查找门面                                                                                                                                                                                                                                     |
 | `src/infrastructure/` | `di.rs`：`AsyncKit` 四模块拓扑序组装与 `verify_kit`                                                                                                                                                                                                                                                                                                                              |
+| `src/masking/`        |（feature `masking`，不进 `full`）出站请求掩码：`rule_detector.rs` 组装 inklog 扩展形态表 + 熵扫描 + 自定义词/正则；`placeholder.rs` 进程内确定性占位符注册表（SHA256 掺每进程随机 pepper 前 8 hex——跨实例不可关联；反向映射仅内存最小堆 LRU 10k + TTL 24h，永不落盘；回程还原凭 `MaskTicket` 请求域放行——伪造/跨请求回显不还原）；`masker.rs` 出站 JSON 递归掩码 + 三档动作；`stream_restore.rs`/`restorer.rs` 流式尾部保持缓冲与整量还原；`gates.rs` fail-closed 门（故障 503 拒发）与 24h 统计窗  |
 
 ---
 
@@ -689,3 +691,42 @@ database → logging：async_logger（DB sink）无条件消费 inklog；inklog 
 | [安全文档](./SECURITY.md)      | 认证、隔离与安全设计     |
 | [FAQ](./FAQ.md)                | 常见问题解答             |
 | [更新日志](./CHANGELOG.md)     | 版本变更记录             |
+
+## 目录同步链路（catalog-sync）
+
+`catalog-sync` feature（不进 `full`）+ `[catalog_sync].enabled` 双门控。**只增不改**是硬策略：
+合并仅新增目录缺失的 `model_id`，既有条目（含用户自定价）零改动——计价正源语义不可被外部源覆盖。
+
+```mermaid
+flowchart LR
+    T["admin POST /admin/catalog/sync<br/>或周期任务<br/>(interval_secs > 0, ±10% 抖动)"] --> G{"[catalog_sync].enabled<br/>热读 + 进程内单飞"}
+    G -->|"关"| X["404 / 409"]
+    G -->|"开"| F["CatalogSyncer::fetch<br/>If-None-Match · timeout_secs<br/>8MB 上限"]
+    F -->|"304"| NM["NotModified<br/>零改动"]
+    F -->|"200"| P["parse_source<br/>providers→models 映射<br/>unit.rs 换算单点<br/>缺档回退标记 fallback"]
+    P --> M["merge 只增不改<br/>(键 = model_id, 先到先得)"]
+    M -->|"dry_run"| D["diff 响应<br/>不落盘"]
+    M -->|"persist"| W["update_config_with<br/>校验 → 原子落盘 → 切内存"]
+    F -->|"超时/网络/超限"| FAIL["fail-open<br/>catalog_sync_fail_total{reason}"]
+```
+
+- 模块：`src/config/catalog_sync.rs`（feature 门控）+ `src/config/unit.rs`（定价单位换算单点，后续 cost-replay 复用）；
+- 观测：`/admin/metrics` 的 `catalog_sync_fail_total{reason}` / `catalog_sync_added_total`；
+- 管理面：`POST /admin/catalog/sync`（dry_run 出 diff、重入 409、失败 502/超限 413，i18n 错误详情）；SDK 对应 `FluxgateClient::sync_catalog`。
+
+## netguard 信任边界（web-search-inject）
+
+```mermaid
+flowchart LR
+    C["调用方"] -->|"POST /v1/fetch {url}"| H["fetch handler<br/>(web-search feature)"]
+    H --> R["DNS 解析<br/>tokio::net::lookup_host"]
+    R --> G["guard(ip) 全地址判定<br/>特殊网段段表"]
+    G -->|"任一 Allow"| P["pin 该 IP 建连<br/>Host 保持域名（防 rebinding 二跳）"]
+    G -->|"全拒"| B["400 netguard_blocked<br/>仅段名 tag，不回显地址"]
+    P --> U["上游（10s 超时 / 1 MiB 上限 /<br/>Content-Type 白名单）"]
+    U -->|"301/302"| X["禁自动跟随：<br/>Location 原样返回调用方"]
+```
+
+- **判定只守「用户可控 URL」路径**（/v1/fetch 与未来抓取面）；vendor `api_base` 是管理员配置的可信面，不挂 netguard 判定——全局挂载会把误配变成运行时拒绝，破坏既有部署语义（design Alternatives）。
+- **判定时点在解析后、建连前**，判过的 IP 经 reqwest `ClientBuilder::resolve` pin 死（0.13 无 per-request resolve，host 级一次性 Client 缓存承载连接复用；键含 IP——解析结果变化即新条目，pin 快照永不复用）。
+- **搜索 provider 出站（/v1/search）不走 netguard**：provider base_url 同为管理员配置的可信面；与 vendor 出站同一信任等级。

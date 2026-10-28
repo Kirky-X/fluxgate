@@ -26,6 +26,14 @@ hel = "hel"
 THR = "THR"
 thr = "thr"
 
+# masking 大小写敏感性夹具（tests/masking/engine_test.rs）："BaDgE" 验证
+# words_any_case 开关——混排大小写是夹具本体，不是 "badge" 的笔误。
+Ba = "Ba"
+
+# RFC 4648 base64url 标准测试向量（src/vendor/subscription/oauth.rs）：
+# b"fo" → "Zm8" 是 RFC 4648 §10 规范样例，PKCE challenge 实现的验收锚点。
+fo = "fo"
+
 [files]
 # out/ 为提交在库的研究报告工具产物（含大量有意缩写与英文笔误），非源码。
 extend-exclude = ["out"]

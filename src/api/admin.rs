@@ -710,6 +710,344 @@ pub async fn delete_model(
     })))
 }
 
+// ---- 目录自动同步（catalog-sync feature 门控）----
+
+/// POST /admin/catalog/sync 请求体：`{"dry_run": true|false}`；
+/// 缺省 dry_run=false（直接落盘）。
+#[cfg(feature = "catalog-sync")]
+#[derive(serde::Deserialize)]
+pub struct CatalogSyncRequest {
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// 统一 JSON 错误体形状（与 insights_disabled_response 同构）
+#[cfg(feature = "catalog-sync")]
+fn catalog_sync_error(
+    status: axum::http::StatusCode,
+    kind: &'static str,
+    message: String,
+    reason: Option<&'static str>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut error = serde_json::json!({ "type": kind, "message": message });
+    if let Some(reason) = reason {
+        error["reason"] = serde_json::json!(reason);
+    }
+    (status, axum::Json(serde_json::json!({ "error": error }))).into_response()
+}
+
+/// POST /admin/catalog/sync — 模型目录自动同步（catalog-sync 双门控：
+/// feature 编译门 + `[catalog_sync].enabled` 运行时门，关时 404）。
+/// dry_run=true 返回 diff 不落盘；false 走既有热更新写路径（校验→原子
+/// 落盘→切内存）。只增不改：既有条目永不触碰。防重入：进程内单飞，
+/// 重入 409；拉取/解析失败 fail-open（目录原样）→ 502/413 + i18n 详情。
+#[cfg(feature = "catalog-sync")]
+#[axum::debug_handler]
+pub async fn catalog_sync(
+    State(state): State<Arc<ApiState>>,
+    Json(request): Json<CatalogSyncRequest>,
+) -> Result<axum::response::Response, FluxgateError> {
+    use crate::config::catalog_sync::{self, FetchError, SyncError};
+    if !state.config.read().catalog_sync.enabled {
+        return Ok(catalog_sync_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found",
+            t("catalog-sync-disabled"),
+            None,
+        ));
+    }
+    // 快照后弃读锁（拉取是长 await，不持锁跨热点）
+    let (section, existing) = {
+        let snapshot = state.config.read();
+        (
+            snapshot.catalog_sync.clone(),
+            snapshot.model_catalog.clone(),
+        )
+    };
+    let metrics = state.vendor_manager.metrics();
+    match catalog_sync::plan_from_source(&section, &existing, metrics.as_ref()).await {
+        Err(SyncError::InFlight) => Ok(catalog_sync_error(
+            axum::http::StatusCode::CONFLICT,
+            "conflict",
+            t("catalog-sync-in-flight"),
+            None,
+        )),
+        Err(SyncError::Fetch(e)) => {
+            let status = if matches!(e, FetchError::TooLarge) {
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE
+            } else {
+                axum::http::StatusCode::BAD_GATEWAY
+            };
+            Ok(catalog_sync_error(
+                status,
+                "catalog_sync_failed",
+                t_args("catalog-sync-failed", &[("reason", e.to_string())]),
+                Some(e.reason()),
+            ))
+        }
+        Err(SyncError::Parse(detail)) => Ok(catalog_sync_error(
+            axum::http::StatusCode::BAD_GATEWAY,
+            "catalog_sync_failed",
+            t_args("catalog-sync-failed", &[("reason", detail.clone())]),
+            Some("parse"),
+        )),
+        Err(SyncError::Persist(e)) => Err(FluxgateError::from(e)),
+        Ok(outcome) => match outcome {
+            crate::config::catalog_sync::PlanOutcome::NotModified => Ok((
+                axum::http::StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "dry_run": request.dry_run,
+                    "status": "not_modified",
+                    "added": 0,
+                })),
+            )
+                .into_response()),
+            crate::config::catalog_sync::PlanOutcome::Plan(plan, etag) => {
+                if request.dry_run {
+                    let report = catalog_sync::SyncReport::from_plan(true, &plan, etag);
+                    return Ok((axum::http::StatusCode::OK, axum::Json(report)).into_response());
+                }
+                catalog_sync::persist_plan(&state.config, &plan, metrics.as_ref()).map_err(
+                    |e| match e {
+                        // persist 只有 Persist(GateError) 一个失败形态
+                        SyncError::Persist(gate) => FluxgateError::from(gate),
+                        other => FluxgateError::from(GateError::Config {
+                            message: t_args(
+                                "catalog-sync-failed",
+                                &[("reason", other.to_string())],
+                            ),
+                        }),
+                    },
+                )?;
+                // etag 随 persist 成功回存（dry_run 不回存——未落盘不占进度）
+                catalog_sync::commit_etag(etag.as_deref());
+                let report = catalog_sync::SyncReport::from_plan(false, &plan, etag);
+                Ok((axum::http::StatusCode::OK, axum::Json(report)).into_response())
+            }
+        },
+    }
+}
+
+// ---- subscription（subscription-vendor feature）：订阅账号管理面 ----
+
+/// 订阅账号管理面（authorize / callback / accounts / revoke）。feature 门
+/// 在路由挂载侧；`[subscription].enabled` 运行时门在 handler 内热读（关时
+/// 404，与 usage-insights 同口径）。响应与日志零 token 片段。
+#[cfg(feature = "subscription-vendor")]
+pub mod subscription_admin {
+    use super::*;
+    use crate::vendor::subscription::pool::{AccountPool, AuthorizationStart};
+    use crate::vendor::subscription::{store, SubscriptionError};
+    use axum::extract::Path;
+
+    /// 池未装配（feature 关或 bootstrap 未注入）时的统一错误。
+    fn pool_unavailable() -> FluxgateError {
+        FluxgateError::Gate(GateError::VendorUnavailable {
+            vendor: "subscription".to_string(),
+        })
+    }
+
+    fn pool_of(state: &ApiState) -> Result<Arc<AccountPool>, FluxgateError> {
+        state
+            .vendor_manager
+            .subscription_pool()
+            .ok_or_else(pool_unavailable)
+    }
+
+    /// `[subscription].enabled` 运行时门：关时 404（不暴露端点存在性）。
+    fn subscription_disabled_response() -> axum::response::Response {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": {
+                    "type": "not_found",
+                    "message": t("subscription-admin-disabled"),
+                }
+            })),
+        )
+            .into_response()
+    }
+
+    fn require_enabled(state: &ApiState) -> Result<(), axum::response::Response> {
+        if state.config.read().subscription.enabled {
+            Ok(())
+        } else {
+            Err(subscription_disabled_response())
+        }
+    }
+
+    /// OAuth 错误 → HTTP 语义：回调无效 400、供应商拒绝/降级 503、账号未知 400。
+    fn subscription_error(e: SubscriptionError) -> FluxgateError {
+        match e {
+            SubscriptionError::InvalidCallback => FluxgateError::Gate(GateError::Validation {
+                field: t("subscription-callback-invalid"),
+            }),
+            SubscriptionError::UnknownAccount(id) => FluxgateError::Gate(GateError::Validation {
+                field: t_args("subscription-account-unknown", &[("account", id)]),
+            }),
+            other => FluxgateError::Gate(GateError::VendorUnavailable {
+                vendor: format!("subscription: {other}"),
+            }),
+        }
+    }
+
+    /// 回调地址缺省值：本进程 `[server]` 监听面拼回调路径（部署在反代后
+    /// 时可用 authorize 请求体覆写；回调必须打回同一实例——单实例约束）。
+    /// `0.0.0.0`/`::`/空 host 是监听面不是浏览器可达地址：兜底换回环并
+    /// 告警提示覆写（反代/公网部署必须显式 redirect_uri）。
+    fn default_redirect_uri(state: &ApiState) -> String {
+        let server = &state.config.read().server;
+        let host = match server.host.as_str() {
+            "0.0.0.0" | "::" | "" => {
+                tracing::warn!(
+                    "{}",
+                    crate::i18n::t("subscription-redirect-default-loopback")
+                );
+                "127.0.0.1"
+            }
+            other => other,
+        };
+        format!("http://{host}:{}/admin/subscription/callback", server.port)
+    }
+
+    #[derive(serde::Deserialize)]
+    pub struct AuthorizeRequest {
+        /// 目标供应商 kind（当前仅 "anthropic"）。
+        pub vendor: String,
+        /// 复用 `[[subscription_accounts]]` 已声明账号；缺省 = ad-hoc 自增。
+        #[serde(default)]
+        pub account_id: Option<String>,
+        /// 反代后部署的公网回调地址覆写；缺省 = 本进程 server 面。
+        #[serde(default)]
+        pub redirect_uri: Option<String>,
+    }
+
+    /// POST /admin/subscription/authorize：生成 PKCE 会话并返回授权 URL；
+    /// 用户在浏览器完成授权后回调本进程换码。
+    pub async fn authorize(
+        State(state): State<Arc<ApiState>>,
+        Json(body): Json<AuthorizeRequest>,
+    ) -> Result<axum::response::Response, FluxgateError> {
+        use axum::response::IntoResponse;
+        if let Err(response) = require_enabled(&state) {
+            return Ok(response);
+        }
+        if state.config.read().subscription.client_id.trim().is_empty() {
+            return Err(FluxgateError::Gate(GateError::Validation {
+                field: t("subscription-client-id-missing"),
+            }));
+        }
+        if !state
+            .config
+            .read()
+            .vendors
+            .iter()
+            .any(|v| v.id == body.vendor)
+        {
+            return Err(FluxgateError::Gate(GateError::Validation {
+                field: t_args(
+                    "subscription-account-unknown-vendor",
+                    &[("vendor", body.vendor.clone())],
+                ),
+            }));
+        }
+        let pool = pool_of(&state)?;
+        let redirect_uri = body
+            .redirect_uri
+            .clone()
+            .unwrap_or_else(|| default_redirect_uri(&state));
+        let start: AuthorizationStart = pool
+            .begin_authorization(&body.vendor, body.account_id.as_deref(), &redirect_uri)
+            .map_err(subscription_error)?;
+        Ok(Json(serde_json::json!({
+            "account_id": start.account_id,
+            "state": start.state,
+            "authorize_url": start.authorize_url,
+            "expires_in_secs": crate::vendor::subscription::oauth::SESSION_TTL.as_secs(),
+            "message": t("subscription-authorize-pending"),
+        }))
+        .into_response())
+    }
+
+    #[derive(serde::Deserialize)]
+    pub struct CallbackQuery {
+        pub state: String,
+        pub code: String,
+    }
+
+    /// GET /admin/subscription/callback：核对 state（单次/10 分钟）→ 换码 →
+    /// refresh token 落 vault、access token 入池。
+    pub async fn callback(
+        State(state): State<Arc<ApiState>>,
+        axum::extract::Query(query): axum::extract::Query<CallbackQuery>,
+    ) -> Result<axum::response::Response, FluxgateError> {
+        use axum::response::IntoResponse;
+        if let Err(response) = require_enabled(&state) {
+            return Ok(response);
+        }
+        let pool = pool_of(&state)?;
+        let account_id = pool
+            .finish_authorization(&query.state, &query.code)
+            .await
+            .map_err(subscription_error)?;
+        Ok(Json(serde_json::json!({
+            "account_id": account_id,
+            "status": "active",
+        }))
+        .into_response())
+    }
+
+    /// GET /admin/subscription/accounts：池状态脱敏列表（id/vendor/状态/
+    /// 过期时间戳，零 token 片段）。
+    pub async fn accounts(
+        State(state): State<Arc<ApiState>>,
+    ) -> Result<axum::response::Response, FluxgateError> {
+        use axum::response::IntoResponse;
+        if let Err(response) = require_enabled(&state) {
+            return Ok(response);
+        }
+        let pool = pool_of(&state)?;
+        Ok(Json(serde_json::json!({ "accounts": pool.summaries() })).into_response())
+    }
+
+    /// DELETE /admin/subscription/accounts/{id}：吊销——删 vault 条目 +
+    /// 内存摘除，此后该账号不再参与出站。
+    pub async fn revoke(
+        State(state): State<Arc<ApiState>>,
+        Path(account_id): Path<String>,
+    ) -> Result<Json<serde_json::Value>, FluxgateError> {
+        if require_enabled(&state).is_err() {
+            return Err(FluxgateError::Gate(GateError::Validation {
+                field: t("subscription-admin-disabled"),
+            }));
+        }
+        let pool = pool_of(&state)?;
+        // vault 条目**先删**（refresh token 无主即删，不留孤儿凭证）：
+        // 先摘池后删 vault 时，vault 删除失败提前返回会留下孤儿 refresh
+        // token——声明账号重启经 register_declared（检测到 token 即 Active）
+        // 复活，与吊销语义相反。先删 vault 失败时池内仍在，可重试吊销。
+        // 条目与池同源——写在池装配的 store，不在 manager 的 vault 兜底面
+        let mut removed_entries = 0usize;
+        if let Some(vault_store) = pool.vault_store() {
+            removed_entries = store::delete_account_tokens(&vault_store, &account_id).await?;
+        }
+        let removed_from_pool = pool.remove(&account_id);
+        if removed_from_pool {
+            tracing::info!(
+                account = %account_id,
+                vault_entries = removed_entries,
+                "{}",
+                crate::i18n::t("subscription-account-revoked")
+            );
+        }
+        Ok(Json(serde_json::json!({
+            "removed": removed_from_pool,
+            "vault_entries_removed": removed_entries,
+        })))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,4 +1082,41 @@ mod tests {
             "键未登记，裸键名进入响应: {bare}"
         );
     }
+}
+
+/// GET /admin/masking/stats — 出站掩码观测（feature `masking`）：24h 滚动窗
+/// 的 per-kind 命中次数与值长度直方图**元数据**；不含任何值本身。门未装配
+///（feature 关闭或 bootstrap 未接线）返回空窗与 enabled=false。
+#[cfg(feature = "masking")]
+pub async fn masking_stats(
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<Value>, FluxgateError> {
+    let gate = state.vendor_manager.mask_gate();
+    let enabled = gate.as_ref().is_some_and(|g| g.enabled());
+    let mut kinds = serde_json::Map::new();
+    if let Some(gate) = &gate {
+        for (kind, count, buckets) in gate.stats_window() {
+            kinds.insert(
+                kind.as_str().to_string(),
+                serde_json::json!({
+                    "count": count,
+                    "value_len_buckets": {
+                        "le_8": buckets[0],
+                        "le_16": buckets[1],
+                        "le_32": buckets[2],
+                        "le_64": buckets[3],
+                        "le_128": buckets[4],
+                        "le_256": buckets[5],
+                        "le_1024": buckets[6],
+                        "gt_1024": buckets[7],
+                    }
+                }),
+            );
+        }
+    }
+    Ok(Json(serde_json::json!({
+        "enabled": enabled,
+        "window_hours": 24,
+        "kinds": kinds,
+    })))
 }

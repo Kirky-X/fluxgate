@@ -33,6 +33,9 @@ pub mod state;
 pub(crate) mod stream_usage;
 #[cfg(feature = "vault")]
 pub mod vault;
+/// 搜索注入与守护抓取（web-search feature；端点注册在 router_builder）
+#[cfg(feature = "web-search")]
+pub mod web_search;
 
 pub use router_builder::create_router;
 pub use routing_hints::RoutingHints;
@@ -776,10 +779,15 @@ mod fallback_guard_tests {
 
     async fn make_state(vendors: Vec<VendorConfig>, retry: RetrySection) -> Arc<ApiState> {
         let config = Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
@@ -865,6 +873,8 @@ mod fallback_guard_tests {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -1105,10 +1115,15 @@ mod cooldown_retry_after {
         retry: RetrySection,
     ) -> Arc<ApiState> {
         let config = Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
@@ -1194,6 +1209,8 @@ mod cooldown_retry_after {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 

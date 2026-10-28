@@ -276,6 +276,10 @@ mod tests {
         vendors[1].enabled = false; // Disable anthropic
 
         let disabled_config = Config {
+            masking: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             vendor_budgets: Vec::new(),
             server: config.server.clone(),
@@ -299,6 +303,7 @@ mod tests {
             responses: Default::default(),
             otlp: Default::default(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
             metrics: Default::default(),
         };
 
@@ -318,6 +323,10 @@ mod tests {
         vendors[0].models[0].enabled = false; // Disable gpt-4
 
         let disabled_config = Config {
+            masking: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             vendor_budgets: Vec::new(),
             server: config.server.clone(),
@@ -341,6 +350,7 @@ mod tests {
             responses: Default::default(),
             otlp: Default::default(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
             metrics: Default::default(),
         };
         let config_manager = Arc::new(ConfigManager::new(disabled_config));

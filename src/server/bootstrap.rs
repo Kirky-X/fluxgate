@@ -40,6 +40,9 @@ pub(crate) struct Assembly {
     /// OTLP 桥轮询任务句柄（随停机 abort）。
     #[cfg(feature = "otlp")]
     pub(crate) otlp_task: Option<tokio::task::JoinHandle<()>>,
+    /// 目录同步周期任务句柄（catalog-sync feature；随停机 abort）。
+    #[cfg(feature = "catalog-sync")]
+    pub(crate) catalog_sync_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// 初始化日志系统。
@@ -138,6 +141,57 @@ pub(crate) async fn assemble(
     let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
     vendor_manager.initialize().await?;
     tracing::info!("{}", t("main-vendor-manager-initialized"));
+
+    // 出站掩码门（feature `masking`）：装配期一次性挂到 VendorManager；
+    // 未挂门 = admin masking 面恒空、出站路径零掩码。enabled 由 `[masking]`
+    // 热读，门本体始终在位。
+    #[cfg(feature = "masking")]
+    {
+        vendor_manager.set_mask_gate(Arc::new(crate::masking::MaskGate::new(
+            config_manager.clone(),
+            vendor_manager.metrics().clone(),
+        )));
+        tracing::info!("{}", t("main-masking-gate-ready"));
+    }
+
+    // 订阅账号池（feature `subscription-vendor`）：provider/client/池装配 +
+    // `[[subscription_accounts]]` 逐条登记（vault 有 refresh token 即 Active，
+    // 无则待授权）。`[subscription]`.enabled 是运行时门（热读），池常在位
+    // ——启用与授权均无需重启。无库形态（vault 特性关）refresh token 不落盘，
+    // 刷新路径会降级（配置校验层已提示）。
+    #[cfg(feature = "subscription-vendor")]
+    {
+        let (client_id, accounts) = {
+            let snapshot = config_manager.read();
+            (
+                snapshot.subscription.client_id.clone(),
+                snapshot.subscription_accounts.clone(),
+            )
+        };
+        let pool = assemble_subscription_pool(
+            vendor_manager.vault(),
+            client_id,
+            &accounts,
+            vendor_manager.metrics().clone(),
+        )
+        .await;
+        for account in &accounts {
+            if pool
+                .register_declared(&account.id, &account.vendor_id)
+                .await
+            {
+                tracing::info!(
+                    "{}",
+                    t_args(
+                        "main-subscription-account-registered",
+                        &[("account", account.id.clone())]
+                    )
+                );
+            }
+        }
+        vendor_manager.set_subscription_pool(pool);
+        tracing::info!("{}", t("main-subscription-pool-ready"));
+    }
 
     // 成本内存视图启动恢复：文件库时按窗口聚合 token_usage 回填
     // CostTracker（先恢复再对外服务）；内存库无跨重启数据，warn 跳过。
@@ -557,6 +611,9 @@ pub(crate) async fn assemble(
         responses: Some(Arc::new(crate::api::responses::ResponsesRuntime::new(
             database.repository.clone(),
         ))),
+        // 搜索注入运行时（web-search feature；[web_search].enabled 运行时热读门）
+        #[cfg(feature = "web-search")]
+        web_search: Some(Arc::new(crate::api::web_search::WebSearchRuntime::new())),
     });
 
     crate::api::init_global_state(api_state.clone());
@@ -609,6 +666,31 @@ pub(crate) async fn assemble(
         config_manager.clone(),
     )));
 
+    // 目录同步周期任务（catalog-sync 双门控：enabled 且 interval_secs>0 才
+    // 挂载；interval=0 = 不周期，仅 admin 手动触发）。句柄移交 Assembly 停机 abort。
+    #[cfg(feature = "catalog-sync")]
+    let catalog_sync_task = {
+        if catalog_sync_task_due(&config_manager.read().catalog_sync) {
+            let handle = tokio::spawn(run_catalog_sync_loop(
+                config_manager.clone(),
+                vendor_manager.metrics().clone(),
+            ));
+            tracing::info!(
+                "{}",
+                t_args(
+                    "main-catalog-sync-started",
+                    &[(
+                        "interval_secs",
+                        config_manager.read().catalog_sync.interval_secs.to_string(),
+                    )]
+                )
+            );
+            Some(handle)
+        } else {
+            None
+        }
+    };
+
     // 就绪探针注册（sdforge 全局表，装配期一次性；检查不发起上游请求）。
     crate::api::readiness::register_readiness_checks(&api_state, &database.pool);
     let hot_reloader = crate::server::hot_reload::maybe_start_hot_reload(&config_manager).await;
@@ -625,7 +707,105 @@ pub(crate) async fn assemble(
         otlp_bridge,
         #[cfg(feature = "otlp")]
         otlp_task,
+        #[cfg(feature = "catalog-sync")]
+        catalog_sync_task,
     })
+}
+
+/// 目录同步周期任务挂载判定（pure，测试钉）：双门控 enabled 且
+/// interval_secs > 0（0 = 不周期）。
+#[cfg(feature = "catalog-sync")]
+pub(crate) fn catalog_sync_task_due(section: &crate::config::CatalogSyncSection) -> bool {
+    section.enabled && section.interval_secs > 0
+}
+
+/// 订阅账号池装配（feature `subscription-vendor`）：provider 固定 Anthropic
+/// OAuth 契约；独立 http 客户端（低频 OAuth 往返，与出站大流量池隔离）；
+/// store 取保密柜句柄（None = 无库形态，refresh token 仅进程内）；声明账号
+/// 逐条登记（vault 有 refresh token 即 Active，无则待授权）。
+#[cfg(feature = "subscription-vendor")]
+async fn assemble_subscription_pool(
+    store: Option<Arc<dyn crate::vault::KeyStore>>,
+    client_id: String,
+    accounts: &[crate::config::SubscriptionAccountConfig],
+    metrics: Arc<crate::utils::metrics::GlobalMetrics>,
+) -> Arc<crate::vendor::subscription::pool::AccountPool> {
+    let provider: Arc<dyn crate::vendor::subscription::SubscriptionProvider> =
+        Arc::new(crate::vendor::subscription::anthropic::AnthropicProvider::new());
+    let pool = Arc::new(crate::vendor::subscription::pool::AccountPool::new(
+        provider,
+        reqwest::Client::new(),
+        client_id,
+        store,
+        metrics,
+    ));
+    for account in accounts {
+        pool.register_declared(&account.id, &account.vendor_id)
+            .await;
+    }
+    pool
+}
+
+/// 目录同步周期循环（catalog-sync feature）：首轮立即同步（此后按
+/// interval ±10% 抖动错峰）；enabled/interval 每轮热读——运行期关闭或
+/// interval 改 0 时休眠待启（admin 手动触发不受影响）。失败 fail-open：
+/// catalog 原样、fail_total 已在 plan_from_source 记，此处只 warn。
+#[cfg(feature = "catalog-sync")]
+async fn run_catalog_sync_loop(
+    config_manager: Arc<crate::config::ConfigManager>,
+    metrics: Arc<crate::utils::metrics::GlobalMetrics>,
+) {
+    loop {
+        let section = config_manager.read().catalog_sync.clone();
+        if !catalog_sync_task_due(&section) {
+            // 热关/改 0：休眠待启（保持任务存活，重新打开无需重启）
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            continue;
+        }
+        let snapshot = config_manager.read();
+        let (section, existing) = (
+            snapshot.catalog_sync.clone(),
+            snapshot.model_catalog.clone(),
+        );
+        drop(snapshot);
+        match crate::config::catalog_sync::plan_from_source(&section, &existing, &metrics).await {
+            Ok(crate::config::catalog_sync::PlanOutcome::NotModified) => {}
+            Ok(crate::config::catalog_sync::PlanOutcome::Plan(plan, etag)) => {
+                match crate::config::catalog_sync::persist_plan(&config_manager, &plan, &metrics) {
+                    Ok(()) => {
+                        // etag 随 persist 成功回存：失败不回存，下轮全量重拉重试
+                        crate::config::catalog_sync::commit_etag(etag.as_deref());
+                        tracing::info!(
+                            "{}",
+                            t_args(
+                                "main-catalog-sync-synced",
+                                &[("added", plan.additions.len().to_string())]
+                            )
+                        )
+                    }
+                    Err(e) => tracing::warn!(
+                        "{}",
+                        t_args("main-catalog-sync-failed", &[("error", e.to_string())])
+                    ),
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "{}",
+                    t_args("main-catalog-sync-failed", &[("error", e.to_string())])
+                );
+            }
+        }
+        // ±10% 抖动（0.9..=1.1）：SystemTime 纳秒做非确定性相位，防多实例
+        // 同刻齐打上游（与 retry spread_jitter 同目的；周期语义不引入 rand 依赖）
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0);
+        let jitter = 0.9 + (nanos % 201) as f64 / 1000.0;
+        let period = (section.interval_secs as f64 * jitter).max(1.0) as u64;
+        tokio::time::sleep(std::time::Duration::from_secs(period)).await;
+    }
 }
 
 /// 启动日志用的端点脱敏：去掉 userinfo 与 query（凭证可能藏在两者中）。
@@ -757,6 +937,35 @@ mod tests {
         assert!(
             vendor_manager.cost_tracker().total_usd() == 0.0,
             "内存模式跳过恢复后计数必须为零"
+        );
+    }
+
+    /// 目录同步周期任务挂载判定（T006）：双门控——enabled=false 不挂任务、
+    /// interval_secs=0 不挂任务（仅 admin 手动触发）、两者同时满足才挂。
+    #[cfg(feature = "catalog-sync")]
+    #[test]
+    fn catalog_sync_task_due_requires_enabled_and_positive_interval() {
+        let disabled = crate::config::CatalogSyncSection::default();
+        assert!(
+            !catalog_sync_task_due(&disabled),
+            "缺省（enabled=false）必须不挂周期任务"
+        );
+        let no_interval = crate::config::CatalogSyncSection {
+            enabled: true,
+            ..crate::config::CatalogSyncSection::default()
+        };
+        assert!(
+            !catalog_sync_task_due(&no_interval),
+            "interval_secs=0 必须不挂周期任务（仅手动触发）"
+        );
+        let due = crate::config::CatalogSyncSection {
+            enabled: true,
+            interval_secs: 3600,
+            ..crate::config::CatalogSyncSection::default()
+        };
+        assert!(
+            catalog_sync_task_due(&due),
+            "enabled + interval>0 必须挂周期任务"
         );
     }
 

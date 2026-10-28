@@ -23,6 +23,12 @@
 //! | `--features sdk`                 | OK   | sdk（reqwest + eventsource-stream + url）   |
 //! | `--features "web-server logging grpc"` | OK | grpc → sdforge/grpc（需 protoc）      |
 //! | `--no-default-features`          | OK   | 门面 re-export（config/error/i18n/protocol/utils）|
+//! | `--no-default-features --features "db-sqlite,vendor-management,masking"` | OK | masking 不进 full、无 resilience——非流式回程还原分支的编译面（E0061 回归钉） |
+//! | `--no-default-features --features "db-sqlite,vendor-management,subscription-vendor,masking"` | OK | 订阅池 + 掩码全开（vault 联动）|
+//!
+//! 【门禁口径】默认特性集（full + db-sqlite）覆盖不到上两行——`masking`
+//! 刻意不进 `full`，`cargo check --benches` 与 clippy 默认面也不含。组合
+//! 编译随修复/复审以 cargo check 显式复验（见审查报告口径）。
 //!
 //! 【矩阵命令口径（重要）】非默认后端必须用 `-p fluxgate` 限定到本包：
 //! `cargo check --workspace --no-default-features --features "full,db-postgres"`
@@ -159,4 +165,19 @@ fn test_core_types_without_sdk() {
     // Gate 变体 transparent 透传 llm-gate 英文规范串
     assert_eq!(err.to_string(), "Configuration error: core");
     let _ = std::marker::PhantomData::<Config>;
+}
+
+/// masking feature：掩码门与占位符注册表可见（不进 full，组合编译面回归钉）
+#[cfg(feature = "masking")]
+#[test]
+fn test_masking_module_available() {
+    let _ = fluxgate::masking::MaskGate::new;
+    let _ = fluxgate::masking::PlaceholderRegistry::new;
+}
+
+/// subscription-vendor feature：订阅池可见（不进 full，装配面回归钉）
+#[cfg(feature = "subscription-vendor")]
+#[test]
+fn test_subscription_module_available() {
+    let _ = fluxgate::vendor::subscription::pool::AccountPool::new;
 }

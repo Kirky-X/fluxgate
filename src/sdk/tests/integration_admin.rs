@@ -37,6 +37,9 @@ fn sdk_admin_routes_are_subset_of_server_route_table() {
         ".route(\"/admin/context-stats\", get(admin::context_stats))",
         ".route(\"/admin/quota/ledger\", get(admin::quota_ledger))",
         ".route(\"/admin/vendor-budgets\", get(admin::vendor_budgets))",
+        // catalog-sync 路由为 feature 门控注册，源码形态恒在（cfg 不影响
+        // 源文本）；SDK 方法与网关路由零差异契约照常对位
+        "let router = router.route(\"/admin/catalog/sync\", post(admin::catalog_sync));",
     ];
     for pattern in &expected {
         assert!(
@@ -64,6 +67,9 @@ fn sdk_admin_routes_are_subset_of_server_route_table() {
             | ("GET", "admin/quota/ledger")
             | ("GET", "admin/vendor-budgets") => {
                 // 已由 expected 精确模式覆盖
+            }
+            ("POST", "admin/catalog/sync") => {
+                // 已由 expected 精确模式覆盖（catalog-sync feature 门控注册）
             }
             ("GET", "api/v1/health") => {
                 // 已由 forge 属性断言覆盖（health.rs 注册）
@@ -563,4 +569,40 @@ async fn vendor_budgets_returns_rows_shape() {
     assert!((row.pace_ratio - 0.4).abs() < 1e-9);
     assert!(!row.depleted);
     assert_eq!(row.reset_secs, 3500);
+}
+
+/// POST /admin/catalog/sync — 网关真实形状（只增不改 diff；fallback 标注）
+#[tokio::test]
+async fn sync_catalog_returns_diff_shape() {
+    let mut server = mockito::Server::new_async().await;
+
+    server
+        .mock("POST", "/admin/catalog/sync")
+        .match_body(mockito::Matcher::PartialJson(
+            serde_json::json!({ "dry_run": true }),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"dry_run":true,"status":"ok","added":2,"skipped":1,"duplicates":0,
+                "unchanged":5,"etag":"\"v1\"",
+                "entries":[
+                  {"vendor_id":"claude-main","model_id":"claude-sonnet-4-5","price_source":"source"},
+                  {"vendor_id":"openai","model_id":"gpt-4o","price_source":"fallback"}
+                ]}"#,
+        )
+        .create();
+
+    let client = build_client(&server.url());
+    let report = client.sync_catalog(true).await.unwrap();
+    assert!(report.dry_run);
+    assert_eq!(report.status, "ok");
+    assert_eq!(report.added, 2);
+    assert_eq!(report.skipped, 1);
+    assert_eq!(report.unchanged, 5);
+    assert_eq!(report.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(report.entries.len(), 2);
+    assert_eq!(report.entries[0].vendor_id, "claude-main");
+    assert_eq!(report.entries[0].price_source, "source");
+    assert_eq!(report.entries[1].price_source, "fallback");
 }

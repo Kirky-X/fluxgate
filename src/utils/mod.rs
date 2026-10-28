@@ -12,6 +12,11 @@ pub mod retry;
 pub mod tenant;
 pub mod tokens;
 
+// 出站 SSRF 防护核（web-search-inject）：特殊网段判定 + GuardedFetcher
+//（fetcher 面依赖 reqwest，随 web-search 门控——netguard 单开只编译纯判定）。
+#[cfg(feature = "netguard")]
+pub mod netguard;
+
 #[cfg(feature = "cost-tracking")]
 pub mod cost_tracker;
 

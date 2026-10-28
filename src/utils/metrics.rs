@@ -211,6 +211,25 @@ pub struct GlobalMetrics {
     quota_window_refused_total: RwLock<HashMap<String, AtomicU64>>,
     quota_factor_depleted_total: RwLock<HashMap<String, AtomicU64>>,
     quota_ledger_flush_fail_total: AtomicU64,
+    /// 目录同步观测（catalog-sync）：失败计数按 reason 标签分列
+    ///（timeout/network/http_status/too_large/client/parse）与累计新增条目
+    catalog_sync_fail_total: RwLock<HashMap<String, AtomicU64>>,
+    catalog_sync_added_total: AtomicU64,
+    /// 订阅账号观测（subscription-vendor）：刷新失败累计与当前降级账号数
+    ///（gauge：进入 Degraded +1，恢复 Active / 摘除 / 吊销 −1）
+    subscription_refresh_fail_total: AtomicU64,
+    subscription_accounts_degraded: AtomicU64,
+    /// 搜索注入观测（web-search-inject）：请求计数按
+    /// "{provider}\u{0}{result}"（result ∈ success|error）标签分列；
+    /// netguard 拒绝按段名 tag 分列
+    web_search_requests_total: RwLock<HashMap<String, AtomicU64>>,
+    netguard_denied_total: RwLock<HashMap<String, AtomicU64>>,
+    /// 出站掩码观测（feature `masking`，门未接线时恒 0）：命中计数
+    ///（标签 kind:action，mask/warn 各记一行）与 blocked / fail / restore
+    masking_hits_total: RwLock<HashMap<String, AtomicU64>>,
+    masking_blocked_total: AtomicU64,
+    masking_fail_total: AtomicU64,
+    masking_restore_total: AtomicU64,
 }
 
 impl GlobalMetrics {
@@ -259,9 +278,65 @@ impl GlobalMetrics {
             affinity_persist_drop_total: AtomicU64::new(0),
             affinity_restored_count: AtomicU64::new(0),
             quota_window_refused_total: RwLock::new(HashMap::new()),
+            catalog_sync_fail_total: RwLock::new(HashMap::new()),
+            catalog_sync_added_total: AtomicU64::new(0),
             quota_factor_depleted_total: RwLock::new(HashMap::new()),
             quota_ledger_flush_fail_total: AtomicU64::new(0),
+            subscription_refresh_fail_total: AtomicU64::new(0),
+            subscription_accounts_degraded: AtomicU64::new(0),
+            web_search_requests_total: RwLock::new(HashMap::new()),
+            netguard_denied_total: RwLock::new(HashMap::new()),
+            masking_hits_total: RwLock::new(HashMap::new()),
+            masking_blocked_total: AtomicU64::new(0),
+            masking_fail_total: AtomicU64::new(0),
+            masking_restore_total: AtomicU64::new(0),
         }
+    }
+
+    // 出站掩码观测（feature `masking`；MaskGate 打点）
+
+    /// 掩码命中计数（`masking_hits_total{kind,action}`）：action ∈
+    /// mask|warn|block（Block 命中同时记 blocked_total）
+    pub fn record_masking_hit(&self, kind: &str, action: &str) {
+        let key = format!("{kind}:{action}");
+        self.masking_hits_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(key)
+            .or_default()
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Block 拒绝计数
+    pub fn record_masking_blocked(&self) {
+        self.masking_blocked_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// fail-closed 拒发计数（检测/掩码/还原任一步 Err 或 panic）
+    pub fn record_masking_fail(&self) {
+        self.masking_fail_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 占位符还原计数（流式逐增量与整量按回填数累加）
+    pub fn record_masking_restore(&self, count: u64) {
+        if count > 0 {
+            self.masking_restore_total
+                .fetch_add(count, Ordering::Relaxed);
+        }
+    }
+
+    /// 掩码命中快照（标签 kind:action → 次数，字典序）
+    pub fn masking_hits(&self) -> Vec<(String, u64)> {
+        let guard = self
+            .masking_hits_total
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut out: Vec<(String, u64)> = guard
+            .iter()
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
+            .collect();
+        out.sort();
+        out
     }
 
     // 嵌入兼容组观测（router::route_embedding / admin / embeddings 处理器写）
@@ -680,7 +755,52 @@ impl GlobalMetrics {
             .fetch_add(count, Ordering::Relaxed);
     }
 
-    // 配额观测（quota-aware-routing，中间件/落盘/路由因子写、admin/快照读）
+    // 搜索/netguard 观测（web-search feature 的 admin/快照消费面）
+
+    /// 搜索请求计数（provider 维度；result ∈ success|error）。web-search
+    /// handler 消费。
+    pub fn record_web_search_request(&self, provider: &str, success: bool) {
+        let key = format!(
+            "{provider}\u{0}{}",
+            if success { "success" } else { "error" }
+        );
+        self.web_search_requests_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(key)
+            .or_default()
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// netguard 拒绝计数（段名 tag 维度）。web-search fetch handler 消费。
+    pub fn record_netguard_denied(&self, tag: &str) {
+        self.netguard_denied_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(tag.to_string())
+            .or_default()
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// web_search_requests 标签计数快照（"{provider}\u{0}{result}" → 计数）。
+    pub fn web_search_requests(&self) -> Vec<(String, u64)> {
+        self.web_search_requests_total
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(key, c)| (key.clone(), c.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// netguard_denied 标签计数快照（tag → 计数）。
+    pub fn netguard_denied(&self) -> Vec<(String, u64)> {
+        self.netguard_denied_total
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(tag, c)| (tag.clone(), c.load(Ordering::Relaxed)))
+            .collect()
+    }
 
     /// 多窗拒绝逐窗计数：429 拒绝时对每个受拒窗 `+1`
     ///（标签 = window id；labeled counter，进程内 HashMap 承载）
@@ -708,6 +828,67 @@ impl GlobalMetrics {
     pub fn record_quota_ledger_flush_fail(&self) {
         self.quota_ledger_flush_fail_total
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 目录同步失败计数（reason 标签：FetchError::reason / "parse"；
+    /// fail-open 语义下只计数不阻塞——catalog 原样）
+    pub fn record_catalog_sync_fail(&self, reason: &str) {
+        self.catalog_sync_fail_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(reason.to_string())
+            .or_default()
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 目录同步累计新增条目数（persist_plan 落盘成功时按 additions 计）
+    pub fn record_catalog_sync_added(&self, count: u64) {
+        self.catalog_sync_added_total
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// 目录同步失败计数快照（/admin/metrics 出口，reason → 次数）
+    pub fn catalog_sync_failures(&self) -> Vec<(String, u64)> {
+        self.catalog_sync_fail_total
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(reason, c)| (reason.clone(), c.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// 目录同步累计新增快照（/admin/metrics 出口）
+    pub fn catalog_sync_added(&self) -> u64 {
+        self.catalog_sync_added_total.load(Ordering::Relaxed)
+    }
+
+    /// 订阅账号刷新失败累计（Degraded 进入与摘除两次失败都计）
+    pub fn record_subscription_refresh_fail(&self) {
+        self.subscription_refresh_fail_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 订阅降级账号 gauge +1（进入 Degraded）
+    pub fn record_subscription_account_degraded_enter(&self) {
+        self.subscription_accounts_degraded
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 订阅降级账号 gauge −1（恢复 Active / 摘除 / 吊销；饱和不下穿 0）
+    pub fn record_subscription_account_degraded_leave(&self) {
+        self.subscription_accounts_degraded
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1))
+            .ok();
+    }
+
+    /// 订阅刷新失败累计快照（/admin/metrics 出口）
+    pub fn subscription_refresh_fails(&self) -> u64 {
+        self.subscription_refresh_fail_total.load(Ordering::Relaxed)
+    }
+
+    /// 订阅降级账号数快照（/admin/metrics 出口）
+    pub fn subscription_accounts_degraded(&self) -> u64 {
+        self.subscription_accounts_degraded.load(Ordering::Relaxed)
     }
 
     /// 逐窗拒绝计数快照（/admin/metrics 出口）
@@ -964,6 +1145,16 @@ impl GlobalMetrics {
             quota_window_refused_total: self.quota_window_refused(),
             quota_factor_depleted_total: self.quota_factor_depleted(),
             quota_ledger_flush_fail_total: self.quota_ledger_flush_failures(),
+            catalog_sync_fail_total: self.catalog_sync_failures(),
+            catalog_sync_added_total: self.catalog_sync_added(),
+            subscription_refresh_fail_total: self.subscription_refresh_fails(),
+            subscription_accounts_degraded: self.subscription_accounts_degraded(),
+            web_search_requests_total: self.web_search_requests(),
+            netguard_denied_total: self.netguard_denied(),
+            masking_hits_total: self.masking_hits(),
+            masking_blocked_total: self.masking_blocked_total.load(Ordering::Relaxed),
+            masking_fail_total: self.masking_fail_total.load(Ordering::Relaxed),
+            masking_restore_total: self.masking_restore_total.load(Ordering::Relaxed),
         }
     }
 
@@ -1028,6 +1219,10 @@ impl GlobalMetrics {
         self.affinity_drift_total.store(0, Ordering::Relaxed);
         self.affinity_persist_drop_total.store(0, Ordering::Relaxed);
         self.affinity_restored_count.store(0, Ordering::Relaxed);
+        self.subscription_refresh_fail_total
+            .store(0, Ordering::Relaxed);
+        self.subscription_accounts_degraded
+            .store(0, Ordering::Relaxed);
         self.quota_window_refused_total
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -1038,8 +1233,28 @@ impl GlobalMetrics {
             .clear();
         self.quota_ledger_flush_fail_total
             .store(0, Ordering::Relaxed);
+        self.catalog_sync_fail_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.catalog_sync_added_total.store(0, Ordering::Relaxed);
         self.gemini_upstream_failures_total
             .store(0, Ordering::Relaxed);
+        self.web_search_requests_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.netguard_denied_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.masking_hits_total
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.masking_blocked_total.store(0, Ordering::Relaxed);
+        self.masking_fail_total.store(0, Ordering::Relaxed);
+        self.masking_restore_total.store(0, Ordering::Relaxed);
     }
 }
 
@@ -1213,6 +1428,22 @@ pub struct MetricsSnapshot {
     pub quota_window_refused_total: Vec<(String, u64)>,
     pub quota_factor_depleted_total: Vec<(String, u64)>,
     pub quota_ledger_flush_fail_total: u64,
+    /// 目录同步观测（catalog-sync）：reason 分列失败计数与累计新增条目
+    pub catalog_sync_fail_total: Vec<(String, u64)>,
+    pub catalog_sync_added_total: u64,
+    /// 订阅账号观测（subscription-vendor）：刷新失败累计 / 当前降级账号数
+    pub subscription_refresh_fail_total: u64,
+    pub subscription_accounts_degraded: u64,
+    /// 搜索注入观测（web-search-inject）："{provider}\u{0}{result}" 分列请求
+    /// 计数与 netguard 段名 tag 分列拒绝计数（/admin/metrics 自动带出）
+    pub web_search_requests_total: Vec<(String, u64)>,
+    pub netguard_denied_total: Vec<(String, u64)>,
+    /// 出站掩码观测（feature `masking`）：命中（kind:action 标签分列）与
+    /// blocked / fail / restore
+    pub masking_hits_total: Vec<(String, u64)>,
+    pub masking_blocked_total: u64,
+    pub masking_fail_total: u64,
+    pub masking_restore_total: u64,
 }
 
 /// 难度定档观测子块（/admin/metrics 快照字段）
@@ -1241,6 +1472,41 @@ fn now_unix_ts() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// reset 收口：web_search/netguard/masking 六面（三标签表 + 三标量）
+    /// 与其余计数面一并归零——reset 后快照不得自相矛盾。
+    #[test]
+    fn reset_clears_web_search_netguard_masking_surfaces() {
+        let m = GlobalMetrics::new();
+        m.record_web_search_request("brave", true);
+        m.record_web_search_request("brave", false);
+        m.record_netguard_denied("private");
+        m.record_masking_hit("api_key", "mask");
+        m.record_masking_blocked();
+        m.record_masking_fail();
+        m.record_masking_restore(3);
+        let snap = m.snapshot();
+        assert!(!snap.web_search_requests_total.is_empty());
+        assert!(!snap.netguard_denied_total.is_empty());
+        assert!(!snap.masking_hits_total.is_empty());
+        assert_eq!(snap.masking_blocked_total, 1);
+        assert_eq!(snap.masking_fail_total, 1);
+        assert!(snap.masking_restore_total >= 3);
+        m.reset();
+        let snap = m.snapshot();
+        assert!(
+            snap.web_search_requests_total.is_empty(),
+            "web_search 标签表须清零"
+        );
+        assert!(
+            snap.netguard_denied_total.is_empty(),
+            "netguard 标签表须清零"
+        );
+        assert!(snap.masking_hits_total.is_empty(), "masking 标签表须清零");
+        assert_eq!(snap.masking_blocked_total, 0, "blocked 标量须清零");
+        assert_eq!(snap.masking_fail_total, 0, "fail 标量须清零");
+        assert_eq!(snap.masking_restore_total, 0, "restore 标量须清零");
+    }
+
     use super::*;
     use std::time::Duration;
 

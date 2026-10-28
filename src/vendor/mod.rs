@@ -11,6 +11,8 @@ pub mod rate_limiter;
 #[cfg(feature = "resilience")]
 pub mod resilience;
 pub mod status;
+#[cfg(feature = "subscription-vendor")]
+pub mod subscription;
 
 pub use cost::{CostCalculator, PricingEntry};
 pub use key_pool::{KeyPoolInfo, PoolSnapshot};

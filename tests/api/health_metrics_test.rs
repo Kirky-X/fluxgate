@@ -23,6 +23,8 @@ use tower::ServiceExt;
 
 fn make_config() -> Config {
     Config {
+        masking: Default::default(),
+        web_search: Default::default(),
         vendor_budgets: Vec::new(),
         server: fluxgate::config::ServerConfig {
             host: "0.0.0.0".into(),
@@ -53,6 +55,9 @@ fn make_config() -> Config {
         rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
         otlp: Default::default(),
         usage_insights: Default::default(),
+        catalog_sync: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
         metrics: Default::default(),
     }
 }
@@ -376,4 +381,111 @@ async fn admin_metrics_exposes_quota_counters() {
             .is_some_and(|v| v.is_u64()),
         "/admin/metrics 缺 quota_ledger_flush_fail_total"
     );
+}
+
+/// /admin/metrics 暴露目录同步观测计数（catalog-sync）：reason 分列失败
+/// 计数（labeled 数组）与累计新增条目字段在位且可累加。打点经 GlobalMetrics
+///（plan_from_source 失败路径 / persist_plan 落盘成功路径写），此处直录
+/// 断言出口形状——与配额三计数同款出口测试。
+#[tokio::test]
+async fn admin_metrics_exposes_catalog_sync_counters() {
+    let (app, state, _) = build_app().await;
+    let metrics = state.vendor_manager.metrics();
+    metrics.record_catalog_sync_fail("timeout");
+    metrics.record_catalog_sync_fail("timeout");
+    metrics.record_catalog_sync_fail("network");
+    metrics.record_catalog_sync_added(3);
+
+    let resp = get(app, "/admin/metrics").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["catalog_sync_added_total"], 3,
+        "新增条目计数必须透出（实测 {json}）"
+    );
+    let failures = json["catalog_sync_fail_total"]
+        .as_array()
+        .expect("失败计数必须为 labeled 数组");
+    let find = |reason: &str| {
+        failures
+            .iter()
+            .find(|pair| pair[0] == reason)
+            .and_then(|pair| pair[1].as_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(find("timeout"), 2, "timeout 计数分列: {failures:?}");
+    assert_eq!(find("network"), 1, "network 计数分列: {failures:?}");
+}
+
+/// /admin/metrics 暴露订阅账号观测（subscription-vendor）：刷新失败累计与
+/// 当前降级账号数（gauge）。打点经 GlobalMetrics（池降级/恢复/摘除路径写），
+/// 此处直录断言出口形状——与目录同步计数同款出口测试。
+#[tokio::test]
+async fn admin_metrics_exposes_subscription_counters() {
+    let (app, state, _) = build_app().await;
+    let metrics = state.vendor_manager.metrics();
+    metrics.record_subscription_refresh_fail();
+    metrics.record_subscription_refresh_fail();
+    metrics.record_subscription_account_degraded_enter();
+
+    let resp = get(app, "/admin/metrics").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["subscription_refresh_fail_total"], 2,
+        "刷新失败计数必须透出（实测 {json}）"
+    );
+    assert_eq!(
+        json["subscription_accounts_degraded"], 1,
+        "降级账号 gauge 必须透出（实测 {json}）"
+    );
+    metrics.record_subscription_account_degraded_leave();
+    assert_eq!(
+        state
+            .vendor_manager
+            .metrics()
+            .snapshot()
+            .subscription_accounts_degraded,
+        0,
+        "gauge 减到 0 不下穿"
+    );
+}
+
+/// 掩码观测四计数经 MetricsSnapshot 进 /admin/metrics JSON（feature
+/// `masking`；门未接线时字段恒在、值为 0——零行为口径的观测面）。
+#[cfg(feature = "masking")]
+#[test]
+fn admin_metrics_snapshot_exposes_masking_counters() {
+    let metrics = fluxgate::utils::metrics::GlobalMetrics::new();
+
+    // 未接线：四字段在场且为 0
+    let snapshot = metrics.snapshot();
+    let value = serde_json::to_value(&snapshot).expect("快照可序列化");
+    assert_eq!(value["masking_hits_total"], serde_json::json!([]));
+    assert_eq!(value["masking_blocked_total"], serde_json::json!(0));
+    assert_eq!(value["masking_fail_total"], serde_json::json!(0));
+    assert_eq!(value["masking_restore_total"], serde_json::json!(0));
+
+    // 打点后四计数按标签/数量出现（kind:action 分列）
+    metrics.record_masking_hit("api_key", "mask");
+    metrics.record_masking_hit("email", "warn");
+    metrics.record_masking_hit("custom", "block");
+    metrics.record_masking_blocked();
+    metrics.record_masking_fail();
+    metrics.record_masking_restore(3);
+    let snapshot = metrics.snapshot();
+    let value = serde_json::to_value(&snapshot).expect("快照可序列化");
+    assert_eq!(
+        value["masking_hits_total"],
+        serde_json::json!([["api_key:mask", 1], ["custom:block", 1], ["email:warn", 1]])
+    );
+    assert_eq!(value["masking_blocked_total"], serde_json::json!(1));
+    assert_eq!(value["masking_fail_total"], serde_json::json!(1));
+    assert_eq!(value["masking_restore_total"], serde_json::json!(3));
 }

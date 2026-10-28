@@ -1,0 +1,78 @@
+{
+ "anthropic": {
+  "id": "anthropic",
+  "name": "Anthropic",
+  "models": {
+   "claude-sonnet-4-5": {
+    "id": "claude-sonnet-4-5",
+    "name": "Claude Sonnet 4.5 (latest)",
+    "tool_call": true,
+    "reasoning": true,
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "cost": {
+     "input": 3,
+     "output": 15,
+     "cache_read": 0.3,
+     "cache_write": 3.75
+    }
+   }
+  }
+ },
+ "openai": {
+  "id": "openai",
+  "name": "OpenAI",
+  "models": {
+   "gpt-4o": {
+    "id": "gpt-4o",
+    "name": "GPT-4o",
+    "tool_call": true,
+    "reasoning": false,
+    "limit": {
+     "context": 128000,
+     "output": 16384
+    },
+    "cost": {
+     "input": 2.5,
+     "output": 10,
+     "cache_read": 1.25
+    }
+   },
+   "gpt-image-1": {
+    "id": "gpt-image-1",
+    "name": "gpt-image-1",
+    "tool_call": false,
+    "reasoning": false,
+    "limit": {
+     "context": 0,
+     "input": 0,
+     "output": 0
+    }
+   }
+  }
+ },
+ "deepseek": {
+  "id": "deepseek",
+  "name": "DeepSeek",
+  "models": {
+   "deepseek-v4-pro": {
+    "id": "deepseek-v4-pro",
+    "name": "DeepSeek V4 Pro",
+    "tool_call": true,
+    "reasoning": true,
+    "limit": {
+     "context": 1048576,
+     "output": 393216
+    },
+    "cost": {
+     "input": 0.66,
+     "output": 1.98,
+     "reasoning": 1.98,
+     "cache_read": 0.022
+    }
+   }
+  }
+ }
+}

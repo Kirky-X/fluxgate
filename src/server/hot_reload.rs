@@ -111,6 +111,12 @@ fn changed_sections(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.usage_insights != new.usage_insights {
         sections.push("usage_insights");
     }
+    if old.catalog_sync != new.catalog_sync {
+        sections.push("catalog_sync");
+    }
+    if old.masking != new.masking {
+        sections.push("masking");
+    }
     // 以下段变更走拒绝路径，正常提交不出现；列出仅为日志完备
     if old.vendors != new.vendors {
         sections.push("vendors");
@@ -239,6 +245,8 @@ mod tests {
     fn minimal_config() -> Config {
         // 最小合法配置：空 vendors + 默认段。
         Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".into(),
                 port: 8080,
@@ -269,6 +277,9 @@ mod tests {
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
         }
     }

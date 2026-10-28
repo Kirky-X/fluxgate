@@ -68,6 +68,10 @@ fn collector() -> &'static SpanCollector {
 
 fn make_config() -> Config {
     Config {
+        masking: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
+        web_search: Default::default(),
         vendor_budgets: Vec::new(),
         server: fluxgate::config::ServerConfig {
             host: "0.0.0.0".into(),
@@ -98,6 +102,7 @@ fn make_config() -> Config {
         rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
         otlp: Default::default(),
         usage_insights: Default::default(),
+        catalog_sync: Default::default(),
         metrics: Default::default(),
     }
 }

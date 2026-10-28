@@ -503,6 +503,13 @@ context_window = 1
 [model_catalog.cache_breakpoints]
 enabled = true
 
+[[web_search.providers]]
+kind = "searxng"
+api_key_env = "SURFACE_PROBE_SEARXNG_KEY"
+api_key_envs = ["SURFACE_PROBE_SEARXNG_KEY_2"]
+api_key_vault_ref = "surface-probe-vault-id"
+base_url = "http://127.0.0.1:8080/search"
+
 [routing.difficulty.tiers]
 low = "surface-probe-low"
 mid = "surface-probe-mid"

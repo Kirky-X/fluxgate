@@ -76,6 +76,8 @@ fn section(mode: &str) -> AffinitySection {
 /// 裸写入器（无落盘通道）：断言决策与亲和表状态
 async fn build_writer(mode: &str) -> (AffinityWriter, Arc<AffinityTable>) {
     let config = crate::config::Config {
+        masking: Default::default(),
+        web_search: Default::default(),
         rate_limit: Default::default(),
         server: crate::config::ServerConfig {
             host: "127.0.0.1".into(),
@@ -109,6 +111,9 @@ async fn build_writer(mode: &str) -> (AffinityWriter, Arc<AffinityTable>) {
         otlp: Default::default(),
         vendor_budgets: Vec::new(),
         usage_insights: Default::default(),
+        catalog_sync: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
         metrics: Default::default(),
     };
     let config = Arc::new(ConfigManager::new(config));
@@ -459,6 +464,8 @@ async fn auto_settle_ttl_survives_route_lookup() {
 #[tokio::test]
 async fn legacy_settle_respects_tenant_scoped_first_binding() {
     let config = crate::config::Config {
+        masking: Default::default(),
+        web_search: Default::default(),
         rate_limit: Default::default(),
         server: crate::config::ServerConfig {
             host: "127.0.0.1".into(),
@@ -493,6 +500,9 @@ async fn legacy_settle_respects_tenant_scoped_first_binding() {
         otlp: Default::default(),
         vendor_budgets: Vec::new(),
         usage_insights: Default::default(),
+        catalog_sync: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
         metrics: Default::default(),
     };
     let config = Arc::new(ConfigManager::new(config));
@@ -574,6 +584,8 @@ async fn sink_receives_sticks_for_auto_and_turn_only() {
     for (mode, expect) in [("auto", 1usize), ("turn", 1), ("legacy", 0), ("off", 0)] {
         let counter = Arc::new(AtomicUsize::new(0));
         let config = crate::config::Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".into(),
@@ -607,6 +619,9 @@ async fn sink_receives_sticks_for_auto_and_turn_only() {
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
         };
         let config = Arc::new(ConfigManager::new(config));

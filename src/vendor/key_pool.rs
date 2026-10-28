@@ -89,6 +89,15 @@ pub(crate) enum RequestCredential {
     Pool { key: String, fingerprint: String },
     /// 池空回退：`api_key_env` 单 key 行为（build 时读 env，缺失报 Config 错误）。
     LegacyEnv,
+    /// 订阅账号凭证（subscription-vendor）：Authorization 头组装 Bearer
+    /// access token（组装唯一入口 vendor::manager 的
+    /// `build_authed_for_credential`）；指纹恒 None → vendor 级熔断器，
+    /// 账号级熔断（降级/摘除）内聚在账号池。
+    #[cfg(feature = "subscription-vendor")]
+    Subscription {
+        account_id: String,
+        access_token: String,
+    },
 }
 
 impl std::fmt::Debug for RequestCredential {
@@ -100,24 +109,52 @@ impl std::fmt::Debug for RequestCredential {
                 .field("fingerprint", fingerprint)
                 .finish(),
             RequestCredential::LegacyEnv => f.debug_struct("LegacyEnv").finish(),
+            #[cfg(feature = "subscription-vendor")]
+            RequestCredential::Subscription {
+                account_id,
+                access_token,
+            } => f
+                .debug_struct("Subscription")
+                .field("account_id", account_id)
+                .field(
+                    "access_token",
+                    &format!("[REDACTED {} chars]", access_token.len()),
+                )
+                .finish(),
         }
     }
 }
 
 impl RequestCredential {
     /// 池命中时的 key 原文；`LegacyEnv` 为 `None`（build 时读 env）。
+    /// 订阅凭证返回 access token（调用方必须经
+    /// `build_authed_for_credential` 组装，不得直连协议分派）。
     pub(crate) fn api_key(&self) -> Option<&str> {
         match self {
             RequestCredential::Pool { key, .. } => Some(key),
             RequestCredential::LegacyEnv => None,
+            #[cfg(feature = "subscription-vendor")]
+            RequestCredential::Subscription { access_token, .. } => Some(access_token),
         }
     }
 
     /// 池命中时的 key 指纹；`LegacyEnv` 为 `None`（用 vendor 级熔断器）。
+    /// 订阅凭证恒 `None`（账号熔断在账号池，不入 key 指纹熔断表）。
     pub(crate) fn fingerprint(&self) -> Option<&str> {
         match self {
             RequestCredential::Pool { fingerprint, .. } => Some(fingerprint),
             RequestCredential::LegacyEnv => None,
+            #[cfg(feature = "subscription-vendor")]
+            RequestCredential::Subscription { .. } => None,
+        }
+    }
+
+    /// 订阅账号 id（401 单刷重试路径的判别用）；非订阅凭证恒 None。
+    #[cfg(feature = "subscription-vendor")]
+    pub(crate) fn account_id(&self) -> Option<&str> {
+        match self {
+            RequestCredential::Subscription { account_id, .. } => Some(account_id),
+            _ => None,
         }
     }
 }
@@ -1212,6 +1249,9 @@ mod blacklist_tests {
         match pool.select_with(config, "v-test", &lookup()) {
             RequestCredential::Pool { key, .. } => Some(key),
             RequestCredential::LegacyEnv => None,
+            // key 池自身永不产出订阅凭证（订阅选择在 manager 层账号池）
+            #[cfg(feature = "subscription-vendor")]
+            RequestCredential::Subscription { .. } => None,
         }
     }
 

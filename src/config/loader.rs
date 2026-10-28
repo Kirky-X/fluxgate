@@ -131,6 +131,33 @@ fn line_column(raw: &str, offset: usize) -> Option<(usize, usize)> {
     Some((line, column))
 }
 
+/// `[web_search]` 段 serde 缺省单源（enabled=false、providers 空——
+/// 两端点 404 的安全默认）。Default 实现落 loader（规则 14）。
+impl Default for super::WebSearchSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            providers: Vec::new(),
+        }
+    }
+}
+
+/// `[masking]` 段 serde 缺省单源（enabled=false 零行为、kinds/actions 空 =
+/// 全启用 + 缺省 mask）。Default 实现落 loader（规则 14）。
+impl Default for super::MaskingSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kinds: Vec::new(),
+            actions: std::collections::HashMap::new(),
+            words: Vec::new(),
+            words_any_case: false,
+            rules: Vec::new(),
+            allow: Vec::new(),
+        }
+    }
+}
+
 /// 校验配置 — 加载路径与更新路径共用；管理面弱密钥委托 confers
 /// security-rules，跨 Vec 条目的唯一性约束保留手写（字段级规则无法表达）
 pub fn validate_config(config: &Config) -> Result<(), GateError> {
@@ -154,6 +181,96 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_metrics(config)?;
     validate_otlp(config)?;
     validate_affinity(config)?;
+    validate_catalog_sync(config)?;
+    validate_subscription(config)?;
+    validate_masking(config)?;
+    validate_web_search(config)?;
+    Ok(())
+}
+
+/// `[web_search]` 段校验：enabled=false 完全旁路不校验（与 difficulty 缺段
+/// 同语义）。enabled=true 时：kind 闭集（点名原值拒绝）、searxng 必须显式
+/// base_url、需 key 的源（tavily/brave/exa）至少声明一个 key 来源（vault 引用
+/// 优先于 env）。加载与热更共用本入口。
+fn validate_web_search(config: &Config) -> Result<(), GateError> {
+    let section = &config.web_search;
+    if !section.enabled {
+        return Ok(());
+    }
+    for provider in &section.providers {
+        match provider.kind.as_str() {
+            "tavily" | "brave" | "exa" => {
+                if provider.api_key_env.trim().is_empty()
+                    && provider.api_key_envs.iter().all(|n| n.trim().is_empty())
+                    && provider.api_key_vault_ref.trim().is_empty()
+                {
+                    return Err(GateError::Config {
+                        message: t_args(
+                            "config-web-search-missing-key",
+                            &[("kind", provider.kind.clone())],
+                        ),
+                    });
+                }
+            }
+            "searxng" => {
+                if provider.base_url.trim().is_empty() {
+                    return Err(GateError::Config {
+                        message: t("config-web-search-missing-base-url"),
+                    });
+                }
+            }
+            other => {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-web-search-unknown-kind",
+                        &[("kind", other.to_string())],
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `[masking]` 段校验：kinds/actions 闭集、actions 动作词闭集、rules 正则
+/// 可编译（`masking` feature 启用时经检测器构造面刚性拒绝；feature 关闭时
+/// 跳过编译校验——非法正则由门构造期 fail-closed 兜底）。kind 闭集在此本地
+/// 声明（config 面不依赖 `masking` feature），与 `crate::masking` 的
+/// `MaskKind::parse` 由单测对齐防漂移。加载与热更共用本入口。
+fn validate_masking(config: &Config) -> Result<(), GateError> {
+    const MASKING_KINDS: &[&str] = &[
+        "api_key",
+        "private_key",
+        "token",
+        "email",
+        "card",
+        "id",
+        "custom",
+    ];
+    let m = &config.masking;
+    for raw in m.kinds.iter().chain(m.actions.keys()) {
+        if !MASKING_KINDS.contains(&raw.as_str()) {
+            return Err(GateError::Config {
+                message: t_args("config-masking-kind-invalid", &[("kind", raw.clone())]),
+            });
+        }
+    }
+    for value in m.actions.values() {
+        if !matches!(value.as_str(), "mask" | "warn" | "block") {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-masking-action-invalid",
+                    &[("action", value.clone())],
+                ),
+            });
+        }
+    }
+    #[cfg(feature = "masking")]
+    {
+        crate::masking::RuleDetector::validate_rules(&m.rules).map_err(|e| GateError::Config {
+            message: t_args("config-masking-rule-invalid", &[("detail", e.to_string())]),
+        })?;
+    }
     Ok(())
 }
 
@@ -799,6 +916,42 @@ pub fn default_usage_insights_enabled() -> bool {
     true
 }
 
+/// `[catalog_sync]` 缺省源：models.dev 公开模型目录 JSON API（2026-10-28
+/// 实测形态：顶层 provider slug → {models: {id: {cost, limit, ...}}}）。
+pub fn default_catalog_sync_source_url() -> String {
+    "https://models.dev/api.json".to_string()
+}
+
+/// `[catalog_sync]` 单次拉取超时缺省 10s。
+pub fn default_catalog_sync_timeout_secs() -> u64 {
+    10
+}
+
+impl Default for crate::config::CatalogSyncSection {
+    /// Rust 侧手构缺省与 serde 缺省单源：enabled=false（双门控运行时半边）、
+    /// interval_secs=0（不周期）、alias 空表（slug 即 vendor_id）。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            source_url: default_catalog_sync_source_url(),
+            interval_secs: 0,
+            timeout_secs: default_catalog_sync_timeout_secs(),
+            alias: HashMap::new(),
+        }
+    }
+}
+
+impl Default for crate::config::SubscriptionSection {
+    /// Rust 侧手构缺省与 serde 缺省单源：enabled=false（双门控运行时半边）、
+    /// client_id 空（未配置——authorize 请求点名拒绝，不猜默认应用）。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            client_id: String::new(),
+        }
+    }
+}
+
 /// `[[quota.windows]]` 缺省值（serde default 路径引用；mod.rs 规则 14 禁
 /// 实现函数，默认值落在本实现文件）：scope=api_key、period=rolling、
 /// calendar 空串。限额与 rolling_secs 默认 0 = 由校验/判定侧解释。
@@ -1052,6 +1205,67 @@ fn validate_affinity(config: &Config) -> Result<(), GateError> {
         }
     }
     Ok(())
+}
+
+/// `[catalog_sync]` 段校验：enabled=false 完全旁路不校验（与「缺段」同
+/// 语义，difficulty 先例）；enabled 时 source_url 仅 HTTPS（loopback 放行
+/// http 供嵌入式上游/本机镜像）且禁 userinfo；alias 表键值非空白。
+/// 加载与热更共用本入口（manager 更新路径同走 validate_config）。
+fn validate_catalog_sync(config: &Config) -> Result<(), GateError> {
+    let section = &config.catalog_sync;
+    if !section.enabled {
+        return Ok(());
+    }
+    if section.timeout_secs == 0 {
+        return Err(GateError::Config {
+            message: t("config-catalog-sync-timeout-zero"),
+        });
+    }
+    // scheme/authority 按字符串判定（`url` 是 optional 依赖，与 validate_otlp
+    // 同口径，保 `--no-default-features` 构建可编译）。
+    let raw = section.source_url.trim();
+    let (scheme, rest) = raw.split_once("://").ok_or_else(|| GateError::Config {
+        message: t_args(
+            "config-catalog-sync-source-url-invalid",
+            &[("value", raw.to_string())],
+        ),
+    })?;
+    if scheme != "https" && !is_loopback_source(scheme, rest) {
+        // 安全约束（delta spec Constraints）：源固定 HTTPS；唯一例外是
+        // loopback 上的 http（嵌入式上游 / 本机镜像，不出主机）
+        return Err(GateError::Config {
+            message: t_args(
+                "config-catalog-sync-source-url-scheme",
+                &[("value", raw.to_string())],
+            ),
+        });
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err(GateError::Config {
+            message: t("config-catalog-sync-source-url-userinfo"),
+        });
+    }
+    for (slug, vendor_id) in &section.alias {
+        if slug.trim().is_empty() || vendor_id.trim().is_empty() {
+            return Err(GateError::Config {
+                message: t("config-catalog-sync-alias-blank"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// loopback http 豁免判定：scheme=http 且 authority 主机 ∈
+/// {127.0.0.1, localhost, ::1}（剥离端口；IPv6 字面量剥方括号）。
+fn is_loopback_source(scheme: &str, rest: &str) -> bool {
+    if !scheme.eq_ignore_ascii_case("http") {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 /// `[metrics]` 段边界校验：成本恢复窗口 1..=8760 小时（1h..1y）。
@@ -1589,6 +1803,52 @@ fn validate_vendor_budgets(config: &Config) -> Result<(), GateError> {
     Ok(())
 }
 
+/// `[[subscription_accounts]]` / `[subscription]` 校验：账号 id 非空且唯一、
+/// vendor 绑定非空且与 `[[vendors]]` 对得上（错拼绑定静默不服务是运维事故，
+/// 口径同 [`validate_vendor_budgets`]）。enabled=false 时账号声明仍校验——
+/// 声明是持久 vault 键的绑定面，与运行时开关正交。
+fn validate_subscription(config: &Config) -> Result<(), GateError> {
+    let mut seen: Vec<&str> = Vec::new();
+    for account in &config.subscription_accounts {
+        let id = account.id.trim();
+        if id.is_empty() {
+            return Err(GateError::Config {
+                message: t("config-subscription-account-id-empty"),
+            });
+        }
+        if seen.contains(&id) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-subscription-account-id-duplicate",
+                    &[("account", id.to_string())],
+                ),
+            });
+        }
+        seen.push(id);
+        let vendor_id = account.vendor_id.trim();
+        if vendor_id.is_empty() {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-subscription-account-vendor-empty",
+                    &[("account", id.to_string())],
+                ),
+            });
+        }
+        if !config.vendors.iter().any(|v| v.id == vendor_id) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-subscription-account-unknown-vendor",
+                    &[
+                        ("account", id.to_string()),
+                        ("vendor", vendor_id.to_string()),
+                    ],
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// `[routing.quota_factor].mode` 闭集校验（off/smart/pace，大小写不敏感 +
 /// trim；与 [`crate::config::QuotaFactorMode::parse`] 单源）。非法值以原值
 /// 点名拒绝——热读回滚阀 `from_section` 只兜手构配置，加载面必须刚性拒绝。
@@ -1738,10 +1998,15 @@ mod tests {
 
     fn config_with(quota_enabled: bool, auth: Option<crate::config::AuthSection>) -> Config {
         Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
             server: crate::config::ServerConfig {
                 host: "127.0.0.1".into(),

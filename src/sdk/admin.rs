@@ -157,6 +157,37 @@ pub struct VendorBudgetsResponse {
     pub rows: Vec<VendorBudgetInfo>,
 }
 
+/// 目录同步 diff 条目 — 对齐网关 `POST /admin/catalog/sync` 的 `entries[]`
+///（`price_source: "fallback"` 标注该条目至少一档价格回退 catalog 默认 0 价）。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct CatalogSyncEntry {
+    pub vendor_id: String,
+    pub model_id: String,
+    /// `source`（四档来自源）| `fallback`（缺档回退）
+    pub price_source: String,
+}
+
+/// 目录同步响应 — 对齐网关 `POST /admin/catalog/sync`（只增不改合并计划；
+/// `status = "not_modified"` 时为 304 短路形状，entries 为空）。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct CatalogSyncResponse {
+    pub dry_run: bool,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub added: usize,
+    #[serde(default)]
+    pub skipped: usize,
+    #[serde(default)]
+    pub duplicates: usize,
+    #[serde(default)]
+    pub unchanged: usize,
+    #[serde(default)]
+    pub etag: Option<String>,
+    #[serde(default)]
+    pub entries: Vec<CatalogSyncEntry>,
+}
+
 #[derive(Deserialize)]
 struct AdminActionResponse {
     success: bool,
@@ -422,6 +453,32 @@ impl FluxgateClient {
         Ok(resp.json().await?)
     }
 
+    /// POST /admin/catalog/sync — 触发模型目录自动同步（add-only 合并）。
+    /// `dry_run=true` 只取 diff 不落盘；409 = 同步进行中、502/413 = 拉取
+    /// 失败（映射 [`FluxgateSdkError::Api`]）。
+    pub async fn sync_catalog(
+        &self,
+        dry_run: bool,
+    ) -> Result<CatalogSyncResponse, FluxgateSdkError> {
+        let url =
+            self.base_url
+                .join("admin/catalog/sync")
+                .map_err(|e| FluxgateSdkError::Config {
+                    message: format!("invalid URL: {e}"),
+                })?;
+
+        let request = self
+            .http
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .timeout(self.effective_timeout)
+            .json(&serde_json::json!({ "dry_run": dry_run }));
+        let request = self.apply_default_headers(request);
+        let resp = send_with_retry(&request, &self.retry_policy).await?;
+
+        Ok(resp.json().await?)
+    }
+
     /// admin 写路径的 success 断言（2xx 由重试层
     /// [`send_with_retry`] 保证；`success=false` → Protocol 错误显性）。
     async fn assert_admin_ok(resp: reqwest::Response) -> Result<(), FluxgateSdkError> {
@@ -450,6 +507,7 @@ pub(crate) mod sdk_routes {
         ("GET", "admin/context-stats"),
         ("GET", "admin/quota/ledger"),
         ("GET", "admin/vendor-budgets"),
+        ("POST", "admin/catalog/sync"),
         ("GET", "api/v1/health"),
     ];
 }

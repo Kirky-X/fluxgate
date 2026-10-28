@@ -173,6 +173,10 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 | `health` / `quota` | 主动健康探针（默认 off）、成本/token 配额 + `[[quota.windows]]` 多窗预算 + `[[vendor_budgets]]` 声明式预算（均默认关） | ✅ 均热读 |
 | `lexcompress` | 词法压缩（`X-Compress: 1` 且单条消息超阈值时生效，默认关） | ✅ 热读 |
 | `grpc` / `docs` | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用） | ❌ 需重启 |
+| `subscription` / `subscription_accounts` | 订阅账号上游（`subscription-vendor` feature，不进 `full`；双门控默认关，合规警示见下） | ✅ 热读 |
+| `web_search` | 搜索注入与守护抓取（`web-search` feature，不进 `full`；`netguard` 零依赖 SSRF 判定单开可用）。`/v1/search` 多源搜索（Tavily/Brave/Exa/SearXNG，多 key 轮换）、`/v1/fetch` 守护抓取、`/admin/web-search/stats` 观测 | ✅ 热读 |
+| `catalog_sync` | 模型目录自动同步（`catalog-sync` feature，不进 `full`）：从外部目录源（默认 models.dev）拉取定价/上下文窗口映射进 `[[model_catalog]]`，**只增不改**（既有条目含用户定价永不覆盖）；`POST /admin/catalog/sync`（dry_run 出 diff）+ 可选周期任务，失败 fail-open 计数 | ✅ 热读 |
+| `masking` | 出站请求掩码（`masking` feature，不进 `full`；`[masking]` 双门控默认关）：发送上游前把出站 JSON 中的敏感值（API key/私钥/JWT/邮箱/自定义词与正则）替换为进程内确定性占位符 `{{FLUX_<KIND>_<8HEX>}}`（掺每进程随机 pepper，跨实例不可关联），回程只还原**本请求登记过**的占位符（伪造/跨请求回显原样透传）——厂商永不落真值；Mask/Warn/Block 三档动作、fail-closed（故障 503 拒绝不原文出站）、`/admin/masking/stats` 观测 | ✅ 热读 |
 
 </details>
 
@@ -438,6 +442,15 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 
 API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环境变量名、错误响应仅暴露固定 `error.type` 代码、配置快照自动打码密钥、CORS 与入站限流（429）分层防护、Docker 非 root 运行。逐项机制见 [🔒 安全文档](docs/SECURITY.md)。
 
+### ⚠️ 订阅上游合规警示（subscription-vendor）
+
+`subscription-vendor` feature 允许把 OAuth 订阅账号（如 Claude Pro/Max）作为服务端出站上游。**该能力默认不存在于任何构建产物**：feature 不进 `full`，`[subscription].enabled` 默认 `false`，双门全开才有行为。启用前必读：
+
+- 以订阅账号作服务端出站上游**可能违反厂商服务条款**（厂商公开政策将订阅 OAuth 面限定于其官方客户端），商用部署请自行评估合规风险，责任由部署者自担；
+- 本网关只实现标准 OAuth 授权码 + PKCE 流程，不含任何绕过限制的技术；
+- 授权回调受**单实例约束**：PKCE state 存进程内存，多副本部署不共享，回调必须打回同一实例；
+- `subscription_refresh_fail_total` / `subscription_accounts_degraded`（`/admin/metrics`）暴露账号健康面。
+
 ### 🚨 报告安全漏洞
 
 请勿通过公开 issue 报告安全漏洞。请使用 GitHub [Security Advisories](https://github.com/Kirky-X/fluxgate/security/policy) 私密披露通道提交报告。项目承诺 48 小时内确认、7 天内给出初步评估。
@@ -462,6 +475,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 <tr><td align="center">✅</td><td>Rust SDK</td><td>sdk 并入 <code>src/sdk</code>（<code>sdk</code> feature 门控，原 workspace 继承断裂已消除）：chat / stream / embed / admin</td></tr>
 <tr><td align="center">✅</td><td>性能基准</td><td>Criterion 组件级基线（转换 / SSE 帧解析 / 路由决策路径 / 缓存经济学亲和）已建立，首轮数据见 <a href="docs/PERFORMANCE.md">PERFORMANCE.md</a></td></tr>
 <tr><td align="center">✅</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤已落 SQL（闭区间 <code>[start_time, end_time]</code>，两端含边界）</td></tr>
+<tr><td align="center">✅</td><td>订阅账号上游</td><td>OAuth 订阅账号（PKCE 授权码流程）并入 vendor 出站凭证池（<code>subscription-vendor</code> feature，<strong>不进 <code>full</code></strong>，<code>[subscription]</code> 默认关双门控）；refresh token 只存 vault（AEAD）、access token 仅内存 + 到期前 5 分钟单飞刷新；刷新失败降级 30 分钟冷却重试一次仍败摘除；admin 四端点（authorize / callback / accounts / 吊销）。<strong>合规警示见「安全」节</strong></td></tr>
 </table>
 
 </details>

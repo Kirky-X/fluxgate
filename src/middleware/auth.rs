@@ -156,12 +156,16 @@ pub async fn api_auth_middleware(
 
     // 豁免端点：健康检查/就绪探针/指标抓取无调用方 key，认证无从谈起；
     // 文档面（/api-docs/*、/swagger-ui/*）开关本身即访问门（默认关闭）。
+    // OAuth 回调豁免：浏览器从上游授权页 302 回跳是裸 GET、无 API key 头，
+    // 该端点的认证即 state 参数本身（128-bit 随机、单次消费、10 分钟 TTL，
+    // oauth.rs）——豁免面收敛到这一条路径，其余 /admin/* 照常鉴权。
     let path = request.uri().path();
     if path == "/health"
         || path == "/api/v1/health"
         || path == "/"
         || path == "/readyz"
         || path == "/metrics"
+        || path == "/admin/subscription/callback"
         || path.starts_with("/api-docs/")
         || path == "/api-docs"
         || path.starts_with("/swagger-ui/")

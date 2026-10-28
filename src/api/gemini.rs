@@ -671,7 +671,7 @@ async fn resolve_route(
 async fn dispatch_nonstream(
     state: &Arc<ApiState>,
     ctx: &GeminiCtx,
-    model: &str,
+    #[cfg_attr(not(feature = "resilience"), allow(unused_variables))] model: &str,
     decision: RoutingDecision,
     request: crate::protocol::UnifiedRequest,
 ) -> Result<(crate::protocol::UnifiedResponse, RoutingDecision), FluxgateError> {

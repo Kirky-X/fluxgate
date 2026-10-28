@@ -8,7 +8,7 @@
 
 use thiserror::Error;
 
-use crate::i18n::t_args;
+use crate::i18n::{t, t_args};
 
 /// 路由核心错误变体集（冻结）。
 #[derive(Error, Debug)]
@@ -42,6 +42,15 @@ pub enum GateError {
     /// 映射 429 + Retry-After；开关关闭时永不产生本变体。
     #[error("All candidate vendors rate limited: retry after {retry_after_secs}s")]
     AllVendorsThrottled { retry_after_secs: u64 },
+
+    /// 出站掩码不可用（feature `masking` + `[masking]`.enabled；检测/掩码/
+    /// 还原任一步 Err 或 panic 的 fail-closed 折叠）：503 拒发，绝不原文出站。
+    #[error("Masking unavailable: request refused (fail-closed)")]
+    MaskingUnavailable,
+
+    /// 出站掩码 `Block` 动作命中：400 拒绝，`kind` 为触发拦截的种类串。
+    #[error("Masking blocked: {kind}")]
+    MaskingBlocked { kind: String },
 }
 
 impl GateError {
@@ -56,6 +65,8 @@ impl GateError {
             GateError::Protocol { .. } => 502,
             GateError::Routing { .. } => 500,
             GateError::AllVendorsThrottled { .. } => 429,
+            GateError::MaskingUnavailable => 503,
+            GateError::MaskingBlocked { .. } => 400,
         }
     }
 
@@ -85,6 +96,10 @@ impl GateError {
                 "error-all-vendors-throttled",
                 &[("retry_after_secs", retry_after_secs.to_string())],
             ),
+            GateError::MaskingUnavailable => t("masking-unavailable"),
+            GateError::MaskingBlocked { kind } => {
+                t_args("masking-blocked", &[("kind", kind.clone())])
+            }
         }
     }
 
@@ -99,6 +114,8 @@ impl GateError {
             GateError::Validation { .. } => "validation_error",
             GateError::Routing { .. } => "routing_error",
             GateError::AllVendorsThrottled { .. } => "all_vendors_throttled",
+            GateError::MaskingUnavailable => "masking_unavailable",
+            GateError::MaskingBlocked { .. } => "masking_blocked",
         }
     }
 

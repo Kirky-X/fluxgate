@@ -20,6 +20,8 @@ use tower::ServiceExt;
 
 fn make_config(docs_enabled: bool) -> Config {
     Config {
+        masking: Default::default(),
+        web_search: Default::default(),
         server: fluxgate::config::ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
@@ -52,6 +54,9 @@ fn make_config(docs_enabled: bool) -> Config {
         otlp: Default::default(),
         vendor_budgets: Vec::new(),
         usage_insights: Default::default(),
+        catalog_sync: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
         metrics: Default::default(),
     }
 }

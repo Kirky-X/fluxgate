@@ -39,6 +39,9 @@ pub mod server;
 #[cfg(feature = "sdk")]
 pub mod sdk;
 
+#[cfg(feature = "masking")]
+pub mod masking;
+
 #[cfg(feature = "vault")]
 pub mod vault;
 

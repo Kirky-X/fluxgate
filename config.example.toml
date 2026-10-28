@@ -658,6 +658,31 @@ enabled = false
 min_chars = 4000
 ratio_ceiling = 0.5
 
+# ✅ 热生效 —— 搜索注入与守护抓取 `[web_search]`（web-search feature 编译门；
+# 不进 full）。enabled 是运行时门，**默认 false = /v1/search 与 /v1/fetch
+# 一律 404**。feature 未编译时本段解析保留但零行为。
+# /v1/fetch：netguard 守护抓取（特殊网段拒绝、DNS 解析后 pin 建连、重定向
+# 禁自动跟随、10s 超时、1 MiB 上限、Content-Type 白名单）。
+# /v1/search：按 providers 数组顺序逐源尝试至首个成功（provider 参数单源，
+# 全败 502 聚合摘要）。key 来源 vault 引用优先于 env（明文不落配置）。
+# - [[web_search.providers]].kind: tavily | brave | exa | searxng（闭集，
+#   非法值加载拒绝）
+# - api_key_env: 主 key 的环境变量名（只存变量名，绝不存 key 原文）
+# - api_key_envs: 多 key 池补充 env 名列表（与 api_key_env 合并去重，
+#   池内轮转，近 5 分钟失败 key 选择时跳过、全败回头）
+# - api_key_vault_ref: /admin/vault/keys 录入条目 id（优先于 env 源）
+# - base_url: 出站 base URL；tavily/brave/exa 缺省用官方地址，searxng 必填
+#   （实例需启用 JSON API）
+[web_search]
+enabled = false
+
+# [[web_search.providers]]
+# kind = "tavily"
+# api_key_env = "TAVILY_API_KEY"
+# # api_key_envs = ["TAVILY_API_KEY_2"]
+# # api_key_vault_ref = "<vault-key-id>"
+# # base_url = "https://api.tavily.com"
+
 # ✅ 全字段请求期热读 —— OpenAI Responses API（/v1/responses）。
 # 默认转成统一 chat IR 后进入现有路由池；有状态能力由网关侧
 # response_store 表（迁移 V4）承担。
@@ -704,6 +729,52 @@ timeout_secs = 10
 # 缺省 true：纯内部统计，不改变任何响应面。
 [usage_insights]
 enabled = true
+
+# 🔥 热读 —— 模型目录自动同步（feature = "catalog-sync"）— 从外部目录源
+#（默认 models.dev 公开 JSON API）拉取模型定价/上下文窗口，映射进
+# [[model_catalog]]。**只增不改**是硬策略：仅新增 catalog 缺失的模型，
+# 已有条目（含你自定的价格）永不覆盖；dry_run 可先看 diff 不落盘。
+# 触发：POST /admin/catalog/sync（body {"dry_run": true|false}），或
+# interval_secs > 0 的周期任务。编译门（--features catalog-sync，不进 full）
+# + 本段 enabled 运行时门双门控；缺任一皆完全禁用。
+# 失败语义 fail-open：拉取/解析失败保持现 catalog 不动，计数
+# catalog_sync_fail_total 并在 admin 响应返回错误详情。
+# - source_url: 目录源 URL。enabled 时仅接受 HTTPS（loopback 上的 http
+#   放行，供本机镜像/嵌入式上游）；禁 userinfo。
+# - interval_secs: 周期同步间隔（秒）；0 = 不挂周期任务（默认，仅手动触发）。
+# - timeout_secs: 单次拉取超时（秒），默认 10。
+# - [catalog_sync.alias]: provider slug → vendor_id 映射表；缺省 slug 本身
+#   即 vendor_id（源里 openai 段的模型落 vendor_id = "openai"）。
+[catalog_sync]
+enabled = false
+source_url = "https://models.dev/api.json"
+interval_secs = 0
+timeout_secs = 10
+
+# [catalog_sync.alias]
+# anthropic = "anthropic-main"
+# openai = "openai-main"
+
+# ⚠️ 合规自担 —— 订阅账号上游（feature = "subscription-vendor"）— 把
+# OAuth 订阅账号（如 Claude Pro/Max）并入 vendor 出站凭证池。**启用前必读**：
+# 以订阅账号作服务端出站上游可能违反厂商服务条款，商用部署请自行评估合规
+# 风险；本网关只实现标准 OAuth 授权码 + PKCE 流程，不含任何绕过限制的技术。
+# 编译门（--features subscription-vendor，不进 full）+ 本段 enabled 运行时门
+# 双门控；缺任一皆完全禁用。
+# - client_id: OAuth client id（Anthropic OAuth 应用）；空串 = 未配置，
+#   authorize 请求点名拒绝。
+# - [[subscription_accounts]]: 订阅账号静态声明（可选）。id 即 vault 键
+#   sub:{id} 的账号段；vendor_id 绑定 [[vendors]] 条目（计入其出站凭证池）。
+#   重启后网关按声明从 vault 回载 refresh token 恢复服务；未声明的账号仅
+#   本次进程内有效。回调受单实例约束：授权回调必须打回同一网关实例
+#（PKCE state 存进程内存，多副本部署不共享）。
+[subscription]
+enabled = false
+client_id = ""
+
+# [[subscription_accounts]]
+# id = "sub-1"
+# vendor_id = "anthropic-main"
 
 # ❌ 需重启 —— gRPC Server（feature = "grpc"）— sdforge grpc 门面
 #（sdforge.v1.SdForgeService）。GrpcServerConfig 固化于服务器构造，更新后需
@@ -987,3 +1058,37 @@ vendor_id = "anthropic"
 model_id = "claude-3-opus-20240229"
 input_per_1k_tokens = 0.015
 output_per_1k_tokens = 0.075
+
+# ✅ 热生效 —— 出站请求掩码 `[masking]`（masking feature 编译门；不进 full，
+# 按需 `--features masking` 启用）。enabled 是运行时门，**默认 false = 零行为**
+#（请求路径逐字节不变）。开启后：协议转换完成、发送上游前对最终出站 JSON 的
+# 全部字符串值做规则/熵检测，命中值替换为确定性占位符 `{{FLUX_<KIND>_<8HEX>}}`，
+# 回程（流式逐事件/非流式整量）经同一内存映射还原——厂商永不落真值。
+# - enabled: 掩码总开关（默认 false）
+# - kinds: 启用的种类闭集（api_key/private_key/token/email/card/id/custom），
+#   空/缺省 = 全启用
+# - actions: kind → 动作（mask 替换 | warn 只计数 | block 整请求 400 拒绝），
+#   未配置种类缺省 mask；非法 kind/动作加载拒绝
+# - words: 自定义词表（词面精确匹配，命中归 custom）
+# - words_any_case: 词表 ASCII 大小写不敏感（默认 false）
+# - rules: 自定义正则（命中归 custom；编译失败加载/热更拒绝——feature 未
+#   编译时由门构造期 fail-closed 兜底）
+# - allow: 白名单（条目精确值或值前缀，命中值跳过掩码）
+# - words/rules/allow 变更热生效（检测器惰性重建；在途请求用旧映射还原，
+#   映射 TTL 24h）。fail-closed：检测/掩码/还原任一步故障 → 503 拒发，
+#   绝不原文出站。注意：掩码启用时透传流（字节级中继）返回 503——该路径
+#   无法保证回程还原；透传非流式不受影响（解析面还原）。
+# 可观测：masking_hits_total{kind,action} / masking_blocked_total /
+# masking_fail_total / masking_restore_total 计数（/admin/metrics）与
+# GET /admin/masking/stats（24h 窗口 per-kind 次数 + 值长度直方图元数据，
+# 不含任何值本身）。
+[masking]
+enabled = false
+# kinds = ["api_key", "private_key", "token", "email", "custom"]
+# [masking.actions]
+# custom = "block"
+# email = "warn"
+# words = ["内部门牌"]
+# words_any_case = false
+# rules = ["AKIA[0-9A-Z]{16}"]
+# allow = ["sk-proj-"]

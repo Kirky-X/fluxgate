@@ -73,6 +73,27 @@ sdk = ["dep:reqwest", "dep:eventsource-stream", "dep:url"]
 # cost-tracking / sdforge-integration 为其编译前提：桥接读 sdforge /metrics 渲染文本
 # （单一真源）+ CostTracker 快照。
 otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "cost-tracking", "sdforge-integration"]
+# 出站请求掩码（outbound-masking）：识别引擎复用 inklog（logging 已带 inklog，
+# masking 显式声明自身直用面）、哈希复用 sha2/hex；不进 full——合规敏感能力
+# 默认不出现在产物中，按需启用。运行时另有 [masking].enabled 热读开关。
+masking = ["dep:inklog", "dep:sha2", "dep:hex"]
+# 模型目录自动同步（catalog-sync）：reqwest 出站拉取 models.dev 映射进
+# [[model_catalog]]（只增不改）；不进 full——对外网络请求能力按需启用。
+# 运行时另有 [catalog_sync].enabled 热读开关（双门控）。
+catalog-sync = ["dep:reqwest"]
+# 订阅账号上游（subscription-upstream）：OAuth 订阅账号（PKCE 授权码流程）
+# 并入 vendor 出站池。合规敏感能力不进 full——订阅上游可能违反厂商服务
+# 条款，默认产物零编译面，部署者自行评估后按需启用。运行时另有
+# [subscription].enabled 热读开关（双门控）；refresh token 只存 vault（AEAD）。
+subscription-vendor = ["vendor-management", "vault", "dep:rand"]
+# 出站 SSRF 防护（netguard）：特殊网段判定（纯 std 零依赖）——网关具备任意
+# URL 抓取能力（/v1/fetch）时防内网/保留地址探测；不进 full——对外网络新
+# 能力按需启用。web-search 依赖其编译（抓取路径先闭合 SSRF 面）。
+netguard = []
+# 搜索能力注入（web-search-inject）：SearchProvider 多源搜索 + netguard 守护
+# 抓取（/v1/search、/v1/fetch）；reqwest 复用 vendor-management 的 optional
+# 依赖。不进 full——对外网络新能力按需启用。[web_search].enabled 运行时默认关。
+web-search = ["dep:reqwest", "netguard"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
@@ -364,6 +385,22 @@ path = "tests/server/server_smoke_test.rs"
 [[test]]
 name = "i18n_parity_test"
 path = "tests/i18n/i18n_parity_test.rs"
+
+# ---- masking：出站掩码引擎（feature 门控，不入 full）----
+[[test]]
+name = "engine_test"
+path = "tests/masking/engine_test.rs"
+required-features = ["masking"]
+[[test]]
+name = "vendor_mask_test"
+path = "tests/masking/vendor_mask_test.rs"
+required-features = ["masking"]
+
+# ---- web-search：搜索注入与 netguard 守护抓取（feature 门控，不入 full）----
+[[test]]
+name = "web_search_test"
+path = "tests/api/web_search_test.rs"
+required-features = ["web-search", "web-server", "db-sqlite"]
 
 # ---- matrix：feature 门控矩阵（应用面 / 路由半边）----
 [[test]]

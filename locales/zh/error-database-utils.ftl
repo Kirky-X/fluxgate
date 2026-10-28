@@ -69,3 +69,7 @@ storage-affinity-sticks-unsupported = 该 AffinityStickSink 实现是数据面�
 database-affinity-persist-flush-failed = 会话粘性批落库失败（丢弃 { $count } 条）：{ $error }
 database-affinity-persist-channel-closed = 会话粘性落盘通道已关闭：{ $error }
 database-affinity-sticks-read-failed = 会话粘性读取失败：{ $error }
+
+# ---- masking: 出站掩码（feature masking；错误面 + config 校验面）----
+masking-unavailable = 请求被拒绝：出站掩码不可用（fail-closed，绝不原文出站）
+masking-blocked = 请求被拦截：{ $kind } 类敏感数据禁止出站

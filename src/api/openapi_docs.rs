@@ -355,6 +355,16 @@ submit_route_with_id!(
     &["admin"],
     "Vendor ID"
 );
+// 目录自动同步（catalog-sync feature 门控：路由本体同门控，spec 条目
+// 仅在该 feature 下登记，避免文档面出现不可达端点）
+#[cfg(feature = "catalog-sync")]
+submit_route!(
+    "/admin/catalog/sync",
+    "POST",
+    "Sync model catalog",
+    "Fetch the external model catalog source (add-only merge) into [[model_catalog]]; dry_run returns the diff without persisting.",
+    &["admin"]
+);
 submit_route_with_id!(
     "/admin/vendors/{id}/reset",
     "POST",

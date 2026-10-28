@@ -249,6 +249,7 @@ pub fn routing_config() -> Config {
         .collect();
 
     Config {
+        web_search: Default::default(),
         rate_limit: Default::default(),
         vendor_budgets: Vec::new(),
         server: ServerConfig {
@@ -283,6 +284,10 @@ pub fn routing_config() -> Config {
         metrics: Default::default(),
         otlp: Default::default(),
         usage_insights: Default::default(),
+        catalog_sync: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
+        masking: Default::default(),
     }
 }
 

@@ -682,6 +682,10 @@ mod auth {
             .route("/test", get(|| async { "ok" }))
             .route("/health", get(|| async { "OK" }))
             .route("/admin/panel", get(|| async { "admin" }))
+            .route(
+                "/admin/subscription/callback",
+                get(|| async { "callback-reached" }),
+            )
             .route_layer(from_fn(move |req, next| {
                 let state = auth_state.clone();
                 async move { api_auth_middleware(req, next, state).await }
@@ -755,6 +759,43 @@ mod auth {
             .await
             .unwrap();
 
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// OAuth 回调豁免：上游授权页 302 回跳是裸 GET、无 API key 头——该端点
+    /// 的认证即 state 参数（128-bit 随机、单次、10 分钟）。auth 开启时回调
+    /// 必须穿透中间件到 handler（非 401），其余 /admin/* 照常拦截。
+    #[tokio::test]
+    async fn test_api_auth_middleware_exempts_subscription_callback() {
+        let auth_state = Arc::new(ApiAuthState::new(true));
+        let app = build_test_router(auth_state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/subscription/callback?state=x&code=y")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "回调豁免不得被 auth 拦截"
+        );
+
+        let app = build_test_router(Arc::new(ApiAuthState::new(true)));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/panel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -8349,5 +8390,887 @@ mod otlp_gate {
             }
             other => panic!("enabled 必须装配，got {other:?}"),
         }
+    }
+}
+
+/// catalog-sync（feature 门控）：CatalogSyncer 拉取器对嵌入式上游的行为钉——
+/// If-None-Match 304 短路 / 8MB 上限拒绝 / 超时错误形态（fail-open 的计数
+/// 在 sync 编排层，admin E2E 见 catalog_sync mod）。
+#[cfg(feature = "catalog-sync")]
+mod catalog_sync_fetch {
+    use axum::{response::IntoResponse, Router};
+    use fluxgate::config::catalog_sync::{CatalogSyncer, FetchError, FetchOutcome};
+    use std::time::Duration;
+
+    /// 嵌入式上游：axum 服务挂在 127.0.0.1 随机端口，返回 (status, headers, body)。
+    async fn spawn_upstream(
+        status: axum::http::StatusCode,
+        etag: Option<&str>,
+        body: Vec<u8>,
+        delay: Duration,
+    ) -> String {
+        use axum::routing::get;
+        let etag = etag.map(str::to_string);
+        let app = Router::new().route(
+            "/api.json",
+            get(move || {
+                let status = status;
+                let etag = etag.clone();
+                let body = body.clone();
+                async move {
+                    tokio::time::sleep(delay).await;
+                    let mut response = (status, body).into_response();
+                    if let Some(tag) = etag {
+                        response.headers_mut().insert("etag", tag.parse().unwrap());
+                    }
+                    response
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}/api.json")
+    }
+
+    /// 200 响应回传 body 与 ETag（ETag 是 304 短路的客户端半边输入）。
+    #[tokio::test]
+    async fn fetch_returns_body_and_etag() {
+        let url = spawn_upstream(
+            axum::http::StatusCode::OK,
+            Some("\"v1\""),
+            b"{}".to_vec(),
+            Duration::ZERO,
+        )
+        .await;
+        let syncer = CatalogSyncer::new(5).unwrap();
+        match syncer.fetch(&url, None).await.unwrap() {
+            FetchOutcome::Body { bytes, etag } => {
+                assert_eq!(bytes, b"{}");
+                assert_eq!(etag.as_deref(), Some("\"v1\""), "ETag 必须回传供缓存");
+            }
+            other => panic!("首次拉取必须得 body，got {other:?}"),
+        }
+    }
+
+    /// 上游 304（条件请求命中）→ NotModified 短路。
+    #[tokio::test]
+    async fn etag_304_short_circuits_and_size_cap_rejects() {
+        // —— 304 分支 ——
+        let url = spawn_upstream(
+            axum::http::StatusCode::NOT_MODIFIED,
+            Some("\"v1\""),
+            Vec::new(),
+            Duration::ZERO,
+        )
+        .await;
+        let syncer = CatalogSyncer::new(5).unwrap();
+        match syncer.fetch(&url, Some("\"v1\"")).await.unwrap() {
+            FetchOutcome::NotModified => {}
+            other => panic!("304 必须短路 NotModified，got {other:?}"),
+        }
+
+        // —— 8MB 上限分支：Content-Length 超限直接拒绝（不搬运 body） ——
+        let oversized = vec![b'x'; 8 * 1024 * 1024 + 1];
+        let url = spawn_upstream(axum::http::StatusCode::OK, None, oversized, Duration::ZERO).await;
+        let syncer = CatalogSyncer::new(5).unwrap();
+        match syncer.fetch(&url, None).await {
+            Err(FetchError::TooLarge) => {}
+            other => panic!("超 8MB 必须拒绝 TooLarge，got {other:?}"),
+        }
+    }
+
+    /// 超时 → FetchError::Timeout（sync 编排层按 reason=timeout 计数并
+    /// fail-open 保持现 catalog，见 admin E2E）。
+    #[tokio::test]
+    async fn fetch_timeout_returns_timeout_error() {
+        let url = spawn_upstream(
+            axum::http::StatusCode::OK,
+            None,
+            b"{}".to_vec(),
+            Duration::from_secs(3),
+        )
+        .await;
+        let syncer = CatalogSyncer::new(1).unwrap();
+        match syncer.fetch(&url, None).await {
+            Err(FetchError::Timeout) => {}
+            other => panic!("超时必须归一 Timeout，got {other:?}"),
+        }
+    }
+}
+
+/// catalog-sync（feature 门控）：POST /admin/catalog/sync 管理面行为钉——
+/// dry_run 只返回 diff 不落盘、非 dry_run 走既有热更新写路径落盘、
+/// 只增不改的二次同步全 skipped。
+#[cfg(feature = "catalog-sync")]
+mod catalog_sync_admin {
+    use axum::{extract::State, response::IntoResponse, Json};
+    use fluxgate::api::admin;
+    use fluxgate::config::{ConfigManager, GlobalModelConfig};
+    use fluxgate::{ApiState, VendorManager};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    const FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/config/fixtures/models_dev.json"
+    ));
+
+    /// 进程内单飞标记是模块级静态：两个 admin 用例必须串行（否则并行
+    /// 触发真实的 409 in-flight 拒绝）。
+    static ADMIN_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 嵌入式上游：回放实测裁剪 fixture（同 unit 侧源数据）。
+    async fn spawn_fixture_upstream() -> String {
+        let body = FIXTURE.as_bytes().to_vec();
+        let app = axum::Router::new().route(
+            "/api.json",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { (axum::http::StatusCode::OK, body).into_response() }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}/api.json")
+    }
+
+    async fn create_state(source_url: String) -> (Arc<ApiState>, std::path::PathBuf) {
+        let mut config = crate::common::test_config(vec![]);
+        config.global_model = Some(GlobalModelConfig {
+            enabled: true,
+            strategy: "weighted".into(),
+        });
+        config.catalog_sync.enabled = true;
+        config.catalog_sync.source_url = source_url;
+        config.catalog_sync.timeout_secs = 5;
+        config.catalog_sync.alias =
+            std::collections::HashMap::from([("anthropic".to_string(), "claude-main".to_string())]);
+        let config_manager = Arc::new(ConfigManager::new(config));
+        // keep（泄漏到进程退出）：落盘路径须在测试进程内存活（同
+        // model_catalog_admin_test 先例），否则 tempdir 析构后写回 ENOENT
+        let root = tempfile::TempDir::new().expect("tempdir").keep();
+        let disk_path = root.join("config.toml");
+        config_manager.set_path(disk_path.clone());
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let state = Arc::new(ApiState {
+            affinity_writer: None,
+            config: config_manager.clone(),
+            vendor_manager: vendor_manager.clone(),
+            router: Arc::new(fluxgate::router::Router::new(
+                config_manager,
+                vendor_manager,
+            )),
+            logger: None,
+            pre_aggregator: None,
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+            difficulty: None,
+            responses: None,
+            openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
+            anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
+            database: Arc::new(fluxgate::database::Database {
+                pool: dbnexus::DbPool::with_config(dbnexus::DbConfig {
+                    url: "sqlite::memory:".to_string(),
+                    pool_config: dbnexus::PoolConfig {
+                        max_connections: 1,
+                        min_connections: 1,
+                        ..Default::default()
+                    },
+                    admin_role: "admin".to_string(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+                repository: {
+                    let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+                        url: "sqlite::memory:".to_string(),
+                        pool_config: dbnexus::PoolConfig {
+                            max_connections: 1,
+                            min_connections: 1,
+                            ..Default::default()
+                        },
+                        admin_role: "admin".to_string(),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                    Arc::new(fluxgate::database::Repository::new(pool))
+                },
+            }),
+        });
+        (state, disk_path)
+    }
+
+    /// dry_run=true：返回 diff（added/entries/price_source 标注）且目录与
+    /// 磁盘零改动。
+    #[tokio::test]
+    async fn dry_run_returns_diff_without_persist() {
+        let _serial = ADMIN_SYNC_LOCK.lock().unwrap();
+        let url = spawn_fixture_upstream().await;
+        let (state, disk_path) = create_state(url).await;
+
+        let response = admin::catalog_sync(
+            State(state.clone()),
+            Json(fluxgate::api::admin::CatalogSyncRequest { dry_run: true }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["dry_run"], true);
+        assert_eq!(value["added"], 3, "fixture 产出 3 份草稿: {value}");
+        let entries = value["entries"].as_array().unwrap();
+        let claude = entries
+            .iter()
+            .find(|e| e["model_id"] == "claude-sonnet-4-5")
+            .expect("diff 必须含 claude-sonnet-4-5");
+        assert_eq!(claude["vendor_id"], "claude-main", "alias 生效");
+        assert_eq!(claude["price_source"], "source");
+        let gpt4o = entries
+            .iter()
+            .find(|e| e["model_id"] == "gpt-4o")
+            .expect("diff 必须含 gpt-4o");
+        assert_eq!(
+            gpt4o["price_source"], "fallback",
+            "缺 cache_write 档标注回退"
+        );
+
+        // 零改动：内存目录为空、磁盘无条目
+        assert!(
+            state.config.read().model_catalog.is_empty(),
+            "dry_run 不得落盘"
+        );
+        assert!(
+            !disk_path.exists(),
+            "dry_run 不得写盘（配置文件不应被创建）"
+        );
+    }
+
+    /// dry_run=false：经既有热更新写路径（update_config_with → 校验 →
+    /// 原子落盘 → 切内存）落目录；二次同步全 skipped（只增不改）。
+    #[tokio::test]
+    async fn sync_persists_via_hot_reload_path() {
+        let _serial = ADMIN_SYNC_LOCK.lock().unwrap();
+        let url = spawn_fixture_upstream().await;
+        let (state, disk_path) = create_state(url).await;
+
+        let response = admin::catalog_sync(
+            State(state.clone()),
+            Json(fluxgate::api::admin::CatalogSyncRequest { dry_run: false }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let catalog = state.config.read().model_catalog.clone();
+        assert_eq!(catalog.len(), 3, "同步后目录生效");
+        let claude = catalog
+            .iter()
+            .find(|e| e.model_id == "claude-sonnet-4-5")
+            .expect("claude 条目已登记");
+        assert_eq!(claude.input_price, 3.0);
+        assert_eq!(claude.context_window, 200_000);
+        // 磁盘同落（热更新写路径 = 内存+磁盘一致）
+        let disk = std::fs::read_to_string(&disk_path).unwrap();
+        assert!(disk.contains("claude-sonnet-4-5"), "落盘必须含新条目");
+
+        // 二次同步：既有条目全 skipped、目录零改动（只增不改硬策略）
+        let response = admin::catalog_sync(
+            State(state.clone()),
+            Json(fluxgate::api::admin::CatalogSyncRequest { dry_run: false }),
+        )
+        .await
+        .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["added"], 0, "二次同步不得新增");
+        assert_eq!(value["skipped"], 3, "既有条目全 skipped");
+        assert_eq!(value["unchanged"], 3);
+        let catalog_after = state.config.read().model_catalog.clone();
+        assert_eq!(catalog_after, catalog, "二次同步目录逐位不变");
+    }
+
+    /// 管理面 413 映射钉（R-catalog-001 超限验收的管理面半边）：上游响应
+    /// 超 8MB 体积上限时 admin 端点返回 413（Payload Too Large），目录零改动。
+    #[tokio::test]
+    async fn oversized_source_maps_to_413_without_persist() {
+        let _serial = ADMIN_SYNC_LOCK.lock().unwrap();
+        let body = vec![b'x'; 8 * 1024 * 1024 + 1];
+        let app = axum::Router::new().route(
+            "/api.json",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { (axum::http::StatusCode::OK, body).into_response() }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let (state, _disk_path) = create_state(format!("http://{addr}/api.json")).await;
+        let response = admin::catalog_sync(
+            State(state.clone()),
+            Json(fluxgate::api::admin::CatalogSyncRequest { dry_run: false }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            "超限必须映射 413"
+        );
+        assert!(
+            state.config.read().model_catalog.is_empty(),
+            "fail-open：超限后目录必须原样"
+        );
+    }
+}
+
+/// 订阅账号上游集成（subscription-vendor feature）：出站双账号轮换、
+/// 401 单刷重试、admin 全链与脱敏。测试面用 pub 的 `SubscriptionProvider`
+/// trait 自实现 mock 供应商（端点指向 mockito，`with_endpoints` 是
+/// pub(crate) 不出库）。
+#[cfg(all(feature = "web-server", feature = "subscription-vendor"))]
+mod subscription_outbound {
+    use crate::common;
+    use axum::{
+        body::Body,
+        http::Request,
+        routing::{get, post},
+        Router,
+    };
+    use fluxgate::vault::FileKeyStore;
+    use fluxgate::vendor::subscription::pool::AccountPool;
+    use fluxgate::vendor::subscription::{SubscriptionError, SubscriptionProvider, TokenSet};
+    use fluxgate::{
+        api::{chat_completions, ApiState},
+        config::{Config, ConfigManager, ServerConfig},
+        protocol::{AnthropicConverter, OpenAIConverter},
+        vendor::VendorManager,
+    };
+    use secrecy::SecretString;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    /// marker 子串（脱敏断言用；token 值本身随机假造）。
+    const ACCESS_MARKER: &str = "it-access-marker-88f2";
+    const REFRESH_MARKER: &str = "it-refresh-marker-51c7";
+
+    /// mock 供应商：authorize URL 指向 mockito；exchange/refresh 打
+    /// `/oauth/token` 单端点。
+    struct MockProvider {
+        base: String,
+    }
+
+    impl MockProvider {
+        fn token_set(access: &str, refresh: &str) -> TokenSet {
+            TokenSet {
+                access_token: SecretString::new(access.to_string().into()),
+                refresh_token: SecretString::new(refresh.to_string().into()),
+                expires_in_secs: 3600,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SubscriptionProvider for MockProvider {
+        fn kind(&self) -> &'static str {
+            "anthropic"
+        }
+        fn scopes(&self) -> &'static [&'static str] {
+            &["user:inference"]
+        }
+        fn authorize_url(
+            &self,
+            client_id: &str,
+            redirect_uri: &str,
+            state: &str,
+            challenge: &str,
+        ) -> String {
+            format!(
+                "{}/oauth/authorize?client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256",
+                self.base, client_id, redirect_uri, state, challenge
+            )
+        }
+        async fn exchange_code(
+            &self,
+            http: &reqwest::Client,
+            _client_id: &str,
+            redirect_uri: &str,
+            code: &str,
+            verifier: &str,
+        ) -> Result<TokenSet, SubscriptionError> {
+            let response = http
+                .post(format!("{}/oauth/token", self.base))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(format!(
+                    "grant_type=authorization_code&code={code}&redirect_uri={redirect_uri}&code_verifier={verifier}"
+                ))
+                .send()
+                .await
+                .map_err(|e| SubscriptionError::Transport(e.to_string()))?;
+            token_response(response).await
+        }
+        async fn refresh(
+            &self,
+            http: &reqwest::Client,
+            _client_id: &str,
+            refresh_token: &str,
+        ) -> Result<TokenSet, SubscriptionError> {
+            let response = http
+                .post(format!("{}/oauth/token", self.base))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(format!(
+                    "grant_type=refresh_token&refresh_token={refresh_token}"
+                ))
+                .send()
+                .await
+                .map_err(|e| SubscriptionError::Transport(e.to_string()))?;
+            token_response(response).await
+        }
+    }
+
+    async fn token_response(response: reqwest::Response) -> Result<TokenSet, SubscriptionError> {
+        let status = response.status();
+        if !status.is_success() {
+            return Err(SubscriptionError::Oauth {
+                status: status.as_u16(),
+            });
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|e| SubscriptionError::Transport(e.to_string()))?;
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|_| SubscriptionError::InvalidTokenResponse("json"))?;
+        Ok(TokenSet {
+            access_token: SecretString::new(
+                json["access_token"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+                    .into(),
+            ),
+            refresh_token: SecretString::new(
+                json["refresh_token"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+                    .into(),
+            ),
+            expires_in_secs: json["expires_in"].as_u64().unwrap_or_default(),
+        })
+    }
+
+    fn subscription_vendor(id: &str, api_base: String) -> fluxgate::config::VendorConfig {
+        let mut v = common::base_vendor(id, api_base);
+        v.type_ = "anthropic".into();
+        v.concurrency.requests_per_second = 1000;
+        v
+    }
+
+    async fn make_state(config: Config) -> Arc<ApiState> {
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let database = Arc::new(fluxgate::database::Database {
+            pool: pool.clone(),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+        });
+        let router = Arc::new(fluxgate::router::Router::new(
+            config_manager.clone(),
+            vendor_manager.clone(),
+        ));
+        Arc::new(ApiState {
+            affinity_writer: None,
+            config: config_manager,
+            vendor_manager,
+            router,
+            logger: None,
+            pre_aggregator: None,
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+            difficulty: None,
+            responses: None,
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database,
+        })
+    }
+
+    async fn make_pool(
+        state: &ApiState,
+        oauth_base: String,
+    ) -> (Arc<AccountPool>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: Arc<dyn fluxgate::vault::KeyStore> = Arc::new(
+            FileKeyStore::open(vec![7u8; 32], dir.path().join("vault.bin")).expect("file store"),
+        );
+        let pool = AccountPool::new(
+            Arc::new(MockProvider { base: oauth_base }),
+            reqwest::Client::new(),
+            "it-client".to_string(),
+            Some(store),
+            state.vendor_manager.metrics().clone(),
+        );
+        let pool = Arc::new(pool);
+        state.vendor_manager.set_subscription_pool(pool.clone());
+        (pool, dir)
+    }
+
+    fn app(state: Arc<ApiState>) -> Router {
+        use fluxgate::api::admin::subscription_admin;
+        Router::new()
+            .route("/v1/chat/completions", post(chat_completions))
+            .route(
+                "/admin/subscription/authorize",
+                post(subscription_admin::authorize),
+            )
+            .route(
+                "/admin/subscription/callback",
+                get(subscription_admin::callback),
+            )
+            .route(
+                "/admin/subscription/accounts",
+                get(subscription_admin::accounts),
+            )
+            .route(
+                "/admin/subscription/accounts/{id}",
+                axum::routing::delete(subscription_admin::revoke),
+            )
+            .with_state(state)
+    }
+
+    async fn post_json(
+        state: Arc<ApiState>,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn get_json(state: Arc<ApiState>, uri: &str) -> axum::response::Response {
+        app(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).expect("JSON body")
+    }
+
+    fn upstream_ok() -> String {
+        json!({
+            "id": "msg_it",
+            "type": "message",
+            "role": "assistant",
+            "model": "target-model",
+            "content": [{"type": "text", "text": "hi from subscription"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })
+        .to_string()
+    }
+
+    fn chat_body() -> serde_json::Value {
+        json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 10
+        })
+    }
+
+    fn subscription_config(vendor: fluxgate::config::VendorConfig) -> Config {
+        let mut config = Config {
+            server: ServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            ..common::test_config(vec![vendor])
+        };
+        config.subscription.enabled = true;
+        config.subscription.client_id = "it-client".into();
+        config
+    }
+
+    /// 双账号轮换：两次请求经订阅凭证出站（Authorization Bearer），两账号
+    /// 各服务一次；上游从未见过 key 池凭证。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn subscription_account_serves_and_pool_rotates() {
+        let mut upstream = mockito::Server::new_async().await;
+        let bearer_at_1 = upstream
+            .mock("POST", "/v1/messages")
+            .match_header("authorization", "Bearer it-access-one")
+            .with_status(200)
+            .with_body(upstream_ok())
+            .expect(1)
+            .create_async()
+            .await;
+        let bearer_at_2 = upstream
+            .mock("POST", "/v1/messages")
+            .match_header("authorization", "Bearer it-access-two")
+            .with_status(200)
+            .with_body(upstream_ok())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut vendor = subscription_vendor("claude_main", upstream.url());
+        vendor.models = vec![fluxgate::config::ModelConfig {
+            model_id: "target-model".into(),
+            abstract_id: Some("gpt-4".into()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        }];
+        let state = make_state(subscription_config(vendor)).await;
+        let oauth = mockito::Server::new_async().await;
+        let (pool, _dir) = make_pool(&state, oauth.url()).await;
+        state.vendor_manager.initialize().await.expect("init");
+
+        for (id, access) in [("sub-1", "it-access-one"), ("sub-2", "it-access-two")] {
+            pool.register_declared(id, "claude_main").await;
+            pool.complete_authorization(id, MockProvider::token_set(access, "it-rt"))
+                .await
+                .expect("seed");
+        }
+
+        for _ in 0..2 {
+            let response = post_json(state.clone(), "/v1/chat/completions", chat_body()).await;
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::OK,
+                "订阅账号应服务请求: {:?}",
+                body_json(response).await
+            );
+        }
+        bearer_at_1.assert_async().await;
+        bearer_at_2.assert_async().await;
+    }
+
+    /// 401 单刷重试：上游对旧 token 401 → 池单飞刷新（mock OAuth）→
+    /// 新 token 同 vendor 重试一次成功。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn subscription_401_refreshes_and_retries_same_vendor() {
+        let mut upstream = mockito::Server::new_async().await;
+        let rejected = upstream
+            .mock("POST", "/v1/messages")
+            .match_header("authorization", "Bearer it-stale-access")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"expired"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let accepted = upstream
+            .mock("POST", "/v1/messages")
+            .match_header("authorization", "Bearer it-fresh-access")
+            .with_status(200)
+            .with_body(upstream_ok())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut vendor = subscription_vendor("claude_main", upstream.url());
+        vendor.models = vec![fluxgate::config::ModelConfig {
+            model_id: "target-model".into(),
+            abstract_id: Some("gpt-4".into()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        }];
+        let state = make_state(subscription_config(vendor)).await;
+
+        let mut oauth = mockito::Server::new_async().await;
+        let refresh_mock = oauth
+            .mock("POST", "/oauth/token")
+            .match_body(mockito::Matcher::Regex("grant_type=refresh_token".into()))
+            .with_status(200)
+            .with_body(
+                json!({"access_token": "it-fresh-access", "refresh_token": "it-rt-2", "expires_in": 3600})
+                    .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let (pool, _dir) = make_pool(&state, oauth.url()).await;
+        pool.register_declared("sub-1", "claude_main").await;
+        pool.complete_authorization(
+            "sub-1",
+            MockProvider::token_set("it-stale-access", "it-rt-1"),
+        )
+        .await
+        .expect("seed");
+        state.vendor_manager.initialize().await.expect("init");
+
+        let response = post_json(state.clone(), "/v1/chat/completions", chat_body()).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "401 → 刷新 → 重试应成功"
+        );
+        rejected.assert_async().await;
+        refresh_mock.assert_async().await;
+        accepted.assert_async().await;
+    }
+
+    /// admin 全链 + 脱敏：authorize → callback（mock OAuth 换码）→
+    /// accounts 列表零 token 子串 → revoke 删 vault 条目并移出池。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn accounts_listing_never_contains_token() {
+        let mut oauth = mockito::Server::new_async().await;
+        let exchange = oauth
+            .mock("POST", "/oauth/token")
+            .match_body(mockito::Matcher::Regex(
+                "grant_type=authorization_code".into(),
+            ))
+            .with_status(200)
+            .with_body(
+                json!({
+                    "access_token": ACCESS_MARKER,
+                    "refresh_token": REFRESH_MARKER,
+                    "expires_in": 3600
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let vendor = subscription_vendor("claude_main", "http://127.0.0.1:1".into());
+        let state = make_state(subscription_config(vendor)).await;
+        let (_pool, _dir) = make_pool(&state, oauth.url()).await;
+
+        // authorize：返回授权 URL 与 state
+        let response = post_json(
+            state.clone(),
+            "/admin/subscription/authorize",
+            json!({"vendor": "claude_main"}),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let start = body_json(response).await;
+        assert!(start["authorize_url"]
+            .as_str()
+            .unwrap()
+            .contains("/oauth/authorize"));
+        assert_eq!(start["account_id"], "sub-1", "ad-hoc 账号自增");
+
+        // callback：以 state + code 换码（扮演浏览器回跳）
+        let response = get_json(
+            state.clone(),
+            &format!(
+                "/admin/subscription/callback?state={}&code=it-auth-code",
+                start["state"].as_str().unwrap()
+            ),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "回调换码应成功"
+        );
+        exchange.assert_async().await;
+
+        // accounts：脱敏列表（id/vendor/状态/过期时间戳，零 token 子串）
+        let response = get_json(state.clone(), "/admin/subscription/accounts").await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let text = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let text = String::from_utf8(text.to_vec()).unwrap();
+        assert!(text.contains("sub-1"), "列表含账号 id: {text}");
+        assert!(text.contains("claude_main"), "列表含 vendor 绑定: {text}");
+        assert!(!text.contains(ACCESS_MARKER), "列表零 access token: {text}");
+        assert!(
+            !text.contains(REFRESH_MARKER),
+            "列表零 refresh token: {text}"
+        );
+
+        // 重放回调被拒（state 单次使用）
+        let response = get_json(
+            state.clone(),
+            &format!(
+                "/admin/subscription/callback?state={}&code=it-auth-code",
+                start["state"].as_str().unwrap()
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        // revoke：删 vault 条目 + 内存摘除
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/admin/subscription/accounts/sub-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["removed"], true);
+        assert_eq!(body["vault_entries_removed"], 1, "vault 条目随吊销清理");
+
+        let accounts_after =
+            body_json(get_json(state.clone(), "/admin/subscription/accounts").await).await;
+        assert_eq!(
+            accounts_after["accounts"].as_array().unwrap().len(),
+            0,
+            "吊销后账号移出池"
+        );
     }
 }

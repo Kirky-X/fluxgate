@@ -415,10 +415,15 @@ mod tests {
 
     fn base_config() -> Config {
         Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
             server: ServerConfig {
                 host: "127.0.0.1".into(),

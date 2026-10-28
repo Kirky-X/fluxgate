@@ -2280,6 +2280,10 @@ mod token_weighted_tickets {
     async fn make_weighted_manager(api_base: String, weighted: bool) -> Arc<VendorManager> {
         common::ensure_test_api_key();
         let config = fluxgate::config::Config {
+            masking: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             vendor_budgets: Vec::new(),
             server: fluxgate::config::ServerConfig {
@@ -2345,6 +2349,7 @@ mod token_weighted_tickets {
             responses: Default::default(),
             otlp: Default::default(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
             metrics: Default::default(),
         };
         let cm = Arc::new(fluxgate::config::ConfigManager::new(config));

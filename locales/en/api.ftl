@@ -122,6 +122,38 @@ router-gemini-no-native-vendor = No native Gemini vendor for model "{ $model }":
 middleware-gemini-unauthorized = Gemini request is missing or has an invalid API key
 
 usage-insights-disabled = Usage insights are disabled; enable [usage_insights] to use this endpoint
+
+# ---- api/admin.rs（订阅账号管理面，subscription-vendor feature）----
+subscription-admin-disabled = Subscription accounts are disabled; enable [subscription] and the subscription-vendor feature to use this endpoint
+subscription-client-id-missing = [subscription].client_id is not configured; an OAuth application client id is required to start authorization
+subscription-account-unknown = Subscription account "{ $account }" is not registered in the pool
+subscription-account-unknown-vendor = vendor "{ $vendor }" does not match any [[vendors]] id
+
+# ---- api/web_search.rs（搜索注入与守护抓取，web-search feature）----
+web-search-disabled = Web search and fetch endpoints are disabled; enable [web_search] to use them
+netguard-blocked = Outbound fetch blocked: target resolves into a protected network range ({ $tag })
+fetch-unsupported-media = Outbound fetch supports only text/html, text/plain, text/markdown or application/json responses
+fetch-body-too-large = Outbound fetch response exceeds the 1 MiB size cap
+search-all-providers-failed = All search providers failed: { $summary }
+search-no-providers = No search providers configured; add [[web_search.providers]] entries
+config-web-search-unknown-kind = Unknown web search provider kind "{ $kind }" (expected tavily, brave, exa or searxng)
+config-web-search-missing-base-url = SearXNG provider requires an explicit base_url
+config-web-search-missing-key = Provider "{ $kind }" requires at least one key source (api_key_env, api_key_envs or api_key_vault_ref)
 config-otlp-endpoint-invalid = OTLP endpoint is not a valid URL: { $value }
 config-otlp-endpoint-scheme = OTLP endpoint scheme must be http or https, got "{ $value }"
 config-otlp-endpoint-userinfo = OTLP endpoint must not embed credentials (userinfo)
+
+# ---- api/admin.rs（catalog-sync：目录自动同步管理面） ----
+catalog-sync-disabled = Catalog sync is disabled; enable [catalog_sync].enabled (and build with --features catalog-sync) to use this endpoint
+catalog-sync-in-flight = A catalog sync is already in flight; retry after it completes
+catalog-sync-failed = Catalog sync failed: { $reason }
+config-catalog-sync-timeout-zero = [catalog_sync].timeout_secs must be at least 1
+config-catalog-sync-source-url-invalid = [catalog_sync].source_url is not a valid URL: { $value }
+config-catalog-sync-source-url-scheme = [catalog_sync].source_url must use HTTPS (loopback http allowed), got "{ $value }"
+config-catalog-sync-source-url-userinfo = [catalog_sync].source_url must not embed credentials (userinfo)
+config-catalog-sync-alias-blank = [catalog_sync.alias] entries must not be blank
+catalog-sync-parse-failed = Catalog source could not be parsed as JSON: { $error }
+catalog-sync-source-skipped = Catalog source entries skipped (missing pricing or context window)
+main-catalog-sync-started = Periodic catalog sync task started (interval: { $interval_secs }s)
+main-catalog-sync-synced = Catalog sync completed: { $added } entries added
+main-catalog-sync-failed = Catalog sync failed (fail-open, catalog unchanged): { $error }

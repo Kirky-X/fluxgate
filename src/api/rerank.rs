@@ -508,10 +508,15 @@ mod rerank_cost_db_tests {
 
     async fn make_state() -> (Arc<ApiState>, Arc<Repository>) {
         let config = Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
@@ -591,6 +596,8 @@ mod rerank_cost_db_tests {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         });
         (state, repository)
     }

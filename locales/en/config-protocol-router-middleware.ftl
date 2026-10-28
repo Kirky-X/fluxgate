@@ -48,6 +48,10 @@ config-vendor-budget-id-duplicate = [[vendor_budgets]] declares duplicate vendor
 config-vendor-budget-unknown-vendor = [[vendor_budgets]] vendor_id "{ $vendor }" does not match any [[vendors]] id: a misspelled budget entry would silently never apply
 config-vendor-budget-empty-limits = [[vendor_budgets]] vendor "{ $vendor }" sets both tokens_limit and cost_limit_millicents to 0: declare at least one dimension or drop the entry
 config-quota-factor-mode-unknown = routing.quota_factor.mode "{ $value }" is invalid (valid values: off / smart / pace)
+config-subscription-account-id-empty = [[subscription_accounts]] entry has an empty id — the id keys the vault entry (sub:ID) and the account pool
+config-subscription-account-id-duplicate = [[subscription_accounts]] declares duplicate id "{ $account }"
+config-subscription-account-vendor-empty = [[subscription_accounts]] account "{ $account }" has an empty vendor_id — the binding decides which vendor pool serves with this account
+config-subscription-account-unknown-vendor = [[subscription_accounts]] account "{ $account }" binds vendor_id "{ $vendor }" that matches no [[vendors]] id: a misspelled binding would silently never serve
 # quota.enabled 开而 [auth] 关/缺段的组合告警：tenant 键取自客户端自报头（L9）
 config-quota-without-auth = [quota].enabled is on but [auth] is disabled or absent: quota tenant keys come from client-supplied headers without verification, so billing control can be bypassed with forged headers (isolate /admin and data planes, or enable auth)
 # $details 为固定序条目明细：位置 + 规则结论（本仓库形态契约或 confers
@@ -149,3 +153,9 @@ config-vendor-anthropic-version-invalid = [vendors] anthropic_version of vendor 
 router-responses-no-native-vendor = No native Responses vendor for model "{ $model }": declare type_ = "openai" and api_style = "responses" on the vendor, and make sure both vendor and model are enabled
 config-affinity-mode-unknown = [routing.affinity] mode is invalid: "{ $value }" (valid values: legacy / auto / turn / off)
 config-vendor-cache-ttl-secs-out-of-range = [vendors] cache_ttl_secs of vendor { $vendor } is out of range: { $value } (valid range: 1-86400 seconds)
+
+# ---- masking: 出站掩码（feature masking；config 校验 + 运维日志）----
+config-masking-kind-invalid = Invalid masking kind: { $kind } (valid: api_key, private_key, token, email, card, id, custom)
+config-masking-action-invalid = Invalid masking action: { $action } (valid: mask, warn, block)
+config-masking-rule-invalid = Invalid masking rule (regex compile failed): { $detail }
+masking-rule-build-failed = masking detector rebuild failed on a custom rule; rebuilt without custom rules (detections continue on builtin patterns and words)

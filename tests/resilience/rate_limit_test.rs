@@ -95,6 +95,10 @@ fn make_config(rules: Vec<RateLimitRule>) -> Config {
 
 fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Config {
     Config {
+        masking: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
+        web_search: Default::default(),
         vendor_budgets: Vec::new(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
@@ -130,6 +134,7 @@ fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Co
         rate_limit: RateLimitSection { rules },
         otlp: Default::default(),
         usage_insights: Default::default(),
+        catalog_sync: Default::default(),
         metrics: Default::default(),
     }
 }

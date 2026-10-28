@@ -48,6 +48,10 @@ config-vendor-budget-id-duplicate = [[vendor_budgets]] 声明了重复 vendor_id
 config-vendor-budget-unknown-vendor = [[vendor_budgets]] vendor_id「{ $vendor }」与任何 [[vendors]] id 都对不上：错拼的预算条目会静默永不生效
 config-vendor-budget-empty-limits = [[vendor_budgets]] vendor「{ $vendor }」的 tokens_limit 与 cost_limit_millicents 同时为 0：至少声明一个维度，或删掉该条目
 config-quota-factor-mode-unknown = routing.quota_factor.mode「{ $value }」非法（合法值：off / smart / pace）
+config-subscription-account-id-empty = [[subscription_accounts]] 条目 id 为空——id 是 vault 条目（sub:ID）与账号池的键
+config-subscription-account-id-duplicate = [[subscription_accounts]] 声明了重复 id「{ $account }」
+config-subscription-account-vendor-empty = [[subscription_accounts]] 账号「{ $account }」的 vendor_id 为空——该绑定决定哪些 vendor 池用此账号出站
+config-subscription-account-unknown-vendor = [[subscription_accounts]] 账号「{ $account }」绑定的 vendor_id「{ $vendor }」与任何 [[vendors]] id 都对不上：错拼的绑定会静默永不服务
 # quota.enabled 开而 [auth] 关/缺段的组合告警：租户键取自客户端自报头（L9）
 config-quota-without-auth = [quota].enabled 已开启但 [auth] 关闭或缺段：配额租户键取自未经校验的客户端自报头，计费控制可被伪造头旁路（请以反代/网络层隔离管理面，或开启认证）
 # $details 为固定序条目明细：位置 + 规则结论（本仓库形态契约或 confers
@@ -149,3 +153,9 @@ config-vendor-anthropic-version-invalid = [vendors] 厂商 { $vendor } 的 anthr
 router-responses-no-native-vendor = 模型 "{ $model }" 无 Responses 原生候选：请为厂商声明 type_ = "openai" 且 api_style = "responses"，并确认厂商与模型均已启用
 config-affinity-mode-unknown = [routing.affinity] mode 非法: "{ $value }"（合法值: legacy / auto / turn / off）
 config-vendor-cache-ttl-secs-out-of-range = [vendors] 厂商 { $vendor } 的 cache_ttl_secs 越界: { $value }（合法范围: 1-86400 秒）
+
+# ---- masking: 出站掩码（feature masking；config 校验 + 运维日志）----
+config-masking-kind-invalid = 无效的掩码种类：{ $kind }（合法值：api_key、private_key、token、email、card、id、custom）
+config-masking-action-invalid = 无效的掩码动作：{ $action }（合法值：mask、warn、block）
+config-masking-rule-invalid = 无效的掩码正则（编译失败）：{ $detail }
+masking-rule-build-failed = 掩码检测器因自定义正则构建失败，已按空正则重建（内置形态与词表检测继续生效）

@@ -52,11 +52,17 @@ pub struct ApiState {
     /// Responses 运行时（有状态存储 + 后台任务）。None = 未接线：
     /// 端点仍可用，但 `store`/`previous_response_id`/`background` 降级。
     pub responses: Option<Arc<crate::api::responses::ResponsesRuntime>>,
+    /// 搜索注入运行时（`web-search` feature 门控）：守护抓取器 + key 池缓存
+    /// + 成败计数。None = 未接线（/v1/search、/v1/fetch、/admin/web-search/stats
+    /// 一律 404，与 [web_search].enabled=false 同语义）。
+    #[cfg(feature = "web-search")]
+    pub web_search: Option<Arc<crate::api::web_search::WebSearchRuntime>>,
 }
 
 impl std::fmt::Debug for ApiState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ApiState")
+        let mut builder = f.debug_struct("ApiState");
+        builder
             .field("config", &"ConfigManager")
             .field("vendor_manager", &"VendorManager")
             .field("router", &"Router")
@@ -70,8 +76,10 @@ impl std::fmt::Debug for ApiState {
             .field("response_cache", &self.response_cache.is_some())
             .field("bandit", &self.bandit.is_some())
             .field("difficulty", &self.difficulty.is_some())
-            .field("responses", &self.responses.is_some())
-            .finish()
+            .field("responses", &self.responses.is_some());
+        #[cfg(feature = "web-search")]
+        builder.field("web_search", &self.web_search.is_some());
+        builder.finish()
     }
 }
 

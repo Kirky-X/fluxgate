@@ -122,6 +122,38 @@ router-gemini-no-native-vendor = 模型 "{ $model }" 无 Gemini 原生厂商：�
 middleware-gemini-unauthorized = Gemini 请求缺少有效的 API key
 
 usage-insights-disabled = 会话/上下文统计已关闭；启用 [usage_insights] 后可用
+
+# ---- api/admin.rs（订阅账号管理面，subscription-vendor feature）----
+subscription-admin-disabled = 订阅账号已关闭；启用 [subscription] 与 subscription-vendor feature 后可用
+subscription-client-id-missing = 未配置 [subscription].client_id：发起授权需要 OAuth 应用 client id
+subscription-account-unknown = 订阅账号「{ $account }」未在池中登记
+subscription-account-unknown-vendor = vendor「{ $vendor }」与任何 [[vendors]] id 都对不上
+
+# ---- api/web_search.rs（搜索注入与守护抓取，web-search feature）----
+web-search-disabled = 搜索与抓取端点已关闭；启用 [web_search] 后可用
+netguard-blocked = 出站抓取被拒绝：目标解析到受保护网段（{ $tag }）
+fetch-unsupported-media = 出站抓取仅支持 text/html、text/plain、text/markdown 或 application/json 响应
+fetch-body-too-large = 出站抓取响应超过 1 MiB 上限
+search-all-providers-failed = 全部搜索源失败：{ $summary }
+search-no-providers = 未配置搜索源；请添加 [[web_search.providers]] 条目
+config-web-search-unknown-kind = 未知的搜索源类型 "{ $kind }"（合法值 tavily、brave、exa、searxng）
+config-web-search-missing-base-url = SearXNG 源必须显式配置 base_url
+config-web-search-missing-key = 搜索源 "{ $kind }" 至少需要一个 key 来源（api_key_env、api_key_envs 或 api_key_vault_ref）
 config-otlp-endpoint-invalid = OTLP 端点不是合法 URL：{ $value }
 config-otlp-endpoint-scheme = OTLP 端点 scheme 必须是 http 或 https，实际 "{ $value }"
 config-otlp-endpoint-userinfo = OTLP 端点不得内嵌凭证（userinfo）
+
+# ---- api/admin.rs（catalog-sync：目录自动同步管理面） ----
+catalog-sync-disabled = 目录同步已关闭；启用 [catalog_sync].enabled（并以 --features catalog-sync 构建）后可用
+catalog-sync-in-flight = 已有一次目录同步在进行中；请等其完成后再试
+catalog-sync-failed = 目录同步失败：{ $reason }
+config-catalog-sync-timeout-zero = [catalog_sync].timeout_secs 必须至少为 1
+config-catalog-sync-source-url-invalid = [catalog_sync].source_url 不是合法 URL：{ $value }
+config-catalog-sync-source-url-scheme = [catalog_sync].source_url 必须使用 HTTPS（loopback 上的 http 放行），实际 "{ $value }"
+config-catalog-sync-source-url-userinfo = [catalog_sync].source_url 不得内嵌凭证（userinfo）
+config-catalog-sync-alias-blank = [catalog_sync.alias] 表键值不得为空白
+catalog-sync-parse-failed = 目录源无法按 JSON 解析：{ $error }
+catalog-sync-source-skipped = 目录源条目已跳过（缺定价或上下文窗口）
+main-catalog-sync-started = 目录同步周期任务已启动（间隔 { $interval_secs } 秒）
+main-catalog-sync-synced = 目录同步完成：新增 { $added } 条
+main-catalog-sync-failed = 目录同步失败（fail-open，目录保持原样）：{ $error }

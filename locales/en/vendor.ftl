@@ -52,3 +52,11 @@ vendor-extra-header-conflict = extra_headers conflicts with a gateway header; sk
 vendor-extra-header-name-invalid = extra_headers header name invalid; skipped
 vendor-extra-header-value-invalid = extra_headers header value invalid; skipped
 vendor-gemini-url-requires-model = vendor { $vendor } is Gemini type: URL must be built from model + action
+vendor-subscription-retry-after-refresh = subscription 401: access token refreshed once and request retried on the same vendor
+
+# ---- subscription（subscription-vendor feature）----
+subscription-refresh-token-rotated = subscription refresh token rotated; stale vault entries removed
+subscription-authorize-pending = subscription authorization started; complete it in your browser and the callback will store the credentials
+subscription-callback-invalid = subscription callback rejected: unknown, expired, or already-used state
+subscription-account-revoked = subscription account revoked; vault entries deleted and account removed from the pool
+subscription-redirect-default-loopback = server.host is a listen address; OAuth redirect_uri fell back to 127.0.0.1 (set redirect_uri explicitly for reverse-proxy/public deployments)

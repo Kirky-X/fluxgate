@@ -69,3 +69,7 @@ storage-affinity-sticks-unsupported = this AffinityStickSink implementation is a
 database-affinity-persist-flush-failed = affinity stick batch persist failed (dropped { $count } sticks): { $error }
 database-affinity-persist-channel-closed = affinity stick persist channel closed: { $error }
 database-affinity-sticks-read-failed = affinity stick read failed: { $error }
+
+# ---- masking: 出站掩码（feature masking；错误面 + config 校验面）----
+masking-unavailable = Request refused: outbound masking is unavailable (fail-closed, never send raw)
+masking-blocked = Request blocked: sensitive data of kind { $kind } is not allowed to leave

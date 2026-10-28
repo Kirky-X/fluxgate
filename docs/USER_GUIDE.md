@@ -16,6 +16,7 @@
 - [响应缓存 cache](#-响应缓存-cache)
 - [入站限流与准入 ratelimitadmission](#-入站限流与准入-ratelimit--admission)
 - [定价与成本 pricing](#-定价与成本-pricing)
+- [订阅账号上游 subscription](#-订阅账号上游-subscription)
 - [配置热更新操作指南](#-配置热更新操作指南)
 - [Docker 部署](#-docker-部署)
 - [运维手册](#-运维手册)
@@ -739,6 +740,120 @@ w_quota = 0.3
 
 ---
 
+## 📲 订阅账号上游 subscription
+
+> ⚠️ **合规警示**：以订阅账号（如 Claude Pro/Max）作服务端出站上游可能违反厂商服务条款（厂商公开政策将订阅 OAuth 面限定于其官方客户端）。商用部署请自行评估合规风险，责任由部署者自担。本网关只实现标准 OAuth 授权码 + PKCE 流程，不含任何绕过限制的技术。
+
+### 双门控
+
+1. **编译门**：`--features subscription-vendor`（不进 `full`——默认产物零合规面）；
+2. **运行时门**：`[subscription].enabled = true`（缺段/缺字段默认关）。
+
+### 配置
+
+```toml
+[subscription]
+enabled = true
+client_id = "<OAuth 应用 client id>"   # 空串 = 未配置，authorize 点名拒绝
+
+[[subscription_accounts]]
+id = "sub-1"                # 即 vault 键 sub:sub-1 的账号段
+vendor_id = "claude-main"   # 绑定 [[vendors]] 条目（计入其出站凭证池轮换）
+```
+
+`[[subscription_accounts]]` 是可选的静态声明：重启后网关按声明从 vault 回载 refresh token 恢复服务；不声明则账号仅本次进程内有效。
+
+### 授权全流程（admin 四端点）
+
+| 步骤 | 端点 | 说明 |
+| :--- | :--- | :--- |
+| 1 发起 | `POST /admin/subscription/authorize` | body `{"vendor": "claude-main", "account_id": "sub-1", "redirect_uri": null}`；返回 `{authorize_url, state, account_id}`。`redirect_uri` 缺省为本进程 `http://{server.host}:{server.port}/admin/subscription/callback`（反代后部署可覆写） |
+| 2 浏览器授权 | — | 打开 `authorize_url` 登录并批准（PKCE S256；state 10 分钟有效、单次使用） |
+| 3 回调 | `GET /admin/subscription/callback?state=...&code=...` | 核对 state → 授权码换 token → **refresh token 落 vault（cocoon AEAD）**，access token 仅内存。**auth 中间件豁免该路径**（浏览器裸 GET 无 API key 头；端点认证即 state 参数——128-bit 随机、单次消费、10 分钟 TTL） |
+| 4 查看 | `GET /admin/subscription/accounts` | 脱敏列表：id / vendor / 池状态 / token 过期时间戳，**零 token 片段** |
+| 5 吊销 | `DELETE /admin/subscription/accounts/{id}` | 删 vault 条目 + 内存摘除，此后该账号不再参与出站 |
+
+### 运行语义
+
+- **池轮换**：同一 vendor 的 Active 账号按游标轮换出站（订阅凭证优先于 API key 池）；
+- **抢占刷新**：access token 到期前 5 分钟单飞刷新（同账号并发只发一次刷新请求）；
+- **降级与摘除**：刷新失败账号进入 30 分钟冷却（不参与出站，请求走既有 Fallback 换路）；冷却到点重试一次，仍败摘除。`/admin/metrics` 的 `subscription_refresh_fail_total` / `subscription_accounts_degraded` 暴露健康面；
+- **401 自愈全路径**：上游 401（access token 被吊销）→ 强制刷新一次 → 新 token 原路重发一次——非流式 / 流式 / 透传非流式 / 透传流式四条出站路径同一闭环（响应头级判定，重发仍 401 即降级出池）；候选账号刷新失败自动换下一候选，不再整请求损失订阅机会；
+- **单实例约束**：PKCE state 存进程内存，多副本部署不共享——授权回调必须打回同一实例。
+
+## 📥 目录自动同步 catalog_sync
+
+> **只增不改（硬策略，不可配置）**：同步只新增 `[[model_catalog]]` 中缺失的模型；已有条目（含你自己定的价格）**永不覆盖**。用户定价是计价正源，自动覆盖会破坏计价语义。
+
+### 双门控
+
+1. **编译门**：`--features catalog-sync`（不进 `full`——对外网络请求能力按需启用）；
+2. **运行时门**：`[catalog_sync].enabled = true`（缺段/缺字段默认关）。
+
+### 配置
+
+```toml
+[catalog_sync]
+enabled = true
+source_url = "https://models.dev/api.json"  # 外部目录源（enabled 时仅 HTTPS；loopback 放行 http）
+interval_secs = 0                           # 周期同步间隔（秒）；0 = 不周期，仅手动触发
+timeout_secs = 10
+
+[catalog_sync.alias]
+anthropic = "claude-main"   # provider slug → vendor_id；缺省 slug 本身即 vendor_id
+```
+
+### 触发
+
+| 方式 | 说明 |
+| :--- | :--- |
+| 手动 | `POST /admin/catalog/sync`，body `{"dry_run": true}` 只返回 diff 不落盘；`{"dry_run": false}` 走既有热更新写路径（校验 → 原子落盘 → 切内存，立即生效） |
+| 周期 | `interval_secs > 0` 时启动挂周期任务（±10% 抖动错峰）；运行期改 0 或关 enabled 即热停 |
+
+### 响应与语义
+
+- 成功：`{dry_run, status, added, skipped, unchanged, etag, entries[]}`；`entries[].price_source = "fallback"` 标注该条目至少一档价格源缺失、以 catalog 默认 0 价回退；
+- 重入：进程内单飞，同步进行中再次触发返回 **409**；
+- 失败 fail-open：拉取/解析失败保持现 catalog 原样，返回 **502**（超 8MB 体积上限返回 **413**），`/admin/metrics` 的 `catalog_sync_fail_total{reason}` / `catalog_sync_added_total` 暴露计数；
+- 条件请求：成功响应缓存上游 ETag，下轮自动带 `If-None-Match`，304 命中零搬运；
+- 跳过：源中缺定价或缺上下文窗口的条目跳过并计数（catalog 登记 `context_window` 必须 > 0）。
+
+## 🎭 出站请求掩码 masking（`masking` feature）
+
+> 将租户 prompt 中意外携带的真实密钥（`.env` 内容、日志片段、连接串）在**发送上游前**替换为确定性占位符 `{{FLUX_<KIND>_<8HEX>}}`，回程（流式逐事件 / 非流式整量）经同一内存映射还原——厂商永不落真值。映射仅存内存（LRU 10k + TTL 24h），任何落盘路径不含原值。
+
+### 双门控
+
+1. **编译门**：`--features masking`（不进 `full`——合规敏感能力默认不出现在产物中）；
+2. **运行时门**：`[masking].enabled = true`（缺段/缺字段默认关，零行为）。
+
+### 配置
+
+```toml
+[masking]
+enabled = true
+# kinds = ["api_key", "private_key", "token", "email", "custom"]  # 空 = 全启用
+# words = ["内部门牌"]           # 自定义词表（命中归 custom）
+# words_any_case = false         # 词表 ASCII 大小写不敏感
+# rules = ["AKIA[0-9A-Z]{16}"]   # 自定义正则（编译失败加载拒绝）
+# allow = ["sk-proj-"]           # 白名单（精确值或值前缀跳过）
+
+[masking.actions]               # kind → 动作；缺省 mask
+custom = "block"                # block = 整请求 400 拒绝
+email = "warn"                  # warn = 只计数不改写
+```
+
+### 行为语义
+
+- **检测面**：inklog 扩展形态表（9 类裸 secret + email/密码赋值）+ 高熵 token 扫描 + 自定义词/正则；
+- **进程内确定性占位符**：同值同种类跨请求同串（哈希掺**每进程随机 pepper**）——会话历史字节稳定，prompt cache 不失效；跨进程/实例占位符不同，上游无法离线预计算或跨实例关联同值；
+- **请求域还原**：回程只还原**本请求掩码登记过**的占位符——上游编造或他请求回显的占位符原样透传（跨请求还原预言机闭合）；
+- **三档动作**：mask（替换）/ warn（只计数）/ block（400 + `masking-blocked` 文案）；
+- **fail-closed**：检测/掩码/还原任一步故障 → 503（`masking-unavailable`），绝不原文出站；
+- **缓存域一致**：响应缓存指纹取掩码前请求体、存取均在已还原（客户端域）形态；
+- **限制**：掩码启用时**透传流**（字节级中继）返回 503——该路径无法保证回程还原；透传非流式不受影响；
+- **可观测**：`/admin/metrics` 的 `masking_hits_total{kind,action}` / `masking_blocked_total` / `masking_fail_total` / `masking_restore_total`，`GET /admin/masking/stats`（24h 窗口 per-kind 次数与值长度直方图元数据，不含任何值本身）。
+
 ## 🔄 配置热更新操作指南
 
 ### 操作入口
@@ -756,7 +871,7 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 
 | 类别   | 段                                                                                                                                                                                                                                                         | 生效方式                                |
 | :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------- |
-| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读）                                            | `POST /admin/config` 后下一请求即用新值 |
+| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读）、`masking`（每请求热读，words/rules 变更检测器惰性重建）            | `POST /admin/config` 后下一请求即用新值 |
 | 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑）、`cache.semantic`（语义层 bootstrap 装配一次） | 修改后须重启进程                        |
 
 > ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组检测 `server` / `cors` / `rate_limit` / `database` / `grpc` / `global_model` / `cache.semantic` / `docs.enabled` / `routing.difficulty.enabled`（`src/api/admin.rs:333-395`），另在 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键变更时加入对应键名（分类器 bootstrap 装配一次，热更后惰性直到重启）。数组之外仍有两类需重启面：vendor `concurrency` 与 `vendors` 拓扑——改这些段后请自行安排重启。
@@ -785,7 +900,7 @@ flowchart TB
 
 除 `POST /admin/config` 外，网关启动时若配置来自文件，会旁挂文件监听（去抖 500ms，按配置文件路径监听——库内部改挂父目录 + 精确路径过滤，兼容原子 rename 写盘；同目录其他文件与子目录的写盘不触发重载）：
 
-- **热生效段**：`retry` / `routing` / `cache` / `resilience` / `admission` / `auth` / `pricing` / `model_catalog` / `lexcompress`——文件改动后下一请求即用新值（只切内存，不落盘；与 admin 写盘内容一致时跳过，不成环）。
+- **热生效段**：`retry` / `routing` / `cache` / `resilience` / `admission` / `auth` / `pricing` / `model_catalog` / `lexcompress` / `masking`——文件改动后下一请求即用新值（只切内存，不落盘；与 admin 写盘内容一致时跳过，不成环）。
 - **结构变更拒绝**：`vendors`（实例拓扑）、`server`、`database`、`grpc`、`cors`、`rate_limit`、`docs`、`global_model` 改动触发 `ReloadRejected`——旧快照继续服务，失败计数 + 日志留痕，改后须重启。
 - `docs` 段改动同样拒绝（路由建站期固化，见上表需重启段）。
 
@@ -957,3 +1072,40 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 | [架构文档](./ARCHITECTURE.md)  | 内部机制与模块设计     |
 | [安全文档](./SECURITY.md)      | 安全策略               |
 | [README](../README.md)         | 项目总览与特性清单     |
+
+## 搜索注入与守护抓取（`web-search` feature）
+
+双 feature 门控：`web-search`（含 reqwest 与 `netguard` 依赖）不进 `full`，构建时显式启用——`cargo build --features web-search`；`netguard`（零依赖 SSRF 判定）可单独启用。`[web_search]` 段 `enabled` 是运行时热读门，**默认 false：`POST /v1/search`、`POST /v1/fetch`、`GET /admin/web-search/stats` 一律 404**。
+
+### `/v1/search {query, n?, provider?}`
+
+- `n` 结果数 1..=20（缺省 5）；`provider` 指定单源（kind 名，大小写不敏感）。
+- 默认按 `[[web_search.providers]]` 数组顺序逐源尝试至首个成功；全败 502 聚合各源错误摘要。
+- 支持 Tavily / Brave / Exa / SearXNG；多 key 池轮转，近 5 分钟失败的 key 选择时跳过（全败回头兜底）。
+- key 来源 vault 引用（`api_key_vault_ref`，`/admin/vault/keys` 录入）优先于环境变量（`api_key_env` / `api_key_envs`）；配置面零 key 明文。
+- SearXNG 无需 key 但必须显式 `base_url`（实例需启用 JSON API）。
+
+### `/v1/fetch {url}`（SSRF 防护语义）
+
+`netguard` 守护抓取的约束（全部不可配置，安全默认）：
+
+- **判定时点**：DNS 解析后、TCP 建连前。全部解析地址逐个过特殊网段判定（loopback/私网/链路本地/CGNAT/组播/保留/文档段，IPv4+IPv6），任一公网地址放行，全拒返回 400 `netguard_blocked`——错误体只带段名 tag，**不回显内网地址**。
+- **防 DNS rebinding**：判过的 IP 直接 pin 进连接（Host 头保持域名，不做第二次解析）。
+- **重定向策略**：禁自动跟随。301/302 原样把状态码与 `Location` 返回给调用方，是否跳转由调用方自行决定并重新发起（每跳都过同一守护判定）。
+- **其余约束**：10s 超时（504）、正文 1 MiB 上限（413）、Content-Type 白名单 text/html | text/plain | text/markdown | application/json（415）。text/html 正文做标签剥离（结构化提取为后续方向，复杂页面正文质量一般）。
+
+```toml
+[web_search]
+enabled = true
+
+[[web_search.providers]]
+kind = "tavily"
+api_key_env = "TAVILY_API_KEY"
+api_key_envs = ["TAVILY_API_KEY_2"]   # 可选：多 key 池
+
+[[web_search.providers]]
+kind = "searxng"
+base_url = "https://searx.example/search"
+```
+
+观测：`GET /admin/web-search/stats` 按 (provider, key_idx) 出成败计数（零 key 材料回显）；`GET /admin/metrics` 带 `web_search_requests_total{provider,result}` 与 `netguard_denied_total{tag}` 计数。

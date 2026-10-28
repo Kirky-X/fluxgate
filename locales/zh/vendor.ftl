@@ -52,3 +52,11 @@ vendor-extra-header-conflict = extra_headers 与网关头冲突，已跳过
 vendor-extra-header-name-invalid = extra_headers 头名非法，已跳过
 vendor-extra-header-value-invalid = extra_headers 头值非法，已跳过
 vendor-gemini-url-requires-model = 厂商 { $vendor } 为 Gemini 类型：URL 必须由 model + action 构造
+vendor-subscription-retry-after-refresh = 订阅 401：access token 已刷新一次并在本 vendor 重试
+
+# ---- subscription（subscription-vendor feature）----
+subscription-refresh-token-rotated = 订阅 refresh token 已轮换，vault 旧条目已清理
+subscription-authorize-pending = 订阅授权已发起，请在浏览器完成授权，回调将保存凭证
+subscription-callback-invalid = 订阅回调被拒绝：state 未知、已过期或已被使用
+subscription-account-revoked = 订阅账号已吊销：vault 条目已删除，账号已移出池
+subscription-redirect-default-loopback = server.host 是监听地址；OAuth redirect_uri 已兜底为 127.0.0.1（反代/公网部署必须显式传 redirect_uri）

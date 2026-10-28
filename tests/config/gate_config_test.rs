@@ -234,6 +234,8 @@ mod tests {
 
     fn create_test_config() -> Config {
         Config {
+            masking: Default::default(),
+            web_search: Default::default(),
             rate_limit: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
@@ -368,6 +370,9 @@ mod tests {
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
             usage_insights: Default::default(),
+            catalog_sync: Default::default(),
+            subscription: Default::default(),
+            subscription_accounts: Vec::new(),
             metrics: Default::default(),
         }
     }
@@ -1292,6 +1297,526 @@ mod quota_windows_config {
             assert!(
                 validate_config(&ok).is_ok(),
                 "合法值 {mode} 必须放行（大小写不敏感 + trim）"
+            );
+        }
+    }
+}
+
+/// `[catalog_sync]` 段：缺省值（catalog-sync 双门控运行时半边）与
+/// source_url 校验（仅 HTTPS；loopback 放行 http 供嵌入式上游测试）。
+#[cfg(test)]
+mod catalog_sync_config {
+    use crate::common;
+    use fluxgate::config::{validate_config, CatalogSyncSection};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_catalog_sync_section_defaults() {
+        let section = CatalogSyncSection::default();
+        assert!(!section.enabled, "缺段/缺字段必须禁用（双门控运行时半边）");
+        assert_eq!(section.source_url, "https://models.dev/api.json");
+        assert_eq!(section.interval_secs, 0, "0 = 不挂周期任务");
+        assert_eq!(section.timeout_secs, 10);
+        assert!(
+            section.alias.is_empty(),
+            "缺省无别名表（slug 即 vendor_id）"
+        );
+
+        let config = common::test_config(vec![]);
+        assert_eq!(config.catalog_sync, section, "Config 缺段走同一 Default");
+        assert!(validate_config(&config).is_ok(), "缺省段合法");
+    }
+
+    /// `[catalog_sync.alias]` 表解析：slug → vendor_id 覆盖生效。
+    #[test]
+    fn test_catalog_sync_alias_table_parses() {
+        let config: fluxgate::config::Config = toml::from_str(
+            r#"
+            [server]
+            host = "127.0.0.1"
+            port = 8080
+            [database]
+            path = ":memory:"
+            [[vendors]]
+            id = "v"
+            name = "V"
+            type_ = "openai"
+            api_key_env = "K"
+            rate_limit = { type = "token", max_tokens = 1 }
+            concurrency = { requests_per_second = 1 }
+            [catalog_sync]
+            enabled = true
+            [catalog_sync.alias]
+            anthropic = "claude-main"
+            openai = "gpt-vendor"
+            "#,
+        )
+        .expect("alias 表解析");
+        assert_eq!(
+            config
+                .catalog_sync
+                .alias
+                .get("anthropic")
+                .map(String::as_str),
+            Some("claude-main")
+        );
+        assert_eq!(config.catalog_sync.alias.len(), 2);
+    }
+
+    /// enabled=false 完全旁路不校验（与「缺段」同语义，difficulty 先例）；
+    /// enabled=true 时非 HTTPS 公网源拒绝、HTTPS 放行、loopback http 放行
+    ///（嵌入式上游测试面）、非法 URL 拒绝。
+    #[test]
+    fn test_catalog_sync_source_url_validation() {
+        // 旁路：disabled 不校验 URL
+        let mut config = common::test_config(vec![]);
+        config.catalog_sync.enabled = false;
+        config.catalog_sync.source_url = "not a url".into();
+        assert!(
+            validate_config(&config).is_ok(),
+            "disabled 不校验 source_url（运行时半边关着即可）"
+        );
+
+        // enabled + 公网 http 拒绝
+        let mut config = common::test_config(vec![]);
+        config.catalog_sync.enabled = true;
+        config.catalog_sync.source_url = "http://models.dev/api.json".into();
+        let err = validate_config(&config).expect_err("公网 http 源必须拒绝");
+        assert!(
+            err.to_string().contains("http://models.dev/api.json"),
+            "错误必须回显原值: {err}"
+        );
+
+        // enabled + https 放行
+        let mut config = common::test_config(vec![]);
+        config.catalog_sync.enabled = true;
+        config.catalog_sync.source_url = "https://mirror.example.com/api.json".into();
+        assert!(validate_config(&config).is_ok(), "自定义 https 源合法");
+
+        // enabled + loopback http 放行（嵌入式上游测试）
+        let mut config = common::test_config(vec![]);
+        config.catalog_sync.enabled = true;
+        config.catalog_sync.source_url = "http://127.0.0.1:1234/api.json".into();
+        assert!(
+            validate_config(&config).is_ok(),
+            "loopback http 放行（嵌入式上游）"
+        );
+
+        // enabled + 非 https 非 loopback 的其它 scheme 拒绝
+        let mut config = common::test_config(vec![]);
+        config.catalog_sync.enabled = true;
+        config.catalog_sync.source_url = "ftp://models.dev/api.json".into();
+        assert!(validate_config(&config).is_err(), "ftp scheme 必须拒绝");
+    }
+
+    /// alias 表键值非空白校验（enabled 时）：空键/空值拒绝。
+    #[test]
+    fn test_catalog_sync_alias_blank_entries_rejected() {
+        let mut config = common::test_config(vec![]);
+        config.catalog_sync.enabled = true;
+        config.catalog_sync.alias = HashMap::from([("".to_string(), "v".to_string())]);
+        assert!(validate_config(&config).is_err(), "空 slug 键必须拒绝");
+
+        let mut config = common::test_config(vec![]);
+        config.catalog_sync.enabled = true;
+        config.catalog_sync.alias = HashMap::from([("anthropic".to_string(), "  ".to_string())]);
+        assert!(validate_config(&config).is_err(), "空白 vendor_id 必须拒绝");
+    }
+}
+
+/// `[subscription]` / `[[subscription_accounts]]` 段：缺省值（subscription-vendor
+/// 双门控运行时半边）与账号声明校验（id 唯一非空、vendor 绑定存在）。
+#[cfg(test)]
+mod subscription_config {
+    use crate::common;
+    use fluxgate::config::{validate_config, SubscriptionAccountConfig, SubscriptionSection};
+
+    #[test]
+    fn test_subscription_section_defaults() {
+        let section = SubscriptionSection::default();
+        assert!(!section.enabled, "缺段/缺字段必须禁用（双门控运行时半边）");
+        assert_eq!(
+            section.client_id, "",
+            "缺省未配置 client_id（authorize 点名拒绝）"
+        );
+
+        let config = common::test_config(vec![]);
+        assert_eq!(config.subscription, section, "Config 缺段走同一 Default");
+        assert!(config.subscription_accounts.is_empty(), "缺省无账号声明");
+        assert!(validate_config(&config).is_ok(), "缺省段合法");
+    }
+
+    /// `[[subscription_accounts]]` 解析：id + vendor_id 声明生效，缺段为空。
+    #[test]
+    fn test_subscription_accounts_table_parses() {
+        let config: fluxgate::config::Config = toml::from_str(
+            r#"
+            [server]
+            host = "127.0.0.1"
+            port = 8080
+            [database]
+            path = ":memory:"
+            [[vendors]]
+            id = "claude-main"
+            name = "Claude"
+            type_ = "anthropic"
+            api_key_env = "K"
+            rate_limit = { type = "token", max_tokens = 1 }
+            concurrency = { requests_per_second = 1 }
+            [subscription]
+            enabled = true
+            client_id = "my-client-id"
+            [[subscription_accounts]]
+            id = "sub-1"
+            vendor_id = "claude-main"
+            "#,
+        )
+        .expect("subscription 段解析");
+        assert!(config.subscription.enabled);
+        assert_eq!(config.subscription.client_id, "my-client-id");
+        assert_eq!(
+            config.subscription_accounts,
+            vec![SubscriptionAccountConfig {
+                id: "sub-1".to_string(),
+                vendor_id: "claude-main".to_string(),
+            }]
+        );
+        assert!(validate_config(&config).is_ok(), "合法声明通过校验");
+    }
+
+    /// 校验三态：空 id / 重复 id / 未知 vendor 绑定，全部点名拒绝；
+    /// enabled=false 时声明仍校验（声明是持久 vault 键的绑定面，与开关正交）。
+    #[test]
+    fn test_subscription_accounts_validation() {
+        let mut config = common::test_config(vec![common::base_vendor("claude-main", "")]);
+        config.subscription_accounts = vec![SubscriptionAccountConfig {
+            id: "  ".to_string(),
+            vendor_id: "claude-main".to_string(),
+        }];
+        let err = validate_config(&config).expect_err("空 id 必须拒绝");
+        assert!(err.to_string().contains("id"), "错误需点名 id 维度: {err}");
+
+        let mut config = common::test_config(vec![common::base_vendor("claude-main", "")]);
+        config.subscription_accounts = vec![
+            SubscriptionAccountConfig {
+                id: "sub-1".to_string(),
+                vendor_id: "claude-main".to_string(),
+            },
+            SubscriptionAccountConfig {
+                id: "sub-1".to_string(),
+                vendor_id: "claude-main".to_string(),
+            },
+        ];
+        let err = validate_config(&config).expect_err("重复 id 必须拒绝");
+        assert!(err.to_string().contains("sub-1"), "错误需回显原值: {err}");
+
+        let mut config = common::test_config(vec![common::base_vendor("claude-main", "")]);
+        config.subscription_accounts = vec![SubscriptionAccountConfig {
+            id: "sub-1".to_string(),
+            vendor_id: "ghost-vendor".to_string(),
+        }];
+        let err = validate_config(&config).expect_err("未知 vendor 绑定必须拒绝");
+        assert!(
+            err.to_string().contains("ghost-vendor"),
+            "错误需回显原值: {err}"
+        );
+
+        // 空白 vendor_id 拒绝
+        let mut config = common::test_config(vec![common::base_vendor("claude-main", "")]);
+        config.subscription_accounts = vec![SubscriptionAccountConfig {
+            id: "sub-1".to_string(),
+            vendor_id: " ".to_string(),
+        }];
+        assert!(validate_config(&config).is_err(), "空白 vendor_id 必须拒绝");
+
+        // enabled=false 时声明仍校验
+        let mut config = common::test_config(vec![common::base_vendor("claude-main", "")]);
+        config.subscription.enabled = false;
+        config.subscription_accounts = vec![SubscriptionAccountConfig {
+            id: "sub-1".to_string(),
+            vendor_id: "ghost-vendor".to_string(),
+        }];
+        assert!(
+            validate_config(&config).is_err(),
+            "enabled=false 不豁免声明校验"
+        );
+    }
+}
+
+#[cfg(test)]
+mod web_search {
+    use fluxgate::config::{parse_config_content, WebSearchProviderConfig, WebSearchSection};
+    use std::path::Path;
+
+    fn parse(web_search_toml: &str) -> Result<fluxgate::config::Config, fluxgate::GateError> {
+        let content = format!(
+            r#"
+[server]
+host = "127.0.0.1"
+port = 0
+
+[database]
+path = ":memory:"
+
+[[vendors]]
+id = "v"
+name = "V"
+type_ = "openai"
+api_key_env = "V_KEY"
+concurrency = {{ requests_per_second = 1 }}
+rate_limit = {{ type = "token", max_tokens = 1000 }}
+
+{web_search_toml}
+"#
+        );
+        parse_config_content(Path::new("config.toml"), &content)
+    }
+
+    /// 缺段 = 安全默认（enabled=false、providers 空）。
+    #[test]
+    fn web_search_defaults_when_section_absent() {
+        let config = parse("").expect("缺段解析");
+        assert_eq!(config.web_search, WebSearchSection::default());
+        assert!(!config.web_search.enabled);
+        assert!(config.web_search.providers.is_empty());
+    }
+
+    /// 合法配置解析（env 多 key 池 + base_url）。
+    #[test]
+    fn web_search_parses_providers() {
+        let config = parse(
+            r#"[web_search]
+enabled = true
+
+[[web_search.providers]]
+kind = "tavily"
+api_key_env = "TAVILY_KEY"
+api_key_envs = ["TAVILY_KEY_2"]
+
+[[web_search.providers]]
+kind = "searxng"
+base_url = "http://127.0.0.1:8888/search"
+"#,
+        )
+        .expect("合法 web_search 解析");
+        assert!(config.web_search.enabled);
+        assert_eq!(config.web_search.providers.len(), 2);
+        let p: &WebSearchProviderConfig = &config.web_search.providers[0];
+        assert_eq!(p.kind, "tavily");
+        assert_eq!(p.api_key_env, "TAVILY_KEY");
+        assert_eq!(p.api_key_envs, vec!["TAVILY_KEY_2".to_string()]);
+    }
+
+    /// kind 闭集外 → 加载拒绝（点名原值）。
+    #[test]
+    fn web_search_rejects_unknown_kind() {
+        let err = parse(
+            r#"[web_search]
+enabled = true
+
+[[web_search.providers]]
+kind = "bing"
+api_key_env = "BING_KEY"
+"#,
+        )
+        .expect_err("未知 kind 必须拒绝");
+        assert!(err.to_string().contains("bing"), "{err}");
+    }
+
+    /// searxng 缺 base_url → 加载拒绝。
+    #[test]
+    fn web_search_rejects_searxng_without_base_url() {
+        let err = parse(
+            r#"[web_search]
+enabled = true
+
+[[web_search.providers]]
+kind = "searxng"
+"#,
+        )
+        .expect_err("searxng 缺 base_url 必须拒绝");
+        assert!(!err.to_string().is_empty());
+    }
+
+    /// 需 key 源的 kind（tavily/brave/exa）全源缺省 → 加载拒绝；searxng 免 key。
+    #[test]
+    fn web_search_rejects_keyless_tavily_but_allows_keyless_searxng() {
+        let err = parse(
+            r#"[web_search]
+enabled = true
+
+[[web_search.providers]]
+kind = "tavily"
+"#,
+        )
+        .expect_err("tavily 无 key 源必须拒绝");
+        assert!(!err.to_string().is_empty());
+
+        parse(
+            r#"[web_search]
+enabled = true
+
+[[web_search.providers]]
+kind = "searxng"
+base_url = "http://127.0.0.1:8888/search"
+"#,
+        )
+        .expect("searxng 免 key 合法");
+    }
+
+    /// enabled=false 完全旁路不校验（与 difficulty 缺段同语义）。
+    #[test]
+    fn web_search_disabled_bypasses_validation() {
+        parse(
+            r#"[web_search]
+enabled = false
+
+[[web_search.providers]]
+kind = "bing"
+"#,
+        )
+        .expect("disabled 时不校验 kind");
+    }
+}
+
+/// `[masking]` 段：默认零行为 + 闭集/正则校验（feature `masking` 编译门 +
+/// enabled 运行时门，双层隔离）。
+#[cfg(test)]
+mod masking_config {
+    use crate::common;
+    use fluxgate::config::{parse_config_content, validate_config, MaskingSection};
+
+    #[test]
+    fn test_masking_section_defaults() {
+        let section = MaskingSection::default();
+        assert!(!section.enabled, "默认 false = 零行为");
+        assert!(section.kinds.is_empty(), "空 kinds = 全启用");
+        assert!(section.actions.is_empty(), "空 actions = 缺省 mask");
+        assert!(section.words.is_empty());
+        assert!(!section.words_any_case);
+        assert!(section.rules.is_empty());
+        assert!(section.allow.is_empty());
+    }
+
+    /// enabled=false（默认）时零行为变化：配置加载/校验路径与无段一致。
+    #[test]
+    fn test_masking_disabled_is_inert() {
+        let mut config = common::test_config(vec![]);
+        config.masking = MaskingSection::default();
+        validate_config(&config).expect("默认段必过校验");
+        // 序列化往返：段缺省不丢（persist_and_swap 全量写回不抹段）
+        let rendered = toml::to_string_pretty(&config).expect("序列化");
+        assert!(
+            rendered.contains("[masking]"),
+            "Section 字段落地防热更抹段: {}",
+            &rendered[..rendered.len().min(400)]
+        );
+    }
+
+    /// kinds/actions 闭集：非法 kind / 非法动作加载拒绝（原值点名）。
+    #[test]
+    fn test_masking_closed_sets_rejected() {
+        let mut config = common::test_config(vec![]);
+        config.masking = MaskingSection {
+            enabled: true,
+            kinds: vec!["secret_kind".into()],
+            ..Default::default()
+        };
+        let err = validate_config(&config).expect_err("非法 kind 必须拒绝");
+        assert!(err.to_string().contains("secret_kind"), "{err}");
+
+        let mut config = common::test_config(vec![]);
+        config.masking = MaskingSection {
+            enabled: true,
+            actions: [("api_key".into(), "delete".into())].into_iter().collect(),
+            ..Default::default()
+        };
+        let err = validate_config(&config).expect_err("非法动作必须拒绝");
+        assert!(err.to_string().contains("delete"), "{err}");
+
+        let mut config = common::test_config(vec![]);
+        config.masking = MaskingSection {
+            enabled: true,
+            actions: [("not_a_kind".into(), "mask".into())].into_iter().collect(),
+            ..Default::default()
+        };
+        assert!(validate_config(&config).is_err(), "actions 键同 kinds 闭集");
+    }
+
+    /// 合法配置通过；TOML 加载面（含注释段缺省）可解析。
+    #[test]
+    fn test_masking_valid_config_parses() {
+        let parsed = parse_config_content(
+            std::path::Path::new("masking-test.toml"),
+            r#"
+[server]
+host = "127.0.0.1"
+port = 0
+
+[database]
+path = ":memory:"
+
+[[vendors]]
+id = "v"
+name = "v"
+type_ = "openai"
+api_key_env = "K"
+api_base = "http://127.0.0.1:1"
+enabled = true
+models = [{ model_id = "m", enabled = true }]
+concurrency = { requests_per_second = 1 }
+rate_limit = { type = "token", max_tokens = 1000 }
+
+[masking]
+enabled = true
+words = ["内部门牌"]
+rules = ["AKIA[0-9A-Z]{16}"]
+allow = ["sk-proj-"]
+
+[masking.actions]
+email = "warn"
+"#,
+        )
+        .expect("合法 masking 配置必须可加载");
+        assert!(parsed.masking.enabled);
+        assert_eq!(parsed.masking.words, vec!["内部门牌".to_string()]);
+        assert_eq!(parsed.masking.allow, vec!["sk-proj-".to_string()]);
+        assert_eq!(
+            parsed.masking.actions.get("email").map(String::as_str),
+            Some("warn")
+        );
+    }
+
+    /// 非法正则：`masking` feature 启用时加载拒绝（刚性）；kind 闭集与
+    /// `crate::masking::MaskKind::parse` 单源（防漂移）。
+    #[cfg(feature = "masking")]
+    #[test]
+    fn test_masking_invalid_rule_rejected_and_kind_set_aligned() {
+        let mut config = common::test_config(vec![]);
+        config.masking = MaskingSection {
+            enabled: true,
+            rules: vec!["(unclosed".into()],
+            ..Default::default()
+        };
+        let err = validate_config(&config).expect_err("非法正则必须拒绝");
+        assert!(
+            err.to_string().contains("(unclosed") || !err.to_string().is_empty(),
+            "{err}"
+        );
+
+        // kind 闭集防漂移：config 侧合法值 ⊆ masking::MaskKind::parse
+        for raw in [
+            "api_key",
+            "private_key",
+            "token",
+            "email",
+            "card",
+            "id",
+            "custom",
+        ] {
+            assert!(
+                fluxgate::masking::MaskKind::parse(raw).is_some(),
+                "config 闭集与 MaskKind::parse 漂移: {raw}"
             );
         }
     }

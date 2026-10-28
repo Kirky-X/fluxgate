@@ -33,6 +33,9 @@ pub struct ServerHandle {
     /// OTLP 桥轮询任务句柄（shutdown 首阶段 abort）。
     #[cfg(feature = "otlp")]
     otlp_task: Option<tokio::task::JoinHandle<()>>,
+    /// 目录同步周期任务句柄（catalog-sync feature；shutdown 首阶段 abort）。
+    #[cfg(feature = "catalog-sync")]
+    catalog_sync_task: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "grpc")]
     grpc_server: std::sync::OnceLock<Option<crate::server::grpc::GrpcServer>>,
 }
@@ -61,6 +64,8 @@ impl ServerHandle {
             otlp_bridge: assembly.otlp_bridge,
             #[cfg(feature = "otlp")]
             otlp_task: assembly.otlp_task,
+            #[cfg(feature = "catalog-sync")]
+            catalog_sync_task: assembly.catalog_sync_task,
             #[cfg(feature = "grpc")]
             grpc_server: std::sync::OnceLock::new(),
         }
@@ -97,6 +102,12 @@ impl ServerHandle {
         // OTLP 桥轮询任务同停（flush 钩子负责最后一跳导出）。
         #[cfg(feature = "otlp")]
         if let Some(handle) = &self.otlp_task {
+            handle.abort();
+        }
+        // 目录同步周期任务同停（admin 手动触发的单次同步不在此列——
+        // in-flight 守卫保证完成后自然收尾）。
+        #[cfg(feature = "catalog-sync")]
+        if let Some(handle) = &self.catalog_sync_task {
             handle.abort();
         }
         // serve 返回即 in-flight 已完成，此刻补最终 flush 防缓冲日志与聚合数据丢失

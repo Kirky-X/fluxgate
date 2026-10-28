@@ -17,8 +17,10 @@ fn database_test_source() -> String {
     fs::read_to_string(&path).expect("tests/database/database_test.rs 必须存在")
 }
 
-/// 提取 `#[ignore]` 属性紧随其后的条目名（`mod X` / `fn X` / `async fn X`）。
-/// 属性与条目声明之间允许穿插其他属性行（如 `#[tokio::test]`）与注释。
+/// 提取 `#[ignore]` 属性紧随其后的条目名（`mod X` / `fn X` / `async fn X`，
+/// 含 `pub ` 变体）。属性与条目声明之间允许穿插其他属性行（如 `#[tokio::test]`）
+/// 与注释；声明行无法识别时立即 panic——静默跳过会让单条漏检无任何断言
+/// 可暴露，只有全部落空才被 `!names.is_empty()` 兜住。
 fn ignored_item_names(source: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut pending = false;
@@ -34,26 +36,59 @@ fn ignored_item_names(source: &str) -> Vec<String> {
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
             continue;
         }
-        if let Some(name) = item_name(trimmed) {
-            names.push(name);
+        match item_name(trimmed) {
+            Some(name) => names.push(name),
+            None => panic!(
+                "#[ignore] 后的声明行无法解析（跨行签名或未收录的前缀变体），\
+                 静默跳过等于守卫漏检：{trimmed}"
+            ),
         }
         pending = false;
     }
     names
 }
 
-/// 条目声明行 → 条目名（行内首段标识符；不支持跨行签名——database_test
-/// 现状与既有惯例均为单行声明，跨行声明会落空并在断言处显性暴露）。
+/// 条目声明行 → 条目名（行内首段标识符）。前缀表长前缀在前：`pub ` 变体
+/// 先于裸关键字，否则 `pub fn` 会漏配全部前缀。新增可见性/修饰符变体时
+/// 在此表补列。
 fn item_name(line: &str) -> Option<String> {
-    ["async fn ", "mod ", "fn "]
-        .iter()
-        .find_map(|kw| line.strip_prefix(kw))
-        .map(|rest| {
-            rest.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                .next()
-                .unwrap_or_default()
-                .to_string()
-        })
+    [
+        "pub async fn ",
+        "pub fn ",
+        "pub mod ",
+        "async fn ",
+        "mod ",
+        "fn ",
+    ]
+    .iter()
+    .find_map(|kw| line.strip_prefix(kw))
+    .map(|rest| {
+        rest.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    })
+}
+
+#[test]
+fn item_name_recognizes_pub_variants() {
+    assert_eq!(
+        item_name("pub async fn v7_and_upsert_run_on_server_backend() {").as_deref(),
+        Some("v7_and_upsert_run_on_server_backend")
+    );
+    assert_eq!(item_name("pub fn plain() {").as_deref(), Some("plain"));
+    assert_eq!(
+        item_name("pub mod server_side {").as_deref(),
+        Some("server_side")
+    );
+    assert_eq!(item_name("async fn bare() {").as_deref(), Some("bare"));
+    assert_eq!(item_name("mod nested {").as_deref(), Some("nested"));
+}
+
+#[test]
+#[should_panic(expected = "声明行无法解析")]
+fn unparsable_declaration_line_panics_instead_of_silent_drop() {
+    ignored_item_names("#[ignore = \"需要实例\"]\npub(crate) async fn hidden() {}\n");
 }
 
 #[test]

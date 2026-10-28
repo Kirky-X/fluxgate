@@ -107,6 +107,8 @@ mod tests {
             bandit: None,
             quota: None,
             difficulty: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             responses: Some(Arc::new(fluxgate::api::responses::ResponsesRuntime::new(
                 repository.clone(),
             ))),

@@ -501,8 +501,6 @@ async fn admin_web_search_stats_reports_counts_without_key_material() {
 /// netguard_denied_total{tag} 打点，经 /admin/metrics 快照断言。
 #[tokio::test]
 async fn metrics_record_web_search_and_netguard_denials() {
-    use fluxgate::utils::netguard::Verdict;
-
     struct PrivateResolver;
     #[async_trait::async_trait]
     impl Resolver for PrivateResolver {

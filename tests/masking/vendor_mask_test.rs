@@ -421,6 +421,8 @@ mod stats_endpoint {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         });
         let app = axum::Router::new()
             .route(

@@ -110,6 +110,8 @@ async fn build_app() -> (Router, Arc<ApiState>, DbPool) {
         quota: None,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
     });
     let app = create_router(state.clone()).await;
     // /readyz 由 sdforge 站点在生产合并侧自挂；直连 create_router 时经
@@ -325,6 +327,8 @@ async fn admin_metrics_exposes_quota_counters() {
         quota: Some(Arc::new(fluxgate::middleware::quota::QuotaState::new())),
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
     });
     let app = create_router(state.clone()).await;
 

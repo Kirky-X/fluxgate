@@ -187,6 +187,8 @@ async fn build_app_with_vendors(rules: Vec<RateLimitRule>, vendors: Vec<VendorCo
         quota: None,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
     });
 
     create_router(state).await
@@ -582,6 +584,8 @@ async fn auth_runs_before_rate_limit_layers() {
         quota: None,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
     });
     let app = create_router(state).await;
 

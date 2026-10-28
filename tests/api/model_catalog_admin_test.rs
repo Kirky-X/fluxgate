@@ -95,6 +95,8 @@ async fn create_state() -> Arc<ApiState> {
         quota: None,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
@@ -456,6 +458,8 @@ async fn reset_vendor_clears_blacklist_and_cooldown() {
         quota: None,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
@@ -610,6 +614,8 @@ mod cost_endpoint {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database: Arc::new(Database {

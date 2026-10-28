@@ -109,6 +109,8 @@ async fn setup(
         quota: None,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
         openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
         anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
         database: Arc::new(fluxgate::Database {

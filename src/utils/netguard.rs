@@ -42,7 +42,7 @@ impl Verdict {
 
 /// IPv4 特殊网段表：`(网络地址, 前缀, 段名 tag)`——magpie netguard 同源集合
 ///（RFC 6890 特殊用途段）。
-const V4_RANGES: &[(Ipv4Addr, u8, &'static str)] = &[
+const V4_RANGES: &[(Ipv4Addr, u8, &str)] = &[
     (Ipv4Addr::new(0, 0, 0, 0), 8, "this_network"),
     (Ipv4Addr::new(10, 0, 0, 0), 8, "private"),
     (Ipv4Addr::new(100, 64, 0, 0), 10, "cgnat"),
@@ -64,7 +64,7 @@ const V4_RANGES: &[(Ipv4Addr, u8, &'static str)] = &[
 /// v6 半边；设计清单外的唯一补集，规格组播要求同源）。`::/128`（未指定）、
 /// `64:ff9b::/96`（NAT64 合成——有 NAT64 网关的环境可借此触达内网 v4）、
 /// `100::/64`（discard-only）为同源清单的 v6 缺口补齐。
-const V6_RANGES: &[(Ipv6Addr, u8, &'static str)] = &[
+const V6_RANGES: &[(Ipv6Addr, u8, &str)] = &[
     (Ipv6Addr::LOCALHOST, 128, "loopback"),
     (Ipv6Addr::UNSPECIFIED, 128, "unspecified"),
     (

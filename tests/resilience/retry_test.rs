@@ -169,6 +169,8 @@ mod vendor_fallback_integration {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,

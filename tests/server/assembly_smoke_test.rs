@@ -129,6 +129,8 @@ async fn build_state() -> Arc<ApiState> {
         quota: None,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
         openai_converter: Arc::new(OpenAIConverter::new()),
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database,

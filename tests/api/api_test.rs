@@ -115,6 +115,8 @@ mod endpoints {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -443,6 +445,8 @@ mod integration {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -968,6 +972,8 @@ mod admin {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             openai_converter,
             anthropic_converter,
             database,
@@ -1474,6 +1480,8 @@ mod streaming_error_propagation {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,
@@ -1895,6 +1903,8 @@ mod logging_pipeline {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         });
         (state, logger, pa, repository)
     }
@@ -2205,6 +2215,8 @@ mod logging_pipeline {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         });
 
         let response = Router::new()
@@ -2406,6 +2418,8 @@ mod embeddings_governance {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -3020,6 +3034,8 @@ mod response_cache_tests {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -3399,6 +3415,8 @@ mod linucb_reward_chain {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         });
         (state, bandit)
     }
@@ -3547,6 +3565,8 @@ mod global_model_switch {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -3795,6 +3815,8 @@ mod api_handler_coverage {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -6549,6 +6571,8 @@ mod data_plane_endpoints {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -7034,6 +7058,8 @@ mod fallback_observation_headers {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -7358,6 +7384,8 @@ mod route_explain {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -8202,6 +8230,8 @@ mod fallback_observation_headers_anthropic {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 
@@ -8574,6 +8604,8 @@ mod catalog_sync_admin {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
             anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
             database: Arc::new(fluxgate::database::Database {
@@ -8920,6 +8952,8 @@ mod subscription_outbound {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database,

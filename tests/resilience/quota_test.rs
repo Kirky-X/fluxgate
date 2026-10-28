@@ -226,6 +226,8 @@ async fn make_state_with_cache(config: Config, with_quota: bool) -> Arc<ApiState
         quota,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
     })
 }
 
@@ -283,6 +285,8 @@ async fn make_state_inner(
         quota,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
     })
 }
 

@@ -54,7 +54,7 @@ pub struct ApiState {
     pub responses: Option<Arc<crate::api::responses::ResponsesRuntime>>,
     /// 搜索注入运行时（`web-search` feature 门控）：守护抓取器 + key 池缓存
     /// + 成败计数。None = 未接线（/v1/search、/v1/fetch、/admin/web-search/stats
-    /// 一律 404，与 [web_search].enabled=false 同语义）。
+    ///   一律 404，与 [web_search].enabled=false 同语义）。
     #[cfg(feature = "web-search")]
     pub web_search: Option<Arc<crate::api::web_search::WebSearchRuntime>>,
 }

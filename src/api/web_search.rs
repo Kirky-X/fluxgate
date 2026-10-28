@@ -76,6 +76,12 @@ impl std::fmt::Debug for WebSearchRuntime {
     }
 }
 
+impl Default for WebSearchRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebSearchRuntime {
     /// 生产构造（10s/1MB 守护约束）。
     pub fn new() -> Self {
@@ -147,7 +153,7 @@ pub async fn search(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<SearchRequest>,
 ) -> Result<Response, FluxgateErrorResponse> {
-    let runtime = gate(&state).map_err(FluxgateErrorResponse)?;
+    let runtime = gate(&state).map_err(|r| FluxgateErrorResponse(*r))?;
     let query = body.query.trim().to_string();
     if query.is_empty() {
         return Err(GateError::Validation {
@@ -286,7 +292,7 @@ fn search_success(hits: Vec<Hit>, kind: &str) -> Response {
 pub async fn admin_stats(
     State(state): State<Arc<ApiState>>,
 ) -> Result<Response, FluxgateErrorResponse> {
-    let runtime = gate(&state).map_err(FluxgateErrorResponse)?;
+    let runtime = gate(&state).map_err(|r| FluxgateErrorResponse(*r))?;
     let mut providers: Vec<serde_json::Value> = Vec::new();
     let mut by_provider: BTreeMap<String, Vec<(usize, u64, u64)>> = BTreeMap::new();
     for ((provider, key_idx), (ok, fail)) in runtime.stats().snapshot() {
@@ -323,11 +329,17 @@ impl SearchError {
 }
 
 /// 双门判定：enabled 运行时门 + 运行时装配门，未开一律 404 响应。
-fn gate(state: &ApiState) -> Result<&WebSearchRuntime, Response> {
+/// 错误侧 `Box<Response>`（`Response` 本体超 clippy::result_large_err 阈值，
+/// 三个调用点都以 `?` 上抛，堆装一次换栈上小 Result）。
+fn gate(state: &ApiState) -> Result<&WebSearchRuntime, Box<Response>> {
     if !state.config.read().web_search.enabled {
-        return Err(web_search_disabled());
+        return Err(Box::new(web_search_disabled()));
     }
-    state.web_search.as_deref().ok_or_else(web_search_disabled)
+    state
+        .web_search
+        .as_deref()
+        .ok_or_else(web_search_disabled)
+        .map_err(Box::new)
 }
 
 fn web_search_disabled() -> Response {
@@ -353,7 +365,7 @@ pub async fn fetch(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<FetchRequest>,
 ) -> Result<Response, FluxgateErrorResponse> {
-    let runtime = gate(&state).map_err(FluxgateErrorResponse)?;
+    let runtime = gate(&state).map_err(|r| FluxgateErrorResponse(*r))?;
     let url = body.url.trim().to_string();
     if url.is_empty() {
         return Err(GateError::Validation {
@@ -774,6 +786,7 @@ pub(crate) enum KeySource {
 }
 
 impl KeySource {
+    #[cfg(test)]
     pub(crate) fn env(name: &str) -> Self {
         Self::Env(name.to_string())
     }

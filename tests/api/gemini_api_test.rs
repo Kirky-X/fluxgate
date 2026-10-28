@@ -105,6 +105,8 @@ mod tests {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         })
     }
 

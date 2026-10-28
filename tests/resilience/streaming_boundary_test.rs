@@ -191,6 +191,8 @@ async fn make_state(config: Config) -> Arc<ApiState> {
         quota: None,
         difficulty: None,
         responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
     })
 }
 

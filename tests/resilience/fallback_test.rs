@@ -545,6 +545,8 @@ mod cover_all_paths {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         });
         (state, logger, repository)
     }

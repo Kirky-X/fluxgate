@@ -537,6 +537,8 @@ mod full_chain {
             quota: None,
             difficulty: None,
             responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
         });
         (create_router(state).await, vendor_manager)
     }

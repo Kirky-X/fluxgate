@@ -1624,9 +1624,7 @@ impl Router {
         // 配额因子单次快照（T007/T008）：mode 判定一次 + 逐 vendor 视图一次，
         // smart 过滤与第 6 因子打分共用；off/未接线零查询零分配
         let (quota_mode, views) = self.quota_factor_views(&candidates).await;
-        let (candidates, views) = self
-            .apply_quota_filter(candidates, quota_mode, &views)
-            .await;
+        let (candidates, views) = self.apply_quota_filter(candidates, quota_mode, views).await;
         // 容量权重（第 3 级）：仅无请求级覆盖时计算
         let mut capacity: HashMap<String, f64> = HashMap::new();
         if request_weight.is_none() {
@@ -1724,18 +1722,19 @@ impl Router {
     /// smart 候选过滤（T007 / R-vbr-002）：预算耗尽 vendor 摘出候选（候选与
     /// 视图同序收缩，产物直接供第 6 因子打分，免二次查询）；全员耗尽保留
     /// 全部并对每个 vendor 计 `quota_factor_depleted_total`。非 smart 或
-    /// views 为空（off/未接线）→ 原样返回。
+    /// views 为空（off/未接线）→ 原样返回。收缩用原位 swap 压缩（零重建
+    /// 零克隆——每路由一次，重建候选/视图两个 Vec 是热路径纯开销）。
     async fn apply_quota_filter(
         &self,
-        candidates: Vec<(VendorConfig, ModelConfig)>,
+        mut candidates: Vec<(VendorConfig, ModelConfig)>,
         mode: crate::config::QuotaFactorMode,
-        views: &[Option<crate::middleware::quota::VendorBudgetView>],
+        mut views: Vec<Option<crate::middleware::quota::VendorBudgetView>>,
     ) -> (
         Vec<(VendorConfig, ModelConfig)>,
         Vec<Option<crate::middleware::quota::VendorBudgetView>>,
     ) {
         if mode != crate::config::QuotaFactorMode::Smart || views.is_empty() {
-            return (candidates, views.to_vec());
+            return (candidates, views);
         }
         let depleted = |view: &Option<crate::middleware::quota::VendorBudgetView>| {
             view.as_ref().is_some_and(|b| b.depleted())
@@ -1747,15 +1746,21 @@ impl Router {
             for (vendor, _) in &candidates {
                 metrics.record_quota_factor_depleted(&vendor.id);
             }
-            let views = views.to_vec();
             return (candidates, views);
         }
-        let (candidates, views): (Vec<_>, Vec<_>) = candidates
-            .into_iter()
-            .zip(views.iter())
-            .filter(|(_, view)| !depleted(view))
-            .map(|(candidate, view)| (candidate, view.clone()))
-            .unzip();
+        let mut kept = 0usize;
+        for read in 0..candidates.len() {
+            if depleted(&views[read]) {
+                continue;
+            }
+            if kept != read {
+                candidates.swap(kept, read);
+                views.swap(kept, read);
+            }
+            kept += 1;
+        }
+        candidates.truncate(kept);
+        views.truncate(kept);
         (candidates, views)
     }
 
@@ -2607,7 +2612,7 @@ pub struct CandidateAssessment {
     pub eligible: bool,
     pub reason_code: &'static str,
     pub detail: String,
-    /// 入选者 5 因子分解（排除项 None）。
+    /// 入选者 6 因子分解（排除项 None）。
     pub factors: Option<WeightBreakdown>,
     /// 分解合成（`factors` 加和；排除项 None）。
     pub base_weight: Option<f64>,

@@ -1158,6 +1158,64 @@ mod quota_windows_config {
         );
     }
 
+    /// scope=global 双零拒绝：全局窗按请求租户回填会让同一窗的判定随
+    /// 请求者漂移（A 租户的 per-key 限额约束整个舰队）、无限额租户整体
+    /// 绕过——舰队级约束必须配置面显式；显式单维度限额放行。
+    #[test]
+    fn test_global_window_zero_limits_rejected() {
+        let mut config = common::test_config(vec![]);
+        config.quota.windows = vec![QuotaWindowConfig {
+            id: "fleet".into(),
+            scope: "global".into(),
+            rolling_secs: 60,
+            ..Default::default()
+        }];
+        let err = validate_config(&config).expect_err("global 双零必须拒绝（不回填）");
+        assert!(err.to_string().contains("fleet"), "{err}");
+
+        config.quota.windows = vec![QuotaWindowConfig {
+            id: "fleet".into(),
+            scope: "global".into(),
+            rolling_secs: 60,
+            tokens_limit: 100_000,
+            ..Default::default()
+        }];
+        assert!(validate_config(&config).is_ok(), "显式单维度限额放行");
+    }
+
+    /// id 长度上限（落 quota_ledger.window_id，MySQL VARCHAR(128)，超长行
+    /// 每 flush 必败改启动即拒）与 ASCII 大小写变体去重（window id 进
+    /// 指标标签与账本行键，仅差大小写会产生双标签/双行）。
+    #[test]
+    fn test_window_id_length_and_case_variant_rejected() {
+        let mut config = common::test_config(vec![]);
+        config.quota.windows = vec![QuotaWindowConfig {
+            id: "w".repeat(129),
+            rolling_secs: 60,
+            tokens_limit: 1,
+            ..Default::default()
+        }];
+        let err = validate_config(&config).expect_err("超长 id 必须拒绝");
+        assert!(err.to_string().contains("128"), "{err}");
+
+        config.quota.windows = vec![
+            QuotaWindowConfig {
+                id: "daily".into(),
+                rolling_secs: 60,
+                tokens_limit: 1,
+                ..Default::default()
+            },
+            QuotaWindowConfig {
+                id: "Daily".into(),
+                rolling_secs: 120,
+                tokens_limit: 1,
+                ..Default::default()
+            },
+        ];
+        let err = validate_config(&config).expect_err("仅大小写不同的 id 必须拒绝");
+        assert!(err.to_string().contains("Daily"), "{err}");
+    }
+
     /// `[[vendor_budgets]]`：vendor_id 必须对得上 `[[vendors]]`、去重、
     /// 双限额零拒绝、周期闭集同源；合法条目放行。
     #[test]

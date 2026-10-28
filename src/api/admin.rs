@@ -869,6 +869,7 @@ pub mod subscription_admin {
             .into_response()
     }
 
+    #[allow(clippy::result_large_err)] // Err 即 axum Response 本体，Box 化反增堆分配
     fn require_enabled(state: &ApiState) -> Result<(), axum::response::Response> {
         if state.config.read().subscription.enabled {
             Ok(())

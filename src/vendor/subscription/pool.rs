@@ -862,7 +862,9 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         let (pool, _metrics, _store, _dir) = pool_with_store(&server.url()).await;
         pool.set_clock(Some(1_000_000));
-        seed_authorized(&pool, "sub-1", "v1", "at-dead", "rt-1", 3_600).await;
+        // sub-1 播种 4 分钟后到期——落在 5 分钟抢占窗内，credential_for 才会
+        // 触发刷新并走到"首候选失败换下一候选"分支；sub-2 远期有效直接服务
+        seed_authorized(&pool, "sub-1", "v1", "at-dead", "rt-1", 240).await;
         seed_authorized(&pool, "sub-2", "v1", "at-live", "rt-2", 3_600).await;
         let rejected = server
             .mock("POST", "/v1/oauth/token")

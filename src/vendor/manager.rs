@@ -567,6 +567,7 @@ impl VendorManager {
     /// 单飞 + 降级/摘除时序内聚），成功 → 以新 token 重发一次本请求；
     /// 仍 401 → 账号降级并返回原 401 失败（调用方走既有 Fallback 换路）。
     #[cfg(feature = "subscription-vendor")]
+    #[allow(clippy::too_many_arguments)] // 请求重发九要素穿线，聚合成 structs 反而强制全量克隆
     async fn subscription_retry_on_unauthorized(
         result: Result<reqwest::Response, AttemptFailure>,
         client: &reqwest::Client,
@@ -2308,6 +2309,7 @@ impl VendorManager {
     /// 强刷一次（单飞）→ 新 token 重发一次本请求；刷新失败或重发传输失败
     /// → 返回原响应走既有非 2xx 映射；重发仍 401 → 账号降级出池。
     #[cfg(feature = "subscription-vendor")]
+    #[allow(clippy::too_many_arguments)] // 请求重发八要素穿线，聚合收益不及克隆成本
     async fn subscription_refresh_retry_response(
         &self,
         response: reqwest::Response,

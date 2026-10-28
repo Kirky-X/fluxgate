@@ -425,6 +425,10 @@ name = "comment_hygiene_test"
 path = "tests/guard/comment_hygiene_test.rs"
 
 [[test]]
+name = "ignore_filter_guard"
+path = "tests/guard/ignore_filter_guard.rs"
+
+[[test]]
 name = "difficulty_tier_test"
 path = "tests/routing/difficulty_tier_test.rs"
 

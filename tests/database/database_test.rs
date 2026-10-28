@@ -2150,7 +2150,9 @@ mod quota_ledger_server {
         repo.initialize().await.expect("重跑幂等");
 
         // ② 三列复合主键 UPSERT 在真实方言上覆盖去重（ON CONFLICT /
-        //    ON DUPLICATE KEY 两路 SQL 由 upsert_quota_ledger_sql 按后端选择）
+        //    ON DUPLICATE KEY 两路 SQL 由 upsert_quota_ledger_sql 按后端
+        //    选择）；同批喂跨周期双行走 begin → N×execute → commit 事务
+        //    模式——生产 flush 即批量写，与 sqlite 用例批量形态对齐
         let mk = |start: i64, tokens: i64| QuotaLedgerRow {
             api_key_hash: "server-dialect".into(),
             window_id: "daily".into(),
@@ -2162,23 +2164,40 @@ mod quota_ledger_server {
         repo.upsert_quota_ledger(&[mk(1_770_000_000, 100)])
             .await
             .expect("UPSERT");
-        repo.upsert_quota_ledger(&[mk(1_770_000_000, 220)])
+        repo.upsert_quota_ledger(&[mk(1_770_000_000, 220), mk(1_770_086_400, 10)])
             .await
-            .expect("覆盖 UPSERT");
+            .expect("覆盖 UPSERT + 跨周期批量");
         let rows = repo.read_quota_ledger(0).await.expect("read");
         let mine: Vec<&QuotaLedgerRow> = rows
             .iter()
             .filter(|r| r.api_key_hash == "server-dialect")
             .collect();
-        assert_eq!(mine.len(), 1, "同 PK 必须覆盖为单行");
-        assert_eq!(mine[0].tokens_used, 220, "覆盖为最后写入");
+        assert_eq!(mine.len(), 2, "同 PK 覆盖为单行 + 下周期独立行");
+        let current = mine
+            .iter()
+            .find(|r| r.window_start == 1_770_000_000)
+            .expect("当期行");
+        assert_eq!(current.tokens_used, 220, "覆盖为最后写入");
+        let next = mine
+            .iter()
+            .find(|r| r.window_start == 1_770_086_400)
+            .expect("下周期行");
+        assert_eq!(next.tokens_used, 10, "不同周期实例独立行");
 
-        // ③ 清场（共享实例不留测试行）
-        repo.upsert_quota_ledger(&[QuotaLedgerRow {
-            tokens_used: 0,
-            ..mk(1_770_000_000, 0)
-        }])
-        .await
-        .expect("清场覆盖");
+        // ③ 清场（共享实例不留测试行）：purge 路径真删而非 0 值覆盖残留，
+        //    同时让 purge_expired_quota_ledger 的方言 DELETE 进 CI 实跑面
+        let purged = repo
+            .purge_expired_quota_ledger(i64::MAX)
+            .await
+            .expect("清场");
+        assert!(purged >= 2, "本模块写入的行必须被真删（实际 {purged}）");
+        assert!(
+            repo.read_quota_ledger(0)
+                .await
+                .expect("read")
+                .iter()
+                .all(|r| r.api_key_hash != "server-dialect"),
+            "清场后本模块测试行无残留"
+        );
     }
 }

@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
   # 每日安全扫描：仅 security 作业响应 schedule，其余作业跳过
   schedule:
-    - cron: '37 5 * * *'
+    - cron: "37 5 * * *"
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  RUST_VERSION: '1.97'
+  RUST_VERSION: "1.97"
   # ↑ MSRV 下限工具链：与 Cargo.toml 的 rust-version = "1.97.1" 对齐（'1.97'
   #   解析到当前最新 patch 1.97.1）。按 MSRV 跑 build/clippy 同时两个目的：
   #   守住兄弟库下限、让 clippy  lint 集合可复现（clippy 随工具链版本变化）。
@@ -177,7 +177,7 @@ jobs:
   # 默认 test 作业只接 sqlite；非默认后端的建表迁移与方言 UPSERT 此前只做
   # 编译级 check（ON CONFLICT / ON DUPLICATE KEY UPDATE 从未真实执行）。
   # 本作业起服务容器，用 FLUXGATE_TEST_DB_URL 驱动 database_test 里
-  # `affinity_sticks_server` 的 #[ignore] 用例。
+  # `*_server` 的 #[ignore] 用例（affinity V6 亲和 + quota V7 预算账本）。
   #-----------------------------------------------------------------------------
   server-backend:
     name: Server backend (${{ matrix.backend }})
@@ -229,13 +229,13 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # 只跑服务端方言相关用例（迁移建表 / UPSERT 冲突 / 读取 / 清理）
-      - name: Run server-backend affinity tests
+      - name: Run server-backend dialect tests
         env:
           FLUXGATE_TEST_DB_URL: ${{ matrix.url }}
         run: |
           cargo test -p fluxgate --no-default-features \
             --features "full,${{ matrix.feature }}" \
-            --test database_test affinity_sticks_server -- --ignored --nocapture
+            --test database_test server -- --ignored --nocapture
 
   #-----------------------------------------------------------------------------
   # 三平台编译（跨平台约束的 CI 落点）

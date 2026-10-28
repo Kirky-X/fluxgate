@@ -36,35 +36,47 @@ pub(crate) fn schema_sql_for_backend(backend: DatabaseBackend) -> &'static str {
 /// sqlite/postgres/mysql 走 dbnexus 版本化迁移（V1..=V2），其余后端回落
 /// 逐语句 DDL；MySQL 普通索引幂等创建（无 CREATE INDEX IF NOT EXISTS），
 /// v0.1 列回填保持在迁移之后。迁移失败直接返回 Err（启动 fail-fast）；
-/// session 逐段获取逐段释放（测试池 max_connections=1）
+/// session 逐段获取逐段释放（测试池 max_connections=1）。
+///
+/// postgres/mysql 初始化全程持有跨进程迁移锁（见
+/// [`crate::database::migration::acquire_migration_lock`]）：两个实例对同
+/// 一库并发启动会同时读到空迁移历史并重放 V1（pg pg_type 23505 / mysql
+/// 历史行 1062 必现冲突），MySQL 索引探针与 v0.1 列回填同为
+/// check-then-create TOCTOU——建表迁移、索引补齐、列回填必须整体串行。
 pub(crate) async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
     let backend = {
         let session = pool.get_session("admin").await?;
         session.connection()?.get_database_backend()
     };
-    match backend {
-        DatabaseBackend::Postgres | DatabaseBackend::MySql | DatabaseBackend::Sqlite => {
-            crate::database::migration::apply_core_migrations(pool).await?;
-        }
-        _ => {
-            let session = pool.get_session("admin").await?;
-            for statement in schema_sql_for_backend(backend).split(';') {
-                let trimmed = statement.trim();
-                if !trimmed.is_empty() {
-                    session.execute_raw_ddl(trimmed).await?;
+    let lock = crate::database::migration::acquire_migration_lock(pool, backend).await?;
+    let result = async {
+        match backend {
+            DatabaseBackend::Postgres | DatabaseBackend::MySql | DatabaseBackend::Sqlite => {
+                crate::database::migration::apply_core_migrations(pool).await?;
+            }
+            _ => {
+                let session = pool.get_session("admin").await?;
+                for statement in schema_sql_for_backend(backend).split(';') {
+                    let trimmed = statement.trim();
+                    if !trimmed.is_empty() {
+                        session.execute_raw_ddl(trimmed).await?;
+                    }
                 }
             }
         }
+        if backend == DatabaseBackend::MySql {
+            let session = pool.get_session("admin").await?;
+            ensure_indexes_mysql(session.connection()?).await?;
+        }
+        {
+            let session = pool.get_session("admin").await?;
+            migrate_v0_1_columns(&session, backend).await?;
+        }
+        Ok::<(), DbError>(())
     }
-    if backend == DatabaseBackend::MySql {
-        let session = pool.get_session("admin").await?;
-        ensure_indexes_mysql(session.connection()?).await?;
-    }
-    {
-        let session = pool.get_session("admin").await?;
-        migrate_v0_1_columns(&session, backend).await?;
-    }
-    Ok(())
+    .await;
+    lock.release().await;
+    result
 }
 
 /// V0.1 旧库列迁移：并入 init_schema 使迁移随生产建链可达。各后端均无

@@ -13,8 +13,9 @@
 //! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级）。
 
 use dbnexus::{DatabaseType, DbError, DbPool, MigrationExecutor, MigrationFile};
-use sea_orm::DatabaseBackend;
+use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// 核心表迁移最新版本（V7：quota_ledger 多窗预算账本）。
 pub(crate) const CORE_SCHEMA_VERSION: u32 = 7;
@@ -690,8 +691,115 @@ pub(crate) async fn apply_core_migrations(pool: &DbPool) -> Result<u32, DbError>
     Ok(applied)
 }
 
-/// 回滚全部核心迁移（测试面：逆序执行 DOWN 并删除历史行），唯一调用点是
-/// [`live_tests`] 的 DOWN 断言。
+/// 迁移锁轮询间隔 / 等待上限：对端一次完整初始化为秒级；60s 仍拿不到视为
+/// 锁泄漏（持锁进程崩溃时锁随连接断开自动释放，正常不应发生），fail-fast
+/// 上浮而不是无限挂死启动。
+const MIGRATION_LOCK_POLL: Duration = Duration::from_millis(200);
+const MIGRATION_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// 跨进程迁移锁句柄：postgres/mysql 持有专用单连接锁池，其余后端
+/// `lock_pool` 为 `None`（无需进程级锁）。必须以 [`MigrationLock::release`]
+/// 收尾（成功与失败路径都要）。
+pub(crate) struct MigrationLock {
+    /// 锁语句方言 + 专用锁池 + 解锁语句。session 级锁原语（pg advisory
+    /// lock / mysql GET_LOCK）要求获取与释放落在同一物理会话上，而主池的
+    /// 每条语句独立借还连接、无会话亲和——故走 `max_connections = 1` 的
+    /// 独立池：顺序语句恒复用同一条保持打开的连接，锁全程存活。
+    lock_pool: Option<(DatabaseBackend, DbPool, &'static str)>,
+}
+
+/// 获取跨进程迁移锁（[`crate::database::repository::init_schema`] 专用）：
+/// postgres/mysql 上两个实例对同一库并发启动会同时读到空迁移历史并重放
+/// V1（pg pg_type 23505 / mysql 历史行 1062 必现冲突），后续索引/列探针
+/// 同为 check-then-create TOCTOU——初始化全程必须持锁串行。锁键按当前
+/// 数据库派生（`current_database()` / `DATABASE()`）：同集群多库互不阻塞。
+/// sqlite 单写者文件锁天然串行初始化、非 SQL 内嵌后端单进程，均免锁。
+pub(crate) async fn acquire_migration_lock(
+    main: &DbPool,
+    backend: DatabaseBackend,
+) -> Result<MigrationLock, DbError> {
+    let (try_lock_sql, unlock_sql) = match backend {
+        DatabaseBackend::Postgres => (
+            "SELECT pg_try_advisory_lock(hashtextextended(current_database(), 0)) AS locked",
+            "SELECT pg_advisory_unlock(hashtextextended(current_database(), 0)) AS unlocked",
+        ),
+        DatabaseBackend::MySql => (
+            "SELECT GET_LOCK(CONCAT('fluxgate_migration_', DATABASE()), 0) AS locked",
+            "SELECT RELEASE_LOCK(CONCAT('fluxgate_migration_', DATABASE())) AS unlocked",
+        ),
+        _ => return Ok(MigrationLock { lock_pool: None }),
+    };
+    let mut lock_config = main.config().clone();
+    lock_config.pool_config.max_connections = 1;
+    lock_config.pool_config.min_connections = 1;
+    lock_config.auto_migrate = false;
+    let lock_pool = DbPool::with_config(lock_config).await?;
+    // 先取池句柄再释放 session 许可（同 apply_core_migrations：max=1 池
+    // 不容许持有许可期间再执行语句）
+    let conn = {
+        let session = lock_pool.get_session("admin").await?;
+        session.connection()?.clone()
+    };
+    let deadline = Instant::now() + MIGRATION_LOCK_TIMEOUT;
+    loop {
+        let locked = match conn
+            .query_one_raw(Statement::from_string(backend, try_lock_sql.to_string()))
+            .await?
+        {
+            Some(row) => match backend {
+                // pg_try_advisory_lock → bool；GET_LOCK → 1/0/NULL（NULL
+                // 仅服务端内部错误，按未获得继续轮询，超时统一 fail-fast）
+                DatabaseBackend::Postgres => row.try_get::<bool>("", "locked").unwrap_or(false),
+                _ => row.try_get::<i64>("", "locked").unwrap_or(0) == 1,
+            },
+            None => false,
+        };
+        if locked {
+            return Ok(MigrationLock {
+                lock_pool: Some((backend, lock_pool, unlock_sql)),
+            });
+        }
+        if Instant::now() >= deadline {
+            return Err(DbError::Config(format!(
+                "cross-process migration lock not acquired within {MIGRATION_LOCK_TIMEOUT:?} \
+                 ({backend:?}); another instance may be stuck mid-migration"
+            )));
+        }
+        tokio::time::sleep(MIGRATION_LOCK_POLL).await;
+    }
+}
+
+impl MigrationLock {
+    /// 显式释放（同会话解锁语句）；无论释放语句成败，锁池随后被丢弃、
+    /// 连接关闭时服务端兜底自动释放（session 级锁的断连语义）。释放失败
+    /// 记 warn 不上浮——初始化本身已完成，连接断开已保证锁不残留。
+    pub(crate) async fn release(self) {
+        let MigrationLock {
+            lock_pool: Some((backend, lock_pool, unlock_sql)),
+        } = self
+        else {
+            return;
+        };
+        let unlocked = async {
+            let conn = {
+                let session = lock_pool.get_session("admin").await?;
+                session.connection()?.clone()
+            };
+            conn.execute_raw(Statement::from_string(backend, unlock_sql.to_string()))
+                .await?;
+            Ok::<(), DbError>(())
+        }
+        .await;
+        if let Err(e) = unlocked {
+            tracing::warn!(
+                error = %e,
+                "migration lock release statement failed; lock is released server-side \
+                 when the lock pool connection closes"
+            );
+        }
+        drop(lock_pool);
+    }
+}
 #[cfg(all(test, feature = "db-sqlite"))]
 pub(crate) async fn rollback_core_all(pool: &DbPool) -> Result<(), DbError> {
     // 同 apply_core_migrations：先释放 session（size=1 池防死等）。

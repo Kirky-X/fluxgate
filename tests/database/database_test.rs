@@ -2185,7 +2185,12 @@ mod quota_ledger_server {
         assert_eq!(next.tokens_used, 10, "不同周期实例独立行");
 
         // ③ 清场（共享实例不留测试行）：purge 路径真删而非 0 值覆盖残留，
-        //    同时让 purge_expired_quota_ledger 的方言 DELETE 进 CI 实跑面
+        //    同时让 purge_expired_quota_ledger 的方言 DELETE 进 CI 实跑面。
+        //    范围假设：purge 按过期阈值清**全表**（不只本模块行）——依赖
+        //    共享实例上 quota_ledger 无第二写入方（CI --test-threads=1
+        //    串行，另一 ignore 用例 affinity_sticks_server 只写 affinity
+        //    表）；`purged >= 2` 的下界断言顺带容忍历史残留行。未来新增
+        //    写 quota_ledger 的用例须与本模块同样自约串行 + 事后清场。
         let purged = repo
             .purge_expired_quota_ledger(i64::MAX)
             .await

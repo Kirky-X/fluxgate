@@ -43,7 +43,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   RUST_VERSION: "1.97"
-  # ↑ MSRV 下限工具链：与 Cargo.toml 的 rust-version = "1.97.1" 对齐（'1.97'
+  # ↑ MSRV 下限工具链：与 Cargo.toml 的 rust-version = "1.97.1" 对齐（"1.97"
   #   解析到当前最新 patch 1.97.1）。按 MSRV 跑 build/clippy 同时两个目的：
   #   守住兄弟库下限、让 clippy  lint 集合可复现（clippy 随工具链版本变化）。
   #   docker/Dockerfile 与 release.yml 用当前 stable（1.99），高于下限即可
@@ -228,14 +228,36 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # 只跑服务端方言相关用例（迁移建表 / UPSERT 冲突 / 读取 / 清理）
+        with:
+          # 两腿特性组合不同（db-postgres / db-mysql），默认 key 只含 job id：
+          # 同 key 不可覆盖，后保存腿被跳过，两腿 restore 到同一份产物、另一
+          # 腿全量重编。key 掺入 matrix.feature 彻底隔离两腿缓存。
+          key: ${{ matrix.feature }}
+      # 子串过滤器契约：database_test 内所有 #[ignore] 用例命名必含 `server`
+      # （tests/guard/ignore_filter_guard.rs 机械校验）。此处先 --list 断言
+      # 命中数 ≥2：libtest 过滤器零命中时输出 `0 passed` 且 exit 0，模块
+      # 改名/移除后作业会静默虚通过，恰好复辟「方言 UPSERT 从未真实执行」。
+      - name: Assert server filter matches expected tests
+        run: |
+          count=$(cargo test -p fluxgate --no-default-features \
+            --features "full,${{ matrix.feature }}" \
+            --test database_test server -- --ignored --list | grep -c ': test$')
+          echo "server filter matched: $count test(s)"
+          if [ "$count" -lt 2 ]; then
+            echo "::error::server 过滤器仅命中 ${count} 个用例（预期 ≥2），过滤器契约失效"
+            exit 1
+          fi
+      # 只跑服务端方言相关用例（迁移建表 / UPSERT 冲突 / 读取 / 清理）。
+      # --test-threads=1：两个用例各自 initialize() 同一共享实例，且测试
+      # 模块自约「单函数串行防并行互染」（database_test.rs 模块文档）——
+      # 并行会让迁移重放 / 索引探针的 DDL 竞态偶发红
       - name: Run server-backend dialect tests
         env:
           FLUXGATE_TEST_DB_URL: ${{ matrix.url }}
         run: |
           cargo test -p fluxgate --no-default-features \
             --features "full,${{ matrix.feature }}" \
-            --test database_test server -- --ignored --nocapture
+            --test database_test server -- --ignored --test-threads=1 --nocapture
 
   #-----------------------------------------------------------------------------
   # 三平台编译（跨平台约束的 CI 落点）

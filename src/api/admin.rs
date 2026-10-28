@@ -869,12 +869,15 @@ pub mod subscription_admin {
             .into_response()
     }
 
-    #[allow(clippy::result_large_err)] // Err 即 axum Response 本体，Box 化反增堆分配
-    fn require_enabled(state: &ApiState) -> Result<(), axum::response::Response> {
+    /// `[subscription].enabled` 运行时门：关时 404（不暴露端点存在性）；
+    /// Err 装箱与 web_search `gate` / `dispatch_direct` 同款——
+    /// `Response` 本体超 `clippy::result_large_err` 阈值，错误路径单次
+    /// 堆分配换栈上小 `Result`。
+    fn require_enabled(state: &ApiState) -> Result<(), Box<axum::response::Response>> {
         if state.config.read().subscription.enabled {
             Ok(())
         } else {
-            Err(subscription_disabled_response())
+            Err(Box::new(subscription_disabled_response()))
         }
     }
 
@@ -932,7 +935,7 @@ pub mod subscription_admin {
     ) -> Result<axum::response::Response, FluxgateError> {
         use axum::response::IntoResponse;
         if let Err(response) = require_enabled(&state) {
-            return Ok(response);
+            return Ok(*response);
         }
         if state.config.read().subscription.client_id.trim().is_empty() {
             return Err(FluxgateError::Gate(GateError::Validation {
@@ -985,7 +988,7 @@ pub mod subscription_admin {
     ) -> Result<axum::response::Response, FluxgateError> {
         use axum::response::IntoResponse;
         if let Err(response) = require_enabled(&state) {
-            return Ok(response);
+            return Ok(*response);
         }
         let pool = pool_of(&state)?;
         let account_id = pool
@@ -1006,7 +1009,7 @@ pub mod subscription_admin {
     ) -> Result<axum::response::Response, FluxgateError> {
         use axum::response::IntoResponse;
         if let Err(response) = require_enabled(&state) {
-            return Ok(response);
+            return Ok(*response);
         }
         let pool = pool_of(&state)?;
         Ok(Json(serde_json::json!({ "accounts": pool.summaries() })).into_response())

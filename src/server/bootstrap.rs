@@ -175,20 +175,6 @@ pub(crate) async fn assemble(
             vendor_manager.metrics().clone(),
         )
         .await;
-        for account in &accounts {
-            if pool
-                .register_declared(&account.id, &account.vendor_id)
-                .await
-            {
-                tracing::info!(
-                    "{}",
-                    t_args(
-                        "main-subscription-account-registered",
-                        &[("account", account.id.clone())]
-                    )
-                );
-            }
-        }
         vendor_manager.set_subscription_pool(pool);
         tracing::info!("{}", t("main-subscription-pool-ready"));
     }
@@ -732,16 +718,30 @@ async fn assemble_subscription_pool(
 ) -> Arc<crate::vendor::subscription::pool::AccountPool> {
     let provider: Arc<dyn crate::vendor::subscription::SubscriptionProvider> =
         Arc::new(crate::vendor::subscription::anthropic::AnthropicProvider::new());
+    // OAuth 往返独立 client（低频，与出站大流量池隔离）必须带超时：刷新在
+    // per-account 刷新锁内 await、credential_for 顺序等候选——零超时下上游
+    // token 端点「连上不响应」会楔死该 vendor 全部订阅路径，只能重启恢复
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("subscription oauth http client");
     let pool = Arc::new(crate::vendor::subscription::pool::AccountPool::new(
-        provider,
-        reqwest::Client::new(),
-        client_id,
-        store,
-        metrics,
+        provider, http, client_id, store, metrics,
     ));
     for account in accounts {
-        pool.register_declared(&account.id, &account.vendor_id)
-            .await;
+        if pool
+            .register_declared(&account.id, &account.vendor_id)
+            .await
+        {
+            tracing::info!(
+                "{}",
+                t_args(
+                    "main-subscription-account-registered",
+                    &[("account", account.id.clone())]
+                )
+            );
+        }
     }
     pool
 }

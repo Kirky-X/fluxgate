@@ -36,14 +36,15 @@ jobs:
         continue-on-error: true
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
       - name: gitleaks 密钥扫描
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
       # 不引入 cargo-vet：`cargo vet verify` 以仓库根存在 supply-chain/（vet.toml /
       # imports.lock）为前提，本仓没有该目录，保留只会必红。依赖来源审计由
       # ci.yml 已有的 cargo-audit + cargo-deny 承担（vecboost/CodeNexus 同口径）。
       - name: trivy (文件系统/依赖漏洞)
-        uses: aquasecurity/trivy-action@master
+        # 可变引用（`@master`）换 SHA 钉的 v0.36.0：tag 可被上游重指，SHA 不可。
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .

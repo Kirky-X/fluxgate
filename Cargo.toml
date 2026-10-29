@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 # MSRV 单一事实源：cargo 解析期据此硬拒更低工具链；CI 用此下限，Docker/release 用当前 stable。
 rust-version = "1.97.1"
+# src/bin/ 下的工具二进制必须显式登记 required-features（离线性分析工具默认产物不含），
+# 故关闭 bin 自动发现——否则未声明的 .rs 会被自动建成无门控 target、默认构建即编译失败。
+autobins = false
 # examples/ 是独立 workspace 成员、非本包示例目录：关闭自动发现，否则其顶层 .rs 会被误作 example target 编译失败。
 autoexamples = false
 # tests/ 按功能域目录化、Cargo 自动发现不递归，故关闭之、改用下方 [[test]] 显式注册（新增测试必须登记，特性门控留文件顶 `#![cfg(feature = ...)]`）。
@@ -24,6 +27,13 @@ path = "src/lib.rs"
 name = "fluxgate"
 path = "src/main.rs"
 required-features = ["full"]
+
+# 离线成本回放工具（cost-replay）：读 request_logs 历史回放 counterfactual 成本，
+# 只报告不改配置。默认产物不含（需 cost-replay + 一个 db 后端）。
+[[bin]]
+name = "fluxgate-replay"
+path = "src/bin/fluxgate-replay.rs"
+required-features = ["cost-replay", "db-sqlite"]
 
 [features]
 # default 携带 db-sqlite：`cargo run` 默认仍为 sqlite 文件库；库嵌入方用 default-features = false 自选后端。
@@ -94,6 +104,11 @@ netguard = []
 # 抓取（/v1/search、/v1/fetch）；reqwest 复用 vendor-management 的 optional
 # 依赖。不进 full——对外网络新能力按需启用。[web_search].enabled 运行时默认关。
 web-search = ["dep:reqwest", "netguard"]
+# 离线成本回放（cost-replay）：读 request_logs 逐请求历史，按场景（affinity/
+# cache_ttl）重放 counterfactual 成本——纯显式代码，不调模型、不开服务、不写库。
+# 不进 full：离线分析工具默认产物不含，构建时显式启用并搭配一个 db 后端
+# （bin fluxgate-replay 的 required-features 另含 db-sqlite）。
+cost-replay = ["database", "dep:dbnexus", "dep:sea-orm"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
@@ -414,6 +429,12 @@ path = "tests/matrix/gate_feature_matrix.rs"
 [[test]]
 name = "gate_utils_coverage_test"
 path = "tests/utils/gate_utils_coverage_test.rs"
+
+# ---- replay：离线成本回放引擎与 CLI（feature 门控，不入 full）----
+[[test]]
+name = "replay_test"
+path = "tests/replay/replay_test.rs"
+required-features = ["cost-replay", "db-sqlite"]
 
 # ---- guard：仓库级防回归守卫（扫描 src/，与文件位置无关）----
 [[test]]

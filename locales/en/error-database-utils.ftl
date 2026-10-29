@@ -73,3 +73,15 @@ database-affinity-sticks-read-failed = affinity stick read failed: { $error }
 # ---- masking: 出站掩码（feature masking；错误面 + config 校验面）----
 masking-unavailable = Request refused: outbound masking is unavailable (fail-closed, never send raw)
 masking-blocked = Request blocked: sensitive data of kind { $kind } is not allowed to leave
+
+# ---- cost-replay: 离线成本回放 CLI（bin fluxgate-replay）----
+replay-cli-usage = usage: fluxgate-replay --db <sqlite-path|url> --from <unix|RFC3339> --to <unix|RFC3339> [--config <path>] [--scenario affinity|cache_ttl|all] [--json]
+replay-cli-missing-arg = missing required argument: { $arg }
+replay-cli-missing-value = argument { $arg } requires a value
+replay-cli-unknown-arg = unknown argument: { $arg }
+replay-cli-bad-time = invalid time value: { $value } (expected unix seconds or RFC3339)
+replay-cli-bad-scenario = invalid scenario: { $value } (expected affinity|cache_ttl|all)
+replay-cli-bad-window = --to must be greater than or equal to --from
+replay-cli-config-load-failed = failed to load config for model_catalog prices: { $error }
+replay-cli-db-open-failed = failed to open replay database: { $error }
+replay-cli-load-failed = failed to load request_logs for replay: { $error }

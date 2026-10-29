@@ -73,3 +73,15 @@ database-affinity-sticks-read-failed = 会话粘性读取失败：{ $error }
 # ---- masking: 出站掩码（feature masking；错误面 + config 校验面）----
 masking-unavailable = 请求被拒绝：出站掩码不可用（fail-closed，绝不原文出站）
 masking-blocked = 请求被拦截：{ $kind } 类敏感数据禁止出站
+
+# ---- cost-replay: 离线成本回放 CLI（bin fluxgate-replay）----
+replay-cli-usage = 用法：fluxgate-replay --db <sqlite 路径|URL> --from <unix|RFC3339> --to <unix|RFC3339> [--config <路径>] [--scenario affinity|cache_ttl|all] [--json]
+replay-cli-missing-arg = 缺少必需参数：{ $arg }
+replay-cli-missing-value = 参数 { $arg } 需要一个取值
+replay-cli-unknown-arg = 未知参数：{ $arg }
+replay-cli-bad-time = 时间取值非法：{ $value }（需 unix 秒或 RFC3339）
+replay-cli-bad-scenario = 场景取值非法：{ $value }（需 affinity|cache_ttl|all）
+replay-cli-bad-window = --to 必须大于或等于 --from
+replay-cli-config-load-failed = 加载 model_catalog 单价配置失败：{ $error }
+replay-cli-db-open-failed = 打开回放数据库失败：{ $error }
+replay-cli-load-failed = 加载 request_logs 回放数据失败：{ $error }

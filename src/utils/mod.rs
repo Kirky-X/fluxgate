@@ -20,6 +20,10 @@ pub mod netguard;
 #[cfg(feature = "cost-tracking")]
 pub mod cost_tracker;
 
+// 离线成本回放（cost-replay）：feature 门控的只读分析引擎，随独立 bin 提供。
+#[cfg(feature = "cost-replay")]
+pub mod replay;
+
 // OTLP 桥（usage-observability）：otlp feature 隐含 cost-tracking 与
 // sdforge-integration（文本真源 + 成本快照为其编译前提），见 Cargo.toml 特性注释。
 #[cfg(feature = "otlp")]

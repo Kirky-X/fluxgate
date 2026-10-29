@@ -16,6 +16,7 @@
 - [响应缓存 cache](#-响应缓存-cache)
 - [入站限流与准入 ratelimitadmission](#-入站限流与准入-ratelimit--admission)
 - [定价与成本 pricing](#-定价与成本-pricing)
+- [离线成本回放 cost-replay](#-离线成本回放-cost-replay)
 - [订阅账号上游 subscription](#-订阅账号上游-subscription)
 - [配置热更新操作指南](#-配置热更新操作指南)
 - [Docker 部署](#-docker-部署)
@@ -656,14 +657,14 @@ cost_quota_millicents = 500_000  # 每小时 5 USD
 「摘要行 + 逐窗重置秒数」（脱敏：仅 window id 与秒数，不含 key 信息），
 `Retry-After` 取受拒窗中最晚重置者（所有窗须同时有余，最早可成功重试时刻）。
 
-| 字段                    | 默认值    | 说明                                                                                                          |
-| :---------------------- | :-------- | :------------------------------------------------------------------------------------------------------------ |
-| `id`                    | （必填）  | 窗口唯一标识（账本行键与指标标签 `quota_window_refused_total{window_id}`）；空/重复启动即拒                   |
-| `scope`                 | `api_key` | `api_key` 按租户判定 / `global` 全体请求共享一窗                                                              |
-| `period`                | `rolling` | `rolling`（配 `rolling_secs`，从窗内首次用量起算）/ `calendar`（配 `calendar`）                               |
-| `calendar`              | （空）    | `daily`（自然日 00:00）/ `weekly`（ISO 周一）/ `monthly`（自然月 1 日）；与 `rolling_secs` 互斥，同配启动即拒 |
-| `tz_offset_secs`        | `0`       | calendar 时区偏移（±86400 内；默认 0 = UTC；+8h 即东八区自然边界，daily/weekly/monthly 三种月历窗一致按本地帧对齐） |
-| `tokens_limit`          | `0`       | token 限额；`0` = 落回 `[[auth.keys]]` 的 per-key `token_quota`（**仅 `scope=api_key`**）                     |
+| 字段                    | 默认值    | 说明                                                                                                                                             |
+| :---------------------- | :-------- | :----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                    | （必填）  | 窗口唯一标识（账本行键与指标标签 `quota_window_refused_total{window_id}`）；空/重复启动即拒                                                      |
+| `scope`                 | `api_key` | `api_key` 按租户判定 / `global` 全体请求共享一窗                                                                                                 |
+| `period`                | `rolling` | `rolling`（配 `rolling_secs`，从窗内首次用量起算）/ `calendar`（配 `calendar`）                                                                  |
+| `calendar`              | （空）    | `daily`（自然日 00:00）/ `weekly`（ISO 周一）/ `monthly`（自然月 1 日）；与 `rolling_secs` 互斥，同配启动即拒                                    |
+| `tz_offset_secs`        | `0`       | calendar 时区偏移（±86400 内；默认 0 = UTC；+8h 即东八区自然边界，daily/weekly/monthly 三种月历窗一致按本地帧对齐）                              |
+| `tokens_limit`          | `0`       | token 限额；`0` = 落回 `[[auth.keys]]` 的 per-key `token_quota`（**仅 `scope=api_key`**）                                                        |
 | `cost_limit_millicents` | `0`       | 成本限额；`0` = 落回 per-key `cost_quota_millicents`（双零 = 该窗不判；**`scope=global` 不回填**——全局窗必须显式声明至少一个维度，双零启动即拒） |
 
 ```toml
@@ -740,6 +741,66 @@ w_quota = 0.3
 
 ---
 
+## 💹 离线成本回放 cost-replay
+
+`cost-replay` 是**离线只读分析工具**（独立 bin `fluxgate-replay`，不进 `full`）：读既有 `request_logs` 逐请求历史，对"如果当时就开着缓存保 warm / 换个 TTL"这类反事实（counterfactual）算一遍钱——回答"缓存参数调优到底省了多少"。纯显式代码（规则 7）：无随机、无时钟依赖（时间全取日志 `timestamp`），同一输入同一输出；**不开服务、不写库、不调模型**。
+
+### 构建
+
+```bash
+# feature 不进 full，且 bin 需搭配一个 db 后端（required-features）。
+cargo build --release --features "cost-replay,db-sqlite"
+# 产物：target/release/fluxgate-replay
+```
+
+### 用法
+
+```bash
+fluxgate-replay \
+  --db ./data/llm_proxy.db \      # sqlite 文件路径，或完整 URL（sqlite:///postgres:///mysql://）
+  --from 1730000000 \             # 起点（unix 秒或 RFC3339）
+  --to   1730086400 \             # 终点（unix 秒或 RFC3339）
+  --config config.toml \          # 取 [[model_catalog]] 单价（缺省 config.toml）
+  --scenario all \                # affinity | cache_ttl | all（缺省 all）
+  --json                          # 机器可读（缺省 stdout Markdown）
+```
+
+| 参数              | 必填 | 说明                                                                                 |
+| :---------------- | :--- | :----------------------------------------------------------------------------------- |
+| `--db`            | 是   | 既有库的 sqlite 路径或完整连接 URL；工具不建库不建表                                 |
+| `--from` / `--to` | 是   | 回放时间窗（unix 秒或 RFC3339）；`--to` 必须 ≥ `--from`                              |
+| `--config`        | 否   | 取 `[[model_catalog]]` 四档单价（计价正源）；缺省 `config.toml`                      |
+| `--scenario`      | 否   | `affinity`（legacy vs 单档 auto）/ `cache_ttl`（{300,900,3600} 三档）/ `all`（缺省） |
+| `--json`          | 否   | 输出 JSON（与 Markdown 同源数值）；缺省 Markdown                                     |
+
+缺参或参数非法 → stderr 报错 + 退出码 **2**；运行期失败（配置/库/查询）→ 退出码 1。
+
+### 报告口径
+
+| 场景          | 语义                                                                                                                                                    |
+| :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `baseline`    | as-logged：`request_logs.cost_usd` 非空直接累计；空则按**当前** `[[model_catalog]]` 现价（未命中口径）重算，并在尾部标注重算行数                        |
+| `legacy`      | 现状假设：无缓存收益，逐请求全价                                                                                                                        |
+| `auto-<TTL>s` | 同会话、同 vendor、间隔 < TTL 的请求按命中计价（input 走 `cache_read_price`、写走 `cache_creation_price`、出按 `output_price`）；TTL ∈ {300, 900, 3600} |
+
+输出含场景汇总表（总额 / 相对基线差额 / 会话数 / 命中率 / 未登记计数）、per-vendor 与 per-model 分解，尾部固定披露三条假设。
+
+### 关于报告的三条固定假设（务必对照读数）
+
+1. **NULL 会话无收益**：`session_key` 为空的行在回放中**每行自成会话**，不产生任何缓存命中（历史本就没有会话语义）；
+2. **上游缓存以 TTL 窗口近似**：命中判定只看"同会话 + 同 vendor + 间隔 < TTL"，是缓存行为的近似模型，非上游真值；
+3. **单价用当前目录**：四档单价取当前 `[[model_catalog]]`，历史时刻的真实单价不可考——绝对金额会随目录定价漂移，请以**同一次运行内的差额**为准。
+
+### 窗长建议
+
+数据量随时间窗线性增长，工具把窗内全部行读进内存单遍扫：
+
+- 百万行级 SQLite 读入约秒级，建议单次窗长控制在**一周以内**；
+- 需要更长跨度时，按会话或按天分多次跑再各自对比差额；
+- 未登记在 `[[model_catalog]]` 的模型按 logged 成本回退并计数 `uncataloged`，报告会显式提示——这类行的 counterfactual 不参与计价。
+
+---
+
 ## 📲 订阅账号上游 subscription
 
 > ⚠️ **合规警示**：以订阅账号（如 Claude Pro/Max）作服务端出站上游可能违反厂商服务条款（厂商公开政策将订阅 OAuth 面限定于其官方客户端）。商用部署请自行评估合规风险，责任由部署者自担。本网关只实现标准 OAuth 授权码 + PKCE 流程，不含任何绕过限制的技术。
@@ -765,13 +826,13 @@ vendor_id = "claude-main"   # 绑定 [[vendors]] 条目（计入其出站凭证�
 
 ### 授权全流程（admin 四端点）
 
-| 步骤 | 端点 | 说明 |
-| :--- | :--- | :--- |
-| 1 发起 | `POST /admin/subscription/authorize` | body `{"vendor": "claude-main", "account_id": "sub-1", "redirect_uri": null}`；返回 `{authorize_url, state, account_id}`。`redirect_uri` 缺省为本进程 `http://{server.host}:{server.port}/admin/subscription/callback`（反代后部署可覆写） |
-| 2 浏览器授权 | — | 打开 `authorize_url` 登录并批准（PKCE S256；state 10 分钟有效、单次使用） |
-| 3 回调 | `GET /admin/subscription/callback?state=...&code=...` | 核对 state → 授权码换 token → **refresh token 落 vault（cocoon AEAD）**，access token 仅内存。**auth 中间件豁免该路径**（浏览器裸 GET 无 API key 头；端点认证即 state 参数——128-bit 随机、单次消费、10 分钟 TTL） |
-| 4 查看 | `GET /admin/subscription/accounts` | 脱敏列表：id / vendor / 池状态 / token 过期时间戳，**零 token 片段** |
-| 5 吊销 | `DELETE /admin/subscription/accounts/{id}` | 删 vault 条目 + 内存摘除，此后该账号不再参与出站 |
+| 步骤         | 端点                                                  | 说明                                                                                                                                                                                                                                       |
+| :----------- | :---------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 发起       | `POST /admin/subscription/authorize`                  | body `{"vendor": "claude-main", "account_id": "sub-1", "redirect_uri": null}`；返回 `{authorize_url, state, account_id}`。`redirect_uri` 缺省为本进程 `http://{server.host}:{server.port}/admin/subscription/callback`（反代后部署可覆写） |
+| 2 浏览器授权 | —                                                     | 打开 `authorize_url` 登录并批准（PKCE S256；state 10 分钟有效、单次使用）                                                                                                                                                                  |
+| 3 回调       | `GET /admin/subscription/callback?state=...&code=...` | 核对 state → 授权码换 token → **refresh token 落 vault（cocoon AEAD）**，access token 仅内存。**auth 中间件豁免该路径**（浏览器裸 GET 无 API key 头；端点认证即 state 参数——128-bit 随机、单次消费、10 分钟 TTL）                          |
+| 4 查看       | `GET /admin/subscription/accounts`                    | 脱敏列表：id / vendor / 池状态 / token 过期时间戳，**零 token 片段**                                                                                                                                                                       |
+| 5 吊销       | `DELETE /admin/subscription/accounts/{id}`            | 删 vault 条目 + 内存摘除，此后该账号不再参与出站                                                                                                                                                                                           |
 
 ### 运行语义
 
@@ -805,10 +866,10 @@ anthropic = "claude-main"   # provider slug → vendor_id；缺省 slug 本身�
 
 ### 触发
 
-| 方式 | 说明 |
-| :--- | :--- |
+| 方式 | 说明                                                                                                                                                   |
+| :--- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 手动 | `POST /admin/catalog/sync`，body `{"dry_run": true}` 只返回 diff 不落盘；`{"dry_run": false}` 走既有热更新写路径（校验 → 原子落盘 → 切内存，立即生效） |
-| 周期 | `interval_secs > 0` 时启动挂周期任务（±10% 抖动错峰）；运行期改 0 或关 enabled 即热停 |
+| 周期 | `interval_secs > 0` 时启动挂周期任务（±10% 抖动错峰）；运行期改 0 或关 enabled 即热停                                                                  |
 
 ### 响应与语义
 
@@ -869,10 +930,10 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 
 ### 热生效段 vs 需重启段
 
-| 类别   | 段                                                                                                                                                                                                                                                         | 生效方式                                |
-| :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------- |
-| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读）、`masking`（每请求热读，words/rules 变更检测器惰性重建）            | `POST /admin/config` 后下一请求即用新值 |
-| 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑）、`cache.semantic`（语义层 bootstrap 装配一次） | 修改后须重启进程                        |
+| 类别   | 段                                                                                                                                                                                                                                                                       | 生效方式                                |
+| :----- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------- |
+| 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读）、`masking`（每请求热读，words/rules 变更检测器惰性重建） | `POST /admin/config` 后下一请求即用新值 |
+| 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑）、`cache.semantic`（语义层 bootstrap 装配一次）               | 修改后须重启进程                        |
 
 > ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组检测 `server` / `cors` / `rate_limit` / `database` / `grpc` / `global_model` / `cache.semantic` / `docs.enabled` / `routing.difficulty.enabled`（`src/api/admin.rs:333-395`），另在 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键变更时加入对应键名（分类器 bootstrap 装配一次，热更后惰性直到重启）。数组之外仍有两类需重启面：vendor `concurrency` 与 `vendors` 拓扑——改这些段后请自行安排重启。
 

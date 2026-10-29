@@ -2,7 +2,7 @@
 
 <img src="docs/assets/fluxgate.png" alt="Fluxgate Logo" width="240">
 
-[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxgate?style=for-the-badge)](https://github.com/Kirky-X/fluxgate/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxgate/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxgate?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxgate) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)]() [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
+[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxgate?style=for-the-badge)](https://github.com/Kirky-X/fluxgate/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxgate/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxgate?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxgate) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)](<>) [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 
 **中文** | [English](README_EN.md)
 
@@ -77,7 +77,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>请求日志与预聚合</b><br><span style="color:#64748B">异步批量写库（默认 SQLite，db-postgres/db-mysql 构建下写对应后端；满载丢弃计数不阻塞响应），Token 用量按 (厂商, 模型, api_key 摘要, 日期, 小时) 预聚合 UPSERT</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[model_catalog]]</code> 的四档单价为计价正源（微美元原子累积按厂商/模型分账，热更新立即生效）；<code>[[pricing]]</code> 仅用于路由 SLA 因子与未登记目录模型的配额回退档</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[model_catalog]]</code> 的四档单价为计价正源（微美元原子累积按厂商/模型分账，热更新立即生效）；<code>[[pricing]]</code> 仅用于路由 SLA 因子与未登记目录模型的配额回退档。另有离线成本回放工具 <code>fluxgate-replay</code>（<code>cost-replay</code> feature，不进 <code>full</code>）：读 <code>request_logs</code> 历史重放 affinity/cache_ttl 场景的 counterfactual 成本，只读不写库</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；<code>server</code>/<code>cors</code>/<code>rate_limit</code>/<code>database</code>/<code>grpc</code>/<code>global_model</code>/<code>cache.semantic</code>/<code>docs.enabled</code>/<code>routing.difficulty.enabled</code> 及 <code>routing.difficulty.classifier</code> 的 <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> 变更会在响应 <code>restart_required</code> 中显式提示（vendor <code>concurrency</code> 等其余需重启面无此字段，需自行重启）</span></td>
@@ -162,21 +162,21 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 <details>
 <summary>📋 表格</summary>
 
-| 段 | 作用 | 热更新 |
-|----|------|--------|
-| `server` / `database` | 监听地址与 SQLite 路径/池大小 | ❌ 需重启 |
-| `vendors` / `global_model` | 厂商、模型、权重、限流三形态 | ✅ 热读（`global_model` 仅经 admin 写入路径热生效，直接改文件被结构门拒绝） |
-| `auth` / `cors` | API Key 摘要与 CORS | auth ✅ / cors ❌ |
-| `routing` / `retry` / `resilience` | 路由系数与选择算法、重试策略、韧性覆盖面（含 `[routing.difficulty]` 难度定档子段） | ✅ |
-| `cache` / `rate_limit` / `admission` | 响应缓存、入站限流、拥塞准入 | cache/admission ✅ / rate_limit ❌ |
-| `model_catalog` / `pricing` | 模型能力目录（四档单价为计价正源）/ SLA 因子与未登记模型的配额回退档 | ✅ |
-| `health` / `quota` | 主动健康探针（默认 off）、成本/token 配额 + `[[quota.windows]]` 多窗预算 + `[[vendor_budgets]]` 声明式预算（均默认关） | ✅ 均热读 |
-| `lexcompress` | 词法压缩（`X-Compress: 1` 且单条消息超阈值时生效，默认关） | ✅ 热读 |
-| `grpc` / `docs` | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用） | ❌ 需重启 |
-| `subscription` / `subscription_accounts` | 订阅账号上游（`subscription-vendor` feature，不进 `full`；双门控默认关，合规警示见下） | ✅ 热读 |
-| `web_search` | 搜索注入与守护抓取（`web-search` feature，不进 `full`；`netguard` 零依赖 SSRF 判定单开可用）。`/v1/search` 多源搜索（Tavily/Brave/Exa/SearXNG，多 key 轮换）、`/v1/fetch` 守护抓取、`/admin/web-search/stats` 观测 | ✅ 热读 |
-| `catalog_sync` | 模型目录自动同步（`catalog-sync` feature，不进 `full`）：从外部目录源（默认 models.dev）拉取定价/上下文窗口映射进 `[[model_catalog]]`，**只增不改**（既有条目含用户定价永不覆盖）；`POST /admin/catalog/sync`（dry_run 出 diff）+ 可选周期任务，失败 fail-open 计数 | ✅ 热读 |
-| `masking` | 出站请求掩码（`masking` feature，不进 `full`；`[masking]` 双门控默认关）：发送上游前把出站 JSON 中的敏感值（API key/私钥/JWT/邮箱/自定义词与正则）替换为进程内确定性占位符 `{{FLUX_<KIND>_<8HEX>}}`（掺每进程随机 pepper，跨实例不可关联），回程只还原**本请求登记过**的占位符（伪造/跨请求回显原样透传）——厂商永不落真值；Mask/Warn/Block 三档动作、fail-closed（故障 503 拒绝不原文出站）、`/admin/masking/stats` 观测 | ✅ 热读 |
+| 段                                       | 作用                                                                                                                                                                                                                                                                                                                                                                                                                     | 热更新                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `server` / `database`                    | 监听地址与 SQLite 路径/池大小                                                                                                                                                                                                                                                                                                                                                                                            | ❌ 需重启                                                                   |
+| `vendors` / `global_model`               | 厂商、模型、权重、限流三形态                                                                                                                                                                                                                                                                                                                                                                                             | ✅ 热读（`global_model` 仅经 admin 写入路径热生效，直接改文件被结构门拒绝） |
+| `auth` / `cors`                          | API Key 摘要与 CORS                                                                                                                                                                                                                                                                                                                                                                                                      | auth ✅ / cors ❌                                                           |
+| `routing` / `retry` / `resilience`       | 路由系数与选择算法、重试策略、韧性覆盖面（含 `[routing.difficulty]` 难度定档子段）                                                                                                                                                                                                                                                                                                                                       | ✅                                                                          |
+| `cache` / `rate_limit` / `admission`     | 响应缓存、入站限流、拥塞准入                                                                                                                                                                                                                                                                                                                                                                                             | cache/admission ✅ / rate_limit ❌                                          |
+| `model_catalog` / `pricing`              | 模型能力目录（四档单价为计价正源）/ SLA 因子与未登记模型的配额回退档                                                                                                                                                                                                                                                                                                                                                     | ✅                                                                          |
+| `health` / `quota`                       | 主动健康探针（默认 off）、成本/token 配额 + `[[quota.windows]]` 多窗预算 + `[[vendor_budgets]]` 声明式预算（均默认关）                                                                                                                                                                                                                                                                                                   | ✅ 均热读                                                                   |
+| `lexcompress`                            | 词法压缩（`X-Compress: 1` 且单条消息超阈值时生效，默认关）                                                                                                                                                                                                                                                                                                                                                               | ✅ 热读                                                                     |
+| `grpc` / `docs`                          | gRPC 门面、OpenAPI/Swagger UI 出口（均需显式启用）                                                                                                                                                                                                                                                                                                                                                                       | ❌ 需重启                                                                   |
+| `subscription` / `subscription_accounts` | 订阅账号上游（`subscription-vendor` feature，不进 `full`；双门控默认关，合规警示见下）                                                                                                                                                                                                                                                                                                                                   | ✅ 热读                                                                     |
+| `web_search`                             | 搜索注入与守护抓取（`web-search` feature，不进 `full`；`netguard` 零依赖 SSRF 判定单开可用）。`/v1/search` 多源搜索（Tavily/Brave/Exa/SearXNG，多 key 轮换）、`/v1/fetch` 守护抓取、`/admin/web-search/stats` 观测                                                                                                                                                                                                       | ✅ 热读                                                                     |
+| `catalog_sync`                           | 模型目录自动同步（`catalog-sync` feature，不进 `full`）：从外部目录源（默认 models.dev）拉取定价/上下文窗口映射进 `[[model_catalog]]`，**只增不改**（既有条目含用户定价永不覆盖）；`POST /admin/catalog/sync`（dry_run 出 diff）+ 可选周期任务，失败 fail-open 计数                                                                                                                                                      | ✅ 热读                                                                     |
+| `masking`                                | 出站请求掩码（`masking` feature，不进 `full`；`[masking]` 双门控默认关）：发送上游前把出站 JSON 中的敏感值（API key/私钥/JWT/邮箱/自定义词与正则）替换为进程内确定性占位符 `{{FLUX_<KIND>_<8HEX>}}`（掺每进程随机 pepper，跨实例不可关联），回程只还原**本请求登记过**的占位符（伪造/跨请求回显原样透传）——厂商永不落真值；Mask/Warn/Block 三档动作、fail-closed（故障 503 拒绝不原文出站）、`/admin/masking/stats` 观测 | ✅ 热读                                                                     |
 
 </details>
 
@@ -233,15 +233,15 @@ model_type = "rerank"
 <details>
 <summary>📋 表格</summary>
 
-| 文档 | 说明 |
-|------|------|
-| [📖 用户指南](docs/USER_GUIDE.md) | 从配置、部署到运维的完整使用教程 |
+| 文档                                 | 说明                                                                   |
+| ------------------------------------ | ---------------------------------------------------------------------- |
+| [📖 用户指南](docs/USER_GUIDE.md)    | 从配置、部署到运维的完整使用教程                                       |
 | [📘 API 参考](docs/API_REFERENCE.md) | 全部 33 个方法端点（数据面 14 + 管理 18 + 健康 1）的参数、响应与错误码 |
-| [🏗️ 架构文档](docs/ARCHITECTURE.md) | 设计原则、路由决策体系、弹性与热更新机制 |
-| [🔒 安全文档](docs/SECURITY.md) | 安全设计、供应链门禁与漏洞处理流程 |
-| [❓ FAQ](docs/FAQ.md) | 常见问题与已知边界 |
-| [📋 更新日志](docs/CHANGELOG.md) | 版本变更记录（Keep a Changelog 格式） |
-| [🤝 贡献指南](docs/CONTRIBUTING.md) | 环境搭建、开发命令与提交规范 |
+| [🏗️ 架构文档](docs/ARCHITECTURE.md)  | 设计原则、路由决策体系、弹性与热更新机制                               |
+| [🔒 安全文档](docs/SECURITY.md)      | 安全设计、供应链门禁与漏洞处理流程                                     |
+| [❓ FAQ](docs/FAQ.md)                | 常见问题与已知边界                                                     |
+| [📋 更新日志](docs/CHANGELOG.md)     | 版本变更记录（Keep a Changelog 格式）                                  |
+| [🤝 贡献指南](docs/CONTRIBUTING.md)  | 环境搭建、开发命令与提交规范                                           |
 
 </details>
 
@@ -364,12 +364,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <details>
 <summary>📋 表格</summary>
 
-| 构建目标 | feature 组合 |
-| --- | --- |
-| 独立运行（默认，sqlite） | `cargo run` |
-| 独立运行（PostgreSQL） | `cargo build --no-default-features --features "full,db-postgres"` |
-| 独立运行（MySQL） | `cargo build --no-default-features --features "full,db-mysql"` |
-| 库嵌入（自选后端） | `fluxgate = { default-features = false, features = ["full", "db-postgres"] }` |
+| 构建目标                 | feature 组合                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| 独立运行（默认，sqlite） | `cargo run`                                                                   |
+| 独立运行（PostgreSQL）   | `cargo build --no-default-features --features "full,db-postgres"`             |
+| 独立运行（MySQL）        | `cargo build --no-default-features --features "full,db-mysql"`                |
+| 库嵌入（自选后端）       | `fluxgate = { default-features = false, features = ["full", "db-postgres"] }` |
 
 </details>
 
@@ -412,19 +412,19 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 <details>
 <summary>📋 表格</summary>
 
-| 测试域 | 用例数 | 位置 | 覆盖范围 |
-|--------|--------|------|----------|
-| protocol_test | 160 | tests/protocol/ | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧 |
-| api_test | 138 | tests/api/ | 端点集成 / 缓存 / 换路 / 亲和 / admin |
-| vendor_test | 116 | tests/vendor/ | 厂商管理 / 限流 / 流式超时 / 健康与指标 |
-| router_test | 115 | tests/routing/ | 加权选择 / 亲和 / 提示路由 / 边界 |
-| difficulty_tier_test | 6 | tests/routing/ | 难度定档改写 → 既有路由链集成 |
-| database / sse | 41 / 40 | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK |
-| config / utils_coverage | 29 / 19 | tests/config/ · tests/utils/ | 配置加载 / 指标与限流边界 |
-| retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | 重试分类与延迟策略 / loader·manager 分支 |
-| quota / fallback / admission | 20 / 17 / 19 | tests/resilience/ | 配额窗 / 换路链 / 准入 |
-| bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit 路由 / 模型目录 admin |
-| server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点 / key 池等 | 其余 208 | tests/server/ 等 | server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点与厂商 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
+| 测试域                                                                        | 用例数       | 位置                              | 覆盖范围                                                                                                                               |
+| ----------------------------------------------------------------------------- | ------------ | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| protocol_test                                                                 | 160          | tests/protocol/                   | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧                                                                                        |
+| api_test                                                                      | 138          | tests/api/                        | 端点集成 / 缓存 / 换路 / 亲和 / admin                                                                                                  |
+| vendor_test                                                                   | 116          | tests/vendor/                     | 厂商管理 / 限流 / 流式超时 / 健康与指标                                                                                                |
+| router_test                                                                   | 115          | tests/routing/                    | 加权选择 / 亲和 / 提示路由 / 边界                                                                                                      |
+| difficulty_tier_test                                                          | 6            | tests/routing/                    | 难度定档改写 → 既有路由链集成                                                                                                          |
+| database / sse                                                                | 41 / 40      | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK                                                                                                        |
+| config / utils_coverage                                                       | 29 / 19      | tests/config/ · tests/utils/      | 配置加载 / 指标与限流边界                                                                                                              |
+| retry / config_coverage                                                       | 23 / 20      | tests/resilience/ · tests/config/ | 重试分类与延迟策略 / loader·manager 分支                                                                                               |
+| quota / fallback / admission                                                  | 20 / 17 / 19 | tests/resilience/                 | 配额窗 / 换路链 / 准入                                                                                                                 |
+| bandit / model_catalog_admin                                                  | 13 / 13      | tests/routing/ · tests/api/       | bandit 路由 / 模型目录 admin                                                                                                           |
+| server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点 / key 池等 | 其余 208     | tests/server/ 等                  | server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点与厂商 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
 
 </details>
 
@@ -557,8 +557,8 @@ docker compose -f docker/docker-compose.yml up -d
 <details>
 <summary>📋 表格</summary>
 
-| 版本 | 日期 | 要点 |
-|------|------|------|
+| 版本  | 日期       | 要点                                                                                                                                                                |
+| ----- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0.1.0 | 2026-10-12 | 初始发布并持续迭代（63 commits）：协议互转网关、5 因子加权路由与可选智能层、limiteron 弹性体系、异步日志与预聚合、成本追踪、confers 热更新底座、i18n、35 项优化落地 |
 
 </details>
@@ -580,15 +580,15 @@ Fluxgate 经 crates.io registry 集成以下自研库（版本声明在根 `Carg
 <details>
 <summary>📋 表格</summary>
 
-| 库 | 用途 |
-|----|------|
-| [confers](https://github.com/Kirky-X/confers) | 配置加载防护与热更新底座（DynamicField / SnapshotManager） |
-| [dbnexus](https://github.com/Kirky-X/dbnexus) | SQLite 持久化（连接池 / 批量事务 / kit 集成） |
-| [inklog](https://github.com/Kirky-X/inklog) | 结构化日志（HTTP / CLI / SQLite） |
-| [limiteron](https://github.com/Kirky-X/limiteron) | 限流 / 熔断 / 重试原语 |
-| [oxcache](https://github.com/Kirky-X/oxcache) | 统一缓存 API（会话亲和与响应缓存存储层 + single-flight 去重） |
-| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP 服务框架（`#[forge]` 宏 / 路由注册） |
-| [trait-kit](https://github.com/Kirky-X/trait-kit) | DI 容器（AsyncKit，4 module 拓扑组装） |
+| 库                                                | 用途                                                          |
+| ------------------------------------------------- | ------------------------------------------------------------- |
+| [confers](https://github.com/Kirky-X/confers)     | 配置加载防护与热更新底座（DynamicField / SnapshotManager）    |
+| [dbnexus](https://github.com/Kirky-X/dbnexus)     | SQLite 持久化（连接池 / 批量事务 / kit 集成）                 |
+| [inklog](https://github.com/Kirky-X/inklog)       | 结构化日志（HTTP / CLI / SQLite）                             |
+| [limiteron](https://github.com/Kirky-X/limiteron) | 限流 / 熔断 / 重试原语                                        |
+| [oxcache](https://github.com/Kirky-X/oxcache)     | 统一缓存 API（会话亲和与响应缓存存储层 + single-flight 去重） |
+| [sdforge](https://github.com/Kirky-X/sdforge)     | HTTP 服务框架（`#[forge]` 宏 / 路由注册）                     |
+| [trait-kit](https://github.com/Kirky-X/trait-kit) | DI 容器（AsyncKit，4 module 拓扑组装）                        |
 
 </details>
 

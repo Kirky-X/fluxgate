@@ -2,7 +2,7 @@
 
 <img src="docs/assets/fluxgate.png" alt="Fluxgate Logo" width="240">
 
-[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxgate?style=for-the-badge)](https://github.com/Kirky-X/fluxgate/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxgate/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxgate?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxgate) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)]() [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
+[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxgate?style=for-the-badge)](https://github.com/Kirky-X/fluxgate/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxgate/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxgate?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxgate) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)](<>) [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 
 [中文](README.md) | **English**
 
@@ -77,7 +77,7 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Request logs & pre-aggregation</b><br><span style="color:#64748B">Asynchronous batched writes to the configured backend (SQLite by default; db-postgres/db-mysql builds write to that backend — drop-counting under backpressure, never blocks responses), token usage UPSERT pre-aggregated by (vendor, model, API-key digest, date, hour)</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>Cost tracking</b><br><span style="color:#64748B">the four-tier unit prices in <code>[[model_catalog]]</code> are the costing source of truth (micro-USD atomic accumulation per vendor/model, hot-reloadable); <code>[[pricing]]</code> feeds only the routing SLA factor and the quota fallback tier for uncataloged models</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>Cost tracking</b><br><span style="color:#64748B">the four-tier unit prices in <code>[[model_catalog]]</code> are the costing source of truth (micro-USD atomic accumulation per vendor/model, hot-reloadable); <code>[[pricing]]</code> feeds only the routing SLA factor and the quota fallback tier for uncataloged models. There is also an offline cost-replay tool <code>fluxgate-replay</code> (<code>cost-replay</code> feature, not in <code>full</code>): replays <code>request_logs</code> history to price counterfactual affinity / cache_ttl scenarios — read-only, never writes the DB</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); <code>server</code>/<code>cors</code>/<code>rate_limit</code>/<code>database</code>/<code>grpc</code>/<code>global_model</code>/<code>cache.semantic</code>/<code>docs.enabled</code>/<code>routing.difficulty.enabled</code> and the <code>routing.difficulty.classifier</code> keys <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> are reported explicitly in the <code>restart_required</code> response field (remaining restart-required surfaces such as vendor <code>concurrency</code> carry no such signal — restart manually)</span></td>
@@ -163,21 +163,21 @@ Runtime configuration is a single `config.toml` (**not committed** — `.gitigno
 <details>
 <summary>📋 Table</summary>
 
-| Section | Purpose | Hot reload |
-|---------|---------|------------|
-| `server` / `database` | Listen address, SQLite path / pool size | ❌ restart required |
-| `vendors` / `global_model` | Vendors, models, weights, rate-limit forms | ✅ hot-read (`global_model` takes effect only through the admin write path; direct file edits are rejected by the structural gate) |
-| `auth` / `cors` | API key digests, CORS | auth ✅ / cors ❌ |
-| `routing` / `retry` / `resilience` | Routing coefficients & selection algorithm, retry policy, resilience coverage | ✅ |
-| `cache` / `rate_limit` / `admission` | Response cache, inbound rate limiting, congestion admission | cache/admission ✅ / rate_limit ❌ |
-| `model_catalog` / `pricing` | Model capability catalog (its four-tier prices are the costing source of truth) / SLA factor and quota fallback tier | ✅ |
-| `health` / `quota` | Active health probes (default off), cost/token quota + `[[quota.windows]]` multi-window budgets + `[[vendor_budgets]]` declarative budgets (all default off) | ✅ both hot-read |
-| `lexcompress` | Lexical compression (applies on `X-Compress: 1` when a message exceeds the threshold, default off) | ✅ hot-read |
-| `subscription` / `subscription_accounts` | Subscription-account upstreams (`subscription-vendor` feature, excluded from `full`; dual-gated off by default, see the compliance notice below) | ✅ hot-read |
-| `web_search` | Search injection and guarded fetch (`web-search` feature, not in `full`; zero-dependency `netguard` SSRF triage usable standalone). `POST /v1/search` (Tavily/Brave/Exa/SearXNG, multi-key rotation), `POST /v1/fetch`, `GET /admin/web-search/stats` | ✅ hot-read |
-| `catalog_sync` | Automatic model-catalog sync (`catalog-sync` feature, not in `full`): fetches pricing/context windows from an external source (models.dev by default) into `[[model_catalog]]`, **add-only** (existing entries, including your own pricing, are never overwritten); `POST /admin/catalog/sync` (dry_run diff) plus an optional periodic task; failures are fail-open with counters | ✅ hot-read |
-| `masking` | Outbound request masking (`masking` feature, not in `full`; `[masking]` dual-gated, default off): sensitive values in outbound JSON (API keys/private keys/JWTs/emails/custom words & regexes) are replaced with per-process deterministic placeholders `{{FLUX_<KIND>_<8HEX>}}` (hashed with a per-process random pepper; not correlatable across instances); the return path restores only placeholders registered by the **same request** (forged or cross-request echoes pass through) — vendors never store real values; Mask/Warn/Block actions, fail-closed (503 refusal on failure), `/admin/masking/stats` observability | ✅ hot-reload |
-| `grpc` / `docs` | gRPC facade, OpenAPI/Swagger UI surface (both opt-in) | ❌ restart required |
+| Section                                  | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Hot reload                                                                                                                         |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `server` / `database`                    | Listen address, SQLite path / pool size                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | ❌ restart required                                                                                                                |
+| `vendors` / `global_model`               | Vendors, models, weights, rate-limit forms                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | ✅ hot-read (`global_model` takes effect only through the admin write path; direct file edits are rejected by the structural gate) |
+| `auth` / `cors`                          | API key digests, CORS                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | auth ✅ / cors ❌                                                                                                                  |
+| `routing` / `retry` / `resilience`       | Routing coefficients & selection algorithm, retry policy, resilience coverage                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | ✅                                                                                                                                 |
+| `cache` / `rate_limit` / `admission`     | Response cache, inbound rate limiting, congestion admission                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | cache/admission ✅ / rate_limit ❌                                                                                                 |
+| `model_catalog` / `pricing`              | Model capability catalog (its four-tier prices are the costing source of truth) / SLA factor and quota fallback tier                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | ✅                                                                                                                                 |
+| `health` / `quota`                       | Active health probes (default off), cost/token quota + `[[quota.windows]]` multi-window budgets + `[[vendor_budgets]]` declarative budgets (all default off)                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | ✅ both hot-read                                                                                                                   |
+| `lexcompress`                            | Lexical compression (applies on `X-Compress: 1` when a message exceeds the threshold, default off)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | ✅ hot-read                                                                                                                        |
+| `subscription` / `subscription_accounts` | Subscription-account upstreams (`subscription-vendor` feature, excluded from `full`; dual-gated off by default, see the compliance notice below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | ✅ hot-read                                                                                                                        |
+| `web_search`                             | Search injection and guarded fetch (`web-search` feature, not in `full`; zero-dependency `netguard` SSRF triage usable standalone). `POST /v1/search` (Tavily/Brave/Exa/SearXNG, multi-key rotation), `POST /v1/fetch`, `GET /admin/web-search/stats`                                                                                                                                                                                                                                                                                                                                                                             | ✅ hot-read                                                                                                                        |
+| `catalog_sync`                           | Automatic model-catalog sync (`catalog-sync` feature, not in `full`): fetches pricing/context windows from an external source (models.dev by default) into `[[model_catalog]]`, **add-only** (existing entries, including your own pricing, are never overwritten); `POST /admin/catalog/sync` (dry_run diff) plus an optional periodic task; failures are fail-open with counters                                                                                                                                                                                                                                                | ✅ hot-read                                                                                                                        |
+| `masking`                                | Outbound request masking (`masking` feature, not in `full`; `[masking]` dual-gated, default off): sensitive values in outbound JSON (API keys/private keys/JWTs/emails/custom words & regexes) are replaced with per-process deterministic placeholders `{{FLUX_<KIND>_<8HEX>}}` (hashed with a per-process random pepper; not correlatable across instances); the return path restores only placeholders registered by the **same request** (forged or cross-request echoes pass through) — vendors never store real values; Mask/Warn/Block actions, fail-closed (503 refusal on failure), `/admin/masking/stats` observability | ✅ hot-reload                                                                                                                      |
+| `grpc` / `docs`                          | gRPC facade, OpenAPI/Swagger UI surface (both opt-in)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | ❌ restart required                                                                                                                |
 
 </details>
 
@@ -214,15 +214,15 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 <details>
 <summary>📋 Table</summary>
 
-| Document | Description |
-|----------|-------------|
-| [📖 User Guide](docs/USER_GUIDE.md) | End-to-end tutorial: configuration, deployment, operations |
+| Document                                  | Description                                                                                       |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [📖 User Guide](docs/USER_GUIDE.md)       | End-to-end tutorial: configuration, deployment, operations                                        |
 | [📘 API Reference](docs/API_REFERENCE.md) | All 33 method endpoints (14 data-plane + 18 admin + 1 health): parameters, responses, error codes |
-| [🏗️ Architecture](docs/ARCHITECTURE.md) | Design principles, routing decision system, resilience & hot reload |
-| [🔒 Security](docs/SECURITY.md) | Security design, supply-chain gates, vulnerability handling |
-| [❓ FAQ](docs/FAQ.md) | Common questions and known limitations |
-| [📋 Changelog](docs/CHANGELOG.md) | Version history (Keep a Changelog format) |
-| [🤝 Contributing](docs/CONTRIBUTING.md) | Environment setup, development commands, commit conventions |
+| [🏗️ Architecture](docs/ARCHITECTURE.md)   | Design principles, routing decision system, resilience & hot reload                               |
+| [🔒 Security](docs/SECURITY.md)           | Security design, supply-chain gates, vulnerability handling                                       |
+| [❓ FAQ](docs/FAQ.md)                     | Common questions and known limitations                                                            |
+| [📋 Changelog](docs/CHANGELOG.md)         | Version history (Keep a Changelog format)                                                         |
+| [🤝 Contributing](docs/CONTRIBUTING.md)   | Environment setup, development commands, commit conventions                                       |
 
 </details>
 
@@ -347,11 +347,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 <details>
 <summary>📋 Table</summary>
 
-| Build target | Feature set |
-| --- | --- |
-| Standalone (default, sqlite) | `cargo run` |
-| Standalone (PostgreSQL) | `cargo build --no-default-features --features "full,db-postgres"` |
-| Standalone (MySQL) | `cargo build --no-default-features --features "full,db-mysql"` |
+| Build target                   | Feature set                                                                   |
+| ------------------------------ | ----------------------------------------------------------------------------- |
+| Standalone (default, sqlite)   | `cargo run`                                                                   |
+| Standalone (PostgreSQL)        | `cargo build --no-default-features --features "full,db-postgres"`             |
+| Standalone (MySQL)             | `cargo build --no-default-features --features "full,db-mysql"`                |
 | Embedded library (own backend) | `fluxgate = { default-features = false, features = ["full", "db-postgres"] }` |
 
 </details>
@@ -396,18 +396,18 @@ As of the current version (measured with `cargo test --workspace`): **1878 tests
 <details>
 <summary>📋 Table</summary>
 
-| Test domain | Cases | Location | Coverage |
-|-------------|-------|----------|----------|
-| protocol_test | 160 | tests/protocol/ | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing |
-| api_test | 138 | tests/api/ | endpoint integration / caching / rerouting / affinity / admin |
-| vendor_test | 116 | tests/vendor/ | vendor management / rate limits / stream timeouts / health & metrics |
-| router_test | 115 | tests/routing/ | weighted selection / affinity / hint routing / edges |
-| database / sse | 41 / 40 | tests/database/ · tests/protocol/ | persistence & pre-aggregation / stream framing & SDK |
-| config / utils_coverage | 29 / 19 | tests/config/ · tests/utils/ | config loading / metrics & limiter edges |
-| retry / config_coverage | 23 / 20 | tests/resilience/ · tests/config/ | retry classes & delay policy / loader·manager branches |
-| quota / fallback / admission | 20 / 17 / 19 | tests/resilience/ | quota window / fallback chain / admission |
-| bandit / model_catalog_admin | 13 / 13 | tests/routing/ · tests/api/ | bandit routing / model catalog admin |
-| server·grpc serving / assembly smoke / feature matrix / Responses·Gemini endpoints / key pool etc. | remainder (214) | tests/server/ & more | server·grpc serving / assembly smoke / feature matrix / Responses·Gemini endpoints & vendors / key pool / price factors / model catalog admin / dead-code guard |
+| Test domain                                                                                        | Cases           | Location                          | Coverage                                                                                                                                                        |
+| -------------------------------------------------------------------------------------------------- | --------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| protocol_test                                                                                      | 160             | tests/protocol/                   | OpenAI ↔ Anthropic conversion / streaming variants / SSE framing                                                                                                |
+| api_test                                                                                           | 138             | tests/api/                        | endpoint integration / caching / rerouting / affinity / admin                                                                                                   |
+| vendor_test                                                                                        | 116             | tests/vendor/                     | vendor management / rate limits / stream timeouts / health & metrics                                                                                            |
+| router_test                                                                                        | 115             | tests/routing/                    | weighted selection / affinity / hint routing / edges                                                                                                            |
+| database / sse                                                                                     | 41 / 40         | tests/database/ · tests/protocol/ | persistence & pre-aggregation / stream framing & SDK                                                                                                            |
+| config / utils_coverage                                                                            | 29 / 19         | tests/config/ · tests/utils/      | config loading / metrics & limiter edges                                                                                                                        |
+| retry / config_coverage                                                                            | 23 / 20         | tests/resilience/ · tests/config/ | retry classes & delay policy / loader·manager branches                                                                                                          |
+| quota / fallback / admission                                                                       | 20 / 17 / 19    | tests/resilience/                 | quota window / fallback chain / admission                                                                                                                       |
+| bandit / model_catalog_admin                                                                       | 13 / 13         | tests/routing/ · tests/api/       | bandit routing / model catalog admin                                                                                                                            |
+| server·grpc serving / assembly smoke / feature matrix / Responses·Gemini endpoints / key pool etc. | remainder (214) | tests/server/ & more              | server·grpc serving / assembly smoke / feature matrix / Responses·Gemini endpoints & vendors / key pool / price factors / model catalog admin / dead-code guard |
 
 </details>
 
@@ -547,9 +547,9 @@ The full version history lives in the [📋 Changelog](docs/CHANGELOG.md) (follo
 <details>
 <summary>📋 Table</summary>
 
-| Version | Date | Highlights |
-|---------|------|------------|
-| 0.1.0 | 2026-10-12 | Initial release, continuously iterated (63 commits): protocol-converting gateway, 5-factor weighted routing with optional smart layers, limiteron resilience system, async logging & pre-aggregation, cost tracking, confers hot-reload foundation, i18n, 35 optimization recommendations landed |
+| Version | Date       | Highlights                                                                                                                                                                                                                                                                                       |
+| ------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0.1.0   | 2026-10-12 | Initial release, continuously iterated (63 commits): protocol-converting gateway, 5-factor weighted routing with optional smart layers, limiteron resilience system, async logging & pre-aggregation, cost tracking, confers hot-reload foundation, i18n, 35 optimization recommendations landed |
 
 </details>
 
@@ -570,15 +570,15 @@ Fluxgate integrates the following self-developed libraries through the crates.io
 <details>
 <summary>📋 Table</summary>
 
-| Library | Purpose |
-|---------|---------|
-| [confers](https://github.com/Kirky-X/confers) | Config loading guards & hot-reload foundation (DynamicField / SnapshotManager) |
-| [dbnexus](https://github.com/Kirky-X/dbnexus) | SQLite persistence (pooling / batched transactions / kit integration) |
-| [inklog](https://github.com/Kirky-X/inklog) | Structured logging (HTTP / CLI / SQLite) |
-| [limiteron](https://github.com/Kirky-X/limiteron) | Rate limiting / circuit breaking / retry primitives |
-| [oxcache](https://github.com/Kirky-X/oxcache) | Unified cache API (storage for affinity & response cache) |
-| [sdforge](https://github.com/Kirky-X/sdforge) | HTTP service framework (`#[forge]` macro / route registration) |
-| [trait-kit](https://github.com/Kirky-X/trait-kit) | DI container (AsyncKit, 4-module topology) |
+| Library                                           | Purpose                                                                        |
+| ------------------------------------------------- | ------------------------------------------------------------------------------ |
+| [confers](https://github.com/Kirky-X/confers)     | Config loading guards & hot-reload foundation (DynamicField / SnapshotManager) |
+| [dbnexus](https://github.com/Kirky-X/dbnexus)     | SQLite persistence (pooling / batched transactions / kit integration)          |
+| [inklog](https://github.com/Kirky-X/inklog)       | Structured logging (HTTP / CLI / SQLite)                                       |
+| [limiteron](https://github.com/Kirky-X/limiteron) | Rate limiting / circuit breaking / retry primitives                            |
+| [oxcache](https://github.com/Kirky-X/oxcache)     | Unified cache API (storage for affinity & response cache)                      |
+| [sdforge](https://github.com/Kirky-X/sdforge)     | HTTP service framework (`#[forge]` macro / route registration)                 |
+| [trait-kit](https://github.com/Kirky-X/trait-kit) | DI container (AsyncKit, 4-module topology)                                     |
 
 </details>
 

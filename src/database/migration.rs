@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! 核心表版本化迁移（V1..=V4）——sqlite/postgres/mysql 启动建表唯一入口。
+//! 核心表版本化迁移（V1..=V8）——sqlite/postgres/mysql 启动建表唯一入口。
 //!
 //! V1（FROZEN）建四张初版表；V2 把 token_usage 原地升级为分账形态（新增
 //! api_key_hash 与四类 token/四项分项成本列，UNIQUE 键扩为 (vendor, model,
@@ -9,6 +9,9 @@
 //! V3 建密钥保密柜表 vault_keys（key-vault：cocoon 加密 blob + 掩码/指纹列）。
 //! V4 建 Responses 有状态表 response_store（input/output items + 父子链 +
 //! 会话分组 + 过期时间）。
+//! V5 为 request_logs 补会话/上下文观测四列与 (session_key, timestamp) 索引；
+//! V6 建会话粘性表 affinity_sticks；V7 建 quota_ledger 多窗预算账本；
+//! V8 追加 request_logs 的 (timestamp, id) 稳定序索引（回放装载按该序取窗）。
 //! 已发布的迁移常量禁止改动（已部署库的历史行指向它们），新变更走新版本。
 //! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级）。
 
@@ -17,8 +20,8 @@ use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// 核心表迁移最新版本（V7：quota_ledger 多窗预算账本）。
-pub(crate) const CORE_SCHEMA_VERSION: u32 = 7;
+/// 核心表迁移最新版本（V8：request_logs 时间窗稳定序索引 `(timestamp, id)`）。
+pub(crate) const CORE_SCHEMA_VERSION: u32 = 8;
 
 /// V1 UP（sqlite，FROZEN；含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
@@ -567,6 +570,37 @@ const DOWN_V7: &str = r#"
 DROP TABLE IF EXISTS quota_ledger;
 "#;
 
+/// V8 UP（sqlite）：request_logs 时间窗稳定序索引 `(timestamp, id)`。
+/// 回放装载按 `ORDER BY timestamp ASC, id ASC` 取窗（`src/utils/replay.rs`）；
+/// SQLite 的 rowid 索引天然给出 (timestamp, rowid) 序，此索引与其同构，
+/// 仅为三方言形态对齐（含 `IF NOT EXISTS`，幂等）。
+const UP_V8_SQLITE: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_request_logs_ts_id ON request_logs(timestamp, id);
+"#;
+
+/// V8 UP（postgres）：同 `(timestamp, id)` 复合索引——PG 的 btree(timestamp)
+/// 不携带 id 序，`ORDER BY timestamp, id` 会对整窗额外排序；复合索引消掉该排序。
+const UP_V8_POSTGRES: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_request_logs_ts_id ON request_logs(timestamp, id);
+"#;
+
+/// V8 UP（mysql）：索引不在此建——MySQL 不支持 `CREATE INDEX IF NOT EXISTS`，
+/// 统一由 `repository::ensure_indexes_mysql` 探针幂等创建（与其余索引同路）。
+const UP_V8_MYSQL: &str = r#"
+-- idx_request_logs_ts_id 由 repository::ensure_indexes_mysql 运行时探针创建
+"#;
+
+/// V8 DOWN（sqlite/postgres）：仅删索引，无列/表变更。
+const DOWN_V8: &str = r#"
+DROP INDEX IF EXISTS idx_request_logs_ts_id;
+"#;
+
+/// V8 DOWN（mysql）：MySQL 的 `DROP INDEX` 不支持 `IF EXISTS` 且必须带
+/// `ON tbl`，故走 `ALTER TABLE ... DROP INDEX`（与 DOWN_V5_MYSQL 同形）。
+const DOWN_V8_MYSQL: &str = r#"
+ALTER TABLE request_logs DROP INDEX idx_request_logs_ts_id;
+"#;
+
 /// V1 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
 const DOWN_COMMON: &str = r#"
 DROP TABLE IF EXISTS model_stats;
@@ -615,6 +649,9 @@ pub(crate) fn core_migration_file(
         (7, DatabaseBackend::Sqlite) => UP_V7_SQLITE,
         (7, DatabaseBackend::Postgres) => UP_V7_POSTGRES,
         (7, DatabaseBackend::MySql) => UP_V7_MYSQL,
+        (8, DatabaseBackend::Sqlite) => UP_V8_SQLITE,
+        (8, DatabaseBackend::Postgres) => UP_V8_POSTGRES,
+        (8, DatabaseBackend::MySql) => UP_V8_MYSQL,
         _ => {
             return Err(DbError::Config(format!(
                 "no core migration v{version} for {label}"
@@ -631,6 +668,10 @@ pub(crate) fn core_migration_file(
         },
         6 => DOWN_V6,
         7 => DOWN_V7,
+        8 => match backend {
+            DatabaseBackend::MySql => DOWN_V8_MYSQL,
+            _ => DOWN_V8,
+        },
         2 => match backend {
             DatabaseBackend::Sqlite => DOWN_V2_SQLITE,
             DatabaseBackend::Postgres => DOWN_V2_POSTGRES,
@@ -1036,6 +1077,38 @@ mod content_tests {
                 "{backend:?} V6 DOWN 缺 affinity_sticks"
             );
         }
+    }
+
+    /// V8 UP（三方言）：request_logs 的 (timestamp, id) 稳定序索引；
+    /// sqlite/postgres 内联 `IF NOT EXISTS`，mysql 走 `ensure_indexes_mysql` 探针。
+    #[test]
+    fn v8_up_adds_request_logs_ts_id_index() {
+        for (backend, with_index) in [
+            (DatabaseBackend::Sqlite, true),
+            (DatabaseBackend::Postgres, true),
+            (DatabaseBackend::MySql, false),
+        ] {
+            let file = core_migration_file(backend, 8).expect("三后端必有 V8");
+            assert_eq!(file.version(), 8);
+            let up = file.content().split("-- DOWN").next().unwrap_or_default();
+            let present = up.contains("idx_request_logs_ts_id") && up.contains("(timestamp, id)");
+            assert_eq!(present, with_index, "{backend:?} V8 索引形态不符");
+        }
+        // DOWN 可提取：sqlite/pg 走 DROP INDEX IF EXISTS，mysql 走 ALTER TABLE
+        let sqlite_file = core_migration_file(DatabaseBackend::Sqlite, 8).expect("V8");
+        let sqlite_down =
+            MigrationExecutor::extract_down_sql(sqlite_file.content()).expect("V8 sqlite DOWN");
+        assert!(
+            sqlite_down.contains("DROP INDEX IF EXISTS idx_request_logs_ts_id"),
+            "{sqlite_down}"
+        );
+        let mysql_file = core_migration_file(DatabaseBackend::MySql, 8).expect("V8");
+        let mysql_down =
+            MigrationExecutor::extract_down_sql(mysql_file.content()).expect("V8 mysql DOWN");
+        assert!(
+            mysql_down.contains("ALTER TABLE request_logs DROP INDEX idx_request_logs_ts_id"),
+            "{mysql_down}"
+        );
     }
 
     /// FROZEN V1 与文档 schema.sql 表集合一致（双源并存，漂移即红——禁止静默改 V1）。

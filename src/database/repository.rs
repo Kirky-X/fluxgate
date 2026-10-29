@@ -101,7 +101,7 @@ async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> 
     // 无长度键规格的 TEXT 索引（1170 BLOB/TEXT column used in key specification
     // without a key length）；255 字符 = 1020 字节，在 3072 字节上限内，与
     // sqlite/postgres 的全列索引同语义（非唯一索引，等值/前缀查找等价）。
-    const INDEXES: [(&str, &str, &str); 11] = [
+    const INDEXES: [(&str, &str, &str); 12] = [
         ("idx_timestamp", "request_logs", "timestamp"),
         ("idx_vendor", "request_logs", "actual_vendor"),
         ("idx_model", "request_logs", "abstract_model(255)"),
@@ -115,6 +115,9 @@ async fn ensure_indexes_mysql(conn: &DatabaseConnection) -> Result<(), DbError> 
             "request_logs",
             "session_key, timestamp",
         ),
+        // 回放装载 (ORDER BY timestamp, id) 的稳定序索引（V8 语义）；
+        // MySQL 无 CREATE INDEX IF NOT EXISTS，故统一走本探针幂等创建。
+        ("idx_request_logs_ts_id", "request_logs", "timestamp, id"),
         ("idx_token_usage_date", "token_usage", "date"),
         (
             "idx_token_usage_key_date",

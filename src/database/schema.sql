@@ -76,6 +76,7 @@ CREATE INDEX IF NOT EXISTS idx_vendor ON request_logs(actual_vendor);
 CREATE INDEX IF NOT EXISTS idx_model ON request_logs(abstract_model);
 CREATE INDEX IF NOT EXISTS idx_request_id ON request_logs(request_id);
 CREATE INDEX IF NOT EXISTS idx_request_logs_session ON request_logs(session_key, timestamp);
+CREATE INDEX IF NOT EXISTS idx_request_logs_ts_id ON request_logs(timestamp, id);
 
 -- 密钥保密柜（key-vault，V3）：payload 为 cocoon self-contained 密文，
 -- mask/fingerprint 为明文衍生的展示/去重面（零明文）。

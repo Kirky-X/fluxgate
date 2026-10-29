@@ -143,6 +143,8 @@ jobs:
           cargo check -p fluxgate --no-default-features --features "database,db-sqlite"
           cargo check -p fluxgate --no-default-features --features "web-server,db-sqlite"
           cargo check -p fluxgate --no-default-features --features "logging,db-sqlite"
+          # cost-replay 不进 full：默认面既不编译库模块也不编译独立 bin
+          cargo check -p fluxgate --no-default-features --features "cost-replay,db-sqlite"
 
   #-----------------------------------------------------------------------------
   # 测试（mockito 自包含，无外部服务依赖）
@@ -172,16 +174,20 @@ jobs:
       # 编译它们，模块里的缺陷会静默合入。此步单独编译并跑这些特性的测试。
       - name: Run feature-gated tests (otlp)
         run: cargo test --features otlp,db-sqlite
+      # cost-replay 同样不进 full（独立 bin + 回放引擎），默认口径下
+      # `cargo test --workspace` 零编译、零执行；单列一步跑引擎单测 + CLI 集成测试。
+      - name: Run feature-gated tests (cost-replay)
+        run: cargo test -p fluxgate --no-default-features --features "cost-replay,db-sqlite"
 
   #-----------------------------------------------------------------------------
-  # 全特性回归：不进 full 的合规敏感面（web-search / subscription-vendor）
+  # 全特性回归：不进 full 的合规敏感面（web-search / subscription-vendor / cost-replay）
   # 默认 test/clippy 只编译 default 面，这些特性下的模块缺陷会静默合入
   # （与上一作业单独补 otlp 同理，二者合起来覆盖全部「不进 full」特性）。
   # schedule + workflow_dispatch 触发：不在 PR 门禁上加重编时长，nightly
-  # 兜底。default（full + db-sqlite）打底叠加两特性，与本地收口口径一致。
+  # 兜底。default（full + db-sqlite）打底叠加三特性，与本地收口口径一致。
   #-----------------------------------------------------------------------------
   full-features:
-    name: Full features (web-search + subscription-vendor)
+    name: Full features (web-search + subscription-vendor + cost-replay)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -194,10 +200,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Run clippy (default + web-search + subscription-vendor)
-        run: cargo clippy --features "web-search,subscription-vendor" --all-targets -- -D warnings
-      - name: Run tests (default + web-search + subscription-vendor)
-        run: cargo test --features "web-search,subscription-vendor"
+      - name: Run clippy (default + web-search + subscription-vendor + cost-replay)
+        run: cargo clippy --features "web-search,subscription-vendor,cost-replay" --all-targets -- -D warnings
+      - name: Run tests (default + web-search + subscription-vendor + cost-replay)
+        run: cargo test --features "web-search,subscription-vendor,cost-replay"
 
   #-----------------------------------------------------------------------------
   # 服务端数据库后端的运行时验证（postgres / mysql）

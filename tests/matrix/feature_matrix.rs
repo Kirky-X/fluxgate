@@ -187,6 +187,13 @@ fn test_subscription_module_available() {
 #[cfg(feature = "cost-replay")]
 #[test]
 fn test_cost_replay_module_available() {
-    let _ = fluxgate::utils::replay::build_report;
     let _ = fluxgate::utils::replay::load_rows;
+    let empty: &[fluxgate::utils::replay::ReplayRow] = &[];
+    let report = fluxgate::utils::replay::build_report(empty, &[], 0, 0, "test");
+    assert_eq!(report.requests, 0);
+    assert_eq!(
+        report.scenarios.len(),
+        fluxgate::utils::replay::TTL_SWEEP.len() + 1,
+        "legacy + TTL_SWEEP 三档"
+    );
 }

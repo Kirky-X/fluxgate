@@ -77,7 +77,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>请求日志与预聚合</b><br><span style="color:#64748B">异步批量写库（默认 SQLite，db-postgres/db-mysql 构建下写对应后端；满载丢弃计数不阻塞响应），Token 用量按 (厂商, 模型, api_key 摘要, 日期, 小时) 预聚合 UPSERT</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[model_catalog]]</code> 的四档单价为计价正源（微美元原子累积按厂商/模型分账，热更新立即生效）；<code>[[pricing]]</code> 仅用于路由 SLA 因子与未登记目录模型的配额回退档。另有离线成本回放工具 <code>fluxgate-replay</code>（<code>cost-replay</code> feature，不进 <code>full</code>）：读 <code>request_logs</code> 历史重放 affinity/cache_ttl 场景的 counterfactual 成本，只读不写库</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[model_catalog]]</code> 的四档单价为计价正源（微美元原子累积按厂商/模型分账，热更新立即生效）；<code>[[pricing]]</code> 仅用于路由 SLA 因子与未登记目录模型的配额回退档。另有离线成本回放工具 <code>fluxgate-replay</code>（<code>cost-replay</code> feature，不进 <code>full</code>）：读 <code>request_logs</code> 历史重放 affinity/cache_ttl 场景的 counterfactual 成本，只读不写库（目标库须已存在，不存在则报错）</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；<code>server</code>/<code>cors</code>/<code>rate_limit</code>/<code>database</code>/<code>grpc</code>/<code>global_model</code>/<code>cache.semantic</code>/<code>docs.enabled</code>/<code>routing.difficulty.enabled</code> 及 <code>routing.difficulty.classifier</code> 的 <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> 变更会在响应 <code>restart_required</code> 中显式提示（vendor <code>concurrency</code> 等其余需重启面无此字段，需自行重启）</span></td>

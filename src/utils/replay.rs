@@ -20,12 +20,21 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// TTL 扫描档位（秒）——`cache_ttl` 场景的三档对比。
 pub const TTL_SWEEP: [i64; 3] = [300, 900, 3600];
 
-/// 报告尾部固定披露的三条假设（口径透明，避免误读）。
-pub const ASSUMPTIONS: [&str; 3] = [
+/// 报告尾部固定披露的五条假设（口径透明，避免误读）。
+pub const ASSUMPTIONS: [&str; 5] = [
     "NULL-session rows have no cache benefit (each such row is its own session).",
     "Upstream cache behavior is approximated by the TTL window (same session + same vendor within TTL).",
     "Prices use the current [[model_catalog]]; historical unit prices are not recoverable.",
+    "On a cache hit the prompt tokens are priced at cache_read_price and the row's cache_write_tokens are charged again at cache_creation_price; a miss prices the prompt tokens at input_price only (no cache_write charge).",
+    "The logged cache_read_tokens column is not consumed by pricing; only catalog unit prices drive the counterfactual.",
 ];
+
+/// 单次回放的装载行数上限（默认）。
+///
+/// 装载按行线性占内存（实测约 1.4 KB/行，release，SQLite）；上限把「整窗
+/// 全量读进内存」变成 fail-fast，避免进程被 OOM killer 静默杀死。调用方
+/// （CLI `--max-rows`）可上调，但需自担内存。
+pub const DEFAULT_MAX_ROWS: u64 = 1_000_000;
 
 /// 回放行——`request_logs` 的时间窗投影（装载与回放共用的中间契约）。
 ///
@@ -74,6 +83,10 @@ pub fn session_key_of(row: &ReplayRow, ordinal: u64) -> SessionKey {
 /// 与 `Database::new` 的差异在这一点：回放对象是既有库，工具不产生任何
 /// 写操作（design：不开服务、不写库）。调用方给出完整 URL
 /// （`sqlite://…`、`postgres://…`、`mysql://…`）。
+///
+/// 注意：本函数不校验目标是否存在，也不改写 URL 的 `mode`——控制只读语义
+/// 是调用方的责任（`fluxgate-replay` CLI 对 sqlite 强制 `mode=ro` 且要求
+/// 文件已存在，见其 `resolve_db_url`）。
 pub async fn open_pool(url: &str) -> Result<DbPool, FluxgateError> {
     let config = dbnexus::DbConfig {
         url: url.to_string(),
@@ -103,42 +116,87 @@ const LOAD_ROWS_SQL: &str = "SELECT timestamp, session_key, actual_vendor, actua
 /// 只读 SELECT，占位符统一 `?` 并经 [`crate::database::raw_statement`] 按连接
 /// 后端方言化（postgres → `$n`；sqlite/mysql 原样）；列名与类型在
 /// sqlite/postgres/mysql 三方言下一致（`usage-observability` V5 迁移后的四列）。
-pub async fn load_rows(pool: &DbPool, from: i64, to: i64) -> Result<Vec<ReplayRow>, FluxgateError> {
+///
+/// `max_rows` 为装载上限：查询多取一行探测，超出即 fail-fast（不静默截断，
+/// 也不把整窗全量读进内存）。
+pub async fn load_rows(
+    pool: &DbPool,
+    from: i64,
+    to: i64,
+    max_rows: u64,
+) -> Result<Vec<ReplayRow>, FluxgateError> {
     let session = pool.get_session("admin").await?;
     let conn = session.connection()?;
+    let probe = max_rows.saturating_add(1).min(i64::MAX as u64) as i64;
+    let sql = format!("{LOAD_ROWS_SQL} LIMIT ?");
     let stmt = crate::database::raw_statement(
         conn.get_database_backend(),
-        LOAD_ROWS_SQL,
-        vec![Value::BigInt(Some(from)), Value::BigInt(Some(to))],
+        sql,
+        vec![
+            Value::BigInt(Some(from)),
+            Value::BigInt(Some(to)),
+            Value::BigInt(Some(probe)),
+        ],
     );
     let rows = conn
         .query_all_raw(stmt)
         .await
         .map_err(dbnexus::DbError::from)?;
-    Ok(rows.iter().map(map_replay_row).collect())
+    if rows.len() as u64 > max_rows {
+        return Err(FluxgateError::Database {
+            message: crate::i18n::t_args(
+                "replay-window-too-large",
+                &[
+                    ("rows", (rows.len() as u64).to_string()),
+                    ("limit", max_rows.to_string()),
+                ],
+            ),
+        });
+    }
+    rows.iter().map(map_replay_row).collect()
 }
 
-fn map_replay_row(row: &QueryResult) -> ReplayRow {
-    let u64_of = |col: &str| -> u64 {
-        row.try_get::<Option<i64>>("", col)
-            .ok()
-            .flatten()
-            .unwrap_or(0)
-            .max(0) as u64
+/// 把一行 `QueryResult` 投影为 [`ReplayRow`]。
+///
+/// 列读取失败**不吞**（规则 4 失败显性化）：类型漂移/列改名会让整次装载
+/// 报错，而不是把 token 静默当成 0、把金额静默低估。可空列（`session_key`、
+/// `cost_usd`）保留 NULL 语义；token 计数列 NULL 按 0（schema 可空）。
+fn map_replay_row(row: &QueryResult) -> Result<ReplayRow, FluxgateError> {
+    fn decode(col: &str, err: sea_orm::DbErr) -> FluxgateError {
+        FluxgateError::Database {
+            message: crate::i18n::t_args(
+                "replay-row-decode-failed",
+                &[("column", col.to_string()), ("error", err.to_string())],
+            ),
+        }
+    }
+    let u64_of = |col: &str| -> Result<u64, FluxgateError> {
+        let raw: Option<i64> = row
+            .try_get::<Option<i64>>("", col)
+            .map_err(|e| decode(col, e))?;
+        Ok(raw.unwrap_or(0).max(0) as u64)
     };
-    ReplayRow {
-        ts: row.try_get("", "timestamp").unwrap_or_default(),
+    Ok(ReplayRow {
+        ts: row
+            .try_get("", "timestamp")
+            .map_err(|e| decode("timestamp", e))?,
         session_key: row
             .try_get::<Option<String>>("", "session_key")
-            .unwrap_or(None),
-        vendor_id: row.try_get("", "actual_vendor").unwrap_or_default(),
-        model_id: row.try_get("", "actual_model").unwrap_or_default(),
-        prompt_tokens: u64_of("prompt_tokens"),
-        cache_read: u64_of("cache_read_tokens"),
-        cache_write: u64_of("cache_write_tokens"),
-        completion_tokens: u64_of("completion_tokens"),
-        logged_cost_usd: row.try_get::<Option<f64>>("", "cost_usd").unwrap_or(None),
-    }
+            .map_err(|e| decode("session_key", e))?,
+        vendor_id: row
+            .try_get("", "actual_vendor")
+            .map_err(|e| decode("actual_vendor", e))?,
+        model_id: row
+            .try_get("", "actual_model")
+            .map_err(|e| decode("actual_model", e))?,
+        prompt_tokens: u64_of("prompt_tokens")?,
+        cache_read: u64_of("cache_read_tokens")?,
+        cache_write: u64_of("cache_write_tokens")?,
+        completion_tokens: u64_of("completion_tokens")?,
+        logged_cost_usd: row
+            .try_get::<Option<f64>>("", "cost_usd")
+            .map_err(|e| decode("cost_usd", e))?,
+    })
 }
 
 /// 四档价（currency / 1M tokens）→ 该 token 数的微单位金额（10⁻⁶ currency）。
@@ -165,16 +223,50 @@ pub struct PricedRequest {
     pub uncataloged: bool,
 }
 
+/// 计价索引：`[[model_catalog]]` 一次性建精确查找表，逐请求命中为 O(1)。
+///
+/// 未精确命中再按短名前缀回退（多命中取字典序最小，确定性）——与
+/// `vendor::cost::lookup_pricing_entry` 同语义（计价查找的裁决域）。
+pub struct PricingIndex<'a> {
+    catalog: &'a [ModelCatalogEntry],
+    exact: HashMap<&'a str, &'a ModelCatalogEntry>,
+}
+
+impl<'a> PricingIndex<'a> {
+    /// 建索引：重复 `model_id` 保留首条（与线性 `find` 的选取顺序一致）。
+    pub fn new(catalog: &'a [ModelCatalogEntry]) -> Self {
+        let mut exact: HashMap<&'a str, &'a ModelCatalogEntry> = HashMap::new();
+        for entry in catalog {
+            exact.entry(entry.model_id.as_str()).or_insert(entry);
+        }
+        Self { catalog, exact }
+    }
+
+    fn lookup(&self, model_id: &str) -> Option<&'a ModelCatalogEntry> {
+        if let Some(entry) = self.exact.get(model_id) {
+            return Some(entry);
+        }
+        self.catalog
+            .iter()
+            .filter(|e| e.model_id.starts_with(model_id))
+            .min_by(|a, b| a.model_id.cmp(&b.model_id))
+    }
+}
+
 /// 单请求计价（显式实现，规则 7）。
 ///
 /// - 命中（`cache_hit`）：input 按 `cache_read_price` 计、写按
 ///   `cache_creation_price` 计、出按 `output_price` 计；
 /// - 未命中：input 按 `input_price` 计、出按 `output_price` 计（全价）。
 /// - 目录缺模型：回退到该行 logged 成本（无则 0），并置 `uncataloged=true`。
-pub fn price(row: &ReplayRow, catalog: &[ModelCatalogEntry], cache_hit: bool) -> PricedRequest {
-    let Some(entry) = lookup_pricing_entry(catalog, &row.model_id) else {
+pub fn price(row: &ReplayRow, index: &PricingIndex<'_>, cache_hit: bool) -> PricedRequest {
+    let Some(entry) = index.lookup(&row.model_id) else {
         return PricedRequest {
-            micro_usd: row.logged_cost_usd.map(usd_to_micro).unwrap_or(0),
+            micro_usd: row
+                .logged_cost_usd
+                .filter(|usd| usd.is_finite())
+                .map(usd_to_micro)
+                .unwrap_or(0),
             uncataloged: true,
         };
     };
@@ -190,21 +282,6 @@ pub fn price(row: &ReplayRow, catalog: &[ModelCatalogEntry], cache_hit: bool) ->
         micro_usd,
         uncataloged: false,
     }
-}
-
-/// 目录精确命中 → 短名前缀回退（多命中取字典序最小，确定性）。
-/// 与 `vendor::cost::lookup_pricing_entry` 同语义（计价查找的裁决域）。
-fn lookup_pricing_entry<'a>(
-    catalog: &'a [ModelCatalogEntry],
-    model_id: &str,
-) -> Option<&'a ModelCatalogEntry> {
-    if let Some(entry) = catalog.iter().find(|e| e.model_id == model_id) {
-        return Some(entry);
-    }
-    catalog
-        .iter()
-        .filter(|e| e.model_id.starts_with(model_id))
-        .min_by(|a, b| a.model_id.cmp(&b.model_id))
 }
 
 /// 单场景成本（`affinity`/`cache_ttl` 的一档或基线）。
@@ -243,14 +320,25 @@ struct Acc {
 
 impl Acc {
     fn add(&mut self, row: &ReplayRow, ordinal: u64, micro: i64, hit: bool) {
-        self.total += micro;
-        self.requests += 1;
+        // 饱和累加：损坏/极端 logged 成本不得静默回绕成负值，也不得 panic。
+        self.total = self.total.saturating_add(micro);
+        self.requests = self.requests.saturating_add(1);
         if hit {
-            self.cache_hits += 1;
+            self.cache_hits = self.cache_hits.saturating_add(1);
         }
         self.sessions.insert(session_key_of(row, ordinal));
-        *self.by_vendor.entry(row.vendor_id.clone()).or_insert(0) += micro;
-        *self.by_model.entry(row.model_id.clone()).or_insert(0) += micro;
+        match self.by_vendor.get_mut(&row.vendor_id) {
+            Some(total) => *total = total.saturating_add(micro),
+            None => {
+                self.by_vendor.insert(row.vendor_id.clone(), micro);
+            }
+        }
+        match self.by_model.get_mut(&row.model_id) {
+            Some(total) => *total = total.saturating_add(micro),
+            None => {
+                self.by_model.insert(row.model_id.clone(), micro);
+            }
+        }
     }
 
     fn finish(self, name: impl Into<String>) -> ScenarioCost {
@@ -268,16 +356,16 @@ impl Acc {
     }
 }
 
-/// 基线（as-logged）：`cost_usd` 非空直接用；空则按目录现价（未命中口径）重算，
-/// 并计数 `recomputed`（报告据此标注口径）。
-pub fn baseline(rows: &[ReplayRow], catalog: &[ModelCatalogEntry]) -> ScenarioCost {
+/// 基线（as-logged）：`cost_usd` 非空且有限直接用；空或非有限则按目录现价
+/// （未命中口径）重算，并计数 `recomputed`（报告据此标注口径）。
+pub fn baseline(rows: &[ReplayRow], index: &PricingIndex<'_>) -> ScenarioCost {
     let mut acc = Acc::default();
     for (i, row) in rows.iter().enumerate() {
         let micro = match row.logged_cost_usd {
-            Some(usd) => usd_to_micro(usd),
-            None => {
+            Some(usd) if usd.is_finite() => usd_to_micro(usd),
+            _ => {
                 acc.recomputed += 1;
-                let priced = price(row, catalog, false);
+                let priced = price(row, index, false);
                 if priced.uncataloged {
                     acc.uncataloged += 1;
                 }
@@ -293,9 +381,12 @@ pub fn baseline(rows: &[ReplayRow], catalog: &[ModelCatalogEntry]) -> ScenarioCo
 /// `< ttl_secs` 的请求按缓存命中计价（input 走 `cache_read_price`），其余全价。
 ///
 /// `ttl_secs == 0` 时任何间隔都不命中——即 legacy（现状，无缓存收益假设）。
+///
+/// 前置条件：`rows` 必须按 `ts` 升序（装载已保证，见 [`load_rows`]）；命中判定
+/// 另加 `row.ts >= last_ts` 守卫，乱序输入不会因负间隔被误判为命中。
 pub fn replay_affinity(
     rows: &[ReplayRow],
-    catalog: &[ModelCatalogEntry],
+    index: &PricingIndex<'_>,
     ttl_secs: i64,
 ) -> ScenarioCost {
     let mut acc = Acc::default();
@@ -305,11 +396,14 @@ pub fn replay_affinity(
         let key = session_key_of(row, ordinal);
         let hit = match last.get(&key) {
             Some((vendor, ts)) => {
-                ttl_secs > 0 && *vendor == row.vendor_id && (row.ts - *ts) < ttl_secs
+                ttl_secs > 0
+                    && *vendor == row.vendor_id
+                    && row.ts >= *ts
+                    && (row.ts - *ts) < ttl_secs
             }
             None => false,
         };
-        let priced = price(row, catalog, hit);
+        let priced = price(row, index, hit);
         if priced.uncataloged {
             acc.uncataloged += 1;
         }
@@ -325,44 +419,66 @@ pub fn replay_affinity(
 }
 
 /// affinity 场景全集：legacy（无缓存收益）+ [`TTL_SWEEP`] 三档 auto。
-pub fn affinity_scenarios(rows: &[ReplayRow], catalog: &[ModelCatalogEntry]) -> Vec<ScenarioCost> {
-    let mut out = vec![replay_affinity(rows, catalog, 0)];
+pub fn affinity_scenarios(rows: &[ReplayRow], index: &PricingIndex<'_>) -> Vec<ScenarioCost> {
+    let mut out = vec![replay_affinity(rows, index, 0)];
     out.extend(
         TTL_SWEEP
             .iter()
-            .map(|ttl| replay_affinity(rows, catalog, *ttl)),
+            .map(|ttl| replay_affinity(rows, index, *ttl)),
     );
     out
 }
 
-/// 回放报告：窗口、基线、场景集与固定假设披露。
+/// 回放报告：窗口、计价值源、基线、场景集与固定假设披露。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ReplayReport {
     pub from: i64,
     pub to: i64,
     pub requests: u64,
+    /// 计价值源标识（`[[model_catalog]]` 载入自哪个 `--config`）；审计追溯用，可为空。
+    pub source: String,
     pub baseline: ScenarioCost,
     pub scenarios: Vec<ScenarioCost>,
 }
 
 /// 组装报告（确定性：无时钟、无随机，仅由入参推导）。
+///
+/// `source` 为计价值源标识（CLI 传 `--config` 路径）；空串表示未标注。
 pub fn build_report(
     rows: &[ReplayRow],
     catalog: &[ModelCatalogEntry],
     from: i64,
     to: i64,
+    source: impl Into<String>,
 ) -> ReplayReport {
+    let index = PricingIndex::new(catalog);
     ReplayReport {
         from,
         to,
         requests: rows.len() as u64,
-        baseline: baseline(rows, catalog),
-        scenarios: affinity_scenarios(rows, catalog),
+        source: source.into(),
+        baseline: baseline(rows, &index),
+        scenarios: affinity_scenarios(rows, &index),
     }
 }
 
 fn usd(micro: i64) -> String {
     format!("{:.6}", micro as f64 / MICROS_PER_UNIT)
+}
+
+/// Markdown 表格单元格转义：`|` 转义、换行/回车折为空格、控制字符（含 ESC）
+/// 剔除——DB 中的 vendor/model 名不得污染报告表格或注入终端转义序列。
+fn md_cell(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '|' => out.push_str("\\|"),
+            '\n' | '\r' => out.push(' '),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn hit_rate(hits: u64, requests: u64) -> String {
@@ -374,7 +490,7 @@ fn hit_rate(hits: u64, requests: u64) -> String {
 }
 
 impl ReplayReport {
-    /// Markdown 渲染：场景汇总表 + per-vendor/model 分解 + 固定三假设披露。
+    /// Markdown 渲染：场景汇总表 + per-vendor/model 分解 + 固定五假设披露。
     pub fn render_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str("# Cost replay report\n\n");
@@ -382,6 +498,9 @@ impl ReplayReport {
             "window: {}..{} ({} requests)\n\n",
             self.from, self.to, self.requests
         ));
+        if !self.source.is_empty() {
+            out.push_str(&format!("pricing source: {}\n\n", md_cell(&self.source)));
+        }
 
         out.push_str(
             "| scenario | total (USD) | diff vs baseline (USD) | sessions | requests | cache hits | hit rate | uncataloged |\n",
@@ -391,7 +510,7 @@ impl ReplayReport {
         for s in std::iter::once(&self.baseline).chain(self.scenarios.iter()) {
             out.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                s.name,
+                md_cell(&s.name),
                 usd(s.total_micro_usd),
                 usd(s.total_micro_usd - base),
                 s.sessions,
@@ -405,14 +524,24 @@ impl ReplayReport {
         out.push_str("\n## by vendor\n\n| scenario | vendor | USD |\n| --- | --- | --- |\n");
         for s in std::iter::once(&self.baseline).chain(self.scenarios.iter()) {
             for (vendor, micro) in &s.by_vendor {
-                out.push_str(&format!("| {} | {} | {} |\n", s.name, vendor, usd(*micro)));
+                out.push_str(&format!(
+                    "| {} | {} | {} |\n",
+                    md_cell(&s.name),
+                    md_cell(vendor),
+                    usd(*micro)
+                ));
             }
         }
 
         out.push_str("\n## by model\n\n| scenario | model | USD |\n| --- | --- | --- |\n");
         for s in std::iter::once(&self.baseline).chain(self.scenarios.iter()) {
             for (model, micro) in &s.by_model {
-                out.push_str(&format!("| {} | {} | {} |\n", s.name, model, usd(*micro)));
+                out.push_str(&format!(
+                    "| {} | {} | {} |\n",
+                    md_cell(&s.name),
+                    md_cell(model),
+                    usd(*micro)
+                ));
             }
         }
 
@@ -423,7 +552,7 @@ impl ReplayReport {
 
         if self.baseline.recomputed > 0 {
             out.push_str(&format!(
-                "\n> baseline caliber: {} row(s) had no logged cost and were recomputed at current catalog prices.\n",
+                "\n> baseline caliber: {} row(s) had no usable logged cost and were recomputed at current catalog prices.\n",
                 self.baseline.recomputed
             ));
         }
@@ -437,16 +566,23 @@ impl ReplayReport {
     }
 
     /// JSON 渲染：与 Markdown 同源数据结构，数值逐位一致。
+    ///
+    /// 序列化失败即 panic（fail-loud）：`ScenarioCost`/`Vec<ScenarioCost>` 的
+    /// `Serialize` 为派生且仅含基元与映射，不可能失败；静默降级成空串会让
+    /// 调用方拿到「空报告 + exit 0」。
     pub fn render_json(&self) -> String {
         let value = serde_json::json!({
             "window": { "from": self.from, "to": self.to, "requests": self.requests },
-            "baseline": serde_json::to_value(&self.baseline).unwrap_or(serde_json::Value::Null),
-            "scenarios": serde_json::to_value(&self.scenarios).unwrap_or(serde_json::Value::Null),
+            "source": self.source,
+            "baseline": serde_json::to_value(&self.baseline)
+                .expect("ScenarioCost is Serialize"),
+            "scenarios": serde_json::to_value(&self.scenarios)
+                .expect("Vec<ScenarioCost> is Serialize"),
             "assumptions": ASSUMPTIONS,
             "baseline_recomputed_rows": self.baseline.recomputed,
             "baseline_uncataloged_rows": self.baseline.uncataloged,
         });
-        serde_json::to_string_pretty(&value).unwrap_or_default()
+        serde_json::to_string_pretty(&value).expect("report JSON value is serializable")
     }
 }
 
@@ -509,6 +645,7 @@ mod tests {
     #[test]
     fn cache_hit_prices_read_tier_and_miss_prices_full() {
         let catalog = vec![sonnet()];
+        let index = PricingIndex::new(&catalog);
         // 1M prompt + 1M completion，1M cache_write
         let r = row(
             0,
@@ -522,12 +659,12 @@ mod tests {
         );
 
         // 未命中：3.0 (input) + 15.0 (output) = 18.0 USD → 18_000_000 µ$
-        let miss = price(&r, &catalog, false);
+        let miss = price(&r, &index, false);
         assert_eq!(miss.micro_usd, 18_000_000, "未命中=input+output 全价");
         assert!(!miss.uncataloged);
 
         // 命中：0.3 (read) + 3.75 (write) + 15.0 (output) = 19.05 USD → 19_050_000 µ$
-        let hit = price(&r, &catalog, true);
+        let hit = price(&r, &index, true);
         assert_eq!(
             hit.micro_usd, 19_050_000,
             "命中=cache_read+cache_write+output 价"
@@ -537,19 +674,45 @@ mod tests {
         // 缺模型回退：无 logged → 0，且计数
         let mut r2 = row(0, Some("s"), "v", "unregistered-model", 1_000_000, 0, 0, 0);
         r2.logged_cost_usd = Some(0.5);
-        let fb = price(&r2, &catalog, false);
+        let fb = price(&r2, &index, false);
         assert!(fb.uncataloged, "未登记模型必须计数 uncataloged");
         assert_eq!(fb.micro_usd, 500_000, "回退到 logged 成本");
 
         // 无 logged 且未登记 → 0（不伪装免费为其它值）
         let r3 = row(0, Some("s"), "v", "unregistered-model", 1_000_000, 0, 0, 0);
-        assert_eq!(price(&r3, &catalog, false).micro_usd, 0);
+        assert_eq!(price(&r3, &index, false).micro_usd, 0);
+
+        // 未登记且 logged 非有限（NaN/∞）→ 0，不回退成饱和巨值
+        let mut r4 = row(0, Some("s"), "v", "unregistered-model", 1_000_000, 0, 0, 0);
+        r4.logged_cost_usd = Some(f64::NAN);
+        assert_eq!(
+            price(&r4, &index, false).micro_usd,
+            0,
+            "非有限 logged 不得计入"
+        );
+    }
+
+    /// 计价索引保留「精确命中优先、未命中短名前缀取字典序最小」语义。
+    #[test]
+    fn pricing_index_matches_prefix_fallback() {
+        let catalog = vec![
+            entry("claude-sonnet-4.5", 1.0, 1.0, 1.0, 1.0),
+            entry("claude-sonnet-4", 3.0, 15.0, 0.3, 3.75),
+        ];
+        let index = PricingIndex::new(&catalog);
+        // 精确命中
+        assert_eq!(index.lookup("claude-sonnet-4").unwrap().input_price, 3.0);
+        // 前缀回退：两个候选皆以 "claude" 起，取字典序最小（claude-sonnet-4）
+        assert_eq!(index.lookup("claude").unwrap().model_id, "claude-sonnet-4");
+        // 未命中
+        assert!(index.lookup("gpt-4o").is_none());
     }
 
     /// affinity：间隔 < TTL 计缓存价、超窗全价、换 vendor 全价。
     #[test]
     fn same_vendor_within_ttl_gets_cache_price() {
         let catalog = vec![sonnet()];
+        let index = PricingIndex::new(&catalog);
         // 同会话同 vendor：t=0 与 t=100（窗内）、t=2000（超 300s 窗）、
         // t=2100 换 vendor（不同 vendor 不命中）
         let rows = vec![
@@ -558,7 +721,7 @@ mod tests {
             row(2000, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
             row(2100, Some("s"), "v2", "claude-sonnet-4", 1_000_000, 0, 0, 0),
         ];
-        let c = replay_affinity(&rows, &catalog, 300);
+        let c = replay_affinity(&rows, &index, 300);
         // 命中仅第 2 行：0.3 (read) → 300_000 µ$
         // 其余三行全价 3.0 → 3_000_000 µ$ 各
         assert_eq!(c.cache_hits, 1, "仅窗内同 vendor 一行命中");
@@ -566,7 +729,7 @@ mod tests {
         assert_eq!(c.name, "auto-300s");
 
         // ttl=0：legacy，无任何命中
-        let legacy = replay_affinity(&rows, &catalog, 0);
+        let legacy = replay_affinity(&rows, &index, 0);
         assert_eq!(legacy.cache_hits, 0);
         assert_eq!(legacy.total_micro_usd, 4 * 3_000_000);
         assert_eq!(legacy.name, "legacy");
@@ -576,21 +739,37 @@ mod tests {
     #[test]
     fn null_session_rows_never_hit() {
         let catalog = vec![sonnet()];
+        let index = PricingIndex::new(&catalog);
         let rows = vec![
             row(0, None, "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
             row(10, None, "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
             row(20, None, "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
         ];
-        let c = replay_affinity(&rows, &catalog, 3600);
+        let c = replay_affinity(&rows, &index, 3600);
         assert_eq!(c.cache_hits, 0, "NULL 会话无缓存收益");
         assert_eq!(c.total_micro_usd, 3 * 3_000_000);
         assert_eq!(c.sessions, 3, "每行自成会话");
     }
 
-    /// TTL 扫描 {300,900,3600}：档位序列固定、alfinity 越宽命中越多（总额单调不增）。
+    /// 乱序输入不得因负间隔被误判命中（前置条件守卫）。
+    #[test]
+    fn out_of_order_rows_do_not_false_hit() {
+        let catalog = vec![sonnet()];
+        let index = PricingIndex::new(&catalog);
+        // 同会话同 vendor，时间倒序（100 → 50）：负间隔，必须全价
+        let rows = vec![
+            row(100, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
+            row(50, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
+        ];
+        let c = replay_affinity(&rows, &index, 3600);
+        assert_eq!(c.cache_hits, 0, "负间隔不得命中");
+    }
+
+    /// TTL 扫描 {300,900,3600}：档位序列固定、越宽命中越多（总额单调不增）。
     #[test]
     fn ttl_sweep_reports_monotonic_sessions() {
         let catalog = vec![sonnet()];
+        let index = PricingIndex::new(&catalog);
         // 同会话同 vendor：间隔分别 200（三档全命中）、500（仅 900/3600 命中）、
         // 1000（仅 3600 命中）
         let rows = vec![
@@ -599,7 +778,7 @@ mod tests {
             row(700, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
             row(1700, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
         ];
-        let scenarios = affinity_scenarios(&rows, &catalog);
+        let scenarios = affinity_scenarios(&rows, &index);
         assert_eq!(
             scenarios
                 .iter()
@@ -621,26 +800,75 @@ mod tests {
         assert!(scenarios.iter().all(|s| s.sessions == 1));
     }
 
-    /// 基线优先 logged 成本；空则现价重算并计数 recomputed（报告标注口径）。
+    /// 基线优先 logged 成本；空/非有限则现价重算并计数 recomputed（报告标注口径）。
     #[test]
     fn baseline_prefers_logged_cost_with_fallback_note() {
         let catalog = vec![sonnet()];
+        let index = PricingIndex::new(&catalog);
         let mut r1 = row(0, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0);
         r1.logged_cost_usd = Some(7.0); // 直接用 logged（7_000_000 µ$）
         let r2 = row(10, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0); // 无 logged → 重算 3.0
+        let mut r3 = row(20, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0);
+        r3.logged_cost_usd = Some(f64::INFINITY); // 非有限 → 同样重算
 
-        let rows = vec![r1, r2];
-        let b = baseline(&rows, &catalog);
+        let rows = vec![r1, r2, r3];
+        let b = baseline(&rows, &index);
         assert_eq!(b.name, "baseline");
-        assert_eq!(b.total_micro_usd, 7_000_000 + 3_000_000);
-        assert_eq!(b.recomputed, 1, "1 行无 logged 成本");
+        assert_eq!(b.total_micro_usd, 7_000_000 + 2 * 3_000_000);
+        assert_eq!(b.recomputed, 2, "无 logged + 非有限 logged 各 1 行");
 
-        let report = build_report(&rows, &catalog, 0, 10);
+        let report = build_report(&rows, &catalog, 0, 20, "config.toml");
         let md = report.render_markdown();
         assert!(
-            md.contains("baseline caliber: 1 row(s) had no logged cost"),
+            md.contains("baseline caliber: 2 row(s) had no usable logged cost"),
             "报告必须标注重算口径: {md}"
         );
+        assert!(md.contains("pricing source: config.toml"), "{md}");
+    }
+
+    /// 极端金额饱和累加：不 panic、不回绕成负值。
+    #[test]
+    fn accumulation_saturates_instead_of_overflowing() {
+        let catalog = vec![sonnet()];
+        let index = PricingIndex::new(&catalog);
+        let mut rows = Vec::new();
+        for ts in 0..3 {
+            let mut r = row(ts, Some("s"), "v1", "claude-sonnet-4", 0, 0, 0, 0);
+            r.logged_cost_usd = Some(1e308); // 乘 1e6 后饱和到 i64::MAX
+            rows.push(r);
+        }
+        let b = baseline(&rows, &index);
+        assert!(b.total_micro_usd > 0, "饱和不得回绕成负值");
+        assert_eq!(b.total_micro_usd, i64::MAX, "三行极端值饱和在 i64::MAX");
+    }
+
+    /// 报告表格转义：`|`/换行/控制字符不得污染 Markdown 表格或终端。
+    #[test]
+    fn markdown_cells_escape_table_and_control_chars() {
+        let catalog = vec![sonnet()];
+        let index = PricingIndex::new(&catalog);
+        let rows = vec![row(
+            0,
+            Some("s"),
+            "evil|vendor\ninjected\u{1b}[31mRED",
+            "claude-sonnet-4",
+            1_000_000,
+            0,
+            0,
+            0,
+        )];
+        let report = ReplayReport {
+            from: 0,
+            to: 0,
+            requests: rows.len() as u64,
+            source: String::new(),
+            baseline: baseline(&rows, &index),
+            scenarios: vec![],
+        };
+        let md = report.render_markdown();
+        assert!(!md.contains('\u{1b}'), "控制字符必须剔除");
+        assert!(md.contains("evil\\|vendor injected[31mRED"), "{md}");
+        assert!(!md.contains("\n| injected"), "换行不得伪造表格行: {md}");
     }
 
     /// 报告快照：Markdown 汇总/分解/假设披露 + JSON 同源数值一致。
@@ -651,7 +879,7 @@ mod tests {
             row(0, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
             row(100, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
         ];
-        let report = build_report(&rows, &catalog, 0, 100);
+        let report = build_report(&rows, &catalog, 0, 100, "");
         let md = report.render_markdown();
         assert!(md.starts_with("# Cost replay report\n"));
         assert!(md.contains("window: 0..100 (2 requests)"));
@@ -670,6 +898,7 @@ mod tests {
         assert_eq!(json["baseline"]["total_micro_usd"], 6_000_000);
         assert_eq!(json["scenarios"][1]["total_micro_usd"], 3_300_000);
         assert_eq!(json["window"]["requests"], 2);
+        assert_eq!(json["assumptions"].as_array().unwrap().len(), 5);
     }
 
     /// 装载 SQL 的三方言占位符投影：postgres 翻 `$n`，sqlite/mysql 保留 `?`；
@@ -691,6 +920,12 @@ mod tests {
                 crate::database::raw_statement(backend, LOAD_ROWS_SQL, values.clone());
             assert_eq!(st.sql.matches('?').count(), 2, "{backend:?} 保留两个 `?`");
         }
+        // 装载 SQL 追加 LIMIT 后占位符为 3 个，三方言逐位投影
+        let limited = format!("{LOAD_ROWS_SQL} LIMIT ?");
+        let pg_limited: Statement =
+            crate::database::raw_statement(DatabaseBackend::Postgres, limited, values.clone());
+        assert!(pg_limited.sql.contains("$3"), "{}", pg_limited.sql);
+        assert!(!pg_limited.sql.contains('?'), "{}", pg_limited.sql);
         // 全列存在于 SELECT 列表（三方言 schema 同列）
         for col in [
             "timestamp",
@@ -715,8 +950,8 @@ mod tests {
             row(0, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
             row(100, Some("s"), "v1", "claude-sonnet-4", 1_000_000, 0, 0, 0),
         ];
-        let a = build_report(&rows, &catalog, 0, 100);
-        let b = build_report(&rows, &catalog, 0, 100);
+        let a = build_report(&rows, &catalog, 0, 100, "config.toml");
+        let b = build_report(&rows, &catalog, 0, 100, "config.toml");
         assert_eq!(a, b);
         assert_eq!(a.render_markdown(), b.render_markdown());
         assert_eq!(a.render_json(), b.render_json());
@@ -801,7 +1036,9 @@ mod tests {
                     .expect("seed row");
             }
 
-            let rows = load_rows(&db.pool, 100, 400).await.expect("load window");
+            let rows = load_rows(&db.pool, 100, 400, DEFAULT_MAX_ROWS)
+                .await
+                .expect("load window");
             assert_eq!(rows.len(), 4, "窗口过滤：仅 100..=400 的四行");
             assert_eq!(
                 rows.iter().map(|r| r.ts).collect::<Vec<_>>(),
@@ -826,6 +1063,36 @@ mod tests {
                 session_key_of(&rows[3], 3),
                 "同 session_key 必须归同一身份"
             );
+        }
+
+        /// 装载上限 fail-fast：超过 max_rows 即报错，不静默截断。
+        #[tokio::test]
+        async fn load_rows_fails_fast_over_limit() {
+            let db = fixture().await;
+            for (rid, ts) in [("r1", 100), ("r2", 200), ("r3", 300)] {
+                db.repository()
+                    .log_request(&log(
+                        rid,
+                        ts,
+                        Some("s1"),
+                        "v1",
+                        "m1",
+                        10,
+                        1,
+                        Some(0),
+                        Some(0),
+                        Some(0.1),
+                    ))
+                    .await
+                    .expect("seed row");
+            }
+            // 上限 2：窗内有 3 行 → 必须报错
+            let err = load_rows(&db.pool, 100, 300, 2)
+                .await
+                .expect_err("超限必须 fail-fast");
+            let msg = err.to_string();
+            assert!(msg.contains("3"), "报错须含实际行数: {msg}");
+            assert!(msg.contains("2"), "报错须含上限: {msg}");
         }
     }
 }

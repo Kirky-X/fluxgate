@@ -75,13 +75,19 @@ masking-unavailable = 请求被拒绝：出站掩码不可用（fail-closed，�
 masking-blocked = 请求被拦截：{ $kind } 类敏感数据禁止出站
 
 # ---- cost-replay: 离线成本回放 CLI（bin fluxgate-replay）----
-replay-cli-usage = 用法：fluxgate-replay --db <sqlite 路径|URL> --from <unix|RFC3339> --to <unix|RFC3339> [--config <路径>] [--scenario affinity|cache_ttl|all] [--json]
+replay-cli-usage = 用法：fluxgate-replay --db <sqlite 路径|URL> --from <unix|RFC3339> --to <unix|RFC3339> [--config <路径>] [--scenario affinity|cache_ttl|all] [--max-rows <n>] [--json]
 replay-cli-missing-arg = 缺少必需参数：{ $arg }
 replay-cli-missing-value = 参数 { $arg } 需要一个取值
 replay-cli-unknown-arg = 未知参数：{ $arg }
 replay-cli-bad-time = 时间取值非法：{ $value }（需 unix 秒或 RFC3339）
 replay-cli-bad-scenario = 场景取值非法：{ $value }（需 affinity|cache_ttl|all）
+replay-cli-bad-max-rows = --max-rows 取值非法：{ $value }（需正整数）
 replay-cli-bad-window = --to 必须大于或等于 --from
+replay-cli-db-not-found = 回放数据库文件不存在：{ $path }（工具不建库，请核对 --db 路径）
 replay-cli-config-load-failed = 加载 model_catalog 单价配置失败：{ $error }
 replay-cli-db-open-failed = 打开回放数据库失败：{ $error }
 replay-cli-load-failed = 加载 request_logs 回放数据失败：{ $error }
+
+# ---- cost-replay: 回放引擎（库级错误）----
+replay-window-too-large = 回放窗口有 { $rows } 行，超过 --max-rows 上限 { $limit }；请收窄 --from/--to 或提高 --max-rows
+replay-row-decode-failed = 解码 request_logs 列 { $column } 失败：{ $error }

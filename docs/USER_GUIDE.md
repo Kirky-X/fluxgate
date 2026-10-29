@@ -757,46 +757,57 @@ cargo build --release --features "cost-replay,db-sqlite"
 
 ```bash
 fluxgate-replay \
-  --db ./data/llm_proxy.db \      # sqlite 文件路径，或完整 URL（sqlite:///postgres:///mysql://）
+  --db ./data/llm_proxy.db \      # sqlite 文件路径或 sqlite:// URL；必须已存在（工具不建库）
   --from 1730000000 \             # 起点（unix 秒或 RFC3339）
   --to   1730086400 \             # 终点（unix 秒或 RFC3339）
   --config config.toml \          # 取 [[model_catalog]] 单价（缺省 config.toml）
   --scenario all \                # affinity | cache_ttl | all（缺省 all）
+  --max-rows 1000000 \            # 窗内装载行数上限（缺省 1000000，超出即报错）
   --json                          # 机器可读（缺省 stdout Markdown）
+
+fluxgate-replay --help            # 用法打到 stdout，退出码 0
 ```
 
-| 参数              | 必填 | 说明                                                                                 |
-| :---------------- | :--- | :----------------------------------------------------------------------------------- |
-| `--db`            | 是   | 既有库的 sqlite 路径或完整连接 URL；工具不建库不建表                                 |
-| `--from` / `--to` | 是   | 回放时间窗（unix 秒或 RFC3339）；`--to` 必须 ≥ `--from`                              |
-| `--config`        | 否   | 取 `[[model_catalog]]` 四档单价（计价正源）；缺省 `config.toml`                      |
-| `--scenario`      | 否   | `affinity`（legacy vs 单档 auto）/ `cache_ttl`（{300,900,3600} 三档）/ `all`（缺省） |
-| `--json`          | 否   | 输出 JSON（与 Markdown 同源数值）；缺省 Markdown                                     |
+> **后端说明**：独立 bin 以 `db-sqlite` 构建（`required-features = ["cost-replay","db-sqlite"]`），
+> 因此 `--db` 实际接受 sqlite 路径/URL。回放引擎的 SQL 与列集在 sqlite/postgres/mysql
+> 三方言下通用（见 `src/utils/replay.rs` 的 `load_rows`），库嵌入方可用其它后端打开连接池后
+> 自行调用引擎 API。
 
-缺参或参数非法 → stderr 报错 + 退出码 **2**；运行期失败（配置/库/查询）→ 退出码 1。
+| 参数              | 必填 | 说明                                                                                                           |
+| :---------------- | :--- | :------------------------------------------------------------------------------------------------------------- |
+| `--db`            | 是   | 既有库的 sqlite 路径或 URL；**文件必须已存在**（不存在直接报错，绝不新建库文件）；SQLite 以只读 `mode=ro` 打开 |
+| `--from` / `--to` | 是   | 回放时间窗（unix 秒或 RFC3339）；`--to` 必须 ≥ `--from`                                                        |
+| `--config`        | 否   | 取 `[[model_catalog]]` 四档单价（计价正源）；缺省 `config.toml`；报告头部回显该路径                            |
+| `--scenario`      | 否   | `affinity`（legacy vs 单档 auto）/ `cache_ttl`（{300,900,3600} 三档）/ `all`（缺省）                           |
+| `--max-rows`      | 否   | 窗内装载行数上限（缺省 `1000000`）；超出即报错退出，提示收窄窗口或上调上限                                     |
+| `--json`          | 否   | 输出 JSON（与 Markdown 同源数值）；缺省 Markdown                                                               |
+
+缺参或参数非法 → stderr 报错 + 退出码 **2**；运行期失败（配置/库/查询/超限）→ 退出码 **1**；`--help` → stdout + 退出码 **0**。
 
 ### 报告口径
 
 | 场景          | 语义                                                                                                                                                    |
 | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `baseline`    | as-logged：`request_logs.cost_usd` 非空直接累计；空则按**当前** `[[model_catalog]]` 现价（未命中口径）重算，并在尾部标注重算行数                        |
+| `baseline`    | as-logged：`request_logs.cost_usd` 非空且有限直接累计；空或非有限则按**当前** `[[model_catalog]]` 现价（未命中口径）重算，并在尾部标注重算行数          |
 | `legacy`      | 现状假设：无缓存收益，逐请求全价                                                                                                                        |
 | `auto-<TTL>s` | 同会话、同 vendor、间隔 < TTL 的请求按命中计价（input 走 `cache_read_price`、写走 `cache_creation_price`、出按 `output_price`）；TTL ∈ {300, 900, 3600} |
 
-输出含场景汇总表（总额 / 相对基线差额 / 会话数 / 命中率 / 未登记计数）、per-vendor 与 per-model 分解，尾部固定披露三条假设。
+输出含场景汇总表（总额 / 相对基线差额 / 会话数 / 命中率 / 未登记计数）、per-vendor 与 per-model 分解、计价值源行，尾部固定披露五条假设。`vendor`/`model` 等外部字符串在渲染前转义（`|`、换行、控制字符），不会污染表格或注入终端转义序列。
 
-### 关于报告的三条固定假设（务必对照读数）
+### 关于报告的五条固定假设（务必对照读数）
 
 1. **NULL 会话无收益**：`session_key` 为空的行在回放中**每行自成会话**，不产生任何缓存命中（历史本就没有会话语义）；
 2. **上游缓存以 TTL 窗口近似**：命中判定只看"同会话 + 同 vendor + 间隔 < TTL"，是缓存行为的近似模型，非上游真值；
-3. **单价用当前目录**：四档单价取当前 `[[model_catalog]]`，历史时刻的真实单价不可考——绝对金额会随目录定价漂移，请以**同一次运行内的差额**为准。
+3. **单价用当前目录**：四档单价取当前 `[[model_catalog]]`，历史时刻的真实单价不可考——绝对金额会随目录定价漂移，请以**同一次运行内的差额**为准；
+4. **命中仍按 creation 价收写的 token**：命中时 input 按 `cache_read_price` 计，行内的 `cache_write_tokens` 另按 `cache_creation_price` 计（未命中不额外收写价）——`auto-<TTL>` 与 `baseline` 的差额里混有这部分口径，勿按"纯缓存省下"直接解读；
+5. **日志里的 `cache_read_tokens` 不参与计价**：counterfactual 只由目录单价与 token 基数推导，落库的缓存读计数是被忽略的历史观测量。
 
 ### 窗长建议
 
-数据量随时间窗线性增长，工具把窗内全部行读进内存单遍扫：
+数据量随窗口线性增长，工具把窗内全部行读进内存后逐场景扫（affinity 4 档 + 基线共 5 遍）：
 
-- 百万行级 SQLite 读入约秒级，建议单次窗长控制在**一周以内**；
-- 需要更长跨度时，按会话或按天分多次跑再各自对比差额；
+- 实测约 **1.4 KB/行**（release，SQLite）：百万行约 1.4 GB 峰值内存、秒级耗时；`--max-rows` 缺省 100 万行即以此为准（超出直接报错，不静默截断）；
+- 建议单次窗长控制在**一周以内**，并按 `--max-rows` 估算内存；需要更长跨度时按会话或按天分多次跑再各自对比差额；
 - 未登记在 `[[model_catalog]]` 的模型按 logged 成本回退并计数 `uncataloged`，报告会显式提示——这类行的 counterfactual 不参与计价。
 
 ---

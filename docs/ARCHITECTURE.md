@@ -157,7 +157,7 @@ flowchart TB
 | 文件                         | 职责                                                                                                                                                                                                            |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `database/database.rs`       | `Database`：连接建立（path + pool_size）与 repository 句柄                                                                                                                                                      |
-| `database/migration.rs`      | 版本化迁移：V1 FROZEN + V2/V3 迁移（sqlite/postgres/mysql 三方言，当前 `CORE_SCHEMA_VERSION = 3`）经 dbnexus `MigrationExecutor` 执行（UP 建表 + DOWN 回滚）；`schema.*.sql` 退为可读文档，一致性由守卫测试锁定 |
+| `database/migration.rs`      | 版本化迁移：V1 FROZEN + V2..V8 迁移（sqlite/postgres/mysql 三方言，当前 `CORE_SCHEMA_VERSION = 8`）经 dbnexus `MigrationExecutor` 执行（UP 建表 + DOWN 回滚）；`schema.*.sql` 退为可读文档，一致性由守卫测试锁定 |
 | `database/repository.rs`     | 仓储：dbnexus 会话防御链上的参数化批量 INSERT（`execute_with_params` + 单事务批量）                                                                                                                             |
 | `database/async_logger.rs`   | recId=9 背压语义异步日志写入器：`try_send` 满即丢弃计数，绝不阻塞响应路径；落库前经 inklog secret gate 脱敏                                                                                                     |
 | `database/pre_aggregator.rs` | Token 使用预聚合器：按小时聚合，减少数据库查询压力                                                                                                                                                              |
@@ -461,7 +461,7 @@ stateDiagram-v2
 | ---------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CostCalculator` | `src/vendor/cost.rs`        | 定价表来自热配置 `[[pricing]]`，按 `(prompt/1000)×in_price + (completion/1000)×out_price` 计算 USD；`(vendor_id, model_id)` 未命中计 0.0；每请求现读热配置，定价修改即时生效（`src/vendor/manager.rs` 的定价热读点）                                                             |
 | `CostTracker`    | `src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径；`restore_from_db(pool, window_hours)` 启动恢复（按 `(vendor, model)` 聚合 `token_usage` 最近窗口回填内存视图，装配期先恢复再对外服务） |
-| `replay`         | `src/utils/replay.rs`       | 离线成本回放（`cost-replay` feature，独立 bin `fluxgate-replay`）：按时间窗读 `request_logs`，对 affinity / cache_ttl 场景重放 counterfactual 成本（微单位整数累计，`catalog-sync` 的 `unit.rs` 换算单点）；纯显式代码、只读不写库，同输入 byte-equal                            |
+| `replay`         | `src/utils/replay.rs`       | 离线成本回放（`cost-replay` feature，独立 bin `fluxgate-replay`）：按时间窗读 `request_logs`，对 affinity / cache_ttl 场景重放 counterfactual 成本（微单位整数累计，`catalog-sync` 的 `unit.rs` 换算单点）；纯显式代码、只读不写库（sqlite `mode=ro` + 目标库须已存在）、装载行数上限 fail-fast，同输入 byte-equal |
 
 **成本落库与内存边界（如实标注）**：成本分账已落库——`token_usage` 表按 `(vendor, model, api_key_hash, date, hour)` UPSERT，写入 `input_cost` / `output_cost` / `cache_read_cost` / `cache_creation_cost` 四档成本列（`src/database/pre_aggregator.rs`，单价取 `[[model_catalog]]` 四档，未登记记 0），并可由 `GET /admin/cost` 按 vendor/model 分组聚合查询。逐请求成本同步落库——`request_logs.cost_usd` 在日志写入路径经 `src/api/request_cost.rs` 的 `request_cost_usd` 计算：响应 usage 四档求和 × 目录单价（chat/embeddings/anthropic/gemini/responses 五入口共用，cache 语义单源 `prompt_cache_semantics`，与分账同口径；rerank 按每千文档价）；五入口无 usage（失败/空响应/流式成功——流式 usage 走预聚合分账，日志无 usage 响应体）记 `None`，未登记单价记 0。rerank 沿用既有口径：请求日志 `cost_usd` 失败路径（能力不匹配/上游失败）同样按公式写计算值，而 `token_usage` 分账失败不入账——两套口径并行，`/admin/cost` 聚合不含失败请求成本。进程内 `CostTracker`（`by_vendor`/`by_model`）启动时自 `token_usage` 按窗口恢复（`[metrics].cost_restore_window_hours`，默认 24，范围 1–8760；DB 未接线或内存库 warn 跳过）——恢复窗口之外的历史用量不进入实时内存视图。
 
@@ -471,7 +471,7 @@ stateDiagram-v2
 
 ### 存储模型
 
-SQLite，5 张表（迁移 V1↔V3 定义于 `src/database/migration.rs`（当前 `CORE_SCHEMA_VERSION = 3`），`schema.*.sql` 为同源可读文档）：
+SQLite，5 张表（迁移 V1↔V8 定义于 `src/database/migration.rs`（当前 `CORE_SCHEMA_VERSION = 8`），`schema.*.sql` 为同源可读文档）：
 
 | 表              | 用途                                                 | 状态                    |
 | --------------- | ---------------------------------------------------- | ----------------------- |
@@ -481,7 +481,7 @@ SQLite，5 张表（迁移 V1↔V3 定义于 `src/database/migration.rs`（当�
 | `model_stats`   | 模型统计                                             | 仅有 schema，无读写路径 |
 | `vault_keys`    | 密钥保密柜（cocoon 密文 + 掩码/指纹列，V3 迁移建表） | 读写                    |
 
-表结构经 dbnexus `MigrationExecutor` 版本化管理：启动装配链执行 V1/V2/V3 迁移（UP 建表 + 索引，DOWN 对应回滚），迁移历史记录于 dbnexus 默认历史表；存量库（表已存在、历史为空）由基线化检查兼容，不重复建表。三方言（sqlite/postgres/mysql）各有 FROZEN V1，与对应 `schema.*.sql` 文档的一致性由守卫测试锁定。
+表结构经 dbnexus `MigrationExecutor` 版本化管理：启动装配链执行 V1..V8 迁移（UP 建表 + 索引，DOWN 对应回滚），迁移历史记录于 dbnexus 默认历史表；存量库（表已存在、历史为空）由基线化检查兼容，不重复建表。三方言（sqlite/postgres/mysql）各有 FROZEN V1，与对应 `schema.*.sql` 文档的一致性由守卫测试锁定。
 
 ### 异步写入管线
 

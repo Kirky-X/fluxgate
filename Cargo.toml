@@ -316,6 +316,11 @@ path = "tests/config/gate_config_coverage_test.rs"
 name = "database_test"
 path = "tests/database/database_test.rs"
 
+[[test]]
+name = "dialect_probe"
+path = "tests/database/dialect_probe.rs"
+required-features = ["database"]
+
 # ---- protocol：协议转换 / Anthropic 缓存块 / SSE 分帧 ----
 [[test]]
 name = "gate_anthropic_cache_test"

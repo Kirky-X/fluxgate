@@ -1651,6 +1651,40 @@ mod live_tests {
         );
     }
 
+    /// V8：request_logs 的 (timestamp, id) 稳定序索引真实建出；重跑幂等。
+    #[tokio::test]
+    async fn v8_creates_request_logs_ts_id_index_idempotently() {
+        let pool = memory_pool().await;
+        init_schema(&pool).await.expect("首次迁移");
+        init_schema(&pool).await.expect("重跑幂等");
+
+        let session = pool.get_session("admin").await.expect("session");
+        let stmt = sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='request_logs'"
+                .to_string(),
+        );
+        let indexes: std::collections::HashSet<String> = session
+            .connection()
+            .expect("conn")
+            .query_all_raw(stmt)
+            .await
+            .expect("indexes")
+            .iter()
+            .filter_map(|row| row.try_get::<String>("", "name").ok())
+            .collect();
+        drop(session);
+        assert!(
+            indexes.contains("idx_request_logs_ts_id"),
+            "V8 必须建稳定序索引（实测 {indexes:?}）"
+        );
+        assert_eq!(
+            applied_versions(&pool).await,
+            all_core_versions(),
+            "V8 已记账"
+        );
+    }
+
     /// V5：request_logs 四列 + 会话索引存在；重跑 init_schema 幂等
     ///（列已存在时 ALTER 不得二次执行——版本历史短路）。
     #[tokio::test]

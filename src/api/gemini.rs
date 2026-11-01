@@ -1102,12 +1102,10 @@ fn decode_base64_f32(encoded: &str) -> Option<Vec<f32>> {
     if bytes.len() % 4 != 0 {
         return None;
     }
-    Some(
-        bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect(),
-    )
+    // 按 4 字节一组解 f32：`as_chunks` 在编译期消掉边界检查与切片索引，
+    // 长度非 4 的整数倍时尾部余项直接丢弃（与 `chunks_exact` 同语义）。
+    let (words, _remainder) = bytes.as_chunks::<4>();
+    Some(words.iter().map(|w| f32::from_le_bytes(*w)).collect())
 }
 
 fn decode_base64(encoded: &str) -> Option<Vec<u8>> {

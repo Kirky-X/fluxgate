@@ -48,7 +48,7 @@ pub struct Router {
     embedding_pin: Option<Arc<EmbeddingPin>>,
     /// 配额账本句柄（quota-aware-routing 第 6 因子的预算读侧）。None =
     /// 因子整体旁路（mode 热读再叠加一层开关；双关默认 = 零参与）
-    quota_state: Option<Arc<crate::middleware::quota::QuotaState>>,
+    quota_state: Option<Arc<dyn crate::quota_contract::VendorBudgetSource>>,
 }
 
 impl Router {
@@ -69,7 +69,7 @@ impl Router {
     /// 配额因子整体旁路（与 mode=off 等效）。
     pub fn with_quota_state(
         mut self,
-        quota_state: Arc<crate::middleware::quota::QuotaState>,
+        quota_state: Arc<dyn crate::quota_contract::VendorBudgetSource>,
     ) -> Self {
         self.quota_state = Some(quota_state);
         self
@@ -1693,7 +1693,7 @@ impl Router {
         candidates: &[(VendorConfig, ModelConfig)],
     ) -> (
         crate::config::QuotaFactorMode,
-        Vec<Option<crate::middleware::quota::VendorBudgetView>>,
+        Vec<Option<crate::quota_contract::VendorBudgetView>>,
     ) {
         let Some(state) = &self.quota_state else {
             return (crate::config::QuotaFactorMode::Off, Vec::new());
@@ -1703,16 +1703,16 @@ impl Router {
         if mode == crate::config::QuotaFactorMode::Off {
             return (mode, Vec::new());
         }
-        let mut cache: HashMap<&str, Option<crate::middleware::quota::VendorBudgetView>> =
+        let mut cache: HashMap<&str, Option<crate::quota_contract::VendorBudgetView>> =
             HashMap::new();
         let views = candidates
             .iter()
             .map(|(vendor, _)| {
                 if let Some(view) = cache.get(vendor.id.as_str()) {
-                    return view.clone();
+                    return *view;
                 }
                 let view = state.vendor_budget_view(&snapshot, &vendor.id);
-                cache.insert(vendor.id.as_str(), view.clone());
+                cache.insert(vendor.id.as_str(), view);
                 view
             })
             .collect();
@@ -1728,15 +1728,15 @@ impl Router {
         &self,
         mut candidates: Vec<(VendorConfig, ModelConfig)>,
         mode: crate::config::QuotaFactorMode,
-        mut views: Vec<Option<crate::middleware::quota::VendorBudgetView>>,
+        mut views: Vec<Option<crate::quota_contract::VendorBudgetView>>,
     ) -> (
         Vec<(VendorConfig, ModelConfig)>,
-        Vec<Option<crate::middleware::quota::VendorBudgetView>>,
+        Vec<Option<crate::quota_contract::VendorBudgetView>>,
     ) {
         if mode != crate::config::QuotaFactorMode::Smart || views.is_empty() {
             return (candidates, views);
         }
-        let depleted = |view: &Option<crate::middleware::quota::VendorBudgetView>| {
+        let depleted = |view: &Option<crate::quota_contract::VendorBudgetView>| {
             view.as_ref().is_some_and(|b| b.depleted())
         };
         let any_alive = views.iter().any(|view| !depleted(view));
@@ -2499,14 +2499,14 @@ pub fn quota_pace_multiplier(pace_ratio: f64) -> f64 {
 /// 候选集同序对齐（[`Router::apply_quota_filter`] 产物直入，免二次查询）。
 fn quota_factor_scores(
     mode: crate::config::QuotaFactorMode,
-    views: &[Option<crate::middleware::quota::VendorBudgetView>],
+    views: &[Option<crate::quota_contract::VendorBudgetView>],
 ) -> (Vec<Option<QuotaFactorScore>>, Vec<Option<f64>>) {
     match mode {
         crate::config::QuotaFactorMode::Smart => (
             views
                 .iter()
                 .map(|view| {
-                    view.clone()
+                    (*view)
                         .filter(|b| !b.not_started)
                         .map(|b| QuotaFactorScore {
                             normalized_reset: b.normalized_reset(),
@@ -2519,7 +2519,7 @@ fn quota_factor_scores(
             Vec::new(),
             views
                 .iter()
-                .map(|view| view.clone().map(|b| quota_pace_multiplier(b.pace_ratio())))
+                .map(|view| view.map(|b| quota_pace_multiplier(b.pace_ratio())))
                 .collect(),
         ),
         crate::config::QuotaFactorMode::Off => (Vec::new(), Vec::new()),

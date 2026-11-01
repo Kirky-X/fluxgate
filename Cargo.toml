@@ -55,7 +55,7 @@ resilience = []
 # cost-tracking：CostTracker 的分片锁并发 map
 cost-tracking = ["dep:dashmap"]
 # async_logger（DB sink）无条件消费 inklog 类型，故 logging 为编译前提。
-database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "dep:url", "protocol", "logging"]
+database = ["dep:dbnexus", "dep:sea-orm", "dep:async-channel", "dep:url", "protocol", "logging", "dep:trait-kit"]
 # vendor 栈：reqwest 出站 + limiteron 限流/熔断原语 + 队列通道，rand 供加权采样；不携带存储。
 vendor-management = ["dep:reqwest", "dep:limiteron", "dep:rand", "dep:async-channel"]
 # 保密柜：cocoon AEAD + secrecy；db 后端门控，SDK 嵌入回落 FileKeyStore
@@ -129,7 +129,7 @@ sea-orm = { version = "2.0", default-features = false, optional = true }
 
 # 日志层：落库后端随 db-* 透传；fast-masking + secret-scan 仅日志面启用
 # rc.11 起 inklog 解除 oxcache 精确 pin，与 vecboost 线（需 oxcache rc.10）解析区间相交
-inklog = { version = "0.3.0-rc.11", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
+inklog = { version = "0.3.0-rc.12", default-features = false, features = ["kit", "fast-masking", "secret-scan"], optional = true }
 # 配置加载与热重载：dynamic/snapshot/loader + json 投影 + security-rules
 confers = { version = "0.6.0-rc.11", default-features = false, features = ["toml", "json", "dynamic", "snapshot", "security-rules", "hot-reload-kit"] }
 # tracing 显式集（关默认等价声明）：std + attributes（info!/span! 等事件宏的展开面）
@@ -151,7 +151,9 @@ oxcache = { version = "0.5.0-rc.11", default-features = false, features = ["mini
 vecboost = { path = "../vecboost", default-features = false, optional = true }
 
 # DI（async + shutdown 面）
-trait-kit = { version = "0.5.0-rc.10", default-features = false, features = ["async", "shutdown"], optional = true }
+# masking：inklog rc.12 起 SecretScanGate/DataMasker 下沉 trait-kit，
+# async_logger 的 fail-closed 脱敏面（mask_checked → MaskError）直接消费其类型。
+trait-kit = { version = "0.5.0-rc.12", default-features = false, features = ["async", "shutdown", "masking"], optional = true }
 
 # 服务框架门面。不声明 streaming：其流式分帧面本仓零引用，SSE 分帧由 src/protocol 自实现。
 sdforge = { version = "0.5.0-rc.9", default-features = false, features = ["http", "security", "health", "metrics", "context", "graceful", "openapi", "docs", "schemars"], optional = true }
@@ -445,6 +447,11 @@ required-features = ["cost-replay", "db-sqlite"]
 [[test]]
 name = "dead_code_guard"
 path = "tests/guard/dead_code_guard.rs"
+
+# 分层守卫：router 不得依赖 web 层（`--features router` 单独构建可成立）
+[[test]]
+name = "layering_guard"
+path = "tests/guard/layering_guard.rs"
 
 [[test]]
 name = "comment_hygiene_test"

@@ -14,6 +14,8 @@ pub mod utils;
 pub mod protocol;
 // 存储边界缝（RequestLogSink/UsageSink + 契约类型）定义于本模块，实现留在 database 模块
 pub mod storage;
+// 配额预算读侧契约缝（预算读模型 + 读侧端口）定义于本模块，实现留在 middleware::quota
+pub mod quota_contract;
 
 #[cfg(feature = "database")]
 pub mod database;

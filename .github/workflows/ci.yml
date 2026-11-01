@@ -145,6 +145,9 @@ jobs:
           cargo check -p fluxgate --no-default-features --features "logging,db-sqlite"
           # cost-replay 不进 full：默认面既不编译库模块也不编译独立 bin
           cargo check -p fluxgate --no-default-features --features "cost-replay,db-sqlite"
+          # router 必须脱离 web-server 独立成形（嵌入式消费方的实际组合；
+          # 历史缺陷：router 曾直接引用 middleware，此组合长期不可编译）
+          cargo check -p fluxgate --no-default-features --features "vendor-management,router,protocol,resilience"
 
   #-----------------------------------------------------------------------------
   # 测试（mockito 自包含，无外部服务依赖）

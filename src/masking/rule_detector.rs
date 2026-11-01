@@ -84,7 +84,7 @@ impl RuleDetector {
                     detail: e.to_string(),
                 })?;
         }
-        let gate = SecretScanGate::new(registry).with_entropy(EntropyScanner::new());
+        let gate = SecretScanGate::new(&registry).with_entropy(EntropyScanner::new());
         Ok(Self {
             gate,
             words: words.to_vec(),

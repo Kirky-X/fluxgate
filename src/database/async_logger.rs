@@ -13,11 +13,16 @@ use crate::database::{Repository, RequestLog};
 use crate::error::FluxgateError;
 use crate::i18n::{t, t_args};
 use async_channel::{bounded, Receiver, Sender};
-use inklog::{DataMasker, EntropyScanner, InklogError, SecretPatternRegistry, SecretScanGate};
+// inklog rc.12 起 SecretScanGate/DataMasker 下沉 trait-kit，且 mask_checked 的
+// 错误类型为 MaskError（无到 InklogError 的转换）。故脱敏面直接用 trait-kit 类型：
+// 「脱敏拒发」（MaskError）与「sink 写入失败」（InklogError）本就是两条独立 fail
+// 语义，类型分离后调用方不必再压制其一。
+use inklog::{DataMasker, InklogError, SecretPatternRegistry, SecretScanGate};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use trait_kit::masking::{EntropyScanner, MaskError};
 
 /// 单次 flush 的缓冲阈值（条）：达到即提前落库
 const FLUSH_BUFFER_CAPACITY: usize = 100;
@@ -33,7 +38,9 @@ pub(crate) const TRUNCATION_MARKER: &str = "\n…[truncated]";
 /// 出站脱敏 masker：库默认规则构造 SecretScanGate，不做业务定制；
 /// console sink 与落库管道共用此构造，两条出站通路同一脱敏面
 pub(crate) fn outbound_masker() -> DataMasker {
-    let gate = SecretScanGate::new(SecretPatternRegistry::with_builtins())
+    // rc.12 起 `new` 接收引用（表在构建时冻结，不发散所有权）；注册表为
+    // 一次性构造、仅此处使用，临时值寿命足以覆盖调用。
+    let gate = SecretScanGate::new(&SecretPatternRegistry::with_builtins())
         .with_entropy(EntropyScanner::new());
     DataMasker::builder().with_secret_scan(gate).build()
 }
@@ -41,7 +48,7 @@ pub(crate) fn outbound_masker() -> DataMasker {
 /// 单条出站文本的统一脱敏策略（console 与落库共用，fail 姿态一致）：
 /// 超门限先按 UTF-8 边界截断再 mask_checked（fail-closed）；仍超门限
 /// → Err → 整条拒发（宁可丢日志不可泄密）
-pub(crate) fn redact_text(masker: &DataMasker, text: &str) -> Result<String, InklogError> {
+pub(crate) fn redact_text(masker: &DataMasker, text: &str) -> Result<String, MaskError> {
     let bounded: std::borrow::Cow<str> = if text.len() > MASK_INPUT_LIMIT_BYTES {
         std::borrow::Cow::Owned(format!("{}{TRUNCATION_MARKER}", truncate_to_limit(text)))
     } else {
@@ -62,7 +69,7 @@ fn truncate_to_limit(text: &str) -> &str {
 /// [`redact_text`] 的 serde_json::Value 递归形态：字符串值逐个脱敏，
 /// 数组/对象下钻——fields 的嵌套 JSON 与顶层标量同一 fail 姿态。
 #[cfg_attr(not(feature = "web-server"), allow(dead_code))] // 仅 server 装配消费
-fn redact_value(masker: &DataMasker, value: &mut Value) -> Result<(), InklogError> {
+fn redact_value(masker: &DataMasker, value: &mut Value) -> Result<(), MaskError> {
     match value {
         Value::String(s) => {
             *s = redact_text(masker, s)?;
@@ -110,7 +117,7 @@ impl GateSink {
         self.dropped.load(Ordering::Relaxed)
     }
 
-    fn reject(&self, error: &InklogError) {
+    fn reject(&self, error: &MaskError) {
         let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
         tracing::warn!(
             total,
@@ -338,11 +345,13 @@ impl AsyncLogger {
                                 Self::redact_log(&redact_masker, log)
                             })
                             .await
-                            .unwrap_or_else(|e| {
-                                Err(InklogError::ConfigError(format!(
-                                    "redact worker failed: {e}"
-                                )))
-                            });
+                            // 工作线程 panic 只记固定文案：`JoinError` 的 Display 会带 panic
+                            // payload，而该文案经 warn 落到出站日志——记录内容可触发的
+                            // 文本不得进入出站通道。计数已由上方 reject 覆盖，此处只需
+                            // 让本批整条拒发。
+                            .unwrap_or_else(|_| Err(MaskError::ConfigError(
+                                "redact worker failed".to_string(),
+                            )));
                             match result {
                                 Ok(redacted) => {
                                     buffer.push(redacted);
@@ -423,7 +432,7 @@ impl AsyncLogger {
     /// 三个自由文本字段经 [`redact_text`] 统一策略（超门限截断 + fail-closed
     /// gate）扫描改写，与 console 通路同一 fail 姿态。Err 原样上抛由调用方
     /// 丢弃计数。
-    fn redact_log(masker: &DataMasker, mut log: RequestLog) -> Result<RequestLog, InklogError> {
+    fn redact_log(masker: &DataMasker, mut log: RequestLog) -> Result<RequestLog, MaskError> {
         log.messages = redact_text(masker, &log.messages)?;
         if let Some(response) = log.response.take() {
             log.response = Some(redact_text(masker, &response)?);

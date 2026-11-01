@@ -101,14 +101,24 @@ fn test_router_dependency_chain() {
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
-/// 依赖链验证：database 开启时 logging 必须也可用
-///（async_logger 无条件消费 inklog，database→logging 为编译前提）
+/// 依赖链验证：database 开启时 logging 与 dep:trait-kit 必须也可用
+///（async_logger 无条件消费 inklog；脱敏面自 inklog rc.12 起消费
+/// trait-kit 的 MaskError/SecretScanGate，故 database→trait-kit 亦为编译前提）
 #[cfg(feature = "database")]
 #[test]
 fn test_database_logging_chain() {
     let _ = std::marker::PhantomData::<fluxgate::database::Database>;
     #[cfg(not(feature = "logging"))]
     compile_error!("database 开启必须携带 logging（async_logger 消费 inklog）");
+    // `dep:trait-kit` 不是可探测 feature；用其 masking 面符号作在场断言
+    #[cfg(feature = "database")]
+    let _ = std::marker::PhantomData::<trait_kit::masking::MaskError>;
+
+    #[cfg(feature = "database")]
+    let _: fn() = || {
+        // 编译期断言：脱敏面类型在 database 组合下必须可见
+        let _ = std::marker::PhantomData::<trait_kit::masking::MaskError>;
+    };
 }
 
 /// 依赖链验证：web-server 开启时 infrastructure 必须也可用

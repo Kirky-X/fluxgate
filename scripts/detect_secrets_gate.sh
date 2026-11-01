@@ -18,11 +18,30 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 BASELINE=.secrets.baseline
-mapfile -t FILES < <(git ls-files | grep -vE '^(tests/|src/sdk/tests|out/|Cargo\.lock$|\.secrets\.baseline$)')
+# 不依赖 bash 4 的 mapfile：macOS 自带 bash 3.2 无该内建（hook 环境仍可能
+# 走 /bin/bash）。NUL 分隔读入数组，避免路径含空白时被拆词。
+FILES=()
+while IFS= read -r -d '' f; do
+    case "$f" in
+        tests/*|src/sdk/tests/*|out/*|Cargo.lock|.secrets.baseline) continue ;;
+    esac
+    FILES+=("$f")
+done < <(git ls-files -z)
+
+# 入口可移植化：优先 PATH 中的 detect-secrets；未装为脚本时回落
+# `python3 -m detect_secrets`（pip --user 安装常不进 PATH）。
+if command -v detect-secrets >/dev/null 2>&1; then
+    DS=(detect-secrets)
+elif python3 -c 'import detect_secrets' >/dev/null 2>&1; then
+    DS=(python3 -m detect_secrets)
+else
+    echo "detect-secrets 未安装：pip install detect-secrets" >&2
+    exit 1
+fi
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
-detect-secrets scan "${FILES[@]}" > "$tmp"
+"${DS[@]}" scan "${FILES[@]}" > "$tmp"
 
 python3 - "$BASELINE" "$tmp" <<'PY'
 import json

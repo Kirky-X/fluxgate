@@ -877,7 +877,7 @@ impl GlobalMetrics {
     /// 订阅降级账号 gauge −1（恢复 Active / 摘除 / 吊销；饱和不下穿 0）
     pub fn record_subscription_account_degraded_leave(&self) {
         self.subscription_accounts_degraded
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1))
             .ok();
     }
 

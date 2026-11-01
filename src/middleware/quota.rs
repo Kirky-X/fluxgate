@@ -1098,72 +1098,27 @@ pub struct QuotaLedgerEntry {
     pub reset_at: i64,
 }
 
-/// vendor 预算读侧视图（router 第 6 因子与 admin 端点共用）：预算窗的
-/// 占用/限额/重置/消耗率一次性快照。语义方法（depleted/normalized_reset/
-/// pace_ratio）为确定性纯函数——路由打分不做隐藏 IO。
-#[derive(Debug, Clone, PartialEq)]
-pub struct VendorBudgetView {
-    pub tokens_used: u64,
-    pub tokens_limit: u64,
-    pub cost_used: u64,
-    pub cost_limit: u64,
-    /// 距重置秒数（≥0）
-    pub reset_secs: u64,
-    /// 窗长秒数（pace 的 budget/period 分母）
-    pub period_secs: u64,
-    /// 窗已流逝秒数（pace 的 used/elapsed 分母）
-    pub elapsed_secs: u64,
-    /// 窗尚未起算（rolling 无状态）——smart 无重置压力（不加工成）
-    pub not_started: bool,
-}
+/// 预算读模型与读侧端口的定义在同名根级契约模块 [`crate::quota_contract`]
+/// （无 feature 门控，与 [`crate::storage`] 缝同构）。此处**只为本文件实现使用**
+/// 而引入类型，不做 re-export——对外公开面只有 `VendorBudgetSource` 的 trait
+/// 方法，避免出现「同一类型两条公开路径」。
+use crate::quota_contract::{VendorBudgetSource, VendorBudgetView};
 
-impl VendorBudgetView {
-    /// 预算耗尽：任一已判维度 used ≥ limit（R-vbr-002 摘除判据）
-    pub fn depleted(&self) -> bool {
-        (self.tokens_limit > 0 && self.tokens_used >= self.tokens_limit)
-            || (self.cost_limit > 0 && self.cost_used >= self.cost_limit)
-    }
-
-    /// smart 归一化重置时刻 ∈ [0,1]：reset_secs / period_secs（0 = 即将
-    /// 重置 → 加成最大；1 = 无压力）。窗未起算（rolling 无状态）→ 1.0。
-    pub fn normalized_reset(&self) -> f64 {
-        if self.not_started {
-            return 1.0;
-        }
-        (self.reset_secs as f64 / self.period_secs.max(1) as f64).clamp(0.0, 1.0)
-    }
-
-    /// pace 消耗率比 = max_维度 (used/elapsed) / (limit/period)：>1.1 超带、
-    /// <0.9 欠带（R-vbr-003）。elapsed=0（窗首秒/未起算）→ 0.0（满额待花）。
-    pub fn pace_ratio(&self) -> f64 {
-        if self.elapsed_secs == 0 {
-            return 0.0;
-        }
-        let elapsed = self.elapsed_secs as f64;
-        let period = self.period_secs.max(1) as f64;
-        let mut ratio = 0.0f64;
-        if self.tokens_limit > 0 {
-            let token_rate = self.tokens_used as f64 / elapsed;
-            let token_budget = self.tokens_limit as f64 / period;
-            if token_budget > 0.0 {
-                ratio = ratio.max(token_rate / token_budget);
-            }
-        }
-        if self.cost_limit > 0 {
-            let cost_rate = self.cost_used as f64 / elapsed;
-            let cost_budget = self.cost_limit as f64 / period;
-            if cost_budget > 0.0 {
-                ratio = ratio.max(cost_rate / cost_budget);
-            }
-        }
-        ratio
+impl VendorBudgetSource for QuotaState {
+    fn vendor_budget_view(&self, config: &Config, vendor_id: &str) -> Option<VendorBudgetView> {
+        self.vendor_budget_view_impl(config, vendor_id)
     }
 }
 
 impl QuotaState {
-    /// vendor 预算读侧视图（router 打分/admin 出口共用单点）；未配置预算
-    /// 返回 None（vendor 不参与该因子）。
-    pub fn vendor_budget_view(&self, config: &Config, vendor_id: &str) -> Option<VendorBudgetView> {
+    /// 端口 [`VendorBudgetSource::vendor_budget_view`] 的唯一落点（私有）：
+    /// 端口契约下 router 与 admin 均经 trait 方法调用，本函数不对外暴露。
+    /// 未配置预算返回 None（vendor 不参与该因子）。
+    fn vendor_budget_view_impl(
+        &self,
+        config: &Config,
+        vendor_id: &str,
+    ) -> Option<VendorBudgetView> {
         let windows = resolve_vendor_budget_windows(config, vendor_id);
         let window = windows.first()?;
         let now = chrono::Utc::now().timestamp();
@@ -1172,8 +1127,14 @@ impl QuotaState {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let state = guard.get(vendor_id).and_then(|map| map.get(&window.id));
-        let (tokens_used, cost_used, start) = match state {
-            Some(state) => (state.token_used, state.cost_used, state.window_start),
+        // 读侧惰性翻转（与写侧 `flip_if_needed` 同源 `effective_start`）：账本态
+        // 停在上一窗时不得把上一窗占用暴露给读侧。否则窗过期且此后该 vendor
+        // 零流量时，`depleted()` 恒 true → smart 永久摘除候选，且因无结算再无
+        // 翻转机会（只能重启或用直连路由解开）。
+        let start = Self::effective_start(window, state.and_then(|s| s.window_start), now);
+        let live = state.filter(|s| s.window_start == Some(start));
+        let (tokens_used, cost_used, start) = match live {
+            Some(st) => (st.token_used, st.cost_used, Some(start)),
             None => (0, 0, None),
         };
         let (reset_secs, period_secs, elapsed_secs, not_started) = match start {
@@ -2381,6 +2342,57 @@ mod tests {
             quota.vendor_snapshot("plain", &vendor_window_id("plain")),
             (0, 0),
             "无预算 vendor 不参与"
+        );
+    }
+
+    /// 读侧惰性翻转：账本态停在上一窗时，读侧必须归零而非暴露上一窗占用。
+    ///
+    /// 缺陷场景（回归钉）：窗过期 + 此后该 vendor 零流量 → 写侧 `flip_if_needed`
+    /// 不会被触发 → 若读侧照搬 `token_used`，`depleted()` 恒 true，smart 模式把
+    /// 该 vendor **永久**摘出候选（无结算即无翻转机会）。
+    #[test]
+    fn vendor_budget_view_zeroes_expired_window() {
+        use crate::quota_contract::VendorBudgetSource as _;
+
+        let config = Arc::new(ConfigManager::new(vendor_budget_config()));
+        let quota = Arc::new(QuotaState::new());
+        let snapshot = config.read();
+
+        // 灌满预算（limit=10_000，用 10_000 即耗尽）
+        quota.record_vendor_usage(&snapshot, "budgeted", 10_000, 0);
+        let view = quota
+            .vendor_budget_view(&snapshot, "budgeted")
+            .expect("有预算 vendor 必有视图");
+        assert!(view.depleted(), "窗内足额应判耗尽");
+
+        // 把账本态回拨到上一窗（rolling 1h，回拨 2h 必然过期）
+        {
+            let mut guard = quota
+                .vendor_budgets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let state = guard
+                .get_mut("budgeted")
+                .and_then(|m| m.get_mut(&vendor_window_id("budgeted")))
+                .expect("预算态已建立");
+            let stale = chrono::Utc::now().timestamp() - 7_200;
+            state.window_start = Some(stale);
+        }
+
+        // 读侧必须按新窗归零：不再耗尽、占用为 0
+        let view = quota
+            .vendor_budget_view(&snapshot, "budgeted")
+            .expect("有预算 vendor 必有视图");
+        assert_eq!(view.tokens_used, 0, "过期窗占用不得暴露给读侧");
+        assert!(
+            !view.depleted(),
+            "过期窗不得判耗尽（否则 vendor 被永久摘除）"
+        );
+        // 账本态本身不被读侧改写（读不产生副作用）
+        assert_eq!(
+            quota.vendor_snapshot("budgeted", &vendor_window_id("budgeted")),
+            (10_000, 0),
+            "读侧不得改写账本态"
         );
     }
 

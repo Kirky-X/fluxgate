@@ -5,6 +5,9 @@ use crate::config::{Config, GlobalModelConfig, ModelCatalogEntry, VendorConfig};
 use crate::database::LogFilter;
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
+// `vendor_budget_view` 由 `VendorBudgetSource` trait 提供（QuotaState 反向实现），
+// 需 trait 在作用域内才可调用。
+use crate::quota_contract::VendorBudgetSource as _;
 use crate::{error::FluxgateError, ApiState};
 use axum::{
     extract::{Path, Query, State},

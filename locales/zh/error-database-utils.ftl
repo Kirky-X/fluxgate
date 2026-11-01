@@ -1,6 +1,7 @@
 # zh/error-database-utils: src/error.rs + src/{database,utils} 用户可见消息。
 # error-*: FluxgateError 变体本地化消息（IntoResponse 展示轨道，Display 恒英文规范串）。
 error-config = 配置错误：{ $message }
+error-io = I/O 错误：{ $message }
 error-protocol = 协议转换错误：{ $source }
 error-vendor-unavailable = 厂商不可用：{ $vendor }
 error-timeout = 请求超时：{ $vendor }

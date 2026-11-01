@@ -40,7 +40,9 @@ impl CostTracker {
     ///
     /// 用 `.round` 而非 `as u64` 截断，避免浮点表示误差导致的截断损失。
     pub fn record(&self, vendor: &str, model: &str, cost_usd: f64) {
-        if cost_usd <= 0.0 {
+        // 非有限值必须先拦：NaN 与任何值比较都是 false（`NaN <= 0.0` 为 false，
+        // 会穿透本守卫），inf 则在 `as u64` 饱和成 u64::MAX，把累计额打爆。
+        if !cost_usd.is_finite() || cost_usd <= 0.0 {
             return;
         }
         let micro_usd = (cost_usd * MICRO_PER_USD).round() as u64;
@@ -132,6 +134,11 @@ impl CostTracker {
         self.by_vendor.clear();
         self.by_model.clear();
         for row in &rows {
+            // 汇总侧同样防御：库里可能已有历史 inf 行（写入路径修复前遗留），
+            // inf 经 `as u64` 会饱和成 u64::MAX，污染累计额。
+            if !row.total_cost.is_finite() {
+                continue;
+            }
             // 与 record 同一取整口径：×1e6 round，防浮点表示误差
             let micro_usd = (row.total_cost * MICRO_PER_USD).round() as u64;
             self.total_micro_usd.fetch_add(micro_usd, Ordering::Relaxed);

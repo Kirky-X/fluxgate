@@ -1,6 +1,7 @@
 # en/error-database-utils: src/error.rs + src/{database,utils} 用户可见消息。
 # error-*: FluxgateError 变体本地化消息（IntoResponse 展示轨道，Display 恒英文规范串）。
 error-config = Configuration error: { $message }
+error-io = I/O error: { $message }
 error-protocol = Protocol conversion error: { $source }
 error-vendor-unavailable = Vendor unavailable: { $vendor }
 error-timeout = Request timeout: { $vendor }

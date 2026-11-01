@@ -97,12 +97,43 @@ fn write_key_file(path: &std::path::Path, key: &[u8]) -> Result<(), VaultError> 
             ))
         })?;
     }
-    std::fs::write(path, hex::encode(key)).map_err(|e| {
-        VaultError::MasterKey(t_args(
-            "vault-master-key-write-failed",
-            &[("error", e.to_string())],
-        ))
-    })?;
+    // 创建即 0600（Unix）：`fs::write` 按 umask 建文件（通常 0644），主密钥
+    // 在「写完 → set_permissions」之间存在全局可读窗口。这里用 OpenOptions
+    // 的 mode 让文件从诞生起就是 0600，下面的 set_permissions 保留为兜底
+    // （覆盖已存在文件的权限收紧）。
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| {
+                VaultError::MasterKey(t_args(
+                    "vault-master-key-write-failed",
+                    &[("error", e.to_string())],
+                ))
+            })?;
+        file.write_all(hex::encode(key).as_bytes()).map_err(|e| {
+            VaultError::MasterKey(t_args(
+                "vault-master-key-write-failed",
+                &[("error", e.to_string())],
+            ))
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, hex::encode(key)).map_err(|e| {
+            VaultError::MasterKey(t_args(
+                "vault-master-key-write-failed",
+                &[("error", e.to_string())],
+            ))
+        })?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

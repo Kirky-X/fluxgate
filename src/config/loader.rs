@@ -1758,7 +1758,11 @@ fn validate_quota_period(
 /// 预算段静默失效是运维事故）、去重、周期两形态同 [`validate_quota_period`]；
 /// 双限额均 0 = 该段空转，拒绝（声明式预算必须至少一个维度）。
 fn validate_vendor_budgets(config: &Config) -> Result<(), GateError> {
-    let mut seen: Vec<&str> = Vec::new();
+    // HashSet + 小写归一：与 validate_vendor_entries 的去重口径一致（那里用
+    // to_ascii_lowercase）。原实现用 Vec::contains 且大小写敏感，导致
+    // `"OpenAI"` 与 `"openai"` 两段预算都通过校验、运行时抢同一账本行；
+    // 顺带把 O(n²) 降为 O(n)。
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for budget in &config.vendor_budgets {
         let vendor_id = budget.vendor_id.trim();
         if vendor_id.is_empty() {
@@ -1766,7 +1770,7 @@ fn validate_vendor_budgets(config: &Config) -> Result<(), GateError> {
                 message: t("config-vendor-budget-id-empty"),
             });
         }
-        if seen.contains(&vendor_id) {
+        if !seen.insert(vendor_id.to_ascii_lowercase()) {
             return Err(GateError::Config {
                 message: t_args(
                     "config-vendor-budget-id-duplicate",
@@ -1774,8 +1778,11 @@ fn validate_vendor_budgets(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
-        seen.push(vendor_id);
-        if !config.vendors.iter().any(|v| v.id == vendor_id) {
+        if !config
+            .vendors
+            .iter()
+            .any(|v| v.id.trim().eq_ignore_ascii_case(vendor_id))
+        {
             return Err(GateError::Config {
                 message: t_args(
                     "config-vendor-budget-unknown-vendor",
@@ -1834,7 +1841,11 @@ fn validate_subscription(config: &Config) -> Result<(), GateError> {
                 ),
             });
         }
-        if !config.vendors.iter().any(|v| v.id == vendor_id) {
+        if !config
+            .vendors
+            .iter()
+            .any(|v| v.id.trim().eq_ignore_ascii_case(vendor_id))
+        {
             return Err(GateError::Config {
                 message: t_args(
                     "config-subscription-account-unknown-vendor",

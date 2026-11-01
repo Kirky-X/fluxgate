@@ -16,6 +16,9 @@ pub enum GateError {
     #[error("Configuration error: {message}")]
     Config { message: String },
 
+    #[error("I/O error: {message}")]
+    Io { message: String },
+
     #[error("Protocol conversion error: {source}")]
     Protocol {
         source: String,
@@ -62,6 +65,7 @@ impl GateError {
             GateError::Timeout { .. } => 504,
             GateError::RateLimited { .. } => 429,
             GateError::Config { .. } => 500,
+            GateError::Io { .. } => 500,
             GateError::Protocol { .. } => 502,
             GateError::Routing { .. } => 500,
             GateError::AllVendorsThrottled { .. } => 429,
@@ -76,6 +80,7 @@ impl GateError {
             GateError::Config { message } => {
                 t_args("error-config", &[("message", message.clone())])
             }
+            GateError::Io { message } => t_args("error-io", &[("message", message.clone())]),
             GateError::Protocol { source, .. } => {
                 t_args("error-protocol", &[("source", source.clone())])
             }
@@ -107,6 +112,7 @@ impl GateError {
     pub fn error_code(&self) -> &'static str {
         match self {
             GateError::Config { .. } => "config_error",
+            GateError::Io { .. } => "io_error",
             GateError::Protocol { .. } => "protocol_error",
             GateError::VendorUnavailable { .. } => "vendor_unavailable",
             GateError::Timeout { .. } => "timeout",

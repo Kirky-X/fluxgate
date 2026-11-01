@@ -2312,6 +2312,12 @@ mod tests {
             }),
             "CB 分类器对 RateLimited 必须无感（既有语义，对照基线）"
         );
+        assert!(
+            classifier.is_counted_as_failure(&crate::error::GateError::Io {
+                message: "quota persist channel closed".into()
+            }),
+            "Io 网关侧运维故障与 Config 同档，必须保守计 CB 失败"
+        );
 
         // 失败率滑窗独立计数：429 按失败入窗（记账点把 RateLimited 记为
         // success=false，与本 API 的失败语义一致）

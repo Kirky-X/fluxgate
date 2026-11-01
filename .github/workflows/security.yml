@@ -22,7 +22,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: actionlint
-        uses: docker://rhysd/actionlint:latest
+        # 第三方 docker action 钉具体版本：latest 可变，上游可静默换镜像。
+        # Docker Hub 实际 tag 无 v 前缀（v1.7.7 manifest unknown 必红），钉 1.7.12
+        uses: docker://rhysd/actionlint:1.7.12
         with:
           # shellcheck 子检查降到 error 级：YAML 语法/表达式错误仍阻断，
           # 风格级（SC2086/SC2034 等）不阻断，避免打断既有流水线。
@@ -36,7 +38,7 @@ jobs:
         continue-on-error: true
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
       - name: gitleaks 密钥扫描
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
       # 不引入 cargo-vet：`cargo vet verify` 以仓库根存在 supply-chain/（vet.toml /

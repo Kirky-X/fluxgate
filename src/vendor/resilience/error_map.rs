@@ -87,7 +87,7 @@ pub fn classify_key_error(status: u16, message: &str) -> KeyErrorClass {
 /// - `VendorUnavailable` / `Timeout`（上游故障）→ 计失败
 /// - `RateLimited` / `Validation` / `Protocol`（网关自身保护 / 客户端侧
 ///   问题，非 vendor 故障信号）→ 不计
-/// - `Config` / `Routing` / `AllVendorsThrottled` → 保守计失败
+/// - `Config` / `Io` / `Routing` / `AllVendorsThrottled` → 保守计失败
 #[derive(Debug)]
 pub struct GateErrorClassifier;
 
@@ -99,6 +99,8 @@ impl FailureClassifier<GateError> for GateErrorClassifier {
             | GateError::Validation { .. }
             | GateError::Protocol { .. } => false,
             GateError::Config { .. }
+            // Io（如配额持久化通道关闭）：网关侧运维故障，与 Config 同档保守计失败
+            | GateError::Io { .. }
             | GateError::Routing { .. }
             | GateError::AllVendorsThrottled { .. } => true,
             // 掩码门拒绝（fail-closed 503 / Block 400）：网关自身合规动作，

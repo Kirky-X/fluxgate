@@ -138,7 +138,10 @@ fn truncate_session_key(raw: &str) -> String {
 /// `worth_tokens` / `ttl_secs`：最后一次 settle 的粘性记账（且其 vendor 与
 /// 当前绑定一致）；无记账（legacy 模式 / 未结算 / 记账行已换 vendor）为
 /// `null`。`ttl_secs` 是**绑定键**的剩余存活秒数（与 `peek` 同源），不是记账
-/// 快照——记账行的 `expires_at` 不会随读路径变化。
+/// 快照——记账行的 `expires_at` 不会随读路径变化。注意两次读取是顺序的
+/// （`peek` → `remaining_ttl`），非原子：并发 bind/unbind/expire 落在两次
+/// await 之间时，`ttl_secs` 可能与 `vendor` 不同源。本端点只做诊断展示，
+/// 该漂移可接受；路由决策路径各自独立读，不消费本块。
 ///
 /// `tenant`：`affinity_tenant_scoped` 开启时由调用方传 API key 摘要（与路由
 /// 同源）；关闭时一律 legacy 键空间。

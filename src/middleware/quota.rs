@@ -797,6 +797,15 @@ impl QuotaState {
     ) -> usize {
         let now = chrono::Utc::now().timestamp();
         let windows = effective_quota_windows(&config.quota);
+        // 索引化：restore 行数多时逐行线性扫 windows/vendor_budgets 是 O(rows×N)，
+        // 一次性建 HashMap 后恢复路径 O(rows+N)
+        let window_index: std::collections::HashMap<&str, &_> =
+            windows.iter().map(|w| (w.id.as_str(), w)).collect();
+        let budget_index: std::collections::HashMap<&str, &_> = config
+            .vendor_budgets
+            .iter()
+            .map(|b| (b.vendor_id.trim(), b))
+            .collect();
         let mut restored = 0usize;
         let mut restored_keys = 0usize;
         let mut skipped_keys = 0usize;
@@ -809,7 +818,7 @@ impl QuotaState {
                 if row.api_key_hash.starts_with("__vendor__:") {
                     continue;
                 }
-                let Some(window) = windows.iter().find(|w| w.id == row.window_id) else {
+                let Some(window) = window_index.get(row.window_id.as_str()) else {
                     continue;
                 };
                 let Some(period) =
@@ -867,11 +876,7 @@ impl QuotaState {
             let Some(vendor_id) = row.api_key_hash.strip_prefix("__vendor__:") else {
                 continue;
             };
-            let Some(budget) = config
-                .vendor_budgets
-                .iter()
-                .find(|b| b.vendor_id.trim() == vendor_id)
-            else {
+            let Some(budget) = budget_index.get(vendor_id.trim()) else {
                 continue;
             };
             let Some(period) =
@@ -1066,7 +1071,9 @@ fn resolve_vendor_budget_windows(config: &Config, vendor_id: &str) -> Vec<Runtim
     config
         .vendor_budgets
         .iter()
-        .filter(|b| b.vendor_id.trim() == vendor_id)
+        // 与 config 校验同口径（eq_ignore_ascii_case）：校验层允许 vendor id 大小写
+        // 不同但视为同一 vendor，运行时要匹配得上，否则预算配置静默失效
+        .filter(|b| b.vendor_id.trim().eq_ignore_ascii_case(vendor_id))
         .filter_map(|b| {
             Period::from_config(&b.period, &b.calendar, b.rolling_secs).map(|period| {
                 RuntimeWindow {

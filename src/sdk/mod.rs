@@ -19,8 +19,9 @@ pub mod stream;
 pub(crate) mod transport;
 
 pub use admin::{
-    ContextStatInfo, ContextStatsResponse, HealthStatus, KeyPoolInfo, ModelCatalogInfo,
-    ModelCatalogUpsert, SessionInfo, SessionsResponse, VendorStatusInfo,
+    CatalogSyncEntry, CatalogSyncResponse, ContextStatInfo, ContextStatsResponse, HealthStatus,
+    KeyPoolInfo, ModelCatalogInfo, ModelCatalogUpsert, QuotaLedgerInfo, QuotaLedgerResponse,
+    SessionInfo, SessionsResponse, VendorBudgetInfo, VendorBudgetsResponse, VendorStatusInfo,
 };
 pub use chat::{
     AllowedToolsBody, AllowedToolsMode, ChatChoice, ChatContent, ChatContentPart, ChatFinishReason,

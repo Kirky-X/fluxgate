@@ -252,6 +252,7 @@ pub fn routing_config() -> Config {
         web_search: Default::default(),
         rate_limit: Default::default(),
         vendor_budgets: Vec::new(),
+        key_budgets: Default::default(),
         server: ServerConfig {
             host: "127.0.0.1".into(),
             port: 0,

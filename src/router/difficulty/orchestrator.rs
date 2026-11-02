@@ -420,6 +420,7 @@ mod tests {
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
+            key_budgets: Default::default(),
             usage_insights: Default::default(),
             catalog_sync: Default::default(),
             subscription: Default::default(),

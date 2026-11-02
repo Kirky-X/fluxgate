@@ -73,6 +73,7 @@ fn make_config() -> Config {
         subscription_accounts: Vec::new(),
         web_search: Default::default(),
         vendor_budgets: Vec::new(),
+        key_budgets: Default::default(),
         server: fluxgate::config::ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,

@@ -107,6 +107,7 @@ fn make_config(vendors: Vec<VendorConfig>, circuit_open_timeout_ms: u64) -> Conf
         web_search: Default::default(),
         rate_limit: Default::default(),
         vendor_budgets: Vec::new(),
+        key_budgets: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,

@@ -87,6 +87,7 @@ mod vendor_fallback_integration {
             web_search: Default::default(),
             rate_limit: Default::default(),
             vendor_budgets: Vec::new(),
+            key_budgets: Default::default(),
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,

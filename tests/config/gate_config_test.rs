@@ -369,6 +369,7 @@ mod tests {
             responses: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
+            key_budgets: Default::default(),
             usage_insights: Default::default(),
             catalog_sync: Default::default(),
             subscription: Default::default(),
@@ -1423,6 +1424,70 @@ mod quota_windows_config {
                 "合法值 {mode} 必须放行（大小写不敏感 + trim）"
             );
         }
+    }
+
+    /// `[key_budgets]`：hash 必须 64 位小写 hex、cost_limit_millicents > 0、
+    /// window 闭集 daily|monthly、同 (hash, window) 不得重复；空段整体关闭。
+    #[test]
+    fn test_key_budgets_validation() {
+        /// sha256("test-good-key")（与 quota/rate-limit 测试同值的小写 hex）。
+        const KEY_HASH: &str = "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303";
+        let rule = || fluxgate::config::KeyBudgetRule {
+            api_key_hash: KEY_HASH.into(),
+            cost_limit_millicents: 100,
+            window: "daily".into(),
+            fail_open: false,
+        };
+
+        let mut config = common::test_config(vec![]);
+        config.key_budgets.rules = vec![rule()];
+        assert!(validate_config(&config).is_ok(), "合法规则放行");
+
+        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+            window: "monthly".into(),
+            ..rule()
+        }];
+        assert!(validate_config(&config).is_ok(), "monthly 窗口放行");
+
+        config.key_budgets.rules = vec![];
+        assert!(validate_config(&config).is_ok(), "空段整体关闭不校验");
+
+        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+            api_key_hash: "abc".into(),
+            ..rule()
+        }];
+        let err = validate_config(&config).expect_err("非 64 位 hex 摘要必须拒绝");
+        assert!(err.to_string().contains("abc"), "{err}");
+
+        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+            api_key_hash: KEY_HASH.to_uppercase(),
+            ..rule()
+        }];
+        assert!(
+            validate_config(&config).is_err(),
+            "大写 hex 必须拒绝（与 auth 摘要同口径：小写）"
+        );
+
+        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+            cost_limit_millicents: 0,
+            ..rule()
+        }];
+        let err = validate_config(&config).expect_err("limit=0 必须拒绝");
+        assert!(
+            err.to_string().contains("0") || err.to_string().contains(KEY_HASH),
+            "{err}"
+        );
+
+        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+            window: "weekly".into(),
+            ..rule()
+        }];
+        let err = validate_config(&config).expect_err("window 闭集 daily|monthly");
+        assert!(err.to_string().contains("weekly"), "{err}");
+
+        config.key_budgets.rules = vec![rule(), rule()];
+        let err = validate_config(&config).expect_err("同 (hash, window) 重复必须拒绝");
+        assert!(err.to_string().contains(KEY_HASH), "{err}");
     }
 }
 

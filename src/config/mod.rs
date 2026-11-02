@@ -1391,6 +1391,10 @@ pub struct Config {
     /// 记账面）。空 vec = 无预算登记，该 vendor 不参与因子。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vendor_budgets: Vec<VendorBudgetConfig>,
+    /// `[key_budgets]` 段 — 网关键（入站 API key）成本预算（在飞预留-结算
+    /// 回冲）。段缺省/规则空 = 整体关闭，行为与现状逐字节一致。
+    #[serde(default)]
+    pub key_budgets: KeyBudgetsSection,
     /// `[grpc]` 段 — gRPC 服务器（`feature = "grpc"`）。None = 配置中无该段，
     /// gRPC 服务器禁用（不监听 gRPC 端口）
     #[serde(default)]
@@ -1726,6 +1730,35 @@ pub struct QuotaWindowConfig {
     pub tokens_limit: u64,
     #[serde(default)]
     pub cost_limit_millicents: u64,
+}
+
+/// `[key_budgets]` 段：网关键（入站 API key）成本预算——按 key 的成本上限
+/// （millicents）+ UTC 日历窗口 + fail_open 开关。段缺省/`rules` 空 = 功能
+/// 整体关闭（零配置逐字节不变）。闭集与数值域经 validate_key_budgets
+/// 校验（loader）。运行时见 `middleware::key_budget`（在飞预留-结算回冲）。
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct KeyBudgetsSection {
+    /// 预算规则表（空 = 整体关闭）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<KeyBudgetRule>,
+}
+
+/// `[[key_budgets.rules]]` 单条：入站 key 维度成本预算。`api_key_hash` 为
+/// SHA256 hex 摘要（与 `[auth]` 同口径）；`window` 闭集 daily|monthly（按
+/// UTC 日历翻转）；`fail_open` 默认 false = fail-closed（预算源不可用时
+/// 拒绝并带 Retry-After）。闭集与数值域经 validate_key_budgets 校验。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct KeyBudgetRule {
+    /// 受预算约束的 key 摘要（SHA256 hex，64 个小写十六进制字符）
+    pub api_key_hash: String,
+    /// 窗口成本上限（millicents，1 单位 = 1e-5 USD；必须 > 0）
+    pub cost_limit_millicents: u64,
+    /// 翻转窗口：daily | monthly（UTC 日历，缺省 daily）
+    #[serde(default = "loader::default_key_budget_window")]
+    pub window: String,
+    /// 预算源不可用时放行（默认 false = 拒绝）
+    #[serde(default)]
+    pub fail_open: bool,
 }
 
 /// `[[vendor_budgets]]` 单 vendor 声明式预算：网关按实际用量记账，

@@ -100,6 +100,7 @@ fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Co
         subscription_accounts: Vec::new(),
         web_search: Default::default(),
         vendor_budgets: Vec::new(),
+        key_budgets: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,

@@ -580,6 +580,23 @@ est_chars_per_token = 4
 #period = "calendar"
 #calendar = "monthly"
 
+# 网关键成本预算（`[key_budgets]`，**默认空 = 整体关闭**，行为与现状逐字节
+# 一致）。按入站 API key 的 SHA256 摘要约束窗口成本：请求进入时预扣估成本
+#（在飞预留），响应后按实际用量结算回冲；窗口按 UTC 日历翻转。进程内记账，
+# 重启归零（预算按窗口重算），多副本各自记账。超限 429 + Retry-After。
+# - api_key_hash: key 的 SHA256 hex 摘要（64 位小写 hex，与 [auth] 同口径；
+#   校验只查格式不查存在性，错拼条目静默不生效）
+# - cost_limit_millicents: 窗口成本上限（millicents，1 单位 = 1e-5 USD，> 0）
+# - window: 翻转窗口 daily | monthly（UTC 日历，缺省 daily）
+# - fail_open: 预算源不可用时放行（默认 false = fail-closed 拒绝）
+# 启用模板（按需取消注释）：
+#[key_budgets]
+#[[key_budgets.rules]]
+#api_key_hash = "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303"
+#cost_limit_millicents = 500_000
+#window = "daily"
+#fail_open = false
+
 # ✅ 热生效 —— 拥塞感知优先级准入（准入每请求从热配置现读）
 #
 # 网关侧并发占用率（Σ in_flight / Σ vendor 并发上限）达到 congestion_threshold

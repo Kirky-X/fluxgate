@@ -465,6 +465,9 @@ pub struct QuotaState {
     /// vendor 预算记账态：vendor_id → window_id → 状态（usage 结算点累计，
     /// 无预扣预留语义——预算按实际用量记账）
     vendor_budgets: Mutex<HashMap<String, HashMap<String, WindowState>>>,
+    /// 网关键成本预算账本（`[key_budgets]`，在飞预留-结算回冲；段缺省时
+    /// reserve 早退 NoBudget——零配置零行为）
+    pub key_budgets: crate::middleware::key_budget::KeyBudgetLedger,
     /// 落盘句柄（bootstrap 装配；未接线 = 纯内存态，行为与历史一致）
     ledger: Mutex<Option<Arc<crate::middleware::quota_persist::QuotaLedgerPersister>>>,
     /// 淘汰迟滞水位（见 [`QUOTA_EVICT_HYSTERESIS`]；0 = 未越过上限）
@@ -2466,6 +2469,7 @@ mod tests {
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
+            key_budgets: Default::default(),
             usage_insights: Default::default(),
             catalog_sync: Default::default(),
             subscription: Default::default(),

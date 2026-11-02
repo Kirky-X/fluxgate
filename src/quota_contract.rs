@@ -114,6 +114,61 @@ pub trait VendorBudgetSource: Send + Sync {
     fn vendor_budget_view(&self, config: &Config, vendor_id: &str) -> Option<VendorBudgetView>;
 }
 
+/// 网关键成本预算读模型（`[key_budgets]` 单窗快照）：窗口占用（在飞预留 +
+/// 已结算）/ 限额 / 距重置秒数同一次时钟读取。字段语义与
+/// [`VendorBudgetView`] 的 cost 维一致；`window` 为窗名（daily/monthly）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyBudgetView {
+    /// 已占用（在飞预留 + 已结算，millicents）
+    pub cost_used: u64,
+    /// 窗口成本上限（millicents）
+    pub cost_limit: u64,
+    /// 距重置秒数（≥1）
+    pub reset_secs: u64,
+    /// 窗名：daily | monthly
+    pub window: String,
+}
+
+/// 预留句柄：`reserve` 成功产物，`settle` 凭它回冲。**每个 Admitted 预留
+/// 必须恰好结算一次**（含 est=0 的零预留——结算仍要把实际用量记入窗口），
+/// 未结算的预留占用窗口余量直至窗翻转。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyBudgetReservation {
+    /// 在飞表内单调 id（settle 幂等键）
+    pub id: u64,
+    /// 预留时锁定的 key 摘要（防跨键误结算）
+    pub key_hash: String,
+    /// 预扣估成本（millicents）
+    pub est_millicents: u64,
+}
+
+/// 预留产物：Admitted / 窗口余量不足（Retry-After = 窗重置余量换算）/
+/// 该 key 无预算规则（调用方零行为直通）/ 预算源不可用（容量上限——
+/// 调用方按 `[key_budgets.rules].fail_open` 语义处置）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReserveOutcome {
+    Admitted(KeyBudgetReservation),
+    Exceeded { retry_after_secs: u64 },
+    NoBudget,
+    Unavailable,
+}
+
+/// 网关键预算写侧端口（R-budget-001）：auth 识别 key 后、路由前 `reserve`
+/// 预扣估成本，响应后 `settle` 按实际结算回冲；`view` 为运维读侧。实现方
+/// 只允许读 `config.key_budgets`（同 [`VendorBudgetSource`] 的整份快照
+/// 同代钉住语义）。
+pub trait KeyBudgetSource: Send + Sync {
+    fn reserve(&self, config: &Config, key_hash: &str, est_millicents: u64) -> ReserveOutcome;
+    fn settle(
+        &self,
+        config: &Config,
+        key_hash: &str,
+        actual_millicents: u64,
+        reservation: &KeyBudgetReservation,
+    );
+    fn view(&self, config: &Config, key_hash: &str) -> Option<KeyBudgetView>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

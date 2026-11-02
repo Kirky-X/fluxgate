@@ -174,6 +174,7 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     warn_quota_without_auth(config);
     validate_quota_windows(config)?;
     validate_vendor_budgets(config)?;
+    validate_key_budgets(config)?;
     validate_quota_factor(config)?;
     warn_quota_window_fields_conflict(config);
     validate_difficulty(config)?;
@@ -992,6 +993,23 @@ impl Default for crate::config::VendorBudgetConfig {
             rolling_secs: 0,
             calendar: String::new(),
             tz_offset_secs: 0,
+        }
+    }
+}
+
+/// `[[key_budgets.rules]]` 缺省窗口：daily（UTC 日历）。
+pub fn default_key_budget_window() -> String {
+    "daily".to_string()
+}
+
+impl Default for crate::config::KeyBudgetRule {
+    /// Rust 侧手构缺省与 serde 缺省单源：window=daily、fail_open=false。
+    fn default() -> Self {
+        Self {
+            api_key_hash: String::new(),
+            cost_limit_millicents: 0,
+            window: default_key_budget_window(),
+            fail_open: false,
         }
     }
 }
@@ -1833,6 +1851,58 @@ fn validate_vendor_budgets(config: &Config) -> Result<(), GateError> {
     Ok(())
 }
 
+/// `[key_budgets]` 校验：hash 必须是 64 位小写 hex（与 `[auth]` 摘要同口径，
+/// 错拼预算段静默失效是运维事故）、cost_limit_millicents > 0、window 闭集
+/// daily|monthly、同 (hash, window) 不得重复声明（重复条目会在同一账本窗
+/// 上双写占用，语义二义）。空 rules = 整体关闭，不校验其余面。
+fn validate_key_budgets(config: &Config) -> Result<(), GateError> {
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for rule in &config.key_budgets.rules {
+        let hash = rule.api_key_hash.trim();
+        let is_64_hex =
+            hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if !is_64_hex {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-key-budget-hash-invalid",
+                    &[("hash", hash.to_string())],
+                ),
+            });
+        }
+        if rule.cost_limit_millicents == 0 {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-key-budget-limit-invalid",
+                    &[("hash", hash.to_string())],
+                ),
+            });
+        }
+        if !matches!(rule.window.trim(), "daily" | "monthly") {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-key-budget-window-unknown",
+                    &[
+                        ("hash", hash.to_string()),
+                        ("value", rule.window.trim().to_string()),
+                    ],
+                ),
+            });
+        }
+        if !seen.insert((hash.to_string(), rule.window.trim().to_string())) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-key-budget-duplicate",
+                    &[
+                        ("hash", hash.to_string()),
+                        ("window", rule.window.trim().to_string()),
+                    ],
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// `[[subscription_accounts]]` / `[subscription]` 校验：账号 id 非空且唯一、
 /// vendor 绑定非空且与 `[[vendors]]` 对得上（错拼绑定静默不服务是运维事故，
 /// 口径同 [`validate_vendor_budgets`]）。enabled=false 时账号声明仍校验——
@@ -2037,6 +2107,7 @@ mod tests {
             rate_limit: Default::default(),
             otlp: Default::default(),
             vendor_budgets: Vec::new(),
+            key_budgets: Default::default(),
             usage_insights: Default::default(),
             catalog_sync: Default::default(),
             subscription: Default::default(),

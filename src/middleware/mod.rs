@@ -3,6 +3,7 @@
 
 pub mod admission;
 pub mod auth;
+pub mod key_budget;
 pub mod lexcompress;
 pub mod quota;
 pub mod quota_period;

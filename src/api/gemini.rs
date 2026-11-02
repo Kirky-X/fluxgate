@@ -47,6 +47,8 @@ struct GeminiCtx {
     summary: String,
     /// 上游键归因 sink（与派发 options 同源）——log_request 落库读取。
     served_key_sink: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// 入站 W3C traceparent（otlp 尝试级追踪消费）。
+    traceparent: Option<String>,
 }
 
 impl GeminiCtx {
@@ -307,6 +309,9 @@ async fn native_stream(
             crate::vendor::manager::VendorCallOptions {
                 anthropic_beta: None,
                 served_key_sink: Some(ctx.served_key_sink.clone()),
+                traceparent: ctx.traceparent.clone(),
+                #[cfg(feature = "otlp")]
+                trace: None,
             },
         )
         .await;
@@ -394,20 +399,23 @@ async fn stream_ir(
             model,
             decision.clone(),
             false,
-            |d| {
+            ctx.traceparent.clone(),
+            #[cfg_attr(not(feature = "otlp"), allow(unused_variables))]
+            |d, trace| {
                 let vendor_manager = state.vendor_manager.clone();
                 let unified = unified.clone();
                 let sink = ctx.served_key_sink.clone();
+                let traceparent = ctx.traceparent.clone();
                 async move {
+                    let call_options = crate::vendor::manager::VendorCallOptions {
+                        anthropic_beta: None,
+                        served_key_sink: Some(sink),
+                        traceparent,
+                        #[cfg(feature = "otlp")]
+                        trace,
+                    };
                     vendor_manager
-                        .execute_stream_request_with_options(
-                            &d.vendor.id,
-                            unified,
-                            crate::vendor::manager::VendorCallOptions {
-                                anthropic_beta: None,
-                                served_key_sink: Some(sink),
-                            },
-                        )
+                        .execute_stream_request_with_options(&d.vendor.id, unified, call_options)
                         .await
                 }
             },
@@ -425,6 +433,9 @@ async fn stream_ir(
                 crate::vendor::manager::VendorCallOptions {
                     anthropic_beta: None,
                     served_key_sink: Some(ctx.served_key_sink.clone()),
+                    traceparent: ctx.traceparent.clone(),
+                    #[cfg(feature = "otlp")]
+                    trace: None,
                 },
             )
             .await
@@ -442,6 +453,9 @@ async fn stream_ir(
             crate::vendor::manager::VendorCallOptions {
                 anthropic_beta: None,
                 served_key_sink: Some(ctx.served_key_sink.clone()),
+                traceparent: ctx.traceparent.clone(),
+                #[cfg(feature = "otlp")]
+                trace: None,
             },
         )
         .await
@@ -605,6 +619,7 @@ fn make_ctx(
         preferred_vendor: hints.preferred_vendor.clone(),
         summary: summarize(body, stream),
         served_key_sink: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        traceparent: crate::api::inbound_traceparent(headers),
     }
 }
 
@@ -728,6 +743,9 @@ async fn dispatch_nonstream(
             crate::vendor::manager::VendorCallOptions {
                 anthropic_beta: None,
                 served_key_sink: Some(ctx.served_key_sink.clone()),
+                traceparent: ctx.traceparent.clone(),
+                #[cfg(feature = "otlp")]
+                trace: None,
             },
             &mut trail,
         )

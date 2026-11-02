@@ -1092,6 +1092,124 @@ pub async fn masking_stats(
     })))
 }
 
+/// `GET /admin/masking/ledger` 查询参数：date（缺省今日 UTC）+ 明细分页。
+#[cfg(feature = "masking")]
+#[derive(Debug, serde::Deserialize)]
+pub struct MaskingLedgerQuery {
+    /// 台账日期（YYYY-MM-DD，UTC 日界；缺省今日）
+    pub date: Option<String>,
+    /// 明细页码（1 起；缺省 1）
+    pub page: Option<usize>,
+    /// 明细页大小（1..=1000；缺省 100）
+    pub page_size: Option<usize>,
+}
+
+/// GET /admin/masking/ledger — 掩码审计台账查询（feature `masking`）：
+/// 指定日（缺省今日）的 per-kind 聚合 + 明细分页。台账是明细事实源
+///（记录 ts/kind/finder/placeholder/首字符 hint，值不落盘）；
+/// `[masking].ledger.enabled=false` 或门未装配 → 404（明确关闭语义，
+/// 与 web_search 端点开关同口径）。handler 位于 tests 模块之前
+///（items_after_test_module 教训）。
+#[cfg(feature = "masking")]
+#[axum::debug_handler]
+pub async fn masking_ledger(
+    State(state): State<Arc<ApiState>>,
+    Query(params): Query<MaskingLedgerQuery>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    const DEFAULT_PAGE_SIZE: usize = 100;
+    const MAX_PAGE_SIZE: usize = 1000;
+    let Some(gate) = state.vendor_manager.mask_gate() else {
+        return masking_ledger_disabled();
+    };
+    let ledger = gate.ledger();
+    if !ledger.enabled() {
+        return masking_ledger_disabled();
+    }
+    let day = match params.date.as_deref() {
+        Some(raw) => match chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+            Ok(day) => day,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": t("admin-masking-ledger-date-invalid"),
+                            "type": "validation_error",
+                        }
+                    })),
+                )
+                    .into_response()
+            }
+        },
+        None => chrono::Utc::now().date_naive(),
+    };
+    let page = params.page.unwrap_or(1).max(1);
+    let page_size = params
+        .page_size
+        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .clamp(1, MAX_PAGE_SIZE);
+    let lines = match ledger.read_day(day) {
+        Ok(lines) => lines,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": t_args(
+                            "masking-ledger-io-failed",
+                            &[("op", "read".to_string()), ("detail", e.to_string())],
+                        ),
+                        "type": "database_error",
+                    }
+                })),
+            )
+                .into_response()
+        }
+    };
+    let mut per_kind: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for line in &lines {
+        let kind = line
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        *per_kind.entry(kind).or_insert(0) += 1;
+    }
+    let total = lines.len();
+    let start = (page - 1).saturating_mul(page_size);
+    let entries: Vec<&serde_json::Value> = lines.iter().skip(start).take(page_size).collect();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "enabled": true,
+            "date": day.format("%Y-%m-%d").to_string(),
+            "total": total,
+            "per_kind": per_kind,
+            "page": page,
+            "page_size": page_size,
+            "entries": entries,
+        })),
+    )
+        .into_response()
+}
+
+/// 台账关闭（门未装配或 enabled=false）的 404 语义。
+#[cfg(feature = "masking")]
+fn masking_ledger_disabled() -> axum::response::Response {
+    use axum::http::StatusCode;
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": {
+                "message": t("admin-masking-ledger-disabled"),
+                "type": "masking_ledger_disabled",
+            }
+        })),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

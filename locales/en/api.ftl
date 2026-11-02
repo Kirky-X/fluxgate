@@ -15,6 +15,8 @@ admin-only-global-model-supported = Only 'global' model config is supported
 # ---- admin.rs /admin/cost 成本分账查询 ----
 admin-cost-group-by-invalid = group_by (must be vendor|model)
 admin-cost-date-format-invalid = { $name } (must be YYYY-MM-DD)
+admin-masking-ledger-date-invalid = date (must be YYYY-MM-DD)
+admin-masking-ledger-disabled = masking ledger is not enabled ([masking].ledger.enabled is false)
 admin-cost-usage-sink-unwired = usage sink is not wired; cost usage unavailable
 admin-token-stats-usage-sink-unwired = usage sink is not wired; token stats unavailable
 admin-vendor-reset-unknown-vendor = vendor '{ $id }' (unknown vendor)

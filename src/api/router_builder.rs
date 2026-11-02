@@ -866,6 +866,10 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
     // 出站掩码观测（feature `masking`）：24h 窗口元数据，随既有层叠受 auth 保护
     #[cfg(feature = "masking")]
     let router = router.route("/admin/masking/stats", get(admin::masking_stats));
+    // 掩码审计台账（feature `masking`）：per-kind 聚合 + 明细分页；
+    // [masking].ledger.enabled 热读门在 handler 内（关时 404）
+    #[cfg(feature = "masking")]
+    let router = router.route("/admin/masking/ledger", get(admin::masking_ledger));
     // 密钥保密柜（key-vault）：录入/掩码列表/删除，随既有层叠受 auth 保护
     #[cfg(feature = "vault")]
     let router = router

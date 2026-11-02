@@ -175,6 +175,11 @@ config-oidc-rule-duplicate = [[auth.oidc_rules.rules]] 重复声明 issuer「{ $
 config-masking-kind-invalid = 无效的掩码种类：{ $kind }（合法值：api_key、private_key、token、email、card、id、custom）
 config-masking-action-invalid = 无效的掩码动作：{ $action }（合法值：mask、warn、block）
 config-masking-rule-invalid = 无效的掩码正则（编译失败）：{ $detail }
+config-masking-ledger-retention-invalid = 无效的掩码台账保留天数：{ $value }（1..=3650）
+config-masking-ledger-max-bytes-invalid = 无效的掩码台账总量上限：{ $value } 字节（≥4096）
+config-otlp-tracing-sample-ratio-out-of-range = 无效的 OTLP 追踪采样比：{ $value }（0.0..=1.0）
+config-otlp-tracing-protocol-invalid = 无效的 OTLP 追踪传输协议：{ $value }（合法值：http、grpc）
+config-otlp-tracing-timeout-secs-out-of-range = 无效的 OTLP 追踪导出超时：{ $value } 秒（1..=300）
 masking-rule-build-failed = 掩码检测器因自定义正则构建失败，已按空正则重建（内置形态与词表检测继续生效）
 
 config-affinity-session-headers-blank = [routing.affinity] session_headers 含空白头名（空串头名无意义且吞掉探测位）

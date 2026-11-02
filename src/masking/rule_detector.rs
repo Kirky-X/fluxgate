@@ -109,7 +109,7 @@ impl RuleDetector {
 
 impl MaskDetector for RuleDetector {
     fn detect(&self, text: &str) -> Vec<MaskHit> {
-        // inklog 检测面（纯读不计数）→ 种类归因
+        // inklog 检测面（纯读不计数）→ 种类归因（finder = pattern 名）
         let mut hits: Vec<MaskHit> = self
             .gate
             .scan(text)
@@ -117,14 +117,16 @@ impl MaskDetector for RuleDetector {
             .map(|m| MaskHit {
                 kind: pattern_kind(&m.pattern),
                 span: m.start..m.end,
+                finder: m.pattern,
             })
             .collect();
-        // 词表命中 → Custom
+        // 词表命中 → Custom（finder = word：词面是配置面非值面，不回显词原文）
         for word in &self.words {
             for span in find_word_spans(text, word, self.words_any_case) {
                 hits.push(MaskHit {
                     kind: MaskKind::Custom,
                     span,
+                    finder: "word".to_string(),
                 });
             }
         }

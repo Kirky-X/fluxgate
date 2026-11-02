@@ -1,11 +1,21 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! 占位符注册表：同进程内同一 (kind, value) 任意请求产同一占位符
+//! 占位符注册表：同一 pepper 下同一 (kind, value) 任意请求产同一占位符
 //! `{{FLUX_<KIND>_<8HEX>}}`（SHA256(pepper ‖ kind_tag ‖ 0x00 ‖ value) 前
-//! 8 hex——0x00 分隔符防 tag/value 边界歧义）。pepper 为**每进程随机盐**
-//!（OS 熵种子派生）：跨进程/实例占位符不同，上游无法离线预计算占位符或
-//! 跨实例关联同值流量（对抗面即上游厂商，见 README 安全披露）。
+//! 8 hex——0x00 分隔符防 tag/value 边界歧义）。
+//!
+//! pepper 三态来源（[`OnceLock`] 缓存，进程内恒定）：
+//! 1. env `FLUXGATE_MASK_PEPPER`（64 hex = 32 字节）；
+//! 2. `~/.fluxgate/mask_pepper.key`（0600；不存在则随机创建，仿
+//!    `vault/master_key.rs` 先例；创建失败降级下一级并 warn）；
+//! 3. 进程内随机（OS 熵种子派生；前两级都不可用时的降级面）。
+//!
+//! **跨进程/多副本确定性成立的条件**：各进程解析到同一 pepper——同机同
+//! pepper 文件、多副本共享持久卷、或统一注入同一 env 值。pepper 各异时
+//! 占位符漂移：上游前缀缓存全量失效（经济面损失）、跨轮对话占位符字面
+//! 变化（值仍不出网关）——不出正确性问题（还原凭据是本请求登记集，与
+//! pepper 无关）。降级为进程内随机时确定性不成立，warn 显性披露。
 //!
 //! 方向性：**value → placeholder 是进程内纯函数**；存储的反向映射
 //!（placeholder → value）仅存内存，LRU 逐出（缺省 10k 条，测试可注入
@@ -37,28 +47,166 @@ pub const DEFAULT_CAPACITY: usize = 10_000;
 /// 反向映射条目 TTL（到期映射失效；同值重掩码重建）。
 pub const ENTRY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// 进程级 pepper：每进程随机 32 字节（`RandomState` 的 OS 熵种子经 SipHash
-/// 派生 4×64bit——std 自带跨平台熵源，不为单点引入新依赖）。进程内恒定，
-/// 进程间独立。
+/// pepper 环境变量名（64 hex = 32 字节；最高优先级，覆盖 pepper 文件）。
+pub const MASK_PEPPER_ENV: &str = "FLUXGATE_MASK_PEPPER";
+
+/// 进程级 pepper：三态来源解析（env → pepper 文件 → 进程内随机），OnceLock
+/// 缓存进程内恒定。解析核心 [`resolve_mask_pepper`] 绝不失败——pepper 面
+/// 任何异常都降级随机并 warn，绝不因 pepper 问题拒绝请求。
 fn pepper() -> &'static [u8; 32] {
     static PEPPER: OnceLock<[u8; 32]> = OnceLock::new();
     PEPPER.get_or_init(|| {
-        let builder = RandomState::new();
-        let mut seed = [0u8; 32];
-        for (round, chunk) in seed.chunks_mut(8).enumerate() {
-            let mut hasher = builder.build_hasher();
-            hasher.write_u64(round as u64);
-            chunk.copy_from_slice(&hasher.finish().to_le_bytes());
-        }
-        seed
+        let env = std::env::var(MASK_PEPPER_ENV)
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        resolve_mask_pepper(env.as_deref(), default_pepper_path().as_deref())
     })
 }
 
+/// 缺省 pepper 文件：`~/.fluxgate/mask_pepper.key`（home 不可得返回 None）。
+fn default_pepper_path() -> Option<std::path::PathBuf> {
+    std::env::home_dir().map(|home| home.join(".fluxgate").join("mask_pepper.key"))
+}
+
+/// pepper 三态解析核心（env 值与文件路径注入，便于测试隔离）：
+/// 1. env 非空 → 64 hex 解析；非法 → warn 降级下一级；
+/// 2. 文件存在 → 64 hex 解析；非法 → warn 后降级进程内随机（不覆写坏
+///    文件，留运维处置）；
+/// 3. 文件不存在 → 随机生成并写盘（0600，仿 `vault/master_key.rs` 先例）；
+///    创建失败 → warn 降级进程内随机。home 不可得 → warn 降级进程内随机。
+pub(crate) fn resolve_mask_pepper(
+    env_value: Option<&str>,
+    file_path: Option<&std::path::Path>,
+) -> [u8; 32] {
+    if let Some(value) = env_value {
+        if let Some(key) = parse_hex_pepper(value) {
+            return key;
+        }
+        tracing::warn!(
+            "{}",
+            crate::i18n::t_args(
+                "masking-pepper-degraded",
+                &[
+                    ("stage", "env".to_string()),
+                    ("detail", "not 64 hex chars".to_string()),
+                ],
+            ),
+        );
+    }
+    let Some(path) = file_path else {
+        tracing::warn!(
+            "{}",
+            crate::i18n::t_args(
+                "masking-pepper-degraded",
+                &[
+                    ("stage", "home".to_string()),
+                    ("detail", "home dir unavailable".to_string()),
+                ],
+            ),
+        );
+        return process_random_pepper();
+    };
+    if let Ok(encoded) = std::fs::read_to_string(path) {
+        if let Some(key) = parse_hex_pepper(encoded.trim()) {
+            return key;
+        }
+        tracing::warn!(
+            "{}",
+            crate::i18n::t_args(
+                "masking-pepper-degraded",
+                &[
+                    ("stage", "file".to_string()),
+                    ("detail", "content not 64 hex chars".to_string()),
+                ],
+            ),
+        );
+        return process_random_pepper();
+    }
+    let key = process_random_pepper();
+    match write_pepper_file(path, &key) {
+        Ok(()) => key,
+        Err(e) => {
+            tracing::warn!(
+                "{}",
+                crate::i18n::t_args(
+                    "masking-pepper-degraded",
+                    &[("stage", "create".to_string()), ("detail", e.to_string()),],
+                ),
+            );
+            process_random_pepper()
+        }
+    }
+}
+
+/// 64 hex（32 字节）解析；其余形态（含空串）一律 None。
+fn parse_hex_pepper(value: &str) -> Option<[u8; 32]> {
+    let trimmed = value.trim();
+    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    hex::decode_to_slice(trimmed, &mut key).ok()?;
+    Some(key)
+}
+
+/// 进程内随机 32 字节（`RandomState` 的 OS 熵种子经 SipHash 派生 4×64bit
+/// ——std 自带跨平台熵源，不为单点引入新依赖）。
+fn process_random_pepper() -> [u8; 32] {
+    let builder = RandomState::new();
+    let mut seed = [0u8; 32];
+    for (round, chunk) in seed.chunks_mut(8).enumerate() {
+        let mut hasher = builder.build_hasher();
+        hasher.write_u64(round as u64);
+        chunk.copy_from_slice(&hasher.finish().to_le_bytes());
+    }
+    seed
+}
+
+/// pepper 文件写盘（hex 文本；0600 直建防全局可读窗口 + set_permissions
+/// 兜底收紧——与 `vault/master_key.rs` 同款先例）。
+fn write_pepper_file(path: &std::path::Path, key: &[u8; 32]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let encoded = hex::encode(key);
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(encoded.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, encoded.as_bytes())?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 /// 进程内纯函数：value → placeholder（SHA256(pepper ‖ tag ‖ 0x00 ‖ value)
-/// 前 8 hex；pepper 随进程随机——跨进程/实例确定性不成立，模块文档披露）。
+/// 前 8 hex；pepper 三态解析见模块文档——同 pepper 下跨进程/重启确定）。
 pub fn placeholder_for(kind: super::MaskKind, value: &str) -> String {
+    placeholder_with_pepper(pepper(), kind, value)
+}
+
+/// 显式 pepper 的占位符计算（测试与多态初始化面；生产走 [`placeholder_for`]）。
+pub(crate) fn placeholder_with_pepper(
+    pepper: &[u8; 32],
+    kind: super::MaskKind,
+    value: &str,
+) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(pepper());
+    hasher.update(pepper);
     hasher.update(kind.as_tag().as_bytes());
     hasher.update([0u8]);
     hasher.update(value.as_bytes());
@@ -338,5 +486,95 @@ mod tests {
         assert!(!ticket.is_empty());
         assert!(ticket.contains("{{FLUX_APIKEY_00000000}}"));
         assert!(!ticket.contains("{{FLUX_APIKEY_11111111}}"));
+    }
+
+    /// 同 pepper 文件两次初始化：读回同值，占位符跨初始化一致
+    ///（R-masking-001 验收：跨重启/多副本稳定性的核心语义）。
+    #[test]
+    fn same_pepper_file_two_inits_same_placeholder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mask_pepper.key");
+        let first = resolve_mask_pepper(None, Some(&path));
+        let second = resolve_mask_pepper(None, Some(&path));
+        assert_eq!(first, second, "同文件两次初始化必须读回同一 pepper");
+        assert_eq!(
+            placeholder_with_pepper(&first, MaskKind::ApiKey, "secret"),
+            placeholder_with_pepper(&second, MaskKind::ApiKey, "secret"),
+            "同 pepper 下占位符必须一致"
+        );
+    }
+
+    /// env 覆盖生效：env 值优先于文件，且不创建/不改写文件。
+    #[test]
+    fn env_overrides_file_without_touching_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mask_pepper.key");
+        let env_hex = "ab".repeat(32);
+        let from_env = resolve_mask_pepper(Some(env_hex.as_str()), Some(&path));
+        assert_eq!(from_env, [0xab; 32]);
+        assert!(!path.exists(), "env 生效时不得创建 pepper 文件");
+        std::fs::write(&path, "cd".repeat(32)).expect("seed file");
+        let again = resolve_mask_pepper(Some(env_hex.as_str()), Some(&path));
+        assert_eq!(again, [0xab; 32], "env 必须压过已有文件");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file intact"),
+            "cd".repeat(32),
+            "文件内容不得被 env 覆盖"
+        );
+    }
+
+    /// 随机创建的 pepper 文件权限 0600（R-masking-001 验收）。
+    #[test]
+    fn generated_pepper_file_is_0600() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("mask_pepper.key");
+        let key = resolve_mask_pepper(None, Some(&path));
+        assert_eq!(hex::encode(key).len(), 64);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "pepper 文件必须 0600");
+        }
+    }
+
+    /// env 非法（非 64 hex）→ warn 降级到文件链路（文件有效则用文件值）。
+    #[test]
+    fn invalid_env_degrades_to_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mask_pepper.key");
+        std::fs::write(&path, "cd".repeat(32)).expect("seed file");
+        let key = resolve_mask_pepper(Some("zz-not-hex"), Some(&path));
+        assert_eq!(key, [0xcd; 32]);
+    }
+
+    /// 文件内容非法 → 降级进程内随机，且不覆写坏文件（留运维处置）。
+    #[test]
+    fn invalid_file_content_degrades_to_random_without_overwrite() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mask_pepper.key");
+        std::fs::write(&path, "definitely-not-hex").expect("seed bad file");
+        let first = resolve_mask_pepper(None, Some(&path));
+        let second = resolve_mask_pepper(None, Some(&path));
+        assert_ne!(
+            first, second,
+            "降级随机必须逐进程独立（不可缓存面由 OnceLock 承担）"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file intact"),
+            "definitely-not-hex",
+            "坏文件不得被静默覆写"
+        );
+    }
+
+    /// 文件创建失败（父路径是普通文件）→ warn 降级进程内随机，绝不 panic。
+    #[test]
+    fn create_failure_degrades_to_random() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "x").expect("blocker");
+        let path = blocker.join("mask_pepper.key");
+        let key = resolve_mask_pepper(None, Some(&path));
+        assert_eq!(key.len(), 32, "降级随机仍须产出可用 pepper");
     }
 }

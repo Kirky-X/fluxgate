@@ -40,6 +40,10 @@ pub(crate) struct Assembly {
     /// OTLP 桥轮询任务句柄（随停机 abort）。
     #[cfg(feature = "otlp")]
     pub(crate) otlp_task: Option<tokio::task::JoinHandle<()>>,
+    /// OTLP 尝试级追踪控制器（feature = "otlp" 且 [otlp].tracing.enabled 时
+    /// 装配并 install；None = 追踪关，span 创建恒 no-op）。
+    #[cfg(feature = "otlp")]
+    pub(crate) otlp_trace: Option<Arc<crate::utils::otlp_export::TraceController>>,
     /// 目录同步周期任务句柄（catalog-sync feature；随停机 abort）。
     #[cfg(feature = "catalog-sync")]
     pub(crate) catalog_sync_task: Option<tokio::task::JoinHandle<()>>,
@@ -217,6 +221,36 @@ pub(crate) async fn assemble(
                     )
                 );
                 (Some(bridge), Some(task))
+            }
+        }
+    };
+
+    // OTLP 尝试级追踪（feature = "otlp" + [otlp].tracing.enabled 双门控）：
+    // metrics 桥装配点旁挂；exporter 构建失败 fail-open（warn 后停用）。
+    #[cfg(feature = "otlp")]
+    let otlp_trace = {
+        match crate::utils::otlp_export::trace_from_section(&config_manager.read().otlp.tracing) {
+            crate::utils::otlp_export::TraceSpawn::Disabled => None,
+            crate::utils::otlp_export::TraceSpawn::Failed(e) => {
+                tracing::warn!(
+                    "{}",
+                    t_args("main-otlp-trace-build-failed", &[("error", e)])
+                );
+                None
+            }
+            crate::utils::otlp_export::TraceSpawn::Ready(controller) => {
+                crate::utils::otlp_export::install(Arc::clone(&controller));
+                tracing::info!(
+                    "{}",
+                    t_args(
+                        "main-otlp-trace-started",
+                        &[(
+                            "endpoint",
+                            redact_endpoint(&config_manager.read().otlp.tracing.endpoint)
+                        )]
+                    )
+                );
+                Some(controller)
             }
         }
     };
@@ -693,6 +727,8 @@ pub(crate) async fn assemble(
         otlp_bridge,
         #[cfg(feature = "otlp")]
         otlp_task,
+        #[cfg(feature = "otlp")]
+        otlp_trace,
         #[cfg(feature = "catalog-sync")]
         catalog_sync_task,
     })

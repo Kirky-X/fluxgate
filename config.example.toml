@@ -781,6 +781,18 @@ endpoint = "http://localhost:4318/v1/metrics"
 interval_secs = 60
 timeout_secs = 10
 
+# [otlp.tracing] —— 尝试级追踪（otlp feature；**双零默认关**：enabled=false
+# 不装 provider，sample_ratio=0.0 全不采样 → 零 span、零网络导出）。
+# 语义：入站 traceparent 解析（无则建 root），每个 vendor attempt 一个子
+# span（vendor/model/attempt 序/状态码/错误分类/cost_details.estimate_usd，
+# fallback 实际命中者标 fluxgate.served=true），出站注入 traceparent；请求/
+# 响应体默认不导出。停机经 teardown coordinator flush（best-effort）。
+# tracing.enabled = false
+# tracing.sample_ratio = 0.0
+# tracing.endpoint = "http://localhost:4318/v1/traces"
+# tracing.protocol = "http"
+# tracing.timeout_secs = 10
+
 # 🔥 热读 —— 会话/上下文利用率统计 — 内部统计，零出站、零新依赖
 # 开启时 request_logs 落 session_key/context_window_tokens/cache_read_tokens/
 # cache_write_tokens 四列，并提供 GET /admin/sessions 与 GET /admin/context-stats。
@@ -1151,3 +1163,11 @@ enabled = false
 # words_any_case = false
 # rules = ["AKIA[0-9A-Z]{16}"]
 # allow = ["sk-proj-"]
+# [masking.ledger] —— 审计台账（观测旁路，默认关）：掩码命中元数据按天
+# JSONL 追加（~/.fluxgate/mask_ledger/ledger-YYYYMMDD.jsonl，UTC 日界），
+# 只记 ts/kind/finder/占位符/首字符 hint，**值与占位符→原值映射不落盘**；
+# GET /admin/masking/ledger?date= 查询 per-kind 聚合与明细。每日首写触发
+# 裁剪：retention_days 按天窗口 + max_total_bytes 总量上限（删最旧日文件）。
+# ledger.enabled = false
+# ledger.retention_days = 30
+# ledger.max_total_bytes = 104857600

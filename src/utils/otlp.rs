@@ -1000,6 +1000,7 @@ mod bridge_tests {
             endpoint: "http://127.0.0.1:9/v1/metrics".to_string(),
             interval_secs: 86_400,
             timeout_secs: 1,
+            tracing: Default::default(),
         };
         let tracker = Arc::new(CostTracker::new());
         let bridge = match bridge_from_section(&section, tracker) {

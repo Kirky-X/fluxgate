@@ -71,6 +71,8 @@ main-semantic-cache-feature-missing = [cache.semantic].enabled requires the sema
 # 难度定档分类器（[routing.difficulty]）：laya 加载失败 → F3 常驻纯规则降级。
 main-difficulty-classifier-disabled = difficulty classifier disabled: laya load failed; rule-only mode engaged
 main-otlp-bridge-started = OTLP metrics bridge started (endpoint: { $endpoint })
+main-otlp-trace-started = OTLP attempt-level tracing assembled (endpoint: { $endpoint })
+main-otlp-trace-build-failed = OTLP attempt-level tracing exporter build failed, tracing disabled (fail-open): { $error }
 main-otlp-bridge-build-failed = OTLP metrics bridge build failed, export disabled: { $error }
 main-otlp-teardown-failed = OTLP metrics bridge teardown failed: { $error }
 main-affinity-restored = session affinity restored: { $count } sticks (limit { $limit })

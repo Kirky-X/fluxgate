@@ -74,6 +74,8 @@ database-affinity-sticks-read-failed = 会话粘性读取失败：{ $error }
 # ---- masking: 出站掩码（feature masking；错误面 + config 校验面）----
 masking-unavailable = 请求被拒绝：出站掩码不可用（fail-closed，绝不原文出站）
 masking-blocked = 请求被拦截：{ $kind } 类敏感数据禁止出站
+masking-pepper-degraded = 掩码 pepper 加载降级为进程内随机（{ $stage }：{ $detail }），占位符跨进程/重启确定性不成立
+masking-ledger-io-failed = 掩码台账 IO 失败（{ $op }：{ $detail }），观测旁路降级不影响请求
 
 # ---- cost-replay: 离线成本回放 CLI（bin fluxgate-replay）----
 replay-cli-usage = 用法：fluxgate-replay --db <sqlite 路径|URL> --from <unix|RFC3339> --to <unix|RFC3339> [--config <路径>] [--scenario affinity|cache_ttl|all] [--max-rows <n>] [--json]

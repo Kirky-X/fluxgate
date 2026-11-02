@@ -355,6 +355,26 @@ pub struct VendorCallOptions {
     /// 成功即终止循环，故终值即实际服务者）。订阅账号凭证非池键，不写。
     /// None = 不归因（缺省，旧行为零变化）。
     pub served_key_sink: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
+    /// 入站 W3C `traceparent` 头原文（api 层原样携带；otlp feature 的
+    /// 尝试级追踪 root 解析消费）。None = 入站未带或 api 层未提取。
+    pub traceparent: Option<String>,
+    /// 尝试级追踪请求域（feature `otlp`；fallback 循环或派发入口装配
+    /// root 后填充——attempt 站点经此取父上下文与估算面）。None = 追踪
+    /// 未启用（零 span、零注入）。
+    #[cfg(feature = "otlp")]
+    pub trace: Option<std::sync::Arc<crate::utils::otlp_export::RequestTrace>>,
+}
+
+impl VendorCallOptions {
+    /// 填充追踪请求域（fallback 循环 / 派发入口懒建 root 后调用）。
+    #[cfg(feature = "otlp")]
+    pub(crate) fn with_trace(
+        mut self,
+        trace: std::sync::Arc<crate::utils::otlp_export::RequestTrace>,
+    ) -> Self {
+        self.trace = Some(trace);
+        self
+    }
 }
 
 pub struct VendorManager {
@@ -697,6 +717,70 @@ impl VendorManager {
     fn sync_ewma_tau(&self) {
         self.metrics
             .set_ewma_tau_ms(self.config.read().routing.ewma_tau_ms);
+    }
+
+    /// 尝试级追踪 root 装配（feature `otlp`）：解析入站 traceparent 建
+    /// root span，并按热配置 model_catalog 注入尝试成本估算面（与计费
+    /// `estimate_cost_from_catalog` 同源；失败尝试按请求字节/4 估输入腿）。
+    /// 追踪未装配 → None（零开销）。
+    #[cfg(feature = "otlp")]
+    pub(crate) fn begin_request_trace(
+        config: &Arc<ConfigManager>,
+        traceparent: Option<&str>,
+    ) -> Option<std::sync::Arc<crate::utils::otlp_export::RequestTrace>> {
+        let catalog = std::sync::Arc::new(config.read().model_catalog.clone());
+        let estimator: crate::utils::otlp_export::Estimator =
+            std::sync::Arc::new(move |model: &str, vendor_type: &str, input| {
+                use crate::utils::otlp_export::EstimateInput;
+                let semantics = crate::vendor::cost::prompt_cache_semantics(vendor_type);
+                let usage = match input {
+                    EstimateInput::Usage(usage) => usage,
+                    EstimateInput::RequestBytes(bytes) => crate::protocol::TokenUsage {
+                        prompt_tokens: (bytes / 4).min(u32::MAX as usize) as u32,
+                        ..Default::default()
+                    },
+                };
+                crate::vendor::cost::estimate_cost_from_catalog(&catalog, model, &usage, semantics)
+                    .map(|estimate| estimate.total_cost)
+            });
+        crate::utils::otlp_export::RequestTrace::start(traceparent, Some(estimator))
+    }
+
+    /// 派发入口懒建 root（无 fallback 循环的路径 / resilience 关闭时的
+    /// 单发调用；fallback 循环已装配时直接透传）。返回 owned trace =
+    /// 本调用新建（调用方负责 end）。
+    #[cfg(feature = "otlp")]
+    fn ensure_request_trace(
+        &self,
+        options: VendorCallOptions,
+        model: &str,
+    ) -> (
+        VendorCallOptions,
+        Option<std::sync::Arc<crate::utils::otlp_export::RequestTrace>>,
+    ) {
+        let _ = model;
+        if options.trace.is_some() {
+            return (options, None);
+        }
+        match Self::begin_request_trace(&self.config, options.traceparent.as_deref()) {
+            Some(trace) => (
+                options.with_trace(std::sync::Arc::clone(&trace)),
+                Some(trace),
+            ),
+            None => (options, None),
+        }
+    }
+
+    /// 出站 traceparent 注入（root 上下文；未启用/未采样 → 原样返回）。
+    #[cfg(feature = "otlp")]
+    fn inject_traceparent(
+        builder: reqwest::RequestBuilder,
+        trace: Option<&std::sync::Arc<crate::utils::otlp_export::RequestTrace>>,
+    ) -> reqwest::RequestBuilder {
+        match trace.and_then(|t| t.traceparent_header()) {
+            Some(value) => builder.header("traceparent", value),
+            None => builder,
+        }
     }
 
     /// 全局成本追踪器访问器（仅 `cost-tracking` feature）。
@@ -1762,59 +1846,127 @@ impl VendorManager {
             .with_max_delay(policy.max_delay)
             .with_jitter(policy.jitter);
 
+        // attempt 序号发生器（闭包多次执行递增；attempt 从 1 起）
+        let attempt_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         retry_policy
             .execute_with(
                 || async {
-                    let builder = Self::build_authed_attempt_builder(
-                        client, config, &url, credential, options,
-                    )?;
-                    let response =
-                        Self::send_attempt(builder, &request_body, config, instance, credential)
-                            .await;
-                    #[cfg(feature = "subscription-vendor")]
-                    let response = match &subscription {
-                        Some(pool) => {
-                            Self::subscription_retry_on_unauthorized(
-                                response,
-                                client,
-                                config,
-                                &url,
-                                credential,
-                                options,
-                                &request_body,
-                                instance,
-                                pool,
-                            )
-                            .await
+                    #[cfg_attr(not(feature = "otlp"), allow(unused_variables))]
+                    let attempt_no =
+                        attempt_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u32
+                            + 1;
+                    #[cfg(feature = "otlp")]
+                    let otlp_attempt = crate::utils::otlp_export::AttemptSpan::begin(
+                        options.trace.as_ref().map(|t| t.span_context()),
+                        &config.id,
+                        target_model,
+                        attempt_no,
+                    );
+                    #[cfg(feature = "otlp")]
+                    let mut otlp_status: Option<u16> = None;
+                    let outcome: Result<UnifiedResponse, AttemptFailure> = async {
+                        let builder = Self::build_authed_attempt_builder(
+                            client, config, &url, credential, options,
+                        )?;
+                        let response = Self::send_attempt(
+                            builder,
+                            &request_body,
+                            config,
+                            instance,
+                            credential,
+                        )
+                        .await;
+                        #[cfg(feature = "subscription-vendor")]
+                        let response = match &subscription {
+                            Some(pool) => {
+                                Self::subscription_retry_on_unauthorized(
+                                    response,
+                                    client,
+                                    config,
+                                    &url,
+                                    credential,
+                                    options,
+                                    &request_body,
+                                    instance,
+                                    pool,
+                                )
+                                .await
+                            }
+                            None => response,
+                        };
+                        let response = response?;
+                        #[cfg(feature = "otlp")]
+                        {
+                            otlp_status = Some(response.status().as_u16());
                         }
-                        None => response,
-                    };
-                    let response = response?;
-                    let response_json = Self::read_attempt_json(response, config).await?;
-                    // 回程还原（feature `masking`）：占位符在 IR 转换前回填，
-                    // 只认本请求掩码登记过的占位符（跨请求/伪造形态原样
-                    // 透传）；UnifiedResponse 与客户端形态都携带原值
-                    #[cfg(feature = "masking")]
-                    let response_json = match mask_gate {
-                        Some(gate) => {
-                            let mut restored = response_json;
-                            gate.restore_body(&mut restored, mask_ticket)
-                                .map_err(|e| AttemptFailure::Fatal(GateError::from(e)))?;
-                            restored
+                        let response_json = Self::read_attempt_json(response, config).await?;
+                        // 回程还原（feature `masking`）：占位符在 IR 转换前回填，
+                        // 只认本请求掩码登记过的占位符（跨请求/伪造形态原样
+                        // 透传）；UnifiedResponse 与客户端形态都携带原值
+                        #[cfg(feature = "masking")]
+                        let response_json = match mask_gate {
+                            Some(gate) => {
+                                let mut restored = response_json;
+                                gate.restore_body(&mut restored, mask_ticket)
+                                    .map_err(|e| AttemptFailure::Fatal(GateError::from(e)))?;
+                                restored
+                            }
+                            None => response_json,
+                        };
+                        let mut parsed = converter
+                            .parse_response(response_json)
+                            .map_err(AttemptFailure::Fatal)?;
+                        // Gemini 响应缺 modelVersion 时，转换器回退占位 "gemini"；
+                        // 用本次目标 model 补齐（其它厂商响应自带 model，不动）
+                        if matches!(config.protocol(), VendorProtocol::Gemini)
+                            && parsed.model == "gemini"
+                        {
+                            parsed.model = target_model.to_string();
                         }
-                        None => response_json,
-                    };
-                    let mut parsed = converter
-                        .parse_response(response_json)
-                        .map_err(AttemptFailure::Fatal)?;
-                    // Gemini 响应缺 modelVersion 时，转换器回退占位 "gemini"；
-                    // 用本次目标 model 补齐（其它厂商响应自带 model，不动）
-                    if matches!(config.protocol(), VendorProtocol::Gemini)
-                        && parsed.model == "gemini"
-                    {
-                        parsed.model = target_model.to_string();
+                        Ok(parsed)
                     }
-                    Ok(parsed)
+                    .await;
+                    #[cfg(feature = "otlp")]
+                    {
+                        use crate::utils::otlp_export::EstimateInput;
+                        let (status_code, error_class, served, estimate) = match &outcome {
+                            Ok(parsed) => {
+                                let estimate = options.trace.as_ref().and_then(|t| {
+                                    t.estimate_usd(
+                                        target_model,
+                                        &config.type_,
+                                        EstimateInput::Usage(parsed.usage.clone()),
+                                    )
+                                });
+                                (otlp_status, None, true, estimate)
+                            }
+                            Err(failure) => {
+                                let (status, class) = match failure {
+                                    AttemptFailure::Network { transient } => (
+                                        None,
+                                        if *transient {
+                                            "network_transient"
+                                        } else {
+                                            "network"
+                                        },
+                                    ),
+                                    AttemptFailure::Http { status, .. } => (Some(*status), "http"),
+                                    AttemptFailure::Fatal(e) => (otlp_status, e.error_code()),
+                                };
+                                let estimate = options.trace.as_ref().and_then(|t| {
+                                    let bytes = request_body.to_string().len();
+                                    t.estimate_usd(
+                                        target_model,
+                                        &config.type_,
+                                        EstimateInput::RequestBytes(bytes),
+                                    )
+                                });
+                                (status.or(otlp_status), Some(class), false, estimate)
+                            }
+                        };
+                        otlp_attempt.finish(status_code, error_class, served, estimate);
+                    }
+                    outcome
                 },
                 |attempt, failure| {
                     // 决策闭包：业务分类留应用（机制归库——见函数 doc）。
@@ -2208,6 +2360,11 @@ impl VendorManager {
                 .clone()
         };
 
+        // 尝试级追踪：无 fallback 循环路径在此懒建 root（fallback 循环已
+        // 装配时透传，N vendor attempt 共享同一 trace）
+        #[cfg(feature = "otlp")]
+        let (options, owned_trace) = self.ensure_request_trace(options, &request.model);
+
         let (response_tx, response_rx) = oneshot::channel();
 
         let pending = PendingRequest {
@@ -2234,11 +2391,19 @@ impl VendorManager {
         } else {
             QUEUE_WAIT_BUDGET
         };
-        timeout(timeout_duration, response_rx)
+        let result: Result<UnifiedResponse, GateError> = timeout(timeout_duration, response_rx)
             .await
             .map_err(|_| GateError::Timeout {
                 vendor: vendor_id.to_string(),
-            })??
+            })??;
+        #[cfg(feature = "otlp")]
+        if let Some(trace) = owned_trace {
+            match &result {
+                Ok(_) => std::sync::Arc::clone(&trace).end(true, None),
+                Err(e) => std::sync::Arc::clone(&trace).end(false, Some(e.error_code())),
+            }
+        }
+        result
     }
 
     /// 流式启动状态码校验 + 错误记账。非 2xx 时错误 JSON 正文原样透传会伪装成伪 200 流；
@@ -2425,6 +2590,16 @@ impl VendorManager {
         #[cfg(not(feature = "resilience"))]
         let _ = model;
         let send = || async {
+            // 尝试级追踪：流式单次发送 = 一个 vendor attempt（fallback 换路
+            // 各自成 span；本 attempt 的出站 header 由 builder 构造点注入
+            // root 上下文）
+            #[cfg(feature = "otlp")]
+            let otlp_attempt = crate::utils::otlp_export::AttemptSpan::begin(
+                options.trace.as_ref().map(|t| t.span_context()),
+                vendor_id,
+                model,
+                1,
+            );
             let response = Self::send_stream_raw(vendor_id, config, &builder, request_body).await?;
             // 订阅 401 处置（自愈闭环下沉到流式/透传路径——响应头级判定）
             #[cfg(feature = "subscription-vendor")]
@@ -2441,9 +2616,23 @@ impl VendorManager {
                 .await;
             #[cfg(not(feature = "subscription-vendor"))]
             let response = response;
+            #[cfg(feature = "otlp")]
+            let status = response.status();
             // 非 2xx 上游不得伪装成 SSE 流
-            self.check_stream_status(vendor_id, start, response, credential)
-                .await
+            let result = self
+                .check_stream_status(vendor_id, start, response, credential)
+                .await;
+            #[cfg(feature = "otlp")]
+            {
+                use crate::utils::otlp_export::EstimateInput;
+                let error_class = result.as_ref().err().map(|e| e.error_code());
+                let estimate = options.trace.as_ref().and_then(|t| {
+                    let bytes = request_body.to_string().len();
+                    t.estimate_usd(model, &config.type_, EstimateInput::RequestBytes(bytes))
+                });
+                otlp_attempt.finish(Some(status.as_u16()), error_class, result.is_ok(), estimate);
+            }
+            result
         };
 
         #[cfg(feature = "resilience")]
@@ -2537,6 +2726,12 @@ impl VendorManager {
             }
         };
 
+        // 尝试级追踪：无 fallback 循环路径在此懒建 root（透传 fallback 循环
+        // 已装配时 options.trace 已就位，直接透传）；须在 request 被 move
+        // 前取 model
+        #[cfg(feature = "otlp")]
+        let (options, owned_trace) = self.ensure_request_trace(options, &request.model);
+
         // per-key 熔断键的 model 段（须在 request 被 move 前捕获）
         let request_model = Self::cb_model(vendor_id, &config, &request.model).to_string();
 
@@ -2575,10 +2770,12 @@ impl VendorManager {
             options.served_key_sink.as_deref(),
         )?;
         let request_builder = Self::inject_vendor_call_headers(request_builder, &config, &options);
+        #[cfg(feature = "otlp")]
+        let request_builder = Self::inject_traceparent(request_builder, options.trace.as_ref());
 
         let start = Instant::now();
         // cover_all_paths 开启时 send + 状态校验段由 CB 包裹（时长只计到响应头）
-        let response = self
+        let dispatch_result = self
             .dispatch_stream_once(
                 vendor_id,
                 &config,
@@ -2591,7 +2788,15 @@ impl VendorManager {
                 &request_body,
                 start,
             )
-            .await?;
+            .await;
+        #[cfg(feature = "otlp")]
+        if let Some(trace) = owned_trace {
+            match &dispatch_result {
+                Ok(_) => std::sync::Arc::clone(&trace).end(true, None),
+                Err(e) => std::sync::Arc::clone(&trace).end(false, Some(e.error_code())),
+            }
+        }
+        let response = dispatch_result?;
 
         // 流式「派发处计」——send 成功（2xx、流已建立）即记成功，错误分支已在
         // check_stream_status 内记账；流中错误不回溯改写派发计数。
@@ -3066,10 +3271,27 @@ impl VendorManager {
         path: &str,
         options: VendorCallOptions,
     ) -> Result<Value, GateError> {
+        // 尝试级追踪：无 fallback 循环路径在此懒建 root（透传 fallback 循环
+        // 已装配时 options.trace 已就位，直接透传）
+        #[cfg(feature = "otlp")]
+        let (options, owned_trace) = {
+            let model = request_body
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<passthrough>");
+            self.ensure_request_trace(options, model)
+        };
         let start = Instant::now();
         let result = self
             .execute_passthrough_request_covered(vendor_id, request_body, path, &options)
             .await;
+        #[cfg(feature = "otlp")]
+        if let Some(trace) = owned_trace {
+            match &result {
+                Ok(_) => std::sync::Arc::clone(&trace).end(true, None),
+                Err(e) => std::sync::Arc::clone(&trace).end(false, Some(e.error_code())),
+            }
+        }
         let duration = start.elapsed();
         // 透传非流式为全程口径（含本地排队），落 e2e 道；成败都记
         self.sync_ewma_tau();
@@ -3202,6 +3424,8 @@ impl VendorManager {
             options.served_key_sink.as_deref(),
         )?;
         let builder = Self::inject_vendor_call_headers(builder, &config, options);
+        #[cfg(feature = "otlp")]
+        let builder = Self::inject_traceparent(builder, options.trace.as_ref());
         // per-attempt 总超时（从 send 起算；0=不限时）
         let builder = Self::apply_attempt_timeout(builder, &config);
 
@@ -3216,10 +3440,27 @@ impl VendorManager {
             ),
         };
 
+        // 尝试级追踪：透传非流式单次发送 = 一个 vendor attempt
+        #[cfg(feature = "otlp")]
+        let otlp_attempt = crate::utils::otlp_export::AttemptSpan::begin(
+            options.trace.as_ref().map(|t| t.span_context()),
+            vendor_id,
+            request_body
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<passthrough>"),
+            1,
+        );
         let response = match builder.json(&request_body).send().await {
             Ok(resp) => resp,
             // 超时映射 Timeout（客户端可识别 504 语义）
-            Err(e) => return Err(Self::outbound_send_error(vendor_id, &e)),
+            Err(e) => {
+                #[cfg(feature = "otlp")]
+                {
+                    otlp_attempt.finish(None, Some("network"), false, None);
+                }
+                return Err(Self::outbound_send_error(vendor_id, &e));
+            }
         };
 
         // 订阅 401 处置（透传非流式自愈闭环）：强刷一次重发
@@ -3236,28 +3477,57 @@ impl VendorManager {
             )
             .await;
 
-        if !response.status().is_success() {
-            return Err(Self::handle_passthrough_non_success(
-                vendor_id, &instance, response, credential,
-            )
-            .await);
-        }
-
-        // per-attempt 超时在 body 读取阶段触发时映射 Timeout，
-        // 与真正的解析失败区分
-        let response_json: Value = Self::read_response_json(vendor_id, response).await?;
-        // 回程还原（feature `masking`）：客户端拿到原值形态（只认本请求
-        // 登记过的占位符）
-        #[cfg(feature = "masking")]
-        let response_json = match self.mask_gate() {
-            Some(gate) => {
-                let mut restored = response_json;
-                gate.restore_body(&mut restored, &mask_ticket)
-                    .map_err(GateError::from)?;
-                restored
+        #[cfg(feature = "otlp")]
+        let otlp_status = response.status();
+        let passthrough_outcome: Result<Value, GateError> = (|| async {
+            if !response.status().is_success() {
+                return Err(Self::handle_passthrough_non_success(
+                    vendor_id, &instance, response, credential,
+                )
+                .await);
             }
-            None => response_json,
-        };
+
+            // per-attempt 超时在 body 读取阶段触发时映射 Timeout，
+            // 与真正的解析失败区分
+            let response_json: Value = Self::read_response_json(vendor_id, response).await?;
+            // 回程还原（feature `masking`）：客户端拿到原值形态（只认本请求
+            // 登记过的占位符）
+            #[cfg(feature = "masking")]
+            let response_json = match self.mask_gate() {
+                Some(gate) => {
+                    let mut restored = response_json;
+                    gate.restore_body(&mut restored, &mask_ticket)
+                        .map_err(GateError::from)?;
+                    restored
+                }
+                None => response_json,
+            };
+            Ok(response_json)
+        })()
+        .await;
+        #[cfg(feature = "otlp")]
+        {
+            use crate::utils::otlp_export::EstimateInput;
+            let error_class = passthrough_outcome.as_ref().err().map(|e| e.error_code());
+            let estimate = options.trace.as_ref().and_then(|t| {
+                let bytes = request_body.to_string().len();
+                t.estimate_usd(
+                    request_body
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<passthrough>"),
+                    &config.type_,
+                    EstimateInput::RequestBytes(bytes),
+                )
+            });
+            otlp_attempt.finish(
+                Some(otlp_status.as_u16()),
+                error_class,
+                passthrough_outcome.is_ok(),
+                estimate,
+            );
+        }
+        let response_json = passthrough_outcome?;
 
         // 更新 Token 使用统计（CAS 全有全无，不足则拒绝记账；语义见 helper）
         Self::account_response_tokens(&instance, vendor_id, &response_json).await;
@@ -3409,6 +3679,16 @@ impl VendorManager {
         if self.masking_active() {
             return Err(GateError::MaskingUnavailable);
         }
+        // 尝试级追踪：无 fallback 循环路径在此懒建 root（透传 fallback 循环
+        // 已装配时 options.trace 已就位，直接透传）
+        #[cfg(feature = "otlp")]
+        let (options, owned_trace) = {
+            let model = request_body
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<passthrough>");
+            self.ensure_request_trace(options, model)
+        };
         let instance = {
             let guard = self.instances.read().unwrap();
             guard
@@ -3461,10 +3741,12 @@ impl VendorManager {
             .and_then(|v| v.as_str())
             .unwrap_or("<unspecified>");
         let request_model = Self::cb_model(vendor_id, &config, raw_model).to_string();
+        #[cfg(feature = "otlp")]
+        let builder = Self::inject_traceparent(builder, options.trace.as_ref());
 
         let start = Instant::now();
         // TTFT 超时与状态校验段收拢于 dispatch_stream_once（cover_all_paths 开启时由 CB 包裹）
-        let response = self
+        let dispatch_result = self
             .dispatch_stream_once(
                 vendor_id,
                 &config,
@@ -3477,7 +3759,15 @@ impl VendorManager {
                 &request_body,
                 start,
             )
-            .await?;
+            .await;
+        #[cfg(feature = "otlp")]
+        if let Some(trace) = owned_trace {
+            match &dispatch_result {
+                Ok(_) => std::sync::Arc::clone(&trace).end(true, None),
+                Err(e) => std::sync::Arc::clone(&trace).end(false, Some(e.error_code())),
+            }
+        }
+        let response = dispatch_result?;
 
         // 流式「派发处计」——send 成功即记成功（错误分支已在 check_stream_status 内记账）
         self.metrics
@@ -4505,6 +4795,9 @@ mod tests {
         let options = VendorCallOptions {
             anthropic_beta: Some("extended-thinking-2025-01-01".into()),
             served_key_sink: None,
+            traceparent: None,
+            #[cfg(feature = "otlp")]
+            trace: None,
         };
 
         // anthropic 型 + 开关开：原样注入

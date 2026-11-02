@@ -132,6 +132,22 @@ pub(crate) async fn clear_session_affinity(
 }
 
 /// 大 payload 截断 — 序列化后 >64KB 的 messages/response 存前缀 + 截断标记（按 UTF-8 字符边界截断，避免劈开多字节字符）。
+/// 派发闭包的追踪请求域参数（otlp = root 句柄；非 otlp = () 占位）。
+#[cfg(feature = "otlp")]
+pub(crate) type DispatchTrace = Option<std::sync::Arc<crate::utils::otlp_export::RequestTrace>>;
+#[cfg(not(feature = "otlp"))]
+pub(crate) type DispatchTrace = ();
+
+/// 入站 W3C `traceparent` 头提取（原样携带，非法/缺失由 otlp_export
+/// 解析面拒绝——这里不做语义校验，只做头面提取）。
+pub(crate) fn inbound_traceparent(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 pub(crate) fn truncate_payload(s: String) -> String {
     const MAX: usize = 64 * 1024;
     if s.len() <= MAX {
@@ -571,6 +587,19 @@ pub(crate) async fn execute_request_with_fallback(
     ),
     GateError,
 > {
+    // 尝试级追踪 root（otlp）：fallback 循环级一次，N vendor attempt 共享
+    // 同一 trace（R-otlp-001 的 N+1 形态）；追踪未装配恒 None。
+    #[cfg(feature = "otlp")]
+    let request_trace = crate::vendor::manager::VendorManager::begin_request_trace(
+        &state.config,
+        options.traceparent.as_deref(),
+    );
+    #[cfg(feature = "otlp")]
+    let options = match &request_trace {
+        Some(trace) => options.with_trace(std::sync::Arc::clone(trace)),
+        None => options,
+    };
+
     let mut decision = initial;
     trail.record(&decision.vendor.id);
     // 排除集带原因（Failed/Throttled），Throttled 供 Retry-After 提示判定
@@ -582,49 +611,67 @@ pub(crate) async fn execute_request_with_fallback(
         budget_anchor,
     } = build_fallback_budget(state, model);
 
-    loop {
-        match state
-            .vendor_manager
-            .execute_request_with_options(&decision.vendor.id, request.clone(), options.clone())
-            .await
-        {
-            Ok(response) => return Ok((response, decision)),
-            Err(e) => {
-                let triggered = chain
-                    .as_ref()
-                    .map(|c| c.should_trigger(&e))
-                    .unwrap_or(false);
-                let reason = exclusion_reason(state, &decision.vendor.id, &e).await;
-                excluded.push((decision.vendor.id.clone(), reason));
-                if !triggered || excluded.len() as u32 >= max_attempts {
-                    // trigger/预算耗尽收尾（全 Throttled 且 hint 开启 → AllVendorsThrottled）
-                    return Err(finalize_fallback_error(state, e, &excluded).await);
-                }
-                // 跨 vendor 累计等待超预算 → 放弃换路
-                if let Some(b) = budget {
-                    if crate::utils::retry::budget_exceeded(budget_anchor, b, Duration::ZERO) {
+    let outcome: Result<
+        (
+            crate::protocol::UnifiedResponse,
+            crate::router::RoutingDecision,
+        ),
+        GateError,
+    > = async {
+        loop {
+            match state
+                .vendor_manager
+                .execute_request_with_options(&decision.vendor.id, request.clone(), options.clone())
+                .await
+            {
+                Ok(response) => return Ok((response, decision)),
+                Err(e) => {
+                    let triggered = chain
+                        .as_ref()
+                        .map(|c| c.should_trigger(&e))
+                        .unwrap_or(false);
+                    let reason = exclusion_reason(state, &decision.vendor.id, &e).await;
+                    excluded.push((decision.vendor.id.clone(), reason));
+                    if !triggered || excluded.len() as u32 >= max_attempts {
+                        // trigger/预算耗尽收尾（全 Throttled 且 hint 开启 → AllVendorsThrottled）
                         return Err(finalize_fallback_error(state, e, &excluded).await);
                     }
-                }
-                tracing::warn!(
-                    vendor = %decision.vendor.id,
-                    error = %e,
-                    excluded = ?excluded,
-                    "{}",
-                    t("api-vendor-failed-rerouting")
-                );
-                let excluded_ids: Vec<String> = excluded.iter().map(|(id, _)| id.clone()).collect();
-                match state.router.route_excluding(model, &excluded_ids).await {
-                    Ok(next) => {
-                        trail.record(&next.vendor.id);
-                        decision = next;
+                    // 跨 vendor 累计等待超预算 → 放弃换路
+                    if let Some(b) = budget {
+                        if crate::utils::retry::budget_exceeded(budget_anchor, b, Duration::ZERO) {
+                            return Err(finalize_fallback_error(state, e, &excluded).await);
+                        }
                     }
-                    // 无可用候选：收尾后冒泡（第二耗尽分支）
-                    Err(_) => return Err(finalize_fallback_error(state, e, &excluded).await),
+                    tracing::warn!(
+                        vendor = %decision.vendor.id,
+                        error = %e,
+                        excluded = ?excluded,
+                        "{}",
+                        t("api-vendor-failed-rerouting")
+                    );
+                    let excluded_ids: Vec<String> =
+                        excluded.iter().map(|(id, _)| id.clone()).collect();
+                    match state.router.route_excluding(model, &excluded_ids).await {
+                        Ok(next) => {
+                            trail.record(&next.vendor.id);
+                            decision = next;
+                        }
+                        // 无可用候选：收尾后冒泡（第二耗尽分支）
+                        Err(_) => return Err(finalize_fallback_error(state, e, &excluded).await),
+                    }
                 }
             }
         }
     }
+    .await;
+    #[cfg(feature = "otlp")]
+    if let Some(trace) = &request_trace {
+        match &outcome {
+            Ok(_) => std::sync::Arc::clone(trace).end(true, None),
+            Err(e) => std::sync::Arc::clone(trace).end(false, Some(e.error_code())),
+        }
+    }
+    outcome
 }
 
 /// 透传非流式 / 两条流式路径的换 vendor fallback 循环（仅
@@ -638,15 +685,27 @@ pub(crate) async fn execute_dispatch_with_fallback<T, F, Fut>(
     model: &str,
     initial: crate::router::RoutingDecision,
     same_protocol_only: bool,
+    #[cfg_attr(not(feature = "otlp"), allow(unused_variables))] traceparent: Option<String>,
     dispatch: F,
     trail: &mut crate::vendor::resilience::AttemptTrail,
 ) -> Result<(T, crate::router::RoutingDecision), GateError>
 where
     // 派发闭包持有决策所有权并返回不借用环境的 future：稳定 Rust 的
     // Fn->Fut 无法表达借用闭包参数的高阶生命周期（async-book 限制）。
-    F: Fn(crate::router::RoutingDecision) -> Fut,
+    // 第二参 = 追踪请求域（otlp：root 句柄，闭包填入派发 options）。
+    F: Fn(crate::router::RoutingDecision, DispatchTrace) -> Fut,
     Fut: std::future::Future<Output = Result<T, GateError>>,
 {
+    // 尝试级追踪 root（otlp）：fallback 循环级一次，N vendor attempt 共享
+    // 同一 trace；追踪未装配恒 None（非 otlp 组装 ()）。
+    #[cfg(feature = "otlp")]
+    let request_trace = crate::vendor::manager::VendorManager::begin_request_trace(
+        &state.config,
+        traceparent.as_deref(),
+    );
+    #[cfg(not(feature = "otlp"))]
+    let _ = traceparent;
+
     let expected_type = initial.vendor.type_.clone();
     let mut decision = initial;
     trail.record(&decision.vendor.id);
@@ -658,50 +717,65 @@ where
         budget_anchor,
     } = build_fallback_budget(state, model);
 
-    loop {
-        match dispatch(decision.clone()).await {
-            Ok(response) => return Ok((response, decision)),
-            Err(e) => {
-                let triggered = chain
-                    .as_ref()
-                    .map(|c| c.should_trigger(&e))
-                    .unwrap_or(false);
-                excluded.push(decision.vendor.id.clone());
-                if !triggered || excluded.len() as u32 >= max_attempts {
-                    return Err(e);
-                }
-                // 跨 vendor 累计等待超预算 → 放弃换路，返回最后错误（保留 5xx/429 语义）
-                if let Some(b) = budget {
-                    if crate::utils::retry::budget_exceeded(budget_anchor, b, Duration::ZERO) {
+    let outcome: Result<(T, crate::router::RoutingDecision), GateError> = async {
+        loop {
+            #[cfg(feature = "otlp")]
+            let dispatch_trace: DispatchTrace = request_trace.clone();
+            #[cfg(not(feature = "otlp"))]
+            let dispatch_trace = ();
+            match dispatch(decision.clone(), dispatch_trace).await {
+                Ok(response) => return Ok((response, decision)),
+                Err(e) => {
+                    let triggered = chain
+                        .as_ref()
+                        .map(|c| c.should_trigger(&e))
+                        .unwrap_or(false);
+                    excluded.push(decision.vendor.id.clone());
+                    if !triggered || excluded.len() as u32 >= max_attempts {
                         return Err(e);
                     }
+                    // 跨 vendor 累计等待超预算 → 放弃换路，返回最后错误（保留 5xx/429 语义）
+                    if let Some(b) = budget {
+                        if crate::utils::retry::budget_exceeded(budget_anchor, b, Duration::ZERO) {
+                            return Err(e);
+                        }
+                    }
+                    tracing::warn!(
+                        vendor = %decision.vendor.id,
+                        error = %e,
+                        excluded = ?excluded,
+                        "{}",
+                        t("api-vendor-failed-rerouting-pre-stream")
+                    );
+                    let next = match next_compatible_route(
+                        state,
+                        model,
+                        &expected_type,
+                        same_protocol_only,
+                        max_attempts,
+                        &mut excluded,
+                    )
+                    .await
+                    {
+                        Some(n) => n,
+                        // 无可用候选 / 排除达上限：以原错误冒泡（保留 5xx/429 语义）
+                        None => return Err(e),
+                    };
+                    trail.record(&next.vendor.id);
+                    decision = next;
                 }
-                tracing::warn!(
-                    vendor = %decision.vendor.id,
-                    error = %e,
-                    excluded = ?excluded,
-                    "{}",
-                    t("api-vendor-failed-rerouting-pre-stream")
-                );
-                let next = match next_compatible_route(
-                    state,
-                    model,
-                    &expected_type,
-                    same_protocol_only,
-                    max_attempts,
-                    &mut excluded,
-                )
-                .await
-                {
-                    Some(n) => n,
-                    // 无可用候选 / 排除达上限：以原错误冒泡（保留 5xx/429 语义）
-                    None => return Err(e),
-                };
-                trail.record(&next.vendor.id);
-                decision = next;
             }
         }
     }
+    .await;
+    #[cfg(feature = "otlp")]
+    if let Some(trace) = &request_trace {
+        match &outcome {
+            Ok(_) => std::sync::Arc::clone(trace).end(true, None),
+            Err(e) => std::sync::Arc::clone(trace).end(false, Some(e.error_code())),
+        }
+    }
+    outcome
 }
 
 // tests：fallback 预算与守门器
@@ -899,8 +973,9 @@ mod fallback_guard_tests {
         pre_sleep: Duration,
     ) -> impl Fn(
         crate::router::RoutingDecision,
+        DispatchTrace,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), GateError>>>> {
-        move |_d: crate::router::RoutingDecision| {
+        move |_d: crate::router::RoutingDecision, _trace: DispatchTrace| {
             let calls = calls.clone();
             Box::pin(async move {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -941,6 +1016,7 @@ mod fallback_guard_tests {
             "shared-model",
             initial,
             false,
+            None,
             failing_dispatcher(calls.clone(), Duration::ZERO),
             &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
@@ -977,6 +1053,7 @@ mod fallback_guard_tests {
             "shared-model",
             initial,
             false,
+            None,
             failing_dispatcher(calls.clone(), Duration::ZERO),
             &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
@@ -1016,6 +1093,7 @@ mod fallback_guard_tests {
             "shared-model",
             initial,
             false,
+            None,
             failing_dispatcher(calls.clone(), Duration::from_secs(2)),
             &mut crate::vendor::resilience::AttemptTrail::new(true),
         )

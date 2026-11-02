@@ -33,6 +33,9 @@ pub struct ServerHandle {
     /// OTLP 桥轮询任务句柄（shutdown 首阶段 abort）。
     #[cfg(feature = "otlp")]
     otlp_task: Option<tokio::task::JoinHandle<()>>,
+    /// OTLP 尝试级追踪控制器（shutdown 时 flush + 停 processor + uninstall）。
+    #[cfg(feature = "otlp")]
+    otlp_trace: Option<Arc<crate::utils::otlp_export::TraceController>>,
     /// 目录同步周期任务句柄（catalog-sync feature；shutdown 首阶段 abort）。
     #[cfg(feature = "catalog-sync")]
     catalog_sync_task: Option<tokio::task::JoinHandle<()>>,
@@ -64,6 +67,8 @@ impl ServerHandle {
             otlp_bridge: assembly.otlp_bridge,
             #[cfg(feature = "otlp")]
             otlp_task: assembly.otlp_task,
+            #[cfg(feature = "otlp")]
+            otlp_trace: assembly.otlp_trace,
             #[cfg(feature = "catalog-sync")]
             catalog_sync_task: assembly.catalog_sync_task,
             #[cfg(feature = "grpc")]
@@ -115,14 +120,26 @@ impl ServerHandle {
         let otlp_teardown: crate::server::shutdown::OtlpTeardownHook = {
             #[cfg(feature = "otlp")]
             {
-                self.otlp_bridge.clone().map(|bridge| {
+                let otlp_trace = self.otlp_trace.clone();
+                self.otlp_bridge.clone().map(move |bridge| {
                     Arc::new(move || {
                         // flush 与 shutdown 各自独立：末次导出失败（端点不可达、
                         // 接收端 4xx）不代表 worker 线程该泄漏。调度顺序保留
                         // flush 在前，错误合并上报。
                         let flush_err = bridge.force_flush().err();
                         let shutdown_err = bridge.shutdown().err();
-                        if let Some(e) = flush_err.or(shutdown_err) {
+                        // 尝试级追踪同点收尾：flush 最后一跳 + 停 processor +
+                        // uninstall（best-effort：无 span 丢失承诺，失败只告警）
+                        let trace_flush_err =
+                            otlp_trace.as_ref().and_then(|t| t.force_flush().err());
+                        let trace_shutdown_err =
+                            otlp_trace.as_ref().and_then(|t| t.shutdown().err());
+                        crate::utils::otlp_export::uninstall();
+                        if let Some(e) = flush_err
+                            .or(shutdown_err)
+                            .or(trace_flush_err)
+                            .or(trace_shutdown_err)
+                        {
                             tracing::warn!(
                                 "{}",
                                 t_args("main-otlp-teardown-failed", &[("error", e.to_string())])

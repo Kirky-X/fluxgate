@@ -460,3 +460,156 @@ mod stats_endpoint {
         assert!(!text.contains("{{FLUX_"), "stats 响应不得含占位符: {text}");
     }
 }
+
+/// 台账 admin 面（R-masking-002 验收）：关闭语义 + 开启可查。
+mod ledger_endpoint {
+    use fluxgate::api::admin;
+    use fluxgate::config::{ConfigManager, MaskingLedgerSection, MaskingSection};
+    use fluxgate::masking::{MaskGate, MaskingLedger, RuleDetector};
+    use fluxgate::utils::metrics::GlobalMetrics;
+    use fluxgate::vendor::VendorManager;
+    use std::sync::Arc;
+
+    async fn api_state(
+        cm: Arc<ConfigManager>,
+        vm: Arc<VendorManager>,
+    ) -> Arc<fluxgate::api::ApiState> {
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("内存库");
+        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+        let router = Arc::new(fluxgate::router::Router::new(
+            Arc::clone(&cm),
+            Arc::new(VendorManager::new(Arc::clone(&cm))),
+        ));
+        Arc::new(fluxgate::api::ApiState {
+            affinity_writer: None,
+            config: cm,
+            vendor_manager: vm,
+            router,
+            openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
+            anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
+            database: Arc::new(fluxgate::database::Database { pool, repository }),
+            logger: None,
+            pre_aggregator: None,
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+            difficulty: None,
+            responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
+        })
+    }
+
+    /// `[masking].ledger.enabled=false`（默认）：404 明确关闭语义。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ledger_disabled_yields_404() {
+        let cm = Arc::new(ConfigManager::new(crate::common::test_config(vec![])));
+        let vm = Arc::new(VendorManager::new(Arc::clone(&cm)));
+        let gate = Arc::new(MaskGate::new(
+            Arc::clone(&cm),
+            Arc::new(GlobalMetrics::new()),
+        ));
+        vm.set_mask_gate(gate);
+        let state = api_state(Arc::clone(&cm), vm).await;
+        let app = axum::Router::new()
+            .route(
+                "/admin/masking/ledger",
+                axum::routing::get(admin::masking_ledger),
+            )
+            .with_state(state);
+        use tower::ServiceExt;
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/admin/masking/ledger")
+                    .body(axum::body::Body::empty())
+                    .expect("请求构造"),
+            )
+            .await
+            .expect("请求");
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    /// enabled=true：掩码命中落台账，查询返回 per-kind 聚合与明细，
+    /// 响应不含原值；明细分页 page_size=1 生效。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ledger_enabled_serves_aggregate_and_entries() {
+        let secret = "sk-ledger-admin-0123456789abcdefgh";
+        let mut config = crate::common::test_config(vec![]);
+        config.masking = MaskingSection {
+            enabled: true,
+            ledger: MaskingLedgerSection {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let cm = Arc::new(ConfigManager::new(config));
+        let vm = Arc::new(VendorManager::new(Arc::clone(&cm)));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ledger = Arc::new(MaskingLedger::with_dir(
+            Some(dir.path().to_path_buf()),
+            Arc::clone(&cm),
+        ));
+        let detector: Arc<dyn fluxgate::masking::MaskDetector> =
+            Arc::new(RuleDetector::build(&[], false, &[]).expect("内置检测器"));
+        let gate = Arc::new(
+            MaskGate::new(Arc::clone(&cm), Arc::new(GlobalMetrics::new()))
+                .with_detector(detector)
+                .with_ledger(ledger),
+        );
+        vm.set_mask_gate(Arc::clone(&gate));
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": format!("see {secret} and again {secret}")}]
+        });
+        let (_, _ticket) = gate.mask_body(body).expect("掩码成功");
+        let state = api_state(Arc::clone(&cm), vm).await;
+        let app = axum::Router::new()
+            .route(
+                "/admin/masking/ledger",
+                axum::routing::get(admin::masking_ledger),
+            )
+            .with_state(state);
+        use tower::ServiceExt;
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/admin/masking/ledger?page=1&page_size=1")
+                    .body(axum::body::Body::empty())
+                    .expect("请求构造"),
+            )
+            .await
+            .expect("请求");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(value["enabled"], serde_json::json!(true));
+        assert_eq!(value["total"], serde_json::json!(2), "两次命中各记一条");
+        assert_eq!(
+            value["per_kind"]["api_key"],
+            serde_json::json!(2),
+            "per-kind 聚合在位"
+        );
+        assert_eq!(
+            value["entries"].as_array().expect("entries").len(),
+            1,
+            "分页生效"
+        );
+        assert!(!text.contains(secret), "台账查询响应不得含原值: {text}");
+    }
+}

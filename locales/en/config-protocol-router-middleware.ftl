@@ -175,6 +175,11 @@ config-oidc-rule-duplicate = [[auth.oidc_rules.rules]] declares duplicate issuer
 config-masking-kind-invalid = Invalid masking kind: { $kind } (valid: api_key, private_key, token, email, card, id, custom)
 config-masking-action-invalid = Invalid masking action: { $action } (valid: mask, warn, block)
 config-masking-rule-invalid = Invalid masking rule (regex compile failed): { $detail }
+config-masking-ledger-retention-invalid = Invalid masking ledger retention days: { $value } (1..=3650)
+config-masking-ledger-max-bytes-invalid = Invalid masking ledger total size limit: { $value } bytes (>=4096)
+config-otlp-tracing-sample-ratio-out-of-range = Invalid OTLP tracing sample ratio: { $value } (0.0..=1.0)
+config-otlp-tracing-protocol-invalid = Invalid OTLP tracing transport protocol: { $value } (valid: http, grpc)
+config-otlp-tracing-timeout-secs-out-of-range = Invalid OTLP tracing export timeout: { $value } seconds (1..=300)
 masking-rule-build-failed = masking detector rebuild failed on a custom rule; rebuilt without custom rules (detections continue on builtin patterns and words)
 
 config-affinity-session-headers-blank = [routing.affinity] session_headers contains a blank header name (an empty name is meaningless and swallows a probe slot)

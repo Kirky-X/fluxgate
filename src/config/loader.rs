@@ -154,8 +154,31 @@ impl Default for super::MaskingSection {
             words_any_case: false,
             rules: Vec::new(),
             allow: Vec::new(),
+            ledger: Default::default(),
         }
     }
+}
+
+/// `[masking.ledger]` 段 serde 缺省单源（enabled=false、保留 30 天、总量
+/// 100MiB）。Default 实现落 loader（规则 14）。
+impl Default for super::MaskingLedgerSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            retention_days: default_masking_ledger_retention_days(),
+            max_total_bytes: default_masking_ledger_max_total_bytes(),
+        }
+    }
+}
+
+/// `[masking.ledger]` retention_days 缺省 30 天。
+pub(crate) fn default_masking_ledger_retention_days() -> u32 {
+    30
+}
+
+/// `[masking.ledger]` max_total_bytes 缺省 100MiB。
+pub(crate) fn default_masking_ledger_max_total_bytes() -> u64 {
+    100 * 1024 * 1024
 }
 
 /// 校验配置 — 加载路径与更新路径共用；管理面弱密钥委托 confers
@@ -272,6 +295,22 @@ fn validate_masking(config: &Config) -> Result<(), GateError> {
         crate::masking::RuleDetector::validate_rules(&m.rules).map_err(|e| GateError::Config {
             message: t_args("config-masking-rule-invalid", &[("detail", e.to_string())]),
         })?;
+    }
+    if m.ledger.retention_days == 0 || m.ledger.retention_days > 3650 {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-masking-ledger-retention-invalid",
+                &[("value", m.ledger.retention_days.to_string())],
+            ),
+        });
+    }
+    if m.ledger.max_total_bytes < 4096 {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-masking-ledger-max-bytes-invalid",
+                &[("value", m.ledger.max_total_bytes.to_string())],
+            ),
+        });
     }
     Ok(())
 }
@@ -1278,8 +1317,38 @@ impl Default for crate::config::OtlpSection {
             endpoint: String::new(),
             interval_secs: default_otlp_interval_secs(),
             timeout_secs: default_otlp_timeout_secs(),
+            tracing: Default::default(),
         }
     }
+}
+
+/// `[otlp.tracing]` 段 serde 缺省单源（enabled=false + ratio 0.0 = 双零默认
+/// 关）。Default 实现落 loader（规则 14）。
+impl Default for crate::config::OtlpTracingSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sample_ratio: default_otlp_tracing_sample_ratio(),
+            endpoint: String::new(),
+            protocol: default_otlp_tracing_protocol(),
+            timeout_secs: default_otlp_tracing_timeout_secs(),
+        }
+    }
+}
+
+/// `[otlp.tracing]` sample_ratio 缺省 0.0（全不采样）。
+pub(crate) fn default_otlp_tracing_sample_ratio() -> f64 {
+    0.0
+}
+
+/// `[otlp.tracing]` 传输协议缺省 `http`。
+pub(crate) fn default_otlp_tracing_protocol() -> String {
+    "http".to_string()
+}
+
+/// `[otlp.tracing]` 单次导出超时缺省 10s。
+pub(crate) fn default_otlp_tracing_timeout_secs() -> u64 {
+    10
 }
 
 /// `[otlp]` 段边界校验：推送周期 1..=86400s（1s..1d）、超时 1..=300s、
@@ -1304,48 +1373,80 @@ fn validate_otlp(config: &Config) -> Result<(), GateError> {
         });
     }
     if otlp.enabled {
-        let endpoint = otlp.endpoint.trim();
-        if endpoint.is_empty() {
-            return Err(GateError::Config {
-                message: t_args("config-otlp-endpoint-required", &[]),
-            });
-        }
-        // 只接受 http/https：其它 scheme（file:/ftp:）在 OTLP builder 内部
-        // 才报错，配置期就拒掉更早暴露；同时禁止 userinfo（凭证会随启动
-        // 日志外泄）。此处按字符串判定而非 `url::Url`——`url` 是 optional
-        // 依赖（仅 database/sdk 启用），config 层无条件编译，引用它会打断
-        // `--no-default-features` 构建。
-        let (scheme, rest) = endpoint
-            .split_once("://")
-            .ok_or_else(|| GateError::Config {
-                message: t_args(
-                    "config-otlp-endpoint-invalid",
-                    &[("value", endpoint.to_string())],
-                ),
-            })?;
-        if !matches!(scheme, "http" | "https") {
-            return Err(GateError::Config {
-                message: t_args(
-                    "config-otlp-endpoint-scheme",
-                    &[("value", scheme.to_string())],
-                ),
-            });
-        }
-        // authority 段 = 首个 `/` 之前；含 `@` 即 userinfo。
-        let authority = rest.split('/').next().unwrap_or_default();
-        if authority.contains('@') {
-            return Err(GateError::Config {
-                message: t_args("config-otlp-endpoint-userinfo", &[]),
-            });
-        }
-        if authority.is_empty() {
-            return Err(GateError::Config {
-                message: t_args(
-                    "config-otlp-endpoint-invalid",
-                    &[("value", endpoint.to_string())],
-                ),
-            });
-        }
+        validate_otlp_endpoint(otlp.endpoint.trim())?;
+    }
+    let tracing = &otlp.tracing;
+    if !(0.0..=1.0).contains(&tracing.sample_ratio) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-otlp-tracing-sample-ratio-out-of-range",
+                &[("value", tracing.sample_ratio.to_string())],
+            ),
+        });
+    }
+    if !matches!(tracing.protocol.as_str(), "http" | "grpc") {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-otlp-tracing-protocol-invalid",
+                &[("value", tracing.protocol.clone())],
+            ),
+        });
+    }
+    if !(1..=300).contains(&tracing.timeout_secs) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-otlp-tracing-timeout-secs-out-of-range",
+                &[("value", tracing.timeout_secs.to_string())],
+            ),
+        });
+    }
+    if tracing.enabled {
+        validate_otlp_endpoint(tracing.endpoint.trim())?;
+    }
+    Ok(())
+}
+
+/// OTLP endpoint 校验（metrics 与 tracing 两面共用）：非空、只接受
+/// http/https（其它 scheme 在 OTLP builder 内部才报错，配置期就拒掉更早
+/// 暴露）、禁止 userinfo（凭证会随启动日志外泄）。此处按字符串判定而非
+/// `url::Url`——`url` 是 optional 依赖（仅 database/sdk 启用），config 层
+/// 无条件编译，引用它会打断 `--no-default-features` 构建。
+fn validate_otlp_endpoint(endpoint: &str) -> Result<(), GateError> {
+    if endpoint.is_empty() {
+        return Err(GateError::Config {
+            message: t_args("config-otlp-endpoint-required", &[]),
+        });
+    }
+    let (scheme, rest) = endpoint
+        .split_once("://")
+        .ok_or_else(|| GateError::Config {
+            message: t_args(
+                "config-otlp-endpoint-invalid",
+                &[("value", endpoint.to_string())],
+            ),
+        })?;
+    if !matches!(scheme, "http" | "https") {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-otlp-endpoint-scheme",
+                &[("value", scheme.to_string())],
+            ),
+        });
+    }
+    // authority 段 = 首个 `/` 之前；含 `@` 即 userinfo。
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err(GateError::Config {
+            message: t_args("config-otlp-endpoint-userinfo", &[]),
+        });
+    }
+    if authority.is_empty() {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-otlp-endpoint-invalid",
+                &[("value", endpoint.to_string())],
+            ),
+        });
     }
     Ok(())
 }

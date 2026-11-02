@@ -204,13 +204,14 @@ subtle = { version = "2.6", default-features = false, features = ["std"], option
 cocoon = { version = "0.5", default-features = false, features = ["std", "getrandom", "thiserror"], optional = true }
 secrecy = { version = "0.10", default-features = false, optional = true }
 
-# OTLP 指标导出（otlp feature，usage-observability）：/metrics 文本 + CostTracker 快照
-# 桥接为 SdkMeterProvider http-proto 推送。仅 metrics 面（免 trace/logs proto 生成代码之外的
-# API 面）；http-proto 自带 otlp 内部 trace/metrics 面（proto 生成不可拆）。reqwest 与主图
-# 同 0.13 收敛单构建；rustls TLS 令 otlp 单独组合也具备 https 端点能力。
-opentelemetry = { version = "0.33", default-features = false, features = ["metrics"], optional = true }
-opentelemetry_sdk = { version = "0.33", default-features = false, features = ["metrics"], optional = true }
-opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
+# OTLP 指标导出 + 尝试级追踪（otlp feature，usage-observability）：/metrics 文本
+# + CostTracker 快照桥接为 SdkMeterProvider http-proto 推送；trace 面承载
+# vendor attempt 级 span（magpie-absorb-r1 R-otlp-001/002，grpc-tonic 复用锁内
+# tonic 0.14）。http-proto 自带 otlp 内部 trace/metrics 面（proto 生成不可拆）。
+# reqwest 与主图同 0.13 收敛单构建；rustls TLS 令 otlp 单独组合也具备 https 端点能力。
+opentelemetry = { version = "0.33", default-features = false, features = ["metrics", "trace"], optional = true }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["metrics", "trace"], optional = true }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "grpc-tonic", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
 
 # JWT 验签（oidc feature，auth-and-masking R-auth-001/002）：RS256/ES256 走
 # rust_crypto 纯 Rust 集（rsa+p256+sha2+hmac），免 C 工具链；use_pem 不启用
@@ -236,7 +237,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 mockito = { version = "1", default-features = false }
 # OTLP 桥测试用 InMemory recorder：sdk 的 testing 面（resolver v2 下仅并入测试目标，
 # 正常构建不含）；metrics 面与主 optional 条目联合去重
-opentelemetry_sdk = { version = "0.33", default-features = false, features = ["metrics", "testing"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["metrics", "trace", "testing"] }
 # 测试需注入 limiteron MockClock（假时钟驱动熔断超时 / 限流窗口重置）；MockClock 仅在 test-clock feature 下公开。
 limiteron = { version = "0.3.0-rc.8", default-features = false, features = ["test-clock"] }
 # Criterion 组件级基准（透传/转换/路由决策）。只留 cargo_bench_support；裁掉 plotters（HTML 图）与 rayon（单机基线，单线程统计数值等价）。

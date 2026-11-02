@@ -34,6 +34,11 @@ pub mod replay;
 #[cfg(feature = "otlp")]
 pub mod otlp;
 
+// OTLP 尝试级追踪（usage-observability R-otlp-001/002）：与 otlp.rs（Prometheus
+// 文本桥）职责分离——本模块是 trace 面（span），otlp.rs 是 metrics 面。
+#[cfg(feature = "otlp")]
+pub mod otlp_export;
+
 #[cfg(feature = "vendor-management")]
 pub use metrics::{GlobalMetrics, MetricsSnapshot, VendorMetrics};
 pub use retry::{extract_status_code, ErrorCategory};

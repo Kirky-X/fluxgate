@@ -58,6 +58,8 @@ pub struct MaskGate {
     config: Arc<ConfigManager>,
     metrics: Arc<GlobalMetrics>,
     registry: Arc<PlaceholderRegistry>,
+    /// 审计台账（`[masking].ledger.enabled` 热读门；观测旁路）。
+    ledger: Arc<super::MaskingLedger>,
     /// 惰性构建/指纹变更重建的策略面（检测器 + 动作映射）。
     policy: RwLock<Option<Arc<PolicySurface>>>,
     /// 测试注入的固定检测器（Some 时只替换检测器，动作面仍按配置缓存）。
@@ -78,9 +80,10 @@ impl std::fmt::Debug for MaskGate {
 }
 
 impl MaskGate {
-    /// 由配置管理器构造门（策略面按 `[masking]` 惰性构建）。
+    /// 由配置管理器构造门（策略面按 `[masking]` 惰性构建；台账同源装配）。
     pub fn new(config: Arc<ConfigManager>, metrics: Arc<GlobalMetrics>) -> Self {
         Self {
+            ledger: Arc::new(super::MaskingLedger::from_config(Arc::clone(&config))),
             config,
             metrics,
             registry: Arc::new(PlaceholderRegistry::new()),
@@ -97,9 +100,20 @@ impl MaskGate {
         self
     }
 
+    /// 注入台账实例（测试/嵌入面；生产走 `from_config` 装配 home 目录）。
+    pub fn with_ledger(mut self, ledger: Arc<super::MaskingLedger>) -> Self {
+        self.ledger = ledger;
+        self
+    }
+
     /// 占位符注册表（流式/整量还原共用同一映射面）。
     pub fn registry(&self) -> Arc<PlaceholderRegistry> {
         Arc::clone(&self.registry)
+    }
+
+    /// 审计台账（admin 读取面经此访问；`[masking].ledger.enabled` 热读）。
+    pub(crate) fn ledger(&self) -> Arc<super::MaskingLedger> {
+        Arc::clone(&self.ledger)
     }
 
     /// `[masking]`.enabled 热读。
@@ -331,7 +345,8 @@ impl MaskGate {
         }
     }
 
-    /// 命中入指标（Mask/Warn 各记一行）与 24h 统计窗。
+    /// 命中入指标（Mask/Warn 各记一行）、24h 统计窗与审计台账（ledger
+    /// enabled 热读；观测旁路 IO 失败不反压主链路）。
     fn record_hits(&self, infos: &[MaskedHitInfo], actions: &ActionMap) {
         let mut window = self.lock_window();
         let now = Instant::now();
@@ -355,6 +370,20 @@ impl MaskGate {
             window.drain(0..drop);
             self.window_evicted
                 .fetch_add(drop as u64, Ordering::Relaxed);
+        }
+        drop(window);
+        if self.ledger.enabled() {
+            let records: Vec<super::ledger::LedgerRecord> = infos
+                .iter()
+                .map(|info| super::ledger::LedgerRecord {
+                    kind: info.kind.as_str().to_string(),
+                    finder: info.finder.clone(),
+                    placeholder: info.placeholder.clone(),
+                    first: info.hint_first,
+                    len: info.len,
+                })
+                .collect();
+            self.ledger.record(&records);
         }
     }
 

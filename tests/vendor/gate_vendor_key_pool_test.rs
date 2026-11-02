@@ -571,6 +571,9 @@ async fn key_attribution_sink_records_attempted_key_fingerprint() {
             fluxgate::vendor::manager::VendorCallOptions {
                 anthropic_beta: None,
                 served_key_sink: Some(sink1.clone()),
+                traceparent: None,
+                #[cfg(feature = "otlp")]
+                trace: None,
             },
         )
         .await;
@@ -590,6 +593,9 @@ async fn key_attribution_sink_records_attempted_key_fingerprint() {
             fluxgate::vendor::manager::VendorCallOptions {
                 anthropic_beta: None,
                 served_key_sink: Some(sink2.clone()),
+                traceparent: None,
+                #[cfg(feature = "otlp")]
+                trace: None,
             },
         )
         .await

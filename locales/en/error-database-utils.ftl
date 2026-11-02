@@ -74,6 +74,8 @@ database-affinity-sticks-read-failed = affinity stick read failed: { $error }
 # ---- masking: 出站掩码（feature masking；错误面 + config 校验面）----
 masking-unavailable = Request refused: outbound masking is unavailable (fail-closed, never send raw)
 masking-blocked = Request blocked: sensitive data of kind { $kind } is not allowed to leave
+masking-pepper-degraded = Mask pepper degraded to in-process random ({ $stage }: { $detail }); placeholder determinism across processes/restarts does not hold
+masking-ledger-io-failed = Masking ledger IO failed ({ $op }: { $detail }); observability side-path degraded without affecting requests
 
 # ---- cost-replay: 离线成本回放 CLI（bin fluxgate-replay）----
 replay-cli-usage = usage: fluxgate-replay --db <sqlite-path|url> --from <unix|RFC3339> --to <unix|RFC3339> [--config <path>] [--scenario affinity|cache_ttl|all] [--max-rows <n>] [--json]

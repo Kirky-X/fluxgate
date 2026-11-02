@@ -14,13 +14,20 @@ use super::{MaskAction, MaskDetector, MaskError, MaskKind, MaskTicket, Placehold
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// 单次掩码命中元数据（种类/长度）——admin 统计面口径，不含值本身
-///（值前缀也不携带：任何出口面都不落原值片段）。
+/// 单次掩码命中元数据（种类/长度/来源/首字符/占位符）——admin 统计面与
+/// 审计台账口径，不含值本身（唯一值片段是台账 hint 的单首字符，见
+/// `ledger` 模块与 delta spec R-masking-002 的显式约定）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaskedHitInfo {
     pub kind: MaskKind,
     /// 原值字节长度
     pub len: usize,
+    /// 检测来源（inklog pattern 名 / custom_rule_N / word）
+    pub finder: String,
+    /// 值首字符（台账 hint；Warn 未替换同样携带）
+    pub hint_first: char,
+    /// 替换产生的占位符（Warn 动作未替换为空串）
+    pub placeholder: String,
 }
 
 /// kind → 动作映射（`[masking].actions` 消费面）；未配置种类缺省
@@ -178,15 +185,25 @@ fn mask_string(
     let original = s.clone();
     for hit in applied.iter().rev() {
         let value = &original[hit.span.clone()];
-        infos.push(MaskedHitInfo {
-            kind: hit.kind,
-            len: value.len(),
-        });
         if actions.resolve(hit.kind) == MaskAction::Warn {
+            infos.push(MaskedHitInfo {
+                kind: hit.kind,
+                len: value.len(),
+                finder: hit.finder.clone(),
+                hint_first: value.chars().next().unwrap_or('?'),
+                placeholder: String::new(),
+            });
             continue;
         }
         let placeholder = registry.mask(hit.kind, value);
         ticket.record(&placeholder);
+        infos.push(MaskedHitInfo {
+            kind: hit.kind,
+            len: value.len(),
+            finder: hit.finder.clone(),
+            hint_first: value.chars().next().unwrap_or('？'),
+            placeholder: placeholder.clone(),
+        });
         s.replace_range(hit.span.clone(), &placeholder);
     }
     Ok(())

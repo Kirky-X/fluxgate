@@ -83,6 +83,9 @@ pub async fn rerank(
             crate::vendor::manager::VendorCallOptions {
                 anthropic_beta: None,
                 served_key_sink: Some(served_sink.clone()),
+                traceparent: crate::api::inbound_traceparent(&headers),
+                #[cfg(feature = "otlp")]
+                trace: None,
             },
         )
         .await

@@ -79,6 +79,9 @@ pub async fn messages(
     let call_options = crate::vendor::manager::VendorCallOptions {
         anthropic_beta: hints.anthropic_beta.clone(),
         served_key_sink: Some(served_key_sink.clone()),
+        traceparent: crate::api::inbound_traceparent(&headers),
+        #[cfg(feature = "otlp")]
+        trace: None,
     };
     let request_batch = hints.batch;
     let session_key = hints.effective_session_key(&body);
@@ -176,10 +179,17 @@ async fn chat_passthrough_stream(
             model,
             decision.clone(),
             true,
-            |d| {
+            ctx.call_options.traceparent.clone(),
+            #[cfg_attr(not(feature = "otlp"), allow(unused_variables))]
+            |d, trace| {
                 let vendor_manager = state.vendor_manager.clone();
                 let body = body.clone();
                 let call_options = ctx.call_options.clone();
+                #[cfg(feature = "otlp")]
+                let call_options = match trace {
+                    Some(t) => call_options.with_trace(t),
+                    None => call_options,
+                };
                 async move {
                     vendor_manager
                         .execute_passthrough_stream_request_with_options(
@@ -323,10 +333,17 @@ async fn chat_passthrough_json(
                             &model,
                             initial_decision.clone(),
                             true,
-                            |d| {
+                            ctx.call_options.traceparent.clone(),
+                            #[cfg_attr(not(feature = "otlp"), allow(unused_variables))]
+                            |d, trace| {
                                 let vendor_manager = state.vendor_manager.clone();
                                 let body = body.clone();
                                 let call_options = ctx.call_options.clone();
+                                #[cfg(feature = "otlp")]
+                                let call_options = match trace {
+                                    Some(t) => call_options.with_trace(t),
+                                    None => call_options,
+                                };
                                 async move {
                                     vendor_manager
                                         .execute_passthrough_request_with_options(
@@ -517,10 +534,17 @@ async fn chat_convert_stream(
             model,
             decision.clone(),
             false,
-            |d| {
+            ctx.call_options.traceparent.clone(),
+            #[cfg_attr(not(feature = "otlp"), allow(unused_variables))]
+            |d, trace| {
                 let vendor_manager = state.vendor_manager.clone();
                 let unified_request = unified_request.clone();
                 let call_options = ctx.call_options.clone();
+                #[cfg(feature = "otlp")]
+                let call_options = match trace {
+                    Some(t) => call_options.with_trace(t),
+                    None => call_options,
+                };
                 async move {
                     vendor_manager
                         .execute_stream_request_with_options(

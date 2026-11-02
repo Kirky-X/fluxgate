@@ -134,6 +134,8 @@ struct ResponsesCtx {
     store: bool,
     /// 上游键归因 sink（与派发 options 同源）——log_responses_request 落库读取。
     served_key_sink: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// 入站 W3C traceparent（otlp 尝试级追踪消费）。
+    traceparent: Option<String>,
 }
 
 impl ResponsesCtx {
@@ -169,6 +171,7 @@ pub async fn create_response(
         api_key_hash,
         store: store_wired,
         served_key_sink: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        traceparent: crate::api::inbound_traceparent(&headers),
     };
     let mut merged_items = match resolve_history(&state, &parsed, &ctx.api_key_hash).await {
         Ok(items) => items,
@@ -249,6 +252,7 @@ pub async fn create_response(
         decision,
         unified_request,
         &ctx.served_key_sink,
+        ctx.traceparent.clone(),
     )
     .await
     {
@@ -324,6 +328,9 @@ async fn stream_response(
             crate::vendor::manager::VendorCallOptions {
                 anthropic_beta: None,
                 served_key_sink: Some(ctx.served_key_sink.clone()),
+                traceparent: ctx.traceparent.clone(),
+                #[cfg(feature = "otlp")]
+                trace: None,
             },
         )
         .await;
@@ -512,6 +519,9 @@ async fn native_response(
                 crate::vendor::manager::VendorCallOptions {
                     anthropic_beta: None,
                     served_key_sink: Some(ctx.served_key_sink.clone()),
+                    traceparent: ctx.traceparent.clone(),
+                    #[cfg(feature = "otlp")]
+                    trace: None,
                 },
             )
             .await;
@@ -900,6 +910,7 @@ async fn run_background_job(
         api_key_hash: tenant.to_string(),
         store: true,
         served_key_sink: bg_sink.clone(),
+        traceparent: None,
     };
     let unified_response = match state
         .vendor_manager
@@ -909,6 +920,9 @@ async fn run_background_job(
             crate::vendor::manager::VendorCallOptions {
                 anthropic_beta: None,
                 served_key_sink: Some(bg_sink),
+                traceparent: None,
+                #[cfg(feature = "otlp")]
+                trace: None,
             },
         )
         .await
@@ -941,6 +955,7 @@ async fn dispatch_request(
     decision: RoutingDecision,
     request: UnifiedRequest,
     sink: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    traceparent: Option<String>,
 ) -> Result<(UnifiedResponse, RoutingDecision), FluxgateError> {
     #[cfg(feature = "resilience")]
     {
@@ -956,6 +971,9 @@ async fn dispatch_request(
                 crate::vendor::manager::VendorCallOptions {
                     anthropic_beta: None,
                     served_key_sink: Some(sink.clone()),
+                    traceparent: traceparent.clone(),
+                    #[cfg(feature = "otlp")]
+                    trace: None,
                 },
                 &mut trail,
             )
@@ -965,6 +983,9 @@ async fn dispatch_request(
         let opts = crate::vendor::manager::VendorCallOptions {
             anthropic_beta: None,
             served_key_sink: Some(sink.clone()),
+            traceparent: traceparent.clone(),
+            #[cfg(feature = "otlp")]
+            trace: None,
         };
         let response = state
             .vendor_manager
@@ -978,6 +999,9 @@ async fn dispatch_request(
         let opts = crate::vendor::manager::VendorCallOptions {
             anthropic_beta: None,
             served_key_sink: Some(sink.clone()),
+            traceparent: traceparent.clone(),
+            #[cfg(feature = "otlp")]
+            trace: None,
         };
         let response = state
             .vendor_manager
@@ -1408,6 +1432,7 @@ async fn persist_stream_response(
         api_key_hash: tenant_hash.to_string(),
         store: true,
         served_key_sink: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        traceparent: None,
     };
     let now = now_secs() as i64;
     if let Some(row) = build_stored_row(&ctx, parsed, response, config) {

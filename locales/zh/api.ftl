@@ -15,6 +15,8 @@ admin-only-global-model-supported = 仅支持 'global' 模型配置
 # ---- admin.rs /admin/cost 成本分账查询 ----
 admin-cost-group-by-invalid = group_by（必须为 vendor|model）
 admin-cost-date-format-invalid = { $name }（必须为 YYYY-MM-DD）
+admin-masking-ledger-date-invalid = 日期（必须为 YYYY-MM-DD）
+admin-masking-ledger-disabled = 掩码台账未启用（[masking].ledger.enabled 为 false）
 admin-cost-usage-sink-unwired = usage sink 未接线；成本分账不可用
 admin-token-stats-usage-sink-unwired = usage sink 未接线；token 统计不可用
 admin-vendor-reset-unknown-vendor = 厂商 '{ $id }'（未知厂商）

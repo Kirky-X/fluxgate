@@ -629,6 +629,9 @@ mod manager {
                 serde_json::json!({"model": "claude", "messages": []}),
                 fluxgate::vendor::VendorCallOptions {
                     served_key_sink: None,
+                    traceparent: None,
+                    #[cfg(feature = "otlp")]
+                    trace: None,
                     anthropic_beta: Some("extended-thinking-2025-01-01".into()),
                 },
             )
@@ -669,6 +672,9 @@ mod manager {
                 serde_json::json!({"model": "claude", "messages": []}),
                 fluxgate::vendor::VendorCallOptions {
                     served_key_sink: None,
+                    traceparent: None,
+                    #[cfg(feature = "otlp")]
+                    trace: None,
                     anthropic_beta: Some("extended-thinking-2025-01-01".into()),
                 },
             )

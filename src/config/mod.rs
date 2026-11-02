@@ -1510,6 +1510,28 @@ pub struct MaskingSection {
     /// 白名单（条目精确值或值前缀；命中值跳过掩码）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
+    /// `[masking.ledger]` 子段 — 掩码审计台账（观测旁路默认关；字段语义见
+    /// [`MaskingLedgerSection`]）。热读段。
+    #[serde(default)]
+    pub ledger: MaskingLedgerSection,
+}
+
+/// `[masking.ledger]` 段：掩码审计台账（feature `masking` + 本段 enabled
+/// 双门控，默认 false = 不写任何文件）。按天 JSONL 记录掩码命中元数据
+///（ts/kind/finder/placeholder/首字符 hint），**值与占位符→原值映射不落
+/// 盘**；保留上限双刀：retention_days 按天裁剪 + max_total_bytes 总量裁剪
+///（每日首写触发，删最旧）。Default 实现落 `loader`（规则 14）。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct MaskingLedgerSection {
+    /// 台账开关（默认 false = 零落盘）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 按天文件保留天数（UTC 日界；每日首写删除超期文件；1..=3650）
+    #[serde(default = "loader::default_masking_ledger_retention_days")]
+    pub retention_days: u32,
+    /// 台账目录总字节上限（每日首写超限从最旧日文件开始删除；≥4096）
+    #[serde(default = "loader::default_masking_ledger_max_total_bytes")]
+    pub max_total_bytes: u64,
 }
 
 /// `[web_search]` 段：搜索能力注入（/v1/search、/v1/fetch）。编译门是
@@ -1584,6 +1606,8 @@ pub struct UsageInsightsSection {
 ///   `http://localhost:4318/v1/metrics`）
 /// - `interval_secs`：推送周期（1..=86400，缺省 60）
 /// - `timeout_secs`：单次导出超时（1..=300，缺省 10）
+/// - `tracing`：尝试级 span 追踪子段（R-otlp-001/002；见
+///   [`OtlpTracingSection`]）
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct OtlpSection {
     #[serde(default)]
@@ -1593,6 +1617,33 @@ pub struct OtlpSection {
     #[serde(default = "loader::default_otlp_interval_secs")]
     pub interval_secs: u64,
     #[serde(default = "loader::default_otlp_timeout_secs")]
+    pub timeout_secs: u64,
+    /// `[otlp.tracing]` 子段（尝试级追踪；enabled+ratio 双零默认关）
+    #[serde(default)]
+    pub tracing: OtlpTracingSection,
+}
+
+/// `[otlp.tracing]` 子段：vendor attempt 级 span 追踪（feature `otlp`）。
+/// 双门控默认关：`enabled=false`（不装 provider）或 `sample_ratio=0.0`
+///（全不采样）→ 零 span、零网络导出。字段热读与否：装配期一次性（启动
+/// 即定），与 metrics 桥同口径。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct OtlpTracingSection {
+    /// 追踪总开关（默认 false = 不装配 provider，零 span）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 采样比（0.0..=1.0，默认 0.0 = 全不采样；TraceIdRatioBased 按.trace_id
+    /// 确定性判定，对远端父上下文同样按比例重判——本地确定性优先）
+    #[serde(default = "loader::default_otlp_tracing_sample_ratio")]
+    pub sample_ratio: f64,
+    /// traces 导出端点（enabled 时必填，如 `http://localhost:4318/v1/traces`）
+    #[serde(default)]
+    pub endpoint: String,
+    /// 传输协议 `http`（http-proto）| `grpc`（grpc-tonic），缺省 `http`
+    #[serde(default = "loader::default_otlp_tracing_protocol")]
+    pub protocol: String,
+    /// 单次导出超时（1..=300，缺省 10）
+    #[serde(default = "loader::default_otlp_tracing_timeout_secs")]
     pub timeout_secs: u64,
 }
 

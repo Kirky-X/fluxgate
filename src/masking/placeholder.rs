@@ -208,24 +208,19 @@ impl PlaceholderRegistry {
     /// 命中刷新近用度。
     pub fn restore(&self, placeholder: &str) -> Option<String> {
         let mut inner = self.lock();
-        let expired = match inner.reverse.get(placeholder) {
-            Some(entry) => entry.at.elapsed() >= ENTRY_TTL,
-            None => return None,
-        };
-        if expired {
+        let entry = inner.reverse.get(placeholder)?;
+        if entry.at.elapsed() >= ENTRY_TTL {
             inner.reverse.remove(placeholder);
             return None;
         }
         let now = Instant::now();
         inner.seq += 1;
         let seq = inner.seq;
-        let value = loop {
-            let Some(entry) = inner.reverse.get_mut(placeholder) else {
-                return None;
-            };
+        let value = {
+            let entry = inner.reverse.get_mut(placeholder)?;
             entry.at = now;
             entry.seq = seq;
-            break entry.value.clone();
+            entry.value.clone()
         };
         inner.lru.push(Reverse((seq, placeholder.to_string())));
         Some(value)

@@ -1055,42 +1055,6 @@ pub mod subscription_admin {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 参数校验文案经 i18n 模板拼接：实参进响应文案、无未替换占位符、
-    /// 无参键不回落为裸键名（缺键时 `t` 原样返回键名——静默失败）。
-    #[test]
-    fn test_cost_param_validation_messages_are_localized() {
-        let date = GateError::Validation {
-            field: t_args("admin-cost-date-format-invalid", &[("name", "from".into())]),
-        }
-        .user_message();
-        assert!(date.contains("from"), "实参未进入文案: {date}");
-        assert!(!date.contains('$'), "占位符未被替换: {date}");
-
-        let vendor = GateError::Validation {
-            field: t_args(
-                "admin-vendor-reset-unknown-vendor",
-                &[("id", "vendor-a".into())],
-            ),
-        }
-        .user_message();
-        assert!(vendor.contains("vendor-a"), "实参未进入文案: {vendor}");
-        assert!(!vendor.contains('$'), "占位符未被替换: {vendor}");
-
-        let bare = GateError::Validation {
-            field: t("admin-cost-group-by-invalid"),
-        }
-        .user_message();
-        assert!(
-            !bare.contains("admin-cost-group-by-invalid"),
-            "键未登记，裸键名进入响应: {bare}"
-        );
-    }
-}
-
 /// GET /admin/masking/stats — 出站掩码观测（feature `masking`）：24h 滚动窗
 /// 的 per-kind 命中次数与值长度直方图**元数据**；不含任何值本身。门未装配
 ///（feature 关闭或 bootstrap 未接线）返回空窗与 enabled=false。
@@ -1126,4 +1090,40 @@ pub async fn masking_stats(
         "window_hours": 24,
         "kinds": kinds,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 参数校验文案经 i18n 模板拼接：实参进响应文案、无未替换占位符、
+    /// 无参键不回落为裸键名（缺键时 `t` 原样返回键名——静默失败）。
+    #[test]
+    fn test_cost_param_validation_messages_are_localized() {
+        let date = GateError::Validation {
+            field: t_args("admin-cost-date-format-invalid", &[("name", "from".into())]),
+        }
+        .user_message();
+        assert!(date.contains("from"), "实参未进入文案: {date}");
+        assert!(!date.contains('$'), "占位符未被替换: {date}");
+
+        let vendor = GateError::Validation {
+            field: t_args(
+                "admin-vendor-reset-unknown-vendor",
+                &[("id", "vendor-a".into())],
+            ),
+        }
+        .user_message();
+        assert!(vendor.contains("vendor-a"), "实参未进入文案: {vendor}");
+        assert!(!vendor.contains('$'), "占位符未被替换: {vendor}");
+
+        let bare = GateError::Validation {
+            field: t("admin-cost-group-by-invalid"),
+        }
+        .user_message();
+        assert!(
+            !bare.contains("admin-cost-group-by-invalid"),
+            "键未登记，裸键名进入响应: {bare}"
+        );
+    }
 }

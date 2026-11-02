@@ -105,12 +105,9 @@ pub async fn run(config_path: Option<String>) -> Result<(), FluxgateError> {
 
     // gRPC 服务器启动（[grpc] 段启用时）
     #[cfg(feature = "grpc")]
-    let grpc_task = match handle.take_grpc_server() {
-        Some(grpc) => Some(tokio::spawn(async move {
-            grpc.serve(sdforge::http::default_shutdown_signal()).await
-        })),
-        None => None,
-    };
+    let grpc_task = handle.take_grpc_server().map(|grpc| {
+        tokio::spawn(async move { grpc.serve(sdforge::http::default_shutdown_signal()).await })
+    });
 
     // serve 走 sdforge graceful 三阶段（触发 → 排空 → 收尾钩子）；排空超时 30s，超时强制中止。
     let result = sdforge::http::serve_with_graceful_shutdown(

@@ -8405,12 +8405,14 @@ mod otlp_gate {
         use fluxgate::utils::otlp::{bridge_from_section, BridgeSpawn};
         use std::sync::Arc;
 
-        let mut section = fluxgate::config::OtlpSection::default();
-        section.enabled = true;
-        // 不可达端点（discard 端口）：末次导出必失败，SDK 以 InternalFailure
-        // 汇报——这是接收端不可用时的正常出口，不代表 provider 未停。
-        section.endpoint = "http://127.0.0.1:9/v1/metrics".to_string();
-        section.interval_secs = 86_400;
+        let section = fluxgate::config::OtlpSection {
+            enabled: true,
+            // 不可达端点（discard 端口）：末次导出必失败，SDK 以 InternalFailure
+            // 汇报——这是接收端不可用时的正常出口，不代表 provider 未停。
+            endpoint: "http://127.0.0.1:9/v1/metrics".to_string(),
+            interval_secs: 86_400,
+            ..Default::default()
+        };
         match bridge_from_section(&section, Arc::new(CostTracker::new())) {
             BridgeSpawn::Ready(bridge) => {
                 let _ = bridge.force_flush();
@@ -8541,7 +8543,6 @@ mod catalog_sync_admin {
     use fluxgate::config::{ConfigManager, GlobalModelConfig};
     use fluxgate::{ApiState, VendorManager};
     use std::sync::Arc;
-    use tower::ServiceExt;
 
     const FIXTURE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -8549,8 +8550,10 @@ mod catalog_sync_admin {
     ));
 
     /// 进程内单飞标记是模块级静态：两个 admin 用例必须串行（否则并行
-    /// 触发真实的 409 in-flight 拒绝）。
-    static ADMIN_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 触发真实的 409 in-flight 拒绝）。async 感知锁——guard 需跨 await
+    /// 持有整测试体，std 互斥锁会触发 await_holding_lock。
+    static ADMIN_SYNC_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
     /// 嵌入式上游：回放实测裁剪 fixture（同 unit 侧源数据）。
     async fn spawn_fixture_upstream() -> String {
@@ -8645,7 +8648,7 @@ mod catalog_sync_admin {
     /// 磁盘零改动。
     #[tokio::test]
     async fn dry_run_returns_diff_without_persist() {
-        let _serial = ADMIN_SYNC_LOCK.lock().unwrap();
+        let _serial = ADMIN_SYNC_LOCK.lock().await;
         let url = spawn_fixture_upstream().await;
         let (state, disk_path) = create_state(url).await;
 
@@ -8693,7 +8696,7 @@ mod catalog_sync_admin {
     /// 原子落盘 → 切内存）落目录；二次同步全 skipped（只增不改）。
     #[tokio::test]
     async fn sync_persists_via_hot_reload_path() {
-        let _serial = ADMIN_SYNC_LOCK.lock().unwrap();
+        let _serial = ADMIN_SYNC_LOCK.lock().await;
         let url = spawn_fixture_upstream().await;
         let (state, disk_path) = create_state(url).await;
 
@@ -8738,7 +8741,7 @@ mod catalog_sync_admin {
     /// 超 8MB 体积上限时 admin 端点返回 413（Payload Too Large），目录零改动。
     #[tokio::test]
     async fn oversized_source_maps_to_413_without_persist() {
-        let _serial = ADMIN_SYNC_LOCK.lock().unwrap();
+        let _serial = ADMIN_SYNC_LOCK.lock().await;
         let body = vec![b'x'; 8 * 1024 * 1024 + 1];
         let app = axum::Router::new().route(
             "/api.json",

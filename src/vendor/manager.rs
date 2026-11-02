@@ -1645,7 +1645,9 @@ impl VendorManager {
             let vendor_id = config.id.clone();
             let result = circuit_breaker
                 .execute(|| async {
-                    #[allow(clippy::clone_on_copy)] // feature 关 = 单元穿参
+                    // subscription-vendor 关闭时 SubscriptionPoolArg = ()：clone 触发
+                    // clone_on_copy、传参触发 unit_arg——单一 allow 面收敛（同 :955）
+                    #[allow(clippy::clone_on_copy, clippy::unit_arg)]
                     Self::execute_http_with_retry_policy(
                         client,
                         config,

@@ -995,11 +995,12 @@ mod bridge_tests {
     /// 累计计数，不 panic；计数随下一轮采集以 counter 形式出现在导出面。
     #[test]
     fn export_failures_are_counted_and_fail_open() {
-        let mut section = crate::config::OtlpSection::default();
-        section.enabled = true;
-        section.endpoint = "http://127.0.0.1:9/v1/metrics".to_string();
-        section.interval_secs = 86_400;
-        section.timeout_secs = 1;
+        let section = crate::config::OtlpSection {
+            enabled: true,
+            endpoint: "http://127.0.0.1:9/v1/metrics".to_string(),
+            interval_secs: 86_400,
+            timeout_secs: 1,
+        };
         let tracker = Arc::new(CostTracker::new());
         let bridge = match bridge_from_section(&section, tracker) {
             BridgeSpawn::Ready(bridge) => bridge,

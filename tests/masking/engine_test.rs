@@ -620,7 +620,7 @@ mod gate {
     use fluxgate::config::{Config, MaskingSection};
     use fluxgate::masking::{MaskDetector, MaskError, MaskGate, MaskHit, MaskKind, RuleDetector};
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     fn config_with(masking: MaskingSection) -> Config {
         let mut config = crate::common::test_config(vec![]);

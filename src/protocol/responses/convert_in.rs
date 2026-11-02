@@ -14,8 +14,8 @@
 
 use crate::error::GateError;
 use crate::protocol::responses::types::{
-    InputMessage, ParsedInputItem, ResponsesRequest, StreamEvent, TextConfig,
-    MAX_RESPONSES_INPUT_ITEMS, MAX_RESPONSES_METADATA_ENTRIES, MAX_RESPONSES_METADATA_KEY_CHARS,
+    InputMessage, ParsedInputItem, ResponsesRequest, TextConfig, MAX_RESPONSES_INPUT_ITEMS,
+    MAX_RESPONSES_METADATA_ENTRIES, MAX_RESPONSES_METADATA_KEY_CHARS,
     MAX_RESPONSES_METADATA_VALUE_CHARS, MAX_RESPONSES_OUTPUT_TOKENS,
 };
 use crate::protocol::unified::{
@@ -627,14 +627,6 @@ fn map_text_format(text: &TextConfig) -> Option<Value> {
             }))
         }
         _ => Some(format.clone()),
-    }
-}
-
-/// 从流式事件中提取文本增量（入站编码器与出站解析共用的便捷函数）。
-pub fn event_text_delta(event: &StreamEvent) -> Option<&str> {
-    match event.event_type.as_str() {
-        "response.output_text.delta" => event.delta.as_deref(),
-        _ => None,
     }
 }
 

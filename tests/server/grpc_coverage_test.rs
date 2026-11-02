@@ -108,6 +108,15 @@ fn test_config(grpc_port: u16) -> Config {
         docs: Default::default(),
         lexcompress: Default::default(),
         responses: Default::default(),
+        otlp: Default::default(),
+        vendor_budgets: Vec::new(),
+        usage_insights: Default::default(),
+        catalog_sync: Default::default(),
+        subscription: Default::default(),
+        subscription_accounts: Vec::new(),
+        masking: Default::default(),
+        web_search: Default::default(),
+        metrics: Default::default(),
     }
 }
 

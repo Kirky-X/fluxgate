@@ -466,6 +466,10 @@ name = "difficulty_tier_test"
 path = "tests/routing/difficulty_tier_test.rs"
 
 [[test]]
+name = "e2e_difficulty_matrix_test"
+path = "tests/routing/e2e_difficulty_matrix_test.rs"
+
+[[test]]
 name = "routing_benchmark_test"
 path = "tests/routing/routing_benchmark_test.rs"
 

@@ -35,6 +35,7 @@ mod hot_reload {
                 api_keys: vec!["a".repeat(64)],
                 keys: vec![],
                 header: Default::default(),
+                oidc_rules: None,
             }),
             cors: Some(CorsSection {
                 enabled: true,
@@ -1488,6 +1489,115 @@ mod quota_windows_config {
         config.key_budgets.rules = vec![rule(), rule()];
         let err = validate_config(&config).expect_err("同 (hash, window) 重复必须拒绝");
         assert!(err.to_string().contains(KEY_HASH), "{err}");
+    }
+}
+
+/// `[auth.oidc_rules]`（R-auth-001）：claims 通配/前缀意图硬拦、母键必须
+/// 存在、ttl 越界拒绝、合法规则放行；无段/无规则整体关闭。
+#[cfg(test)]
+mod oidc_rules_config {
+    use crate::common;
+    use fluxgate::config::{validate_config, OidcRuleConfig, OidcRulesSection};
+    use std::collections::HashMap;
+
+    /// sha256("test-good-key")（与 key_budgets 校验测试同值的小写 hex）。
+    const KEY_HASH: &str = "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303";
+
+    fn rule() -> OidcRuleConfig {
+        OidcRuleConfig {
+            issuer: "https://token.example".into(),
+            audience: "gateway-client".into(),
+            claims: HashMap::new(),
+            bind_key_hash: KEY_HASH.into(),
+            ttl_secs: 3600,
+        }
+    }
+
+    fn config(rules: Vec<OidcRuleConfig>) -> fluxgate::config::Config {
+        let mut config = common::test_config(vec![]);
+        config.auth = Some(fluxgate::config::AuthSection {
+            enabled: true,
+            api_keys: vec![KEY_HASH.into()],
+            header: Default::default(),
+            keys: vec![],
+            oidc_rules: Some(OidcRulesSection { rules }),
+        });
+        config
+    }
+
+    #[test]
+    fn test_oidc_rules_validation() {
+        assert!(
+            validate_config(&config(vec![rule()])).is_ok(),
+            "合法规则放行"
+        );
+        assert!(validate_config(&config(vec![])).is_ok(), "空规则整体关闭");
+
+        // claims 通配/前缀意图：键或值含 * / ? 一律硬拦
+        for claims in [
+            HashMap::from([("role".into(), "ad*min".into())]),
+            HashMap::from([("env*".into(), "prod".into())]),
+            HashMap::from([("env?".into(), "prod".into())]),
+        ] {
+            let err = validate_config(&config(vec![OidcRuleConfig { claims, ..rule() }]))
+                .expect_err("claims 通配/前缀意图必须硬拦");
+            assert!(
+                err.to_string().contains("*") || err.to_string().contains("?"),
+                "{err}"
+            );
+        }
+
+        // 母键缺失：hash 不在 api_keys/keys
+        let err = validate_config(&config(vec![OidcRuleConfig {
+            bind_key_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                .into(),
+            ..rule()
+        }]))
+        .expect_err("母键缺失必须拒绝");
+        assert!(err.to_string().contains("e3b0c442"), "{err}");
+
+        // 母键格式：非 64 hex 同拒
+        let err = validate_config(&config(vec![OidcRuleConfig {
+            bind_key_hash: "not-a-hash".into(),
+            ..rule()
+        }]))
+        .expect_err("母键格式错误必须拒绝");
+        assert!(err.to_string().contains("not-a-hash"), "{err}");
+
+        // ttl 越界：0 与 86401
+        for ttl in [0u64, 86_401] {
+            let err = validate_config(&config(vec![OidcRuleConfig {
+                ttl_secs: ttl,
+                ..rule()
+            }]))
+            .expect_err("ttl 越界必须拒绝");
+            assert!(err.to_string().contains(&ttl.to_string()), "{err}");
+        }
+
+        // issuer 闭集：http 仅 loopback 放行
+        let err = validate_config(&config(vec![OidcRuleConfig {
+            issuer: "http://token.example".into(),
+            ..rule()
+        }]))
+        .expect_err("非 loopback http issuer 必须拒绝");
+        assert!(err.to_string().contains("http://token.example"), "{err}");
+        let mut loopback = rule();
+        loopback.issuer = "http://127.0.0.1:8080".into();
+        assert!(
+            validate_config(&config(vec![loopback])).is_ok(),
+            "loopback http 放行"
+        );
+
+        // 缺段整体关闭
+        let mut none = common::test_config(vec![]);
+        none.auth = Some(fluxgate::config::AuthSection {
+            enabled: true,
+            api_keys: vec![],
+            header: Default::default(),
+            keys: vec![],
+            oidc_rules: None,
+        });
+        assert!(validate_config(&none).is_ok(), "无 oidc_rules 段合法");
     }
 }
 

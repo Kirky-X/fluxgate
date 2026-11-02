@@ -2669,6 +2669,7 @@ mod tests {
                     token_quota: 1_000_000,
                     cost_quota_millicents: 0,
                 }],
+                oidc_rules: None,
             }),
             cors: None,
             retry: Default::default(),

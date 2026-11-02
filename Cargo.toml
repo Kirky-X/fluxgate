@@ -96,6 +96,12 @@ catalog-sync = ["dep:reqwest"]
 # 条款，默认产物零编译面，部署者自行评估后按需启用。运行时另有
 # [subscription].enabled 热读开关（双门控）；refresh token 只存 vault（AEAD）。
 subscription-vendor = ["vendor-management", "vault", "dep:rand"]
+# OIDC 换短时网关键（oidc）：JWT 验签（RS256/ES256）+ 进程内 TTL 短时键，
+# 短时键继承绑定母键 tier 与全部限制。不进 full——新增出站 JWKS 拉取，
+# opt-in（对外网络新能力按需启用）；无 [auth.oidc_rules] 规则时运行时
+# 整体关闭，行为与今日逐字节一致。sha2/hex 复用既有 optional 条目
+#（短时键派生与摘要）。crypto 后端取 rust_crypto 纯 Rust 集（rsa+p256）。
+oidc = ["dep:jsonwebtoken", "dep:reqwest", "dep:sha2", "dep:hex"]
 # 出站 SSRF 防护（netguard）：特殊网段判定（纯 std 零依赖）——网关具备任意
 # URL 抓取能力（/v1/fetch）时防内网/保留地址探测；不进 full——对外网络新
 # 能力按需启用。web-search 依赖其编译（抓取路径先闭合 SSRF 面）。
@@ -205,6 +211,11 @@ secrecy = { version = "0.10", default-features = false, optional = true }
 opentelemetry = { version = "0.33", default-features = false, features = ["metrics"], optional = true }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["metrics"], optional = true }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
+
+# JWT 验签（oidc feature，auth-and-masking R-auth-001/002）：RS256/ES256 走
+# rust_crypto 纯 Rust 集（rsa+p256+sha2+hmac），免 C 工具链；use_pem 不启用
+#（测试与运行时均以 JWK/DER 形态供钥）。
+jsonwebtoken = { version = "11.1", default-features = false, features = ["rust_crypto"], optional = true }
 
 
 [dev-dependencies]

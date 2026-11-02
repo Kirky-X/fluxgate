@@ -471,6 +471,13 @@ api_keys = []
 [[auth.keys]]
 hash = "0000000000000000000000000000000000000000000000000000000000000000"
 
+[[auth.oidc_rules.rules]]
+issuer = "https://surface-probe.example"
+audience = "surface-probe-aud"
+claims = { repository = "surface-probe/repo" }
+bind_key_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+ttl_secs = 3600
+
 [cors]
 
 [global_model]
@@ -523,9 +530,10 @@ question_marks = ["?"]
 code_fence_markers = ["```"]
 "#;
 
-/// 键名为「用户数据」而非配置字段的映射（`extra_headers` 的键是部署自定义头名，
-/// 与本仓字段清单无关）：只登记字段名本身，不下钻其数据键。
-const DATA_MAP_FIELDS: [&str; 1] = ["extra_headers"];
+/// 键名为「用户数据」而非配置字段的映射（`extra_headers` 的键是部署自定义头名、
+/// `claims` 的键是 OIDC claim 名，与本仓字段清单无关）：只登记字段名本身，
+/// 不下钻其数据键。
+const DATA_MAP_FIELDS: [&str; 2] = ["extra_headers", "claims"];
 
 /// 递归采集序列化面键名：对象逐键登记后下钻，数组逐元素下钻（标量无键）。
 fn collect_key_names(value: &serde_json::Value, keys: &mut std::collections::BTreeSet<String>) {

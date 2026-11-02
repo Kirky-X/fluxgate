@@ -77,6 +77,7 @@ async fn setup(
             api_keys: vec![AUTH_KEY_HASH.to_string()],
             header: Default::default(),
             keys: vec![],
+            oidc_rules: None,
         });
     }
     let config_manager = Arc::new(ConfigManager::new(config));

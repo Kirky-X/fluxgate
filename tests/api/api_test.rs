@@ -6591,6 +6591,7 @@ mod data_plane_endpoints {
             api_keys: vec![GOOD_KEY_DIGEST.to_string()],
             header: Default::default(),
             keys: Vec::new(),
+            oidc_rules: None,
         });
         config
     }
@@ -7328,6 +7329,7 @@ mod route_explain {
                 api_keys: vec![GOOD_KEY_DIGEST.to_string()],
                 header: Default::default(),
                 keys: Vec::new(),
+                oidc_rules: None,
             });
         }
         if let Some(routing) = wire.routing {

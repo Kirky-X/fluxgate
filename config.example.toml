@@ -107,6 +107,26 @@ api_keys = [
 # token_quota = 100000
 # cost_quota_millicents = 5000000
 
+# OIDC 换短时网关键（`[auth.oidc_rules]`，**默认无规则 = 整体关闭**，认证
+# 行为与今日逐字节一致）。Bearer JWT 命中 issuer 规则且验签通过时，签发
+# 进程内 TTL 短时键（内存表、不落盘、重启失效），继承绑定母键的 tier 与
+# 全部限制。需要 `oidc` feature（不进 full——新增出站 JWKS 拉取，opt-in）。
+# - issuer: OIDC issuer URL（仅 https；loopback 放行 http）；JWKS 取自
+#   `{issuer}/.well-known/jwks.json`，按 kid 缓存（TTL 10 分钟，失败沿用
+#   旧缓存至 24h）
+# - audience: JWT aud 精确匹配
+# - claims: 额外 claim 精确匹配表（**键值均为字面字符串，禁通配/前缀/**；
+#   校验层硬拦任何 * 或 ?——宽松匹配可让任意发行方 token 换到母键）
+# - bind_key_hash: 母键摘要（必须存在于 api_keys/keys；母键删除即失效）
+# - ttl_secs: 短时键 TTL（默认 3600，上限 86400）
+# 启用模板（按需取消注释；hash 换成真实 64 位小写 hex）：
+# [[auth.oidc_rules.rules]]
+# issuer = "https://token.actions.githubusercontent.com"
+# audience = "my-gateway-client"
+# claims = { repository = "org/repo" }
+# bind_key_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+# ttl_secs = 3600
+
 # 请求头名与前缀（保留段结构；当前中间件按 Authorization/Bearer 提取）
 [auth.header]
 name = "Authorization"

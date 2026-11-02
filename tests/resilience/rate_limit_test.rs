@@ -546,6 +546,7 @@ async fn auth_runs_before_rate_limit_layers() {
         ],
         header: Default::default(),
         keys: Vec::new(),
+        oidc_rules: None,
     });
     let config_manager = Arc::new(ConfigManager::new(config));
     let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));

@@ -454,6 +454,7 @@ mod tests {
                 api_keys: vec![],
                 header: Default::default(),
                 keys: vec![],
+                oidc_rules: None,
             }),
             cors: None,
             retry: Default::default(),

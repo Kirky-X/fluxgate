@@ -175,6 +175,7 @@ pub fn validate_config(config: &Config) -> Result<(), GateError> {
     validate_quota_windows(config)?;
     validate_vendor_budgets(config)?;
     validate_key_budgets(config)?;
+    validate_oidc_rules(config)?;
     validate_quota_factor(config)?;
     warn_quota_window_fields_conflict(config);
     validate_difficulty(config)?;
@@ -1012,6 +1013,123 @@ impl Default for crate::config::KeyBudgetRule {
             fail_open: false,
         }
     }
+}
+
+/// `[[auth.oidc_rules.rules]]` 缺省 TTL：3600s（1h；上限 86400s 由校验钳）。
+pub fn default_oidc_ttl_secs() -> u64 {
+    3600
+}
+
+impl Default for crate::config::OidcRuleConfig {
+    /// Rust 侧手构缺省与 serde 缺省单源：ttl_secs=3600。
+    fn default() -> Self {
+        Self {
+            issuer: String::new(),
+            audience: String::new(),
+            claims: std::collections::HashMap::new(),
+            bind_key_hash: String::new(),
+            ttl_secs: default_oidc_ttl_secs(),
+        }
+    }
+}
+
+/// `[auth.oidc_rules]` 校验（R-auth-001）：issuer 仅 https（loopback 放行
+/// http，口径同 validate_catalog_sync）、audience 非空、claims 表**精确
+/// 匹配红线**——任何键/值含 `*` 或 `?`（通配/前缀意图）硬拦、bind_key_hash
+/// 必须是 64 位小写 hex 且存在于既有 `[auth]` api_keys/keys（短时键继承其
+/// tier 与全部限制，母键缺失即规则悬空）、ttl_secs ∈ [1, 86400]、
+/// 同 (issuer, audience) 不得重复声明。无规则 = 整体关闭不校验。
+fn validate_oidc_rules(config: &Config) -> Result<(), GateError> {
+    let Some(rules) = config
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.oidc_rules.as_ref())
+        .filter(|section| !section.rules.is_empty())
+        .map(|section| &section.rules)
+    else {
+        return Ok(());
+    };
+    let known_keys: std::collections::HashSet<&str> = config
+        .auth
+        .as_ref()
+        .map(|auth| {
+            auth.api_keys
+                .iter()
+                .map(|hash| hash.trim())
+                .chain(auth.keys.iter().map(|entry| entry.hash.trim()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for rule in rules {
+        let issuer = rule.issuer.trim();
+        let (scheme, rest) = issuer.split_once("://").ok_or_else(|| GateError::Config {
+            message: t_args(
+                "config-oidc-issuer-invalid",
+                &[("value", issuer.to_string())],
+            ),
+        })?;
+        if scheme != "https" && !is_loopback_source(scheme, rest) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-oidc-issuer-scheme",
+                    &[("value", issuer.to_string())],
+                ),
+            });
+        }
+        if rule.audience.trim().is_empty() {
+            return Err(GateError::Config {
+                message: t("config-oidc-audience-empty"),
+            });
+        }
+        for (key, value) in &rule.claims {
+            if key.trim().is_empty() {
+                return Err(GateError::Config {
+                    message: t("config-oidc-claim-key-empty"),
+                });
+            }
+            if key.contains('*') || key.contains('?') || value.contains('*') || value.contains('?')
+            {
+                return Err(GateError::Config {
+                    message: t_args(
+                        "config-oidc-claims-wildcard",
+                        &[("key", key.trim().to_string())],
+                    ),
+                });
+            }
+        }
+        let bind = rule.bind_key_hash.trim();
+        let is_64_hex =
+            bind.len() == 64 && bind.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if !is_64_hex || !known_keys.contains(bind) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-oidc-bind-key-missing",
+                    &[("hash", bind.to_string())],
+                ),
+            });
+        }
+        if !(1..=86_400).contains(&rule.ttl_secs) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-oidc-ttl-out-of-range",
+                    &[("value", rule.ttl_secs.to_string())],
+                ),
+            });
+        }
+        if !seen.insert((issuer.to_string(), rule.audience.trim().to_string())) {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-oidc-rule-duplicate",
+                    &[
+                        ("issuer", issuer.to_string()),
+                        ("audience", rule.audience.trim().to_string()),
+                    ],
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// 旧单窗字段缺省：3600s 固定窗口 + 4 字符/token 估算（与历史一致）。
@@ -2159,9 +2277,11 @@ mod tests {
                 token_quota: 0,
                 cost_quota_millicents: 0,
             }],
+            oidc_rules: None,
         };
         let auth_off = AuthSection {
             enabled: false,
+            oidc_rules: None,
             ..auth_on.clone()
         };
         assert!(quota_without_auth(&config_with(true, None)), "缺段 → 告警");
@@ -2749,6 +2869,7 @@ high = \"reasoning\"
                     cost_quota_millicents: 0,
                 })
                 .collect(),
+            oidc_rules: None,
         }
     }
 

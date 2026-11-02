@@ -69,6 +69,7 @@ fn test_config() -> Config {
             api_keys: vec![SMOKE_KEY_HASH.to_string()],
             keys: vec![],
             header: Default::default(),
+            oidc_rules: None,
         }),
         ..common::test_config(vec![vendor])
     }
@@ -315,6 +316,7 @@ async fn test_auth_state_from_config_hashes() {
         api_keys: vec![SMOKE_KEY_HASH.to_string()],
         keys: vec![],
         header: Default::default(),
+        oidc_rules: None,
     };
     let state = ApiAuthState::from_section(&section);
     assert!(state.validate_key(SMOKE_KEY));
@@ -353,6 +355,7 @@ async fn test_auth_key_revocation_takes_effect_immediately() {
         api_keys: vec![ROTATED_KEY_HASH.to_string()],
         keys: vec![],
         header: Default::default(),
+        oidc_rules: None,
     });
     config
         .update_config(next)

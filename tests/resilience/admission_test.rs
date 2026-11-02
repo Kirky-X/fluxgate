@@ -382,6 +382,7 @@ fn tier_for_request_resolves_auth_keys_table() {
                 token_quota: 0,
                 cost_quota_millicents: 0,
             }],
+            oidc_rules: None,
         }),
         ..config_with(AdmissionSection::default())
     };
@@ -481,6 +482,7 @@ mod full_chain {
                         cost_quota_millicents: 0,
                     },
                 ],
+                oidc_rules: None,
             }),
             admission: AdmissionSection {
                 enabled,

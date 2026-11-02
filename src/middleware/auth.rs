@@ -341,6 +341,7 @@ mod tests {
             api_keys: vec![KNOWN_HASH.to_string()],
             keys: vec![],
             header: Default::default(),
+            oidc_rules: None,
         };
         let state = ApiAuthState::from_section(&section);
         assert!(state.enabled);
@@ -351,6 +352,7 @@ mod tests {
             api_keys: vec![],
             keys: vec![],
             header: Default::default(),
+            oidc_rules: None,
         };
         let state = ApiAuthState::from_section(&disabled);
         assert!(!state.enabled);

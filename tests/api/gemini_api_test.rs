@@ -127,6 +127,7 @@ mod tests {
             api_keys: vec![digest(key)],
             keys: vec![],
             header: Default::default(),
+            oidc_rules: None,
         });
         let config_manager = Arc::new(ConfigManager::new(config));
         Router::new()

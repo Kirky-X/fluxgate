@@ -456,6 +456,41 @@ pub struct AuthSection {
     /// key 档位表（可选；缺省全 elastic、准入不启用）
     #[serde(default)]
     pub keys: Vec<AuthKeyEntry>,
+    /// `[auth.oidc_rules]` 子段（可选；`oidc` feature 是编译门）。None/无
+    /// 规则 = OIDC 路径整体关闭，认证行为与今日逐字节一致
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc_rules: Option<OidcRulesSection>,
+}
+
+/// `[auth.oidc_rules]` 段：OIDC 换短时网关键规则表（`oidc` feature 编译门）。
+/// 无规则 = 整体关闭；校验经 validate_oidc_rules（loader，R-auth-001）。
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct OidcRulesSection {
+    /// 规则表（空 = 整体关闭）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<OidcRuleConfig>,
+}
+
+/// `[[auth.oidc_rules.rules]]` 单条：issuer + audience + claims 精确匹配 +
+/// 绑定母键 + 短时键 TTL。
+///
+/// claims 键值含 `*` 或 `?` 的通配/前缀意图被校验层硬拦（评审红线：宽松
+/// 匹配可让任意仓库 workflow 换键）；bind_key_hash 必须是既有
+/// api_keys/keys 中的摘要（短时键继承其 tier 与全部限制）。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct OidcRuleConfig {
+    /// OIDC issuer（URL；仅 https，loopback 放行 http 供嵌入式上游）
+    pub issuer: String,
+    /// audience 精确匹配（JWT aud 声明）
+    pub audience: String,
+    /// 额外 claim 精确匹配表（键值均为字面字符串，禁通配/前缀/正则）
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub claims: std::collections::HashMap<String, String>,
+    /// 母键摘要（SHA256 hex，必须存在于 `[auth]` api_keys/keys）
+    pub bind_key_hash: String,
+    /// 短时键 TTL 秒（默认 3600，上限 86400）
+    #[serde(default = "loader::default_oidc_ttl_secs")]
+    pub ttl_secs: u64,
 }
 
 fn default_auth_enabled() -> bool {

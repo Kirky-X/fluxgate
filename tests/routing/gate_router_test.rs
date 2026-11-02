@@ -5134,6 +5134,7 @@ mod quota_factor {
                 token_quota: 500,
                 cost_quota_millicents: 700,
             }],
+            oidc_rules: None,
         });
         config.quota = QuotaSection {
             enabled: true,

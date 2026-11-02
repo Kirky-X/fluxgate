@@ -162,6 +162,14 @@ config-affinity-mode-unknown = [routing.affinity] mode 非法: "{ $value }"（�
 config-vendor-cache-ttl-secs-out-of-range = [vendors] 厂商 { $vendor } 的 cache_ttl_secs 越界: { $value }（合法范围: 1-86400 秒）
 
 # ---- masking: 出站掩码（feature masking；config 校验 + 运维日志）----
+config-oidc-issuer-invalid = [[auth.oidc_rules.rules]] 的 issuer「{ $value }」不是合法 URL（缺少 scheme://）
+config-oidc-issuer-scheme = [[auth.oidc_rules.rules]] 的 issuer「{ $value }」必须是 https（仅 loopback 放行 http 供嵌入式上游）
+config-oidc-audience-empty = [[auth.oidc_rules.rules]] 的 audience 为空：aud 精确匹配是短时键签发的边界之一，空值等同不限受众
+config-oidc-claim-key-empty = [[auth.oidc_rules.rules]] 的 claims 含空键：claim 名不得为空白
+config-oidc-claims-wildcard = [[auth.oidc_rules.rules]] 的 claims 键「{ $key }」含 * 或 ?：claims 只支持精确匹配（通配/前缀会让任意发行方 token 换到母键，评审红线）
+config-oidc-bind-key-missing = [[auth.oidc_rules.rules]] 的 bind_key_hash「{ $hash }」不是 64 位小写 hex 或不存在于 [auth] api_keys/keys：母键缺失即规则悬空（短时键继承其 tier 与全部限制）
+config-oidc-ttl-out-of-range = [[auth.oidc_rules.rules]] 的 ttl_secs（{ $value }s）越界：须在 1..=86400（1 小时默认，1 天上限）
+config-oidc-rule-duplicate = [[auth.oidc_rules.rules]] 重复声明 issuer「{ $issuer }」+ audience「{ $audience }」：同受众双规则会让验签路径二义
 config-masking-kind-invalid = 无效的掩码种类：{ $kind }（合法值：api_key、private_key、token、email、card、id、custom）
 config-masking-action-invalid = 无效的掩码动作：{ $action }（合法值：mask、warn、block）
 config-masking-rule-invalid = 无效的掩码正则（编译失败）：{ $detail }

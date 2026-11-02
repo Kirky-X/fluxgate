@@ -298,6 +298,7 @@ async fn admin_metrics_exposes_quota_counters() {
             token_quota: 1,
             cost_quota_millicents: 0,
         }],
+        oidc_rules: None,
     });
     config.quota.enabled = true;
 

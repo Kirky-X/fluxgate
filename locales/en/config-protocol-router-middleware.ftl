@@ -162,6 +162,14 @@ config-affinity-mode-unknown = [routing.affinity] mode is invalid: "{ $value }" 
 config-vendor-cache-ttl-secs-out-of-range = [vendors] cache_ttl_secs of vendor { $vendor } is out of range: { $value } (valid range: 1-86400 seconds)
 
 # ---- masking: 出站掩码（feature masking；config 校验 + 运维日志）----
+config-oidc-issuer-invalid = [[auth.oidc_rules.rules]] issuer "{ $value }" is not a valid URL (missing scheme://)
+config-oidc-issuer-scheme = [[auth.oidc_rules.rules]] issuer "{ $value }" must be https (only loopback may use http for embedded upstreams)
+config-oidc-audience-empty = [[auth.oidc_rules.rules]] audience is empty: exact aud matching is one of the short-lived key issuance boundaries, an empty value means unrestricted audience
+config-oidc-claim-key-empty = [[auth.oidc_rules.rules]] claims contains an empty key: claim names must not be blank
+config-oidc-claims-wildcard = [[auth.oidc_rules.rules]] claims key "{ $key }" contains * or ?: claims support exact matching only (wildcards/prefixes would let any issuer token mint the mother key, review red line)
+config-oidc-bind-key-missing = [[auth.oidc_rules.rules]] bind_key_hash "{ $hash }" is not a 64-char lowercase hex digest or is absent from [auth] api_keys/keys: a missing mother key leaves the rule dangling (short-lived keys inherit its tier and limits)
+config-oidc-ttl-out-of-range = [[auth.oidc_rules.rules]] ttl_secs ({ $value }s) is out of range: must be 1..=86400 (1 hour default, 1 day cap)
+config-oidc-rule-duplicate = [[auth.oidc_rules.rules]] declares duplicate issuer "{ $issuer }" + audience "{ $audience }": duplicate rules make the verification path ambiguous
 config-masking-kind-invalid = Invalid masking kind: { $kind } (valid: api_key, private_key, token, email, card, id, custom)
 config-masking-action-invalid = Invalid masking action: { $action } (valid: mask, warn, block)
 config-masking-rule-invalid = Invalid masking rule (regex compile failed): { $detail }

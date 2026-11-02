@@ -163,6 +163,7 @@ fn quota_config_full(
             token_quota,
             cost_quota_millicents,
         }],
+        oidc_rules: None,
     });
     config.quota = QuotaSection {
         enabled: true,
@@ -1643,6 +1644,7 @@ fn key_budget_config(vendors: Vec<VendorConfig>, fail_open: bool, limit_millicen
         api_keys: vec![GOOD_KEY_DIGEST.to_string()],
         header: Default::default(),
         keys: vec![],
+        oidc_rules: None,
     });
     config.key_budgets = KeyBudgetsSection {
         rules: vec![KeyBudgetRule {
@@ -1769,6 +1771,7 @@ async fn key_budget_absent_section_passes_through() {
         api_keys: vec![GOOD_KEY_DIGEST.to_string()],
         header: Default::default(),
         keys: vec![],
+        oidc_rules: None,
     });
     config.key_budgets = KeyBudgetsSection { rules: vec![] };
     let state = make_state(config, false).await;

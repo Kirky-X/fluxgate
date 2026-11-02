@@ -54,6 +54,8 @@ config-key-budget-hash-invalid = [[key_budgets.rules]] 的 api_key_hash「{ $has
 config-key-budget-limit-invalid = [[key_budgets.rules]] key「{ $hash }」的 cost_limit_millicents 为 0：预算上限必须大于 0，不设限请删除该条目
 config-key-budget-window-unknown = [[key_budgets.rules]] key「{ $hash }」的 window「{ $value }」非法（合法值：daily / monthly）
 config-key-budget-duplicate = [[key_budgets.rules]] 对同一 key「{ $hash }」重复声明 window「{ $window }」：同窗重复条目会在同一账本上双写占用
+config-quota-factor-field-invalid = routing.quota_factor.{ $field } 数值非法：ε 须在 [0,1]（0=关闭平局打破），降档阈值与乘数须在 (0,1]（乘数 >1 会变成升档）
+config-quota-factor-tier-order = routing.quota_factor 的 degrade_used_tier1 必须严格小于 degrade_used_tier2：先判紧档嵌套生效，相等或倒置会让档位二永不可达
 config-quota-factor-mode-unknown = routing.quota_factor.mode「{ $value }」非法（合法值：off / smart / pace）
 config-subscription-account-id-empty = [[subscription_accounts]] 条目 id 为空——id 是 vault 条目（sub:ID）与账号池的键
 config-subscription-account-id-duplicate = [[subscription_accounts]] 声明了重复 id「{ $account }」

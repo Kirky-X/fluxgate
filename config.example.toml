@@ -403,9 +403,26 @@ turn_gap_secs = 120
 #     低于 0.9 升权 ×1.2、带内不变。
 # - w_quota: 第 6 因子系数，默认 0.3（与 w_model/w_queue/w_window 同温标；
 #   仅 mode ≠ "off" 时被咨询）。
+#
+# 配额时钟补全（同一快照单点生效，✅ 热生效）：
+# - tie_epsilon: 平局打破 ε——候选 quota 分差 < ε 且各自剩余额度都 >10% 时，
+#   reset_at 更早者获满加成（把将作废的额度先用掉）。默认 0.05；0 = 关闭。
+# - degrade_enabled: 两级降档总开关，默认 true = 启用（显式 false 才关闭）。
+# - degrade_used_tier1/degrade_multiplier_tier1: 已用 ≥90%（剩余 ≤10%）时
+#   权重 ×0.9（轻档缓转向）。
+# - degrade_used_tier2/degrade_multiplier_tier2: 已用 ≥98%（剩余 ≤2%）时
+#   权重 ×0.75（重档强转向）。先判紧档；档一阈值必须小于档二。
+# - /admin/route/explain 的 quota 块透出 tie_break 生效者与降档档位
+#  （tier1/tier2）。
 [routing.quota_factor]
 mode = "off"
 w_quota = 0.3
+tie_epsilon = 0.05
+degrade_enabled = true
+degrade_used_tier1 = 0.90
+degrade_multiplier_tier1 = 0.9
+degrade_used_tier2 = 0.98
+degrade_multiplier_tier2 = 0.75
 
 # 难度定档（`[routing.difficulty]`，默认关——缺段 = enabled=false 完全旁路，
 # 行为与历史逐位一致）。✅ 热生效（字段热读）

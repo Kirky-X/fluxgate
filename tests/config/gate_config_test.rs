@@ -1427,6 +1427,53 @@ mod quota_windows_config {
         }
     }
 
+    /// `[routing.quota_factor]` 配额时钟补全（R-budget-002）：ε/阈值/乘数
+    /// 数值域与档序校验；缺省全绿（平局打破 ε=0.05、降档启用）。
+    #[test]
+    fn test_quota_factor_clock_fields_validation() {
+        use fluxgate::config::QuotaFactorSection;
+        let section = QuotaFactorSection::default();
+        assert!((section.tie_epsilon - 0.05).abs() < 1e-9, "ε 缺省 0.05");
+        assert!(section.degrade_enabled, "降档缺省启用");
+        assert!((section.degrade_used_tier1 - 0.90).abs() < 1e-9);
+        assert!((section.degrade_multiplier_tier1 - 0.9).abs() < 1e-9);
+        assert!((section.degrade_used_tier2 - 0.98).abs() < 1e-9);
+        assert!((section.degrade_multiplier_tier2 - 0.75).abs() < 1e-9);
+        assert!(
+            validate_config(&common::test_config(vec![])).is_ok(),
+            "缺省段合法"
+        );
+
+        fn with_field(mutate: impl FnOnce(&mut QuotaFactorSection)) -> fluxgate::config::Config {
+            let mut config = common::test_config(vec![]);
+            mutate(&mut config.routing.quota_factor);
+            config
+        }
+        // ε 越界（<0 或 >1）
+        for eps in [-0.1f64, 1.5, f64::NAN] {
+            let err =
+                validate_config(&with_field(|q| q.tie_epsilon = eps)).expect_err("ε 越界必须拒绝");
+            assert!(err.to_string().contains("tie_epsilon"), "{err}");
+        }
+        // 阈值/乘数越界（≤0 或 >1）
+        let err = validate_config(&with_field(|q| q.degrade_used_tier1 = 0.0))
+            .expect_err("阈值越界必须拒绝");
+        assert!(err.to_string().contains("degrade_used_tier1"), "{err}");
+        let err = validate_config(&with_field(|q| q.degrade_multiplier_tier2 = 1.5))
+            .expect_err("乘数越界必须拒绝");
+        assert!(
+            err.to_string().contains("degrade_multiplier_tier2"),
+            "{err}"
+        );
+        // 档序：tier1 ≥ tier2 拒绝（档二永不可达）
+        let err = validate_config(&with_field(|q| {
+            q.degrade_used_tier1 = 0.98;
+            q.degrade_used_tier2 = 0.98;
+        }))
+        .expect_err("档序倒置必须拒绝");
+        assert!(err.to_string().contains("tier"), "{err}");
+    }
+
     /// `[key_budgets]`：hash 必须 64 位小写 hex、cost_limit_millicents > 0、
     /// window 闭集 daily|monthly、同 (hash, window) 不得重复；空段整体关闭。
     #[test]

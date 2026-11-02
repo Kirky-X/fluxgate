@@ -7468,6 +7468,17 @@ mod route_explain {
             (item["weight"].as_f64().unwrap() - item["base_weight"].as_f64().unwrap()).abs() < 1e-9,
             "默认配置下生产权重 == 合成基准: {item}"
         );
+        // quota views 块（R-budget-002）：explain 透出平局打破生效者与降档
+        // 档位；未接线配额视图时 tie_break=false、degrade_tier=null
+        assert!(
+            item["quota"].is_object(),
+            "explain 必须透出 quota views 块: {item}"
+        );
+        assert_eq!(item["quota"]["tie_break"], false);
+        assert!(
+            item["quota"]["degrade_tier"].is_null(),
+            "无预算视图时无降档档位: {item}"
+        );
 
         // 共用同一实现：路由对同一候选集算出的权重必须一致
         let pair = {

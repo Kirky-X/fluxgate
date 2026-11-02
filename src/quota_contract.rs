@@ -92,6 +92,22 @@ impl VendorBudgetView {
         }
         ratio
     }
+
+    /// 剩余额度比例 ∈ [0,1]（已判维度取最小——最紧维度代表余量；
+    /// 双限额均 0 = 无已判维度 → None，降档/平局打破不判该候选）。
+    /// 语义纯函数（同 normalized_reset/pace_ratio：路由打分不做隐藏 IO）。
+    pub fn remaining_fraction(&self) -> Option<f64> {
+        let mut remaining: Option<f64> = None;
+        if self.cost_limit > 0 {
+            let r = 1.0 - self.cost_used as f64 / self.cost_limit as f64;
+            remaining = Some(remaining.map_or(r, |cur: f64| cur.min(r)).clamp(0.0, 1.0));
+        }
+        if self.tokens_limit > 0 {
+            let r = 1.0 - self.tokens_used as f64 / self.tokens_limit as f64;
+            remaining = Some(remaining.map_or(r, |cur: f64| cur.min(r)).clamp(0.0, 1.0));
+        }
+        remaining
+    }
 }
 
 /// 预算读侧端口：router 只依赖本 trait，不依赖记账实现。

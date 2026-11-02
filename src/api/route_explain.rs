@@ -76,6 +76,12 @@ pub async fn route_explain(
                 item["selection"] = json!(a
                     .selection
                     .unwrap_or_else(|| panic!("{}", t("api-explain-no-selection"))));
+                // quota views 块（R-budget-002）：平局打破生效者与降档档位，
+                // 与生产路由同快照单点（quota_factor_scores）
+                item["quota"] = json!({
+                    "tie_break": a.quota_tie_break.unwrap_or(false),
+                    "degrade_tier": a.quota_degrade_tier,
+                });
             }
             item
         })

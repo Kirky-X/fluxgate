@@ -4943,6 +4943,7 @@ mod quota_factor {
         config.routing.quota_factor = QuotaFactorSection {
             mode: mode.into(),
             w_quota,
+            ..Default::default()
         };
         // 三 vendor 同预算：rolling 3600s、1000 token
         config.vendor_budgets = vec!["fresh", "soon", "gone"]
@@ -5115,6 +5116,294 @@ mod quota_factor {
             weights.iter().all(|(_, x)| (x - w).abs() < 1e-9),
             "mode=off 零参与（同权重）: {weights:?}"
         );
+    }
+
+    // ---- 配额时钟补全（R-budget-002）：平局打破 + 两级降档 ----
+
+    use fluxgate::config::QuotaFactorSection as Qfs;
+
+    /// 平局打破用配置：early/late 两 vendor 同 token 预算，rolling 周期
+    /// 各异（3600/7200）——同起点可造出「score 相同、reset_at 不同」的
+    /// 纯平局形态。
+    fn tie_config(w_quota: f64, tie_epsilon: f64) -> Config {
+        let mut config = common::test_config(vec![vendor("early"), vendor("late")]);
+        config.routing.quota_factor = Qfs {
+            mode: "smart".into(),
+            w_quota,
+            tie_epsilon,
+            ..Default::default()
+        };
+        config.vendor_budgets = vec![
+            VendorBudgetConfig {
+                vendor_id: "early".into(),
+                tokens_limit: 1000,
+                period: "rolling".into(),
+                rolling_secs: 3600,
+                ..Default::default()
+            },
+            VendorBudgetConfig {
+                vendor_id: "late".into(),
+                tokens_limit: 1000,
+                period: "rolling".into(),
+                rolling_secs: 7200,
+                ..Default::default()
+            },
+        ];
+        config
+    }
+
+    fn seed_with(config: &Config, rows: Vec<QuotaLedgerRow>) -> Arc<QuotaState> {
+        let state = Arc::new(QuotaState::new());
+        let restored = state.restore_from_ledger(&rows, config);
+        assert_eq!(restored, rows.len(), "全部注入行必须恢复（rolling 未过期）");
+        state
+    }
+
+    async fn weights_from(config: &Config, state: Arc<QuotaState>) -> Vec<(String, f64)> {
+        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm.clone(), vm.clone()).with_quota_state(state);
+        let candidates = vec!["early", "late"]
+            .into_iter()
+            .map(|id| {
+                let vendor = config.vendors.iter().find(|v| v.id == id).unwrap();
+                let model = vendor.models[0].clone();
+                (vendor.clone(), model)
+            })
+            .collect();
+        router
+            .calculate_weights(candidates)
+            .await
+            .into_iter()
+            .map(|(w, (v, _))| (v.id, w))
+            .collect()
+    }
+
+    /// 平局打破生效（R-budget-002）：score 平局（同 normalized、异
+    /// reset_secs）且双方剩余 >10% → reset_at 更早者满加成、权重严格更高；
+    /// ε=0 关闭时两权重回到相等（纯 6 因子平局）。
+    #[tokio::test]
+    async fn tie_break_prefers_earlier_reset_within_epsilon() {
+        // early: rolling 3600 起点 -3300 → reset 300s、normalized 1/12
+        // late:  rolling 7200 起点 -6600 → reset 600s、normalized 1/12
+        // 双方 used=100/1000 → remaining 0.9 > 10% ✓
+        let config = tie_config(1.0, 0.05);
+        let state = seed_with(
+            &config,
+            vec![
+                ledger_row("early", 3300, 100),
+                ledger_row("late", 6600, 100),
+            ],
+        );
+        // 打分单点直接断言：early 是平局打破生效者
+        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm).with_quota_state(state.clone());
+        let candidates: Vec<(
+            fluxgate::config::VendorConfig,
+            fluxgate::config::ModelConfig,
+        )> = vec!["early", "late"]
+            .into_iter()
+            .map(|id| {
+                let vendor = config.vendors.iter().find(|v| v.id == id).unwrap();
+                (vendor.clone(), vendor.models[0].clone())
+            })
+            .collect();
+        let (_, views) = router.quota_factor_views(&candidates).await;
+        let scoring = fluxgate::router::quota_factor_scores(
+            fluxgate::config::QuotaFactorMode::Smart,
+            &views,
+            &config.routing.quota_factor,
+        );
+        assert_eq!(
+            scoring.tie_break_winners,
+            vec![true, false],
+            "reset_at 更早者（early）必须是平局打破生效者"
+        );
+        assert_eq!(
+            scoring.degrade_tiers,
+            vec![None, None],
+            "剩余 90% 在平局打破域，不得触发降档"
+        );
+
+        // 权重：early 严格更高（满加成 vs 6 因子 (1-1/12)）
+        let weights = weights_from(&config, state).await;
+        let early = weights.iter().find(|(id, _)| id == "early").unwrap().1;
+        let late = weights.iter().find(|(id, _)| id == "late").unwrap().1;
+        assert!(early > late, "平局打破后 reset 更早者权重更高: {weights:?}");
+        assert!(
+            ((early - late) - 1.0 / 12.0).abs() < 1e-6,
+            "平局打破差 = 满加成 − (1-normalized) = 1/12：early={early} late={late}"
+        );
+
+        // ε=0 关闭平局打破：同形态回到纯 6 因子平局（两权重相等）
+        let config_off = tie_config(1.0, 0.0);
+        let state_off = seed_with(
+            &config_off,
+            vec![
+                ledger_row("early", 3300, 100),
+                ledger_row("late", 6600, 100),
+            ],
+        );
+        let weights = weights_from(&config_off, state_off).await;
+        let early = weights.iter().find(|(id, _)| id == "early").unwrap().1;
+        let late = weights.iter().find(|(id, _)| id == "late").unwrap().1;
+        assert!(
+            (early - late).abs() < 1e-6,
+            "ε=0 平局打破关闭，score 平局即权重平局: {weights:?}"
+        );
+    }
+
+    /// ε 外不干预：分差 > ε 不构成平局组，无生效者标记，排序保持
+    /// 「重置更快者更高」的原 6 因子序。
+    #[tokio::test]
+    async fn outside_epsilon_tie_break_does_not_interfere() {
+        // early: rolling 3600 起点 -3300（normalized ≈ 0.0833）
+        // late:  rolling 3600 起点 -3000（reset 600s、normalized ≈ 0.1667）
+        // 分差 ≈ 0.0833 > ε=0.05 → 非平局，无标记；used=100 → 剩余 90% 不降档
+        let mut config = tie_config(1.0, 0.05);
+        config.vendor_budgets[1].rolling_secs = 3600;
+        let state = seed_with(
+            &config,
+            vec![
+                ledger_row("early", 3300, 100),
+                ledger_row("late", 3000, 100),
+            ],
+        );
+        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm).with_quota_state(state.clone());
+        let candidates: Vec<(
+            fluxgate::config::VendorConfig,
+            fluxgate::config::ModelConfig,
+        )> = vec!["early", "late"]
+            .into_iter()
+            .map(|id| {
+                let vendor = config.vendors.iter().find(|v| v.id == id).unwrap();
+                (vendor.clone(), vendor.models[0].clone())
+            })
+            .collect();
+        let (_, views) = router.quota_factor_views(&candidates).await;
+        let scoring = fluxgate::router::quota_factor_scores(
+            fluxgate::config::QuotaFactorMode::Smart,
+            &views,
+            &config.routing.quota_factor,
+        );
+        assert!(
+            scoring.tie_break_winners.iter().all(|w| !w),
+            "ε 外不得有平局打破生效者: {:?}",
+            scoring.tie_break_winners
+        );
+        assert_eq!(scoring.degrade_tiers, vec![None, None]);
+        // 排序保持原序：reset 更快者权重更高（差 = w_quota×分差）
+        let weights = weights_from(&config, state).await;
+        let early = weights.iter().find(|(id, _)| id == "early").unwrap().1;
+        let late = weights.iter().find(|(id, _)| id == "late").unwrap().1;
+        assert!(early > late, "ε 外保持原 6 因子序: {weights:?}");
+        assert!(
+            ((early - late) - 1.0 / 12.0).abs() < 1e-6,
+            "分差完全由 normalized 差贡献（无打破干预）: early={early} late={late}"
+        );
+    }
+
+    /// 两级降档（R-budget-002）：已用 95% → ×0.9、99% → ×0.75（先判紧档）；
+    /// 未消耗者不降档；缺省配置即启用。
+    #[tokio::test]
+    async fn two_tier_degrade_multipliers_apply_with_defaults() {
+        assert!(Qfs::default().degrade_enabled, "缺省启用降档（结构性断言）");
+        // 三 vendor 同窗同起点（6 因子同值），仅 used 不同：
+        // control 0 / mid 950（95%）/ deep 990（99%）
+        let mut config =
+            common::test_config(vec![vendor("control"), vendor("mid"), vendor("deep")]);
+        config.routing.quota_factor = Qfs {
+            mode: "smart".into(),
+            w_quota: 0.0,
+            ..Default::default()
+        };
+        config.vendor_budgets = vec!["control", "mid", "deep"]
+            .into_iter()
+            .map(|id| VendorBudgetConfig {
+                vendor_id: id.into(),
+                tokens_limit: 1000,
+                period: "rolling".into(),
+                rolling_secs: 3600,
+                ..Default::default()
+            })
+            .collect();
+        let state = seed_with(
+            &config,
+            vec![
+                ledger_row("control", 100, 0),
+                ledger_row("mid", 100, 950),
+                ledger_row("deep", 100, 990),
+            ],
+        );
+        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm).with_quota_state(state.clone());
+        let candidates: Vec<(
+            fluxgate::config::VendorConfig,
+            fluxgate::config::ModelConfig,
+        )> = vec!["control", "mid", "deep"]
+            .into_iter()
+            .map(|id| {
+                let vendor = config.vendors.iter().find(|v| v.id == id).unwrap();
+                (vendor.clone(), vendor.models[0].clone())
+            })
+            .collect();
+        let (_, views) = router.quota_factor_views(&candidates).await;
+        let scoring = fluxgate::router::quota_factor_scores(
+            fluxgate::config::QuotaFactorMode::Smart,
+            &views,
+            &config.routing.quota_factor,
+        );
+        assert_eq!(
+            scoring.degrade_tiers,
+            vec![None, Some("tier1"), Some("tier2")],
+            "95% → tier1、99% → tier2、未消耗不降档"
+        );
+        assert_eq!(
+            scoring.degrade_multipliers,
+            vec![None, Some(0.9), Some(0.75)]
+        );
+        // mid/deep 剩余 ≤10% 出平局打破域；control 单员成组无打破
+        assert!(scoring.tie_break_winners.iter().all(|w| !w));
+
+        // 权重比 = 乘数（同底重）
+        let weights = weights_from3(&config, state).await;
+        let control = weights.iter().find(|(id, _)| id == "control").unwrap().1;
+        let mid = weights.iter().find(|(id, _)| id == "mid").unwrap().1;
+        let deep = weights.iter().find(|(id, _)| id == "deep").unwrap().1;
+        assert!(
+            ((mid / control) - 0.9).abs() < 1e-6,
+            "95% 已用 → ×0.9: mid={mid} control={control}"
+        );
+        assert!(
+            ((deep / control) - 0.75).abs() < 1e-6,
+            "99% 已用 → ×0.75: deep={deep} control={control}"
+        );
+    }
+
+    async fn weights_from3(config: &Config, state: Arc<QuotaState>) -> Vec<(String, f64)> {
+        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm).with_quota_state(state);
+        let candidates: Vec<(
+            fluxgate::config::VendorConfig,
+            fluxgate::config::ModelConfig,
+        )> = vec!["control", "mid", "deep"]
+            .into_iter()
+            .map(|id| {
+                let vendor = config.vendors.iter().find(|v| v.id == id).unwrap();
+                (vendor.clone(), vendor.models[0].clone())
+            })
+            .collect();
+        router
+            .calculate_weights(candidates)
+            .await
+            .into_iter()
+            .map(|(w, (v, _))| (v.id, w))
+            .collect()
     }
 
     /// 限额回填语义（多窗准入伴生）：窗口限额 0 落回 per-key；显式限额

@@ -1825,12 +1825,39 @@ pub struct VendorBudgetConfig {
 /// w_window 同温标（默认 0.3，仅 mode≠off 时被咨询）。合法值集单源
 /// `QuotaFactorMode::parse`（实现在 loader）；
 /// 字段热读（POST /admin/config 立即生效）
+///
+/// 配额时钟补全（R-budget-002，同一快照单点生效）：
+/// - 平局打破：候选 quota 分差 < `tie_epsilon`（默认 0.05，0 = 关闭）且
+///   各自剩余额度都 >10% 时，`reset_at` 更早者获满加成（将作废的额度
+///   先用掉）；
+/// - 两级降档：已用比例 ≥ `degrade_used_tier1`（默认 0.90，即剩余 ≤10%）
+///   权重乘 `degrade_multiplier_tier1`（默认 0.9）、≥ `degrade_used_tier2`
+///   （默认 0.98）乘 `degrade_multiplier_tier2`（默认 0.75）——先判紧档；
+///   `degrade_enabled` 缺省 true = 启用。阈值/乘数/ε 全部可配。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct QuotaFactorSection {
     #[serde(default = "loader::default_quota_factor_mode")]
     pub mode: String,
     #[serde(default = "loader::default_quota_factor_weight")]
     pub w_quota: f64,
+    /// 平局打破 ε（score 分差小于该值视为平局；0 = 关闭）
+    #[serde(default = "loader::default_quota_tie_epsilon")]
+    pub tie_epsilon: f64,
+    /// 降档总开关（缺省 true = 启用）
+    #[serde(default = "loader::default_quota_degrade_enabled")]
+    pub degrade_enabled: bool,
+    /// 降档档位一的已用比例阈值（缺省 0.90：剩余 ≤10%）
+    #[serde(default = "loader::default_quota_degrade_used_tier1")]
+    pub degrade_used_tier1: f64,
+    /// 档位一乘数（缺省 0.9）
+    #[serde(default = "loader::default_quota_degrade_multiplier_tier1")]
+    pub degrade_multiplier_tier1: f64,
+    /// 降档档位二的已用比例阈值（缺省 0.98：剩余 ≤2%）
+    #[serde(default = "loader::default_quota_degrade_used_tier2")]
+    pub degrade_used_tier2: f64,
+    /// 档位二乘数（缺省 0.75）
+    #[serde(default = "loader::default_quota_degrade_multiplier_tier2")]
+    pub degrade_multiplier_tier2: f64,
 }
 
 /// 配额因子模式闭集（`[routing.quota_factor].mode` 的合法值集）。字段保持

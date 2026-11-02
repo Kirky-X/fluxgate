@@ -770,13 +770,15 @@ impl Router {
 
         // 先行筛选（与权重无关的 reason），收集合格对。
         enum Screen {
-            Excluded(CandidateAssessment),
+            // Box：CandidateAssessment 含逐行 detail/factors，装盒压平枚举
+            // 尺寸差（clippy large_enum_variants）
+            Excluded(Box<CandidateAssessment>),
             Candidate(Box<(VendorConfig, ModelConfig)>),
         }
         let mut screens: Vec<Screen> = Vec::new();
         for (vendor, entry) in rows {
             let Some(model_entry) = entry else {
-                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                screens.push(Screen::Excluded(Box::new(CandidateAssessment::excluded(
                     vendor.id.clone(),
                     model.to_string(),
                     REASON_NOT_IN_CATALOG,
@@ -784,11 +786,11 @@ impl Router {
                         "router-explain-not-in-catalog",
                         &[("vendor", vendor.id.clone()), ("model", model.to_string())],
                     ),
-                )));
+                ))));
                 continue;
             };
             if !vendor.enabled || !model_entry.enabled {
-                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                screens.push(Screen::Excluded(Box::new(CandidateAssessment::excluded(
                     vendor.id.clone(),
                     model_entry.model_id.clone(),
                     REASON_DISABLED,
@@ -796,7 +798,7 @@ impl Router {
                         "vendor enabled={} model enabled={}",
                         vendor.enabled, model_entry.enabled
                     ),
-                )));
+                ))));
                 continue;
             }
             let status = self.vendor_manager.get_status(&vendor.id).await;
@@ -804,16 +806,16 @@ impl Router {
             // 限流窗口耗尽先于状态（get_status peek 窗口——耗尽者状态恒
             // Throttled；先判窗口以区分「配额耗尽」与「错误驱动冷却」）。
             if matches!(&window, Some(info) if !info.has_budget()) {
-                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                screens.push(Screen::Excluded(Box::new(CandidateAssessment::excluded(
                     vendor.id.clone(),
                     model_entry.model_id.clone(),
                     REASON_THROTTLED,
                     t("router-explain-throttled"),
-                )));
+                ))));
                 continue;
             }
             if status != VendorStatus::Available {
-                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                screens.push(Screen::Excluded(Box::new(CandidateAssessment::excluded(
                     vendor.id.clone(),
                     model_entry.model_id.clone(),
                     REASON_COOLING_DOWN,
@@ -821,13 +823,13 @@ impl Router {
                         "router-explain-cooling-down",
                         &[("status", format!("{status:?}"))],
                     ),
-                )));
+                ))));
                 continue;
             }
             // 全部 key 黑名单 = 无可用出站凭证：报 cooling_down 并注明
             // key 池耗尽，detail 携带指纹明细（截断哈希，非 key 原文）
             if let Some(fingerprints) = self.vendor_manager.key_pool_exhausted(&vendor.id) {
-                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                screens.push(Screen::Excluded(Box::new(CandidateAssessment::excluded(
                     vendor.id.clone(),
                     model_entry.model_id.clone(),
                     REASON_COOLING_DOWN,
@@ -838,12 +840,12 @@ impl Router {
                             ("prints", fingerprints.join(",")),
                         ],
                     ),
-                )));
+                ))));
                 continue;
             }
             if let Some(bound) = bound_vendor.as_deref() {
                 if bound != vendor.id {
-                    screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                    screens.push(Screen::Excluded(Box::new(CandidateAssessment::excluded(
                         vendor.id.clone(),
                         model_entry.model_id.clone(),
                         REASON_AFFINITY_BOUND_ELSEWHERE,
@@ -851,13 +853,13 @@ impl Router {
                             "router-explain-affinity-bound-elsewhere",
                             &[("bound", bound.to_string())],
                         ),
-                    )));
+                    ))));
                     continue;
                 }
             }
             let queue_len = self.queue_len_for(&vendor, &routing.load_signal);
             if queue_len >= QUEUE_SATURATION_LEN {
-                screens.push(Screen::Excluded(CandidateAssessment::excluded(
+                screens.push(Screen::Excluded(Box::new(CandidateAssessment::excluded(
                     vendor.id.clone(),
                     model_entry.model_id.clone(),
                     REASON_QUEUE_OVER_LIMIT,
@@ -868,11 +870,14 @@ impl Router {
                             ("saturation", QUEUE_SATURATION_LEN.to_string()),
                         ],
                     ),
-                )));
+                ))));
                 continue;
             }
             screens.push(Screen::Candidate(Box::new((vendor, model_entry))));
         }
+
+        // 合格对的生产精确权重（与路由同一方法）+ 6 因子分解（第 6 项 quota
+        // 与生产链同一快照单点，见 quota_factor_views）。
 
         // 合格对的生产精确权重（与路由同一方法）+ 6 因子分解（第 6 项 quota
         // 与生产链同一快照单点，见 quota_factor_views）。
@@ -884,7 +889,8 @@ impl Router {
             })
             .collect();
         let (quota_mode, quota_views) = self.quota_factor_views(&eligible).await;
-        let (quota_scores, _pace_multipliers) = quota_factor_scores(quota_mode, &quota_views);
+        let scoring = quota_factor_scores(quota_mode, &quota_views, &routing.quota_factor);
+        let quota_scores = scoring.scores.clone();
         // smart 摘除集：生产路由在权重前已把预算耗尽 vendor 摘出候选——
         // 解释块同样标记 excluded（reason=quota_depleted），不再显示 eligible
         let depleted_ids: std::collections::HashSet<&str> = if quota_mode
@@ -916,7 +922,7 @@ impl Router {
         let mut eligible_idx = 0usize;
         for screen in screens {
             match screen {
-                Screen::Excluded(assessment) => out.push(assessment),
+                Screen::Excluded(assessment) => out.push(*assessment),
                 Screen::Candidate(pair) => {
                     let (vendor, model_entry) = pair.as_ref().clone();
                     let quota_idx = eligible_idx;
@@ -965,6 +971,8 @@ impl Router {
                             base,
                             weight,
                             selection,
+                            scoring.tie_break_winners.get(quota_idx).copied(),
+                            scoring.degrade_tiers.get(quota_idx).copied().flatten(),
                         ));
                     }
                 }
@@ -1633,15 +1641,24 @@ impl Router {
         let est_prompt_tokens = ctx.as_ref().map(|c| c.est_prompt_tokens);
 
         // 价格因子上下文（开关关闭时零查询开销）
-        let price_factor_enabled = self.config.read().routing.price_factor_enabled;
+        let (quota_section, price_factor_enabled) = {
+            let snapshot = self.config.read();
+            (
+                snapshot.routing.quota_factor.clone(),
+                snapshot.routing.price_factor_enabled,
+            )
+        };
         let price_factors = if price_factor_enabled {
             self.price_factor_multipliers(&candidates, est_prompt_tokens)
         } else {
             Vec::new()
         };
 
-        // 配额因子打分上下文（T007/T008）：过滤后的候选与视图同序对齐
-        let (quota_scores, pace_multipliers) = quota_factor_scores(quota_mode, &views);
+        // 配额因子打分上下文（T007/T008 + R-budget-002）：过滤后的候选与
+        // 视图同序对齐；平局打破与两级降档同快照单点生效
+        let scoring = quota_factor_scores(quota_mode, &views, &quota_section);
+        let (quota_scores, pace_multipliers) =
+            (scoring.scores.clone(), scoring.pace_multipliers.clone());
 
         let mut weighted = Vec::with_capacity(candidates.len());
         // SLA 打分上下文：sla_v=0（默认）零开销旁路；候选集级预收集
@@ -1679,6 +1696,11 @@ impl Router {
             if let Some(Some(factor)) = pace_multipliers.get(i) {
                 weight *= *factor;
             }
+            // 两级降档乘性修正（R-budget-002：剩余 ≤10%/≤2% 缓/强转向，
+            // 与 pace 独立叠加；缺省启用）
+            if let Some(Some(factor)) = scoring.degrade_multipliers.get(i) {
+                weight *= *factor;
+            }
             weighted.push((weight, (vendor, model)));
         }
         weighted
@@ -1687,8 +1709,8 @@ impl Router {
     /// 配额因子单次快照（T007/T008）：mode 判定一次 + 逐 vendor 视图一次
     ///（同 vendor 多 model 候选共享同一视图，互斥锁与 `Utc::now` 只付一次）。
     /// off / 未接线 → 双空（调用方整链零查询零分配）；views 与 candidates
-    /// 同序对齐。
-    async fn quota_factor_views(
+    /// 同序对齐。pub 供确定性测试注入（R-budget-002 平局打破/降档验证）。
+    pub async fn quota_factor_views(
         &self,
         candidates: &[(VendorConfig, ModelConfig)],
     ) -> (
@@ -2494,35 +2516,154 @@ pub fn quota_pace_multiplier(pace_ratio: f64) -> f64 {
     }
 }
 
+/// 配额因子打分产物（`quota_factor_scores` 单点）：与候选集同序对齐的四路
+/// 向量 + 平局打破生效者标记。pub 供确定性测试与 explain 复用。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QuotaFactorScoring {
+    /// smart 第 6 因子分（mode=smart 时非空）
+    pub scores: Vec<Option<QuotaFactorScore>>,
+    /// pace 消耗率带乘数（mode=pace 时非空）
+    pub pace_multipliers: Vec<Option<f64>>,
+    /// 两级降档乘数（R-budget-002；缺省启用，阈值乘数可配）——与 pace 乘数
+    /// 独立叠加，mode=smart/pace 都生效
+    pub degrade_multipliers: Vec<Option<f64>>,
+    /// 降档档位（explain 透出）：`"tier1"`（剩余 ≤10% 默认档）| `"tier2"`
+    /// （剩余 ≤2% 默认档）
+    pub degrade_tiers: Vec<Option<&'static str>>,
+    /// 平局打破生效者（smart 模式：reset_at 更早者在 ε 平局组内获满加成）
+    pub tie_break_winners: Vec<bool>,
+}
+
+/// 平局打破的剩余额度门（R-budget-002「剩余都 >10%」）：低于该值的候选
+/// 进入降档域（`degrade_for`），不再参与平局打破。固定 0.10 与降档档位一
+/// 缺省阈值分域互补；降档阈值可配、此门独立固定。
+const TIE_BREAK_MIN_REMAINING: f64 = 0.10;
+
+/// 两级降档判定（纯函数，R-budget-002）：已用比例 ≥ 档二阈值 → ×tier2 乘数
+///（先判紧档）；≥ 档一阈值 → ×tier1 乘数。视图无已判维度或降档关闭 → None。
+/// 阈值/乘数语义：tier1 默认 0.90/0.9（剩余 ≤10% 缓转向）、tier2 默认
+/// 0.98/0.75（剩余 ≤2% 强转向）——与平局打破的「剩余 >10%」门互补分域：
+/// 未及 90% 已用 = 平局打破域，之后逐级降档至硬耗尽（smart 摘除）。
+fn degrade_for(
+    view: &crate::quota_contract::VendorBudgetView,
+    section: &crate::config::QuotaFactorSection,
+) -> Option<(f64, &'static str)> {
+    if !section.degrade_enabled {
+        return None;
+    }
+    let remaining = view.remaining_fraction()?;
+    let used = 1.0 - remaining;
+    if used >= section.degrade_used_tier2 {
+        Some((section.degrade_multiplier_tier2, "tier2"))
+    } else if used >= section.degrade_used_tier1 {
+        Some((section.degrade_multiplier_tier1, "tier1"))
+    } else {
+        None
+    }
+}
+
 /// 配额因子打分上下文（纯函数）：smart → 每候选重置归一化分（未起算窗不
-/// 加成）；pace → 每候选消耗率带乘性因子。off → 双空（零评分）。views 与
-/// 候选集同序对齐（[`Router::apply_quota_filter`] 产物直入，免二次查询）。
-fn quota_factor_scores(
+/// 加成）+ 平局打破（reset_at 更早者在 ε 平局组内获满加成）；pace → 每候选
+/// 消耗率带乘性因子；双模式统一叠加两级降档乘数。off → 全空（零评分）。
+/// views 与候选集同序对齐（[`Router::apply_quota_filter`] 产物直入，免二次
+/// 查询）。pub 供确定性测试（R-budget-002 平局打破/降档验证入口）。
+pub fn quota_factor_scores(
     mode: crate::config::QuotaFactorMode,
     views: &[Option<crate::quota_contract::VendorBudgetView>],
-) -> (Vec<Option<QuotaFactorScore>>, Vec<Option<f64>>) {
-    match mode {
-        crate::config::QuotaFactorMode::Smart => (
-            views
+    section: &crate::config::QuotaFactorSection,
+) -> QuotaFactorScoring {
+    // 平局打破（smart 域）：score = normalized_reset，floor = 组内最小分；
+    // 分差 < ε 的候选构成平局组，组内全部剩余 >10%（降档域接管前）时，
+    // reset_secs 最小者（reset_at 更早）得满加成（normalized_reset → 0）。
+    // ε 非法（负/非有限）或 0 → 关闭。
+    let mut scores: Vec<Option<QuotaFactorScore>> = match mode {
+        crate::config::QuotaFactorMode::Smart => views
+            .iter()
+            .map(|view| {
+                (*view)
+                    .filter(|b| !b.not_started)
+                    .map(|b| QuotaFactorScore {
+                        normalized_reset: b.normalized_reset(),
+                    })
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut tie_break_winners = vec![false; views.len()];
+    if mode == crate::config::QuotaFactorMode::Smart
+        && section.tie_epsilon.is_finite()
+        && section.tie_epsilon > 0.0
+    {
+        // 平局打破资格：有 score 且剩余 > 10%（降档域候选不参与——先转向
+        // 再谈平局）；「两候选……剩余都 >10%」按组员逐个判定
+        let eligible: Vec<usize> = scores
+            .iter()
+            .enumerate()
+            .filter(|(i, score)| {
+                score.is_some()
+                    && views[*i]
+                        .as_ref()
+                        .and_then(|b| b.remaining_fraction())
+                        .is_some_and(|remaining| remaining > TIE_BREAK_MIN_REMAINING)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if eligible.len() >= 2 {
+            let floor = eligible
+                .iter()
+                .filter_map(|&i| scores[i].as_ref().map(|s| s.normalized_reset))
+                .fold(f64::INFINITY, f64::min);
+            // 平局组：与 floor 分差 < ε；reset_at 更早者优先（reset_secs 最小）
+            let group: Vec<usize> = eligible
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    scores[i]
+                        .as_ref()
+                        .is_some_and(|s| s.normalized_reset - floor < section.tie_epsilon)
+                })
+                .collect();
+            if group.len() >= 2 {
+                let winner = group
+                    .iter()
+                    .copied()
+                    .min_by_key(|&i| (views[i].as_ref().map_or(u64::MAX, |b| b.reset_secs), i))
+                    .expect("组非空");
+                tie_break_winners[winner] = true;
+                if let Some(score) = &mut scores[winner] {
+                    score.normalized_reset = 0.0;
+                }
+            }
+        }
+    }
+    // 两级降档乘数（smart/pace 双模式叠加；off 零评分）
+    let (degrade_multipliers, degrade_tiers): (Vec<Option<f64>>, Vec<Option<&'static str>>) =
+        match mode {
+            crate::config::QuotaFactorMode::Off => (Vec::new(), Vec::new()),
+            _ => views
                 .iter()
                 .map(|view| {
-                    (*view)
-                        .filter(|b| !b.not_started)
-                        .map(|b| QuotaFactorScore {
-                            normalized_reset: b.normalized_reset(),
+                    view.as_ref()
+                        .and_then(|b| degrade_for(b, section))
+                        .map_or((None, None), |(multiplier, tier)| {
+                            (Some(multiplier), Some(tier))
                         })
                 })
-                .collect(),
-            Vec::new(),
-        ),
-        crate::config::QuotaFactorMode::Pace => (
-            Vec::new(),
-            views
-                .iter()
-                .map(|view| view.map(|b| quota_pace_multiplier(b.pace_ratio())))
-                .collect(),
-        ),
-        crate::config::QuotaFactorMode::Off => (Vec::new(), Vec::new()),
+                .unzip(),
+        };
+    let pace_multipliers: Vec<Option<f64>> = match mode {
+        crate::config::QuotaFactorMode::Pace => views
+            .iter()
+            .map(|view| view.map(|b| quota_pace_multiplier(b.pace_ratio())))
+            .collect(),
+        _ => Vec::new(),
+    };
+    QuotaFactorScoring {
+        scores,
+        pace_multipliers,
+        degrade_multipliers,
+        degrade_tiers,
+        tie_break_winners,
     }
 }
 
@@ -2620,6 +2761,10 @@ pub struct CandidateAssessment {
     pub weight: Option<f64>,
     /// 当前 selection 档位（入选者有值）。
     pub selection: Option<&'static str>,
+    /// 平局打破生效者（R-budget-002：quota views 透出；入选者有值）。
+    pub quota_tie_break: Option<bool>,
+    /// 降档档位（R-budget-002：`tier1`/`tier2`；未降档 None，入选者有值）。
+    pub quota_degrade_tier: Option<&'static str>,
 }
 
 impl CandidateAssessment {
@@ -2639,9 +2784,12 @@ impl CandidateAssessment {
             base_weight: None,
             weight: None,
             selection: None,
+            quota_tie_break: None,
+            quota_degrade_tier: None,
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // 行数据全字段构造：explain 单点消费
     fn eligible(
         vendor_id: String,
         model_id: String,
@@ -2649,6 +2797,8 @@ impl CandidateAssessment {
         base_weight: f64,
         weight: f64,
         selection: &'static str,
+        quota_tie_break: Option<bool>,
+        quota_degrade_tier: Option<&'static str>,
     ) -> Self {
         Self {
             vendor_id,
@@ -2663,6 +2813,8 @@ impl CandidateAssessment {
             base_weight: Some(base_weight),
             weight: Some(weight),
             selection: Some(selection),
+            quota_tie_break,
+            quota_degrade_tier,
         }
     }
 }

@@ -1167,8 +1167,44 @@ impl Default for crate::config::QuotaFactorSection {
         Self {
             mode: default_quota_factor_mode(),
             w_quota: default_quota_factor_weight(),
+            tie_epsilon: default_quota_tie_epsilon(),
+            degrade_enabled: default_quota_degrade_enabled(),
+            degrade_used_tier1: default_quota_degrade_used_tier1(),
+            degrade_multiplier_tier1: default_quota_degrade_multiplier_tier1(),
+            degrade_used_tier2: default_quota_degrade_used_tier2(),
+            degrade_multiplier_tier2: default_quota_degrade_multiplier_tier2(),
         }
     }
+}
+
+/// 平局打破 ε 缺省：0.05（score 分差 <5% 视为平局；0 = 关闭）。
+pub fn default_quota_tie_epsilon() -> f64 {
+    0.05
+}
+
+/// 两级降档缺省启用（缺省 true；显式 false 才关闭）。
+pub fn default_quota_degrade_enabled() -> bool {
+    true
+}
+
+/// 降档档位一阈值：已用 ≥90%（剩余 ≤10%）。
+pub fn default_quota_degrade_used_tier1() -> f64 {
+    0.90
+}
+
+/// 档位一乘数：×0.9（轻档，缓转向）。
+pub fn default_quota_degrade_multiplier_tier1() -> f64 {
+    0.9
+}
+
+/// 降档档位二阈值：已用 ≥98%（剩余 ≤2%，硬耗尽前最后一段）。
+pub fn default_quota_degrade_used_tier2() -> f64 {
+    0.98
+}
+
+/// 档位二乘数：×0.75（重档，强转向）。
+pub fn default_quota_degrade_multiplier_tier2() -> f64 {
+    0.75
 }
 
 impl crate::config::QuotaFactorMode {
@@ -2082,6 +2118,37 @@ fn validate_quota_factor(config: &Config) -> Result<(), GateError> {
                 "config-quota-factor-mode-unknown",
                 &[("value", section.mode.trim().to_string())],
             ),
+        });
+    }
+    // 配额时钟补全数值域（R-budget-002）：ε ∈ [0,1]（0 = 关闭平局打破）、
+    // 阈值 ∈ (0,1]、乘数 ∈ (0,1]（>1 会变成升档，语义不允许）、档一阈值
+    // 必须严格小于档二（嵌套先判紧档；相等让档二永不可达）
+    if !section.tie_epsilon.is_finite() || !(0.0..=1.0).contains(&section.tie_epsilon) {
+        return Err(GateError::Config {
+            message: t_args(
+                "config-quota-factor-field-invalid",
+                &[("field", "tie_epsilon".to_string())],
+            ),
+        });
+    }
+    for (field, value) in [
+        ("degrade_used_tier1", section.degrade_used_tier1),
+        ("degrade_used_tier2", section.degrade_used_tier2),
+        ("degrade_multiplier_tier1", section.degrade_multiplier_tier1),
+        ("degrade_multiplier_tier2", section.degrade_multiplier_tier2),
+    ] {
+        if !value.is_finite() || value <= 0.0 || value > 1.0 {
+            return Err(GateError::Config {
+                message: t_args(
+                    "config-quota-factor-field-invalid",
+                    &[("field", field.to_string())],
+                ),
+            });
+        }
+    }
+    if section.degrade_used_tier1 >= section.degrade_used_tier2 {
+        return Err(GateError::Config {
+            message: t("config-quota-factor-tier-order"),
         });
     }
     Ok(())

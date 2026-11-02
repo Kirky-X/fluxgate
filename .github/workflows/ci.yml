@@ -101,6 +101,16 @@ jobs:
       # feature 的 clippy，覆盖代码生成与 grpc_client 模块 lint（此作业已装 protoc）
       - name: Run clippy (examples grpc feature)
         run: cargo clippy -p fluxgate-examples --no-default-features --features grpc --all-targets -- -D warnings
+      # 非默认 feature 面的 lint 腿：feature-matrix.yml 每周只跑 cargo hack check
+      # （仅编译性、无 clippy），「单独开启才编译」的 feature 其 lint 从未被门禁
+      # （masking/catalog-sync 曾积 lint 债，codenexus-audit-remediation 清零）。
+      # 本腿每 PR 防复辟，覆盖全部 runner 可解析的非默认面（含 otlp——test 作业
+      # 只编译不 lint，三维审查 M1 补齐口径）。difficulty-classifier 与
+      # semantic-cache 排除：二者均 dep:vecboost，是 sibling path 依赖（../vecboost）
+      # 且 rc.3 未发 crates.io，runner 上不存在（同 feature-matrix.yml 排除理由；
+      # 三维审查 H-1 修正——本地预演因本机存在 ../vecboost 而通过，属环境差异盲点）
+      - name: Run clippy (non-default feature surfaces)
+        run: cargo clippy -p fluxgate --features "masking,catalog-sync,otlp,grpc" --all-targets -- -D warnings
 
   #-----------------------------------------------------------------------------
   # 编译检查（默认特性 / 三后端特性矩阵）

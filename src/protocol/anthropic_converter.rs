@@ -1115,17 +1115,10 @@ impl AnthropicStreamEncoder {
                 .to_string(),
             );
             for shard in buffer.arguments_shards {
-                events.push(
-                    json!({
-                        "type": "content_block_delta",
-                        "index": self.block_index,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": shard,
-                        },
-                    })
-                    .to_string(),
-                );
+                events.push(self.content_block_delta_event(json!({
+                    "type": "input_json_delta",
+                    "partial_json": shard,
+                })));
             }
             events.push(self.content_block_stop_event());
             self.block_index += 1;
@@ -1145,172 +1138,23 @@ impl AnthropicStreamEncoder {
                 // 多片段帧回退产物）的工具载荷不再静默丢弃——整段 arguments
                 // 合成为一片 ToolCall 入既有缓冲，走刷写路径产出合法 tool_use 块
                 if let MessageContent::ToolCalls(calls) = &delta {
-                    for call in calls {
-                        let slot = self
-                            .pending_tools
-                            .keys()
-                            .copied()
-                            .next_back()
-                            .map_or(0, |k| k + 1);
-                        let buffer = self.pending_tools.entry(slot).or_default();
-                        buffer.id = call.id.clone();
-                        buffer.name = Some(call.function.name.clone()).filter(|n| !n.is_empty());
-                        if !call.function.arguments.is_empty() {
-                            buffer
-                                .arguments_shards
-                                .push(call.function.arguments.clone());
-                        }
-                    }
+                    self.buffer_fallback_tool_calls(calls);
                 }
                 // 思考增量单独成块（R-008）：thinking 块开闭状态跟踪，
                 // thinking_delta / signature_delta 事件序重建；
                 // 文本路径仍只走 extract_delta_text（不产出思考文本）
                 if let MessageContent::Reasoning { text, signature } = &delta {
-                    let mut events = Vec::new();
-                    if !self.message_started {
-                        events.push(self.message_start_event());
-                    }
-                    // 思考块前同样先刷写工具缓冲（块序归一化）
-                    self.flush_pending_tools(&mut events);
-                    // 已开的文本块需先闭合才能开思考块（块不混流）
-                    if self.block_open && !self.thinking_block_open {
-                        events.push(self.content_block_stop_event());
-                        self.block_open = false;
-                        self.block_index += 1;
-                    }
-                    if !text.is_empty() {
-                        if !self.block_open {
-                            events.push(self.thinking_block_start_event());
-                        }
-                        events.push(
-                            json!({
-                                "type": "content_block_delta",
-                                "index": self.block_index,
-                                "delta": {
-                                    "type": "thinking_delta",
-                                    "thinking": text,
-                                },
-                            })
-                            .to_string(),
-                        );
-                    }
-                    if let Some(signature) = signature {
-                        if !self.block_open {
-                            events.push(self.thinking_block_start_event());
-                        }
-                        events.push(
-                            json!({
-                                "type": "content_block_delta",
-                                "index": self.block_index,
-                                "delta": {
-                                    "type": "signature_delta",
-                                    "signature": signature,
-                                },
-                            })
-                            .to_string(),
-                        );
-                    }
-                    if let Some(reason) = finish_reason {
-                        self.stop_reason = Some(reason);
-                    }
-                    if self.stop_reason.is_some() && self.block_open {
-                        events.push(self.content_block_stop_event());
-                        self.block_open = false;
-                        self.thinking_block_open = false;
-                        self.block_index += 1;
-                    }
-                    return events;
+                    return self.encode_reasoning_delta(text, signature, finish_reason);
                 }
-
                 let text = extract_delta_text(&delta);
-                if let Some(reason) = finish_reason {
-                    self.stop_reason = Some(reason);
-                }
-
-                let mut events = Vec::new();
-                if !self.message_started {
-                    events.push(self.message_start_event());
-                }
-                // 文本块打开前先刷写工具缓冲（工具块在前为归一化
-                // 顺序；文本块如在其后重新开块，块序仍合法）
-                self.flush_pending_tools(&mut events);
-                if !text.is_empty() {
-                    // 思考块未闭合时文本不能续写其中：先闭再开
-                    if self.block_open && self.thinking_block_open {
-                        events.push(self.content_block_stop_event());
-                        self.block_open = false;
-                        self.thinking_block_open = false;
-                        self.block_index += 1;
-                    }
-                    if !self.block_open {
-                        events.push(self.content_block_start_event());
-                    }
-                    events.push(
-                        json!({
-                            "type": "content_block_delta",
-                            "index": self.block_index,
-                            "delta": {
-                                "type": "text_delta",
-                                "text": text,
-                            },
-                        })
-                        .to_string(),
-                    );
-                }
-                // finish_reason 到达即闭合当前 content block
-                // （message_delta 由 Usage 帧或 finish 兜底发出）。
-                // 闭合即递增序号——后开块序号唯一（Anthropic 块序号语义）。
-                if self.stop_reason.is_some() && self.block_open {
-                    events.push(self.content_block_stop_event());
-                    self.block_open = false;
-                    self.thinking_block_open = false;
-                    self.block_index += 1;
-                }
-                events
+                self.encode_text_delta(text, finish_reason)
             }
             StreamChunk::Usage {
                 prompt_tokens,
                 completion_tokens,
                 finish_reason,
                 ..
-            } => {
-                let mut events = Vec::new();
-                // 终止原因与 usage 同帧到达时（Anthropic 上游回流），
-                // 先更新 stop_reason 再发 message_delta
-                if let Some(reason) = finish_reason {
-                    self.stop_reason = Some(reason);
-                }
-                if !self.message_started {
-                    events.push(self.message_start_event_with_input(prompt_tokens));
-                }
-                // message_delta 前必须刷写完所有工具块（顺序块语义）
-                self.flush_pending_tools(&mut events);
-                if self.block_open {
-                    events.push(self.content_block_stop_event());
-                    self.block_open = false;
-                    self.thinking_block_open = false;
-                    self.block_index += 1;
-                }
-                events.push(
-                    json!({
-                        "type": "message_delta",
-                        "delta": {
-                            // IR finish 词表 → Anthropic stop_reason 词表
-                            //（stop→end_turn、tool_calls→tool_use 等；未知词透传）
-                            "stop_reason": self
-                                .stop_reason
-                                .as_deref()
-                                .map(finish_reason_to_anthropic_stop_reason),
-                            "stop_sequence": Value::Null,
-                        },
-                        "usage": {
-                            "output_tokens": completion_tokens,
-                        },
-                    })
-                    .to_string(),
-                );
-                events
-            }
+            } => self.encode_usage_chunk(prompt_tokens, completion_tokens, finish_reason),
             // 工具片段先缓冲（顺序块语义），到刷写点按槽位序串行化
             StreamChunk::ToolCall {
                 index,
@@ -1333,6 +1177,174 @@ impl AnthropicStreamEncoder {
             }
             StreamChunk::Heartbeat => vec![json!({ "type": "ping" }).to_string()],
         }
+    }
+
+    /// 非规范回退形状 Content{ToolCalls} 的缓冲：整段 arguments 合成为一片
+    /// ToolCall 入既有缓冲（开槽接在现有最大槽位之后）。
+    fn buffer_fallback_tool_calls(&mut self, calls: &[ToolCall]) {
+        for call in calls {
+            let slot = self
+                .pending_tools
+                .keys()
+                .copied()
+                .next_back()
+                .map_or(0, |k| k + 1);
+            let buffer = self.pending_tools.entry(slot).or_default();
+            buffer.id = call.id.clone();
+            buffer.name = Some(call.function.name.clone()).filter(|n| !n.is_empty());
+            if !call.function.arguments.is_empty() {
+                buffer
+                    .arguments_shards
+                    .push(call.function.arguments.clone());
+            }
+        }
+    }
+
+    /// 思考增量编码：thinking_delta / signature_delta 事件序重建。思考块
+    /// 开闭状态跟踪——块前先刷工具缓冲（块序归一化），已开文本块先闭合
+    /// 才能开思考块（块不混流）；finish 到达即闭合。
+    fn encode_reasoning_delta(
+        &mut self,
+        text: &str,
+        signature: &Option<String>,
+        finish_reason: Option<String>,
+    ) -> Vec<String> {
+        let mut events = Vec::new();
+        if !self.message_started {
+            events.push(self.message_start_event());
+        }
+        // 思考块前同样先刷写工具缓冲（块序归一化）
+        self.flush_pending_tools(&mut events);
+        // 已开的文本块需先闭合才能开思考块（块不混流）
+        if self.block_open && !self.thinking_block_open {
+            events.push(self.content_block_stop_event());
+            self.block_open = false;
+            self.block_index += 1;
+        }
+        if !text.is_empty() {
+            if !self.block_open {
+                events.push(self.thinking_block_start_event());
+            }
+            events.push(self.content_block_delta_event(json!({
+                "type": "thinking_delta",
+                "thinking": text,
+            })));
+        }
+        if let Some(signature) = signature {
+            if !self.block_open {
+                events.push(self.thinking_block_start_event());
+            }
+            events.push(self.content_block_delta_event(json!({
+                "type": "signature_delta",
+                "signature": signature,
+            })));
+        }
+        if let Some(reason) = finish_reason {
+            self.stop_reason = Some(reason);
+        }
+        if self.stop_reason.is_some() && self.block_open {
+            events.push(self.content_block_stop_event());
+            self.block_open = false;
+            self.thinking_block_open = false;
+            self.block_index += 1;
+        }
+        events
+    }
+
+    /// 文本增量编码：思考块未闭合时先闭再开文本块（块不混流）；
+    /// finish_reason 到达即闭合当前 content block（message_delta 由
+    /// Usage 帧或 finish 兜底发出）。闭合即递增序号——后开块序号唯一
+    ///（Anthropic 块序号语义）。
+    fn encode_text_delta(&mut self, text: String, finish_reason: Option<String>) -> Vec<String> {
+        if let Some(reason) = finish_reason {
+            self.stop_reason = Some(reason);
+        }
+        let mut events = Vec::new();
+        if !self.message_started {
+            events.push(self.message_start_event());
+        }
+        // 文本块打开前先刷写工具缓冲（工具块在前为归一化
+        // 顺序；文本块如在其后重新开块，块序仍合法）
+        self.flush_pending_tools(&mut events);
+        if !text.is_empty() {
+            // 思考块未闭合时文本不能续写其中：先闭再开
+            if self.block_open && self.thinking_block_open {
+                events.push(self.content_block_stop_event());
+                self.block_open = false;
+                self.thinking_block_open = false;
+                self.block_index += 1;
+            }
+            if !self.block_open {
+                events.push(self.content_block_start_event());
+            }
+            events.push(self.content_block_delta_event(json!({
+                "type": "text_delta",
+                "text": text,
+            })));
+        }
+        if self.stop_reason.is_some() && self.block_open {
+            events.push(self.content_block_stop_event());
+            self.block_open = false;
+            self.thinking_block_open = false;
+            self.block_index += 1;
+        }
+        events
+    }
+
+    /// Usage 帧编码：message_delta 承载 stop_reason 与输出 token 结算。
+    fn encode_usage_chunk(
+        &mut self,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        finish_reason: Option<String>,
+    ) -> Vec<String> {
+        let mut events = Vec::new();
+        // 终止原因与 usage 同帧到达时（Anthropic 上游回流），
+        // 先更新 stop_reason 再发 message_delta
+        if let Some(reason) = finish_reason {
+            self.stop_reason = Some(reason);
+        }
+        if !self.message_started {
+            events.push(self.message_start_event_with_input(prompt_tokens));
+        }
+        // message_delta 前必须刷写完所有工具块（顺序块语义）
+        self.flush_pending_tools(&mut events);
+        if self.block_open {
+            events.push(self.content_block_stop_event());
+            self.block_open = false;
+            self.thinking_block_open = false;
+            self.block_index += 1;
+        }
+        events.push(
+            json!({
+                "type": "message_delta",
+                "delta": {
+                    // IR finish 词表 → Anthropic stop_reason 词表
+                    //（stop→end_turn、tool_calls→tool_use 等；未知词透传）
+                    "stop_reason": self
+                        .stop_reason
+                        .as_deref()
+                        .map(finish_reason_to_anthropic_stop_reason),
+                    "stop_sequence": Value::Null,
+                },
+                "usage": {
+                    "output_tokens": completion_tokens,
+                },
+            })
+            .to_string(),
+        );
+        events
+    }
+
+    /// content_block_delta 事件信封：事件名与块序号收敛一处，delta 载荷
+    /// 由调用方给形（text/thinking/signature/input_json 各 delta）。
+    fn content_block_delta_event(&self, delta: serde_json::Value) -> String {
+        json!({
+            "type": "content_block_delta",
+            "index": self.block_index,
+            "delta": delta,
+        })
+        .to_string()
     }
 
     /// 流收尾：补齐未闭合的 content_block_stop 与 message_stop。

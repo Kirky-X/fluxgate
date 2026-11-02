@@ -71,7 +71,7 @@ pub async fn messages(
     let lexcompressed =
         crate::middleware::lexcompress::apply_to_body(&state.config, &headers, &mut body);
 
-    let hints = RoutingHints::from_headers(&headers);
+    let hints = crate::api::routing_hints::hints_from_state(&state.config.read(), &headers);
     // 调用级厂商选项：anthropic-beta 由 manager 按厂商类型与开关门控
     // served_key_sink：出站组装点写入实际服务键指纹（failover 后为最终
     // 命中者），日志落库归因用；Arc 共享随 call_options.clone() 透传。

@@ -68,6 +68,7 @@ fn vendor(id: &str, cache_ttl_secs: u64, silent_cache: bool) -> VendorConfig {
 fn section(mode: &str) -> AffinitySection {
     AffinitySection {
         mode: mode.into(),
+        session_headers: None,
         cache_worth_tokens: 1024,
         turn_gap_secs: 120,
     }

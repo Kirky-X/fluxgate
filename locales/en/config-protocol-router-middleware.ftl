@@ -159,3 +159,5 @@ config-masking-kind-invalid = Invalid masking kind: { $kind } (valid: api_key, p
 config-masking-action-invalid = Invalid masking action: { $action } (valid: mask, warn, block)
 config-masking-rule-invalid = Invalid masking rule (regex compile failed): { $detail }
 masking-rule-build-failed = masking detector rebuild failed on a custom rule; rebuilt without custom rules (detections continue on builtin patterns and words)
+
+config-affinity-session-headers-blank = [routing.affinity] session_headers contains a blank header name (an empty name is meaningless and swallows a probe slot)

@@ -740,6 +740,11 @@ fn default_price_factor_mode() -> String {
 pub struct AffinitySection {
     #[serde(default = "loader::default_affinity_economy_mode")]
     pub mode: String,
+    /// 会话头别名列表（magpie-absorb-r1 R-affinity-001）：按序探测、首个
+    /// 存在且非空者作亲和键源（大小写不敏感）。缺省/None = 仅 x-session-id
+    /// （零配置行为与历史逐字节一致）。元素经 loader 归一小写并拒空白。
+    #[serde(default)]
+    pub session_headers: Option<Vec<String>>,
     #[serde(default = "loader::default_affinity_cache_worth_tokens")]
     pub cache_worth_tokens: u64,
     #[serde(default = "loader::default_affinity_turn_gap_secs")]

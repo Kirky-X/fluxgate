@@ -42,9 +42,32 @@ pub struct RoutingHints {
     pub preferred_weight: Option<f64>,
 }
 
+/// 缺省会话头（零配置 = 仅 x-session-id，历史行为）。
+pub(crate) const DEFAULT_SESSION_HEADERS: [&str; 1] = ["x-session-id"];
+
+/// 统一入口：按 `[routing.affinity].session_headers` 配置提取 hints
+/// （None → 缺省列表；配置列表整体替换头来源，正文兜底语义不变）。
+pub fn hints_from_state(config: &crate::config::Config, headers: &HeaderMap) -> RoutingHints {
+    match config.routing.affinity.session_headers.as_deref() {
+        Some(list) if !list.is_empty() => {
+            RoutingHints::from_headers_with_session_headers(headers, list)
+        }
+        _ => RoutingHints::from_headers(headers),
+    }
+}
+
 impl RoutingHints {
-    /// 从请求头提取路由提示
+    /// 从请求头提取路由提示（缺省会话头口径）
     pub fn from_headers(headers: &HeaderMap) -> Self {
+        Self::from_headers_with_session_headers(headers, &DEFAULT_SESSION_HEADERS)
+    }
+
+    /// 带会话头别名的提取（magpie-absorb-r1 R-affinity-001）：按序探测，
+    /// 首个存在且非空者截断为亲和键源；全部缺失走既有兜底。
+    pub fn from_headers_with_session_headers(
+        headers: &HeaderMap,
+        session_headers: &[impl AsRef<str>],
+    ) -> Self {
         Self {
             preferred_vendor: headers
                 .get("x-vendor")
@@ -56,11 +79,13 @@ impl RoutingHints {
                 .and_then(|v| v.to_str().ok())
                 .filter(|s| !s.is_empty())
                 .map(String::from),
-            session_key: headers
-                .get("x-session-id")
-                .and_then(|v| v.to_str().ok())
-                .filter(|s| !s.is_empty())
-                .map(truncate_session_key),
+            session_key: session_headers.iter().find_map(|name| {
+                headers
+                    .get(name.as_ref())
+                    .and_then(|v| v.to_str().ok())
+                    .filter(|s| !s.is_empty())
+                    .map(truncate_session_key)
+            }),
             preferred_weight: headers
                 .get("x-weight")
                 .and_then(|v| v.to_str().ok())
@@ -374,5 +399,67 @@ mod tests {
                 .map(|s| s.len()),
             Some(ANTHROPIC_BETA_MAX_LEN)
         );
+    }
+}
+
+#[cfg(test)]
+mod session_header_alias_tests {
+    //! 会话头别名（magpie-absorb-r1 R-affinity-001）：配置列表整体替换
+    //! 头来源——按序取首个存在且非空者；零配置（缺省列表）行为与历史一致。
+    use super::*;
+
+    fn hdr(name: &str, val: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            val.parse().unwrap(),
+        );
+        h
+    }
+
+    #[test]
+    fn alias_list_first_present_wins() {
+        let list = ["x-session-id", "x-conversation-id"];
+        // 仅第二个头存在 → 取其值
+        let hints = RoutingHints::from_headers_with_session_headers(
+            &hdr("x-conversation-id", "conv-42"),
+            &list,
+        );
+        assert_eq!(hints.session_key.as_deref(), Some("conv-42"));
+        // 两者都在 → 取前者
+        let mut both = hdr("x-conversation-id", "conv-42");
+        both.insert("x-session-id", "sess-1".parse().unwrap());
+        let hints = RoutingHints::from_headers_with_session_headers(&both, &list);
+        assert_eq!(hints.session_key.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn alias_case_insensitive_header_lookup() {
+        // HeaderMap 取值本身大小写不敏感——配置大写别名同样命中
+        let list = ["X-Conversation-ID"];
+        let hints = RoutingHints::from_headers_with_session_headers(
+            &hdr("x-conversation-id", "conv-7"),
+            &list,
+        );
+        assert_eq!(hints.session_key.as_deref(), Some("conv-7"));
+    }
+
+    #[test]
+    fn alias_all_missing_yields_none_until_body_fallback() {
+        let list = ["x-session-id", "x-conversation-id"];
+        let hints = RoutingHints::from_headers_with_session_headers(&HeaderMap::new(), &list);
+        assert!(
+            hints.session_key.is_none(),
+            "头全缺 → None，正文兜底走既有路径"
+        );
+    }
+
+    #[test]
+    fn default_list_matches_legacy_behavior() {
+        // 零配置口径：仅 x-session-id
+        let hints = RoutingHints::from_headers(&hdr("x-conversation-id", "c1"));
+        assert!(hints.session_key.is_none(), "缺省列表不含别名头");
+        let hints = RoutingHints::from_headers(&hdr("x-session-id", "s1"));
+        assert_eq!(hints.session_key.as_deref(), Some("s1"));
     }
 }

@@ -53,23 +53,30 @@ impl FileKeyStore {
     /// 打开文件柜：文件存在则解密载入，不存在则以空柜启动（首次 put 时落盘）。
     pub fn open(master_key: Vec<u8>, path: impl Into<PathBuf>) -> Result<Self, VaultError> {
         let path = path.into();
-        let entries = if path.exists() {
-            let raw = std::fs::read(&path).map_err(|e| VaultError::Storage {
-                message: t_args("vault-read-file-failed", &[("error", e.to_string())]),
-            })?;
-            let payload =
-                raw.strip_prefix(VAULT_FILE_MAGIC)
-                    .ok_or_else(|| VaultError::Storage {
-                        message: t("vault-file-magic-mismatch"),
-                    })?;
-            let bytes = crypto::open(&master_key, payload)?;
-            serde_json::from_str::<BTreeMap<String, StoredEntry>>(bytes.expose_secret()).map_err(
-                |e| VaultError::Storage {
-                    message: t_args("vault-decode-entries-failed", &[("error", e.to_string())]),
-                },
-            )?
-        } else {
-            BTreeMap::new()
+        // 崩溃安全读取（magpie-absorb-r1 R-state-002）：校验=magic 前缀+解密
+        // +JSON 解析三者全过；主文件损坏→隔离 .bad-<ts> 并回退 .bak；均坏→
+        // 显式错误（绝不静默空柜——那等于丢账号密钥数据）。
+        let validate = |raw: &[u8]| -> Option<BTreeMap<String, StoredEntry>> {
+            let payload = raw.strip_prefix(VAULT_FILE_MAGIC)?;
+            let bytes = crypto::open(&master_key, payload).ok()?;
+            serde_json::from_str(bytes.expose_secret()).ok()
+        };
+        let entries = match crate::utils::state_file::read_with_recovery(&path, |raw| {
+            validate(raw).is_some()
+        }) {
+            crate::utils::state_file::StateFileOutcome::Parsed(raw)
+            | crate::utils::state_file::StateFileOutcome::RecoveredFromBak { bytes: raw, .. } => {
+                validate(&raw).ok_or_else(|| VaultError::Storage {
+                    message: t("vault-file-magic-mismatch"),
+                })?
+            }
+            crate::utils::state_file::StateFileOutcome::Unrecoverable { reason } => {
+                return Err(VaultError::Storage {
+                    message: t_args("vault-state-unrecoverable", &[("reason", reason)]),
+                });
+            }
+            // 首装形态（主/bak 均无）：空柜启动，首次 put 时落盘——历史行为
+            crate::utils::state_file::StateFileOutcome::Missing => BTreeMap::new(),
         };
         Ok(Self {
             master_key,
@@ -110,6 +117,10 @@ impl FileKeyStore {
         std::fs::rename(&tmp, &self.path).map_err(|e| VaultError::Storage {
             message: t_args("vault-replace-file-failed", &[("error", e.to_string())]),
         })?;
+        // 成功落盘后回写 .bak（读侧崩溃回退源；失败仅警告不影响主链路）
+        if let Ok(fresh) = std::fs::read(&self.path) {
+            crate::utils::state_file::write_backup(&self.path, &fresh);
+        }
         Ok(())
     }
 

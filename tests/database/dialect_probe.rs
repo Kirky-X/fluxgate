@@ -5,6 +5,7 @@
 use dbnexus::{DbConfig, DbPool};
 use fluxgate::database::Repository;
 
+#[ignore = "server: requires FLUXGATE_TEST_DB_URL (CI server-backend leg)"]
 #[tokio::test]
 async fn dialect_probe_full_chain_on_server_backend() {
     let url = std::env::var("FLUXGATE_TEST_DB_URL").expect("need FLUXGATE_TEST_DB_URL");
@@ -21,7 +22,7 @@ async fn dialect_probe_full_chain_on_server_backend() {
     .await
     .expect("connect");
     let repo = Repository::new(pool.clone());
-    repo.initialize().await.expect("migration V1..=V8");
+    repo.initialize().await.expect("migration V1..=V9");
     repo.initialize().await.expect("idempotent rerun");
 
     let log = fluxgate::database::RequestLog {

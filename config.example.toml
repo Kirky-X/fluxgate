@@ -346,6 +346,10 @@ prefix_chars = 512
 # ✅ 热生效。针对两个经济性缺陷：粘性不看缓存价值（只写入 200 token 缓存的
 # 会话也粘 1h，把会话锁在次优 vendor 上）；粘性不落盘（重启后被 vendor
 # prompt cache 服务着的会话随机路由，刚建好的缓存作废）。
+# - session_headers: 会话头别名列表（可选；缺省仅 "x-session-id"）。按序探测
+#     首个存在且非空者作亲和键源，如纳 agent 原生会话头（整体替换头来源，
+#     正文兜底语义不变）：
+#     session_headers = ["x-session-id", "x-conversation-id"]
 # - mode:
 #   - "legacy"（默认）：执行成功即粘 1h、命中续期——现行为冻结，零回归。
 #   - "auto"：按响应缓存价值判定。worth = cache_read + cache_creation +

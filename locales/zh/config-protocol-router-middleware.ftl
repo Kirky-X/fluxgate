@@ -159,3 +159,5 @@ config-masking-kind-invalid = 无效的掩码种类：{ $kind }（合法值：ap
 config-masking-action-invalid = 无效的掩码动作：{ $action }（合法值：mask、warn、block）
 config-masking-rule-invalid = 无效的掩码正则（编译失败）：{ $detail }
 masking-rule-build-failed = 掩码检测器因自定义正则构建失败，已按空正则重建（内置形态与词表检测继续生效）
+
+config-affinity-session-headers-blank = [routing.affinity] session_headers 含空白头名（空串头名无意义且吞掉探测位）

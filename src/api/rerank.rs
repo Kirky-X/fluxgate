@@ -8,7 +8,6 @@
 //! 复用共享连接池、限流、熔断与超时治理。日志只落摘要（query/documents
 //! 原文不入库），成本按目录每千文档价计请求级金额。
 
-use crate::api::routing_hints::RoutingHints;
 use crate::config::{ModelTask, VendorProtocol};
 use crate::database::RequestLog;
 use crate::error::{FluxgateError, GateError};
@@ -35,7 +34,8 @@ pub async fn rerank(
 
     let parsed = parse_rerank_request(&body)?;
     validate_rerank_hints(&state, &headers)?;
-    let session_key = RoutingHints::from_headers(&headers).session_key;
+    let session_key =
+        crate::api::routing_hints::hints_from_state(&state.config.read(), &headers).session_key;
     let decision = state
         .router
         .route_rerank(&parsed.model, session_key.as_deref())
@@ -239,7 +239,7 @@ async fn record_rerank_usage(
 /// 解析到 rerank 条目；不匹配即 ProtocolError（请求不发出）——防止点名
 /// 绕过能力过滤（合法点名继续由 `route_rerank` 在能力集合内选择）。
 fn validate_rerank_hints(state: &Arc<ApiState>, headers: &HeaderMap) -> Result<(), FluxgateError> {
-    let hints = RoutingHints::from_headers(headers);
+    let hints = crate::api::routing_hints::hints_from_state(&state.config.read(), headers);
     let mismatch = || {
         FluxgateError::from(GateError::Protocol {
             source: t("api-rerank-capability-mismatch"),

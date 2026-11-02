@@ -92,3 +92,4 @@ replay-cli-load-failed = failed to load request_logs for replay: { $error }
 # ---- cost-replay: 回放引擎（库级错误）----
 replay-window-too-large = replay window has { $rows } row(s), exceeding the --max-rows limit of { $limit }; narrow --from/--to or raise --max-rows
 replay-row-decode-failed = failed to decode request_logs column { $column }: { $error }
+vault-state-unrecoverable = Vault file and backup are both unusable: { $reason } — refusing to start with an empty vault (data safety first); inspect the quarantined .bad-* file or restore from an external backup

@@ -191,7 +191,7 @@ async fn generate_content(
     }
 
     let unified = convert_in::to_unified_request(&body, &model, false)?;
-    let hints = RoutingHints::from_headers(&headers);
+    let hints = crate::api::routing_hints::hints_from_state(&state.config.read(), &headers);
     let decision = resolve_route(
         &state,
         &model,
@@ -228,7 +228,7 @@ async fn stream_generate_content(
         return native_stream(state, headers, model, body, ctx).await;
     }
     let unified = convert_in::to_unified_request(&body, &model, true)?;
-    let hints = RoutingHints::from_headers(&headers);
+    let hints = crate::api::routing_hints::hints_from_state(&state.config.read(), &headers);
     let decision = resolve_route(
         &state,
         &model,
@@ -589,13 +589,13 @@ fn ensure_native_vendor(state: &Arc<ApiState>, ctx: &GeminiCtx) -> Result<(), Fl
 }
 
 fn make_ctx(
-    _state: &Arc<ApiState>,
+    state: &Arc<ApiState>,
     headers: &HeaderMap,
     model: &str,
     body: &Value,
     stream: bool,
 ) -> GeminiCtx {
-    let hints = RoutingHints::from_headers(headers);
+    let hints = crate::api::routing_hints::hints_from_state(&state.config.read(), headers);
     GeminiCtx {
         request_id: uuid::Uuid::new_v4().to_string(),
         start_time: std::time::Instant::now(),

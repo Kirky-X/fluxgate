@@ -157,7 +157,7 @@ pub async fn create_response(
     let start_time = std::time::Instant::now();
     let parsed = parse_request(&body)?;
     let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
-    let hints = RoutingHints::from_headers(&headers);
+    let hints = crate::api::routing_hints::hints_from_state(&state.config.read(), &headers);
     let session_key = hints.effective_session_key(&body);
 
     let effective_store = parsed.store() && responses_config.store_enabled;

@@ -59,6 +59,7 @@ fn writer_fixture(mode: &str) -> AffinityWriter {
     let mut config = common::routing_config();
     config.routing.affinity = AffinitySection {
         mode: mode.into(),
+        session_headers: None,
         cache_worth_tokens: 1024,
         turn_gap_secs: 120,
     };
@@ -94,6 +95,7 @@ fn writer_fixture_with_sink(mode: &str) -> (AffinityWriter, Arc<CountingSink>) {
     let mut config = common::routing_config();
     config.routing.affinity = AffinitySection {
         mode: mode.into(),
+        session_headers: None,
         cache_worth_tokens: 1024,
         turn_gap_secs: 120,
     };
@@ -120,6 +122,7 @@ fn writer_fixture_with_sink(mode: &str) -> (AffinityWriter, Arc<CountingSink>) {
 fn bench_decide_auto(c: &mut Criterion) {
     let section = AffinitySection {
         mode: "auto".into(),
+        session_headers: None,
         cache_worth_tokens: 1024,
         turn_gap_secs: 120,
     };

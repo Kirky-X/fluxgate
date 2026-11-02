@@ -848,6 +848,7 @@ impl Default for crate::config::AffinitySection {
     fn default() -> Self {
         Self {
             mode: default_affinity_economy_mode(),
+            session_headers: None,
             cache_worth_tokens: default_affinity_cache_worth_tokens(),
             turn_gap_secs: default_affinity_turn_gap_secs(),
         }
@@ -1182,6 +1183,27 @@ fn validate_otlp(config: &Config) -> Result<(), GateError> {
 /// 1..=86400s（1s..1d）——0 会让粘持记录写完即过期、等于永不粘。
 fn validate_affinity(config: &Config) -> Result<(), GateError> {
     use crate::config::AffinityMode;
+    // 会话头别名：小写归一存回（HeaderMap 取值大小写不敏感，归一防重复
+    // 探测漂移）；空白元素拒绝（空串头名无意义且吞掉后续探测位）。
+    let normalized_session_headers = config
+        .routing
+        .affinity
+        .session_headers
+        .as_ref()
+        .map(|list| {
+            list.iter()
+                .map(|h| h.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        });
+    if let Some(list) = normalized_session_headers.as_ref() {
+        for h in list.iter() {
+            if h.is_empty() {
+                return Err(GateError::Config {
+                    message: t("config-affinity-session-headers-blank"),
+                });
+            }
+        }
+    }
     let raw = config.routing.affinity.mode.trim();
     if AffinityMode::parse(raw).is_none() {
         return Err(GateError::Config {

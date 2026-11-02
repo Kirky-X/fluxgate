@@ -92,3 +92,4 @@ replay-cli-load-failed = 加载 request_logs 回放数据失败：{ $error }
 # ---- cost-replay: 回放引擎（库级错误）----
 replay-window-too-large = 回放窗口有 { $rows } 行，超过 --max-rows 上限 { $limit }；请收窄 --from/--to 或提高 --max-rows
 replay-row-decode-failed = 解码 request_logs 列 { $column } 失败：{ $error }
+vault-state-unrecoverable = 保密柜文件与备份均不可用：{ $reason } —— 拒绝以空柜启动（数据保全优先），请从 .bad-* 隔离文件或外部备份排查恢复

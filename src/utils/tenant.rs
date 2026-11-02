@@ -38,9 +38,17 @@ pub fn extract_api_key(headers: &HeaderMap) -> Option<String> {
 
 /// 调用方 API key 的 SHA256 摘要（响应缓存键/亲和表/配额账本的租户维度）。
 /// 认证关闭/无 key 的请求统一归入 `anonymous` 租户。
+/// OIDC 短时凭据经别名表（`oidc_keys`，仅验签路径写入）解析到母键摘要——
+/// 租户/配额/预算/亲和与母键静态 key 同视角（R-auth-002 继承语义）；
+/// 表空零开销直通，静态 key 路径行为逐字节不变。
 pub fn api_key_digest(headers: &HeaderMap) -> String {
     match extract_api_key(headers) {
-        Some(key) => hex::encode(Sha256::digest(key.as_bytes())),
+        Some(key) => {
+            if let Some(mother) = crate::utils::oidc_keys::resolve(&key) {
+                return mother;
+            }
+            hex::encode(Sha256::digest(key.as_bytes()))
+        }
         None => hex::encode(Sha256::digest(b"anonymous")),
     }
 }

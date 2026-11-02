@@ -112,7 +112,16 @@ impl ApiAuthState {
 
     /// key 档位 — 现场摘要后与 `[auth]`.keys 表做常量时间比较；未声明 → 缺省档
     /// elastic，认证关闭时表为空 → 恒 elastic。
+    /// OIDC 短时凭据经别名表解析到母键摘要后按母键查档（tier 继承，
+    /// R-auth-002）；调用点在认证中间件内侧，重放凭据到不了这里。
     pub fn tier_for_key(&self, key: &str) -> AuthTier {
+        if let Some(mother) = crate::utils::oidc_keys::resolve_mother(key) {
+            return self
+                .tiers
+                .get(&mother)
+                .copied()
+                .unwrap_or(AuthTier::Elastic);
+        }
         let candidate = sha256_hex(key);
         self.tiers
             .iter()
@@ -134,18 +143,49 @@ pub async fn auth_middleware(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let auth_state = match config_manager.read().auth.as_ref() {
+    let snapshot = config_manager.read();
+    let auth_state = match snapshot.auth.as_ref() {
         Some(section) => ApiAuthState::from_section(section),
         None => ApiAuthState::new(false),
     };
-    api_auth_middleware(request, next, Arc::new(auth_state)).await
+    // OIDC 规则面（oidc feature 门控）：有规则才携带整段 auth（验签路径
+    // 要读 api_keys/keys 做母键在位校验）；无段/无规则 = 路径整体关闭
+    #[cfg(feature = "oidc")]
+    let oidc_auth: Option<AuthSection> = snapshot
+        .auth
+        .as_ref()
+        .filter(|auth| auth.enabled)
+        .filter(|auth| {
+            auth.oidc_rules
+                .as_ref()
+                .is_some_and(|section| !section.rules.is_empty())
+        })
+        .cloned();
+    #[cfg(not(feature = "oidc"))]
+    let oidc_auth: Option<AuthSection> = None;
+    drop(snapshot);
+    api_auth_middleware_with_oidc(request, next, Arc::new(auth_state), oidc_auth.as_ref()).await
 }
 
-/// API Key 认证中间件
+/// API Key 认证中间件（无 OIDC 形态，历史公开签名保持不变）
 pub async fn api_auth_middleware(
+    request: Request<Body>,
+    next: Next,
+    auth_state: Arc<ApiAuthState>,
+) -> Result<Response, StatusCode> {
+    api_auth_middleware_with_oidc(request, next, auth_state, None).await
+}
+
+/// API Key 认证中间件（OIDC 兜底形态）：静态校验失败且凭证呈 JWT 形态且
+/// 规则存在时进入验签路径（`oidc` feature）；通过后改写 Authorization 为
+/// 短时凭据——下游 `api_key_digest` 经别名表解析到母键摘要，租户/配额/
+/// 亲和与母键同视角。无规则/feature 缺位时行为与今日逐字节一致（R-auth-001）。
+async fn api_auth_middleware_with_oidc(
     mut request: Request<Body>,
     next: Next,
     auth_state: Arc<ApiAuthState>,
+    // oidc feature 缺位时无消费者——下划线别名规避 unused 警告
+    #[cfg_attr(not(feature = "oidc"), allow(unused_variables))] oidc_auth: Option<&AuthSection>,
 ) -> Result<Response, StatusCode> {
     // Gemini SDK 可用 `?key=` 传凭证：认证/租户摘要前注入到标准头，
     // 仅限 `/v1beta/` 路径（其它路径不接受 query key，避免进入代理日志）
@@ -182,6 +222,32 @@ pub async fn api_auth_middleware(
     };
 
     if !auth_state.validate_key(&api_key) {
+        // OIDC 兜底（feature + 规则 + JWT 形态）：验签失败与既有无效 key
+        // 同形 401，不泄漏「JWT 面存在」的信号。短时凭据含随机熵（不可由
+        // issuer+sub 推算），直接呈报旧凭据在会话过期后失效、活会话凭据
+        // 虽过别名解析但 JWT 形态预筛（无点段）不入验签路径——静态校验
+        // 仍拒绝，防止凭据重放绕过验签。
+        #[cfg(feature = "oidc")]
+        if let Some(auth) = oidc_auth {
+            if crate::middleware::oidc::is_jwt_shape(&api_key) {
+                return match crate::middleware::oidc::authenticate(&api_key, auth).await {
+                    Ok(identity) => {
+                        // 改写 Authorization 为短时凭据（64 hex 无点段），
+                        // 凭据值不落日志（本路径零 tracing 输出凭据）
+                        if let Ok(value) = axum::http::HeaderValue::from_str(&format!(
+                            "Bearer {}",
+                            identity.credential
+                        )) {
+                            request
+                                .headers_mut()
+                                .insert(axum::http::header::AUTHORIZATION, value);
+                        }
+                        return Ok(next.run(request).await);
+                    }
+                    Err(_) => Ok(unauthorized_response(path, t("middleware-invalid-api-key"))),
+                };
+            }
+        }
         return Ok(unauthorized_response(path, t("middleware-invalid-api-key")));
     }
 

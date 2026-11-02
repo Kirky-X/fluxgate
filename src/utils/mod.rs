@@ -12,6 +12,9 @@ pub mod state_file;
 // 均为 web-server 面的直接依赖——随 web-server 门控，避免精简组合拉入缺席依赖。
 #[cfg(feature = "web-server")]
 pub mod tenant;
+// OIDC 短时键别名表（auth-and-masking R-auth-002 常驻半边）：纯 std 单锁表，
+// oidc feature 的验签路径写、api_key_digest/档位解析读；表空零开销直通。
+pub mod oidc_keys;
 pub mod tokens;
 
 // 出站 SSRF 防护核（web-search-inject）：特殊网段判定 + GuardedFetcher

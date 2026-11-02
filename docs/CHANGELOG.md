@@ -10,6 +10,17 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-03
+
+首个公开发布版本。核心能力：多厂商统一接入与协议互转（OpenAI/Anthropic/
+Gemini/Responses/Embeddings/Rerank，含 SSE 流式）、六因子加权智能路由
+（LinUCB/缓存经济学亲和/难度定档/SLA 队列）、熔断重试与 Fallback 链、
+限流与拥塞准入、密钥保密柜（AEAD）、响应缓存与语义缓存、请求日志预聚合
+与成本追踪（含长上下文阶梯计价）、上游键归因（V9 列）、会话头别名、
+崩溃安全状态读（.bak 回退）、i18n（zh/en）、Rust SDK、热重载、gRPC、
+Docker。安全面：API Key 仅存摘要常量时间比较、netguard SSRF 防护、
+出站脱敏。详见各文档。
+
 ### Added
 
 - **多窗持久预算 + 配额感知路由因子（quota-aware-routing）**：① `[[quota.windows]]` 多窗预算（一 key 多窗并存、每窗独立判定，`scope=api_key` 按租户 / `global` 全舰队共享一窗，rolling/calendar（daily/weekly/monthly + `tz_offset_secs` 本地帧对齐）双形态，任一窗任一维度超限 429 + Retry-After 取受拒窗最晚重置者，响应体列逐窗重置秒数脱敏）；0 限额维度 `scope=api_key` 落回 `[[auth.keys]]` per-key 限额、`scope=global` 不回填（双零启动即拒）。② `quota_ledger` 表（迁移 V7，复合主键 `(api_key_hash, window_id, window_start)`，三方言）持久预算账本：结算即 UPSERT（消费端同键合流 drain + 单事务批量提交）+ 30s 全量 flush + 优雅停机最终 flush（正常重启不丢账，非优雅退出崩溃回退 ≤30s）+ 保留清理（每小时按「now − 配置最长窗」下界删过期周期行，恢复读侧同下界过滤，表增长有界）；启动恢复仅取未过期窗且灌回受 10k 键上限约束。③ `[[vendor_budgets]]` vendor 声明式预算（按实际 usage 结算记账）与 `[routing.quota_factor]` 路由第 6 因子（`mode=smart` 预算耗尽 vendor 摘出候选——全员耗尽保留全部并计数，重置最快者得 `w_quota × (1 − reset_secs/period_secs)` 加成；`mode=pace` 按消耗率带乘性升降权 ×0.5/×1.2；默认 `off` 零参与）；单次快照打分（mode 判定 + 逐 vendor 视图各一次，off/未接线零查询）。④ 观测与管理面：`quota_window_refused_total{window_id}` / `quota_factor_depleted_total{vendor}` / `quota_ledger_flush_fail_total` 指标、`GET /admin/quota/ledger` 与 `GET /admin/vendor-budgets` 端点、Rust SDK `quota_ledger()`/`vendor_budgets()`、i18n en/zh 全量同步。

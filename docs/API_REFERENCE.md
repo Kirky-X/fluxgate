@@ -790,12 +790,15 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
     "completion_tokens": null,
     "total_tokens": null,
     "duration_ms": 523,
-    "cost_usd": null
+    "cost_usd": null,
+    "upstream_key_fingerprint": "a1b2c3d4e5f60718"
   }
 ]
 ```
 
 > `cost_usd` 按 `[[model_catalog]]` 四档求和 × 目录单价落库（rerank 按每千文档价）；未登记单价写 `0`、无 usage 写 `null`。分账聚合见 [GET /admin/cost](#get-admincost)。
+>
+> `upstream_key_fingerprint`：**实际服务本请求**的上游池键指纹（fallback 换路后记录实际命中者，failover 归属不撒谎）。`null` 语义 = 迁移 V9 之前写入的历史行，或未走键池的请求（legacy env 键/订阅账号凭证）。字段注释单源 `src/storage.rs`。
 
 **错误码**: `database_error`(500)
 
@@ -1900,6 +1903,44 @@ curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
 
 ---
 
+### GET /admin/masking/ledger
+
+掩码审计台账查询（feature `masking` + `[masking].ledger.enabled` 双门控；台账默认关，关时 404）。
+返回指定日（UTC 日界）的 per-kind 聚合与明细分页——台账是明细事实源，`/admin/masking/stats` 的 24h 窗口是内存聚合，二者互补。
+
+**认证**: 需要 Bearer Token
+
+**Query 参数**:
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| `date` | string | 否 | 今日（UTC） | 台账日期（`YYYY-MM-DD`） |
+| `page` | integer | 否 | `1` | 明细页码（1 起） |
+| `page_size` | integer | 否 | `100` | 明细页大小（1..=1000） |
+
+**响应**:
+
+```json
+{
+  "enabled": true,
+  "date": "2026-11-03",
+  "total": 2,
+  "per_kind": {"api_key": 2},
+  "page": 1,
+  "page_size": 100,
+  "entries": [
+    {"ts": "2026-11-03T08:00:00.123Z", "kind": "api_key", "finder": "openai_sk",
+     "placeholder": "{{FLUX_APIKEY_AB12CD34}}", "hint": {"first": "s", "len": 48}}
+  ]
+}
+```
+
+> 台账只记元数据：`ts`/`kind`/`finder`（inklog pattern 名、`custom_rule_N` 或 `word`）/`placeholder`/`hint`（**首字符** + 字节长度）——**值与占位符→原值映射不落盘**。按天文件 `~/.fluxgate/mask_ledger/ledger-YYYYMMDD.jsonl`，每日首写触发裁剪（`retention_days` 按天 + `max_total_bytes` 总量删最旧）。
+
+**错误码**: `validation_error`(400, date 非法)；台账未启用 → 404（`masking_ledger_disabled`）
+
+---
+
 ### POST /admin/route/explain
 
 路由可解释性：对指定模型逐候选给出路由评估（纯只读——不发上游请求，不改变亲和/熔断/队列任何状态）。候选池 = 全部 vendor × 请求模型（按 `model_id`/`abstract_id` 大小写不敏感匹配）。
@@ -1931,7 +1972,8 @@ curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
       "decision": "eligible", "reason_code": "eligible",
       "detail": "候选合格（selection=weighted）",
       "factors": {"model": 0.4, "queue": 0.3, "window": 0.3, "latency": 0.0, "error": 0.0},
-      "weight": 1.0, "base_weight": 1.0, "selection": "weighted"
+      "weight": 1.0, "base_weight": 1.0, "selection": "weighted",
+      "quota": {"tie_break": false, "degrade_tier": null}
     },
     {
       "vendor": "anthropic", "model": "gpt-4",
@@ -1943,6 +1985,8 @@ curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
 ```
 
 `reason_code` 稳定机器码（不做 i18n）：`disabled`（vendor/模型未启用）| `cooling_down`（熔断/冷却中）| `throttled`（限流窗口耗尽）| `not_in_catalog`（该 vendor 不提供此模型）| `weight_zero`（合成权重为 0）| `affinity_bound_elsewhere`（会话亲和绑定他处，hard 模式排他）| `queue_over_limit`（队列饱和）| `quota_depleted`（vendor 预算耗尽，被 quota-aware smart 过滤摘除——其余厂商尚有预算时与生产路由同口径排除）| `eligible`（候选合格）。优先级：`not_in_catalog` → `disabled` → `throttled` → `cooling_down` → `affinity_bound_elsewhere` → `queue_over_limit` → `quota_depleted` → `weight_zero` → `eligible`。
+
+**`quota` 观测块**（入选者附；与生产路由同快照单点 `quota_factor_scores`）：`tie_break` = 平局打破生效（分差 < `[routing.quota_factor]` ε 且剩余 >10% 时 `reset_at` 更早者先用，把将作废的额度先用掉）；`degrade_tier` = 配额时钟降档档位（剩余 ≤90% → `"tier1"`（×0.9）、≤98% → `"tier2"`（×0.75），`null` = 未降档；阈值乘数可配，缺省启用）。
 
 **`affinity` 决策块**（R-affinity-004；解释点纯只读，`peek` 不续期、不改任何状态）：
 

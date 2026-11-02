@@ -10,6 +10,19 @@
 
 ## [Unreleased]
 
+### Added（magpie-absorb-r1：magpie 调研吸收十项）
+
+- **上游键用量归因**：`request_logs` 新增 `upstream_key_fingerprint` 列（迁移 V9，三方言同步），记录 fallback 后**实际服务请求**的键池指纹；`GET /admin/logs` 透出（历史行/未走键池为 NULL）。
+- **长上下文阶梯计价接入计费**：prompt tokens 超过 `long_context_threshold_tokens` 时计费与路由同用 `long_context_input_price`；`[[model_catalog]]` 补第 5 价位 `cache_creation_1h_price`（Claude 1h cache write，默认 0.0）并接入 catalog-sync 映射。
+- **会话头别名**：`[routing.affinity].session_headers` 按序取第一个存在的头作亲和键源（默认 `["x-session-id"]`，零配置零回归）。
+- **崩溃安全状态读**：`state_file::read_with_recovery` 三态（主文件坏 → `.bad-<ts>` 隔离 → 回退 `.bak`，全坏 fail-closed 报错）；vault 文件柜接入（config 人写错误仍原样上报）。
+- **网关键成本预算** `[key_budgets]`：按 API key 的成本上限 + daily/monthly 窗口 + 在飞预留（请求字节/4 + 滑动均值估输出）；超限 429+Retry-After；`fail_open` 可配（默认 fail-closed）。
+- **OIDC 换短时网关键**（`oidc` feature，不进 full）：`[auth.oidc_rules]` 每条 issuer+audience+claims **精确匹配**（通配加载拒绝）+ 绑定母键；JWKS 按 kid 缓存（TTL 10 分钟）；签发进程内 TTL 短时键（不落盘、重启失效、继承母键 tier）。
+- **配额时钟平局打破与两级降档**：分差 <ε 且剩余 >10% 时 reset 更早者先用；剩余 ≤90%/≤98% 两档乘数（阈值乘数可配）；`/admin/route/explain` 的 `quota.{tie_break, degrade_tier}` 透出。
+- **占位符 pepper 持久化**：env `FLUXGATE_MASK_PEPPER` → `~/.fluxgate/mask_pepper.key`（0600）→ 进程内随机降级 warn——同 pepper 下占位符跨进程/多副本稳定（上游前缀缓存友好）。
+- **掩码审计台账** `[masking.ledger]`（默认关）：按天 JSONL 记掩码命中元数据（ts/kind/finder/占位符/首字符 hint，**值不落盘**），双上限裁剪；`GET /admin/masking/ledger` 聚合+分页。
+- **OTLP 尝试级追踪** `[otlp.tracing]`（双零默认关）：入站 traceparent 解析、每 vendor attempt 一个子 span（vendor/model/attempt/状态/错误分类/估算成本，实际命中者标 `fluxgate.served`）、出站注入；`docs/ARCHITECTURE.md` 可观测性节划界 metrics 桥与 trace 面。
+
 ## [0.1.0] - 2026-11-03
 
 首个公开发布版本。核心能力：多厂商统一接入与协议互转（OpenAI/Anthropic/

@@ -126,6 +126,21 @@ hash = "<sha256-hex>"
 tier = "dedicated"
 ```
 
+### OIDC 换短时网关键 `[auth.oidc_rules]`（`oidc` feature）
+
+OIDC ID Token 换网关短时键：Bearer JWT 命中规则 → JWKS 按 kid 验签（RS256/ES256，缓存 TTL 10 分钟、失败沿用旧缓存至 24h）→ `sub`+`issuer` 派生进程内 TTL 短时键（默认 1h，上限 86400s；**内存表、不落盘、重启失效**），继承绑定母键的 tier 与全部限制。**默认无规则 = 整体关闭**，auth 中间件行为逐字节不变；母键删除/禁用即规则失效。
+
+```toml
+[auth.oidc_rules.rules]         # 每条规则 = issuer+audience+claims 精确匹配 + 绑定母键
+issuer = "https://token.actions.githubusercontent.com"
+audience = "my-gateway-client"
+claims = { repository = "org/repo", ref = "refs/heads/main" }   # 精确匹配，禁通配/前缀（校验层硬拦）
+bind_key_hash = "<64 位 hex，必须存在于 api_keys>"
+# ttl_secs = 3600               # 短时键 TTL（默认 3600，上限 86400）
+```
+
+**安全红线**：claims 只做**精确匹配**——任何含 `*`/`?` 的键值加载即拒绝（通配会让任意发行方 token 换到母键）。`issuer` 仅 https（loopback 放行 http）。feature 不进 `full`（新增出站 JWKS 拉取，opt-in：`--features oidc`）。
+
 ### 请求头与热读
 
 - 客户端携带 **`Authorization: Bearer <key>`**（优先）或 **`x-api-key: <key>`**（备用），提取逻辑见 `src/utils/tenant.rs`（`auth.rs` 仅 re-export）。
@@ -263,6 +278,14 @@ flowchart TB
 ### 会话亲和
 
 - 客户端经 **`X-Session-Id`** 头声明会话键；缺失时兜底 `sha256(messages[0] 序列化前 2KB)` 截断 hex（`src/api/routing_hints.rs`）。
+- **会话头别名**（`[routing.affinity].session_headers`，默认 `["x-session-id"]`）：按序取**第一个存在且非空**的头作为亲和键源，字节上限沿用——纳各 agent 原生会话头（如 `x-conversation-id`）：
+
+  ```toml
+  [routing.affinity]
+  session_headers = ["x-session-id", "x-conversation-id"]
+  ```
+
+  元素加载时统一小写化；全缺失回退 messages 前缀哈希兜底（零配置行为与今日一致）。
 - `affinity_mode = "hard"`（默认）时命中绑定厂商必选；`"soft"` 时命中厂商权重乘 `(1 + affinity_boost_factor)` 后与其余候选照常竞争。
 - 缓存经济学亲和（`[routing.affinity]`，默认 `legacy` 零回归）：`auto` 模式在响应 usage 结算时判定值不值得粘——把「只写入 200 token 缓存的会话也粘 1h、锁死在次优厂商」的问题交给缓存价值阈值（默认 1024 token，对齐 magpie 实测）；`turn` 模式以 `turn_gap_secs`（默认 120s）近似 tool result 回传窗口。沉默缓存厂商（OpenAI 前缀缓存 / Gemini 隐式缓存，usage 不报 cache 列）配 `silent_cache = true`，把 `prompt_tokens` 当写入值计入缓存价值；TTL 经 `cache_ttl_secs` 对齐上游缓存部署（默认 300s，1h 缓存部署配 3600）。
 - **TTL 只由写入方设定，读路径不续期**（`auto`/`turn`）：settle 写入该 vendor 的 `cache_ttl_secs`（或 `turn_gap_secs`）后，后续路由命中不再把它刷长——上游缓存失效后会话可自然回到路由池，这正是 `auto` 的意义。`legacy` 保持历史语义（表级 1h、命中续期）。低于阈值（`worth < cache_worth_tokens`）的结算既不写也不删：既有记录按它自己写入时的 TTL 过期。
@@ -598,6 +621,20 @@ curl "http://127.0.0.1:8080/admin/context-stats" -H "Authorization: Bearer $API_
 > **fail-open**：接收端不可达或返回非 2xx 时只累计 `otlp_export_fail_total` 并 warn，
 > **不阻塞任何请求路径**，也不影响服务启动。构建失败同样 fail-open（服务照常起，日志告警）。
 
+### OTLP 尝试级追踪 `[otlp.tracing]`
+
+vendor attempt 级分布式追踪（trace 面，与上面的 metrics 桥独立开关）。入站解析 W3C `traceparent`（无则建 root span）；每个 vendor attempt 一个子 span，属性 `vendor`/`model`/`attempt`（序号）/`status_code`/`error_class`/`cost_details.estimate_usd`（成功按响应 usage 计价、失败按请求字节/4 估输入腿，与计费 `estimate_cost_from_catalog` 同源）；fallback 实际命中者的 span 标 `fluxgate.served=true`；出站请求注入 `traceparent`。**请求/响应体默认不导出**（无 body 事件、无临时文件落盘）。
+
+| 字段                 | 默认值  | 说明                                                                        |
+| :------------------- | :------ | :-------------------------------------------------------------------------- |
+| `enabled`            | `false` | 追踪总开关（false 不装 provider，零 span）                                  |
+| `sample_ratio`       | `0.0`   | 采样比 0.0..=1.0（按 trace id 确定性判定；0.0 = 零 span、零网络导出）        |
+| `endpoint`           | `""`    | traces 导出端点（enabled 时必填，如 `http://localhost:4318/v1/traces`）      |
+| `protocol`           | `http`  | 传输协议 `http`（http-proto）或 `grpc`（grpc-tonic）                         |
+| `timeout_secs`       | `10`    | 单次导出超时（1..=300）                                                     |
+
+停机经 teardown coordinator flush（best-effort：flush 失败只告警，不承诺零丢失）。**双零默认关**：`enabled=false` 或 `sample_ratio=0.0` 时零 span、零网络导出。
+
 ### [quota] 成本与 token 配额（预扣-回补）
 
 按调用方 API key 的固定窗口配额，与 `[rate_limit]`（请求数）、`[admission]`（拥塞 shed）**相互独立、叠加生效**：
@@ -740,6 +777,21 @@ w_quota = 0.3
 ```
 
 ---
+
+### 网关键成本预算 `[key_budgets]`（默认空 = 整体关闭）
+
+按**网关 API key**（入站租户维度）的成本上限——与 `[[vendor_budgets]]`（出站 vendor 维度）互补。在飞预留：请求进入时预扣估成本（请求字节/4 + 该键滑动输出均值），响应后按实际结算回冲；窗口按 UTC 日历重置。
+
+```toml
+[key_budgets]
+[[key_budgets.rules]]
+api_key_hash = "<64 位 hex，与 auth 同口径的 sha256 摘要>"
+cost_limit_millicents = 500000      # 上限（毫美分；1 USD = 1000 millicents）
+window = "daily"                    # daily | monthly（UTC 日历）
+# fail_open = false                 # 预算源错误时 false=拒绝（429+Retry-After，默认）、true=放行并 warn
+```
+
+**语义**：超限返回 429 + `Retry-After`（按窗口余量换算）；`fail_open=false`（默认 fail-closed）时预算源不可用同样拒绝并 warn。段缺省/空 = 功能整体关闭。在飞预留为进程内存态，重启即失（预算按窗口重算，可接受）。
 
 ## 💹 离线成本回放 cost-replay
 
@@ -918,13 +970,24 @@ email = "warn"                  # warn = 只计数不改写
 ### 行为语义
 
 - **检测面**：inklog 扩展形态表（9 类裸 secret + email/密码赋值）+ 高熵 token 扫描 + 自定义词/正则；
-- **进程内确定性占位符**：同值同种类跨请求同串（哈希掺**每进程随机 pepper**）——会话历史字节稳定，prompt cache 不失效；跨进程/实例占位符不同，上游无法离线预计算或跨实例关联同值；
+- **确定性占位符**：同值同种类在**同一 pepper 下**跨请求/跨进程同串（哈希掺 pepper——三态来源：env `FLUXGATE_MASK_PEPPER` → `~/.fluxgate/mask_pepper.key`（0600，不存在随机创建）→ 进程内随机降级并 warn）。多副本共享同一 pepper 文件（或统一 env）即跨实例一致——上游前缀缓存命中、多轮对话字节稳定；pepper 各异时占位符漂移（前缀缓存失效，不出正确性问题），上游无法离线预计算或跨实例关联同值；
 - **请求域还原**：回程只还原**本请求掩码登记过**的占位符——上游编造或他请求回显的占位符原样透传（跨请求还原预言机闭合）；
 - **三档动作**：mask（替换）/ warn（只计数）/ block（400 + `masking-blocked` 文案）；
 - **fail-closed**：检测/掩码/还原任一步故障 → 503（`masking-unavailable`），绝不原文出站；
 - **缓存域一致**：响应缓存指纹取掩码前请求体、存取均在已还原（客户端域）形态；
 - **限制**：掩码启用时**透传流**（字节级中继）返回 503——该路径无法保证回程还原；透传非流式不受影响；
 - **可观测**：`/admin/metrics` 的 `masking_hits_total{kind,action}` / `masking_blocked_total` / `masking_fail_total` / `masking_restore_total`，`GET /admin/masking/stats`（24h 窗口 per-kind 次数与值长度直方图元数据，不含任何值本身）。
+
+### 掩码审计台账 `[masking.ledger]`（默认关）
+
+掩码命中的**明细事实源**：按天 JSONL 追加 `~/.fluxgate/mask_ledger/ledger-YYYYMMDD.jsonl`（UTC 日界），每条记 `ts`/`kind`/`finder`（检测来源：inklog pattern 名、`custom_rule_N` 或 `word`）/`placeholder`/`hint`（**首字符**+字节长度）——**值与占位符→原值映射不落盘**。每日首写触发裁剪（`retention_days` 按天窗口 + `max_total_bytes` 总量上限，删最旧日文件）。查询：`GET /admin/masking/ledger?date=&page=&page_size=`（per-kind 聚合 + 明细分页；台账关时 404）。
+
+```toml
+[masking.ledger]
+enabled = false          # 默认关（观测旁路；IO 失败 warn 降级，绝不反压掩码主链路）
+# retention_days = 30    # 按天文件保留窗口（1..=3650）
+# max_total_bytes = 104857600   # 总量上限（≥4096；超限从最旧日文件删起）
+```
 
 ## 🔄 配置热更新操作指南
 

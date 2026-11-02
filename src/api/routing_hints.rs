@@ -80,8 +80,11 @@ impl RoutingHints {
                 .filter(|s| !s.is_empty())
                 .map(String::from),
             session_key: session_headers.iter().find_map(|name| {
+                // A1 修复：消费点 trim+小写归一（loader 校验只拒空白不写回；
+                // HeaderName 折叠使归一仅防重复探测漂移）
+                let normalized = name.as_ref().trim().to_ascii_lowercase();
                 headers
-                    .get(name.as_ref())
+                    .get(normalized.as_str())
                     .and_then(|v| v.to_str().ok())
                     .filter(|s| !s.is_empty())
                     .map(truncate_session_key)

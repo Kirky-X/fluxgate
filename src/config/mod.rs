@@ -742,7 +742,8 @@ pub struct AffinitySection {
     pub mode: String,
     /// 会话头别名列表（magpie-absorb-r1 R-affinity-001）：按序探测、首个
     /// 存在且非空者作亲和键源（大小写不敏感）。缺省/None = 仅 x-session-id
-    /// （零配置行为与历史逐字节一致）。元素经 loader 归一小写并拒空白。
+    /// （零配置行为与历史逐字节一致）。空白元素被 loader 拒绝；大小写归一
+    /// 在消费点（routing_hints）进行。
     #[serde(default)]
     pub session_headers: Option<Vec<String>>,
     #[serde(default = "loader::default_affinity_cache_worth_tokens")]

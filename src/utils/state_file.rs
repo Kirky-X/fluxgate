@@ -34,65 +34,66 @@ where
     match std::fs::read(path) {
         Ok(bytes) if validator(&bytes) => StateFileOutcome::Parsed(bytes),
         Ok(bytes) => {
-            // 主文件可读但非法（半写/截断/全零）——隔离后尝试 .bak
-            let bad = bad_sibling(path);
-            let quarantined = std::fs::rename(path, &bad).is_ok();
+            // 主文件可读但非法。审查 S1/A4 修复：**先验恢复源、后隔离**——
+            // 只有 .bak 确认可用才动主文件（rename）；否则主文件原位保留
+            // （错误密钥等可修复场景不得触发破坏性改名/静默回退）。
             match std::fs::read(&bak) {
-                Ok(bak_bytes) if validator(&bak_bytes) => StateFileOutcome::RecoveredFromBak {
-                    bytes: bak_bytes,
-                    bad_path: if quarantined { bad } else { path.to_path_buf() },
-                },
-                Ok(_) => StateFileOutcome::Unrecoverable {
-                    reason: format!(
-                        "main file invalid (quarantined={}) and .bak invalid: {}",
+                Ok(bak_bytes) if validator(&bak_bytes) => {
+                    let bad = bad_sibling(path);
+                    let quarantined = std::fs::rename(path, &bad).is_ok();
+                    tracing::warn!(
+                        bad = %bad.display(),
                         quarantined,
-                        bak.display()
-                    ),
-                },
-                Err(e) => StateFileOutcome::Unrecoverable {
-                    reason: format!(
-                        "main file invalid (quarantined={quarantined}), .bak unreadable ({e}): {}",
-                        bak.display()
-                    ),
+                        primary_len = bytes.len(),
+                        "state file recovered from .bak; primary quarantined"
+                    );
+                    StateFileOutcome::RecoveredFromBak {
+                        bytes: bak_bytes,
+                        bad_path: if quarantined { bad } else { path.to_path_buf() },
+                    }
+                }
+                other => StateFileOutcome::Unrecoverable {
+                    reason: match other {
+                        Ok(_) => format!(
+                            "main invalid and .bak invalid (primary LEFT IN PLACE): {}",
+                            bak.display()
+                        ),
+                        Err(e) => format!(
+                            "main invalid and .bak unreadable ({e}; primary LEFT IN PLACE): {}",
+                            bak.display()
+                        ),
+                    },
                 },
             }
-            .attach_primary_len(bytes.len())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // 主文件不存在：.bak 存在且合法 → 恢复（首装后/写回中崩溃窗口）；
             // 连 .bak 也没有 → Missing，调用方自决（vault=空柜首装、config=报错）
             match std::fs::read(&bak) {
-                Ok(bak_bytes) if validator(&bak_bytes) => StateFileOutcome::RecoveredFromBak {
-                    bytes: bak_bytes,
-                    bad_path: path.to_path_buf(),
+                Ok(bak_bytes) if validator(&bak_bytes) => {
+                    tracing::warn!(bak = %bak.display(), "primary missing; recovered from .bak");
+                    StateFileOutcome::RecoveredFromBak {
+                        bytes: bak_bytes,
+                        bad_path: path.to_path_buf(),
+                    }
+                }
+                // S2 修复：bak 存在但非法 → 显性 Unrecoverable（非首装），
+                // 防 write_backup 覆盖损坏 bak 的证据销毁路径
+                Ok(_) => StateFileOutcome::Unrecoverable {
+                    reason: format!("primary missing and .bak invalid: {}", bak.display()),
                 },
-                _ => StateFileOutcome::Missing,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => StateFileOutcome::Missing,
+                Err(e) => StateFileOutcome::Unrecoverable {
+                    reason: format!(
+                        "primary missing and .bak unreadable ({e}): {}",
+                        bak.display()
+                    ),
+                },
             }
         }
         Err(e) => StateFileOutcome::Unrecoverable {
             reason: format!("read error on {}: {e}", path.display()),
         },
-    }
-}
-
-impl StateFileOutcome {
-    /// 恢复来源信息补充（主文件损坏时的原始字节数，供日志）。
-    fn attach_primary_len(self, len: usize) -> Self {
-        match self {
-            StateFileOutcome::RecoveredFromBak { bytes, bad_path } => {
-                tracing::warn!(
-                    bad = %bad_path.display(),
-                    primary_len = len,
-                    "state file recovered from .bak; primary quarantined"
-                );
-                StateFileOutcome::RecoveredFromBak { bytes, bad_path }
-            }
-            StateFileOutcome::Unrecoverable { reason } => {
-                tracing::error!(primary_len = len, %reason, "state file unrecoverable");
-                StateFileOutcome::Unrecoverable { reason }
-            }
-            other => other,
-        }
     }
 }
 
@@ -172,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn both_bad_is_unrecoverable_never_empty_ok() {
+    fn both_bad_is_unrecoverable_and_primary_left_in_place() {
         let (p, _d) = tmp("c.state");
         std::fs::write(&p, b"\0\0\0\0").unwrap();
         std::fs::write(p.with_file_name("c.state.bak"), b"\0\0\0\0").unwrap();
@@ -180,6 +181,8 @@ mod tests {
             read_with_recovery(&p, non_empty),
             StateFileOutcome::Unrecoverable { .. }
         ));
+        // S1 修复语义：恢复源不可用时主文件不得被隔离改名（错钥可修复场景）
+        assert!(p.exists(), "双坏时主文件必须原位保留");
     }
 
     #[test]
@@ -206,6 +209,13 @@ mod tests {
         assert!(matches!(
             read_with_recovery(&p2, always_ok),
             StateFileOutcome::Missing
+        ));
+        // S2：主缺 + bak 坏 → Unrecoverable（非首装，防 bak 被覆盖销毁证据）
+        let (p3, _d3) = tmp("e3.state");
+        std::fs::write(p3.with_file_name("e3.state.bak"), b"\0\0\0\0").unwrap();
+        assert!(matches!(
+            read_with_recovery(&p3, non_empty),
+            StateFileOutcome::Unrecoverable { .. }
         ));
     }
 

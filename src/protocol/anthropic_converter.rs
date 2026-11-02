@@ -1741,75 +1741,9 @@ fn parse_anthropic_block(json: &Value) -> Option<ContentBlock> {
     let type_ = json.get("type")?.as_str()?;
 
     match type_ {
-        "text" => {
-            if json.get("citations").is_some() {
-                // 引用块无 IR 槽：显性丢弃（R-012）
-                drop_unsupported(
-                    Protocol::Anthropic,
-                    "content[].citations",
-                    "citations have no IR slot",
-                );
-            }
-            Some(ContentBlock::Text {
-                text: json.get("text")?.as_str()?.to_string(),
-            })
-        }
-        "image" => {
-            let source = json.get("source")?.as_object()?;
-            // base64 与 url 两种 source 形态；未知形态不猜变体
-            let source = match source.get("type").and_then(|v| v.as_str())? {
-                "base64" => ImageSource::Base64 {
-                    media_type: source.get("media_type")?.as_str()?.to_string(),
-                    data: source.get("data")?.as_str()?.to_string(),
-                },
-                "url" => ImageSource::Url {
-                    url: source.get("url")?.as_str()?.to_string(),
-                },
-                _ => return None,
-            };
-            Some(ContentBlock::Image {
-                source,
-                detail: None,
-            })
-        }
-        "document" => {
-            let source = json.get("source")?.as_object()?;
-            let (source, media_type) = match source.get("type").and_then(|v| v.as_str())? {
-                "base64" => {
-                    let media_type = source.get("media_type")?.as_str()?.to_string();
-                    (
-                        ImageSource::Base64 {
-                            media_type: media_type.clone(),
-                            data: source.get("data")?.as_str()?.to_string(),
-                        },
-                        media_type,
-                    )
-                }
-                "url" => (
-                    ImageSource::Url {
-                        url: source.get("url")?.as_str()?.to_string(),
-                    },
-                    // url 形态不携带 media_type（Anthropic wire 定义）；
-                    // 取缺省 document MIME 保 IR 槽完整
-                    source
-                        .get("media_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("application/pdf")
-                        .to_string(),
-                ),
-                // 未知 source 形态不猜变体
-                _ => return None,
-            };
-            Some(ContentBlock::Document {
-                source,
-                media_type,
-                title: json
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                cache_control: json.get("cache_control").cloned(),
-            })
-        }
+        "text" => parse_anthropic_text_block(json),
+        "image" => parse_anthropic_image_block(json),
+        "document" => parse_anthropic_document_block(json),
         other => {
             // 未知块型（redacted_thinking / 未来块等）：显性丢弃（R-012）
             drop_unsupported(
@@ -1820,6 +1754,78 @@ fn parse_anthropic_block(json: &Value) -> Option<ContentBlock> {
             None
         }
     }
+}
+
+/// text 块：引用块（citations）无 IR 槽，显性丢弃后仍按普通文本块建模（R-012）。
+fn parse_anthropic_text_block(json: &Value) -> Option<ContentBlock> {
+    if json.get("citations").is_some() {
+        // 引用块无 IR 槽：显性丢弃（R-012）
+        drop_unsupported(
+            Protocol::Anthropic,
+            "content[].citations",
+            "citations have no IR slot",
+        );
+    }
+    Some(ContentBlock::Text {
+        text: json.get("text")?.as_str()?.to_string(),
+    })
+}
+
+/// image 块：base64 与 url 两种 source 形态；未知形态不猜变体。
+fn parse_anthropic_image_block(json: &Value) -> Option<ContentBlock> {
+    let source = json.get("source")?.as_object()?;
+    let source = match source.get("type").and_then(|v| v.as_str())? {
+        "base64" => ImageSource::Base64 {
+            media_type: source.get("media_type")?.as_str()?.to_string(),
+            data: source.get("data")?.as_str()?.to_string(),
+        },
+        "url" => ImageSource::Url {
+            url: source.get("url")?.as_str()?.to_string(),
+        },
+        _ => return None,
+    };
+    Some(ContentBlock::Image {
+        source,
+        detail: None,
+    })
+}
+
+/// document 块：base64 与 url 两种 source 形态；url 形态不携带 media_type
+///（Anthropic wire 定义），取缺省 document MIME 保 IR 槽完整；未知形态不猜变体。
+fn parse_anthropic_document_block(json: &Value) -> Option<ContentBlock> {
+    let source = json.get("source")?.as_object()?;
+    let (source, media_type) = match source.get("type").and_then(|v| v.as_str())? {
+        "base64" => {
+            let media_type = source.get("media_type")?.as_str()?.to_string();
+            (
+                ImageSource::Base64 {
+                    media_type: media_type.clone(),
+                    data: source.get("data")?.as_str()?.to_string(),
+                },
+                media_type,
+            )
+        }
+        "url" => (
+            ImageSource::Url {
+                url: source.get("url")?.as_str()?.to_string(),
+            },
+            source
+                .get("media_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("application/pdf")
+                .to_string(),
+        ),
+        _ => return None,
+    };
+    Some(ContentBlock::Document {
+        source,
+        media_type,
+        title: json
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        cache_control: json.get("cache_control").cloned(),
+    })
 }
 
 fn message_to_anthropic(msg: &Message) -> Value {

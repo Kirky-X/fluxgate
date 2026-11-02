@@ -1577,3 +1577,203 @@ async fn ledger_survives_restart_and_keeps_adjudicating() {
         .expect("窗仍在册");
     assert_eq!(view.tokens_used, 1000, "放行后占用 = 限额");
 }
+
+// ---- 网关键成本预算（[key_budgets]，R-budget-001 集成三面）----
+
+use fluxgate::config::{KeyBudgetRule, KeyBudgetsSection};
+use fluxgate::middleware::key_budget::KeyBudgetLedger;
+
+/// 预算专用状态构造：QuotaState 换装注入的 KeyBudgetLedger（fail-closed/
+/// fail-open 用容量 0 触发 Unavailable 分支），其余与 make_state 同形。
+async fn make_state_with_budget_ledger(config: Config, ledger: KeyBudgetLedger) -> Arc<ApiState> {
+    let config_manager = Arc::new(ConfigManager::new(config));
+    let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+    vendor_manager.initialize().await.expect("vendor init");
+
+    let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+        url: "sqlite::memory:".to_string(),
+        pool_config: dbnexus::PoolConfig {
+            max_connections: 1,
+            min_connections: 1,
+            ..Default::default()
+        },
+        admin_role: "admin".to_string(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+    repository.initialize().await.expect("schema init");
+    let database = Arc::new(Database { pool, repository });
+    let router = Arc::new(NexusRouter::new(
+        config_manager.clone(),
+        vendor_manager.clone(),
+    ));
+    let mut quota_state = fluxgate::middleware::quota::QuotaState::new();
+    quota_state.key_budgets = ledger;
+    let quota = Some(Arc::new(quota_state));
+
+    Arc::new(ApiState {
+        affinity_writer: None,
+        config: config_manager,
+        vendor_manager,
+        router,
+        openai_converter: Arc::new(OpenAIConverter::new()),
+        anthropic_converter: Arc::new(AnthropicConverter::new()),
+        database,
+        logger: None,
+        pre_aggregator: None,
+        affinity: None,
+        response_cache: None,
+        bandit: None,
+        quota,
+        difficulty: None,
+        responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
+    })
+}
+
+/// 预算配置：租户配额窗不判（token_quota=0 双零窗剔除），只有 key 预算
+/// 生效——隔离预算维度的断言。
+fn key_budget_config(vendors: Vec<VendorConfig>, fail_open: bool, limit_millicents: u64) -> Config {
+    let mut config = common::test_config(vendors);
+    config.auth = Some(AuthSection {
+        enabled: true,
+        api_keys: vec![GOOD_KEY_DIGEST.to_string()],
+        header: Default::default(),
+        keys: vec![],
+    });
+    config.key_budgets = KeyBudgetsSection {
+        rules: vec![KeyBudgetRule {
+            api_key_hash: GOOD_KEY_DIGEST.to_string(),
+            cost_limit_millicents: limit_millicents,
+            window: "daily".into(),
+            fail_open,
+        }],
+    };
+    config.pricing = pricing_entries();
+    config
+}
+
+///：key 预算超限 → 429 + Retry-After + i18n 文案，上游零触达。
+#[tokio::test]
+async fn key_budget_over_limit_rejected_with_retry_after() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body("{}")
+        .expect(0)
+        .create_async()
+        .await;
+
+    // 预算上限 1 millicent：估成本（体字节/4 ≈ 180 tok × 输入 10/1k USD）
+    // 远超余量 → 首请求即 429，上游零触达。
+    let state = make_state(
+        key_budget_config(vec![openai_vendor("q-a", server.url())], false, 1),
+        true,
+    )
+    .await;
+    let (status, text, has_retry_after) = read_text(post_chat(state, chat_body(false)).await).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(has_retry_after, "预算超限必须带 Retry-After");
+    assert!(
+        text.contains("预算已耗尽") || text.contains("budget exhausted"),
+        "429 体必须为 i18n 预算文案，实际：{text}"
+    );
+    assert!(text.contains("daily"), "拒绝体应注明预算窗名");
+
+    mock.assert_async().await;
+}
+
+///：fail_open=false 且预算源不可用 → 429 拒绝（fail-closed），上游零触达。
+#[tokio::test]
+async fn key_budget_unavailable_fail_closed_rejects() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body("{}")
+        .expect(0)
+        .create_async()
+        .await;
+
+    // 容量 0 的账本 → reserve 恒 Unavailable；fail_open=false 拒绝。
+    let state = make_state_with_budget_ledger(
+        key_budget_config(vec![openai_vendor("q-a", server.url())], false, 1_000_000),
+        KeyBudgetLedger::with_capacity(0),
+    )
+    .await;
+    let (status, _text, has_retry_after) =
+        read_text(post_chat(state, chat_body(false)).await).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "fail-closed 必须拒绝"
+    );
+    assert!(has_retry_after, "fail-closed 拒绝同样带 Retry-After");
+
+    mock.assert_async().await;
+}
+
+///：fail_open=true 且预算源不可用 → 放行（warn 观测），上游正常服务。
+#[tokio::test]
+async fn key_budget_unavailable_fail_open_admits() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"id":"q","object":"chat.completion","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#,
+        )
+        .expect(1)
+        .create_async()
+        .await;
+
+    let state = make_state_with_budget_ledger(
+        key_budget_config(vec![openai_vendor("q-a", server.url())], true, 1_000_000),
+        KeyBudgetLedger::with_capacity(0),
+    )
+    .await;
+    let (status, value, has_retry_after) =
+        read_body(post_chat(state, chat_body(false)).await).await;
+    assert_eq!(status, StatusCode::OK, "fail-open 必须放行");
+    assert!(!has_retry_after, "放行响应不得带 Retry-After");
+    assert_eq!(value["object"], "chat.completion");
+
+    mock.assert_async().await;
+}
+
+/// 段缺省整体关闭：无 [key_budgets] 规则时同请求零行为透传（逐字节回归锚）。
+#[tokio::test]
+async fn key_budget_absent_section_passes_through() {
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"id":"q","object":"chat.completion","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#,
+        )
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mut config = common::test_config(vec![openai_vendor("q-a", server.url())]);
+    config.auth = Some(AuthSection {
+        enabled: true,
+        api_keys: vec![GOOD_KEY_DIGEST.to_string()],
+        header: Default::default(),
+        keys: vec![],
+    });
+    config.key_budgets = KeyBudgetsSection { rules: vec![] };
+    let state = make_state(config, false).await;
+    let (status, _, _) = read_body(post_chat(state, chat_body(false)).await).await;
+    assert_eq!(status, StatusCode::OK, "空规则段 = 整体关闭，正常服务");
+
+    mock.assert_async().await;
+}

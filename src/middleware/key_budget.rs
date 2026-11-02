@@ -72,6 +72,9 @@ struct Inner {
 pub struct KeyBudgetLedger {
     inner: Mutex<Inner>,
     next_id: AtomicU64,
+    /// 在飞预留容量上限（生产 = [`MAX_IN_FLIGHT_RESERVATIONS`]；测试可
+    /// 收缩为 0 直接触发 Unavailable 分支）
+    max_in_flight: usize,
     /// 可注入时钟（窗口翻转测试；生产 = Utc::now）
     now: Mutex<Box<dyn Fn() -> i64 + Send + Sync>>,
 }
@@ -123,7 +126,17 @@ impl KeyBudgetLedger {
         Self {
             inner: Mutex::new(Inner::default()),
             next_id: AtomicU64::new(1),
+            max_in_flight: MAX_IN_FLIGHT_RESERVATIONS,
             now: Mutex::new(now),
+        }
+    }
+
+    /// 收缩在飞容量构造（fail-open/fail-closed 集成测试注入点：
+    /// cap=0 → reserve 恒 Unavailable）。
+    pub fn with_capacity(max_in_flight: usize) -> Self {
+        Self {
+            max_in_flight,
+            ..Self::new()
         }
     }
 
@@ -142,8 +155,11 @@ impl KeyBudgetLedger {
         }
         let now = self.now_secs();
         let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        if guard.in_flight.len() >= MAX_IN_FLIGHT_RESERVATIONS && !sweep_stale(&mut guard) {
-            return ReserveOutcome::Unavailable;
+        if guard.in_flight.len() >= self.max_in_flight {
+            sweep_stale(&mut guard);
+            if guard.in_flight.len() >= self.max_in_flight {
+                return ReserveOutcome::Unavailable;
+            }
         }
         // 第一遍：翻转收敛 + 逐窗判定
         let mut committed: Vec<(String, i64)> = Vec::with_capacity(rules.len());
@@ -346,8 +362,8 @@ impl KeyBudgetLedger {
 }
 
 /// 清扫陈旧在飞（全部规则窗均已翻转者——其预留已随窗消亡、settle 不会
-/// 再回冲）：返回是否有清扫空间。O(n) 仅在超容量时发生（摊还）。
-fn sweep_stale(guard: &mut Inner) -> bool {
+/// 再回冲）。O(n) 仅在超容量时发生（摊还）。
+fn sweep_stale(guard: &mut Inner) {
     let stale: Vec<u64> = guard
         .in_flight
         .iter()
@@ -364,7 +380,6 @@ fn sweep_stale(guard: &mut Inner) -> bool {
     for id in stale {
         guard.in_flight.remove(&id);
     }
-    guard.in_flight.len() < MAX_IN_FLIGHT_RESERVATIONS
 }
 
 impl KeyBudgetSource for KeyBudgetLedger {

@@ -61,6 +61,7 @@ pub fn max_unit_prices(pricing: &[PricingConfig], model: &str) -> (f64, f64) {
 
 /// 档源解析单点：目录四档优先，未登记回退 `[[pricing]]` 两档；成本计算
 /// 不允许第二套价目表。
+#[derive(Clone, Copy)]
 enum PriceSource {
     /// 目录条目四档价（每 1M tokens，cache 两档可有值）
     Catalog { input: f64, output: f64 },
@@ -1330,23 +1331,118 @@ fn quota_applies(
 ) -> Option<QuotaLease> {
     let quota = quota?;
     let snapshot = config_manager.read();
+    quota_applies_config(&snapshot, quota, tenant)
+}
+
+/// 同 [`quota_applies`]，快照已持有（结算路径复用同代快照，免二次读锁）。
+fn quota_applies_config(
+    snapshot: &Arc<Config>,
+    quota: &Arc<QuotaState>,
+    tenant: &str,
+) -> Option<QuotaLease> {
     if !snapshot.quota.enabled {
         return None;
     }
-    let windows = quota.resolved_windows(&snapshot, tenant);
+    let windows = quota.resolved_windows(snapshot, tenant);
     if windows.is_empty() {
         return None;
     }
     Some(QuotaLease {
         quota: quota.clone(),
-        config: snapshot,
+        config: snapshot.clone(),
         windows,
     })
+}
+
+/// key 预算估成本（R-budget-001 入口单点）：输入腿 = 请求体字节 / cpt ×
+/// 输入单价（档源与租户配额同一 [`resolve_price_source`]，不允许第二套
+/// 价目表）；输出腿 = 完成 token 滑动均值 × 输出单价，冷启动（无均值）
+/// 取 `cold_start_output_millicents`（调用方传规则窗限额一半——保守方向：
+/// 首请求预留不超半窗输出）。
+pub fn key_budget_estimate(
+    catalog: &[ModelCatalogEntry],
+    pricing: &[PricingConfig],
+    model: &str,
+    est_input_tokens: u64,
+    completion_mean: Option<u64>,
+    cold_start_output_millicents: u64,
+) -> u64 {
+    let source = resolve_price_source(catalog, pricing, model);
+    let input = match source {
+        PriceSource::Catalog { input, .. } => {
+            usd_to_millicents(est_input_tokens as f64 / 1_000_000.0 * input)
+        }
+        PriceSource::Pricing { input, .. } => {
+            usd_to_millicents(est_input_tokens as f64 / 1000.0 * input)
+        }
+    };
+    let output = match completion_mean {
+        Some(mean) => match source {
+            PriceSource::Catalog { output, .. } => {
+                usd_to_millicents(mean as f64 / 1_000_000.0 * output)
+            }
+            PriceSource::Pricing { output, .. } => usd_to_millicents(mean as f64 / 1000.0 * output),
+        },
+        None => cold_start_output_millicents,
+    };
+    input.saturating_add(output)
+}
+
+/// key 预算适用性产物（入口判定）：fail_open 开关（同 key 多条规则时取
+/// 首条——同 key 多窗属罕见形态，首条即声明语义）与冷启动输出预留基准
+///（规则窗限额最小值的 1/2，多窗取最紧——保守方向）。
+struct KeyBudgetLease {
+    fail_open: bool,
+    cold_start_output_millicents: u64,
+}
+
+/// key 预算适用性判定（入口单点）：该 key 有预算规则即适用（与租户配额
+/// 独立叠加，不受 `[quota].enabled` 门控）；无规则 → None（零行为直通）。
+fn key_budget_applies(snapshot: &Config, key_hash: &str) -> Option<KeyBudgetLease> {
+    let mut rules = snapshot
+        .key_budgets
+        .rules
+        .iter()
+        .filter(|rule| rule.api_key_hash.trim() == key_hash);
+    let first = rules.next()?;
+    let min_limit = rules
+        .map(|rule| rule.cost_limit_millicents)
+        .chain(std::iter::once(first.cost_limit_millicents))
+        .min()?;
+    Some(KeyBudgetLease {
+        fail_open: first.fail_open,
+        cold_start_output_millicents: min_limit / 2,
+    })
+}
+
+/// key 预算 429 拒绝响应（超限/源不可用共形）：Retry-After（窗余量换算）
+/// + i18n 文案，形状与租户配额 429 一致。
+fn key_budget_refusal(retry_after_secs: u64, window_name: &str) -> axum::response::Response {
+    (
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        [
+            ("retry-after", retry_after_secs.max(1).to_string()),
+            ("content-type", "text/plain; charset=utf-8".to_string()),
+        ],
+        format!(
+            "{}\n{}",
+            t("middleware-key-budget-exceeded"),
+            t_args(
+                "middleware-key-budget-window-reset",
+                &[
+                    ("window", window_name.to_string()),
+                    ("secs", retry_after_secs.max(1).to_string()),
+                ],
+            )
+        ),
+    )
+        .into_response()
 }
 
 /// 配额中间件（入口裁决）：`/v1/chat/completions`、`/v1/messages`、
 /// `/v1/rerank` 与 `/v1/responses`；关闭/无账本/双限额不限时零行为透传
 /// （限额判定先于体读取）。超限 429 + Retry-After + i18n 文案。
+/// 租户配额窗与网关键预算（`[key_budgets]`）两道独立叠加，任一触发即拒。
 pub async fn quota_middleware(
     State(gate): State<QuotaGate>,
     request: Request,
@@ -1372,18 +1468,18 @@ pub async fn quota_middleware(
     }
     // 租户摘要：认证中间件在外层已放行，现场计算。
     let tenant = api_key_digest(&parts.headers);
-    let Some(lease) = quota_applies(&gate.config, gate.quota.as_ref(), &tenant) else {
+    // 两道适用性判定（独立叠加）：租户配额窗 / 网关键预算。二者皆无 →
+    // 零行为直通（段缺省整体关闭，零配置逐字节不变）。
+    let quota_lease = quota_applies(&gate.config, gate.quota.as_ref(), &tenant);
+    let budget_lease = gate.quota.as_ref().and_then(|quota| {
+        let snapshot = gate.config.read();
+        key_budget_applies(&snapshot, &tenant).map(|lease| (quota.clone(), lease, snapshot))
+    });
+    if quota_lease.is_none() && budget_lease.is_none() {
         return next.run(Request::from_parts(parts, body)).await;
-    };
-    let QuotaLease {
-        quota,
-        config: snapshot,
-        windows,
-    } = lease;
-    // `snapshot` 为 Arc<Config>（非锁守卫）：持至本请求结束，判限全程零深拷贝。
-    let cpt = snapshot.quota.est_chars_per_token.max(1);
-
-    // 受限租户才缓冲与解析（handler 经 Json 提取器自行解析，不跨层传递已解析体）。
+    }
+    // 受限租户/预算 key 才缓冲与解析（handler 经 Json 提取器自行解析，
+    // 不跨层传递已解析体）。
     let body_bytes = match axum::body::to_bytes(body, MAX_QUOTA_BODY_BYTES).await {
         Ok(bytes) => bytes,
         // 读体失败（超限/断流）：显性 413，不吞错转发空体。
@@ -1420,24 +1516,23 @@ pub async fn quota_middleware(
             parsed["model"] = Value::String(model);
         }
     }
-    let (pre_tokens, pre_cost) =
-        precharge_for(&parsed, &snapshot.model_catalog, &snapshot.pricing, cpt);
-    match quota.consume(&tenant, &windows, pre_tokens, pre_cost) {
-        // 预扣成功：body 原样重装交 handler。
-        Ok(()) => {
-            next.run(Request::from_parts(
-                parts,
-                axum::body::Body::from(body_bytes),
-            ))
-            .await
-        }
-        Err(refusal) => {
+    // 第一道：租户配额窗预扣（快照为 Arc<Config>：持至请求结束零深拷贝）
+    if let Some(QuotaLease {
+        quota,
+        config: snapshot,
+        windows,
+    }) = &quota_lease
+    {
+        let cpt = snapshot.quota.est_chars_per_token.max(1);
+        let (pre_tokens, pre_cost) =
+            precharge_for(&parsed, &snapshot.model_catalog, &snapshot.pricing, cpt);
+        if let Err(refusal) = quota.consume(&tenant, windows, pre_tokens, pre_cost) {
             if let Some(metrics) = &gate.metrics {
                 for id in &refusal.refused_ids {
                     metrics.record_quota_window_refused(id);
                 }
             }
-            (
+            return (
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
                 [
                     ("retry-after", refusal.retry_after_secs.max(1).to_string()),
@@ -1445,9 +1540,57 @@ pub async fn quota_middleware(
                 ],
                 refusal_body(&refusal),
             )
-                .into_response()
+                .into_response();
         }
     }
+    // 第二道：网关键预算预扣（auth 识别 key 后、路由前；超限 429 +
+    // Retry-After；预算源不可用按 fail_open 语义处置）
+    if let Some((quota_state, budget_lease, snapshot)) = &budget_lease {
+        let cpt = snapshot.quota.est_chars_per_token.max(1);
+        let model = parsed.get("model").and_then(Value::as_str).unwrap_or("");
+        let est = key_budget_estimate(
+            &snapshot.model_catalog,
+            &snapshot.pricing,
+            model,
+            body_bytes.len() as u64 / cpt,
+            quota_state.key_budgets.completion_mean(&tenant),
+            budget_lease.cold_start_output_millicents,
+        );
+        match quota_state.key_budgets.reserve(snapshot, &tenant, est) {
+            crate::quota_contract::ReserveOutcome::Admitted(_)
+            | crate::quota_contract::ReserveOutcome::NoBudget => {}
+            crate::quota_contract::ReserveOutcome::Exceeded { retry_after_secs } => {
+                let window = quota_state
+                    .key_budgets
+                    .view(snapshot, &tenant)
+                    .map(|view| view.window)
+                    .unwrap_or_default();
+                return key_budget_refusal(retry_after_secs, &window);
+            }
+            crate::quota_contract::ReserveOutcome::Unavailable => {
+                if budget_lease.fail_open {
+                    tracing::warn!(
+                        key_hash = %tenant,
+                        "{}",
+                        t("middleware-key-budget-source-unavailable")
+                    );
+                } else {
+                    // fail-closed：拒绝并带窗重置余量（best-effort）
+                    let view = quota_state.key_budgets.view(snapshot, &tenant);
+                    return key_budget_refusal(
+                        view.as_ref().map(|view| view.reset_secs).unwrap_or(60),
+                        &view.map(|view| view.window).unwrap_or_default(),
+                    );
+                }
+            }
+        }
+    }
+    // 预扣成功：body 原样重装交 handler。
+    next.run(Request::from_parts(
+        parts,
+        axum::body::Body::from(body_bytes),
+    ))
+    .await
 }
 
 /// 非流式回补钩（响应后）：有 usage 才结算（无 usage 保持预扣）。
@@ -1475,17 +1618,18 @@ pub fn settle_nonstream(
     let Some(state) = quota else {
         return;
     };
-    // 结算适用性（快路径保持零解析）：租户配额窗非空 或 vendor 预算在位
-    // 才需要解析 usage 与计价；二者皆无 → 零账面直通。窗集走缓存（入口
-    // 已解析同租户同快照 → 本次零解析）。
+    // 结算适用性（快路径保持零解析）：租户配额窗非空 / vendor 预算在位 /
+    // key 预算在位才需要解析 usage 与计价；三者皆无 → 零账面直通。窗集走
+    // 缓存（入口已解析同租户同快照 → 本次零解析）。
     let snapshot = config.read();
     let has_vendor_budgets = !snapshot.vendor_budgets.is_empty();
+    let has_key_budgets = !snapshot.key_budgets.rules.is_empty();
     let tenant_windows = if snapshot.quota.enabled {
         state.resolved_windows(&snapshot, tenant)
     } else {
         Arc::new(Vec::new())
     };
-    if tenant_windows.is_empty() && !has_vendor_budgets {
+    if tenant_windows.is_empty() && !has_vendor_budgets && !has_key_budgets {
         return;
     }
     let Some((prompt, completion, cache_read, cache_creation)) =
@@ -1511,6 +1655,13 @@ pub fn settle_nonstream(
     if has_vendor_budgets {
         state.record_vendor_usage(&snapshot, vendor_id, actual_tokens, actual_cost);
     }
+    // 网关键预算结算回冲（R-budget-001：FIFO 配对在飞预留，实际用量入窗；
+    // 无预留不丢账）
+    if has_key_budgets {
+        state
+            .key_budgets
+            .settle_fifo(&snapshot, tenant, actual_cost, completion as u64);
+    }
     if !tenant_windows.is_empty() {
         let (pre_tokens, pre_cost) =
             precharge_for(body, &snapshot.model_catalog, &snapshot.pricing, cpt);
@@ -1526,14 +1677,22 @@ pub fn settle_nonstream(
 }
 
 /// 缓存 HIT 结算：命中无上游往返、实际用量为 0，以 0 结算回补预扣；
-/// 门控与入口一致（未接线/未启用/无限额时 no-op）。
+/// 门控与入口一致（未接线/未启用/无限额时 no-op）。key 预算在位时同样
+/// 以 0 结算回冲预留。
 pub fn settle_nonstream_cached(
     config: &Arc<ConfigManager>,
     quota: Option<&Arc<QuotaState>>,
     tenant: &str,
     body: &Value,
 ) {
-    let Some(lease) = quota_applies(config, quota, tenant) else {
+    let Some(state) = quota else {
+        return;
+    };
+    let snapshot = config.read();
+    if !snapshot.key_budgets.rules.is_empty() {
+        state.key_budgets.settle_fifo(&snapshot, tenant, 0, 0);
+    }
+    let Some(lease) = quota_applies_config(&snapshot, state, tenant) else {
         return;
     };
     let snapshot = lease.config;
@@ -1547,8 +1706,8 @@ pub fn settle_nonstream_cached(
 
 /// 结算上下文（转换流）：账本句柄、租户与预扣口径一次构造，上下文不持有请求体
 ///（整段对话不在流存活期常驻内存）。`for_request` 内置早退——不适用返回
-/// `None`，调用方零包装直通。适用性 = 租户配额窗非空 或 vendor 预算在位
-///（后者让无限额租户的流同样构建 ctx，预算记账不漏流式用量）。
+/// `None`，调用方零包装直通。适用性 = 租户配额窗非空 / vendor 预算在位 /
+/// key 预算在位（后两者让无限额租户的流同样构建 ctx，预算记账不漏流式用量）。
 pub struct SettlementCtx {
     quota: Arc<QuotaState>,
     tenant: String,
@@ -1564,6 +1723,8 @@ pub struct SettlementCtx {
     windows: Arc<Vec<RuntimeWindow>>,
     /// vendor 预算在位（流结束记账开关）
     record_vendor: bool,
+    /// key 预算在位（流结束结算回冲开关）
+    settle_key_budget: bool,
     pre_tokens: u64,
     pre_cost: u64,
 }
@@ -1581,12 +1742,13 @@ impl SettlementCtx {
         let quota = quota?;
         let snapshot = config.read();
         let has_vendor_budgets = !snapshot.vendor_budgets.is_empty();
+        let has_key_budgets = !snapshot.key_budgets.rules.is_empty();
         let windows = if snapshot.quota.enabled {
             quota.resolved_windows(&snapshot, tenant)
         } else {
             Arc::new(Vec::new())
         };
-        if windows.is_empty() && !has_vendor_budgets {
+        if windows.is_empty() && !has_vendor_budgets && !has_key_budgets {
             return None;
         }
         let (pre_tokens, pre_cost) = precharge_for(
@@ -1607,6 +1769,7 @@ impl SettlementCtx {
                 .to_string(),
             vendor_type: vendor_type.to_string(),
             record_vendor: has_vendor_budgets,
+            settle_key_budget: has_key_budgets,
             config: snapshot,
             windows,
             pre_tokens,
@@ -1681,6 +1844,14 @@ where
                     &ctx.vendor_id,
                     actual_tokens,
                     actual_cost,
+                );
+            }
+            if ctx.settle_key_budget {
+                ctx.quota.key_budgets.settle_fifo(
+                    &ctx.config,
+                    &ctx.tenant,
+                    actual_cost,
+                    completion as u64,
                 );
             }
             if !ctx.windows.is_empty() {

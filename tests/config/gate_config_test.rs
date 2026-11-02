@@ -844,6 +844,125 @@ concurrency = { requests_per_second = 10 }
         config.model_catalog = (0..1024usize).map(build_entry).collect();
         validate_config(&config).expect("exactly 1024 entries must pass");
     }
+
+    // ---- [vendors] validate_vendor_entries 拒绝臂特征化 ----
+    // （codenexus-audit-remediation T006：拆分前置行为网；validate_difficulty
+    // 各臂已由 loader.rs 内置 #[cfg(test)] 直测覆盖，不在此重复）
+
+    /// 断言 validate_config 拒绝并返回 Config 错误；needles 为必须点名的插值
+    /// 参数片段（沿用本文件既有风格：断言参数不依赖文案语言，i18n 注册与否
+    /// 两态都稳定）。无参错误臂靠构造唯一可达来锁定分支。
+    fn expect_config_err(config: &Config, needles: &[&str]) {
+        match validate_config(config) {
+            Err(GateError::Config { message }) => {
+                for needle in needles {
+                    assert!(message.contains(needle), "错误必须点名 {needle}: {message}");
+                }
+            }
+            other => panic!("期望 Config 错误，实际 {other:?}"),
+        }
+    }
+
+    /// 合法基线放行（拒绝臂的对照半边）
+    #[test]
+    fn vendor_entries_valid_baseline_passes() {
+        assert!(validate_config(&create_test_config()).is_ok());
+    }
+
+    /// id trim 后为空拒绝（config-vendor-id-empty，无插值参数，构造唯一可达）
+    #[test]
+    fn vendor_rejects_blank_id() {
+        let mut config = create_test_config();
+        config.vendors[0].id = "   ".to_string();
+        expect_config_err(&config, &[]);
+    }
+
+    /// 重复 id（ASCII 大小写折叠口径：仅大小写不同的变体也算重复——变体被拒
+    /// 即折叠生效的证据）拒绝并点名厂商（消息带变体原文）
+    #[test]
+    fn vendor_rejects_duplicate_id() {
+        let mut config = create_test_config();
+        let mut dup = config.vendors[0].clone();
+        dup.id = "OpenAI_MAIN".to_string();
+        config.vendors.push(dup);
+        expect_config_err(&config, &["OpenAI_MAIN"]);
+    }
+
+    /// 超长 id（>53 字符）拒绝并点名上限
+    #[test]
+    fn vendor_rejects_overlong_id() {
+        let mut config = create_test_config();
+        config.vendors[0].id = "x".repeat(54);
+        expect_config_err(&config, &["53"]);
+    }
+
+    /// rerank 型无官方默认端点：api_base 空白拒绝并点名厂商
+    #[test]
+    fn vendor_rejects_rerank_without_api_base() {
+        let mut config = create_test_config();
+        config.vendors[0].type_ = "rerank".to_string();
+        expect_config_err(&config, &["openai_main"]);
+    }
+
+    /// gemini 型端点由 model+action 动态拼接：chat_path 静态覆盖即冲突，拒绝并点名厂商
+    #[test]
+    fn vendor_rejects_gemini_chat_path_override() {
+        let mut config = create_test_config();
+        config.vendors[0].type_ = "gemini".to_string();
+        config.vendors[0].chat_path = Some("/v1beta".to_string());
+        expect_config_err(&config, &["openai_main"]);
+    }
+
+    /// api_style 白名单外值拒绝并点名厂商与原值
+    #[test]
+    fn vendor_rejects_unknown_api_style() {
+        let mut config = create_test_config();
+        config.vendors[0].api_style = Some("bogus-style".to_string());
+        expect_config_err(&config, &["openai_main", "bogus-style"]);
+    }
+
+    /// responses 风格仅限 openai 型：anthropic 型声明即拒绝
+    #[test]
+    fn vendor_rejects_responses_style_on_non_openai() {
+        let mut config = create_test_config();
+        config.vendors[1].api_style = Some("responses".to_string());
+        expect_config_err(&config, &["anthropic_main"]);
+    }
+
+    /// responses 风格与 chat_path 互斥：openai 型带 chat_path 拒绝
+    #[test]
+    fn vendor_rejects_responses_style_with_chat_path() {
+        let mut config = create_test_config();
+        config.vendors[0].api_style = Some("responses".to_string());
+        config.vendors[0].chat_path = Some("/v1/chat/completions".to_string());
+        expect_config_err(&config, &["openai_main"]);
+    }
+
+    /// 模型 model_id 空白拒绝并点名厂商
+    #[test]
+    fn vendor_rejects_blank_model_id() {
+        let mut config = create_test_config();
+        config.vendors[0].models[0].model_id = "  ".to_string();
+        expect_config_err(&config, &["openai_main"]);
+    }
+
+    /// abstract_id 声明但空白拒绝并点名厂商与模型
+    #[test]
+    fn vendor_rejects_blank_abstract_id() {
+        let mut config = create_test_config();
+        config.vendors[0].models[0].abstract_id = Some("   ".to_string());
+        expect_config_err(&config, &["openai_main", "gpt-4"]);
+    }
+
+    /// 同厂商内 model_id 重复（ASCII 折叠口径）拒绝并点名厂商与模型
+    #[test]
+    fn vendor_rejects_duplicate_model_id() {
+        let mut config = create_test_config();
+        let mut dup = config.vendors[0].models[0].clone();
+        dup.model_id = "GPT-4".to_string();
+        config.vendors[0].models.push(dup);
+        expect_config_err(&config, &["openai_main", "GPT-4"]);
+    }
 }
 
 /// `[otlp]` 段：缺省值与边界校验（usage-observability T004）

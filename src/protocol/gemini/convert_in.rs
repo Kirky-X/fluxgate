@@ -113,120 +113,168 @@ fn parse_content(content: &Value) -> Result<Vec<Message>, GateError> {
     if parts.is_empty() {
         return Err(validation("api-gemini-parts-invalid"));
     }
-    let assistant = matches!(role, Some("model") | Some("assistant"));
-    let mut messages = Vec::new();
+    // assistant（model/assistant 角色）：单条消息聚合；其余（user/function）
+    // 角色走聚合 + 拆分路径
+    if matches!(role, Some("model") | Some("assistant")) {
+        return Ok(vec![parse_assistant_content(parts)?]);
+    }
+    parse_user_content(parts)
+}
 
-    if assistant {
-        let mut text = String::new();
-        let mut blocks = Vec::new();
-        let mut calls = Vec::new();
-        for part in parts {
-            let part: Part = serde_json::from_value(part.clone())
-                .map_err(|_| validation("api-gemini-part-invalid"))?;
-            if let Some(chunk) = part.text.as_deref() {
-                // thought summary 属输出通道，请求历史中的 thought 文本丢弃
-                if !part.thought {
-                    text.push_str(chunk);
-                }
-            } else if let Some(blob) = part.inline_data {
-                blocks.push(ContentBlock::Image {
-                    source: ImageSource::Base64 {
-                        media_type: blob.mime_type,
-                        data: blob.data,
-                    },
-                    detail: None,
-                });
-            } else if let Some(file) = part.file_data {
-                blocks.push(ContentBlock::Image {
-                    source: ImageSource::Url { url: file.file_uri },
-                    detail: None,
-                });
-            } else if let Some(call) = part.function_call {
-                calls.push(tool_call_from_function(call)?);
-            } else {
-                return Err(validation("api-gemini-part-unsupported"));
-            }
-        }
-        let text_empty = text.is_empty();
-        let content = match (text_empty, blocks.is_empty(), calls.is_empty()) {
-            (false, true, true) => MessageContent::Text(text),
-            (true, false, true) => MessageContent::MultiModal(blocks),
-            (false, false, true) => {
-                let mut all = vec![ContentBlock::Text { text }];
-                all.extend(blocks);
-                MessageContent::MultiModal(all)
-            }
-            (true, true, false) => MessageContent::ToolCalls(calls),
-            (false, true, false) => MessageContent::TextWithToolCalls {
-                text,
-                tool_calls: calls,
-                reasoning: None,
+/// assistant 分支单 part 的归类载荷。
+enum AssistantPart {
+    Text(String),
+    Block(ContentBlock),
+    Call(ToolCall),
+}
+
+/// assistant 单 part 分类：文本（thought 丢弃）→ 聚合、inline_data/file_data
+/// → 图片块、function_call → 工具调用；function_response 等其余形态显式拒绝。
+fn classify_assistant_part(part: Part) -> Result<Option<AssistantPart>, GateError> {
+    if let Some(chunk) = part.text.as_deref() {
+        // thought summary 属输出通道，请求历史中的 thought 文本丢弃
+        return Ok((!part.thought).then(|| AssistantPart::Text(chunk.to_string())));
+    }
+    if let Some(blob) = part.inline_data {
+        return Ok(Some(AssistantPart::Block(ContentBlock::Image {
+            source: ImageSource::Base64 {
+                media_type: blob.mime_type,
+                data: blob.data,
             },
-            // 图片 + 工具调用同消息：IR 无该组合槽，显式拒绝防静默丢图
-            _ => return Err(validation("api-gemini-part-unsupported")),
-        };
+            detail: None,
+        })));
+    }
+    if let Some(file) = part.file_data {
+        return Ok(Some(AssistantPart::Block(ContentBlock::Image {
+            source: ImageSource::Url { url: file.file_uri },
+            detail: None,
+        })));
+    }
+    if let Some(call) = part.function_call {
+        return Ok(Some(AssistantPart::Call(tool_call_from_function(call)?)));
+    }
+    Err(validation("api-gemini-part-unsupported"))
+}
+
+/// assistant 载荷组合形状：文本/图片/工具调用的非空组合收敛为对应 IR 槽。
+fn combine_assistant_content(
+    text: String,
+    blocks: Vec<ContentBlock>,
+    calls: Vec<ToolCall>,
+) -> Result<MessageContent, GateError> {
+    let text_empty = text.is_empty();
+    let content = match (text_empty, blocks.is_empty(), calls.is_empty()) {
+        (false, true, true) => MessageContent::Text(text),
+        (true, false, true) => MessageContent::MultiModal(blocks),
+        (false, false, true) => {
+            let mut all = vec![ContentBlock::Text { text }];
+            all.extend(blocks);
+            MessageContent::MultiModal(all)
+        }
+        (true, true, false) => MessageContent::ToolCalls(calls),
+        (false, true, false) => MessageContent::TextWithToolCalls {
+            text,
+            tool_calls: calls,
+            reasoning: None,
+        },
+        // 图片 + 工具调用同消息：IR 无该组合槽，显式拒绝防静默丢图
+        _ => return Err(validation("api-gemini-part-unsupported")),
+    };
+    Ok(content)
+}
+
+/// assistant 历史消息：逐 part 分类聚合后按组合形状收敛为单条消息。
+fn parse_assistant_content(parts: &[Value]) -> Result<Message, GateError> {
+    let mut text = String::new();
+    let mut blocks = Vec::new();
+    let mut calls = Vec::new();
+    for part in parts {
+        let part: Part = serde_json::from_value(part.clone())
+            .map_err(|_| validation("api-gemini-part-invalid"))?;
+        match classify_assistant_part(part)? {
+            Some(AssistantPart::Text(chunk)) => text.push_str(&chunk),
+            Some(AssistantPart::Block(block)) => blocks.push(block),
+            Some(AssistantPart::Call(call)) => calls.push(call),
+            None => {}
+        }
+    }
+    Ok(Message {
+        role: Role::Assistant,
+        content: combine_assistant_content(text, blocks, calls)?,
+    })
+}
+
+/// user 分支 pending 冲刷：聚合中的文本/图片收敛为一条 user 消息（空不产出）。
+fn flush_user_pending(messages: &mut Vec<Message>, pending: &mut Vec<ContentBlock>) {
+    if !pending.is_empty() {
+        messages.push(Message {
+            role: Role::User,
+            content: blocks_to_content(pending),
+        });
+    }
+}
+
+/// user/function 单 part 消化：文本与图片进 pending；functionResponse 按
+/// 出现顺序拆独立 Tool 消息（冲刷前置保序）；user 携带 functionCall 非规范，
+/// 按 assistant 工具调用语义提升；其余形态显式拒绝。
+fn step_user_part(
+    part: Part,
+    messages: &mut Vec<Message>,
+    pending: &mut Vec<ContentBlock>,
+) -> Result<(), GateError> {
+    if let Some(chunk) = part.text.as_deref() {
+        pending.push(ContentBlock::Text {
+            text: chunk.to_string(),
+        });
+        return Ok(());
+    }
+    if let Some(blob) = part.inline_data {
+        pending.push(ContentBlock::Image {
+            source: ImageSource::Base64 {
+                media_type: blob.mime_type,
+                data: blob.data,
+            },
+            detail: None,
+        });
+        return Ok(());
+    }
+    if let Some(file) = part.file_data {
+        pending.push(ContentBlock::Image {
+            source: ImageSource::Url { url: file.file_uri },
+            detail: None,
+        });
+        return Ok(());
+    }
+    if let Some(response) = part.function_response {
+        flush_user_pending(messages, pending);
+        messages.push(tool_message_from_response(response)?);
+        return Ok(());
+    }
+    if let Some(call) = part.function_call {
+        // user 角色携带 functionCall 非规范；按 assistant 工具调用
+        // 语义提升，避免静默丢弃
+        let call = tool_call_from_function(call)?;
+        flush_user_pending(messages, pending);
         messages.push(Message {
             role: Role::Assistant,
-            content,
+            content: MessageContent::ToolCalls(vec![call]),
         });
-        return Ok(messages);
+        return Ok(());
     }
+    Err(validation("api-gemini-part-unsupported"))
+}
 
-    // user/function：文本与图片聚合为一条 user 消息；functionResponse 按
-    // 出现顺序拆成独立 Tool 消息（避免与文本混在同一 content 时丢失顺序）
+/// user/function 历史消息：文本与图片聚合为一条 user 消息；functionResponse
+/// 按出现顺序拆独立 Tool 消息（避免与文本混在同一 content 时丢失顺序）。
+fn parse_user_content(parts: &[Value]) -> Result<Vec<Message>, GateError> {
+    let mut messages = Vec::new();
     let mut pending = Vec::new();
     for part in parts {
         let part: Part = serde_json::from_value(part.clone())
             .map_err(|_| validation("api-gemini-part-invalid"))?;
-        if let Some(chunk) = part.text.as_deref() {
-            pending.push(ContentBlock::Text {
-                text: chunk.to_string(),
-            });
-        } else if let Some(blob) = part.inline_data {
-            pending.push(ContentBlock::Image {
-                source: ImageSource::Base64 {
-                    media_type: blob.mime_type,
-                    data: blob.data,
-                },
-                detail: None,
-            });
-        } else if let Some(file) = part.file_data {
-            pending.push(ContentBlock::Image {
-                source: ImageSource::Url { url: file.file_uri },
-                detail: None,
-            });
-        } else if let Some(response) = part.function_response {
-            if !pending.is_empty() {
-                messages.push(Message {
-                    role: Role::User,
-                    content: blocks_to_content(&mut pending),
-                });
-            }
-            messages.push(tool_message_from_response(response)?);
-        } else if let Some(call) = part.function_call {
-            // user 角色携带 functionCall 非规范；按 assistant 工具调用
-            // 语义提升，避免静默丢弃
-            let call = tool_call_from_function(call)?;
-            if !pending.is_empty() {
-                messages.push(Message {
-                    role: Role::User,
-                    content: blocks_to_content(&mut pending),
-                });
-            }
-            messages.push(Message {
-                role: Role::Assistant,
-                content: MessageContent::ToolCalls(vec![call]),
-            });
-        } else {
-            return Err(validation("api-gemini-part-unsupported"));
-        }
+        step_user_part(part, &mut messages, &mut pending)?;
     }
-    if !pending.is_empty() {
-        messages.push(Message {
-            role: Role::User,
-            content: blocks_to_content(&mut pending),
-        });
-    }
+    flush_user_pending(&mut messages, &mut pending);
     Ok(messages)
 }
 

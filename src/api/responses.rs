@@ -132,6 +132,14 @@ struct ResponsesCtx {
     api_key_hash: String,
     /// 生效 store（`[responses].store_enabled=false` 时已降级）
     store: bool,
+    /// 上游键归因 sink（与派发 options 同源）——log_responses_request 落库读取。
+    served_key_sink: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl ResponsesCtx {
+    fn served_fp(&self) -> Option<String> {
+        self.served_key_sink.lock().ok().and_then(|s| s.clone())
+    }
 }
 
 #[axum::debug_handler]
@@ -160,6 +168,7 @@ pub async fn create_response(
         session_key,
         api_key_hash,
         store: store_wired,
+        served_key_sink: std::sync::Arc::new(std::sync::Mutex::new(None)),
     };
     let mut merged_items = match resolve_history(&state, &parsed, &ctx.api_key_hash).await {
         Ok(items) => items,
@@ -234,18 +243,25 @@ pub async fn create_response(
 
     // 非流式：派发 → 转回 → 存储 → 日志 → 结算
     let log_decision = decision.clone();
-    let (unified_response, decision) =
-        match dispatch_request(&state, &parsed.request.model, decision, unified_request).await {
-            Ok(pair) => pair,
-            Err(error) => {
-                state
-                    .vendor_manager
-                    .metrics()
-                    .record_responses_upstream_failure();
-                log_responses_failure(&state, &ctx, &log_decision, &parsed, &error).await;
-                return Err(error);
-            }
-        };
+    let (unified_response, decision) = match dispatch_request(
+        &state,
+        &parsed.request.model,
+        decision,
+        unified_request,
+        &ctx.served_key_sink,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(error) => {
+            state
+                .vendor_manager
+                .metrics()
+                .record_responses_upstream_failure();
+            log_responses_failure(&state, &ctx, &log_decision, &parsed, &error).await;
+            return Err(error);
+        }
+    };
     let response_id = format!("resp_{}", uuid::Uuid::new_v4());
     let responses_response = to_responses_response(
         &response_id,
@@ -302,7 +318,14 @@ async fn stream_response(
 ) -> Result<Response, FluxgateError> {
     let chunk_stream = state
         .vendor_manager
-        .execute_stream_request(&decision.vendor.id, unified_request)
+        .execute_stream_request_with_options(
+            &decision.vendor.id,
+            unified_request,
+            crate::vendor::manager::VendorCallOptions {
+                anthropic_beta: None,
+                served_key_sink: Some(ctx.served_key_sink.clone()),
+            },
+        )
         .await;
     let chunk_stream = match chunk_stream {
         Ok(stream) => stream,
@@ -482,7 +505,15 @@ async fn native_response(
     if parsed.request.stream {
         let byte_stream = state
             .vendor_manager
-            .execute_passthrough_stream_request_at(&decision.vendor.id, native_body, "responses")
+            .execute_passthrough_stream_request_at_with_options(
+                &decision.vendor.id,
+                native_body,
+                "responses",
+                crate::vendor::manager::VendorCallOptions {
+                    anthropic_beta: None,
+                    served_key_sink: Some(ctx.served_key_sink.clone()),
+                },
+            )
             .await;
         let byte_stream = match byte_stream {
             Ok(stream) => stream,
@@ -860,16 +891,26 @@ async fn run_background_job(
             .await?
     };
     let start = std::time::Instant::now();
+    // 归因 sink：后台任务同样透传到出站组装点
+    let bg_sink = std::sync::Arc::new(std::sync::Mutex::new(None));
     let ctx = ResponsesCtx {
         request_id: uuid::Uuid::new_v4().to_string(),
         start_time: start,
         session_key: None,
         api_key_hash: tenant.to_string(),
         store: true,
+        served_key_sink: bg_sink.clone(),
     };
     let unified_response = match state
         .vendor_manager
-        .execute_request(&decision.vendor.id, unified_request)
+        .execute_request_with_options(
+            &decision.vendor.id,
+            unified_request,
+            crate::vendor::manager::VendorCallOptions {
+                anthropic_beta: None,
+                served_key_sink: Some(bg_sink),
+            },
+        )
         .await
     {
         Ok(response) => response,
@@ -899,6 +940,7 @@ async fn dispatch_request(
     model: &str,
     decision: RoutingDecision,
     request: UnifiedRequest,
+    sink: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) -> Result<(UnifiedResponse, RoutingDecision), FluxgateError> {
     #[cfg(feature = "resilience")]
     {
@@ -911,24 +953,35 @@ async fn dispatch_request(
                 model,
                 decision,
                 request,
-                crate::vendor::manager::VendorCallOptions::default(),
+                crate::vendor::manager::VendorCallOptions {
+                    anthropic_beta: None,
+                    served_key_sink: Some(sink.clone()),
+                },
                 &mut trail,
             )
             .await
             .map_err(FluxgateError::from);
         }
+        let opts = crate::vendor::manager::VendorCallOptions {
+            anthropic_beta: None,
+            served_key_sink: Some(sink.clone()),
+        };
         let response = state
             .vendor_manager
-            .execute_request(&decision.vendor.id, request)
+            .execute_request_with_options(&decision.vendor.id, request, opts)
             .await
             .map_err(FluxgateError::from)?;
         Ok((response, decision))
     }
     #[cfg(not(feature = "resilience"))]
     {
+        let opts = crate::vendor::manager::VendorCallOptions {
+            anthropic_beta: None,
+            served_key_sink: Some(sink.clone()),
+        };
         let response = state
             .vendor_manager
-            .execute_request(&decision.vendor.id, request)
+            .execute_request_with_options(&decision.vendor.id, request, opts)
             .await
             .map_err(FluxgateError::from)?;
         Ok((response, decision))
@@ -1354,6 +1407,7 @@ async fn persist_stream_response(
         session_key: None,
         api_key_hash: tenant_hash.to_string(),
         store: true,
+        served_key_sink: std::sync::Arc::new(std::sync::Mutex::new(None)),
     };
     let now = now_secs() as i64;
     if let Some(row) = build_stored_row(&ctx, parsed, response, config) {
@@ -1436,6 +1490,7 @@ async fn log_responses_request(
     status_code: i32,
     error_message: Option<String>,
 ) {
+    let upstream_key_fp = ctx.served_fp();
     let messages = crate::api::truncate_payload(
         serde_json::to_string(&parsed.current_items).unwrap_or_default(),
     );
@@ -1490,6 +1545,7 @@ async fn log_responses_request(
         context_window_tokens: ctx_columns.context_window_tokens,
         cache_read_tokens: ctx_columns.cache_read_tokens,
         cache_write_tokens: ctx_columns.cache_write_tokens,
+        upstream_key_fingerprint: upstream_key_fp,
     };
     if let Some(logger) = state.logger.as_ref() {
         if let Err(error) = logger.log(log).await {

@@ -527,3 +527,80 @@ async fn rate_limited_reuses_same_key_without_blacklist() {
     mock_a_429.assert_async().await;
     mock_b_untouched.assert_async().await;
 }
+
+/// 上游键归因 sink（magpie-absorb-r1 R-usage-001）：401 认证类失败推进池游标
+/// （跨请求轮换），下一请求由次 key 服务——sink 终值按 last-write-wins 记录
+/// **实际尝试**所用键指纹，失败请求归因首发键、成功请求归因服务键。
+#[cfg(feature = "resilience")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn key_attribution_sink_records_attempted_key_fingerprint() {
+    std::env::set_var(ENV_KEY_FIRST, KEY_FIRST);
+    std::env::set_var(ENV_KEY_SECOND, KEY_SECOND);
+
+    let mut server = mockito::Server::new_async().await;
+    let mock_second = bearer_mock(&mut server, KEY_SECOND, 200, OPENAI_SUCCESS_BODY)
+        .await
+        .expect(1);
+    let mock_first_401 = bearer_mock(&mut server, KEY_FIRST, 401, "{\"error\":\"unauthorized\"}")
+        .await
+        .expect(1);
+
+    let v = make_vendor(
+        "kp-attribution",
+        server.url(),
+        "",
+        &[ENV_KEY_FIRST, ENV_KEY_SECOND],
+    );
+    let config = make_config(vec![v]);
+    let cm = Arc::new(ConfigManager::new(config));
+    let manager = Arc::new(VendorManager::new(cm));
+    manager.initialize().await.expect("init");
+
+    let fps = manager
+        .key_pool_info("kp-attribution")
+        .expect("pool info")
+        .fingerprints;
+    assert_eq!(fps.len(), 2, "双 key 池展开");
+
+    // 请求 1：首发 key 401——失败请求也归因其尝试键
+    let sink1 = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let r1 = manager
+        .execute_request_with_options(
+            "kp-attribution",
+            make_unified_request(),
+            fluxgate::vendor::manager::VendorCallOptions {
+                anthropic_beta: None,
+                served_key_sink: Some(sink1.clone()),
+            },
+        )
+        .await;
+    assert!(r1.is_err(), "首发 key 401 必须失败");
+    assert_eq!(
+        sink1.lock().unwrap().as_deref(),
+        Some(fps[0].as_str()),
+        "失败请求归因尝试键（首发）"
+    );
+
+    // 请求 2：游标已推进，次 key 200——归因实际服务键
+    let sink2 = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let response = manager
+        .execute_request_with_options(
+            "kp-attribution",
+            make_unified_request(),
+            fluxgate::vendor::manager::VendorCallOptions {
+                anthropic_beta: None,
+                served_key_sink: Some(sink2.clone()),
+            },
+        )
+        .await
+        .expect("次 key 200 必须成功");
+    assert_eq!(
+        sink2.lock().unwrap().as_deref(),
+        Some(fps[1].as_str()),
+        "成功请求归因实际服务键；model={}",
+        response.model
+    );
+
+    mock_second.assert_async().await;
+    mock_first_401.assert_async().await;
+}

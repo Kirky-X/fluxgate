@@ -350,6 +350,11 @@ pub struct VendorCallOptions {
     /// 入站 `anthropic-beta` 头值（已清理）。仅 anthropic 型厂商且
     /// `forward_beta_headers=true` 时注入出站同名头。
     pub anthropic_beta: Option<String>,
+    /// 上游键归因 sink（api 层每请求注入；出站组装点写入本次尝试所用
+    /// 凭证指纹，last-write-wins = 最终尝试者——fallback 每次重派重写，
+    /// 成功即终止循环，故终值即实际服务者）。订阅账号凭证非池键，不写。
+    /// None = 不归因（缺省，旧行为零变化）。
+    pub served_key_sink: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
 }
 
 pub struct VendorManager {
@@ -508,15 +513,25 @@ impl VendorManager {
     /// 凭证 → 带认证请求 builder 的唯一组装点：订阅账号走
     /// `Authorization: Bearer`（订阅上游不走 x-api-key/key 池协议分派），
     /// key 池命中 / legacy 回退走既有路径。
+    // 六固定参数 + key_sink 观测通道；再拆参束会拆散凭证-URL-请求三联的组装点
+    #[allow(clippy::too_many_arguments)]
     fn build_authed_for_credential(
         client: &reqwest::Client,
         config: &VendorConfig,
         url: &str,
         include_content_type: bool,
         credential: &RequestCredential,
+        key_sink: Option<&std::sync::Mutex<Option<String>>>,
     ) -> Result<reqwest::RequestBuilder, GateError> {
         #[cfg(feature = "subscription-vendor")]
         if let RequestCredential::Subscription { access_token, .. } = credential {
+            // 订阅账号非池键：清空 sink，防「池键尝试失败→订阅成功」残留
+            // 上一失败尝试的指纹（终值必须对应实际服务凭证——None 即无归因）
+            if let Some(sink) = key_sink {
+                if let Ok(mut slot) = sink.lock() {
+                    *slot = None;
+                }
+            }
             return Self::build_subscription_request(
                 client,
                 config,
@@ -526,13 +541,23 @@ impl VendorManager {
             );
         }
         match credential.api_key() {
-            Some(api_key) => Self::build_authed_request_with_key(
-                client,
-                config,
-                url,
-                include_content_type,
-                api_key,
-            ),
+            Some(api_key) => {
+                // 键归因：仅池键有指纹（key_pool 进程内稳定 SipHash 16 hex；
+                // 订阅分支已提前 return，env 回退无指纹不写）。sink 缺席或
+                // 中毒时静默放弃——归因是观测增强，绝不反压请求主链路。
+                if let (Some(sink), Some(fp)) = (key_sink, credential.fingerprint()) {
+                    if let Ok(mut slot) = sink.lock() {
+                        *slot = Some(fp.to_string());
+                    }
+                }
+                Self::build_authed_request_with_key(
+                    client,
+                    config,
+                    url,
+                    include_content_type,
+                    api_key,
+                )
+            }
             None => Self::build_authed_request(client, config, url, include_content_type),
         }
     }
@@ -600,7 +625,7 @@ impl VendorManager {
             access_token: refreshed,
         };
         let builder =
-            Self::build_authed_for_credential(client, config, url, true, &retry_credential)
+            Self::build_authed_for_credential(client, config, url, true, &retry_credential, None)
                 .map_err(AttemptFailure::Fatal)?;
         let builder = Self::inject_vendor_call_headers(
             Self::apply_attempt_timeout(builder, config),
@@ -1824,8 +1849,15 @@ impl VendorManager {
         options: &VendorCallOptions,
     ) -> Result<reqwest::RequestBuilder, AttemptFailure> {
         let builder = Self::apply_attempt_timeout(
-            Self::build_authed_for_credential(client, config, url, true, credential)
-                .map_err(AttemptFailure::Fatal)?,
+            Self::build_authed_for_credential(
+                client,
+                config,
+                url,
+                true,
+                credential,
+                options.served_key_sink.as_deref(),
+            )
+            .map_err(AttemptFailure::Fatal)?,
             config,
         );
         Ok(Self::inject_vendor_call_headers(builder, config, options))
@@ -2350,6 +2382,7 @@ impl VendorManager {
             url,
             include_content_type,
             &retry_credential,
+            None,
         ) else {
             return response;
         };
@@ -2533,8 +2566,14 @@ impl VendorManager {
             ),
         };
 
-        let request_builder =
-            Self::build_authed_for_credential(&self.client, &config, &url, true, &credential)?;
+        let request_builder = Self::build_authed_for_credential(
+            &self.client,
+            &config,
+            &url,
+            true,
+            &credential,
+            options.served_key_sink.as_deref(),
+        )?;
         let request_builder = Self::inject_vendor_call_headers(request_builder, &config, &options);
 
         let start = Instant::now();
@@ -3055,15 +3094,6 @@ impl VendorManager {
 
     /// rerank 出站：请求体已由 `rerank_converter` 构造为上游 Cohere 形状，
     /// 复用 passthrough 治理（连接池 / RPS+并发限流 / 熔断 / 超时 / 非 2xx 映射）
-    pub async fn execute_rerank(
-        &self,
-        vendor_id: &str,
-        request_body: Value,
-    ) -> Result<Value, GateError> {
-        self.execute_passthrough_request_at(vendor_id, request_body, "rerank")
-            .await
-    }
-
     /// cover_all_paths 开启时，透传非流式由 per-vendor CircuitBreaker 包裹（CB 拒绝还原为
     /// `VendorUnavailable`，业务错误经 `Inner` 无损透传）；关闭时直连 inner。
     async fn execute_passthrough_request_covered(
@@ -3163,8 +3193,14 @@ impl VendorManager {
         let url = Self::build_vendor_url_at(&config, path)?;
 
         // 池命中用请求启动时固定的 key；legacy 回退读 env；订阅走 Bearer
-        let builder =
-            Self::build_authed_for_credential(&self.client, &config, &url, true, credential)?;
+        let builder = Self::build_authed_for_credential(
+            &self.client,
+            &config,
+            &url,
+            true,
+            credential,
+            options.served_key_sink.as_deref(),
+        )?;
         let builder = Self::inject_vendor_call_headers(builder, &config, options);
         // per-attempt 总超时（从 send 起算；0=不限时）
         let builder = Self::apply_attempt_timeout(builder, &config);
@@ -3346,6 +3382,18 @@ impl VendorManager {
         .await
     }
 
+    /// 带调用级选项的端点可指定透传流式入口（键归因 sink 透传）。
+    pub async fn execute_passthrough_stream_request_at_with_options(
+        &self,
+        vendor_id: &str,
+        request_body: Value,
+        path: &str,
+        options: VendorCallOptions,
+    ) -> Result<impl futures::Stream<Item = Result<Bytes, GateError>>, GateError> {
+        self.execute_passthrough_stream_request_inner(vendor_id, request_body, Some(path), options)
+            .await
+    }
+
     async fn execute_passthrough_stream_request_inner(
         &self,
         vendor_id: &str,
@@ -3398,8 +3446,14 @@ impl VendorManager {
         // 请求级凭证选择 — 订阅账号优先；key 在请求启动时固定（池空回退 legacy 读 env）
         let credential = self.select_credential(&instance, &config).await;
 
-        let builder =
-            Self::build_authed_for_credential(&self.client, &config, &url, false, &credential)?;
+        let builder = Self::build_authed_for_credential(
+            &self.client,
+            &config,
+            &url,
+            false,
+            &credential,
+            options.served_key_sink.as_deref(),
+        )?;
         let builder = Self::inject_vendor_call_headers(builder, &config, &options);
         // per-key 熔断键的 model 段（透传 model 取自请求体，归一到配置模型身份）
         let raw_model = request_body
@@ -4449,6 +4503,7 @@ mod tests {
         };
         let options = VendorCallOptions {
             anthropic_beta: Some("extended-thinking-2025-01-01".into()),
+            served_key_sink: None,
         };
 
         // anthropic 型 + 开关开：原样注入

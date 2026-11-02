@@ -656,6 +656,7 @@ concurrency = { requests_per_second = 10 }
             ModelCatalogEntry {
                 model_id: "claude-sonnet-4-20250514".into(),
                 context_window: 200_000,
+                cache_creation_1h_price: 0.0,
                 rerank_price_per_1k_docs: 0.0,
                 ..Default::default()
             },
@@ -686,6 +687,7 @@ concurrency = { requests_per_second = 10 }
         config.model_catalog = vec![ModelCatalogEntry {
             model_id: "bad-model".into(),
             context_window: 0,
+            cache_creation_1h_price: 0.0,
             rerank_price_per_1k_docs: 0.0,
             ..Default::default()
         }];
@@ -709,6 +711,7 @@ concurrency = { requests_per_second = 10 }
             ModelCatalogEntry {
                 model_id: "claude-sonnet-4-20250514".into(),
                 context_window: 200_000,
+                cache_creation_1h_price: 0.0,
                 rerank_price_per_1k_docs: 0.0,
                 input_price: 3.0,
                 output_price: 15.0,
@@ -761,6 +764,7 @@ concurrency = { requests_per_second = 10 }
             config.model_catalog = vec![ModelCatalogEntry {
                 model_id: "m".into(),
                 context_window: 128_000,
+                cache_creation_1h_price: 0.0,
                 rerank_price_per_1k_docs: if field == "rerank_price_per_1k_docs" {
                     value
                 } else {
@@ -814,6 +818,7 @@ concurrency = { requests_per_second = 10 }
         config.model_catalog = vec![ModelCatalogEntry {
             model_id: "   ".into(),
             context_window: 128_000,
+            cache_creation_1h_price: 0.0,
             rerank_price_per_1k_docs: 0.0,
             ..Default::default()
         }];

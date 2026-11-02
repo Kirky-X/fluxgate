@@ -1532,6 +1532,7 @@ fn validate_catalog_prices(
         ("output_price", entry.output_price),
         ("cache_read_price", entry.cache_read_price),
         ("cache_creation_price", entry.cache_creation_price),
+        ("cache_creation_1h_price", entry.cache_creation_1h_price),
         ("rerank_price_per_1k_docs", entry.rerank_price_per_1k_docs),
     ];
     for (field, price) in prices {

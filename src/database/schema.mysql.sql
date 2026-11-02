@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
     session_key VARCHAR(255),
     context_window_tokens BIGINT,
     cache_read_tokens BIGINT,
-    cache_write_tokens BIGINT
+    cache_write_tokens BIGINT,
+    upstream_key_fingerprint VARCHAR(64) NULL
 ) ENGINE = InnoDB;
 
 -- Token 消耗统计表

@@ -114,6 +114,8 @@ pub fn parse_source_with_stats(
                 output_price,
                 cache_read_price,
                 cache_creation_price,
+                // models.dev 无独立 1h cache write 档位：暂 0.0（未配置不产生成本）
+                cache_creation_1h_price: 0.0,
                 price_source,
                 supports_tools: model.tool_call,
                 supports_thinking: model.reasoning,
@@ -495,6 +497,7 @@ impl CatalogEntryDraft {
             cache_read_price: self.cache_read_price,
             cache_creation_price: self.cache_creation_price,
             long_context_input_price: 0.0,
+            cache_creation_1h_price: 0.0,
             long_context_threshold_tokens: 0,
             currency: PricingCurrency::Usd,
             max_output_tokens: self.max_output_tokens,
@@ -683,6 +686,7 @@ mod tests {
             output_price: 19.99,
             cache_read_price: 0.9,
             cache_creation_price: 9.0,
+            cache_creation_1h_price: 0.0,
             max_output_tokens: Some(8_192),
             supports_tools: true,
             ..Default::default()

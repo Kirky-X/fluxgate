@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
     session_key TEXT,
     context_window_tokens INTEGER,
     cache_read_tokens INTEGER,
-    cache_write_tokens INTEGER
+    cache_write_tokens INTEGER,
+    upstream_key_fingerprint TEXT
 );
 
 -- Token 消耗统计表

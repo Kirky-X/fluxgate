@@ -601,6 +601,7 @@ mod tests {
             cache_read_price: read,
             cache_creation_price: write,
             long_context_input_price: 0.0,
+            cache_creation_1h_price: 0.0,
             long_context_threshold_tokens: 0,
             currency: crate::config::PricingCurrency::Usd,
             max_output_tokens: None,

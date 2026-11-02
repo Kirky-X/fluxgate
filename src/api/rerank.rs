@@ -4,7 +4,7 @@
 //! `POST /v1/rerank` — Cohere 兼容重排序端点。
 //!
 //! 路由按 `vendor.type_ == "rerank"` + `model.model_type == "rerank"` 双维度
-//! 过滤（`Router::route_rerank`）；上游经 `VendorManager::execute_rerank`
+//! 过滤（`Router::route_rerank`）；上游经 `VendorManager::execute_passthrough_request_at_with_options`（path="rerank"，携键归因 sink）
 //! 复用共享连接池、限流、熔断与超时治理。日志只落摘要（query/documents
 //! 原文不入库），成本按目录每千文档价计请求级金额。
 
@@ -64,6 +64,7 @@ pub async fn rerank(
             crate::api::status_code_for_error(&error),
             Some(error.to_string()),
             session_key.as_deref(),
+            None,
         )
         .await;
         return Err(error);
@@ -71,9 +72,19 @@ pub async fn rerank(
 
     let upstream_model = decision.model.model_id.clone();
     let upstream_body = to_upstream_request(&parsed, &upstream_model);
+    // 上游键归因 sink：随 options 透传到出站组装点，落库读取终值。
+    let served_sink = std::sync::Arc::new(std::sync::Mutex::new(None));
     let response_json = match state
         .vendor_manager
-        .execute_rerank(&decision.vendor.id, upstream_body)
+        .execute_passthrough_request_at_with_options(
+            &decision.vendor.id,
+            upstream_body,
+            "rerank",
+            crate::vendor::manager::VendorCallOptions {
+                anthropic_beta: None,
+                served_key_sink: Some(served_sink.clone()),
+            },
+        )
         .await
     {
         Ok(response) => response,
@@ -93,6 +104,7 @@ pub async fn rerank(
                 crate::api::status_code_for_error(&error),
                 Some(error.to_string()),
                 session_key.as_deref(),
+                None,
             )
             .await;
             return Err(error);
@@ -119,6 +131,7 @@ pub async fn rerank(
                 crate::api::status_code_for_error(&error),
                 Some(error.to_string()),
                 session_key.as_deref(),
+                None,
             )
             .await;
             return Err(error);
@@ -167,6 +180,7 @@ pub async fn rerank(
         200,
         None,
         session_key.as_deref(),
+        served_sink.lock().ok().and_then(|v| v.clone()),
     )
     .await;
     state
@@ -315,6 +329,7 @@ async fn push_rerank_log(
     status_code: i32,
     error_message: Option<String>,
     session_key: Option<&str>,
+    upstream_key_fp: Option<String>,
 ) {
     // rerank 无 token 语义：缓存两列恒 NULL；`context_window_tokens` 也写
     // NULL——否则 0 prompt 会以 0% 占用率落进 context-stats 的首桶，稀释均值。
@@ -360,6 +375,7 @@ async fn push_rerank_log(
         context_window_tokens: rerank_columns.context_window_tokens,
         cache_read_tokens: rerank_columns.cache_read_tokens,
         cache_write_tokens: rerank_columns.cache_write_tokens,
+        upstream_key_fingerprint: upstream_key_fp,
     };
     if let Some(logger) = state.logger.as_ref() {
         if let Err(e) = logger.log(log).await {
@@ -628,6 +644,7 @@ mod rerank_cost_db_tests {
             None,
             10,
             200,
+            None,
             None,
             None,
         )

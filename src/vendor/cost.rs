@@ -171,7 +171,20 @@ pub fn estimate_cost_from_catalog(
             usage.prompt_tokens.saturating_sub(cache)
         }
     };
-    let input_cost = per_million(base as u64, entry.input_price);
+    // 长上下文阶梯计价（magpie-absorb-r1 R-catalog-001）：threshold>0 且
+    // 计费口径的输入 token 超阈值、阶梯价已配置时，输入腿整体按
+    // long_context_input_price 计（整请求切换，非仅超出部分）——与路由
+    // 因子（router.rs 价格因子）同一判定条件，杜绝「路由按阶梯价、计费
+    // 按平价」的口径分裂。
+    let input_price = if entry.long_context_threshold_tokens > 0
+        && (base as u64) > entry.long_context_threshold_tokens
+        && entry.long_context_input_price > 0.0
+    {
+        entry.long_context_input_price
+    } else {
+        entry.input_price
+    };
+    let input_cost = per_million(base as u64, input_price);
     let output_cost = per_million(usage.completion_tokens as u64, entry.output_price);
     let cache_read_cost = per_million(usage.cache_read_tokens, entry.cache_read_price);
     let cache_creation_cost = per_million(usage.cache_creation_tokens, entry.cache_creation_price);
@@ -208,6 +221,7 @@ mod catalog_pricing_tests {
             supports_thinking: true,
             cache_breakpoints: None,
             long_context_input_price: 0.0,
+            cache_creation_1h_price: 0.0,
             long_context_threshold_tokens: 0,
         }
     }
@@ -364,6 +378,7 @@ mod catalog_pricing_tests {
             cache_read_price: 1.25,
             cache_creation_price: 0.0,
             long_context_input_price: 0.0,
+            cache_creation_1h_price: 0.0,
             long_context_threshold_tokens: 0,
             currency: PricingCurrency::Usd,
             max_output_tokens: Some(16_384),
@@ -401,5 +416,91 @@ mod catalog_pricing_tests {
             prompt_cache_semantics("anthropic"),
             PromptCacheSemantics::Exclusive
         );
+    }
+}
+
+/// 长上下文阶梯计价（magpie-absorb-r1 R-catalog-001）：超阈值整请求切换、
+/// threshold=0 永不切换、阶梯价 0.0 视为未配置不切换。
+#[cfg(test)]
+mod long_context_pricing_tests {
+    use super::*;
+    use crate::config::model_catalog::ModelCatalogEntry;
+    use crate::config::PricingCurrency;
+
+    fn entry(threshold: u64, lc_price: f64) -> ModelCatalogEntry {
+        ModelCatalogEntry {
+            model_id: "lc-test".into(),
+            context_window: 400_000,
+            rerank_price_per_1k_docs: 0.0,
+            input_price: 3.0,
+            output_price: 15.0,
+            cache_read_price: 0.3,
+            cache_creation_price: 3.75,
+            cache_creation_1h_price: 0.0,
+            long_context_input_price: lc_price,
+            long_context_threshold_tokens: threshold,
+            currency: PricingCurrency::Usd,
+            max_output_tokens: None,
+            supports_tools: false,
+            supports_thinking: false,
+            cache_breakpoints: None,
+        }
+    }
+
+    fn usage(prompt: u32) -> TokenUsage {
+        TokenUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 1_000,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn over_threshold_switches_to_long_context_price() {
+        // 300K prompt > 272K 阈值：输入腿整体按 9.0/百万计
+        let catalog = [entry(272_000, 9.0)];
+        let est = estimate_cost_from_catalog(
+            &catalog,
+            "lc-test",
+            &usage(300_000),
+            PromptCacheSemantics::Exclusive,
+        )
+        .unwrap();
+        assert!((est.input_cost - 300_000.0 / 1e6 * 9.0).abs() < 1e-9);
+        // 平价对照：未超阈值按 3.0
+        let est2 = estimate_cost_from_catalog(
+            &catalog,
+            "lc-test",
+            &usage(200_000),
+            PromptCacheSemantics::Exclusive,
+        )
+        .unwrap();
+        assert!((est2.input_cost - 200_000.0 / 1e6 * 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zero_threshold_never_switches() {
+        let catalog = [entry(0, 9.0)];
+        let est = estimate_cost_from_catalog(
+            &catalog,
+            "lc-test",
+            &usage(400_000),
+            PromptCacheSemantics::Exclusive,
+        )
+        .unwrap();
+        assert!((est.input_cost - 400_000.0 / 1e6 * 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zero_long_price_is_unconfigured_no_switch() {
+        let catalog = [entry(272_000, 0.0)];
+        let est = estimate_cost_from_catalog(
+            &catalog,
+            "lc-test",
+            &usage(300_000),
+            PromptCacheSemantics::Exclusive,
+        )
+        .unwrap();
+        assert!((est.input_cost - 300_000.0 / 1e6 * 3.0).abs() < 1e-9);
     }
 }

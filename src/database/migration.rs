@@ -12,6 +12,8 @@
 //! V5 为 request_logs 补会话/上下文观测四列与 (session_key, timestamp) 索引；
 //! V6 建会话粘性表 affinity_sticks；V7 建 quota_ledger 多窗预算账本；
 //! V8 追加 request_logs 的 (timestamp, id) 稳定序索引（回放装载按该序取窗）。
+//! V9 为 request_logs 补上游键归因列 upstream_key_fingerprint（可空；failover
+//! 后记实际命中键的指纹，历史行 NULL）。
 //! 已发布的迁移常量禁止改动（已部署库的历史行指向它们），新变更走新版本。
 //! 存量库基线 = 幂等重放（V1 UP 全 `IF NOT EXISTS`）；迁移失败直接上浮（无静默降级）。
 
@@ -20,8 +22,8 @@ use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// 核心表迁移最新版本（V8：request_logs 时间窗稳定序索引 `(timestamp, id)`）。
-pub(crate) const CORE_SCHEMA_VERSION: u32 = 8;
+/// 核心表迁移最新版本（V9：request_logs 上游键归因列 `upstream_key_fingerprint`）。
+pub(crate) const CORE_SCHEMA_VERSION: u32 = 9;
 
 /// V1 UP（sqlite，FROZEN；含 cost 列与 4 索引）。
 const UP_SQLITE: &str = r#"
@@ -601,6 +603,22 @@ const DOWN_V8_MYSQL: &str = r#"
 ALTER TABLE request_logs DROP INDEX idx_request_logs_ts_id;
 "#;
 
+/// V9 UP（三方言同形）：request_logs 键归因列。TEXT/VARCHAR(64) 可空——
+/// 历史行、订阅账号凭证、env 缺失均为 NULL（magpie-absorb-r1 R-usage-001）。
+const UP_V9_SQLITE: &str = r#"
+ALTER TABLE request_logs ADD COLUMN upstream_key_fingerprint TEXT;
+"#;
+const UP_V9_POSTGRES: &str = r#"
+ALTER TABLE request_logs ADD COLUMN upstream_key_fingerprint TEXT;
+"#;
+const UP_V9_MYSQL: &str = r#"
+ALTER TABLE request_logs ADD COLUMN upstream_key_fingerprint VARCHAR(64) NULL;
+"#;
+/// V9 DOWN（三方言同形）：DROP COLUMN（sqlite ≥3.35 / PG / MySQL 均支持）。
+const DOWN_V9: &str = r#"
+ALTER TABLE request_logs DROP COLUMN upstream_key_fingerprint;
+"#;
+
 /// V1 DOWN（三后端通用：DROP TABLE 隐式带走索引；`IF EXISTS` 使回滚可重入）。
 const DOWN_COMMON: &str = r#"
 DROP TABLE IF EXISTS model_stats;
@@ -652,6 +670,9 @@ pub(crate) fn core_migration_file(
         (8, DatabaseBackend::Sqlite) => UP_V8_SQLITE,
         (8, DatabaseBackend::Postgres) => UP_V8_POSTGRES,
         (8, DatabaseBackend::MySql) => UP_V8_MYSQL,
+        (9, DatabaseBackend::Sqlite) => UP_V9_SQLITE,
+        (9, DatabaseBackend::Postgres) => UP_V9_POSTGRES,
+        (9, DatabaseBackend::MySql) => UP_V9_MYSQL,
         _ => {
             return Err(DbError::Config(format!(
                 "no core migration v{version} for {label}"
@@ -672,6 +693,7 @@ pub(crate) fn core_migration_file(
             DatabaseBackend::MySql => DOWN_V8_MYSQL,
             _ => DOWN_V8,
         },
+        9 => DOWN_V9,
         2 => match backend {
             DatabaseBackend::Sqlite => DOWN_V2_SQLITE,
             DatabaseBackend::Postgres => DOWN_V2_POSTGRES,
@@ -1240,6 +1262,7 @@ mod live_tests {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         }
     }
 

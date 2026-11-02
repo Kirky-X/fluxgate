@@ -45,6 +45,14 @@ struct GeminiCtx {
     session_key: Option<String>,
     preferred_vendor: Option<String>,
     summary: String,
+    /// 上游键归因 sink（与派发 options 同源）——log_request 落库读取。
+    served_key_sink: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl GeminiCtx {
+    fn served_fp(&self) -> Option<String> {
+        self.served_key_sink.lock().ok().and_then(|s| s.clone())
+    }
 }
 
 #[axum::debug_handler]
@@ -292,7 +300,15 @@ async fn native_stream(
     let path = format!("models/{model}:streamGenerateContent?alt=sse");
     let upstream = state
         .vendor_manager
-        .execute_passthrough_stream_request_at(&decision.vendor.id, body.clone(), &path)
+        .execute_passthrough_stream_request_at_with_options(
+            &decision.vendor.id,
+            body.clone(),
+            &path,
+            crate::vendor::manager::VendorCallOptions {
+                anthropic_beta: None,
+                served_key_sink: Some(ctx.served_key_sink.clone()),
+            },
+        )
         .await;
     let upstream = match upstream {
         Ok(stream) => stream,
@@ -381,9 +397,17 @@ async fn stream_ir(
             |d| {
                 let vendor_manager = state.vendor_manager.clone();
                 let unified = unified.clone();
+                let sink = ctx.served_key_sink.clone();
                 async move {
                     vendor_manager
-                        .execute_stream_request(&d.vendor.id, unified)
+                        .execute_stream_request_with_options(
+                            &d.vendor.id,
+                            unified,
+                            crate::vendor::manager::VendorCallOptions {
+                                anthropic_beta: None,
+                                served_key_sink: Some(sink),
+                            },
+                        )
                         .await
                 }
             },
@@ -395,7 +419,14 @@ async fn stream_ir(
         fallback_trail.record(&decision.vendor.id);
         match state
             .vendor_manager
-            .execute_stream_request(&decision.vendor.id, unified)
+            .execute_stream_request_with_options(
+                &decision.vendor.id,
+                unified,
+                crate::vendor::manager::VendorCallOptions {
+                    anthropic_beta: None,
+                    served_key_sink: Some(ctx.served_key_sink.clone()),
+                },
+            )
             .await
         {
             Ok(stream) => Ok((stream, decision)),
@@ -405,7 +436,14 @@ async fn stream_ir(
     #[cfg(not(feature = "resilience"))]
     let outcome = match state
         .vendor_manager
-        .execute_stream_request(&decision.vendor.id, unified)
+        .execute_stream_request_with_options(
+            &decision.vendor.id,
+            unified,
+            crate::vendor::manager::VendorCallOptions {
+                anthropic_beta: None,
+                served_key_sink: Some(ctx.served_key_sink.clone()),
+            },
+        )
         .await
     {
         Ok(stream) => Ok((stream, decision)),
@@ -566,6 +604,7 @@ fn make_ctx(
         session_key: hints.effective_session_key(body),
         preferred_vendor: hints.preferred_vendor.clone(),
         summary: summarize(body, stream),
+        served_key_sink: std::sync::Arc::new(std::sync::Mutex::new(None)),
     }
 }
 
@@ -686,7 +725,10 @@ async fn dispatch_nonstream(
             model,
             decision,
             request,
-            crate::vendor::manager::VendorCallOptions::default(),
+            crate::vendor::manager::VendorCallOptions {
+                anthropic_beta: None,
+                served_key_sink: Some(ctx.served_key_sink.clone()),
+            },
             &mut trail,
         )
         .await
@@ -874,6 +916,7 @@ async fn log_request(
         context_window_tokens: ctx_columns.context_window_tokens,
         cache_read_tokens: ctx_columns.cache_read_tokens,
         cache_write_tokens: ctx_columns.cache_write_tokens,
+        upstream_key_fingerprint: ctx.served_fp(),
     };
     if let Some(logger) = state.logger.as_ref() {
         if let Err(error) = logger.log(log).await {

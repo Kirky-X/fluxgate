@@ -35,6 +35,8 @@ struct AnthropicDispatchCtx {
     batch: bool,
     // 调用级厂商选项（anthropic-beta 转发等）
     call_options: crate::vendor::manager::VendorCallOptions,
+    /// 上游键归因 sink（与 call_options 同源）——log_request 落库读取。
+    served_key_sink: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 #[axum::debug_handler]
@@ -71,8 +73,12 @@ pub async fn messages(
 
     let hints = RoutingHints::from_headers(&headers);
     // 调用级厂商选项：anthropic-beta 由 manager 按厂商类型与开关门控
+    // served_key_sink：出站组装点写入实际服务键指纹（failover 后为最终
+    // 命中者），日志落库归因用；Arc 共享随 call_options.clone() 透传。
+    let served_key_sink = std::sync::Arc::new(std::sync::Mutex::new(None));
     let call_options = crate::vendor::manager::VendorCallOptions {
         anthropic_beta: hints.anthropic_beta.clone(),
+        served_key_sink: Some(served_key_sink.clone()),
     };
     let request_batch = hints.batch;
     let session_key = hints.effective_session_key(&body);
@@ -106,6 +112,7 @@ pub async fn messages(
         lexcompressed,
         batch: request_batch && decision.vendor.supports_batch,
         call_options,
+        served_key_sink,
     };
 
     // 检查是否可以使用零拷贝透传（入站格式 Anthropic == 出站格式 Anthropic）。
@@ -810,6 +817,8 @@ async fn on_dispatch_failure(
         duration_ms,
         &error,
         ctx.session_key.as_deref(),
+        // 失败路径同样归因尝试键（与 completions 口径一致）
+        ctx.served_fp(),
     )
     .await;
     error
@@ -982,6 +991,13 @@ fn anthropic_sse_stream(
     axum::body::Body::from_stream(sse_stream)
 }
 
+impl AnthropicDispatchCtx {
+    /// 取实际服务键指纹（归因 sink 终值；失败路径不传、历史 None）。
+    fn served_fp(&self) -> Option<String> {
+        self.served_key_sink.lock().ok().and_then(|s| s.clone())
+    }
+}
+
 /// 流式派发成功日志（metrics 已在 manager 层记账，handler 不
 /// 重复计；日志按派发成功记 200，响应体为流占位标记）。
 async fn log_stream_dispatch(
@@ -1002,6 +1018,7 @@ async fn log_stream_dispatch(
         200,
         None,
         ctx.session_key.as_deref(),
+        ctx.served_fp(),
     )
     .await;
 }
@@ -1027,6 +1044,7 @@ async fn log_success_dispatch(
         200,
         None,
         ctx.session_key.as_deref(),
+        ctx.served_fp(),
     )
     .await;
     // 分账落库（hash 透传 + cache 两类 + 四档单价）。
@@ -1064,6 +1082,7 @@ async fn log_request(
     status_code: i32,
     error_message: Option<String>,
     session_key: Option<&str>,
+    upstream_key_fp: Option<String>,
 ) {
     // LinUCB 奖励回传 — 与落库记账同点（本函数收敛成功/失败
     // 两路，`response: None` = 失败）。门控（接线 + selection 热读）在
@@ -1169,6 +1188,7 @@ async fn log_request(
         context_window_tokens: ctx_columns.context_window_tokens,
         cache_read_tokens: ctx_columns.cache_read_tokens,
         cache_write_tokens: ctx_columns.cache_write_tokens,
+        upstream_key_fingerprint: upstream_key_fp,
     };
 
     // logger 未接线 = 降级为不落日志（不回退同步直写）
@@ -1194,6 +1214,7 @@ async fn log_failure(
     duration_ms: i64,
     error: &FluxgateError,
     session_key: Option<&str>,
+    upstream_key_fp: Option<String>,
 ) {
     log_request(
         state,
@@ -1206,6 +1227,7 @@ async fn log_failure(
         crate::api::status_code_for_error(error),
         Some(error.to_string()),
         session_key,
+        upstream_key_fp,
     )
     .await;
 }

@@ -628,6 +628,7 @@ mod manager {
                 "anthropic-beta",
                 serde_json::json!({"model": "claude", "messages": []}),
                 fluxgate::vendor::VendorCallOptions {
+                    served_key_sink: None,
                     anthropic_beta: Some("extended-thinking-2025-01-01".into()),
                 },
             )
@@ -667,6 +668,7 @@ mod manager {
                 "anthropic-beta-off",
                 serde_json::json!({"model": "claude", "messages": []}),
                 fluxgate::vendor::VendorCallOptions {
+                    served_key_sink: None,
                     anthropic_beta: Some("extended-thinking-2025-01-01".into()),
                 },
             )

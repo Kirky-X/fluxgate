@@ -1112,14 +1112,16 @@ mod admin {
         let result =
             admin::update_vendor(State(state), Path("nonexistent".to_string()), Json(vendor)).await;
         match result {
-            Err(FluxgateError::Gate(GateError::Config { message })) => {
+            // admin-vendor-routes-fix：资源不存在是调用方错误，Validation(400)
+            // 承载（原 Config/500）；文案仍点名 id（zh/en 双语，断言走字段值）
+            Err(FluxgateError::Gate(GateError::Validation { field })) => {
                 assert!(
-                    message.contains("not found"),
-                    "message should mention 'not found': {}",
-                    message
+                    field.contains("nonexistent"),
+                    "message should name the missing id: {}",
+                    field
                 );
             }
-            Err(_) => panic!("Expected Config error for nonexistent vendor"),
+            Err(_) => panic!("Expected Validation error for nonexistent vendor"),
             Ok(_) => panic!("update_vendor should fail for nonexistent vendor"),
         }
     }

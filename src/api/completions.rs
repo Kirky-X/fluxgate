@@ -38,6 +38,15 @@ struct ChatDispatchCtx {
     batch: bool,
     // 调用级厂商选项（anthropic-beta 转发等）
     call_options: crate::vendor::manager::VendorCallOptions,
+    /// 上游键归因 sink（与 call_options 同源）——成功日志落库读取。
+    served_key_sink: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl ChatDispatchCtx {
+    /// 取实际服务键指纹（归因 sink 终值）。
+    fn served_fp(&self) -> Option<String> {
+        self.served_key_sink.lock().ok().and_then(|s| s.clone())
+    }
 }
 
 #[axum::debug_handler]
@@ -72,8 +81,12 @@ pub async fn chat_completions(
     // 提取路由提示与会话亲和键（X-Session-Id 优先，messages 前缀哈希兜底）
     let hints = RoutingHints::from_headers(&headers);
     // 调用级厂商选项：anthropic-beta 由 manager 按厂商类型与开关门控
+    // served_key_sink：出站组装点写入实际服务键指纹（failover 后为最终
+    // 命中者），日志落库归因用；Arc 共享随 call_options.clone() 透传。
+    let served_key_sink = std::sync::Arc::new(std::sync::Mutex::new(None));
     let call_options = crate::vendor::manager::VendorCallOptions {
         anthropic_beta: hints.anthropic_beta.clone(),
+        served_key_sink: Some(served_key_sink.clone()),
     };
     let request_batch = hints.batch;
     let session_key = hints.effective_session_key(&body);
@@ -112,6 +125,7 @@ pub async fn chat_completions(
         lexcompressed,
         batch: request_batch && decision.vendor.supports_batch,
         call_options,
+        served_key_sink,
     };
 
     // 零拷贝透传（入站格式 OpenAI == 出站格式 OpenAI）；透传路径不做工具
@@ -818,6 +832,7 @@ async fn on_dispatch_failure(
         &error,
         ctx.linucb_reward_key.as_deref(),
         ctx.session_key.as_deref(),
+        ctx.served_fp(),
     )
     .await;
     error
@@ -1017,6 +1032,7 @@ async fn log_stream_dispatch(
         None,
         ctx.linucb_reward_key.as_deref(),
         ctx.session_key.as_deref(),
+        ctx.served_fp(),
     )
     .await;
 }
@@ -1043,6 +1059,7 @@ async fn log_success_dispatch(
         None,
         ctx.linucb_reward_key.as_deref(),
         ctx.session_key.as_deref(),
+        ctx.served_fp(),
     )
     .await;
     // 分账落库（hash 透传 + cache 两类 + 四档单价）。
@@ -1071,6 +1088,10 @@ async fn log_success_dispatch(
 /// status_code 从实际结果取，大 payload（>64KB）截断。
 /// `response: None` = 失败路径，status_code/error_message 由调用方传真实值；
 /// logger 未接线时跳过落库（不做同步直写）
+fn served_fp(sink: &std::sync::Arc<std::sync::Mutex<Option<String>>>) -> Option<String> {
+    sink.lock().ok().and_then(|s| s.clone())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn log_chat_request(
     state: &Arc<ApiState>,
@@ -1085,6 +1106,7 @@ async fn log_chat_request(
     // 奖励臂键（None = 直连路径跳过奖励）
     linucb_arm_key: Option<&str>,
     session_key: Option<&str>,
+    upstream_key_fp: Option<String>,
 ) {
     // LinUCB 奖励回传 — 与落库记账同点（本函数收敛成功/失败
     // 两路，`response: None` = 失败）。臂键由 handler 按路由分支归一
@@ -1170,6 +1192,7 @@ async fn log_chat_request(
         context_window_tokens: ctx_columns.context_window_tokens,
         cache_read_tokens: ctx_columns.cache_read_tokens,
         cache_write_tokens: ctx_columns.cache_write_tokens,
+        upstream_key_fingerprint: upstream_key_fp,
     };
 
     // logger 未接线 = 降级为不落日志（不回退同步直写）
@@ -1198,6 +1221,7 @@ async fn log_chat_failure(
     // 奖励臂键（None = 直连路径跳过奖励）
     linucb_arm_key: Option<&str>,
     session_key: Option<&str>,
+    upstream_key_fp: Option<String>,
 ) {
     log_chat_request(
         state,
@@ -1211,6 +1235,7 @@ async fn log_chat_failure(
         Some(error.to_string()),
         linucb_arm_key,
         session_key,
+        upstream_key_fp,
     )
     .await;
 }
@@ -1251,6 +1276,12 @@ pub(crate) async fn execute_embeddings(
         Err(e) => return Err(e.into()),
     };
 
+    // 上游键归因 sink：随 options 透传到出站组装点，落库读取终值。
+    let embed_sink = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let embed_options = crate::vendor::manager::VendorCallOptions {
+        anthropic_beta: None,
+        served_key_sink: Some(embed_sink.clone()),
+    };
     // 只支持 OpenAI vendor（兼容组/pin 契约按 OpenAI 形状定义）
     if !matches!(decision.vendor.protocol(), VendorProtocol::OpenAi) {
         return Err(FluxgateError::from(GateError::Protocol {
@@ -1261,7 +1292,12 @@ pub(crate) async fn execute_embeddings(
 
     let response_json = match state
         .vendor_manager
-        .execute_passthrough_request_at(&decision.vendor.id, openai_body.clone(), "embeddings")
+        .execute_passthrough_request_at_with_options(
+            &decision.vendor.id,
+            openai_body.clone(),
+            "embeddings",
+            embed_options,
+        )
         .await
     {
         Ok(r) => r,
@@ -1281,6 +1317,7 @@ pub(crate) async fn execute_embeddings(
                 Some(error_str),
                 &api_key_hash,
                 &log_meta,
+                served_fp(&embed_sink),
             )
             .await;
             return Err(e);
@@ -1356,6 +1393,7 @@ pub(crate) async fn execute_embeddings(
                         Some(error_message),
                         &api_key_hash,
                         &log_meta,
+                        served_fp(&embed_sink),
                     )
                     .await;
                     return Err(error);
@@ -1377,6 +1415,7 @@ pub(crate) async fn execute_embeddings(
         None,
         &api_key_hash,
         &log_meta,
+        served_fp(&embed_sink),
     )
     .await;
 
@@ -1441,6 +1480,7 @@ async fn push_embeddings_log(
     error_message: Option<String>,
     api_key_hash: &str,
     meta: &EmbeddingLogMeta<'_>,
+    upstream_key_fp: Option<String>,
 ) {
     let usage = response.and_then(|r| r.get("usage"));
     let prompt_tokens = usage
@@ -1503,6 +1543,7 @@ async fn push_embeddings_log(
         context_window_tokens: None,
         cache_read_tokens: None,
         cache_write_tokens: None,
+        upstream_key_fingerprint: upstream_key_fp,
     };
 
     if let Some(logger) = state.logger.as_ref() {
@@ -1534,6 +1575,7 @@ mod request_cost_tests {
             supports_thinking: true,
             cache_breakpoints: None,
             long_context_input_price: 0.0,
+            cache_creation_1h_price: 0.0,
             long_context_threshold_tokens: 0,
         }
     }

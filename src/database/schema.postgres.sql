@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
     session_key TEXT,
     context_window_tokens BIGINT,
     cache_read_tokens BIGINT,
-    cache_write_tokens BIGINT
+    cache_write_tokens BIGINT,
+    upstream_key_fingerprint TEXT
 );
 
 -- Token 消耗统计表

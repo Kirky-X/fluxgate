@@ -331,8 +331,8 @@ impl Repository {
                 routing_strategy, status_code, response, error_message,
                 prompt_tokens, completion_tokens, total_tokens, duration_ms,
                 cost_usd, session_key, context_window_tokens,
-                cache_read_tokens, cache_write_tokens
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cache_read_tokens, cache_write_tokens, upstream_key_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#;
         let params: Vec<Value> = vec![
             log.request_id.clone().into(),
@@ -356,6 +356,7 @@ impl Repository {
             log.context_window_tokens.into(),
             log.cache_read_tokens.into(),
             log.cache_write_tokens.into(),
+            log.upstream_key_fingerprint.clone().into(),
         ];
         (SQL.to_string(), params)
     }
@@ -1103,6 +1104,9 @@ fn map_request_log(row: &QueryResult) -> RequestLog {
             .unwrap_or(None),
         cache_write_tokens: row
             .try_get::<Option<i64>>("", "cache_write_tokens")
+            .unwrap_or(None),
+        upstream_key_fingerprint: row
+            .try_get::<Option<String>>("", "upstream_key_fingerprint")
             .unwrap_or(None),
     }
 }

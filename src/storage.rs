@@ -44,6 +44,11 @@ pub struct RequestLog {
     /// 上游报告的缓存写 token。无 usage 时为 None。
     #[serde(default)]
     pub cache_write_tokens: Option<i64>,
+    /// 实际服务本请求的上游池键指纹（key_pool 进程内随机键 SipHash 截断 16 hex，
+    /// 进程内可 join /admin/vendors、跨进程不可复算；failover 后为最终命中者，
+    /// 失败行为最后一次尝试键——NULL=未尝试/订阅凭证/env 回退/历史行。
+    #[serde(default)]
+    pub upstream_key_fingerprint: Option<String>,
 }
 
 /// 日志查询过滤（admin /admin/logs、/admin/logs/search）。
@@ -475,6 +480,7 @@ mod tests {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         }
     }
 

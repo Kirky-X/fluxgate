@@ -635,6 +635,7 @@ mod tests {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         }
     }
 

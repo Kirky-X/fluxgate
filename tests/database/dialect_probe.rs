@@ -47,6 +47,7 @@ async fn dialect_probe_full_chain_on_server_backend() {
         context_window_tokens: Some(1000),
         cache_read_tokens: Some(60),
         cache_write_tokens: Some(6),
+        upstream_key_fingerprint: None,
     };
     // 清场：PG/MySQL 库是共享实例，request_id 有唯一键，先删自己上次的行
     {

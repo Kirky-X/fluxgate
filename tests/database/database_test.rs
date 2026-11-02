@@ -76,6 +76,7 @@ mod tests {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         };
 
         let result = repository.log_request(&log).await;
@@ -114,6 +115,7 @@ mod tests {
                 context_window_tokens: None,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                upstream_key_fingerprint: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -164,6 +166,7 @@ mod tests {
                 context_window_tokens: None,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                upstream_key_fingerprint: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -220,6 +223,7 @@ mod tests {
                 context_window_tokens: None,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                upstream_key_fingerprint: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -263,6 +267,7 @@ mod tests {
                 context_window_tokens: None,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                upstream_key_fingerprint: None,
             };
             repository.log_request(&log).await.unwrap();
         }
@@ -370,6 +375,7 @@ mod tests {
                 context_window_tokens: None,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                upstream_key_fingerprint: None,
             };
 
             handles.push(tokio::spawn(async move { repo.log_request(&log).await }));
@@ -422,6 +428,7 @@ mod tests {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         };
 
         assert_eq!(log.request_id, "test-id");
@@ -487,6 +494,7 @@ mod tests {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         };
 
         assert_eq!(log.status_code, Some(429));
@@ -543,6 +551,7 @@ mod tests {
                 context_window_tokens: None,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                upstream_key_fingerprint: None,
             };
 
             let result = repository.log_request(&log).await;
@@ -635,6 +644,7 @@ mod batch_tx {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         }
     }
 
@@ -936,6 +946,7 @@ mod repository_gap {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         }
     }
 
@@ -1110,6 +1121,7 @@ mod async_logger_gap {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         }
     }
 
@@ -1277,6 +1289,7 @@ mod database_gap {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         }
     }
 
@@ -1577,6 +1590,7 @@ mod usage_observability_columns {
                 context_window_tokens: Some(1000),
                 cache_read_tokens: Some(cache_read),
                 cache_write_tokens: Some(1),
+                upstream_key_fingerprint: None,
             };
             repo.log_request(&log).await.expect("write");
         }
@@ -1604,6 +1618,7 @@ mod usage_observability_columns {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         };
         orphan.session_key = None;
         repo.log_request(&orphan).await.expect("write orphan");
@@ -1672,6 +1687,7 @@ mod usage_observability_columns {
                 context_window_tokens: Some(1000),
                 cache_read_tokens: Some(50),
                 cache_write_tokens: Some(0),
+                upstream_key_fingerprint: None,
             };
             repo.log_request(&log).await.expect("write");
         }
@@ -1731,6 +1747,7 @@ mod usage_observability_columns {
             context_window_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            upstream_key_fingerprint: None,
         };
 
         let mut with_session = build("req-session", 1_700_000_000);
@@ -2203,6 +2220,91 @@ mod quota_ledger_server {
                 .iter()
                 .all(|r| r.api_key_hash != "server-dialect"),
             "清场后本模块测试行无残留"
+        );
+    }
+}
+
+// V9 上游键归因列（magpie-absorb-r1 R-usage-001）：列存在（迁移链落
+// 地）+ Some/None 两态往返无损。
+#[cfg(test)]
+mod v9_key_attribution {
+    use dbnexus::{DbConfig, DbPool, PoolConfig};
+    use fluxgate::database::{LogFilter, Repository, RequestLog};
+    use std::sync::Arc;
+
+    async fn repo() -> Arc<Repository> {
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repo = Arc::new(Repository::new(pool));
+        repo.initialize().await.expect("init schema (V1..=V9)");
+        repo
+    }
+
+    fn log(id: &str, fp: Option<&str>) -> RequestLog {
+        RequestLog {
+            id: None,
+            request_id: id.to_string(),
+            timestamp: 1_700_000_000,
+            endpoint: "/v1/chat/completions".to_string(),
+            input_format: "openai".to_string(),
+            abstract_model: Some("gpt-4".to_string()),
+            messages: "[]".to_string(),
+            actual_vendor: "v".to_string(),
+            actual_model: "gpt-4".to_string(),
+            routing_strategy: "direct".to_string(),
+            status_code: Some(200),
+            response: None,
+            error_message: None,
+            prompt_tokens: Some(1),
+            completion_tokens: Some(1),
+            total_tokens: Some(2),
+            duration_ms: Some(3),
+            cost_usd: None,
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            upstream_key_fingerprint: fp.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn upstream_key_fingerprint_roundtrip_some_and_null() {
+        let repo = repo().await;
+        repo.log_request(&log("v9-fp-some", Some("aabb001122334455")))
+            .await
+            .expect("insert with fp");
+        repo.log_request(&log("v9-fp-null", None))
+            .await
+            .expect("insert null fp");
+
+        let rows = repo
+            .query_logs(&LogFilter {
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .expect("query");
+        let some = rows.iter().find(|r| r.request_id == "v9-fp-some").unwrap();
+        let null = rows.iter().find(|r| r.request_id == "v9-fp-null").unwrap();
+        assert_eq!(
+            some.upstream_key_fingerprint.as_deref(),
+            Some("aabb001122334455"),
+            "Some 指纹往返无损（V9 列存在且经 INSERT/SELECT 两侧）"
+        );
+        assert!(
+            null.upstream_key_fingerprint.is_none(),
+            "NULL 语义保持（历史行/未走键池）"
         );
     }
 }

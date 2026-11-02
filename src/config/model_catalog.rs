@@ -52,6 +52,11 @@ pub struct ModelCatalogEntry {
     /// long_context_threshold_tokens 时替代 input_price 参与因子；0/缺省不启用）
     #[serde(default)]
     pub long_context_input_price: f64,
+    /// 1h 档 cache write 单价（第 5 价位；Anthropic ephemeral_1h 语义）。
+    /// 0.0=未配置不产生成本；协议侧 1h tokens 解析落地前计费暂不消费此价
+    /// （见 magpie-absorb-r1 R-catalog-002 修订注记）。
+    #[serde(default)]
+    pub cache_creation_1h_price: f64,
     /// 长上下文价触发的估 prompt token 阈值（0 = 不启用）
     #[serde(default)]
     pub long_context_threshold_tokens: u64,
@@ -220,6 +225,7 @@ mod tests {
             supports_thinking: true,
             cache_breakpoints: None,
             long_context_input_price: 0.0,
+            cache_creation_1h_price: 0.0,
             long_context_threshold_tokens: 0,
         }
     }
@@ -361,6 +367,7 @@ currency = "eur"
             cache_read_price: 1.25,
             cache_creation_price: 0.0,
             long_context_input_price: 0.0,
+            cache_creation_1h_price: 0.0,
             long_context_threshold_tokens: 0,
             currency: PricingCurrency::Usd,
             max_output_tokens: Some(16_384),

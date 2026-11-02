@@ -34,6 +34,8 @@
   - [GET /admin/context-stats](#get-admincontext-stats)
   - [GET /admin/metrics](#get-adminmetrics)
   - [GET /admin/vendors](#get-adminvendors)
+  - [GET /admin/vendors/config](#get-adminvendorsconfig)
+  - [PUT /admin/vendors/:id](#put-adminvendorsid)
   - [GET /admin/vendors/:id/status](#get-adminvendorsidstatus)
   - [POST /admin/vendors/:id/reset](#post-adminvendorsidreset)
   - [GET /admin/embedding-pins](#get-adminembedding-pins)
@@ -1191,6 +1193,68 @@ curl http://localhost:8080/admin/metrics \
 ```bash
 curl http://localhost:8080/admin/vendors \
   -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
+### GET /admin/vendors/config
+
+返回全部厂商的**原始配置**（`Vec<VendorConfig>`，配置视图）。与 [GET /admin/vendors](#get-adminvendors) 的状态观测视图（含 key 池/队列实时信息）互补：本端点透出配置文件中的静态字段（`priority`/`weight`/`timeout_ms`/`models` 等），供控制台编辑页回填表单。
+
+**认证**: 需要 Bearer Token
+
+**Query 参数**: 无
+
+**响应**: `VendorConfig` 数组（字段同 `[[vendors]]` 配置段）
+
+**错误码**: 无业务错误
+
+**curl 示例**:
+
+```bash
+curl http://localhost:8080/admin/vendors/config \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+---
+
+### PUT /admin/vendors/:id
+
+按 id 原子更新单个厂商配置：写锁内读-改-校验-落盘（与其他 `update_*` 端点互斥，不丢失更新；校验失败不落盘）。请求体为完整 `VendorConfig`（整替语义，非增量 patch）。
+
+**认证**: 需要 Bearer Token
+
+**Path 参数**:
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 厂商 ID（须与既有条目一致；未知 id 返回 400 `validation_error` 并点名 id） |
+
+**请求体**: 完整 `VendorConfig`（字段同 `[[vendors]]` 配置段；非法值经既有配置校验拒绝，旧配置保持不变）
+
+**响应**:
+
+```json
+{
+  "success": true,
+  "message": "厂商已更新"
+}
+```
+
+**错误码**:
+
+| 状态码 | 场景 |
+|---|---|
+| 400 | id 不存在（`admin-vendor-not-found`）或配置校验拒绝 |
+| 4xx | 请求体反序列化失败（字段类型错误等） |
+
+**curl 示例**:
+
+```bash
+curl -X PUT http://localhost:8080/admin/vendors/mock-openai \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"mock-openai","type_":"openai","api_base":"http://localhost:8001/v1","priority":9,...}'
 ```
 
 ---

@@ -601,8 +601,8 @@ pub async fn update_vendor(
                 config.vendors[idx] = vendor;
                 Ok(())
             }
-            None => Err(GateError::Config {
-                message: t_args("admin-vendor-not-found", &[("id", id.clone())]),
+            None => Err(GateError::Validation {
+                field: t_args("admin-vendor-not-found", &[("id", id.clone())]),
             }),
         }
     })?;

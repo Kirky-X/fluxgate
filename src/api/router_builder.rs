@@ -5,7 +5,7 @@ use axum::{
     extract::{Request, State},
     middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use limiteron::limiters::{Limiter, QuotaLimiter, ShardedSlidingWindowLimiter, TokenBucketLimiter};
@@ -552,6 +552,47 @@ async fn admission_middleware(
 /// 返回均为 `'static`（模板表/字面量），调用方零分配。
 fn metrics_route_label(path: &str) -> &'static str {
     #[cfg(feature = "vault")]
+    const TEMPLATES: [&str; 36] = [
+        "/v1/chat/completions",
+        "/v1/embeddings",
+        "/v1/rerank",
+        "/v1/responses",
+        "/v1/responses/input_tokens",
+        "/v1/responses/{id}",
+        "/v1/responses/{id}/cancel",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1beta/models",
+        "/v1beta/models/{id}",
+        "/v1/models",
+        "/admin/route/explain",
+        "/admin/logs",
+        "/admin/logs/search",
+        "/admin/stats/tokens",
+        "/admin/cost",
+        "/admin/sessions",
+        "/admin/context-stats",
+        "/admin/metrics",
+        "/admin/quota/ledger",
+        "/admin/vendor-budgets",
+        "/admin/vendors",
+        "/admin/vendors/config",
+        "/admin/vendors/{id}",
+        "/admin/vendors/{id}/status",
+        "/admin/vendors/{id}/reset",
+        "/admin/embedding-pins",
+        "/admin/embedding-pins/{id}/reset",
+        "/admin/config",
+        "/admin/models",
+        "/admin/models/{id}",
+        // catalog-sync 路由模板（feature 关闭时路径不存在，归一表多一条
+        // 无害死条目；开表条件组合会随 feature 矩阵爆炸，故无条件收录）
+        "/admin/catalog/sync",
+        "/admin/vault/keys",
+        "/admin/vault/keys/{id}",
+        "/api/v1/health",
+    ];
+    #[cfg(not(feature = "vault"))]
     const TEMPLATES: [&str; 34] = [
         "/v1/chat/completions",
         "/v1/embeddings",
@@ -576,45 +617,8 @@ fn metrics_route_label(path: &str) -> &'static str {
         "/admin/quota/ledger",
         "/admin/vendor-budgets",
         "/admin/vendors",
-        "/admin/vendors/{id}/status",
-        "/admin/vendors/{id}/reset",
-        "/admin/embedding-pins",
-        "/admin/embedding-pins/{id}/reset",
-        "/admin/config",
-        "/admin/models",
-        "/admin/models/{id}",
-        // catalog-sync 路由模板（feature 关闭时路径不存在，归一表多一条
-        // 无害死条目；开表条件组合会随 feature 矩阵爆炸，故无条件收录）
-        "/admin/catalog/sync",
-        "/admin/vault/keys",
-        "/admin/vault/keys/{id}",
-        "/api/v1/health",
-    ];
-    #[cfg(not(feature = "vault"))]
-    const TEMPLATES: [&str; 32] = [
-        "/v1/chat/completions",
-        "/v1/embeddings",
-        "/v1/rerank",
-        "/v1/responses",
-        "/v1/responses/input_tokens",
-        "/v1/responses/{id}",
-        "/v1/responses/{id}/cancel",
-        "/v1/messages",
-        "/v1/messages/count_tokens",
-        "/v1beta/models",
-        "/v1beta/models/{id}",
-        "/v1/models",
-        "/admin/route/explain",
-        "/admin/logs",
-        "/admin/logs/search",
-        "/admin/stats/tokens",
-        "/admin/cost",
-        "/admin/sessions",
-        "/admin/context-stats",
-        "/admin/metrics",
-        "/admin/quota/ledger",
-        "/admin/vendor-budgets",
-        "/admin/vendors",
+        "/admin/vendors/config",
+        "/admin/vendors/{id}",
         "/admin/vendors/{id}/status",
         "/admin/vendors/{id}/reset",
         "/admin/embedding-pins",
@@ -821,6 +825,11 @@ pub async fn create_router(state: Arc<ApiState>) -> Router {
         .route("/admin/quota/ledger", get(admin::quota_ledger))
         .route("/admin/vendor-budgets", get(admin::vendor_budgets))
         .route("/admin/vendors", get(admin::vendors))
+        // 原始配置视图（Vec<VendorConfig>）与按 id 原子更新：与上面的状态
+        // 观测视图（/admin/vendors，含 key 池信息）互补；/config 子路径避免
+        // 与 /admin/vendors/{id}/status、/reset 的 {id} 段歧义
+        .route("/admin/vendors/config", get(admin::get_vendors))
+        .route("/admin/vendors/{id}", put(admin::update_vendor))
         .route("/admin/vendors/{id}/status", get(admin::vendor_status))
         .route("/admin/vendors/{id}/reset", post(admin::reset_vendor))
         // 嵌入兼容组 pin 观察与管理：GET 列表 / POST 单条重置（幂等恢复通道）

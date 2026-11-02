@@ -327,6 +327,20 @@ submit_route!(
     &["admin"]
 );
 submit_route!(
+    "/admin/vendors/config",
+    "GET",
+    "List vendor configs",
+    "Raw VendorConfig list (config view; complements the status view of /admin/vendors).",
+    &["admin"]
+);
+submit_route!(
+    "/admin/vendors/{id}",
+    "PUT",
+    "Update vendor",
+    "Atomically replace one vendor config by id (validated read-modify-write under the config write lock). Unknown id yields 400.",
+    &["admin"]
+);
+submit_route!(
     "/admin/config",
     "GET",
     "Get runtime config",

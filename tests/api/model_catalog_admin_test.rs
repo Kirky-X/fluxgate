@@ -517,6 +517,218 @@ async fn reset_vendor_clears_blacklist_and_cooldown() {
     assert_eq!(body["error"]["type"], "validation_error");
 }
 
+/// 厂商配置视图端点 —— `GET /admin/vendors/config` 原始 `Vec<VendorConfig>` 列表
+/// （与 `/admin/vendors` 状态观测视图互补）、`PUT /admin/vendors/{id}` 原子更新
+/// （写锁内读-改-校验-落盘）、未知 id 显性 400（Validation 承载）、
+/// 字段类型非法 4xx 且旧配置不变（校验原子性）。
+#[tokio::test]
+async fn vendor_config_endpoints_read_and_update() {
+    common::ensure_test_api_key();
+    let mut v = common::base_vendor("cfg-v", String::new());
+    v.models = vec![];
+    v.priority = 5;
+    let mut config = common::test_config(vec![v]);
+    config.global_model = Some(GlobalModelConfig {
+        enabled: true,
+        strategy: "weighted".into(),
+    });
+    let config_manager = Arc::new(ConfigManager::new(config));
+    // update_config_with 要求落盘路径（非 loader 创建时拒绝落盘更新）——
+    // 与 gate_config_test 同款 tempdir 种子文件 + set_path。
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg_path = dir.path().join("vendor-config.toml");
+    {
+        let snapshot = config_manager.get_config();
+        std::fs::write(&cfg_path, toml::to_string_pretty(&snapshot).unwrap())
+            .expect("seed config file");
+    }
+    config_manager.set_path(cfg_path);
+    let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+    vendor_manager.initialize().await.expect("init");
+
+    let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+        url: "sqlite::memory:".to_string(),
+        pool_config: dbnexus::PoolConfig {
+            max_connections: 1,
+            min_connections: 1,
+            ..Default::default()
+        },
+        admin_role: "admin".to_string(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let state = Arc::new(ApiState {
+        affinity_writer: None,
+        config: config_manager.clone(),
+        vendor_manager: vendor_manager.clone(),
+        router: Arc::new(Router::new(config_manager, vendor_manager.clone())),
+        logger: None,
+        pre_aggregator: None,
+        affinity: None,
+        response_cache: None,
+        bandit: None,
+        quota: None,
+        difficulty: None,
+        responses: None,
+        #[cfg(feature = "web-search")]
+        web_search: None,
+        openai_converter: Arc::new(OpenAIConverter::new()),
+        anthropic_converter: Arc::new(AnthropicConverter::new()),
+        database: Arc::new(Database {
+            pool: pool.clone(),
+            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+        }),
+    });
+    let app = create_router(state).await;
+
+    // GET 配置视图：列表含种子 vendor 的原始配置字段。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/vendors/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "配置视图必须可达");
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let entry = list
+        .as_array()
+        .expect("配置视图是数组")
+        .iter()
+        .find(|v| v["id"] == "cfg-v")
+        .expect("列表含种子 vendor");
+    assert_eq!(entry["priority"], 5, "配置字段原样透出");
+
+    // PUT 原子更新：priority 5→9，落盘校验通过后 GET 复核生效。
+    let mut updated = common::base_vendor("cfg-v", String::new());
+    updated.models = vec![];
+    updated.priority = 9;
+    let body_str = serde_json::to_string(&updated).unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/admin/vendors/cfg-v")
+                .header("content-type", "application/json")
+                .body(Body::from(body_str))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "合法更新必须成功: {bytes:?}");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["success"], true);
+    assert!(
+        body["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "更新文案非空（i18n）: {body}"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/vendors/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["id"] == "cfg-v")
+        .unwrap();
+    assert_eq!(entry["priority"], 9, "PUT 后配置立即生效");
+
+    // PUT 未知 id → 400（Validation 承载）且文案点名 id。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/admin/vendors/ghost")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&updated).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400, "未知 id 显性 400，非 500");
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["type"], "validation_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("ghost")),
+        "文案必须点名未知 id: {body}"
+    );
+
+    // PUT 字段类型非法（priority 传字符串）→ 4xx 反序列化拒绝，旧配置不变。
+    let mut bad = serde_json::to_value(&updated).unwrap();
+    bad["priority"] = serde_json::json!("high");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/admin/vendors/cfg-v")
+                .header("content-type", "application/json")
+                .body(Body::from(bad.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_client_error(),
+        "类型非法应 4xx，got {}",
+        response.status()
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/vendors/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["id"] == "cfg-v")
+        .unwrap();
+    assert_eq!(entry["priority"], 9, "非法请求不得改变旧配置");
+}
+
 /// `GET /admin/cost`：维度分组、hash/日期过滤、空窗空数组、
 /// 参数错误 400、未鉴权 401。
 mod cost_endpoint {

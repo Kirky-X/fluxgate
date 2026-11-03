@@ -48,7 +48,7 @@ export default function LoginPage() {
               placeholder="API Key"
               value={key}
               onChange={(e) => setKey(e.target.value)}
-              autoComplete="off"
+              autoComplete="new-password"
             />
             {error && <p className="text-small text-danger-text">{error}</p>}
             <Button type="submit" className="w-full">

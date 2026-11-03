@@ -87,6 +87,24 @@ async fn console_routes_serve_embedded_assets() {
         "relative asset paths escape the mount prefix on /console (no trailing slash)"
     );
 
+    // 1b. 尾斜杠两形态：/console/ 与 /console/vendors/ 均须出壳——显式
+    // 路由 + SPA fallback；资产为 /console/ 绝对前缀，尾斜杠不改变解析
+    for uri in ["/console/", "/console/vendors/"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .expect("oneshot should not fail");
+        assert_eq!(response.status(), StatusCode::OK, "GET {uri} must be 200");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("body should be collectable");
+        assert!(
+            String::from_utf8_lossy(&body).contains(r#"<div id="root""#),
+            "GET {uri} must serve the SPA shell"
+        );
+    }
+
     // 2. GET /console/missing-route → 200 SPA fallback（同 index.html 壳）
     let response = app
         .clone()

@@ -97,7 +97,9 @@ fn main() {
     }
 
     if dist_is_current(&console_dir) {
-        // dist 已存在且较新：直接复用，不打 npm
+        // 稳态：dist 新鲜，直接复用，不打 npm。声明与重建成功后同一监视集，
+        // 保持固定点（见尾部注释）。
+        println!("cargo:rerun-if-changed=web/console");
         return;
     }
 
@@ -117,7 +119,7 @@ fn main() {
         );
         return;
     }
-    let install_subcommand = if std::env::var("CI").as_deref() == Ok("true") {
+    let install_subcommand = if matches!(std::env::var("CI").as_deref(), Ok("true") | Ok("1")) {
         "ci"
     } else {
         "install"
@@ -147,9 +149,9 @@ fn main() {
         .arg("--prefix")
         .arg(&console_dir)
         .status();
-    // 构建失败时不输出 rerun-if-changed：保持 cargo 默认「任意变更即重跑」，
-    // 否则收窄后的监视集会让重试永远不触发。成功后监视集与 dist_is_current
-    // 的输入集保持同一动态枚举（硬编码清单漏项 = 只改配置不重跑 build.rs）。
+    // 构建失败时不声明监视集：保持 cargo 默认「包内任意变更即重跑」，否则
+    // 收窄后的监视集会让重试永远不触发。成功后与稳态早退路径声明同一
+    // 监视集（固定点）。
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => {
@@ -161,14 +163,9 @@ fn main() {
             return;
         }
     }
-    if let Ok(entries) = std::fs::read_dir(&console_dir) {
-        for e in entries.filter_map(|e| e.ok()) {
-            let path = e.path();
-            let name = e.file_name().to_string_lossy().into_owned();
-            if path.is_file() && !name.ends_with(".tsbuildinfo") {
-                println!("cargo:rerun-if-changed=web/console/{name}");
-            }
-        }
-    }
-    println!("cargo:rerun-if-changed=web/console/src");
+    // 监视整个 web/console（cargo 对目录递归监视）：动态枚举清单存在「构建
+    // 成功后新增的输入文件不在已记录监视集」与「未来 public/ 等顶层目录」
+    // 两类缺口，整目录监视一并闭合。代价是 dist/node_modules 变更也触发
+    // 重跑——重跑即一次亚毫秒的新鲜度扫描，安全方向（宁多重跑不嵌陈旧）。
+    println!("cargo:rerun-if-changed=web/console");
 }

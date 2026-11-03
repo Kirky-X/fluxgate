@@ -64,6 +64,9 @@ fn serve(path: &str) -> Response {
                 header::CONTENT_SECURITY_POLICY,
                 "frame-ancestors 'self'".to_string(),
             ),
+            // 旧浏览器(不支持 CSP frame-ancestors)的纵深兜底;控制台无被
+            // 自身 iframe 嵌入的用例,DENY 与 'self' 语义在此兼容
+            (header::X_FRAME_OPTIONS, "DENY".to_string()),
         ],
         file.data,
     )

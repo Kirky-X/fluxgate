@@ -147,10 +147,14 @@ COPY --from=build /bin/server /bin/server
 # 当前 musl 静态产物只依赖 ld-musl（实测 ldd 仅这一条），因此这道门禁是
 # 回验而非 ABI 守卫：若将来改用 glibc/musl-dynamic 基座、或依赖图开始
 # 动态拉入 libssl/libsqlite3，而运行阶段没装对应包，这里会直接构建失败，
-# 而不是镜像带病发布到容器启动时才炸
+# 而不是镜像带病发布到容器启动时才炸。
+# 全静态 musl 产物下 ldd 退出 1 且报 "Not a valid dynamic program"——
+# 静态 = 无动态依赖可解，属通过态；捕获输出后判词，不能让 set -e 吃掉
+# ldd 的非零退出（冒烟实测：首次构建到该层即被 set -e 误杀）
 RUN set -eux; \
-    ldd /bin/server; \
-    if ldd /bin/server 2>&1 | grep -q 'Error'; then \
+    ldd_out="$(ldd /bin/server 2>&1 || true)"; \
+    echo "$ldd_out"; \
+    if printf '%s' "$ldd_out" | grep -qi 'not found\|Error'; then \
       echo 'FATAL: /bin/server 有未满足的动态依赖（检查运行阶段 apk add 清单）' >&2; \
       exit 1; \
     fi

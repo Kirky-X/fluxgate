@@ -240,6 +240,11 @@ pub(crate) async fn maybe_start_hot_reload(
 
 #[cfg(test)]
 mod tests {
+    // notify/kqueue（macOS 默认后端）在同一进程内并发注册 watcher 时存在
+    // 丢事件窗口（表现为事件永不到达，单测隔离即过）：watcher 类测试互斥
+    // 执行消除该平台噪声。配置语义类测试不依赖事件面，不参与互斥。
+    static WATCHER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     use super::*;
 
     fn minimal_config() -> Config {
@@ -363,6 +368,8 @@ mod tests {
     /// watcher 探针：文件改写必须产生事件（依赖 inotify 可用）。
     #[tokio::test]
     async fn fs_watcher_delivers_modify_events() {
+        let _watcher_serial = WATCHER_TEST_LOCK.lock().await;
+
         use confers::watcher::FsWatcher;
 
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -372,15 +379,17 @@ mod tests {
         assert!(watcher.is_running());
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         std::fs::write(&path, "a = 2\n").expect("rewrite");
-        let event = tokio::time::timeout(std::time::Duration::from_secs(5), watcher.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(30), watcher.recv())
             .await
-            .expect("5s 内必须收到事件");
+            .expect("30s 内必须收到事件（慢盘/高载下事件延迟可达秒级，语义仍是必须到达）");
         assert!(event.is_some(), "改写必须产生事件");
     }
 
     /// 热字段修改运行时生效 + 结构变更拒绝且服务不中断（真实文件监听）。
     #[tokio::test]
     async fn hot_fields_apply_structural_changes_rejected() {
+        let _watcher_serial = WATCHER_TEST_LOCK.lock().await;
+
         let dir = tempfile::TempDir::new().expect("tempdir");
         let path = dir.path().join("config.toml");
         let base = r#"
@@ -420,7 +429,7 @@ concurrency = { requests_per_second = 1 }
         // 热字段：max_retries 3 → 9，运行时生效
         std::fs::write(&path, base.replace("max_retries = 3", "max_retries = 9")).expect("rewrite");
         let mut applied = false;
-        for _ in 0..50 {
+        for _ in 0..300 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             if manager.read().retry.max_retries == 9 {
                 applied = true;
@@ -429,7 +438,7 @@ concurrency = { requests_per_second = 1 }
         }
         assert!(
             applied,
-            "热字段修改必须在运行时生效（failures={}，current_max_retries={}）",
+            "热字段修改必须在运行时生效（30s 预算；failures={}，current_max_retries={}）",
             reloader.reload_failures(),
             manager.read().retry.max_retries,
         );
@@ -440,13 +449,21 @@ concurrency = { requests_per_second = 1 }
             base.replace("max_retries = 3", "max_retries = 9")
         );
         std::fs::write(&path, structural).expect("rewrite vendors");
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // 事件到达是延迟敏感面（慢盘/高载下秒级）：轮询到「拒绝已计入」
+        // 再断言拒绝语义，不依赖固定窗口
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while reloader.reload_failures() == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "30s 内结构变更未被记为重载失败"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         assert_eq!(
             manager.read().vendors.len(),
             1,
             "结构变更必须保旧快照（vendors 仍为初始 1 条）"
         );
-        assert!(reloader.reload_failures() >= 1, "拒绝必须计入失败数");
         assert_eq!(
             manager.read().retry.max_retries,
             9,
@@ -460,6 +477,8 @@ concurrency = { requests_per_second = 1 }
     /// 2) admin 落盘走 tmp+rename 原子替换，换 inode 后仍必须被捕获。
     #[tokio::test]
     async fn file_target_watch_ignores_sibling_noise_and_survives_atomic_replace() {
+        let _watcher_serial = WATCHER_TEST_LOCK.lock().await;
+
         let dir = tempfile::TempDir::new().expect("tempdir");
         let path = dir.path().join("config.toml");
         let base = r#"
@@ -499,7 +518,7 @@ concurrency = { requests_per_second = 1 }
         std::fs::write(dir.path().join("sibling.toml"), "noise = 1\n").expect("sibling noise");
         std::fs::create_dir_all(dir.path().join("data")).expect("mkdir data");
         std::fs::write(dir.path().join("data/app.db"), b"noise").expect("subdir noise");
-        tokio::time::sleep(std::time::Duration::from_millis(1600)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
         assert!(
             !reload_events.has_changed().expect("reload channel alive"),
             "旁路写盘不得触发重载（事件源必须收敛为配置文件本身）"
@@ -518,7 +537,7 @@ concurrency = { requests_per_second = 1 }
         std::fs::rename(&tmp, &path).expect("atomic replace");
 
         let mut applied = false;
-        for _ in 0..50 {
+        for _ in 0..300 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             if manager.read().retry.max_retries == 9 {
                 applied = true;
@@ -527,7 +546,7 @@ concurrency = { requests_per_second = 1 }
         }
         assert!(
             applied,
-            "rename 原子替换必须仍被捕获（failures={}，current_max_retries={}）",
+            "rename 原子替换必须仍被捕获（30s 预算；failures={}，current_max_retries={}）",
             reloader.reload_failures(),
             manager.read().retry.max_retries,
         );
@@ -537,6 +556,8 @@ concurrency = { requests_per_second = 1 }
     ///（真实文件监听 + 桥接全链路）。
     #[tokio::test]
     async fn comment_only_external_edit_keeps_write_back_available() {
+        let _watcher_serial = WATCHER_TEST_LOCK.lock().await;
+
         let dir = tempfile::TempDir::new().expect("tempdir");
         let path = dir.path().join("config.toml");
         let base = r#"
@@ -745,6 +766,8 @@ concurrency = { requests_per_second = 1 }
 
     #[tokio::test]
     async fn invalid_rewrite_records_reload_failure_and_keeps_memory() {
+        let _watcher_serial = WATCHER_TEST_LOCK.lock().await;
+
         let dir = tempfile::tempdir().expect("tempdir creatable");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, reload_toml(2)).expect("write initial config");
@@ -760,11 +783,11 @@ concurrency = { requests_per_second = 1 }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         std::fs::write(&path, "not [ valid toml").expect("rewrite invalid config");
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         while reloader.reload_failures() == 0 {
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "5s 内非法改写未被记为重载失败"
+                "30s 内非法改写未被记为重载失败（慢盘/高载容忍）"
             );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }

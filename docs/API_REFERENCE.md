@@ -33,6 +33,8 @@
   - [GET /admin/sessions](#get-adminsessions)
   - [GET /admin/context-stats](#get-admincontext-stats)
   - [GET /admin/metrics](#get-adminmetrics)
+  - [GET /admin/quota/ledger](#get-adminquotaledger)
+  - [GET /admin/vendor-budgets](#get-adminvendor-budgets)
   - [GET /admin/vendors](#get-adminvendors)
   - [GET /admin/vendors/config](#get-adminvendorsconfig)
   - [PUT /admin/vendors/:id](#put-adminvendorsid)
@@ -46,9 +48,19 @@
   - [PUT /admin/models/:id](#put-adminmodelsid)
   - [DELETE /admin/models/:id](#delete-adminmodelsid)
   - [POST /admin/models/:id](#post-adminmodelsid)
+  - [POST /admin/catalog/sync](#post-admincatalogsync)
+  - [GET /admin/masking/stats](#get-adminmaskingstats)
   - [GET /admin/vault/keys](#get-adminvaultkeys)
   - [POST /admin/vault/keys](#post-adminvaultkeys)
   - [DELETE /admin/vault/keys/:id](#delete-adminvaultkeysid)
+  - [GET /admin/masking/ledger](#get-adminmaskingledger)
+  - [POST /v1/search](#post-v1search)
+  - [POST /v1/fetch](#post-v1fetch)
+  - [GET /admin/web-search/stats](#get-adminweb-searchstats)
+  - [POST /admin/subscription/authorize](#post-adminsubscriptionauthorize)
+  - [GET /admin/subscription/callback](#get-adminsubscriptioncallback)
+  - [GET /admin/subscription/accounts](#get-adminsubscriptionaccounts)
+  - [DELETE /admin/subscription/accounts/:id](#delete-adminsubscriptionaccountsid)
   - [POST /admin/route/explain](#post-adminrouteexplain)
   - [POST /admin/route/difficulty-explain](#post-adminroutedifficulty-explain)
 - [内置控制台（console feature）](#内置控制台console-feature)
@@ -70,7 +82,7 @@
 | 认证方式 | Bearer Token (API Key) |
 | 请求头 | `Authorization: Bearer <api_key>` |
 | 备用请求头 | `x-api-key: <api_key>` |
-| Gemini 请求头 | `x-goog-api-key: <api_key>`（`/v1beta/` 路径也接受 `?key=<api_key>`） |
+| 通用兜底请求头 | `x-goog-api-key: <api_key>`（任意路径生效，Gemini SDK 兼容；`?key=<api_key>` 查询参数仅 `/v1beta/` 路径接受） |
 | 配置位置 | `config.toml` 的 `[auth]` 段（`api_keys` 存 SHA256 hex 摘要，明文不落盘） |
 | 启用开关 | `auth.enabled` (`true` / `false`) |
 
@@ -87,7 +99,7 @@
 
 HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API key"`）。
 
-> 认证中间件的放行路径为代码事实（`src/middleware/auth.rs:159-168`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共九个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。`/healthz` 与 `/readyz` 由 sdforge 在**全部中间件之后**挂载（`build_with_config`；Fluxgate 的认证/限流/超时层只包业务路由，故探针不经过它们），**免认证免限流**（实测无 key 返回 200）；`/readyz` 每请求真跑 DB 与缓存探针，仅建议内网暴露；`/ready` 未注册（404），仅在限流豁免表里留存。
+> 认证中间件的放行路径为代码事实（认证白名单判定，`src/middleware/auth.rs`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/admin/subscription/callback`（OAuth 302 回跳裸 GET）、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共十个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。`/healthz` 与 `/readyz` 由 sdforge 在**全部中间件之后**挂载（`build_with_config`；Fluxgate 的认证/限流/超时层只包业务路由，故探针不经过它们），**免认证免限流**（实测无 key 返回 200）；`/readyz` 每请求真跑 DB 与缓存探针，仅建议内网暴露；`/ready` 未注册（404），仅在限流豁免表里留存。
 
 ---
 
@@ -128,6 +140,10 @@ Fluxgate 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/
 | `config_error` | 500 Internal Server Error | 配置错误（如 API key 环境变量未设置） |
 | `database_error` | 500 Internal Server Error | 数据库操作失败、IO 错误 |
 | `routing_error` | 500 Internal Server Error | 路由决策失败（无可用厂商等） |
+| `vault_error` | 404 / 409 / 500 | 保密柜键不存在（404）、`vendor_id` 未登记（409）、加密/存储失败（500）（`vault` feature） |
+| `masking_unavailable` | 503 Service Unavailable | 掩码引擎故障，fail-closed 拒绝原文出站（`masking` feature） |
+| `masking_blocked` | 400 Bad Request | 掩码 Block 动作命中敏感值（`masking` feature） |
+| `io_error` | 500 Internal Server Error | 文件/流 IO 失败 |
 
 > **限流与准入（网关侧，独立于上述错误码；tower 化实现）**：
 >
@@ -138,8 +154,9 @@ Fluxgate 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/
 > - 每次响应（含 429）均回传 **`X-Request-Id`** 响应头：透传客户端所带 ID，未带时网关生成（`req-` 前缀）；同请求 tracing span 携带该 ID。
 > - **换路观测响应头**（`[resilience].expose_fallback_headers`，默认 `false`、✅热更；关闭时响应逐字节与现状一致）：开启后成功响应附 `x-fluxgate-vendor`（最终命中厂商 id）、`x-fluxgate-model`（成交模型 id）、`x-fluxgate-attempts`（总尝试次数）、`x-fluxgate-fallbacks`（逗号分隔尝试链，含最终命中者；流式在响应头阶段写入）。缓存命中早退不附头（无实际尝试）。
 > - **配额层**（按 key 的 token/成本固定窗口，`src/middleware/quota.rs`）：`[quota].enabled`（默认 `false`）
->   开启且 `[[auth.keys]]` 的 `token_quota`/`cost_quota_millicents` 任一 > 0 时生效；仅作用于
->   `/v1/chat/completions` 与 `/v1/messages`。入口预扣（预估输入 token×输入单价 + `max_tokens`×输出单价，
+>   开启且 `[[auth.keys]]` 的 `token_quota`/`cost_quota_millicents` 任一 > 0 时生效；作用于全部计费
+>   数据面：`/v1/chat/completions`、`/v1/messages`、`/v1/rerank`、`/v1/responses` 与 Gemini
+>   `POST /v1beta/models/{model}:action`（`countTokens` 除外）。入口预扣（预估输入 token×输入单价 + `max_tokens`×输出单价，
 >   单价以 `[[model_catalog]]` 四档为准，未登记模型回退 `[[pricing]]`），响应/流结束后按实际 usage 回补差额；
 >   超限返回 `429 Too Many Requests` + `Retry-After`（窗口剩余秒），文案随 locale（zh `"配额已耗尽，请稍后重试"`）。
 > - **网关键成本预算**（`[key_budgets]` 段配置时）：入站 key 成本超限同样返回 `429` + `Retry-After`（预算窗口余量换算）；预算源不可达时 `fail_open=false`（默认）拒绝并 warn、`fail_open=true` 放行；段缺省=功能整体关闭，行为零变化。
@@ -290,7 +307,7 @@ OpenAI Embeddings 兼容端点。仅支持 `type_ = "openai"` 的厂商，否则
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `model` | string | 是 | 模型 ID |
-| `input` | string \| array | 是 | 待向量化的文本或文本数组（数组必须全为字符串；缺失 / 空数组 / 含非字符串元素 → 400 `validation_error`） |
+| `input` | string \| array | 是 | 待向量化的文本或文本数组（字符串数组、整数 token 数组与嵌套 token 数组均接受，后两者原样透传上游；缺失 / 空数组 → 400 `validation_error`） |
 | `dimensions` | number | 否 | 透传上游的维度裁剪参数；带此参数的请求不参与网关维度守门记录 |
 
 请求体先经 `embedding_request_to_openai` 转换后再转发给上游 OpenAI 兼容 API。
@@ -768,7 +785,7 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 | `end_time` | integer (Unix 秒) | 否 | - | 结束时间戳（闭区间上界，含边界——`timestamp = end_time` 的行返回） |
 | `vendor` | string | 否 | - | 实际厂商 ID 精确匹配 |
 | `model` | string | 否 | - | 实际模型 ID 精确匹配 |
-| `limit` | integer | 否 | `100` | 返回条数上限；`0` 表示不限 |
+| `limit` | integer | 否 | `100` | 返回条数上限；`0` 表示不限（实现夹紧至上限 1000） |
 
 **响应**: `RequestLog` 数组
 
@@ -793,7 +810,11 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
     "total_tokens": null,
     "duration_ms": 523,
     "cost_usd": null,
-    "upstream_key_fingerprint": "a1b2c3d4e5f60718"
+    "upstream_key_fingerprint": "a1b2c3d4e5f60718",
+    "session_key": null,
+    "context_window_tokens": null,
+    "cache_read_tokens": null,
+    "cache_write_tokens": null
   }
 ]
 ```
@@ -1061,6 +1082,42 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
   "affinity_drift_total": 3,
   "affinity_persist_drop_total": 0,
   "affinity_restored_count": 8,
+  "embedding_pin_set_total": 0,
+  "embedding_pin_reset_total": 0,
+  "embedding_group_exhausted_total": 0,
+  "embedding_dimension_mismatch_total": 0,
+  "rerank_requests_total": 0,
+  "rerank_documents_total": 0,
+  "rerank_upstream_failures_total": 0,
+  "responses_requests_total": 0,
+  "responses_upstream_failures_total": 0,
+  "responses_stored_total": 0,
+  "responses_store_failures_total": 0,
+  "responses_background_jobs_total": 0,
+  "gemini_requests_total": 0,
+  "gemini_upstream_failures_total": 0,
+  "quota_window_refused_total": [],
+  "quota_factor_depleted_total": [],
+  "quota_ledger_flush_fail_total": 0,
+  "catalog_sync_fail_total": [],
+  "catalog_sync_added_total": 0,
+  "subscription_refresh_fail_total": 0,
+  "subscription_accounts_degraded": 0,
+  "web_search_requests_total": [],
+  "netguard_denied_total": [],
+  "difficulty": {
+    "fusion": 0,
+    "rule_only": 0,
+    "cache_hit": 0,
+    "classifier_failed": 0,
+    "features_degraded": 0,
+    "breaker_opened": 0,
+    "breaker_recovered": 0,
+    "tier_low": 0,
+    "tier_mid": 0,
+    "tier_high": 0,
+    "avg_latency_ms": 0.0
+  },
   "top1_share": 0.7,
   "share_entropy": 0.88,
   "dropped_logs": 0,
@@ -1105,6 +1162,18 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 | `affinity_persist_dropped` | integer | 通道侧精确丢弃读数（附加字段，与 `dropped_logs` 的双出口惯例一致） |
 | `affinity_flush_failures` | integer | 落库失败批次累计（UPSERT 整批丢弃；与通道丢弃分列，原因不同） |
 | `affinity_restored_count` | integer | 启动恢复灌回内存亲和表的粘性条数 |
+| `embedding_pin_set_total` / `embedding_pin_reset_total` / `embedding_group_exhausted_total` / `embedding_dimension_mismatch_total` | integer | 嵌入兼容组 pin 写入 / 重置 / 组内候选耗尽 / 维度不匹配累计 |
+| `rerank_requests_total` / `rerank_documents_total` / `rerank_upstream_failures_total` | integer | rerank 请求数 / 文档数 / 上游失败数 |
+| `responses_requests_total` / `responses_upstream_failures_total` / `responses_stored_total` / `responses_store_failures_total` / `responses_background_jobs_total` | integer | Responses API 请求数 / 上游失败数 / 存储量 / 存储失败数 / 后台任务数 |
+| `gemini_requests_total` / `gemini_upstream_failures_total` | integer | Gemini 请求数 / 上游失败数 |
+| `quota_window_refused_total` | array | 配额窗口拒绝累计（按 key 摘要，`Vec<(String, u64)>`） |
+| `quota_factor_depleted_total` | array | 配额因子档位耗尽累计（`Vec<(String, u64)>`） |
+| `quota_ledger_flush_fail_total` | integer | 配额账本落库失败累计 |
+| `catalog_sync_fail_total` / `catalog_sync_added_total` | array \| integer | 目录同步失败累计（按源）与新增条目数（`catalog-sync` feature） |
+| `subscription_refresh_fail_total` / `subscription_accounts_degraded` | integer | 订阅账号刷新失败累计 / 降级账号数（`subscription-vendor` feature） |
+| `web_search_requests_total` | array | web-search 请求数（按源，`Vec<(String, u64)>`） |
+| `netguard_denied_total` | array | netguard SSRF 拦截数（按路径，`Vec<(String, u64)>`） |
+| `difficulty` | object | 难度定档快照：`fusion`/`rule_only`/`cache_hit`/`classifier_failed`/`features_degraded`/`breaker_opened`/`breaker_recovered`/`tier_low`/`tier_mid`/`tier_high`（均 integer）与 `avg_latency_ms`（number） |
 | `top1_share` | number | 滑窗 top-1 厂商流量占比（[0,1]） |
 | `share_entropy` | number | 流量份额 Shannon 熵（归一 [0,1]） |
 | `dropped_logs` | integer | 日志通道满被丢弃的日志条数 |
@@ -1128,6 +1197,7 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `vendor` | string | 厂商 ID |
+| `cache_read_tokens_sum` / `cache_input_tokens_sum` | integer | 缓存读 / 缓存输入 token 累计 |
 | `requests` | integer | 总请求数 |
 | `successes` | integer | 成功请求数 |
 | `failures` | integer | 失败请求数 |
@@ -1142,7 +1212,7 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 | `ewma_queue_ms` | number | 排队段 EWMA（毫秒） |
 | `ttft_samples` / `e2e_samples` / `queue_samples` | integer | 三道各自的样本数 |
 
-**错误码**: 无业务错误（仅可能的限流 429/403）
+**错误码**: 无业务错误（仅可能的限流 429）
 
 **curl 示例**:
 
@@ -1150,6 +1220,30 @@ curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 curl http://localhost:8080/admin/metrics \
   -H "Authorization: Bearer $API_KEY"
 ```
+
+---
+
+### GET /admin/quota/ledger
+
+配额账本查询：按 key 摘要返回当前固定窗口的预扣/实扣余额面（`[quota]` 或 `[key_budgets]` 下的账本读侧；`__global__` / `__vendor__:{id}` 为共享账本键）。
+
+**认证**: 需要 Bearer Token
+
+**响应**: 账本条目数组（key 摘要、窗口起止、token/成本余量等字段，形状随 `[quota]`/`[key_budgets]` 配置）
+
+**错误码**: 无业务错误（配额功能未开启时返回空集合）
+
+---
+
+### GET /admin/vendor-budgets
+
+厂商声明式预算查询：`[[vendor_budgets]]` 各条目的当前窗口消耗与余量观测面。
+
+**认证**: 需要 Bearer Token
+
+**响应**: 预算条目数组（vendor、窗口、已用/上限）
+
+**错误码**: 无业务错误（未声明预算时返回空集合）
 
 ---
 
@@ -1406,7 +1500,7 @@ curl -X POST http://localhost:8080/admin/embedding-pins/text-embedding-small/res
 
 ### GET /admin/config
 
-返回当前运行时配置（完整 `Config` 结构，共 19 个顶层段：`server`、`database`、`vendors`、`global_model`、`pricing`、`model_catalog`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`、`health`、`quota`、`grpc`、`docs`、`lexcompress`；其中 `model_catalog` 为空目录、`grpc` 段缺省时在响应中省略 / 序列化为 `null`）。
+返回当前运行时配置（完整 `Config` 结构，共 30 个顶层字段/段：`server`、`database`、`vendors`、`global_model`、`pricing`、`model_catalog`、`auth`、`cors`、`retry`、`routing`、`cache`、`rate_limit`、`resilience`、`admission`、`health`、`quota`、`vendor_budgets`、`key_budgets`、`responses`、`metrics`、`otlp`、`usage_insights`、`catalog_sync`、`subscription`、`subscription_accounts`、`web_search`、`masking`、`lexcompress`、`grpc`、`docs`；其中 `model_catalog` 为空目录、`grpc` 段缺省时在响应中省略 / 序列化为 `null`）。
 
 **认证**: 需要 Bearer Token
 
@@ -1575,7 +1669,7 @@ curl http://localhost:8080/admin/config \
 
 **认证**: 需要 Bearer Token
 
-**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，19 个顶层段）
+**请求体**: 完整的 `Config` 结构（同 [GET /admin/config](#get-adminconfig) 响应，30 个顶层字段/段）
 
 **响应**:
 
@@ -1621,7 +1715,7 @@ curl -X POST http://localhost:8080/admin/config \
 
 **认证**: 需要 Bearer Token
 
-**响应**: `ModelCatalogEntry` 数组（十一字段，字段对齐 agentstem `ModelEntry`；定价单位 =「currency 计价，每 1M tokens」）
+**响应**: `ModelCatalogEntry` 数组（十五字段，字段对齐 agentstem `ModelEntry`；定价单位 =「currency 计价，每 1M tokens」；`cache_breakpoints` 缺省时整体省略）
 
 ```json
 [
@@ -1632,6 +1726,10 @@ curl -X POST http://localhost:8080/admin/config \
     "output_price": 15.0,
     "cache_read_price": 0.3,
     "cache_creation_price": 3.75,
+    "rerank_price_per_1k_docs": 0.0,
+    "cache_creation_1h_price": 0.0,
+    "long_context_input_price": 0.0,
+    "long_context_threshold_tokens": 0,
     "currency": "usd",
     "max_output_tokens": 8192,
     "supports_tools": true,
@@ -1646,6 +1744,9 @@ curl -X POST http://localhost:8080/admin/config \
 | `context_window` | u64 | 上下文窗口（tokens），登记条目必须 > 0 |
 | `input_price` / `output_price` | f64 | 输入/输出单价（currency，每 1M tokens） |
 | `cache_read_price` / `cache_creation_price` | f64 | 缓存读/写单价（同单位；无独立计价填 0） |
+| `rerank_price_per_1k_docs` | f64 | rerank 每千文档单价（同单位；0 = 未配置） |
+| `cache_creation_1h_price` | f64 | 1h 档 cache write 单价（同单位；0.0 = 未配置，协议侧 1h tokens 解析落地前计费暂不消费） |
+| `long_context_input_price` / `long_context_threshold_tokens` | f64 / u64 | 长上下文阶梯计价：输入 token 超阈值时输入腿改用此价（0/缺省不启用） |
 | `currency` | string | `usd` \| `cny`（四价共用币种） |
 | `max_output_tokens` | u64 \| null | 最大输出 tokens（null = 厂商未公布） |
 | `supports_tools` / `supports_thinking` | bool | 能力位 |
@@ -1781,6 +1882,36 @@ curl -X POST http://localhost:8080/admin/models/global \
 
 ---
 
+### POST /admin/catalog/sync
+
+模型目录自动同步（`catalog-sync` feature 门控）：从外部目录源（`[catalog_sync].source`，默认 models.dev）拉取定价/上下文窗口映射进 `[[model_catalog]]`，**只增不改**（既有条目含用户定价永不覆盖）；`dry_run = true` 出 diff 不落盘。`[catalog_sync].enabled` 运行时热读门在 handler 内——关时 404。
+
+**认证**: 需要 Bearer Token
+
+**请求体**:
+
+```json
+{ "dry_run": false }
+```
+
+**响应**: 同步结果摘要（拉取数、新增条目、跳过项与失败计数；失败 fail-open 计数不阻塞）
+
+**错误码**: `config_error`(500，源不可达)；feature 未编译 → 404；`[catalog_sync].enabled = false` → 404
+
+---
+
+### GET /admin/masking/stats
+
+出站掩码 24h 窗口观测（`masking` feature 门控）：per-kind 命中/动作分布的内存聚合（台账明细事实源见 [GET /admin/masking/ledger](#get-adminmaskingledger)）。
+
+**认证**: 需要 Bearer Token
+
+**响应**: `masking` 统计快照（24h 窗口 per-kind 聚合、Mask/Warn/Block 计数、fail-closed 拒绝计数）
+
+**错误码**: 无业务错误；feature 未编译 → 404；`[masking].enabled = false` → 404
+
+---
+
 ### GET /admin/vault/keys
 
 密钥保密柜列表（key-vault，`vault` feature 门控）：按 `created_at` 升序返回柜内条目掩码面（零明文——响应与日志均不含明文，`mask` 仅用于人工核对）。
@@ -1857,7 +1988,7 @@ curl "http://localhost:8080/admin/vault/keys?vendor_id=openai" \
 
 **响应**: `SecretKeyRecord`（掩码面，同 [GET /admin/vault/keys](#get-adminvaultkeys) 条目形状）
 
-**错误码**: `validation_error`(400，`key` 空白 / `vendor_id` 未登记) · vault 后端错误（5xx）
+**错误码**: `validation_error`(400，`key` 空白) · `vault_error`(409，`vendor_id` 未登记；404 键不存在) · vault 后端错误（5xx `vault_error`）
 
 **curl 示例**:
 
@@ -1940,6 +2071,92 @@ curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
 > 台账只记元数据：`ts`/`kind`/`finder`（inklog pattern 名、`custom_rule_N` 或 `word`）/`placeholder`/`hint`（**首字符** + 字节长度）——**值与占位符→原值映射不落盘**。按天文件 `~/.fluxgate/mask_ledger/ledger-YYYYMMDD.jsonl`，每日首写触发裁剪（`retention_days` 按天 + `max_total_bytes` 总量删最旧）。
 
 **错误码**: `validation_error`(400, date 非法)；台账未启用 → 404（`masking_ledger_disabled`）
+
+---
+
+### POST /v1/search
+
+多源搜索注入（`web-search` feature 门控）：聚合 Tavily / Brave / Exa / SearXNG（多 key 轮换），出站经 netguard SSRF 判定。`[web_search].enabled` 运行时热读门在 handler 内——关时 404。
+
+**认证**: 需要 Bearer Token
+
+**请求体**: 搜索查询（query、最大条数、源选择等字段，见 `[web_search]` 配置面）
+
+**响应**: 聚合结果数组（标题/链接/摘要，按源标注）
+
+**错误码**: `validation_error`(400)；上游失败 → `vendor_unavailable`(503)；feature 未编译或关闭 → 404
+
+---
+
+### POST /v1/fetch
+
+守护抓取（`web-search` feature 门控）：抓取 URL 正文供上下文注入，出站经 netguard SSRF 判定（私网/重定向跟随策略与 `[web_search]` 一致）。
+
+**认证**: 需要 Bearer Token
+
+**请求体**: `{ "url": "https://…" }`
+
+**响应**: 抓取结果（正文文本与元数据）
+
+**错误码**: `validation_error`(400，URL 非法)；netguard 拦截 → 4xx（含拦截原因）；上游失败 → `vendor_unavailable`(503)；feature 未编译或关闭 → 404
+
+---
+
+### GET /admin/web-search/stats
+
+web-search 观测（`web-search` feature 门控）：按源的请求数与拦截计数。
+
+**认证**: 需要 Bearer Token
+
+**响应**: `{ "web_search_requests_total": {"tavily": 0}, "netguard_denied_total": {} }`（同 `/admin/metrics` 对应字段口径）
+
+**错误码**: 无业务错误；feature 未编译 → 404
+
+---
+
+### POST /admin/subscription/authorize
+
+发起订阅账号 OAuth 授权（`subscription-vendor` feature 门控，`[subscription].enabled` 运行时热读门——关时 404）：标准授权码 + PKCE，state 存进程内存（单实例约束）。合规警示见 README「安全」节。
+
+**认证**: 需要 Bearer Token
+
+**响应**: 授权跳转 URL（302 或 JSON 承载，随实现形态）
+
+**错误码**: `validation_error`(400)；feature 未编译或关闭 → 404
+
+---
+
+### GET /admin/subscription/callback
+
+OAuth 302 回跳端点（`subscription-vendor` feature）：凭 `code`/`state` 换取 token；**认证白名单豁免**（裸 GET 回跳，见认证一节），state 校验在 handler 内完成。
+
+**响应**: 302 回前端或错误页
+
+**错误码**: `validation_error`(400，state 不匹配/过期)
+
+---
+
+### GET /admin/subscription/accounts
+
+订阅账号列表（`subscription-vendor` feature）：账号健康面（降级/冷却状态、`subscription_refresh_fail_total` 关联）。
+
+**认证**: 需要 Bearer Token
+
+**响应**: 账号条目数组（掩码面，不含 token 明文）
+
+**错误码**: 无业务错误；feature 未编译或关闭 → 404
+
+---
+
+### DELETE /admin/subscription/accounts/:id
+
+吊销订阅账号（`subscription-vendor` feature）：从凭证池摘除并清理 vault 内 refresh token。
+
+**认证**: 需要 Bearer Token
+
+**响应**: `{ "success": true }`
+
+**错误码**: 404（账号不存在）；feature 未编译或关闭 → 404
 
 ---
 

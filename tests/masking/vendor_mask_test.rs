@@ -11,12 +11,12 @@
 mod common;
 
 mod upstream_never_sees_secret {
-    use fluxgate::config::{Config, ConfigManager, MaskingSection};
-    use fluxgate::error::GateError;
-    use fluxgate::masking::{placeholder_for, MaskGate, MaskKind};
-    use fluxgate::protocol::UnifiedRequest;
-    use fluxgate::utils::metrics::GlobalMetrics;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::config::{Config, ConfigManager, MaskingSection};
+    use fluxweir::error::GateError;
+    use fluxweir::masking::{placeholder_for, MaskGate, MaskKind};
+    use fluxweir::protocol::UnifiedRequest;
+    use fluxweir::utils::metrics::GlobalMetrics;
+    use fluxweir::vendor::VendorManager;
     use mockito::Matcher;
     use serde_json::{json, Value};
     use std::sync::Arc;
@@ -41,7 +41,7 @@ mod upstream_never_sees_secret {
         .expect("UnifiedRequest 形状合法")
     }
 
-    fn config_with(vendor: fluxgate::config::VendorConfig) -> Config {
+    fn config_with(vendor: fluxweir::config::VendorConfig) -> Config {
         let mut config = crate::common::test_config(vec![vendor]);
         config.masking = MaskingSection {
             enabled: true,
@@ -60,7 +60,7 @@ mod upstream_never_sees_secret {
     }
 
     /// 客户端（IR UnifiedResponse）拿到还原后的原值文本。
-    fn response_text(response: &fluxgate::protocol::UnifiedResponse) -> String {
+    fn response_text(response: &fluxweir::protocol::UnifiedResponse) -> String {
         let value = serde_json::to_value(response).expect("IR 可序列化");
         let content = &value["choices"][0]["message"]["content"];
         content.as_str().expect("text 形态").to_string()
@@ -246,9 +246,9 @@ mod upstream_never_sees_secret {
 }
 
 mod cache_serves_restored_form {
-    use fluxgate::api::response_cache::{CacheOutcome, FinalRoute, ResponseCache};
-    use fluxgate::config::{CacheSection, Config, ConfigManager};
-    use fluxgate::utils::metrics::GlobalMetrics;
+    use fluxweir::api::response_cache::{CacheOutcome, FinalRoute, ResponseCache};
+    use fluxweir::config::{CacheSection, Config, ConfigManager};
+    use fluxweir::utils::metrics::GlobalMetrics;
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -344,7 +344,7 @@ mod cache_serves_restored_form {
         );
 
         // 键维度核对：指纹取掩码前请求体（canonical 对入站 body 计算）
-        let canonical = fluxgate::api::response_cache::canonical_body(&body);
+        let canonical = fluxweir::api::response_cache::canonical_body(&body);
         assert!(
             canonical.contains("sk-vendor-masking-0123456789abcdefgh"),
             "缓存键基于未掩码请求体"
@@ -355,11 +355,11 @@ mod cache_serves_restored_form {
 }
 
 mod stats_endpoint {
-    use fluxgate::api::admin;
-    use fluxgate::config::{ConfigManager, MaskingSection};
-    use fluxgate::masking::{MaskGate, RuleDetector};
-    use fluxgate::utils::metrics::GlobalMetrics;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::api::admin;
+    use fluxweir::config::{ConfigManager, MaskingSection};
+    use fluxweir::masking::{MaskGate, RuleDetector};
+    use fluxweir::utils::metrics::GlobalMetrics;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
     /// `stats_endpoint_excludes_values`：/admin/masking/stats 只含元数据
@@ -374,7 +374,7 @@ mod stats_endpoint {
         };
         let cm = Arc::new(ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm.clone()));
-        let detector: Arc<dyn fluxgate::masking::MaskDetector> =
+        let detector: Arc<dyn fluxweir::masking::MaskDetector> =
             Arc::new(RuleDetector::build(&[], false, &[]).expect("内置检测器"));
         let gate = Arc::new(
             MaskGate::new(cm.clone(), Arc::new(GlobalMetrics::new())).with_detector(detector),
@@ -398,18 +398,18 @@ mod stats_endpoint {
         })
         .await
         .expect("内存库");
-        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
-        let state = Arc::new(fluxgate::api::ApiState {
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
+        let state = Arc::new(fluxweir::api::ApiState {
             affinity_writer: None,
             config: Arc::clone(&cm),
             vendor_manager: vm,
-            router: Arc::new(fluxgate::router::Router::new(
+            router: Arc::new(fluxweir::router::Router::new(
                 Arc::clone(&cm),
                 Arc::new(VendorManager::new(Arc::clone(&cm))),
             )),
-            openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
-            anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
-            database: Arc::new(fluxgate::database::Database {
+            openai_converter: Arc::new(fluxweir::protocol::OpenAIConverter::new()),
+            anthropic_converter: Arc::new(fluxweir::protocol::AnthropicConverter::new()),
+            database: Arc::new(fluxweir::database::Database {
                 pool,
                 repository: repository.clone(),
             }),
@@ -463,17 +463,17 @@ mod stats_endpoint {
 
 /// 台账 admin 面（R-masking-002 验收）：关闭语义 + 开启可查。
 mod ledger_endpoint {
-    use fluxgate::api::admin;
-    use fluxgate::config::{ConfigManager, MaskingLedgerSection, MaskingSection};
-    use fluxgate::masking::{MaskGate, MaskingLedger, RuleDetector};
-    use fluxgate::utils::metrics::GlobalMetrics;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::api::admin;
+    use fluxweir::config::{ConfigManager, MaskingLedgerSection, MaskingSection};
+    use fluxweir::masking::{MaskGate, MaskingLedger, RuleDetector};
+    use fluxweir::utils::metrics::GlobalMetrics;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
     async fn api_state(
         cm: Arc<ConfigManager>,
         vm: Arc<VendorManager>,
-    ) -> Arc<fluxgate::api::ApiState> {
+    ) -> Arc<fluxweir::api::ApiState> {
         let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
             url: "sqlite::memory:".to_string(),
             pool_config: dbnexus::PoolConfig {
@@ -486,19 +486,19 @@ mod ledger_endpoint {
         })
         .await
         .expect("内存库");
-        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
-        let router = Arc::new(fluxgate::router::Router::new(
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
+        let router = Arc::new(fluxweir::router::Router::new(
             Arc::clone(&cm),
             Arc::new(VendorManager::new(Arc::clone(&cm))),
         ));
-        Arc::new(fluxgate::api::ApiState {
+        Arc::new(fluxweir::api::ApiState {
             affinity_writer: None,
             config: cm,
             vendor_manager: vm,
             router,
-            openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
-            anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
-            database: Arc::new(fluxgate::database::Database { pool, repository }),
+            openai_converter: Arc::new(fluxweir::protocol::OpenAIConverter::new()),
+            anthropic_converter: Arc::new(fluxweir::protocol::AnthropicConverter::new()),
+            database: Arc::new(fluxweir::database::Database { pool, repository }),
             logger: None,
             pre_aggregator: None,
             affinity: None,
@@ -563,7 +563,7 @@ mod ledger_endpoint {
             Some(dir.path().to_path_buf()),
             Arc::clone(&cm),
         ));
-        let detector: Arc<dyn fluxgate::masking::MaskDetector> =
+        let detector: Arc<dyn fluxweir::masking::MaskDetector> =
             Arc::new(RuleDetector::build(&[], false, &[]).expect("内置检测器"));
         let gate = Arc::new(
             MaskGate::new(Arc::clone(&cm), Arc::new(GlobalMetrics::new()))

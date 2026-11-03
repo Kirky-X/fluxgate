@@ -21,7 +21,7 @@ use limiteron::integrations::kit::LimiteronModule;
 use oxcache::integrations::kit::{OxcacheConfig, OxcacheModule};
 use trait_kit::prelude::*;
 
-use crate::error::FluxgateError;
+use crate::error::FluxweirError;
 use crate::error::GateError;
 
 /// Build a minimal valid `FlowControlConfig` (1 rule matching all IPs with a
@@ -78,12 +78,12 @@ fn memory_db_config() -> dbnexus::foundation::config::DbConfig {
 ///
 /// # Errors
 ///
-/// Returns `FluxgateError::Config` if module registration or the topological
+/// Returns `FluxweirError::Config` if module registration or the topological
 /// build fails (missing dependency, cycle, or a module `build` callback
 /// returning `Err`).
 pub async fn build_kit_with_config(
     db_config: dbnexus::foundation::config::DbConfig,
-) -> Result<AsyncKit<AsyncReady>, FluxgateError> {
+) -> Result<AsyncKit<AsyncReady>, FluxweirError> {
     let mut kit = AsyncKit::new();
 
     kit.set_config(OxcacheConfig::default());
@@ -91,28 +91,28 @@ pub async fn build_kit_with_config(
     kit.set_config(db_config);
 
     kit.register::<OxcacheModule>().map_err(|e| {
-        FluxgateError::from(GateError::Config {
+        FluxweirError::from(GateError::Config {
             message: format!("DI register OxcacheModule failed: {}", e),
         })
     })?;
     kit.register::<LimiteronModule>().map_err(|e| {
-        FluxgateError::from(GateError::Config {
+        FluxweirError::from(GateError::Config {
             message: format!("DI register LimiteronModule failed: {}", e),
         })
     })?;
     kit.register::<DbNexusModule>().map_err(|e| {
-        FluxgateError::from(GateError::Config {
+        FluxweirError::from(GateError::Config {
             message: format!("DI register DbNexusModule failed: {}", e),
         })
     })?;
     kit.register::<InklogModule>().map_err(|e| {
-        FluxgateError::from(GateError::Config {
+        FluxweirError::from(GateError::Config {
             message: format!("DI register InklogModule failed: {}", e),
         })
     })?;
 
     kit.build().await.map_err(|e| {
-        FluxgateError::from(GateError::Config {
+        FluxweirError::from(GateError::Config {
             message: format!("DI kit build failed: {}", e),
         })
     })
@@ -122,7 +122,7 @@ pub async fn build_kit_with_config(
 /// defaults. Production code should call `build_kit_with_config` with a real
 /// `DbConfig` sourced from `config.toml`.
 #[cfg(test)]
-pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, FluxgateError> {
+pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, FluxweirError> {
     build_kit_with_config(memory_db_config()).await
 }
 
@@ -134,28 +134,28 @@ pub async fn build_kit() -> Result<AsyncKit<AsyncReady>, FluxgateError> {
 ///
 /// # Errors
 ///
-/// Returns `FluxgateError::Config` if any capability is missing.
-pub fn verify_kit(kit: &AsyncKit<AsyncReady>) -> Result<(), FluxgateError> {
+/// Returns `FluxweirError::Config` if any capability is missing.
+pub fn verify_kit(kit: &AsyncKit<AsyncReady>) -> Result<(), FluxweirError> {
     let _cache: Arc<dyn oxcache::backend::CacheBackend + Send + Sync> =
         kit.require::<OxcacheModule>().map_err(|e| {
-            FluxgateError::from(GateError::Config {
+            FluxweirError::from(GateError::Config {
                 message: format!("DI require OxcacheModule failed: {}", e),
             })
         })?;
     let _governor: Arc<limiteron::Governor> = kit.require::<LimiteronModule>().map_err(|e| {
-        FluxgateError::from(GateError::Config {
+        FluxweirError::from(GateError::Config {
             message: format!("DI require LimiteronModule failed: {}", e),
         })
     })?;
     let _pool: Arc<dyn dbnexus::database::pool::ConnectionPool + Send + Sync> =
         kit.require::<DbNexusModule>().map_err(|e| {
-            FluxgateError::from(GateError::Config {
+            FluxweirError::from(GateError::Config {
                 message: format!("DI require DbNexusModule failed: {}", e),
             })
         })?;
     let _provider: Arc<dyn inklog::Database + Send + Sync> =
         kit.require::<InklogModule>().map_err(|e| {
-            FluxgateError::from(GateError::Config {
+            FluxweirError::from(GateError::Config {
                 message: format!("DI require InklogModule failed: {}", e),
             })
         })?;

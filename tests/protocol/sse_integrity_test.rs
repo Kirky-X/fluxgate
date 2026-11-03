@@ -9,7 +9,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use fluxgate::protocol::{
+use fluxweir::protocol::{
     AnthropicStreamEncoder, MessageContent, OpenAIConverter, OpenAIStreamEncoder,
     ProtocolConverter, StreamChunk,
 };
@@ -355,14 +355,14 @@ fn openai_tool_call_fragments_assemble_by_index() {
 mod integration {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use fluxgate::api::{chat_completions, messages, ApiState};
-    use fluxgate::config::{
+    use fluxweir::api::{chat_completions, messages, ApiState};
+    use fluxweir::config::{
         ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ServerConfig, VendorConfig,
     };
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -431,7 +431,7 @@ mod integration {
         })
         .await
         .unwrap();
-        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let router = Arc::new(NexusRouter::new(

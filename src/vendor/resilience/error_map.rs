@@ -11,7 +11,7 @@
 //! 降级，本层不用；CB Open 拒绝由 `CircuitCallError::Open` 独立承载。
 //!
 //! 变体集冻结：分类器只覆盖 GateError 核心变体集；
-//! `Database` 变体留 fluxgate、本层不引用。
+//! `Database` 变体留 fluxweir、本层不引用。
 
 use limiteron::circuit::{CircuitCallError, FailureClassifier};
 

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 
 /// 消息角色。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -517,10 +517,10 @@ impl ChatRequest {
         mut self,
         key: impl Into<String>,
         value: serde_json::Value,
-    ) -> Result<Self, FluxgateSdkError> {
+    ) -> Result<Self, FluxweirSdkError> {
         let key = key.into();
         if RESERVED_KEYS.contains(&key.as_str()) {
-            return Err(FluxgateSdkError::Protocol {
+            return Err(FluxweirSdkError::Protocol {
                 message: format!(
                     "vendor extension key `{key}` conflicts with a typed request field"
                 ),
@@ -567,11 +567,11 @@ impl ChatResponse {
     /// 从网关非流式响应 wire JSON 解析（真实形状——choices[0]
     /// message{content,tool_calls?} + finish_reason + usage 可选携带
     /// prompt_tokens_details.cached_tokens）。
-    pub(crate) fn from_wire(v: &serde_json::Value) -> Result<Self, FluxgateSdkError> {
-        use crate::sdk::error::FluxgateSdkError;
+    pub(crate) fn from_wire(v: &serde_json::Value) -> Result<Self, FluxweirSdkError> {
+        use crate::sdk::error::FluxweirSdkError;
 
         let choices_wire = v.get("choices").and_then(|c| c.as_array()).ok_or_else(|| {
-            FluxgateSdkError::Protocol {
+            FluxweirSdkError::Protocol {
                 message: "missing choices array".into(),
             }
         })?;
@@ -592,7 +592,7 @@ impl ChatResponse {
                     a.iter()
                         .map(|tc| {
                             serde_json::from_value::<ChatToolCall>(tc.clone()).map_err(|e| {
-                                FluxgateSdkError::Protocol {
+                                FluxweirSdkError::Protocol {
                                     message: format!("invalid tool_call: {e}"),
                                 }
                             })
@@ -617,7 +617,7 @@ impl ChatResponse {
         let first = choices
             .first()
             .cloned()
-            .ok_or_else(|| FluxgateSdkError::Protocol {
+            .ok_or_else(|| FluxweirSdkError::Protocol {
                 message: "empty choices array".into(),
             })?;
 

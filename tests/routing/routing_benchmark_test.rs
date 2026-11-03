@@ -18,13 +18,13 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, DatabaseConfig, DifficultySection, DifficultyTiers, ModelConfig,
         ServerConfig, Tier,
     };
-    use fluxgate::router::difficulty::{DecisionCache, DifficultyRouter, Guard};
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::router::difficulty::{DecisionCache, DifficultyRouter, Guard};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use serde_json::json;
     use std::collections::{BTreeMap, HashSet};
     use std::sync::Arc;

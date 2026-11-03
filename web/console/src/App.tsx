@@ -41,7 +41,7 @@ function Shell() {
       {/* 窄屏（<768px）导航折为顶部横排（可横向滚动），≥md 恢复左侧 200px 固定列 */}
       <nav className="shrink-0 border-b border-text-disabled/30 bg-bg-elevated md:w-[200px] md:border-b-0 md:border-r">
         <div className="flex items-center gap-2 px-2 py-2 md:block md:px-0 md:py-0">
-          <span className="px-2 text-base font-semibold">Fluxgate</span>
+          <span className="px-2 text-base font-semibold">Fluxweir</span>
           <ul className="flex items-center gap-1 overflow-x-auto md:mt-1 md:block md:px-2 md:py-4">
             {NAV_ITEMS.map((item) => (
               <li key={item.to} className="whitespace-nowrap">

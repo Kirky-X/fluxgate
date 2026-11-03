@@ -52,7 +52,7 @@ fn snapshot_current_config(manager: &ConfigManager, config_path: &Path) {
         format: SnapshotFormat::Toml,
         include_provenance: false,
     });
-    let saved = confers::loader::parse_toml(&content, SourceId::from("fluxgate-config"), None)
+    let saved = confers::loader::parse_toml(&content, SourceId::from("fluxweir-config"), None)
         .and_then(|annotated| snapshots.save_blocking(&annotated, SNAPSHOT_REDACT_PATHS));
     match saved {
         Ok(p) => tracing::debug!(

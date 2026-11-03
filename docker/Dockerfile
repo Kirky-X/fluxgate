@@ -25,7 +25,7 @@
 FROM docker.io/library/rust:1.99-alpine3.24 AS build
 
 # 构建参数
-ARG APP_NAME=fluxgate
+ARG APP_NAME=fluxweir
 ARG APP_VERSION=0.1.0
 
 # 设置工作目录
@@ -60,7 +60,7 @@ RUN apk add --no-cache \
 # examples 必须挂载：根 Cargo.toml 把 examples 列为 [workspace] 成员，cargo
 # 加载 workspace 时要读每个成员的 manifest，漏挂即在解析期报
 # “failed to load manifest for workspace member /app/examples”（实测）。
-# 这里只需要 manifest 存在，不会编译示例（构建目标是 --bin fluxgate）。
+# 这里只需要 manifest 存在，不会编译示例（构建目标是 --bin fluxweir）。
 # 后续新增 workspace 成员时必须同步扩展这里的 bind mount 清单。
 # vecboost 必须经附加上下文挂载到 /vecboost：根 manifest 的 optional path
 # 依赖 ../vecboost（WORKDIR /app 的上级），--locked 即使 default 口径不编译
@@ -78,8 +78,8 @@ RUN --mount=type=bind,source=src,target=src \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     --mount=type=cache,target=/root/.cache/ \
     cp /tmp/Cargo.lock.ro ./Cargo.lock && \
-    cargo build --locked --release --bin fluxgate && \
-    cp ./target/release/fluxgate /bin/server
+    cargo build --locked --release --bin fluxweir && \
+    cp ./target/release/fluxweir /bin/server
 
 #------------------------------------------------------------------------------
 # 阶段 2: 运行阶段 (Runtime Stage)
@@ -89,16 +89,16 @@ FROM docker.io/library/alpine:3.24 AS final
 
 # 标签信息
 # base.name 为元数据，必须跟随上面的 runtime FROM 同步修改
-ARG APP_NAME=fluxgate
+ARG APP_NAME=fluxweir
 ARG APP_VERSION=0.1.0
 ARG BUILD_DATE
 ARG VCS_REF
 
-LABEL maintainer="Fluxgate" \
+LABEL maintainer="Fluxweir" \
       name="${APP_NAME}" \
       version="${APP_VERSION}" \
       description="智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度" \
-      org.opencontainers.image.source="https://github.com/Kirky-X/fluxgate" \
+      org.opencontainers.image.source="https://github.com/Kirky-X/fluxweir" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
@@ -119,18 +119,18 @@ RUN apk add --no-cache \
 # 注意：busybox adduser 不支持 shadow 长选项（--disabled-password 等在 3.21
 # 实测打印 usage 退出 1），统一用短选项：-D 禁密码 / -H 不建家目录 / -G 主组
 # / -s 登录 shell（短选项在 3.22~3.24 busybox 上行为一致，换 base 无需改）
-# -H 省掉的家目录必须手工补建：vault 主钥的文件回退路径是 ~/.fluxgate/
+# -H 省掉的家目录必须手工补建：vault 主钥的文件回退路径是 ~/.fluxweir/
 # （HOME=/home/appuser 由运行时 HOME env 提供），目录缺失时启动期写主钥
 # Permission denied，叠加 restart: unless-stopped 即成重启循环（实测缺陷）。
 # 容器内主钥缺省落在容器层、重建即丢（既有密文随之不可解）——compose 以
-# FLUXGATE_MASTER_KEY_FILE 把主钥文件钉到数据卷（/app/data/vault_master.key），
-# 或由部署方注入 FLUXGATE_MASTER_KEY；此处的家目录补建只保证开箱可启动。
+# FLUXWEIR_MASTER_KEY_FILE 把主钥文件钉到数据卷（/app/data/vault_master.key），
+# 或由部署方注入 FLUXWEIR_MASTER_KEY；此处的家目录补建只保证开箱可启动。
 ARG UID=10001
 ARG GID=10001
 
 RUN addgroup -g ${GID} appgroup && \
     adduser -D -H -u "${UID}" -G appgroup -s /sbin/nologin appuser && \
-    mkdir -p /home/appuser/.fluxgate && \
+    mkdir -p /home/appuser/.fluxweir && \
     chown -R appuser:appgroup /home/appuser
 
 # 创建数据目录并设置权限
@@ -168,11 +168,11 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 # vault 主钥文件默认落数据卷（/app/data 是本镜像唯一的数据持久化挂载点）：
 # 自动生成的主钥随卷存活，容器重建不再换钥、既有 vault_keys 行可解（缺省路径
-# ~/.fluxgate/ 随容器层走，重建即丢 → 启动重启循环，实测缺陷）。
+# ~/.fluxweir/ 随容器层走，重建即丢 → 启动重启循环，实测缺陷）。
 # 安全边界：主钥与密文同卷意味着卷泄露即两者同泄——生产应注入
-# FLUXGATE_MASTER_KEY（env/secret 管理）或把 FLUXGATE_MASTER_KEY_FILE 指向
+# FLUXWEIR_MASTER_KEY（env/secret 管理）或把 FLUXWEIR_MASTER_KEY_FILE 指向
 # 独立卷/secret 挂载点。
-ENV FLUXGATE_MASTER_KEY_FILE=/app/data/vault_master.key
+ENV FLUXWEIR_MASTER_KEY_FILE=/app/data/vault_master.key
 
 # 暴露服务端口
 EXPOSE 8080

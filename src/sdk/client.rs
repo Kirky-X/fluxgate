@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! Fluxgate SDK 客户端 — HTTP 调用 /v1/chat/completions。
+//! Fluxweir SDK 客户端 — HTTP 调用 /v1/chat/completions。
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -11,14 +11,14 @@ use url::Url;
 
 use crate::sdk::chat::{ChatRequest, ChatResponse, RESERVED_KEYS};
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::retry::RetryPolicy;
 use crate::sdk::stream::ChatStream;
 use crate::sdk::transport::send_with_retry;
 
 /// 非流式请求（chat / embed）的默认总超时（对齐官方 SDK 600s）。reqwest
 /// 默认无总超时，挂起的网关会让调用方任务无限悬挂。不作用于
-/// [`FluxgateClient::chat_stream`]：流式不设总超时（reqwest 总超时按整个
+/// [`FluxweirClient::chat_stream`]：流式不设总超时（reqwest 总超时按整个
 /// body 计且不按 chunk 重置，SSE 长流会被中途切断），由
 /// [`DEFAULT_READ_TIMEOUT`] 看护。
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
@@ -66,8 +66,8 @@ const RESTRICTED_HEADERS: &[&str] = &[
 /// debug（`u32::MAX` 配合 120s `Retry-After` 等于无限挂起）。
 const MAX_MAX_RETRIES: u32 = 16;
 
-/// Fluxgate 网关客户端。
-pub struct FluxgateClient {
+/// Fluxweir 网关客户端。
+pub struct FluxweirClient {
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: Url,
     pub(crate) api_key: String,
@@ -85,9 +85,9 @@ pub struct FluxgateClient {
 }
 
 // api_key 是 Bearer 凭证：手写 Debug 脱敏，不用 derive（会打印明文）
-impl std::fmt::Debug for FluxgateClient {
+impl std::fmt::Debug for FluxweirClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FluxgateClient")
+        f.debug_struct("FluxweirClient")
             .field("http", &self.http)
             .field("base_url", &self.base_url)
             .field("api_key", &"[REDACTED]")
@@ -138,7 +138,7 @@ mod tests {
     /// 显式 timeout → 该值（客户端存储的生效超时可审计）。
     #[test]
     fn builder_applies_effective_timeout_to_client() {
-        let default_client = FluxgateClientBuilder::new()
+        let default_client = FluxweirClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .api_key("k")
             .build()
@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(default_client.connect_timeout, DEFAULT_CONNECT_TIMEOUT);
         assert_eq!(default_client.read_timeout, DEFAULT_READ_TIMEOUT);
 
-        let tuned = FluxgateClientBuilder::new()
+        let tuned = FluxweirClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .api_key("k")
             .connect_timeout(Duration::from_millis(300))
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(tuned.read_timeout, Duration::from_millis(400));
 
         let explicit = Duration::from_millis(250);
-        let tuned_client = FluxgateClientBuilder::new()
+        let tuned_client = FluxweirClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .api_key("k")
             .timeout(explicit)
@@ -204,7 +204,7 @@ mod tests {
     /// （日志/调试）不得泄露明文 key。
     #[test]
     fn debug_output_redacts_api_key() {
-        let client = FluxgateClientBuilder::new()
+        let client = FluxweirClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .api_key("super-secret-bearer-key")
             .build()
@@ -223,7 +223,7 @@ mod tests {
 
 /// 客户端构建器。
 #[derive(Default)]
-pub struct FluxgateClientBuilder {
+pub struct FluxweirClientBuilder {
     base_url: Option<String>,
     api_key: Option<String>,
     default_headers: BTreeMap<String, String>,
@@ -234,7 +234,7 @@ pub struct FluxgateClientBuilder {
     max_retries: Option<u32>,
 }
 
-impl FluxgateClientBuilder {
+impl FluxweirClientBuilder {
     pub fn new() -> Self {
         Self::default()
     }
@@ -287,14 +287,14 @@ impl FluxgateClientBuilder {
         self
     }
 
-    pub fn build(self) -> Result<FluxgateClient, FluxgateSdkError> {
-        let url_str = self.base_url.ok_or_else(|| FluxgateSdkError::Config {
+    pub fn build(self) -> Result<FluxweirClient, FluxweirSdkError> {
+        let url_str = self.base_url.ok_or_else(|| FluxweirSdkError::Config {
             message: "base_url is required".into(),
         })?;
-        let base_url = Url::parse(&url_str).map_err(|e| FluxgateSdkError::Config {
+        let base_url = Url::parse(&url_str).map_err(|e| FluxweirSdkError::Config {
             message: format!("invalid base_url: {e}"),
         })?;
-        let api_key = self.api_key.ok_or_else(|| FluxgateSdkError::Config {
+        let api_key = self.api_key.ok_or_else(|| FluxweirSdkError::Config {
             message: "api_key is required".into(),
         })?;
 
@@ -312,7 +312,7 @@ impl FluxgateClientBuilder {
             retry_policy.max_retries = max_retries.min(MAX_MAX_RETRIES);
         }
 
-        Ok(FluxgateClient {
+        Ok(FluxweirClient {
             http,
             base_url,
             api_key,
@@ -356,7 +356,7 @@ struct WireExtras<'a> {
 fn merge_request_extensions(
     merged: &RequestConfig,
     request: &ChatRequest,
-) -> Result<BTreeMap<String, serde_json::Value>, FluxgateSdkError> {
+) -> Result<BTreeMap<String, serde_json::Value>, FluxweirSdkError> {
     for (source, extensions) in [
         ("extra_body", &merged.extra_body),
         ("vendor extension", &request.vendor_extensions),
@@ -365,7 +365,7 @@ fn merge_request_extensions(
             .keys()
             .find(|key| RESERVED_KEYS.contains(&key.as_str()))
         {
-            return Err(FluxgateSdkError::Protocol {
+            return Err(FluxweirSdkError::Protocol {
                 message: format!("{source} key `{key}` conflicts with a typed request field"),
             });
         }
@@ -375,7 +375,7 @@ fn merge_request_extensions(
     Ok(extensions)
 }
 
-impl FluxgateClient {
+impl FluxweirClient {
     /// 应用客户端级默认头（所有请求路径共用；受限头忽略并 debug）。
     pub(crate) fn apply_default_headers(
         &self,
@@ -448,7 +448,7 @@ impl FluxgateClient {
                 .iter()
                 .any(|r| name.eq_ignore_ascii_case(r))
             {
-                tracing::debug!(target: "fluxgate::sdk", header = %name, "restricted header ignored");
+                tracing::debug!(target: "fluxweir::sdk", header = %name, "restricted header ignored");
                 continue;
             }
             match (
@@ -459,7 +459,7 @@ impl FluxgateClient {
                     request = request.header(parsed_name, parsed_value);
                 }
                 _ => {
-                    tracing::debug!(target: "fluxgate::sdk", header = %name, "invalid header ignored");
+                    tracing::debug!(target: "fluxweir::sdk", header = %name, "invalid header ignored");
                 }
             }
         }
@@ -467,7 +467,7 @@ impl FluxgateClient {
     }
 
     /// 发送 chat 请求。合并 `default_config` 与 `req.config`，POST /v1/chat/completions。
-    pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, FluxgateSdkError> {
+    pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, FluxweirSdkError> {
         let merged = self.default_config.merge(&req.config);
         // extra_body 先、vendor_extensions 后（后者优先）；RESERVED_KEYS 拒绝
         let extensions = merge_request_extensions(&merged, req)?;
@@ -486,7 +486,7 @@ impl FluxgateClient {
         let url =
             self.base_url
                 .join("v1/chat/completions")
-                .map_err(|e| FluxgateSdkError::Config {
+                .map_err(|e| FluxweirSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
 
@@ -507,7 +507,7 @@ impl FluxgateClient {
     }
 
     /// 发送流式 chat 请求。强制 `stream = true`，POST /v1/chat/completions，返回 ChatStream。
-    pub async fn chat_stream(&self, req: &ChatRequest) -> Result<ChatStream, FluxgateSdkError> {
+    pub async fn chat_stream(&self, req: &ChatRequest) -> Result<ChatStream, FluxweirSdkError> {
         let mut merged = self.default_config.merge(&req.config);
         merged.stream = true;
         let extensions = merge_request_extensions(&merged, req)?;
@@ -526,7 +526,7 @@ impl FluxgateClient {
         let url =
             self.base_url
                 .join("v1/chat/completions")
-                .map_err(|e| FluxgateSdkError::Config {
+                .map_err(|e| FluxweirSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
 

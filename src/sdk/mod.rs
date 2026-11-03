@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! Fluxgate Rust SDK
+//! Fluxweir Rust SDK
 //!
-//! 通过 Rust 接口与 Fluxgate 网关交互（HTTP 客户端 SDK），
+//! 通过 Rust 接口与 Fluxweir 网关交互（HTTP 客户端 SDK），
 //! 支持 chat / stream / embed / rerank / responses / admin。
 
 pub mod admin;
@@ -29,13 +29,13 @@ pub use chat::{
     ChatToolChoiceFunction, ChatToolDefinition, ChatToolFunction, ChatUsage, ImageUrlBody,
     StandardFinishReason,
 };
-pub use client::{FluxgateClient, FluxgateClientBuilder};
+pub use client::{FluxweirClient, FluxweirClientBuilder};
 pub use config::RequestConfig;
 pub use embed::{
     EmbedData, EmbedEncodingFormat, EmbedInput, EmbedRequest, EmbedResponse, EmbedUsage,
     EmbeddingValue,
 };
-pub use error::{ApiError, ApiErrorKind, FluxgateSdkError};
+pub use error::{ApiError, ApiErrorKind, FluxweirSdkError};
 pub use rerank::{RerankDocument, RerankMeta, RerankRequest, RerankResponse, RerankResult};
 pub use responses::{
     ResponsesContent, ResponsesError, ResponsesInputTokensDetails, ResponsesInputTokensRequest,

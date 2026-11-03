@@ -20,15 +20,15 @@ mod common;
 
 use axum::{body::Body, http::Request, routing::post, Router};
 use dbnexus::{DbConfig, DbPool};
-use fluxgate::api::{chat_completions, messages, ApiState};
-use fluxgate::config::{
+use fluxweir::api::{chat_completions, messages, ApiState};
+use fluxweir::config::{
     Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
     ServerConfig, VendorConfig,
 };
-use fluxgate::database::{Database, Repository};
-use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-use fluxgate::router::Router as NexusRouter;
-use fluxgate::vendor::{VendorManager, VendorStatus};
+use fluxweir::database::{Database, Repository};
+use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+use fluxweir::router::Router as NexusRouter;
+use fluxweir::vendor::{VendorManager, VendorStatus};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -51,7 +51,7 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
         api_style: None,
         name: format!("Test {id}"),
         type_: "openai".into(),
-        api_key_env: "FLUXGATE_TEST_KEY".into(),
+        api_key_env: "FLUXWEIR_TEST_KEY".into(),
         api_key_envs: Vec::new(),
         extra_headers: Default::default(),
         api_base: api_base.into(),
@@ -67,12 +67,12 @@ fn make_vendor(id: &str, api_base: impl Into<String>) -> VendorConfig {
             compat_group: None,
             model_type: None,
         }],
-        rate_limit: fluxgate::config::RateLimitConfig::Token {
+        rate_limit: fluxweir::config::RateLimitConfig::Token {
             max_tokens: 1_000_000,
             window_hours: None,
             sliding: false,
         },
-        concurrency: fluxgate::config::ConcurrencyConfig {
+        concurrency: fluxweir::config::ConcurrencyConfig {
             requests_per_second: 1000,
             max_concurrent_requests: None,
             token_weighted: false,
@@ -126,9 +126,9 @@ fn make_config(vendors: Vec<VendorConfig>, circuit_open_timeout_ms: u64) -> Conf
         model_catalog: Vec::new(),
         auth: None,
         cors: None,
-        retry: fluxgate::config::RetrySection::default(),
-        routing: fluxgate::config::RoutingSection::default(),
-        cache: fluxgate::config::CacheSection::default(),
+        retry: fluxweir::config::RetrySection::default(),
+        routing: fluxweir::config::RoutingSection::default(),
+        cache: fluxweir::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),

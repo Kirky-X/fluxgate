@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-// fluxgate admin API 封装：单文件 fetch 客户端。key 只存内存 state
+// fluxweir admin API 封装：单文件 fetch 客户端。key 只存内存 state
 // （src/state.ts），任何响应/请求体不得回传或记录 key 原文。
 
 export class ApiError extends Error {
@@ -21,7 +21,7 @@ export function setApiKey(key: string | null) {
   bearer = key;
 }
 
-interface FluxgateErrorShape {
+interface FluxweirErrorShape {
   error?: { message?: string; type?: string };
 }
 
@@ -38,7 +38,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let errorType = "http_error";
     if (text) {
       try {
-        const parsed = JSON.parse(text) as FluxgateErrorShape;
+        const parsed = JSON.parse(text) as FluxweirErrorShape;
         if (parsed.error?.message) {
           message = parsed.error.message;
           if (parsed.error.type) errorType = parsed.error.type;

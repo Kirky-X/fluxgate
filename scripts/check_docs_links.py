@@ -27,7 +27,7 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
 
 def github_slug(heading: str) -> str:
-    """GitHub 锚点规则(经线上实证 github.com/Kirky-X/fluxgate 的
+    """GitHub 锚点规则(经线上实证 github.com/Kirky-X/fluxweir 的
     user-content-* id 核对):小写;剥离标点与 emoji 基字符,但保留变体
     选择符 U+FE00-FE0F(`⚙️ 配置概览` → `️-配置概览`);每个空格各转
     一个连字符,连续空格不折叠(`retry · resilience` → `retry--resilience`)。"""

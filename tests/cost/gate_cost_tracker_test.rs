@@ -13,7 +13,7 @@
 
 #![cfg(feature = "cost-tracking")]
 
-use fluxgate::utils::cost_tracker::CostTracker;
+use fluxweir::utils::cost_tracker::CostTracker;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -159,7 +159,7 @@ fn test_total_usd_zero_initially() {
 #[tokio::test]
 #[cfg(all(feature = "cost-tracking", feature = "database"))]
 async fn restore_from_db_aggregates_token_usage_window() {
-    use fluxgate::database::{Database, KeyedUsage, TokenPreAggregator};
+    use fluxweir::database::{Database, KeyedUsage, TokenPreAggregator};
     use std::time::Duration;
 
     let database = Database::new("sqlite::memory:", 1)
@@ -233,7 +233,7 @@ async fn restore_from_db_aggregates_token_usage_window() {
 #[tokio::test]
 #[cfg(all(feature = "cost-tracking", feature = "database"))]
 async fn restore_from_db_empty_table_keeps_zero_counts() {
-    use fluxgate::database::Database;
+    use fluxweir::database::Database;
 
     let database = Database::new("sqlite::memory:", 1)
         .await

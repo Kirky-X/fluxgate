@@ -6,8 +6,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::sdk::client::FluxgateClientBuilder;
-use crate::sdk::error::{ApiError, FluxgateSdkError};
+use crate::sdk::client::FluxweirClientBuilder;
+use crate::sdk::error::{ApiError, FluxweirSdkError};
 use crate::sdk::retry::RetryPolicy;
 use crate::sdk::transport::send_with_retry;
 use crate::sdk::ChatRequest;
@@ -17,8 +17,8 @@ const CHAT_OK: &str = r#"{"id":"chatcmpl-retry","object":"chat.completion","mode
 
 const CHAT_429: &str = r#"{"error":{"message":"slow down","type":"rate_limit_error"}}"#;
 
-fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
-    FluxgateClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxweirClient {
+    FluxweirClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -76,7 +76,7 @@ async fn retries_capped_by_max_retries() {
         .unwrap_err();
 
     match err {
-        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        FluxweirSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
         other => panic!("expected Api error, got {other:?}"),
     }
     failing.assert_async().await;
@@ -103,7 +103,7 @@ async fn should_retry_false_vetoes_retry() {
         .unwrap_err();
 
     match err {
-        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        FluxweirSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
         other => panic!("expected Api error, got {other:?}"),
     }
     failing.assert_async().await;
@@ -122,7 +122,7 @@ async fn max_retries_zero_disables_retry() {
         .create_async()
         .await;
 
-    let client = FluxgateClientBuilder::new()
+    let client = FluxweirClientBuilder::new()
         .base_url(server.url())
         .api_key("test-key")
         .max_retries(0)
@@ -134,7 +134,7 @@ async fn max_retries_zero_disables_retry() {
         .unwrap_err();
 
     match err {
-        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        FluxweirSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
         other => panic!("expected Api error, got {other:?}"),
     }
     failing.assert_async().await;

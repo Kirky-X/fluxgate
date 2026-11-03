@@ -1,6 +1,6 @@
-# Fluxgate 架构文档
+# Fluxweir 架构文档
 
-Fluxgate 是一个用 Rust 编写的 LLM 路由网关：对外统一暴露 OpenAI 与 Anthropic 协议端点，对内在多个模型厂商之间做加权多因子路由决策，并通过熔断、重试、回退链与拥塞准入保证调用弹性；请求日志与 Token 用量经有界队列异步落库，全程不影响响应路径。本文档基于 `src/` 实际代码结构（原 `llm-gate` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），介绍 Fluxgate 的分层设计、模块划分、请求生命周期、路由决策算法以及配置、持久化与性能设计。
+Fluxweir 是一个用 Rust 编写的 LLM 路由网关：对外统一暴露 OpenAI 与 Anthropic 协议端点，对内在多个模型厂商之间做加权多因子路由决策，并通过熔断、重试、回退链与拥塞准入保证调用弹性；请求日志与 Token 用量经有界队列异步落库，全程不影响响应路径。本文档基于 `src/` 实际代码结构（原 `llm-gate` 纯路由核心库已并回单 crate，`fluxweir::config` 等公开路径不变），介绍 Fluxweir 的分层设计、模块划分、请求生命周期、路由决策算法以及配置、持久化与性能设计。
 
 ## 📋 目录
 
@@ -23,7 +23,7 @@ Fluxgate 是一个用 Rust 编写的 LLM 路由网关：对外统一暴露 OpenA
 
 ## 🎯 设计总览
 
-Fluxgate 按职责分为五层：接入层（axum 端点 + 中间件管线）→ 协议层（OpenAI/Anthropic 统一中间表示与转换）→ 路由层（加权多因子决策 + 会话亲和 + LinUCB）→ 厂商执行层（连接池、队列、限流、熔断重试回退）→ 持久化层（异步日志 + 预聚合 + SQLite 仓储）。配置热更新（`confers::dynamic::DynamicField`，arc-swap 无锁读）与国际化为全部层提供横切支撑。
+Fluxweir 按职责分为五层：接入层（axum 端点 + 中间件管线）→ 协议层（OpenAI/Anthropic 统一中间表示与转换）→ 路由层（加权多因子决策 + 会话亲和 + LinUCB）→ 厂商执行层（连接池、队列、限流、熔断重试回退）→ 持久化层（异步日志 + 预聚合 + SQLite 仓储）。配置热更新（`confers::dynamic::DynamicField`，arc-swap 无锁读）与国际化为全部层提供横切支撑。
 
 ```mermaid
 flowchart TB
@@ -100,10 +100,10 @@ flowchart TB
 | `src/vault/`                             | 密钥保密柜：AEAD 加密存储、主钥三态来源（env/0600 文件/派生）                                                                            |
 | `src/server/`                            | 装配与运行面：`bootstrap.rs`（装配链）、`http.rs`（建站与路由合并）、`grpc.rs`（gRPC 门面，feature `grpc`）、`console.rs`（内置控制台，feature `console`）、`hot_reload.rs`（文件热重载与结构门） |
 | `src/sdk/`                               | Rust 客户端：admin / chat / embed / rerank / responses / stream 六模块（feature `sdk`）                                                  |
-| `src/bin/`                               | 独立二进制：`fluxgate-replay`（离线成本回放，feature `cost-replay`）                                                                     |
+| `src/bin/`                               | 独立二进制：`fluxweir-replay`（离线成本回放，feature `cost-replay`）                                                                     |
 | `src/storage.rs`                         | 存储层类型门面：`LogFilter` / `RequestLog` 等跨层共享的存储类型                                                                          |
 | `src/quota_contract.rs`                  | 配额预算读侧契约（独立根级模块，router 消费）                                                                                            |
-| `src/error/mod.rs` / `src/error/gate.rs` | `FluxgateError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale）              |
+| `src/error/mod.rs` / `src/error/gate.rs` | `FluxweirError` / `GateError` 统一错误：Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message()`（FTL，随 locale）              |
 | `src/lib.rs`                             | 库入口：模块声明、feature 门控与公开 re-export（config/i18n/utils/protocol/storage/vendor/router 路由半边 + api/server/database 应用面） |
 | `src/main.rs`                            | 二进制薄入口：仅解析 CLI 配置路径参数；装配链在 `src/server/bootstrap.rs`，建站与路由合并、serve 在 `src/server/http.rs`                 |
 
@@ -237,7 +237,7 @@ sequenceDiagram
 
 ## 🧭 路由决策
 
-路由决策是 Fluxgate 的核心，全部位于 `src/router/`。
+路由决策是 Fluxweir 的核心，全部位于 `src/router/`。
 
 ### 三级决策顺序
 
@@ -456,7 +456,7 @@ stateDiagram-v2
 
 ### 错误映射层
 
-`src/vendor/resilience/error_map.rs`：limiteron 熔断器签名锁定 `LimiteronError`，而 Fluxgate 执行路径使用 `FluxgateError`，映射层提供双向编码（`fluxgate:<variant>:<detail>` 前缀）；错误分类器（`FailureClassifier::is_counted_as_failure`）决定哪些错误计入熔断失败。
+`src/vendor/resilience/error_map.rs`：limiteron 熔断器签名锁定 `LimiteronError`，而 Fluxweir 执行路径使用 `FluxweirError`，映射层提供双向编码（`fluxweir:<variant>:<detail>` 前缀）；错误分类器（`FailureClassifier::is_counted_as_failure`）决定哪些错误计入熔断失败。
 
 ### 连接池
 
@@ -470,7 +470,7 @@ stateDiagram-v2
 | ---------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CostCalculator` | `src/vendor/cost.rs`        | 定价表来自热配置 `[[pricing]]`，按 `(prompt/1000)×in_price + (completion/1000)×out_price` 计算 USD；`(vendor_id, model_id)` 未命中计 0.0；每请求现读热配置，定价修改即时生效（`src/vendor/manager.rs` 的定价热读点）                                                             |
 | `CostTracker`    | `src/utils/cost_tracker.rs` | `total` 用 `AtomicU64` 微美元（USD ×1e6 转 u64，避免浮点累加误差）；`by_vendor` / `by_model` 两张 DashMap 分桶；记账点在 worker 成功路径；`restore_from_db(pool, window_hours)` 启动恢复（按 `(vendor, model)` 聚合 `token_usage` 最近窗口回填内存视图，装配期先恢复再对外服务） |
-| `replay`         | `src/utils/replay.rs`       | 离线成本回放（`cost-replay` feature，独立 bin `fluxgate-replay`）：按时间窗读 `request_logs`，对 affinity / cache_ttl 场景重放 counterfactual 成本（微单位整数累计，`catalog-sync` 的 `unit.rs` 换算单点）；纯显式代码、只读不写库（sqlite `mode=ro` + 目标库须已存在）、装载行数上限 fail-fast，同输入 byte-equal |
+| `replay`         | `src/utils/replay.rs`       | 离线成本回放（`cost-replay` feature，独立 bin `fluxweir-replay`）：按时间窗读 `request_logs`，对 affinity / cache_ttl 场景重放 counterfactual 成本（微单位整数累计，`catalog-sync` 的 `unit.rs` 换算单点）；纯显式代码、只读不写库（sqlite `mode=ro` + 目标库须已存在）、装载行数上限 fail-fast，同输入 byte-equal |
 
 **成本落库与内存边界（如实标注）**：成本分账已落库——`token_usage` 表按 `(vendor, model, api_key_hash, date, hour)` UPSERT，写入 `input_cost` / `output_cost` / `cache_read_cost` / `cache_creation_cost` 四档成本列（`src/database/pre_aggregator.rs`，单价取 `[[model_catalog]]` 四档，未登记记 0），并可由 `GET /admin/cost` 按 vendor/model 分组聚合查询。逐请求成本同步落库——`request_logs.cost_usd` 在日志写入路径经 `src/api/request_cost.rs` 的 `request_cost_usd` 计算：响应 usage 四档求和 × 目录单价（chat/embeddings/anthropic/gemini/responses 五入口共用，cache 语义单源 `prompt_cache_semantics`，与分账同口径；rerank 按每千文档价）；五入口无 usage（失败/空响应/流式成功——流式 usage 走预聚合分账，日志无 usage 响应体）记 `None`，未登记单价记 0。rerank 沿用既有口径：请求日志 `cost_usd` 失败路径（能力不匹配/上游失败）同样按公式写计算值，而 `token_usage` 分账失败不入账——两套口径并行，`/admin/cost` 聚合不含失败请求成本。进程内 `CostTracker`（`by_vendor`/`by_model`）启动时自 `token_usage` 按窗口恢复（`[metrics].cost_restore_window_hours`，默认 24，范围 1–8760；DB 未接线或内存库 warn 跳过）——恢复窗口之外的历史用量不进入实时内存视图。
 
@@ -481,7 +481,7 @@ stateDiagram-v2
 **Prometheus 桥 vs OTLP 追踪职责划界**（feature `otlp` 内两模块并存，语义不同面）：
 
 - **`src/utils/otlp.rs`（metrics 桥）**：把 `/metrics` 的 Prometheus text exposition（单一真源 `sdforge::metrics::global_registry().render()`）解析为样本，经 `SdkMeterProvider` 周期推送到 OTLP/HTTP 端点——面向**聚合指标**（计数/直方图/成本快照），配置段 `[otlp].{enabled, endpoint, interval_secs}`。
-- **`src/utils/otlp_export.rs`（trace 面）**：尝试级分布式追踪——入站解析 W3C `traceparent`（无则建 root），每个 vendor attempt 一个子 span（`vendor`/`model`/`attempt`/`status_code`/`error_class`/`cost_details.estimate_usd`，fallback 实际命中者标 `fluxgate.served=true`），出站注入 `traceparent`；请求/响应体默认不导出。配置段 `[otlp].tracing.{enabled, sample_ratio, endpoint, protocol}`，**双零默认关**（enabled=false 不装 provider、sample_ratio=0.0 全不采样 → 零 span、零网络导出）；停机经 teardown coordinator flush（best-effort）。两者可独立开关；`[otlp].enabled` 只管 metrics 桥，追踪由 `tracing.enabled` 单独门控。
+- **`src/utils/otlp_export.rs`（trace 面）**：尝试级分布式追踪——入站解析 W3C `traceparent`（无则建 root），每个 vendor attempt 一个子 span（`vendor`/`model`/`attempt`/`status_code`/`error_class`/`cost_details.estimate_usd`，fallback 实际命中者标 `fluxweir.served=true`），出站注入 `traceparent`；请求/响应体默认不导出。配置段 `[otlp].tracing.{enabled, sample_ratio, endpoint, protocol}`，**双零默认关**（enabled=false 不装 provider、sample_ratio=0.0 全不采样 → 零 span、零网络导出）；停机经 teardown coordinator flush（best-effort）。两者可独立开关；`[otlp].enabled` 只管 metrics 桥，追踪由 `tracing.enabled` 单独门控。
 
 ---
 
@@ -637,7 +637,7 @@ flowchart LR
 | 消息格式   | Fluent（`.ftl`），en/zh 双束共 10 个文件                                                                                              |
 | 部署形态   | 编译期 `include_str!` 内嵌，产物无需携带磁盘 `locales/` 目录；新增 ftl 必须登记 `EMBEDDED_LOCALES`，守卫测试兜底                      |
 | 运行时结构 | `fluent_bundle::concurrent::FluentBundle` 双束，`OnceLock` 静态缓存，Send+Sync                                                        |
-| 语言检测链 | `FLUXGATE_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → `sys-locale` → `"en"`（强制顺序，显式读取保证 Windows/边缘环境确定性）          |
+| 语言检测链 | `FLUXWEIR_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → `sys-locale` → `"en"`（强制顺序，显式读取保证 Windows/边缘环境确定性）          |
 | 查找回退   | 当前语言 → en → 键名                                                                                                                  |
 | 语言作用域 | 进程级：检测链启动定一次，`set_locale` 覆盖位仅供 SDK 嵌入式调用（服务端无 HTTP 入口、不进配置热更新，无 Accept-Language 请求级协商） |
 | 覆盖范围   | 全部业务消息（错误 `user_message()`、admin 响应与日志文案）；OpenAPI/健康描述等框架面串除外（见下）                                   |
@@ -645,7 +645,7 @@ flowchart LR
 
 错误展示走双轨（`src/error/mod.rs`）：`#[error]` Display 恒英文规范串（供日志与错误链），HTTP 响应体用 `user_message()` 返回随 locale 的 FTL 文案。
 
-与框架层的双栈边界：OpenAPI 文档与 health 端点描述经 `sdforge::i18n::register_translation` 登记，走 sdforge 自己的检测链（`SDFORGE_LANG` 起步；本仓未启用 sdforge `i18n` feature，无 sys-locale 尾段与请求级 locale）。`src/server/http.rs` 的 `assemble_router` 在建站时把框架栈 locale 显式同步为业务栈 `current_locale()`，保证 `FLUXGATE_LANG` 是两栈一致的单一语言入口。
+与框架层的双栈边界：OpenAPI 文档与 health 端点描述经 `sdforge::i18n::register_translation` 登记，走 sdforge 自己的检测链（`SDFORGE_LANG` 起步；本仓未启用 sdforge `i18n` feature，无 sys-locale 尾段与请求级 locale）。`src/server/http.rs` 的 `assemble_router` 在建站时把框架栈 locale 显式同步为业务栈 `current_locale()`，保证 `FLUXWEIR_LANG` 是两栈一致的单一语言入口。
 
 守卫：`tests/i18n/i18n_parity_test.rs` 四条断言（en/zh 键位对齐、引用键存在性、零 Junk + en/zh 占位符对齐、调用点实参覆盖 FTL 占位符）另含扫描器自检用例；`src/i18n/catalog.rs` 单测钉住内嵌清单与磁盘目录双向一致。
 
@@ -669,7 +669,7 @@ flowchart LR
 
 根 `Cargo.toml` 以 registry 版本集成 7 个兄弟库（版本号在 `[dependencies]`、校验和锁在 `Cargo.lock`）。迁移期曾以 path 依赖 + `[patch.crates-io]` 统一身份（保证传递依赖收敛到同一份源码），该形态随全量切 registry 移除：
 
-| 兄弟库      | 在 Fluxgate 中的角色                                      |
+| 兄弟库      | 在 Fluxweir 中的角色                                      |
 | ----------- | --------------------------------------------------------- |
 | `confers`   | 配置加载（loader）与热更新（`DynamicField`）              |
 | `dbnexus`   | 数据库基础层                                              |
@@ -681,7 +681,7 @@ flowchart LR
 
 ### Feature 门控
 
-`default = ["full", "db-sqlite"]`，`full` 预设含 12 个 feature：`web-server` / `database` / `vendor-management` / `router` / `protocol` / `infrastructure` / `sdforge-integration` / `logging` / `resilience` / `cost-tracking` / `sdk` / `vault`；不进 `full` 的独立门控：`grpc`（隐藏宏门控 `http` 之外另设）、`db-postgres` / `db-mysql`（另两个数据库后端，与 `db-sqlite` 互斥）、`otlp`（指标导出与尝试级追踪）、`masking`（出站掩码）、`catalog-sync`（目录同步）、`subscription-vendor`（订阅账号上游）、`oidc`（短时凭据验签中间件）、`netguard`（零依赖 SSRF 判定）、`web-search`（搜索注入与守护抓取）、`console`（内置控制台静态面）、`difficulty-classifier` / `semantic-cache`（两者经 path 依赖 vecboost，需同级 checkout）、`cost-replay`（离线成本回放，独立 bin `fluxgate-replay`，需搭配一个 db 后端）。主要依赖方向：
+`default = ["full", "db-sqlite"]`，`full` 预设含 12 个 feature：`web-server` / `database` / `vendor-management` / `router` / `protocol` / `infrastructure` / `sdforge-integration` / `logging` / `resilience` / `cost-tracking` / `sdk` / `vault`；不进 `full` 的独立门控：`grpc`（隐藏宏门控 `http` 之外另设）、`db-postgres` / `db-mysql`（另两个数据库后端，与 `db-sqlite` 互斥）、`otlp`（指标导出与尝试级追踪）、`masking`（出站掩码）、`catalog-sync`（目录同步）、`subscription-vendor`（订阅账号上游）、`oidc`（短时凭据验签中间件）、`netguard`（零依赖 SSRF 判定）、`web-search`（搜索注入与守护抓取）、`console`（内置控制台静态面）、`difficulty-classifier` / `semantic-cache`（两者经 path 依赖 vecboost，需同级 checkout）、`cost-replay`（离线成本回放，独立 bin `fluxweir-replay`，需搭配一个 db 后端）。主要依赖方向：
 
 ```text
 web-server → router → vendor-management
@@ -739,7 +739,7 @@ flowchart LR
 
 - 模块：`src/config/catalog_sync.rs`（feature 门控）+ `src/config/unit.rs`（定价单位换算单点，cost-replay 回放复用）；
 - 观测：`/admin/metrics` 的 `catalog_sync_fail_total{reason}` / `catalog_sync_added_total`;
-- 管理面：`POST /admin/catalog/sync`（dry_run 出 diff、重入 409、失败 502/超限 413，i18n 错误详情）；SDK 对应 `FluxgateClient::sync_catalog`。
+- 管理面：`POST /admin/catalog/sync`（dry_run 出 diff、重入 409、失败 502/超限 413，i18n 错误详情）；SDK 对应 `FluxweirClient::sync_catalog`。
 
 ## netguard 信任边界（web-search-inject）
 

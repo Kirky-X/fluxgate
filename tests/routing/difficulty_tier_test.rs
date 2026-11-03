@@ -13,15 +13,15 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, DatabaseConfig, DifficultyScoringSection, DifficultySection,
         DifficultyTiers, ModelConfig, ServerConfig, Tier,
     };
-    use fluxgate::router::difficulty::{
+    use fluxweir::router::difficulty::{
         DecisionCache, DifficultyRouter, Guard, MockDifficultyClassifier, TierPath,
     };
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -33,7 +33,7 @@ mod tests {
         id: &str,
         model_id: &str,
         abstract_id: &str,
-    ) -> fluxgate::config::VendorConfig {
+    ) -> fluxweir::config::VendorConfig {
         let mut vendor = common::base_vendor(id, String::new());
         vendor.models = vec![ModelConfig {
             model_id: model_id.to_string(),
@@ -233,7 +233,7 @@ mod tests {
         );
         assert_eq!(
             explanation["classifier"]["error"],
-            fluxgate::i18n::t("difficulty-explain-not-wired")
+            fluxweir::i18n::t("difficulty-explain-not-wired")
         );
         assert_eq!(
             explanation["score_breakdown"]["p_clf"],

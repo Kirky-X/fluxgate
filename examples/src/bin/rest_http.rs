@@ -5,5 +5,5 @@
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    fluxgate_examples::rest_http::run().await
+    fluxweir_examples::rest_http::run().await
 }

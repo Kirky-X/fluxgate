@@ -8,7 +8,7 @@
 //! 工具链缺失/构建失败均降级为 `cargo:warning` 后跳过，仅当 dist 已存在
 //! 时嵌入产物仍然可用。
 //!
-//! 新鲜度采用内容戳而非 mtime：输入快照哈希写入 web/console/.fluxgate-build-stamp，
+//! 新鲜度采用内容戳而非 mtime：输入快照哈希写入 web/console/.fluxweir-build-stamp，
 //! 构建前重算比对——免疫 cp -p 保留时间戳与跨机时钟偏差造成的「假新鲜」。
 //! 本地增量路径先 `npm ci --dry-run` 前置校验锁一致性；不同步即拒绝自由解析。
 
@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-const STAMP: &str = ".fluxgate-build-stamp";
+const STAMP: &str = ".fluxweir-build-stamp";
 
 fn npm_path() -> Option<PathBuf> {
     // PATH 直查 + 常见 Homebrew 位置兜底（macOS GUI 启动 cargo 时 PATH 常不含
@@ -115,7 +115,7 @@ fn dist_is_current(console_dir: &Path) -> bool {
 /// 构建成功后写内容戳；写失败打 warning（下次构建整建，安全方向）。
 fn stamp_write(console_dir: &Path, hash: u64) {
     if let Err(e) = std::fs::write(console_dir.join(STAMP), format!("{hash:016x}\n")) {
-        println!("cargo:warning=fluxgate console: 写构建戳失败（{e}），下次构建将整建");
+        println!("cargo:warning=fluxweir console: 写构建戳失败（{e}），下次构建将整建");
     }
 }
 
@@ -130,7 +130,7 @@ fn main() {
     let console_dir = manifest_dir.join("web/console");
 
     if !console_dir.is_dir() {
-        println!("cargo:warning=fluxgate console: web/console 缺失，跳过前端构建（/console 路由将不可用）");
+        println!("cargo:warning=fluxweir console: web/console 缺失，跳过前端构建（/console 路由将不可用）");
         return;
     }
 
@@ -143,7 +143,7 @@ fn main() {
 
     let Some(npm) = npm_path() else {
         println!(
-            "cargo:warning=fluxgate console: 未检测到 npm，跳过前端构建；预构建产物缺位时 /console 不可用"
+            "cargo:warning=fluxweir console: 未检测到 npm，跳过前端构建；预构建产物缺位时 /console 不可用"
         );
         return;
     };
@@ -153,7 +153,7 @@ fn main() {
     // （lock 满足时为秒级 no-op，避免改一行前端就删 node_modules 全量重装）。
     if !console_dir.join("package-lock.json").is_file() {
         println!(
-            "cargo:warning=fluxgate console: package-lock.json 缺失，跳过前端构建（恢复锁文件后重建）"
+            "cargo:warning=fluxweir console: package-lock.json 缺失，跳过前端构建（恢复锁文件后重建）"
         );
         return;
     }
@@ -175,7 +175,7 @@ fn main() {
             Ok(s) if s.success() => {}
             other => {
                 println!(
-                    "cargo:warning=fluxgate console: package-lock 与 package.json 不同步（或校验失败，{other:?}），跳过前端构建——请先在 web/console 手动 npm install 并提交锁文件"
+                    "cargo:warning=fluxweir console: package-lock 与 package.json 不同步（或校验失败，{other:?}），跳过前端构建——请先在 web/console 手动 npm install 并提交锁文件"
                 );
                 return;
             }
@@ -193,7 +193,7 @@ fn main() {
         Ok(s) if s.success() => {}
         other => {
             println!(
-                "cargo:warning=fluxgate console: npm {} 失败（{:?}），跳过前端构建；已有 dist 仍会嵌入",
+                "cargo:warning=fluxweir console: npm {} 失败（{:?}），跳过前端构建；已有 dist 仍会嵌入",
                 install_subcommand, other
             );
             return;
@@ -213,11 +213,11 @@ fn main() {
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => {
-            println!("cargo:warning=fluxgate console: npm run build 失败（{s}），跳过嵌入更新");
+            println!("cargo:warning=fluxweir console: npm run build 失败（{s}），跳过嵌入更新");
             return;
         }
         Err(e) => {
-            println!("cargo:warning=fluxgate console: npm run build 启动失败（{e}），跳过嵌入更新");
+            println!("cargo:warning=fluxweir console: npm run build 启动失败（{e}），跳过嵌入更新");
             return;
         }
     }
@@ -226,7 +226,7 @@ fn main() {
     match input_snapshot(&console_dir) {
         Some(files) => stamp_write(&console_dir, snapshot_hash(&files)),
         None => println!(
-            "cargo:warning=fluxgate console: 无法计算输入快照，跳过写构建戳（下次构建将整建）"
+            "cargo:warning=fluxweir console: 无法计算输入快照，跳过写构建戳（下次构建将整建）"
         ),
     }
     // 监视整个 web/console（cargo 对目录递归监视）：动态枚举清单存在「构建

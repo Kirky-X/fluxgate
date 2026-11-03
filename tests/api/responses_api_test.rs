@@ -16,15 +16,15 @@ mod tests {
         routing::{get, post},
         Router,
     };
-    use fluxgate::api::responses::{
+    use fluxweir::api::responses::{
         cancel_response, create_response, delete_response, get_response, input_tokens,
     };
-    use fluxgate::config::{ConfigManager, ModelConfig, RateLimitConfig, VendorConfig};
-    use fluxgate::database::{Repository, TokenPreAggregator};
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::config::{ConfigManager, ModelConfig, RateLimitConfig, VendorConfig};
+    use fluxweir::database::{Repository, TokenPreAggregator};
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -82,7 +82,7 @@ mod tests {
             std::time::Duration::from_secs(3600),
         ));
 
-        let db_sink = Arc::new(fluxgate::database::Database {
+        let db_sink = Arc::new(fluxweir::database::Database {
             pool,
             repository: repository.clone(),
         });
@@ -96,10 +96,10 @@ mod tests {
             anthropic_converter: Arc::new(AnthropicConverter::new()),
             database: db_sink.clone(),
             logger: with_logger
-                .then(|| db_sink.clone() as Arc<dyn fluxgate::storage::RequestLogSink>),
+                .then(|| db_sink.clone() as Arc<dyn fluxweir::storage::RequestLogSink>),
             pre_aggregator: Some(pre_aggregator),
             affinity: Some(Arc::new(
-                fluxgate::router::affinity::AffinityTable::with_memory_backend(
+                fluxweir::router::affinity::AffinityTable::with_memory_backend(
                     std::time::Duration::from_secs(3600),
                 ),
             )),
@@ -109,7 +109,7 @@ mod tests {
             difficulty: None,
             #[cfg(feature = "web-search")]
             web_search: None,
-            responses: Some(Arc::new(fluxgate::api::responses::ResponsesRuntime::new(
+            responses: Some(Arc::new(fluxweir::api::responses::ResponsesRuntime::new(
                 repository.clone(),
             ))),
         });
@@ -279,7 +279,7 @@ mod tests {
         let first_body = response_json(first_response).await;
         let previous_id = first_body["id"].as_str().expect("响应 id").to_string();
         // 直接核验落库（避免 404 归因不明）
-        let tenant = fluxgate::utils::tenant::api_key_digest(&axum::http::HeaderMap::new());
+        let tenant = fluxweir::utils::tenant::api_key_digest(&axum::http::HeaderMap::new());
         let stored = state
             .responses
             .as_ref()
@@ -586,7 +586,7 @@ mod tests {
         Router::new()
             .route(
                 "/v1/chat/completions",
-                post(fluxgate::api::completions::chat_completions),
+                post(fluxweir::api::completions::chat_completions),
             )
             .with_state(state)
     }
@@ -850,7 +850,7 @@ mod tests {
         assert_eq!(response.status(), 503);
 
         let logs = repository
-            .query_logs(&fluxgate::database::LogFilter {
+            .query_logs(&fluxweir::database::LogFilter {
                 limit: 10,
                 ..Default::default()
             })

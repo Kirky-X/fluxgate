@@ -757,7 +757,7 @@ concurrency = { requests_per_second = 1 }
             maybe_start_hot_reload(&manager).await.is_none(),
             "无路径不启动"
         );
-        manager.set_path(std::path::PathBuf::from("/nonexistent/cfg/fluxgate.toml"));
+        manager.set_path(std::path::PathBuf::from("/nonexistent/cfg/fluxweir.toml"));
         assert!(
             maybe_start_hot_reload(&manager).await.is_none(),
             "文件不存在不启动"

@@ -1,19 +1,19 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! fluxgate 应用面特性组合矩阵测试。
+//! fluxweir 应用面特性组合矩阵测试。
 //! 应用面 feature 只保留可见性断言；路由核心矩阵见 gate_feature_matrix.rs。
 //! vendor-management→database 联动已解除，database 由 web-server 显式携带
 //! 与 database feature 自身声明
 //!
-//! ## 已验证的特性组合矩阵（fluxgate 侧）
+//! ## 已验证的特性组合矩阵（fluxweir 侧）
 //!
 //! | Feature 组合                      | 编译 | 依赖链                                     |
 //! |----------------------------------|------|-------------------------------------------|
 //! | `--all-features`                 | ✗ 预期失败 | db-sqlite/postgres/mysql 三组互斥，dbnexus 编译期守卫必触发 `compile_error!` |
 //! | `--features full`（default = full + db-sqlite） | OK | 全面向 sqlite 后端        |
-//! | `-p fluxgate --no-default-features --features "full,db-postgres"` | OK | server-side 后端 |
-//! | `-p fluxgate --no-default-features --features "full,db-mysql"`    | OK | server-side 后端 |
+//! | `-p fluxweir --no-default-features --features "full,db-postgres"` | OK | server-side 后端 |
+//! | `-p fluxweir --no-default-features --features "full,db-mysql"`    | OK | server-side 后端 |
 //! | `--no-default-features --features "database,db-sqlite"` | OK | database → protocol + url + logging（inklog kit 需任一 db-* 组） |
 //! | `--features vendor-management`   | OK   | vendor-management 本模块直控               |
 //! | `--features router`              | OK   | router → vendor-management + oxcache       |
@@ -25,23 +25,23 @@
 //! | `--no-default-features`          | OK   | 门面 re-export（config/error/i18n/protocol/utils）|
 //! | `--no-default-features --features "db-sqlite,vendor-management,masking"` | OK | masking 不进 full、无 resilience——非流式回程还原分支的编译面（E0061 回归钉） |
 //! | `--no-default-features --features "db-sqlite,vendor-management,subscription-vendor,masking"` | OK | 订阅池 + 掩码全开（vault 联动）|
-//! | `--no-default-features --features "cost-replay,db-sqlite"` | OK | cost-replay 不进 full → database + dbnexus/sea-orm，独立 bin `fluxgate-replay` |
+//! | `--no-default-features --features "cost-replay,db-sqlite"` | OK | cost-replay 不进 full → database + dbnexus/sea-orm，独立 bin `fluxweir-replay` |
 //!
 //! 【门禁口径】默认特性集（full + db-sqlite）覆盖不到上两行——`masking`
 //! 刻意不进 `full`，`cargo check --benches` 与 clippy 默认面也不含。组合
 //! 编译随修复/复审以 cargo check 显式复验（见审查报告口径）。
 //!
-//! 【矩阵命令口径（重要）】非默认后端必须用 `-p fluxgate` 限定到本包：
+//! 【矩阵命令口径（重要）】非默认后端必须用 `-p fluxweir` 限定到本包：
 //! `cargo check --workspace --no-default-features --features "full,db-postgres"`
-//! 会失败——`fluxgate-examples` 成员（default 含 `embedded` feature）以
-//! `fluxgate = { path = ".." }` 拉入 `full` + `db-sqlite`，Cargo 特性联合把 sqlite 注入共享的
+//! 会失败——`fluxweir-examples` 成员（default 含 `embedded` feature）以
+//! `fluxweir = { path = ".." }` 拉入 `full` + `db-sqlite`，Cargo 特性联合把 sqlite 注入共享的
 //! dbnexus 依赖，与 db-postgres 同时置位即触发其互斥守卫。
 
 /// database feature：验证 Database 类型可访问
 #[cfg(feature = "database")]
 #[test]
 fn test_database_module_available() {
-    use fluxgate::Database;
+    use fluxweir::Database;
     let _ = std::marker::PhantomData::<Database>;
 }
 
@@ -49,7 +49,7 @@ fn test_database_module_available() {
 #[cfg(feature = "vendor-management")]
 #[test]
 fn test_vendor_module_available() {
-    use fluxgate::VendorManager;
+    use fluxweir::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
@@ -63,14 +63,14 @@ fn test_vendor_module_available() {
 #[test]
 fn test_infrastructure_module_available() {
     // di 模块路径存在即表示 infrastructure feature 可用
-    let _ = fluxgate::di::build_kit_with_config;
+    let _ = fluxweir::di::build_kit_with_config;
 }
 
 /// web-server feature：验证 ApiState 类型可访问
 #[cfg(feature = "web-server")]
 #[test]
 fn test_api_module_available() {
-    use fluxgate::ApiState;
+    use fluxweir::ApiState;
     let _ = std::marker::PhantomData::<ApiState>;
 }
 
@@ -78,7 +78,7 @@ fn test_api_module_available() {
 #[cfg(feature = "web-server")]
 #[test]
 fn test_middleware_module_available() {
-    use fluxgate::ApiAuthState;
+    use fluxweir::ApiAuthState;
     let _ = std::marker::PhantomData::<ApiAuthState>;
 }
 
@@ -87,7 +87,7 @@ fn test_middleware_module_available() {
 #[cfg(feature = "web-server")]
 #[test]
 fn test_web_server_dependency_chain() {
-    use fluxgate::{ApiState, Database, VendorManager};
+    use fluxweir::{ApiState, Database, VendorManager};
     let _ = std::marker::PhantomData::<ApiState>;
     let _ = std::marker::PhantomData::<Database>;
     let _ = std::marker::PhantomData::<VendorManager>;
@@ -97,7 +97,7 @@ fn test_web_server_dependency_chain() {
 #[cfg(feature = "router")]
 #[test]
 fn test_router_dependency_chain() {
-    use fluxgate::VendorManager;
+    use fluxweir::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
@@ -107,7 +107,7 @@ fn test_router_dependency_chain() {
 #[cfg(feature = "database")]
 #[test]
 fn test_database_logging_chain() {
-    let _ = std::marker::PhantomData::<fluxgate::database::Database>;
+    let _ = std::marker::PhantomData::<fluxweir::database::Database>;
     #[cfg(not(feature = "logging"))]
     compile_error!("database 开启必须携带 logging（async_logger 消费 inklog）");
     // `dep:trait-kit` 不是可探测 feature；用其 masking 面符号作在场断言
@@ -126,9 +126,9 @@ fn test_database_logging_chain() {
 #[cfg(feature = "web-server")]
 #[test]
 fn test_web_server_infrastructure_chain() {
-    // fluxgate::di 受 infrastructure+database+vendor-management+logging
+    // fluxweir::di 受 infrastructure+database+vendor-management+logging
     // 四联动门控，web-server 组合下全部在场
-    let _ = fluxgate::di::verify_kit;
+    let _ = fluxweir::di::verify_kit;
     #[cfg(not(feature = "infrastructure"))]
     compile_error!("web-server 开启必须携带 infrastructure（shutdown 用 trait-kit）");
 }
@@ -137,9 +137,9 @@ fn test_web_server_infrastructure_chain() {
 #[cfg(feature = "sdk")]
 #[test]
 fn test_sdk_module_available() {
-    use fluxgate::sdk::{FluxgateClient, FluxgateSdkError, RequestConfig};
-    let _ = std::marker::PhantomData::<FluxgateClient>;
-    let _ = std::marker::PhantomData::<FluxgateSdkError>;
+    use fluxweir::sdk::{FluxweirClient, FluxweirSdkError, RequestConfig};
+    let _ = std::marker::PhantomData::<FluxweirClient>;
+    let _ = std::marker::PhantomData::<FluxweirSdkError>;
     let _ = RequestConfig::default();
 }
 
@@ -147,8 +147,8 @@ fn test_sdk_module_available() {
 #[cfg(all(feature = "web-server", feature = "logging"))]
 #[test]
 fn test_server_module_available() {
-    let _ = fluxgate::server::run;
-    let _ = fluxgate::server::build_app;
+    let _ = fluxweir::server::run;
+    let _ = fluxweir::server::build_app;
 }
 
 /// grpc feature：gRPC 服务器模块可访问（server 子模块，另受
@@ -156,8 +156,8 @@ fn test_server_module_available() {
 #[cfg(feature = "grpc")]
 #[test]
 fn test_grpc_module_available() {
-    let _ = std::marker::PhantomData::<fluxgate::server::GrpcServer>;
-    let _ = fluxgate::config::GrpcConfig {
+    let _ = std::marker::PhantomData::<fluxweir::server::GrpcServer>;
+    let _ = fluxweir::config::GrpcConfig {
         enabled: true,
         ..Default::default()
     };
@@ -169,8 +169,8 @@ fn test_grpc_module_available() {
 #[cfg(not(feature = "sdk"))]
 #[test]
 fn test_core_types_without_sdk() {
-    use fluxgate::{Config, FluxgateError, GateError};
-    let err = FluxgateError::from(GateError::Config {
+    use fluxweir::{Config, FluxweirError, GateError};
+    let err = FluxweirError::from(GateError::Config {
         message: "core".to_string(),
     });
     // Gate 变体 transparent 透传 llm-gate 英文规范串
@@ -182,28 +182,28 @@ fn test_core_types_without_sdk() {
 #[cfg(feature = "masking")]
 #[test]
 fn test_masking_module_available() {
-    let _ = fluxgate::masking::MaskGate::new;
-    let _ = fluxgate::masking::PlaceholderRegistry::new;
+    let _ = fluxweir::masking::MaskGate::new;
+    let _ = fluxweir::masking::PlaceholderRegistry::new;
 }
 
 /// subscription-vendor feature：订阅池可见（不进 full，装配面回归钉）
 #[cfg(feature = "subscription-vendor")]
 #[test]
 fn test_subscription_module_available() {
-    let _ = fluxgate::vendor::subscription::pool::AccountPool::new;
+    let _ = fluxweir::vendor::subscription::pool::AccountPool::new;
 }
 
 /// cost-replay feature：回放引擎与报告类型可见（不进 full，独立 bin 的库面回归钉）
 #[cfg(feature = "cost-replay")]
 #[test]
 fn test_cost_replay_module_available() {
-    let _ = fluxgate::utils::replay::load_rows;
-    let empty: &[fluxgate::utils::replay::ReplayRow] = &[];
-    let report = fluxgate::utils::replay::build_report(empty, &[], 0, 0, "test");
+    let _ = fluxweir::utils::replay::load_rows;
+    let empty: &[fluxweir::utils::replay::ReplayRow] = &[];
+    let report = fluxweir::utils::replay::build_report(empty, &[], 0, 0, "test");
     assert_eq!(report.requests, 0);
     assert_eq!(
         report.scenarios.len(),
-        fluxgate::utils::replay::TTL_SWEEP.len() + 1,
+        fluxweir::utils::replay::TTL_SWEEP.len() + 1,
         "legacy + TTL_SWEEP 三档"
     );
 }

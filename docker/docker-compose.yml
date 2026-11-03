@@ -7,8 +7,8 @@ services:
   app:
     # 镜像带版本：:latest 无法回滚也无法追溯构建了哪份代码，tag 与
     # Dockerfile 的 APP_VERSION 标签由同一个变量驱动，保持单一事实来源
-    image: fluxgate:${FLUXGATE_IMAGE_TAG:-0.1.0}
-    container_name: fluxgate-app
+    image: fluxweir:${FLUXWEIR_IMAGE_TAG:-0.1.0}
+    container_name: fluxweir-app
     build:
       # 构建上下文必须是仓库根：Dockerfile 以 bind mount 绑定 src / Cargo.toml，
       # .dockerignore 也按上下文根解析（保持根目录不动）
@@ -19,7 +19,7 @@ services:
       additional_contexts:
         - vecboost=../../vecboost
       args:
-        APP_VERSION: ${FLUXGATE_IMAGE_TAG:-0.1.0}
+        APP_VERSION: ${FLUXWEIR_IMAGE_TAG:-0.1.0}
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -36,15 +36,15 @@ services:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
       # vault 主钥（持久部署建议注入）：64 位 hex = 32 字节。缺失时按镜像层
-      # 默认的 FLUXGATE_MASTER_KEY_FILE（/app/data/vault_master.key，随数据卷
-      # 持久）生成——不设该变量则回落容器内 ~/.fluxgate/，随容器层走、重建即丢，
+      # 默认的 FLUXWEIR_MASTER_KEY_FILE（/app/data/vault_master.key，随数据卷
+      # 持久）生成——不设该变量则回落容器内 ~/.fluxweir/，随容器层走、重建即丢，
       # 柜内密钥随之不可解（此项已由镜像默认值覆盖，此处不再重复声明）。
       # 空值等价未设置（启动回落文件生成）。
       # 纯 `docker compose up -d --build`（宿主机未导出该变量）会从项目目录的
       # docker/.env（gitignored）读取：数据卷已有柜内数据时，在此固定与写入时
       # 一致的主钥——env 与历史写入不一致时柜内条目不可解，启动即 fail-fast
       #（Vault Crypto open failed）。
-      - FLUXGATE_MASTER_KEY=${FLUXGATE_MASTER_KEY:-}
+      - FLUXWEIR_MASTER_KEY=${FLUXWEIR_MASTER_KEY:-}
       # 可选: API Keys (通过环境变量注入)
       # - OPENAI_API_KEY=${OPENAI_API_KEY}
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -72,13 +72,13 @@ services:
           memory: 128M
     # 网络配置
     networks:
-      - fluxgate_network
+      - fluxweir_network
 
 #------------------------------------------------------------------------------
 # 网络配置
 #------------------------------------------------------------------------------
 networks:
-  fluxgate_network:
+  fluxweir_network:
     driver: bridge
     # 不写死子网：固定 172.28.0.0/16 与宿主机已有 docker0/其他项目网络重叠时
     # 直接报 "Pool overlap" 启动失败；交给 Docker 自动分配，本地需要固定段时

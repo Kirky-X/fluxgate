@@ -10,7 +10,7 @@
 
 use crate::config::{ModelTask, VendorProtocol};
 use crate::database::RequestLog;
-use crate::error::{FluxgateError, GateError};
+use crate::error::{FluxweirError, GateError};
 use crate::i18n::t;
 use crate::protocol::rerank_converter::{
     normalize_rerank_scores, parse_rerank_request, parse_rerank_response, to_upstream_request,
@@ -27,7 +27,7 @@ pub async fn rerank(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, FluxgateError> {
+) -> Result<impl IntoResponse, FluxweirError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
     let api_key_hash = crate::utils::tenant::api_key_digest(&headers);
@@ -50,7 +50,7 @@ pub async fn rerank(
             .and_then(ModelTask::parse)
             != Some(ModelTask::Rerank)
     {
-        let error = FluxgateError::from(GateError::Protocol {
+        let error = FluxweirError::from(GateError::Protocol {
             source: t("api-rerank-capability-mismatch"),
             inner: None,
         });
@@ -96,7 +96,7 @@ pub async fn rerank(
                 .vendor_manager
                 .metrics()
                 .record_rerank_upstream_failure();
-            let error = FluxgateError::from(err);
+            let error = FluxweirError::from(err);
             push_rerank_log(
                 &state,
                 &request_id,
@@ -123,7 +123,7 @@ pub async fn rerank(
                 .record_rerank_upstream_failure();
             // 上游已 2xx（已计费）：形状非法也需入分账
             record_rerank_usage(&state, &decision, &api_key_hash, parsed.documents.len()).await;
-            let error = FluxgateError::from(err);
+            let error = FluxweirError::from(err);
             push_rerank_log(
                 &state,
                 &request_id,
@@ -241,10 +241,10 @@ async fn record_rerank_usage(
 /// 点名提示能力复核：X-Vendor 必须指向启用的 rerank 厂商，X-Model 必须能
 /// 解析到 rerank 条目；不匹配即 ProtocolError（请求不发出）——防止点名
 /// 绕过能力过滤（合法点名继续由 `route_rerank` 在能力集合内选择）。
-fn validate_rerank_hints(state: &Arc<ApiState>, headers: &HeaderMap) -> Result<(), FluxgateError> {
+fn validate_rerank_hints(state: &Arc<ApiState>, headers: &HeaderMap) -> Result<(), FluxweirError> {
     let hints = crate::api::routing_hints::hints_from_state(&state.config.read(), headers);
     let mismatch = || {
-        FluxgateError::from(GateError::Protocol {
+        FluxweirError::from(GateError::Protocol {
             source: t("api-rerank-capability-mismatch"),
             inner: None,
         })

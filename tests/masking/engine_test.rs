@@ -11,7 +11,7 @@
 mod common;
 
 mod detect {
-    use fluxgate::masking::{MaskDetector, MaskKind, RuleDetector};
+    use fluxweir::masking::{MaskDetector, MaskKind, RuleDetector};
 
     fn detector() -> RuleDetector {
         RuleDetector::build(&[], false, &[]).expect("builtin-only detector builds")
@@ -71,7 +71,7 @@ mod detect {
 }
 
 mod custom {
-    use fluxgate::masking::{MaskDetector, MaskKind, RuleDetector};
+    use fluxweir::masking::{MaskDetector, MaskKind, RuleDetector};
 
     /// 自定义词与正则命中 Custom；`words_any_case` 时大小写不敏感；
     /// 非法正则构造期 Err（启动拒绝面）。
@@ -103,14 +103,14 @@ mod custom {
         // 非法正则 → 构造期 Err（启动拒绝）
         let err = RuleDetector::build(&[], false, &["(unclosed".to_string()]).unwrap_err();
         assert!(
-            matches!(err, fluxgate::masking::MaskError::InvalidRule { .. }),
+            matches!(err, fluxweir::masking::MaskError::InvalidRule { .. }),
             "{err:?}"
         );
     }
 }
 
 mod placeholder {
-    use fluxgate::masking::{MaskKind, PlaceholderRegistry};
+    use fluxweir::masking::{MaskKind, PlaceholderRegistry};
     use std::sync::Arc;
 
     /// 确定性占位符：同值同种类跨注册表实例同串；形态
@@ -178,7 +178,7 @@ mod placeholder {
 }
 
 mod mask_json {
-    use fluxgate::masking::{
+    use fluxweir::masking::{
         mask_json, ActionMap, AllowList, KindSet, MaskAction, MaskDetector, MaskError, MaskKind,
         MaskTicket, PlaceholderRegistry, RuleDetector,
     };
@@ -375,7 +375,7 @@ mod mask_json {
 }
 
 mod stream_restore {
-    use fluxgate::masking::{MaskKind, PlaceholderRegistry, StreamRestorer};
+    use fluxweir::masking::{MaskKind, PlaceholderRegistry, StreamRestorer};
     use std::sync::Arc;
 
     fn registry() -> Arc<PlaceholderRegistry> {
@@ -504,7 +504,7 @@ mod stream_restore {
 }
 
 mod restore_json {
-    use fluxgate::masking::{
+    use fluxweir::masking::{
         mask_json, placeholder_for, restore_json, ActionMap, AllowList, KindSet, MaskKind,
         MaskTicket, PlaceholderRegistry, RuleDetector,
     };
@@ -567,7 +567,7 @@ mod restore_json {
     /// 伪造/回显他租户占位符的探测面由此闭合。
     #[test]
     fn restore_scopes_to_request_ticket() {
-        use fluxgate::masking::MaskTicket;
+        use fluxweir::masking::MaskTicket;
         let foreign_secret = "sk-tenant-A-0123456789abcdefghij";
         let own_secret = "sk-tenant-B-0123456789abcdefghij";
         let registry = PlaceholderRegistry::new();
@@ -617,8 +617,8 @@ mod restore_json {
 }
 
 mod gate {
-    use fluxgate::config::{Config, MaskingSection};
-    use fluxgate::masking::{MaskDetector, MaskError, MaskGate, MaskHit, MaskKind, RuleDetector};
+    use fluxweir::config::{Config, MaskingSection};
+    use fluxweir::masking::{MaskDetector, MaskError, MaskGate, MaskHit, MaskKind, RuleDetector};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -641,7 +641,7 @@ mod gate {
     ///（调用方按 503 拒发），原文绝不出站。
     #[test]
     fn gate_error_yields_503_not_raw_send() {
-        let config = Arc::new(fluxgate::config::ConfigManager::new(config_with(
+        let config = Arc::new(fluxweir::config::ConfigManager::new(config_with(
             MaskingSection {
                 enabled: true,
                 ..Default::default()
@@ -649,7 +649,7 @@ mod gate {
         )));
         let gate = MaskGate::new(
             config,
-            Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+            Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
         )
         .with_detector(Arc::new(PanickingDetector));
         let body = json!({"messages": [{"role": "user", "content": "hello world"}]});
@@ -660,12 +660,12 @@ mod gate {
     /// enabled=false（默认）：零行为变化——请求原样透传，检测器不被咨询。
     #[test]
     fn disabled_gate_passthrough() {
-        let config = Arc::new(fluxgate::config::ConfigManager::new(config_with(
+        let config = Arc::new(fluxweir::config::ConfigManager::new(config_with(
             MaskingSection::default(),
         )));
         let gate = MaskGate::new(
             config,
-            Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+            Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
         )
         .with_detector(Arc::new(PanickingDetector));
         assert!(!gate.enabled());
@@ -678,7 +678,7 @@ mod gate {
     /// 正常路径：enabled + 真检测器 → 掩码生效；restore 回环原值。
     #[test]
     fn gate_masks_and_restores() {
-        let config = Arc::new(fluxgate::config::ConfigManager::new(config_with(
+        let config = Arc::new(fluxweir::config::ConfigManager::new(config_with(
             MaskingSection {
                 enabled: true,
                 ..Default::default()
@@ -687,7 +687,7 @@ mod gate {
         let detector = RuleDetector::build(&[], false, &[]).unwrap();
         let gate = MaskGate::new(
             config,
-            Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+            Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
         )
         .with_detector(Arc::new(detector));
         let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
@@ -707,7 +707,7 @@ mod gate {
     /// Block 动作经门 → `MaskError::Blocked`。
     #[test]
     fn gate_propagates_block() {
-        let config = Arc::new(fluxgate::config::ConfigManager::new(config_with(
+        let config = Arc::new(fluxweir::config::ConfigManager::new(config_with(
             MaskingSection {
                 enabled: true,
                 actions: [("custom".to_string(), "block".to_string())]
@@ -719,7 +719,7 @@ mod gate {
         let detector = RuleDetector::build(&["内部门牌".to_string()], false, &[]).unwrap();
         let gate = MaskGate::new(
             config,
-            Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+            Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
         )
         .with_detector(Arc::new(detector));
         let body = json!({"messages": [{"role": "user", "content": "see 内部门牌 here"}]});

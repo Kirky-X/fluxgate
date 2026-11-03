@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/fluxgate.png" alt="Fluxgate Logo" width="240">
+<img src="docs/assets/fluxweir.png" alt="Fluxweir Logo" width="240">
 
-[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxgate?style=for-the-badge)](https://github.com/Kirky-X/fluxgate/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxgate/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxgate?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxgate) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)](<>) [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
+[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxweir?style=for-the-badge)](https://github.com/Kirky-X/fluxweir/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxweir/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxweir/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxweir?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxweir) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)](<>) [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 
 **中文** | [English](README_EN.md)
 
@@ -72,19 +72,19 @@
 <td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>入站限流与准入</b><br><span style="color:#64748B">limiteron tower 层入站限流（端点表 + 全局层）+ <code>[[rate_limit.rules]]</code> 路径规则（未配置全局规则时，共享令牌桶兜底）；拥塞感知优先级准入（按 API Key 档位 dedicated/guaranteed/elastic/spot 分级 shed）</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>安全认证与密钥保密柜</b><br><span style="color:#64748B">API Key 仅存 SHA256 摘要、常量时间比较；上游密钥支持保密柜持久化（<code>POST/GET/DELETE /admin/vault/keys</code>，cocoon AEAD 加密入库、响应与日志零明文），首装由 env 引导吸收、之后免二次输入——主钥经 <code>FLUXGATE_MASTER_KEY</code> 或自动生成文件（<code>~/.fluxgate/vault_master.key</code>，0600）分层提供，<b>主钥丢失不可恢复，请备份</b></span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>安全认证与密钥保密柜</b><br><span style="color:#64748B">API Key 仅存 SHA256 摘要、常量时间比较；上游密钥支持保密柜持久化（<code>POST/GET/DELETE /admin/vault/keys</code>，cocoon AEAD 加密入库、响应与日志零明文），首装由 env 引导吸收、之后免二次输入——主钥经 <code>FLUXWEIR_MASTER_KEY</code> 或自动生成文件（<code>~/.fluxweir/vault_master.key</code>，0600）分层提供，<b>主钥丢失不可恢复，请备份</b></span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>响应缓存</b><br><span style="color:#64748B">精确响应缓存（oxcache 存储），租户 + 厂商 + 请求体指纹键，TTL 分级乘数与负载联动，并发去重（single-flight）由 oxcache <code>get_or</code> 承载，<code>X-No-Cache: 1</code> 强制回源</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>请求日志与预聚合</b><br><span style="color:#64748B">异步批量写库（默认 SQLite，db-postgres/db-mysql 构建下写对应后端；满载丢弃计数不阻塞响应），Token 用量按 (厂商, 模型, api_key 摘要, 日期, 小时) 预聚合 UPSERT</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[model_catalog]]</code> 的四档单价为计价正源（微美元原子累积按厂商/模型分账，热更新立即生效）；<code>[[pricing]]</code> 仅用于路由 SLA 因子与未登记目录模型的配额回退档。另有离线成本回放工具 <code>fluxgate-replay</code>（<code>cost-replay</code> feature，不进 <code>full</code>）：读 <code>request_logs</code> 历史重放 affinity/cache_ttl 场景的 counterfactual 成本，只读不写库（目标库须已存在，不存在则报错）</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>成本追踪</b><br><span style="color:#64748B"><code>[[model_catalog]]</code> 的四档单价为计价正源（微美元原子累积按厂商/模型分账，热更新立即生效）；<code>[[pricing]]</code> 仅用于路由 SLA 因子与未登记目录模型的配额回退档。另有离线成本回放工具 <code>fluxweir-replay</code>（<code>cost-replay</code> feature，不进 <code>full</code>）：读 <code>request_logs</code> 历史重放 affinity/cache_ttl 场景的 counterfactual 成本，只读不写库（目标库须已存在，不存在则报错）</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；<code>server</code>/<code>cors</code>/<code>rate_limit</code>/<code>database</code>/<code>grpc</code>/<code>global_model</code>/<code>cache.semantic</code>/<code>docs.enabled</code>/<code>routing.difficulty.enabled</code> 及 <code>routing.difficulty.classifier</code> 的 <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> 变更会在响应 <code>restart_required</code> 中显式提示（vendor <code>concurrency</code> 等其余需重启面无此字段，需自行重启）</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">52 个方法端点（feature 全开口径：数据面 14 + 搜索/抓取 2 + 管理面 35 + 健康 1，其中 11 个随 feature 门控；另有 <code>/readyz</code>、<code>/metrics</code> 运维出口与 <code>/console</code> 控制台）：日志查询/搜索、Token 统计、成本分账查询、全局指标（含亲和命中率、丢弃计数）、厂商状态与密钥池重置、路由解释、配置与模型管理、订阅/掩码/目录同步（feature 门控）、健康检查</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>国际化</b><br><span style="color:#64748B">Fluent 双语束（en/zh）覆盖全部业务消息与错误文案，<code>FLUXGATE_LANG</code> → 系统环境 → 回退 en 检测链</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>国际化</b><br><span style="color:#64748B">Fluent 双语束（en/zh）覆盖全部业务消息与错误文案，<code>FLUXWEIR_LANG</code> → 系统环境 → 回退 en 检测链</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>生产就绪</b><br><span style="color:#64748B">Docker 多阶段构建 + 非 root 运行、镜像层健康检查（<code>HEALTHCHECK</code>）与 docker-compose 资源限制、GitHub Actions CI（fmt/clippy/test/coverage/audit）与自动发布流水线</span></td>
 </tr>
 </table>
@@ -251,7 +251,7 @@ model_type = "rerank"
 
 ## 🏗️ 架构
 
-Fluxgate 采用分层管线设计：入站请求经中间件管线（认证 → 限流 → 准入）进入 API 层，由路由决策器在合格厂商集合中选择目标（抽象模型 → `vendor.model` 直连 → `auto` 全局池三级决策），再经协议转换（或零拷贝透传）交由 VendorManager 携带熔断/重试执行出站调用；响应侧完成 SSE 分帧与协议回转，同时异步落日志、预聚合 Token、累积成本并回写亲和与 LinUCB 奖励。
+Fluxweir 采用分层管线设计：入站请求经中间件管线（认证 → 限流 → 准入）进入 API 层，由路由决策器在合格厂商集合中选择目标（抽象模型 → `vendor.model` 直连 → `auto` 全局池三级决策），再经协议转换（或零拷贝透传）交由 VendorManager 携带熔断/重试执行出站调用；响应侧完成 SSE 分帧与协议回转，同时异步落日志、预聚合 Token、累积成本并回写亲和与 LinUCB 奖励。
 
 <details>
 <summary>📄 代码 · mermaid</summary>
@@ -260,7 +260,7 @@ Fluxgate 采用分层管线设计：入站请求经中间件管线（认证 → 
 flowchart TB
     Client["客户端（OpenAI / Anthropic 任一格式）"]
 
-    subgraph GW["Fluxgate 网关（Axum 0.8 + sdforge）"]
+    subgraph GW["Fluxweir 网关（Axum 0.8 + sdforge）"]
         direction LR
         MW["中间件管线<br/>auth（SHA256）· 滑动窗口限流（缺省令牌桶兜底）· 拥塞准入"]
         Handler["API 处理器<br/>路由提示提取 · 响应缓存"]
@@ -289,13 +289,13 @@ flowchart TB
 
 路由决策体系、弹性层状态机、配置热更新事务语义、DI 组装与 i18n 架构的完整说明见 [🏗️ 架构文档](docs/ARCHITECTURE.md)。
 
-Fluxgate 同时是**库优先**组件：服务器装配链承载于 `fluxgate::server`（可独立部署的 HTTP 服务器），Rust 客户端承载于 `fluxgate::sdk`（`sdk` feature 门控）——二进制 `main.rs` 只是薄启动入口。`grpc` feature（独立门控，不进 `full`）另提供 gRPC 服务器：sdforge `sdforge.v1.SdForgeService` 门面（GetInfo / Call / CallStream，JSON over gRPC）经 `take_grpc_server` 与 HTTP 同进程共存，认证复用 `[auth]` 段 SHA256 摘要，优雅停机与 HTTP 共享同一信号。
+Fluxweir 同时是**库优先**组件：服务器装配链承载于 `fluxweir::server`（可独立部署的 HTTP 服务器），Rust 客户端承载于 `fluxweir::sdk`（`sdk` feature 门控）——二进制 `main.rs` 只是薄启动入口。`grpc` feature（独立门控，不进 `full`）另提供 gRPC 服务器：sdforge `sdforge.v1.SdForgeService` 门面（GetInfo / Call / CallStream，JSON over gRPC）经 `take_grpc_server` 与 HTTP 同进程共存，认证复用 `[auth]` 段 SHA256 摘要，优雅停机与 HTTP 共享同一信号。
 
 ---
 
 ## 📚 作为库依赖
 
-`fluxgate` 既是可执行网关，也是 Rust 库（`src/lib.rs` 导出公共 API）。默认 `full` feature 已含服务器组件；客户端 SDK 由 `sdk` feature 提供（已含于 `full`，亦可单独启用）。
+`fluxweir` 既是可执行网关，也是 Rust 库（`src/lib.rs` 导出公共 API）。默认 `full` feature 已含服务器组件；客户端 SDK 由 `sdk` feature 提供（已含于 `full`，亦可单独启用）。
 
 **嵌入式起服**（在自己的应用中托管网关）：
 
@@ -304,9 +304,9 @@ Fluxgate 同时是**库优先**组件：服务器装配链承载于 `fluxgate::s
 
 ```rust
 #[tokio::main]
-async fn main() -> Result<(), fluxgate::error::FluxgateError> {
+async fn main() -> Result<(), fluxweir::error::FluxweirError> {
     // 装配链（配置/数据库/厂商/路由）+ 起服 + 优雅停机 flush 全部由库承担
-    fluxgate::server::run(Some("config.toml".into())).await
+    fluxweir::server::run(Some("config.toml".into())).await
 }
 ```
 
@@ -318,13 +318,13 @@ async fn main() -> Result<(), fluxgate::error::FluxgateError> {
 <summary>📄 代码 · rust</summary>
 
 ```rust
-use fluxgate::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, FluxgateClientBuilder};
+use fluxweir::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, FluxweirClientBuilder};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = FluxgateClientBuilder::new()
+    let client = FluxweirClientBuilder::new()
         .base_url("http://127.0.0.1:8080")
-        .api_key(std::env::var("FLUXGATE_API_KEY")?)
+        .api_key(std::env::var("FLUXWEIR_API_KEY")?)
         .build()?;
 
     // 便捷构造 + 请求级配置（temperature / max_tokens / hints 等经 RequestConfig）
@@ -371,7 +371,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | 独立运行（默认，sqlite） | `cargo run`                                                                   |
 | 独立运行（PostgreSQL）   | `cargo build --no-default-features --features "full,db-postgres"`             |
 | 独立运行（MySQL）        | `cargo build --no-default-features --features "full,db-mysql"`                |
-| 库嵌入（自选后端）       | `fluxgate = { default-features = false, features = ["full", "db-postgres"] }` |
+| 库嵌入（自选后端）       | `fluxweir = { default-features = false, features = ["full", "db-postgres"] }` |
 
 </details>
 
@@ -379,7 +379,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 配置侧 `[database] url`（完整连接 URL）非空时优先；留空则 `path` 按 sqlite 文件库回退（未编译 db-sqlite 时启动报 `database-backend-missing` 并附重建指引）
 - schema 与列迁移按连接后端自动分派（`schema.postgres.sql` / `schema.mysql.sql` 为 `schema.sql` 的方言投影，加表/加列时三处同改）
 
-> SDK 是「HTTP 客户端」（调用网关 REST API，含 SSE 流式），不是进程内直连路由核心；嵌入式直用 `fluxgate::server` 与 `fluxgate::api` 即可。
+> SDK 是「HTTP 客户端」（调用网关 REST API，含 SSE 流式），不是进程内直连路由核心；嵌入式直用 `fluxweir::server` 与 `fluxweir::api` 即可。
 
 ---
 
@@ -398,9 +398,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-# 非默认后端矩阵（必须 `-p fluxgate` 限定到本包，避开示例成员拉入 db-sqlite 后特性互斥）
-cargo check -p fluxgate --no-default-features --features "full,db-postgres"
-cargo check -p fluxgate --no-default-features --features "full,db-mysql"
+# 非默认后端矩阵（必须 `-p fluxweir` 限定到本包，避开示例成员拉入 db-sqlite 后特性互斥）
+cargo check -p fluxweir --no-default-features --features "full,db-postgres"
+cargo check -p fluxweir --no-default-features --features "full,db-mysql"
 ```
 
 </details>
@@ -455,7 +455,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 ### 🚨 报告安全漏洞
 
-请勿通过公开 issue 报告安全漏洞。请使用 GitHub [Security Advisories](https://github.com/Kirky-X/fluxgate/security/policy) 私密披露通道提交报告。项目承诺 48 小时内确认、7 天内给出初步评估。
+请勿通过公开 issue 报告安全漏洞。请使用 GitHub [Security Advisories](https://github.com/Kirky-X/fluxweir/security/policy) 私密披露通道提交报告。项目承诺 48 小时内确认、7 天内给出初步评估。
 
 ---
 
@@ -494,14 +494,14 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 # 两个基础镜像的 alpine 后缀保持同一分支（产物 musl 静态链接，运行阶段另有
 # ldd 门禁在构建期回验依赖全部可解）
 # 注意：-f 指定 Dockerfile，构建上下文仍为仓库根（bind mount 与 .dockerignore 按根解析）
-docker build -t fluxgate:0.1.0 -f docker/Dockerfile .
+docker build -t fluxweir:0.1.0 -f docker/Dockerfile .
 
 # 运行容器（SQLite 数据持久化于 /app/data；配置放 data/config.toml）
 # ⚠️ 不要用 `-v $(pwd)/config.toml:/app/config.toml:ro` 单文件只读挂载——
 # 管理面写回经 rename 原子覆盖，单文件挂载会 EBUSY，POST /admin/config 与
 # 模型条目写回全部 500（compose 文件同款注释）；要么整目录挂载，要么用 compose
 docker run -d -p 8080:8080 \
-  -v $(pwd)/data:/app/data fluxgate:0.1.0 \
+  -v $(pwd)/data:/app/data fluxweir:0.1.0 \
   /bin/server /app/data/config.toml
 
 # 或使用 docker-compose 一键部署（含资源限制；compose 文件位于 docker/ 下）
@@ -510,7 +510,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 </details>
 
-> 健康检查：由**镜像层 HEALTHCHECK** 单一提供（compose 不再重复声明），探测实际注册路径 `/api/v1/health`；docker-compose 自带资源限制（cpus 2 / 内存 512M）与非 root 运行时，镜像 tag 默认 `fluxgate:0.1.0`，可用 `FLUXGATE_IMAGE_TAG` 覆盖（详见 [📖 用户指南 · Docker 部署](docs/USER_GUIDE.md)）。
+> 健康检查：由**镜像层 HEALTHCHECK** 单一提供（compose 不再重复声明），探测实际注册路径 `/api/v1/health`；docker-compose 自带资源限制（cpus 2 / 内存 512M）与非 root 运行时，镜像 tag 默认 `fluxweir:0.1.0`，可用 `FLUXWEIR_IMAGE_TAG` 覆盖（详见 [📖 用户指南 · Docker 部署](docs/USER_GUIDE.md)）。
 
 ---
 
@@ -531,7 +531,7 @@ docker compose -f docker/docker-compose.yml up -d
 ### 🐛 报告 Bug
 
 发现问题？<br>
-<a href="https://github.com/Kirky-X/fluxgate/issues/new">创建 Issue</a>
+<a href="https://github.com/Kirky-X/fluxweir/issues/new">创建 Issue</a>
 
 </td>
 <td width="33%" align="center" style="padding: 16px">
@@ -539,7 +539,7 @@ docker compose -f docker/docker-compose.yml up -d
 ### 💡 功能建议
 
 有好想法？<br>
-<a href="https://github.com/Kirky-X/fluxgate/discussions">开始讨论</a>
+<a href="https://github.com/Kirky-X/fluxweir/discussions">开始讨论</a>
 
 </td>
 <td width="33%" align="center" style="padding: 16px">
@@ -547,7 +547,7 @@ docker compose -f docker/docker-compose.yml up -d
 ### 🔧 提交 PR
 
 想贡献代码？<br>
-<a href="https://github.com/Kirky-X/fluxgate/pulls">Fork 并提交 PR</a>
+<a href="https://github.com/Kirky-X/fluxweir/pulls">Fork 并提交 PR</a>
 
 </td>
 </tr>
@@ -580,7 +580,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ### 🌟 核心依赖（兄弟库）
 
-Fluxgate 经 crates.io registry 集成以下自研库（版本声明在根 `Cargo.toml`，校验和锁定在 `Cargo.lock`）：
+Fluxweir 经 crates.io registry 集成以下自研库（版本声明在根 `Cargo.toml`，校验和锁定在 `Cargo.lock`）：
 
 <details>
 <summary>📋 表格</summary>
@@ -599,7 +599,7 @@ Fluxgate 经 crates.io registry 集成以下自研库（版本声明在根 `Carg
 
 ### 💝 特别感谢
 
-感谢 Rust 社区与所有[贡献者](https://github.com/Kirky-X/fluxgate/graphs/contributors)。
+感谢 Rust 社区与所有[贡献者](https://github.com/Kirky-X/fluxweir/graphs/contributors)。
 
 ---
 
@@ -608,15 +608,15 @@ Fluxgate 经 crates.io registry 集成以下自研库（版本声明在根 `Carg
 <table style="width:100%; max-width: 600px">
 <tr>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/fluxgate/issues"><b style="color:#991B1B">Issues</b></a><br>
+<a href="https://github.com/Kirky-X/fluxweir/issues"><b style="color:#991B1B">Issues</b></a><br>
 <span style="color:#64748B">报告问题和 Bug</span>
 </td>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/fluxgate/discussions"><b style="color:#1E40AF">讨论区</b></a><br>
+<a href="https://github.com/Kirky-X/fluxweir/discussions"><b style="color:#1E40AF">讨论区</b></a><br>
 <span style="color:#64748B">提问和分享想法</span>
 </td>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/fluxgate"><b style="color:#1E293B">GitHub</b></a><br>
+<a href="https://github.com/Kirky-X/fluxweir"><b style="color:#1E293B">GitHub</b></a><br>
 <span style="color:#64748B">查看源代码</span>
 </td>
 </tr>
@@ -626,7 +626,7 @@ Fluxgate 经 crates.io registry 集成以下自研库（版本声明在根 `Carg
 
 ## ⭐ Star 历史
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/fluxgate&type=Date)](https://star-history.com/#Kirky-X/fluxgate&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/fluxweir&type=Date)](https://star-history.com/#Kirky-X/fluxweir&Date)
 
 如果这个项目对您有帮助，请考虑给它一个 ⭐️！
 

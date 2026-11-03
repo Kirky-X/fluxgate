@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use crate::sdk::client::FluxgateClientBuilder;
-use crate::sdk::error::{ApiError, FluxgateSdkError};
+use crate::sdk::client::FluxweirClientBuilder;
+use crate::sdk::error::{ApiError, FluxweirSdkError};
 use crate::sdk::EmbedRequest;
 use crate::sdk::EmbeddingValue;
 
-fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
-    FluxgateClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxweirClient {
+    FluxweirClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -75,7 +75,7 @@ async fn embed_500_returns_server_error() {
     let err = client.embed(&req).await.unwrap_err();
 
     match err {
-        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        FluxweirSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
         other => panic!("expected Api error, got {other:?}"),
     }
 }

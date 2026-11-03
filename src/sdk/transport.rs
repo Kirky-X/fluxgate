@@ -5,7 +5,7 @@
 
 use reqwest::Response;
 
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::retry::{system_jitter_seed, RetryPolicy};
 
 /// 带重试的发送。
@@ -21,14 +21,14 @@ use crate::sdk::retry::{system_jitter_seed, RetryPolicy};
 pub(crate) async fn send_with_retry(
     request: &reqwest::RequestBuilder,
     policy: &RetryPolicy,
-) -> Result<Response, FluxgateSdkError> {
+) -> Result<Response, FluxweirSdkError> {
     let mut attempt: u32 = 0;
     loop {
         // 每次尝试克隆新 builder（body 为 Bytes 可克隆）；不可克隆（如流式
         // body）不是 panic 场景，显性化为 Config 错误。
         let builder = request
             .try_clone()
-            .ok_or_else(|| FluxgateSdkError::Config {
+            .ok_or_else(|| FluxweirSdkError::Config {
                 message: "request builder is not cloneable (streaming request body?)".to_string(),
             })?;
         match builder.send().await {
@@ -37,9 +37,9 @@ pub(crate) async fn send_with_retry(
                 let status = response.status().as_u16();
                 let headers = response.headers().clone();
                 let text = read_error_body_capped(response).await;
-                let error = FluxgateSdkError::from_http_error(status, &headers, &text);
+                let error = FluxweirSdkError::from_http_error(status, &headers, &text);
                 let retry_after = match &error {
-                    FluxgateSdkError::Api(api) if api.is_retryable() => api.retry_after,
+                    FluxweirSdkError::Api(api) if api.is_retryable() => api.retry_after,
                     _ => return Err(error),
                 };
                 if attempt >= policy.max_retries {
@@ -51,7 +51,7 @@ pub(crate) async fn send_with_retry(
             }
             Err(source) => {
                 let retryable = source.is_timeout() || source.is_connect() || source.is_request();
-                let error = FluxgateSdkError::from(source);
+                let error = FluxweirSdkError::from(source);
                 if !retryable || attempt >= policy.max_retries {
                     return Err(error);
                 }
@@ -77,7 +77,7 @@ async fn read_error_body_capped(mut response: Response) -> String {
             }
             Ok(None) => break,
             Err(error) => {
-                tracing::debug!(target: "fluxgate::sdk", %error, "error body read failed; using prefix");
+                tracing::debug!(target: "fluxweir::sdk", %error, "error body read failed; using prefix");
                 break;
             }
         }

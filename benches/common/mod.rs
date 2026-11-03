@@ -12,17 +12,17 @@
 
 #![allow(dead_code)]
 
-use fluxgate::config::model_catalog::CacheBreakpointPolicy;
-use fluxgate::config::{
+use fluxweir::config::model_catalog::CacheBreakpointPolicy;
+use fluxweir::config::{
     ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
     RateLimitConfig, ServerConfig, VendorConfig,
 };
-use fluxgate::protocol::{
+use fluxweir::protocol::{
     AnthropicConverter, MessageContent, ProtocolConverter, SseFrameParser, StreamChunk,
     UnifiedRequest,
 };
-use fluxgate::router::Router;
-use fluxgate::vendor::VendorManager;
+use fluxweir::router::Router;
+use fluxweir::vendor::VendorManager;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -214,7 +214,7 @@ pub fn routing_config() -> Config {
             id: format!("bench-vendor-{i}"),
             name: format!("Bench Vendor {i}"),
             type_: "openai".into(),
-            api_key_env: "FLUXGATE_BENCH_KEY".into(), // pragma: allowlist secret（仅 fixture 环境变量名，非凭证）
+            api_key_env: "FLUXWEIR_BENCH_KEY".into(), // pragma: allowlist secret（仅 fixture 环境变量名，非凭证）
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base: format!("http://127.0.0.1:{}", 9100 + i),

@@ -21,9 +21,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use fluxgate::config::{Config, ConfigManager, ModelCatalogEntry, ServerConfig};
-use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use fluxgate::vendor::VendorManager;
+use fluxweir::config::{Config, ConfigManager, ModelCatalogEntry, ServerConfig};
+use fluxweir::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use fluxweir::vendor::VendorManager;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -83,7 +83,7 @@ async fn setup_cost_test(
             rerank_price_per_1k_docs: 0.0,
             input_price: 30.0,
             output_price: 60.0,
-            currency: fluxgate::config::PricingCurrency::Usd,
+            currency: fluxweir::config::PricingCurrency::Usd,
             ..Default::default()
         }],
         ..common::test_config(vec![v])
@@ -253,7 +253,7 @@ async fn claude_cache_token_usage_priced_with_cache_tiers() {
             cache_creation_1h_price: 0.0,
             long_context_input_price: 0.0,
             long_context_threshold_tokens: 0,
-            currency: fluxgate::config::PricingCurrency::Usd,
+            currency: fluxweir::config::PricingCurrency::Usd,
             max_output_tokens: Some(8192),
             supports_tools: true,
             supports_thinking: true,

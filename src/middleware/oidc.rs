@@ -145,7 +145,7 @@ pub async fn authenticate(token: &str, auth: &AuthSection) -> Result<OidcIdentit
     let session_id = {
         use sha2::{Digest, Sha256};
         let digest =
-            Sha256::digest(format!("fluxgate-oidc\0{}\0{}", rule.issuer.trim(), sub).as_bytes());
+            Sha256::digest(format!("fluxweir-oidc\0{}\0{}", rule.issuer.trim(), sub).as_bytes());
         hex::encode(digest)
     };
     let ttl_secs = rule.ttl_secs.min(86_400) as i64;

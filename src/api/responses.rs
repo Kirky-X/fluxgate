@@ -9,7 +9,7 @@
 use crate::api::request_cost_usd;
 use crate::api::RoutingHints;
 use crate::database::RequestLog;
-use crate::error::{FluxgateError, GateError};
+use crate::error::{FluxweirError, GateError};
 use crate::protocol::responses::{
     now_secs, parse_request, queued_response, to_responses_response, to_unified_request,
     ParsedResponsesRequest, ResponsesResponse, ResponsesStreamEncoder,
@@ -149,7 +149,7 @@ pub async fn create_response(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     let responses_config = state.config.read().responses.clone();
     if !responses_config.enabled {
         return Ok(not_found(crate::i18n::t("api-responses-disabled")));
@@ -177,7 +177,7 @@ pub async fn create_response(
         Ok(items) => items,
         Err(HistoryError::NotFound(message)) => return Ok(not_found(message)),
         Err(HistoryError::Invalid(field)) => {
-            return Err(FluxgateError::from(GateError::Validation { field }))
+            return Err(FluxweirError::from(GateError::Validation { field }))
         }
     };
     if parsed.request.truncation.as_deref() == Some("auto") {
@@ -187,7 +187,7 @@ pub async fn create_response(
     // 候选，原样打 /responses
     if parsed.native_only.is_some() {
         if parsed.request.background {
-            return Err(FluxgateError::from(GateError::Validation {
+            return Err(FluxweirError::from(GateError::Validation {
                 field: "background: native-only requests are not supported in background mode"
                     .to_string(),
             }));
@@ -319,7 +319,7 @@ async fn stream_response(
     unified_request: UnifiedRequest,
     responses_config: &crate::config::ResponsesSection,
     effective_store: bool,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     let chunk_stream = state
         .vendor_manager
         .execute_stream_request_with_options(
@@ -341,7 +341,7 @@ async fn stream_response(
                 .vendor_manager
                 .metrics()
                 .record_responses_upstream_failure();
-            let error = FluxgateError::from(error);
+            let error = FluxweirError::from(error);
             log_responses_failure(state, ctx, &decision, parsed, &error).await;
             return Err(error);
         }
@@ -475,7 +475,7 @@ async fn native_response(
     hints: RoutingHints,
     responses_config: &crate::config::ResponsesSection,
     effective_store: bool,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     validate_native_hints(state, &hints)?;
     let decision = if hints.has_hints() {
         let route_ctx = crate::api::route_ctx(state, body, hints.batch);
@@ -499,7 +499,7 @@ async fn native_response(
             .await?
     };
     if !decision.vendor.is_responses_style() {
-        return Err(FluxgateError::from(GateError::Protocol {
+        return Err(FluxweirError::from(GateError::Protocol {
             source: crate::i18n::t_args(
                 "api-responses-native-hint-vendor",
                 &[("vendor", decision.vendor.id.clone())],
@@ -532,7 +532,7 @@ async fn native_response(
                     .vendor_manager
                     .metrics()
                     .record_responses_upstream_failure();
-                let error = FluxgateError::from(error);
+                let error = FluxweirError::from(error);
                 log_responses_failure(state, ctx, &decision, parsed, &error).await;
                 return Err(error);
             }
@@ -604,7 +604,7 @@ async fn native_response(
                 .vendor_manager
                 .metrics()
                 .record_responses_upstream_failure();
-            let error = FluxgateError::from(error);
+            let error = FluxweirError::from(error);
             log_responses_failure(state, ctx, &decision, parsed, &error).await;
             return Err(error);
         }
@@ -618,7 +618,7 @@ async fn native_response(
                 .vendor_manager
                 .metrics()
                 .record_responses_upstream_failure();
-            let error = FluxgateError::from(GateError::Protocol {
+            let error = FluxweirError::from(GateError::Protocol {
                 source: format!("responses upstream response: {error}"),
                 inner: None,
             });
@@ -657,14 +657,14 @@ async fn native_response(
 }
 
 /// X-Vendor/X-Model 必须指向 Responses 原生厂商；不匹配 → 502 且不发请求。
-fn validate_native_hints(state: &Arc<ApiState>, hints: &RoutingHints) -> Result<(), FluxgateError> {
+fn validate_native_hints(state: &Arc<ApiState>, hints: &RoutingHints) -> Result<(), FluxweirError> {
     if let Some(vendor_id) = hints.preferred_vendor.as_deref() {
         let capable = state
             .config
             .get_vendor_ci(vendor_id)
             .is_some_and(|vendor| vendor.enabled && vendor.is_responses_style());
         if !capable {
-            return Err(FluxgateError::from(GateError::Protocol {
+            return Err(FluxweirError::from(GateError::Protocol {
                 source: crate::i18n::t_args(
                     "api-responses-native-hint-vendor",
                     &[("vendor", vendor_id.to_string())],
@@ -680,7 +680,7 @@ fn validate_native_hints(state: &Arc<ApiState>, hints: &RoutingHints) -> Result<
             .iter()
             .any(|(vendor, _)| vendor.is_responses_style());
         if !capable {
-            return Err(FluxgateError::from(GateError::Protocol {
+            return Err(FluxweirError::from(GateError::Protocol {
                 source: crate::i18n::t_args(
                     "api-responses-native-hint-model",
                     &[("model", model.to_string())],
@@ -752,24 +752,24 @@ async fn background_response(
     hints: RoutingHints,
     responses_config: &crate::config::ResponsesSection,
     effective_store: bool,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     if !responses_config.background_enabled {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: "background: disabled by [responses].background_enabled".to_string(),
         }));
     }
     if !effective_store {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: "background requires store=true".to_string(),
         }));
     }
     let Some(runtime) = state.responses.as_ref() else {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: "background: state store is not wired".to_string(),
         }));
     };
     if !runtime.jobs.try_begin(responses_config.max_background_jobs) {
-        return Err(FluxgateError::from(GateError::RateLimited {
+        return Err(FluxweirError::from(GateError::RateLimited {
             vendor: "responses-background".to_string(),
         }));
     }
@@ -800,7 +800,7 @@ async fn background_response(
             .vendor_manager
             .metrics()
             .record_responses_store_failure();
-        return Err(FluxgateError::from(GateError::Config {
+        return Err(FluxweirError::from(GateError::Config {
             message: error.to_string(),
         }));
     }
@@ -868,7 +868,7 @@ async fn run_background_job(
     tenant: &str,
     response_id: &str,
     hints: RoutingHints,
-) -> Result<ResponsesResponse, FluxgateError> {
+) -> Result<ResponsesResponse, FluxweirError> {
     let unified_request = to_unified_request(parsed, merged_items)?;
     let route_ctx = crate::api::route_ctx(state, body, hints.batch);
     let decision = if hints.has_hints() {
@@ -933,7 +933,7 @@ async fn run_background_job(
                 .vendor_manager
                 .metrics()
                 .record_responses_upstream_failure();
-            let error = FluxgateError::from(error);
+            let error = FluxweirError::from(error);
             log_responses_failure(state, &ctx, &decision, parsed, &error).await;
             return Err(error);
         }
@@ -956,7 +956,7 @@ async fn dispatch_request(
     request: UnifiedRequest,
     sink: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
     traceparent: Option<String>,
-) -> Result<(UnifiedResponse, RoutingDecision), FluxgateError> {
+) -> Result<(UnifiedResponse, RoutingDecision), FluxweirError> {
     #[cfg(feature = "resilience")]
     {
         let mut trail = crate::vendor::resilience::AttemptTrail::new(
@@ -978,7 +978,7 @@ async fn dispatch_request(
                 &mut trail,
             )
             .await
-            .map_err(FluxgateError::from);
+            .map_err(FluxweirError::from);
         }
         let opts = crate::vendor::manager::VendorCallOptions {
             anthropic_beta: None,
@@ -991,7 +991,7 @@ async fn dispatch_request(
             .vendor_manager
             .execute_request_with_options(&decision.vendor.id, request, opts)
             .await
-            .map_err(FluxgateError::from)?;
+            .map_err(FluxweirError::from)?;
         Ok((response, decision))
     }
     #[cfg(not(feature = "resilience"))]
@@ -1007,7 +1007,7 @@ async fn dispatch_request(
             .vendor_manager
             .execute_request_with_options(&decision.vendor.id, request, opts)
             .await
-            .map_err(FluxgateError::from)?;
+            .map_err(FluxweirError::from)?;
         Ok((response, decision))
     }
 }
@@ -1021,7 +1021,7 @@ async fn resolve_route(
     session_key: Option<&str>,
     api_key_hash: &str,
     body: &Value,
-) -> Result<RoutingDecision, FluxgateError> {
+) -> Result<RoutingDecision, FluxweirError> {
     let ctx = crate::api::route_ctx(state, body, hints.batch);
     let decision = if hints.has_hints() {
         state
@@ -1060,9 +1060,9 @@ async fn resolve_route(
 pub async fn input_tokens(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     if body.get("model").and_then(Value::as_str).is_none() {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: "model".to_string(),
         }));
     }
@@ -1076,7 +1076,7 @@ pub async fn input_tokens(
         _ => false,
     };
     if empty {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: "input: must not be empty".to_string(),
         }));
     }
@@ -1105,7 +1105,7 @@ pub async fn get_response(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     if !state.config.read().responses.enabled {
         return Ok(not_found(crate::i18n::t("api-responses-disabled")));
     }
@@ -1139,7 +1139,7 @@ pub async fn delete_response(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     if !state.config.read().responses.enabled {
         return Ok(not_found(crate::i18n::t("api-responses-disabled")));
     }
@@ -1177,7 +1177,7 @@ pub async fn cancel_response(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     if !state.config.read().responses.enabled {
         return Ok(not_found(crate::i18n::t("api-responses-disabled")));
     }
@@ -1200,7 +1200,7 @@ pub async fn cancel_response(
         )));
     };
     if !row.background {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: "id: only background responses can be cancelled".to_string(),
         }));
     }
@@ -1588,7 +1588,7 @@ async fn log_responses_failure(
     ctx: &ResponsesCtx,
     decision: &RoutingDecision,
     parsed: &ParsedResponsesRequest,
-    error: &FluxgateError,
+    error: &FluxweirError,
 ) {
     log_responses_request(
         state,
@@ -1633,8 +1633,8 @@ async fn settle_nonstream(
 
 fn with_route_headers(mut response: Response, decision: &RoutingDecision) -> Response {
     for (name, value) in [
-        ("x-fluxgate-vendor", decision.vendor.id.as_str()),
-        ("x-fluxgate-model", decision.model.model_id.as_str()),
+        ("x-fluxweir-vendor", decision.vendor.id.as_str()),
+        ("x-fluxweir-model", decision.model.model_id.as_str()),
     ] {
         if let (Ok(name), Ok(value)) = (
             axum::http::HeaderName::from_bytes(name.as_bytes()),

@@ -1,17 +1,17 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! 临时方言探针（跑完即删）：对 FLUXGATE_TEST_DB_URL 指向的真实后端
+//! 临时方言探针（跑完即删）：对 FLUXWEIR_TEST_DB_URL 指向的真实后端
 //! 跑全迁移链 + 四列写读 + COUNT/SUM CAST 读回 + UTF-8 标题。
 #![cfg(feature = "database")]
 
 use dbnexus::{DbConfig, DbPool};
-use fluxgate::database::Repository;
+use fluxweir::database::Repository;
 
-#[ignore = "server: requires FLUXGATE_TEST_DB_URL (CI server-backend leg)"]
+#[ignore = "server: requires FLUXWEIR_TEST_DB_URL (CI server-backend leg)"]
 #[tokio::test]
 async fn dialect_probe_full_chain_on_server_backend() {
-    let url = std::env::var("FLUXGATE_TEST_DB_URL").expect("need FLUXGATE_TEST_DB_URL");
+    let url = std::env::var("FLUXWEIR_TEST_DB_URL").expect("need FLUXWEIR_TEST_DB_URL");
     let pool = DbPool::with_config(DbConfig {
         url,
         pool_config: dbnexus::PoolConfig {
@@ -28,7 +28,7 @@ async fn dialect_probe_full_chain_on_server_backend() {
     repo.initialize().await.expect("migration V1..=V9");
     repo.initialize().await.expect("idempotent rerun");
 
-    let log = fluxgate::database::RequestLog {
+    let log = fluxweir::database::RequestLog {
         id: None,
         request_id: "dialect-probe-1".into(),
         timestamp: 1_761_436_800,

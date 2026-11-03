@@ -17,13 +17,13 @@ mod tests {
         routing::post,
         Router,
     };
-    use fluxgate::api::completions::chat_completions;
-    use fluxgate::config::{ConfigManager, ModelConfig, VendorConfig};
-    use fluxgate::database::{Repository, TokenPreAggregator};
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::api::completions::chat_completions;
+    use fluxweir::config::{ConfigManager, ModelConfig, VendorConfig};
+    use fluxweir::database::{Repository, TokenPreAggregator};
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use mockito::Matcher;
     use serde_json::{json, Value};
     use std::sync::Arc;
@@ -69,7 +69,7 @@ mod tests {
             repository.clone(),
             std::time::Duration::from_secs(3600),
         ));
-        let database = Arc::new(fluxgate::database::Database {
+        let database = Arc::new(fluxweir::database::Database {
             pool,
             repository: repository.clone(),
         });

@@ -16,8 +16,8 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use fluxgate::error::GateError;
-use fluxgate::vendor::resilience::{FallbackChain, FallbackTarget, FallbackTrigger};
+use fluxweir::error::GateError;
+use fluxweir::vendor::resilience::{FallbackChain, FallbackTarget, FallbackTrigger};
 
 fn target(vendor: &str, priority: u8) -> FallbackTarget {
     FallbackTarget {
@@ -207,13 +207,13 @@ fn test_timeout_trigger_matches_only_timeout() {
 /// priority 字段构建；无候选（direct 形式不在 abstract 表）返回 None。
 #[cfg(all(feature = "resilience", feature = "router"))]
 mod build_fallback_chain {
-    use fluxgate::config::{
+    use fluxweir::config::{
         ConcurrencyConfig, Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig,
         RateLimitConfig, RetrySection, ServerConfig, VendorConfig,
     };
-    use fluxgate::router::Router;
-    use fluxgate::vendor::resilience::FallbackTrigger;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::router::Router;
+    use fluxweir::vendor::resilience::FallbackTrigger;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
     fn make_vendor(id: &str, priority: u8, enabled: bool) -> VendorConfig {
@@ -229,7 +229,7 @@ mod build_fallback_chain {
             supports_batch: false,
             name: format!("Test {}", id),
             type_: "openai".into(),
-            api_key_env: "FLUXGATE_TEST_KEY".into(),
+            api_key_env: "FLUXWEIR_TEST_KEY".into(),
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base: String::new(),
@@ -292,13 +292,13 @@ mod build_fallback_chain {
             auth: None,
             cors: None,
             retry: RetrySection::default(),
-            routing: fluxgate::config::RoutingSection::default(),
-            cache: fluxgate::config::CacheSection::default(),
+            routing: fluxweir::config::RoutingSection::default(),
+            cache: fluxweir::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: fluxgate::config::ResilienceSection::default(),
+            resilience: fluxweir::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
@@ -374,17 +374,17 @@ mod build_fallback_chain {
 mod cover_all_paths {
     use axum::{body::Body, http::Request, routing::post, Router};
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::api::{chat_completions, ApiState};
-    use fluxgate::config::{
+    use fluxweir::api::{chat_completions, ApiState};
+    use fluxweir::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
         ServerConfig, VendorConfig,
     };
-    use fluxgate::database::{
+    use fluxweir::database::{
         AsyncLogger, AsyncLoggerHandle, Database, LogFilter, Repository, TokenPreAggregator,
     };
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::Duration;
@@ -406,7 +406,7 @@ mod cover_all_paths {
             supports_batch: false,
             name: format!("Test {}", id),
             type_: "openai".into(),
-            api_key_env: "FLUXGATE_TEST_KEY".into(),
+            api_key_env: "FLUXWEIR_TEST_KEY".into(),
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base,
@@ -422,12 +422,12 @@ mod cover_all_paths {
                 compat_group: None,
                 model_type: None,
             }],
-            rate_limit: fluxgate::config::RateLimitConfig::Token {
+            rate_limit: fluxweir::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
                 window_hours: None,
                 sliding: false,
             },
-            concurrency: fluxgate::config::ConcurrencyConfig {
+            concurrency: fluxweir::config::ConcurrencyConfig {
                 requests_per_second: 100,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -468,9 +468,9 @@ mod cover_all_paths {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            retry: fluxgate::config::RetrySection::default(),
-            routing: fluxgate::config::RoutingSection::default(),
-            cache: fluxgate::config::CacheSection::default(),
+            retry: fluxweir::config::RetrySection::default(),
+            routing: fluxweir::config::RoutingSection::default(),
+            cache: fluxweir::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),

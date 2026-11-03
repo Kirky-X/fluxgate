@@ -8,7 +8,7 @@ mod common;
 #[cfg(test)]
 mod hot_reload {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         AuthSection, Config, ConfigManager, CorsSection, RateLimitConfig, ServerConfig,
     };
     use std::path::PathBuf;
@@ -227,11 +227,11 @@ mod hot_reload {
 
 #[cfg(test)]
 mod tests {
-    use fluxgate::config::{
+    use fluxweir::config::{
         validate_config, Config, ConfigManager, DatabaseConfig, GlobalModelConfig,
         ModelCatalogEntry, ModelConfig, PricingConfig, PricingCurrency, ServerConfig, VendorConfig,
     };
-    use fluxgate::error::GateError;
+    use fluxweir::error::GateError;
 
     fn create_test_config() -> Config {
         Config {
@@ -288,11 +288,11 @@ mod tests {
                             model_type: None,
                         },
                     ],
-                    rate_limit: fluxgate::config::RateLimitConfig::Interval {
+                    rate_limit: fluxweir::config::RateLimitConfig::Interval {
                         hours: 1,
                         sliding: false,
                     },
-                    concurrency: fluxgate::config::ConcurrencyConfig {
+                    concurrency: fluxweir::config::ConcurrencyConfig {
                         requests_per_second: 10,
                         max_concurrent_requests: None,
                         token_weighted: false,
@@ -332,11 +332,11 @@ mod tests {
                         compat_group: None,
                         model_type: None,
                     }],
-                    rate_limit: fluxgate::config::RateLimitConfig::Interval {
+                    rate_limit: fluxweir::config::RateLimitConfig::Interval {
                         hours: 1,
                         sliding: false,
                     },
-                    concurrency: fluxgate::config::ConcurrencyConfig {
+                    concurrency: fluxweir::config::ConcurrencyConfig {
                         requests_per_second: 5,
                         max_concurrent_requests: None,
                         token_weighted: false,
@@ -357,14 +357,14 @@ mod tests {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            retry: fluxgate::config::RetrySection::default(),
-            routing: fluxgate::config::RoutingSection::default(),
-            cache: fluxgate::config::CacheSection::default(),
+            retry: fluxweir::config::RetrySection::default(),
+            routing: fluxweir::config::RoutingSection::default(),
+            cache: fluxweir::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: fluxgate::config::ResilienceSection::default(),
+            resilience: fluxweir::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
@@ -976,7 +976,7 @@ concurrency = { requests_per_second = 10 }
 #[cfg(test)]
 mod otlp_config {
     use crate::common;
-    use fluxgate::config::{validate_config, OtlpSection};
+    use fluxweir::config::{validate_config, OtlpSection};
 
     #[test]
     fn test_otlp_section_defaults() {
@@ -1038,7 +1038,7 @@ mod otlp_config {
     /// `[usage_insights]`：缺省开启（内部统计零外部面），缺段与显式同值。
     #[test]
     fn test_usage_insights_defaults_enabled() {
-        let insights = fluxgate::config::UsageInsightsSection::default();
+        let insights = fluxweir::config::UsageInsightsSection::default();
         assert!(insights.enabled, "缺省必须开启：纯内部统计无对外面");
 
         let config = common::test_config(vec![]);
@@ -1062,13 +1062,13 @@ mod otlp_config {
 #[cfg(test)]
 mod affinity_config {
     use crate::common;
-    use fluxgate::config::validate_config;
+    use fluxweir::config::validate_config;
 
     /// `[routing.affinity]`：缺省 legacy（现行为冻结）+ 阈值/窗口缺省值；
     /// 非法 mode 点名拒绝；vendor cache_ttl_secs 越界拒绝（边界含端点）。
     #[test]
     fn test_affinity_section_defaults() {
-        let section = fluxgate::config::AffinitySection::default();
+        let section = fluxweir::config::AffinitySection::default();
         assert_eq!(section.mode, "legacy", "缺段必须 legacy（零回归）");
         assert_eq!(section.cache_worth_tokens, 1024);
         assert_eq!(section.turn_gap_secs, 120);
@@ -1121,9 +1121,9 @@ mod affinity_config {
 #[cfg(test)]
 mod quota_windows_config {
     use crate::common;
-    use fluxgate::config::validate_config;
+    use fluxweir::config::validate_config;
 
-    use fluxgate::config::{QuotaSection, QuotaWindowConfig};
+    use fluxweir::config::{QuotaSection, QuotaWindowConfig};
 
     /// 只配旧字段（无 `[[quota.windows]]`）：生效窗口编译为 `id="default"`
     /// 的 rolling 窗，行为与历史逐位一致（R-quota-001 兼容验收）。
@@ -1135,7 +1135,7 @@ mod quota_windows_config {
             ..Default::default()
         };
         assert!(config.quota.windows.is_empty());
-        let effective = fluxgate::config::effective_quota_windows(&config.quota);
+        let effective = fluxweir::config::effective_quota_windows(&config.quota);
         assert_eq!(effective.len(), 1, "旧字段编译为单窗");
         assert_eq!(effective[0].id, "default");
         assert_eq!(effective[0].rolling_secs, 1800, "window_secs 原值继承");
@@ -1165,7 +1165,7 @@ mod quota_windows_config {
                 ..Default::default()
             },
         ];
-        let effective = fluxgate::config::effective_quota_windows(&config.quota);
+        let effective = fluxweir::config::effective_quota_windows(&config.quota);
         assert_eq!(
             effective, config.quota.windows,
             "数组非空时原样生效（旧字段忽略）"
@@ -1351,7 +1351,7 @@ mod quota_windows_config {
     /// 双限额零拒绝、周期闭集同源；合法条目放行。
     #[test]
     fn test_vendor_budgets_validation() {
-        let budget = || fluxgate::config::VendorBudgetConfig {
+        let budget = || fluxweir::config::VendorBudgetConfig {
             vendor_id: "v1".into(),
             tokens_limit: 1_000_000,
             period: "calendar".into(),
@@ -1363,7 +1363,7 @@ mod quota_windows_config {
         config.vendor_budgets = vec![budget()];
         assert!(validate_config(&config).is_ok(), "合法预算放行");
 
-        config.vendor_budgets = vec![fluxgate::config::VendorBudgetConfig {
+        config.vendor_budgets = vec![fluxweir::config::VendorBudgetConfig {
             vendor_id: "ghost".into(),
             tokens_limit: 1,
             rolling_secs: 60,
@@ -1376,7 +1376,7 @@ mod quota_windows_config {
         let err = validate_config(&config).expect_err("重复 vendor_id 必须拒绝");
         assert!(err.to_string().contains("v1"), "{err}");
 
-        config.vendor_budgets = vec![fluxgate::config::VendorBudgetConfig {
+        config.vendor_budgets = vec![fluxweir::config::VendorBudgetConfig {
             vendor_id: "v1".into(),
             rolling_secs: 60,
             ..Default::default()
@@ -1386,7 +1386,7 @@ mod quota_windows_config {
             "双限额同时为 0 必须拒绝（空转段）"
         );
 
-        config.vendor_budgets = vec![fluxgate::config::VendorBudgetConfig {
+        config.vendor_budgets = vec![fluxweir::config::VendorBudgetConfig {
             vendor_id: "v1".into(),
             tokens_limit: 1,
             period: "calendar".into(),
@@ -1401,7 +1401,7 @@ mod quota_windows_config {
     /// 非法 mode 点名拒绝；合法值大小写不敏感。
     #[test]
     fn test_quota_factor_section_defaults_and_closed_set() {
-        let section = fluxgate::config::QuotaFactorSection::default();
+        let section = fluxweir::config::QuotaFactorSection::default();
         assert_eq!(section.mode, "off", "缺段必须 off（零回归）");
         assert!((section.w_quota - 0.3).abs() < 1e-9);
 
@@ -1431,7 +1431,7 @@ mod quota_windows_config {
     /// 数值域与档序校验；缺省全绿（平局打破 ε=0.05、降档启用）。
     #[test]
     fn test_quota_factor_clock_fields_validation() {
-        use fluxgate::config::QuotaFactorSection;
+        use fluxweir::config::QuotaFactorSection;
         let section = QuotaFactorSection::default();
         assert!((section.tie_epsilon - 0.05).abs() < 1e-9, "ε 缺省 0.05");
         assert!(section.degrade_enabled, "降档缺省启用");
@@ -1444,7 +1444,7 @@ mod quota_windows_config {
             "缺省段合法"
         );
 
-        fn with_field(mutate: impl FnOnce(&mut QuotaFactorSection)) -> fluxgate::config::Config {
+        fn with_field(mutate: impl FnOnce(&mut QuotaFactorSection)) -> fluxweir::config::Config {
             let mut config = common::test_config(vec![]);
             mutate(&mut config.routing.quota_factor);
             config
@@ -1480,7 +1480,7 @@ mod quota_windows_config {
     fn test_key_budgets_validation() {
         /// sha256("test-good-key")（与 quota/rate-limit 测试同值的小写 hex）。
         const KEY_HASH: &str = "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303";
-        let rule = || fluxgate::config::KeyBudgetRule {
+        let rule = || fluxweir::config::KeyBudgetRule {
             api_key_hash: KEY_HASH.into(),
             cost_limit_millicents: 100,
             window: "daily".into(),
@@ -1491,7 +1491,7 @@ mod quota_windows_config {
         config.key_budgets.rules = vec![rule()];
         assert!(validate_config(&config).is_ok(), "合法规则放行");
 
-        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+        config.key_budgets.rules = vec![fluxweir::config::KeyBudgetRule {
             window: "monthly".into(),
             ..rule()
         }];
@@ -1500,14 +1500,14 @@ mod quota_windows_config {
         config.key_budgets.rules = vec![];
         assert!(validate_config(&config).is_ok(), "空段整体关闭不校验");
 
-        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+        config.key_budgets.rules = vec![fluxweir::config::KeyBudgetRule {
             api_key_hash: "abc".into(),
             ..rule()
         }];
         let err = validate_config(&config).expect_err("非 64 位 hex 摘要必须拒绝");
         assert!(err.to_string().contains("abc"), "{err}");
 
-        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+        config.key_budgets.rules = vec![fluxweir::config::KeyBudgetRule {
             api_key_hash: KEY_HASH.to_uppercase(),
             ..rule()
         }];
@@ -1516,7 +1516,7 @@ mod quota_windows_config {
             "大写 hex 必须拒绝（与 auth 摘要同口径：小写）"
         );
 
-        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+        config.key_budgets.rules = vec![fluxweir::config::KeyBudgetRule {
             cost_limit_millicents: 0,
             ..rule()
         }];
@@ -1526,7 +1526,7 @@ mod quota_windows_config {
             "{err}"
         );
 
-        config.key_budgets.rules = vec![fluxgate::config::KeyBudgetRule {
+        config.key_budgets.rules = vec![fluxweir::config::KeyBudgetRule {
             window: "weekly".into(),
             ..rule()
         }];
@@ -1544,7 +1544,7 @@ mod quota_windows_config {
 #[cfg(test)]
 mod oidc_rules_config {
     use crate::common;
-    use fluxgate::config::{validate_config, OidcRuleConfig, OidcRulesSection};
+    use fluxweir::config::{validate_config, OidcRuleConfig, OidcRulesSection};
     use std::collections::HashMap;
 
     /// sha256("test-good-key")（与 key_budgets 校验测试同值的小写 hex）。
@@ -1560,9 +1560,9 @@ mod oidc_rules_config {
         }
     }
 
-    fn config(rules: Vec<OidcRuleConfig>) -> fluxgate::config::Config {
+    fn config(rules: Vec<OidcRuleConfig>) -> fluxweir::config::Config {
         let mut config = common::test_config(vec![]);
-        config.auth = Some(fluxgate::config::AuthSection {
+        config.auth = Some(fluxweir::config::AuthSection {
             enabled: true,
             api_keys: vec![KEY_HASH.into()],
             header: Default::default(),
@@ -1637,7 +1637,7 @@ mod oidc_rules_config {
 
         // 缺段整体关闭
         let mut none = common::test_config(vec![]);
-        none.auth = Some(fluxgate::config::AuthSection {
+        none.auth = Some(fluxweir::config::AuthSection {
             enabled: true,
             api_keys: vec![],
             header: Default::default(),
@@ -1653,7 +1653,7 @@ mod oidc_rules_config {
 #[cfg(test)]
 mod catalog_sync_config {
     use crate::common;
-    use fluxgate::config::{validate_config, CatalogSyncSection};
+    use fluxweir::config::{validate_config, CatalogSyncSection};
     use std::collections::HashMap;
 
     #[test]
@@ -1676,7 +1676,7 @@ mod catalog_sync_config {
     /// `[catalog_sync.alias]` 表解析：slug → vendor_id 覆盖生效。
     #[test]
     fn test_catalog_sync_alias_table_parses() {
-        let config: fluxgate::config::Config = toml::from_str(
+        let config: fluxweir::config::Config = toml::from_str(
             r#"
             [server]
             host = "127.0.0.1"
@@ -1775,7 +1775,7 @@ mod catalog_sync_config {
 #[cfg(test)]
 mod subscription_config {
     use crate::common;
-    use fluxgate::config::{validate_config, SubscriptionAccountConfig, SubscriptionSection};
+    use fluxweir::config::{validate_config, SubscriptionAccountConfig, SubscriptionSection};
 
     #[test]
     fn test_subscription_section_defaults() {
@@ -1795,7 +1795,7 @@ mod subscription_config {
     /// `[[subscription_accounts]]` 解析：id + vendor_id 声明生效，缺段为空。
     #[test]
     fn test_subscription_accounts_table_parses() {
-        let config: fluxgate::config::Config = toml::from_str(
+        let config: fluxweir::config::Config = toml::from_str(
             r#"
             [server]
             host = "127.0.0.1"
@@ -1891,10 +1891,10 @@ mod subscription_config {
 
 #[cfg(test)]
 mod web_search {
-    use fluxgate::config::{parse_config_content, WebSearchProviderConfig, WebSearchSection};
+    use fluxweir::config::{parse_config_content, WebSearchProviderConfig, WebSearchSection};
     use std::path::Path;
 
-    fn parse(web_search_toml: &str) -> Result<fluxgate::config::Config, fluxgate::GateError> {
+    fn parse(web_search_toml: &str) -> Result<fluxweir::config::Config, fluxweir::GateError> {
         let content = format!(
             r#"
 [server]
@@ -2030,7 +2030,7 @@ kind = "bing"
 #[cfg(test)]
 mod masking_config {
     use crate::common;
-    use fluxgate::config::{parse_config_content, validate_config, MaskingSection};
+    use fluxweir::config::{parse_config_content, validate_config, MaskingSection};
 
     #[test]
     fn test_masking_section_defaults() {
@@ -2161,7 +2161,7 @@ email = "warn"
             "custom",
         ] {
             assert!(
-                fluxgate::masking::MaskKind::parse(raw).is_some(),
+                fluxweir::masking::MaskKind::parse(raw).is_some(),
                 "config 闭集与 MaskKind::parse 漂移: {raw}"
             );
         }

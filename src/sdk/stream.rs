@@ -24,7 +24,7 @@ use serde::Deserialize;
 use crate::sdk::chat::{
     ChatChoice, ChatFinishReason, ChatResponse, ChatRole, ChatToolCall, ChatToolFunction, ChatUsage,
 };
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 
 /// 流式工具调用片段 — 对齐网关出站 `delta.tool_calls[]` 元素
 ///（index 为多片段交错聚合的槽位；id/name 仅首片段携带）。
@@ -81,7 +81,7 @@ pub struct ChatChunk {
 
 /// Chat 流式响应。包装 SSE 事件流，解码为 ChatChunk。
 pub struct ChatStream {
-    inner: BoxStream<'static, Result<ChatChunk, FluxgateSdkError>>,
+    inner: BoxStream<'static, Result<ChatChunk, FluxweirSdkError>>,
 }
 
 /// 网关出站流式帧 JSON 解析辅助结构（choices 可空——usage 尾帧）。
@@ -162,7 +162,7 @@ impl ChatStream {
                     // `event: error` 帧：不按流式内容解析，直接上抛（对齐
                     // 官方 SDK `error` 事件语义）
                     if event.event == "error" {
-                        return Some(Err(FluxgateSdkError::Stream {
+                        return Some(Err(FluxweirSdkError::Stream {
                             message: stream_error_message(&event.data),
                         }));
                     }
@@ -171,7 +171,7 @@ impl ChatStream {
                             // 顶层 `{"error":…}` 负载（部分上游不带
                             // event 名）：不得静默结束，上抛 Stream 错误
                             if parsed.error.as_ref().is_some_and(|value| !value.is_null()) {
-                                return Some(Err(FluxgateSdkError::Stream {
+                                return Some(Err(FluxweirSdkError::Stream {
                                     message: stream_error_message(&event.data),
                                 }));
                             }
@@ -196,12 +196,12 @@ impl ChatStream {
                                 usage: parsed.usage,
                             }))
                         }
-                        Err(e) => Some(Err(FluxgateSdkError::Stream {
+                        Err(e) => Some(Err(FluxweirSdkError::Stream {
                             message: format!("JSON parse error: {e}"),
                         })),
                     }
                 }
-                Err(e) => Some(Err(FluxgateSdkError::Stream {
+                Err(e) => Some(Err(FluxweirSdkError::Stream {
                     message: format!("SSE decode error: {e}"),
                 })),
             }
@@ -217,7 +217,7 @@ impl ChatStream {
     /// 槽位累积（id/name 取首个非空，arguments 拼接）；`finish_reason`/
     /// `usage` 取最后一个携带值；`id` 取首个非空。`model` 流式帧不携带
     /// 有效值（网关产出 `"unknown"`），产物中留空。
-    pub async fn finalize(mut self) -> Result<ChatResponse, FluxgateSdkError> {
+    pub async fn finalize(mut self) -> Result<ChatResponse, FluxweirSdkError> {
         let mut id = String::new();
         let mut content = String::new();
         let mut reasoning_content = String::new();
@@ -321,7 +321,7 @@ fn merge_tool_call_fragment(calls: &mut Vec<ChatToolCall>, fragment: ChatToolCal
 }
 
 impl Stream for ChatStream {
-    type Item = Result<ChatChunk, FluxgateSdkError>;
+    type Item = Result<ChatChunk, FluxweirSdkError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)

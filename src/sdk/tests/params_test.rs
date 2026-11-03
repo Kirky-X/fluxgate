@@ -9,15 +9,15 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 
-use crate::sdk::client::FluxgateClientBuilder;
+use crate::sdk::client::FluxweirClientBuilder;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::ChatRequest;
 
 const CHAT_OK: &str = r#"{"id":"chatcmpl-p","object":"chat.completion","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
 
-fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
-    FluxgateClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxweirClient {
+    FluxweirClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -108,7 +108,7 @@ async fn default_headers_merge_with_case_insensitive_request_override() {
         .create_async()
         .await;
 
-    let client = FluxgateClientBuilder::new()
+    let client = FluxweirClientBuilder::new()
         .base_url(server.url())
         .api_key("test-key")
         .default_headers(BTreeMap::from([
@@ -208,7 +208,7 @@ async fn reserved_keys_rejected_for_extra_body_and_vendor_extensions() {
     };
     let err = client.chat(&request_with_config(config)).await.unwrap_err();
     match err {
-        FluxgateSdkError::Protocol { message } => {
+        FluxweirSdkError::Protocol { message } => {
             assert!(
                 message.contains("extra_body") && message.contains("temperature"),
                 "拒绝消息应定位来源与键: {message}"
@@ -223,7 +223,7 @@ async fn reserved_keys_rejected_for_extra_body_and_vendor_extensions() {
         .insert("model".to_string(), json!("evil"));
     let err = client.chat(&req).await.unwrap_err();
     match err {
-        FluxgateSdkError::Protocol { message } => {
+        FluxweirSdkError::Protocol { message } => {
             assert!(
                 message.contains("vendor extension") && message.contains("model"),
                 "拒绝消息应定位来源与键: {message}"
@@ -255,7 +255,7 @@ async fn request_level_max_retries_override() {
         .await
         .unwrap_err();
     match err {
-        FluxgateSdkError::Api(crate::sdk::ApiError { status, .. }) => assert_eq!(status, 500),
+        FluxweirSdkError::Api(crate::sdk::ApiError { status, .. }) => assert_eq!(status, 500),
         other => panic!("expected Api error, got {other:?}"),
     }
 

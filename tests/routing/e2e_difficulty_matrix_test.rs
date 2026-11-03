@@ -12,15 +12,15 @@ mod common;
 
 use axum::{body::Body, http::Request};
 use dbnexus::{DbConfig, DbPool, PoolConfig};
-use fluxgate::config::{
+use fluxweir::config::{
     Config, ConfigManager, DatabaseConfig, DifficultyScoringSection, DifficultySection,
     DifficultyTiers, GlobalModelConfig, ModelConfig, ServerConfig,
 };
-use fluxgate::database::Database;
-use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-use fluxgate::router::Router;
-use fluxgate::vendor::VendorManager;
-use fluxgate::ApiState;
+use fluxweir::database::Database;
+use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+use fluxweir::router::Router;
+use fluxweir::vendor::VendorManager;
+use fluxweir::ApiState;
 use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -31,7 +31,7 @@ fn tier_vendor(
     model_id: &str,
     abstract_id: &str,
     priority: u8,
-) -> fluxgate::config::VendorConfig {
+) -> fluxweir::config::VendorConfig {
     let mut v = common::base_vendor(id, api_base);
     v.models = vec![ModelConfig {
         model_id: model_id.to_string(),
@@ -76,7 +76,7 @@ fn matrix_config(low_url: String, high_url: String) -> Config {
     });
     // 档内降级需要 cover_all_paths + fallback 链（priority 降序）
     config.resilience.cover_all_paths = true;
-    // x-fluxgate-* 观测头由 expose_fallback_headers 门控（默认关）
+    // x-fluxweir-* 观测头由 expose_fallback_headers 门控（默认关）
     config.resilience.expose_fallback_headers = true;
     config.routing.difficulty = DifficultySection {
         enabled: true,
@@ -136,11 +136,11 @@ async fn app_for(config: Config) -> axum::Router {
         bandit: None,
         quota: None,
         difficulty: Some(Arc::new(
-            fluxgate::router::difficulty::DifficultyRouter::new(
+            fluxweir::router::difficulty::DifficultyRouter::new(
                 _cm.clone(),
                 None, // 纯规则臂（w_clf=0）
-                fluxgate::router::difficulty::Guard::new(3, 300),
-                fluxgate::router::difficulty::DecisionCache::with_memory_backend(300),
+                fluxweir::router::difficulty::Guard::new(3, 300),
+                fluxweir::router::difficulty::DecisionCache::with_memory_backend(300),
                 vendor_manager.metrics().clone(),
             ),
         )),
@@ -151,10 +151,10 @@ async fn app_for(config: Config) -> axum::Router {
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         }),
     });
-    fluxgate::api::create_router(state).await
+    fluxweir::api::create_router(state).await
 }
 
 fn ok_body(model: &str) -> String {
@@ -209,12 +209,12 @@ async fn difficulty_matrix_routes_easy_low_hard_high_with_fallback_degrade() {
     let hdrs = resp.headers().clone();
     let _ = axum::body::to_bytes(resp.into_body(), 64 * 1024).await;
     assert_eq!(
-        hdrs.get("x-fluxgate-vendor").unwrap(),
+        hdrs.get("x-fluxweir-vendor").unwrap(),
         "low_vendor",
         "easy → low 档 vendor"
     );
     assert_eq!(
-        hdrs.get("x-fluxgate-model").unwrap(),
+        hdrs.get("x-fluxweir-model").unwrap(),
         "qwen3-turbo",
         "easy → low 档小模型（难度改写生效）"
     );
@@ -240,8 +240,8 @@ async fn difficulty_matrix_routes_easy_low_hard_high_with_fallback_degrade() {
     let hdrs = resp.headers().clone();
     let _ = axum::body::to_bytes(resp.into_body(), 64 * 1024).await;
     // 同档等权 → 加权随机成员二选一；断言档位成员集合（跨档不混入）
-    let hard_vendor = hdrs.get("x-fluxgate-vendor").unwrap().to_str().unwrap();
-    let hard_model = hdrs.get("x-fluxgate-model").unwrap().to_str().unwrap();
+    let hard_vendor = hdrs.get("x-fluxweir-vendor").unwrap().to_str().unwrap();
+    let hard_model = hdrs.get("x-fluxweir-model").unwrap().to_str().unwrap();
     assert!(
         ["high_vendor", "high_vendor_b"].contains(&hard_vendor),
         "hard → high 档成员，got {hard_vendor}"

@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/fluxgate.png" alt="Fluxgate Logo" width="240">
+<img src="docs/assets/fluxweir.png" alt="Fluxweir Logo" width="240">
 
-[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxgate?style=for-the-badge)](https://github.com/Kirky-X/fluxgate/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxgate/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxgate/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxgate?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxgate) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)](<>) [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
+[![Rust 2021](https://img.shields.io/badge/Rust-2021-edded?logo=rust&style=for-the-badge)](https://www.rust-lang.org/) [![Rustc 1.97.1+](https://img.shields.io/badge/Rustc-1.97.1+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/) [![release](https://img.shields.io/github/v/release/Kirky-X/fluxweir?style=for-the-badge)](https://github.com/Kirky-X/fluxweir/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/fluxweir/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/Kirky-X/fluxweir/actions/workflows/ci.yml) [![coverage](https://img.shields.io/codecov/c/github/Kirky-X/fluxweir?style=for-the-badge)](https://codecov.io/gh/Kirky-X/fluxweir) [![SQLite](https://img.shields.io/badge/SQLite-backend-003B57?logo=sqlite&logoColor=white&style=for-the-badge)](https://sqlite.org/) [![gRPC](https://img.shields.io/badge/gRPC-support-3C8CC9?logo=grpc&style=for-the-badge)](https://grpc.io/) [![Axum](https://img.shields.io/badge/Axum-REST-009688?style=for-the-badge)](https://docs.rs/axum) [![i18n](https://img.shields.io/badge/i18n-zh%20%7C%20en-2CA6E0?style=for-the-badge)](<>) [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://www.docker.com/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 
 [中文](README.md) | **English**
 
@@ -72,19 +72,19 @@ Clients call the gateway in either OpenAI or Anthropic format; the gateway handl
 <td width="50%" style="vertical-align:top; padding: 12px">🚦 <b>Inbound rate limiting & admission</b><br><span style="color:#64748B">limiteron tower-layer inbound rate limiting (endpoint table + global layer), plus <code>[[rate_limit.rules]]</code> path rules (with no global rules configured, a shared token bucket is the fallback); congestion-aware priority admission (per-key tiers dedicated/guaranteed/elastic/spot)</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>Secure auth &amp; key vault</b><br><span style="color:#64748B">API keys stored only as SHA256 digests with constant-time comparison; upstream credentials can persist in the encrypted vault (<code>POST/GET/DELETE /admin/vault/keys</code>, cocoon AEAD at-rest encryption, zero plaintext in responses/logs), seeded once from env and never re-entered — the master key comes from <code>FLUXGATE_MASTER_KEY</code> or an auto-generated file (<code>~/.fluxgate/vault_master.key</code>, 0600); <b>losing it is unrecoverable, back it up</b></span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🔐 <b>Secure auth &amp; key vault</b><br><span style="color:#64748B">API keys stored only as SHA256 digests with constant-time comparison; upstream credentials can persist in the encrypted vault (<code>POST/GET/DELETE /admin/vault/keys</code>, cocoon AEAD at-rest encryption, zero plaintext in responses/logs), seeded once from env and never re-entered — the master key comes from <code>FLUXWEIR_MASTER_KEY</code> or an auto-generated file (<code>~/.fluxweir/vault_master.key</code>, 0600); <b>losing it is unrecoverable, back it up</b></span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">⚡ <b>Response cache</b><br><span style="color:#64748B">Exact-match response cache (oxcache-backed) keyed by tenant + vendor + body fingerprint, tiered TTL multipliers with load linking, concurrent de-duplication (single-flight) carried by oxcache <code>get_or</code>, <code>X-No-Cache: 1</code> to force origin fetch</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">📊 <b>Request logs & pre-aggregation</b><br><span style="color:#64748B">Asynchronous batched writes to the configured backend (SQLite by default; db-postgres/db-mysql builds write to that backend — drop-counting under backpressure, never blocks responses), token usage UPSERT pre-aggregated by (vendor, model, API-key digest, date, hour)</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>Cost tracking</b><br><span style="color:#64748B">the four-tier unit prices in <code>[[model_catalog]]</code> are the costing source of truth (micro-USD atomic accumulation per vendor/model, hot-reloadable); <code>[[pricing]]</code> feeds only the routing SLA factor and the quota fallback tier for uncataloged models. There is also an offline cost-replay tool <code>fluxgate-replay</code> (<code>cost-replay</code> feature, not in <code>full</code>): replays <code>request_logs</code> history to price counterfactual affinity / cache_ttl scenarios — read-only, never writes the DB (the target DB must already exist; it errors otherwise)</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">💰 <b>Cost tracking</b><br><span style="color:#64748B">the four-tier unit prices in <code>[[model_catalog]]</code> are the costing source of truth (micro-USD atomic accumulation per vendor/model, hot-reloadable); <code>[[pricing]]</code> feeds only the routing SLA factor and the quota fallback tier for uncataloged models. There is also an offline cost-replay tool <code>fluxweir-replay</code> (<code>cost-replay</code> feature, not in <code>full</code>): replays <code>request_logs</code> history to price counterfactual affinity / cache_ttl scenarios — read-only, never writes the DB (the target DB must already exist; it errors otherwise)</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>Hot config reload</b><br><span style="color:#64748B">Lock-free hot reads via confers DynamicField; transactional write path (validate → atomic persist → in-memory swap) with automatic snapshots in <code>config-backups/</code> (10 kept, secrets masked); <code>server</code>/<code>cors</code>/<code>rate_limit</code>/<code>database</code>/<code>grpc</code>/<code>global_model</code>/<code>cache.semantic</code>/<code>docs.enabled</code>/<code>routing.difficulty.enabled</code> and the <code>routing.difficulty.classifier</code> keys <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> are reported explicitly in the <code>restart_required</code> response field (remaining restart-required surfaces such as vendor <code>concurrency</code> carry no such signal — restart manually)</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>Admin endpoints & observability</b><br><span style="color:#64748B">52 method endpoints with all features enabled (14 data-plane + 2 search/fetch + 35 admin + 1 health, 11 of them feature-gated; plus <code>/readyz</code>, <code>/metrics</code> ops exits and the <code>/console</code> UI): log query/search, token stats, cost breakdown query, global metrics (affinity hit rate, drop counts), vendor status & key-pool reset, route explain, config & model management, subscription/masking/catalog-sync (feature-gated), health check</span></td>
 </tr>
 <tr>
-<td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>FLUXGATE_LANG</code> → system locale → en fallback chain</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>Internationalization</b><br><span style="color:#64748B">Fluent dual bundles (en/zh) covering all business messages and error copy, with a <code>FLUXWEIR_LANG</code> → system locale → en fallback chain</span></td>
 <td width="50%" style="vertical-align:top; padding: 12px">🧰 <b>Production ready</b><br><span style="color:#64748B">Multi-stage Docker build with non-root runtime, image-level health check (<code>HEALTHCHECK</code>) plus docker-compose resource limits, GitHub Actions CI (fmt/clippy/test/coverage/audit) and automated release pipeline</span></td>
 </tr>
 </table>
@@ -253,7 +253,7 @@ To enable auth, put SHA256 digests of your API keys into the `[auth]` section (`
 
 ## 🏗️ Architecture
 
-Fluxgate uses a layered pipeline: inbound requests pass through the middleware chain (auth → rate limit → admission), then the router picks a target from the eligible vendor set (three-level decision: abstract model → `vendor.model` direct → `auto` global pool), and the request is executed by the VendorManager with circuit breaking and retries, after protocol conversion (or zero-copy passthrough). On the response side, SSE framing and protocol back-conversion complete while logs, token aggregation, cost accumulation, affinity binding and LinUCB rewards are recorded asynchronously.
+Fluxweir uses a layered pipeline: inbound requests pass through the middleware chain (auth → rate limit → admission), then the router picks a target from the eligible vendor set (three-level decision: abstract model → `vendor.model` direct → `auto` global pool), and the request is executed by the VendorManager with circuit breaking and retries, after protocol conversion (or zero-copy passthrough). On the response side, SSE framing and protocol back-conversion complete while logs, token aggregation, cost accumulation, affinity binding and LinUCB rewards are recorded asynchronously.
 
 <details>
 <summary>📄 Code · mermaid</summary>
@@ -262,7 +262,7 @@ Fluxgate uses a layered pipeline: inbound requests pass through the middleware c
 flowchart TB
     Client["Client (OpenAI / Anthropic format)"]
 
-    subgraph GW["Fluxgate Gateway (Axum 0.8 + sdforge)"]
+    subgraph GW["Fluxweir Gateway (Axum 0.8 + sdforge)"]
         direction LR
         MW["Middleware chain<br/>auth (SHA256) · sliding-window limiter (token-bucket fallback) · admission"]
         Handler["API handlers<br/>routing hints · response cache"]
@@ -291,13 +291,13 @@ flowchart TB
 
 The full routing decision system, resilience state machines, hot-reload transaction semantics, DI assembly and i18n design are documented in the [🏗️ Architecture guide](docs/ARCHITECTURE.md).
 
-Fluxgate is also a **library-first** component set: the server assembly chain lives in `fluxgate::server` (an independently deployable HTTP server) and the Rust client lives in `fluxgate::sdk` (gated behind the `sdk` feature) — the binary `main.rs` is only a thin bootstrap. The `grpc` feature (independently gated, not part of `full`) additionally provides a gRPC server: the sdforge `sdforge.v1.SdForgeService` facade (GetInfo / Call / CallStream, JSON over gRPC) coexists with HTTP in the same process via `take_grpc_server`, authentication reuses the `[auth]` section SHA256 digests, and graceful shutdown shares the same signal as HTTP.
+Fluxweir is also a **library-first** component set: the server assembly chain lives in `fluxweir::server` (an independently deployable HTTP server) and the Rust client lives in `fluxweir::sdk` (gated behind the `sdk` feature) — the binary `main.rs` is only a thin bootstrap. The `grpc` feature (independently gated, not part of `full`) additionally provides a gRPC server: the sdforge `sdforge.v1.SdForgeService` facade (GetInfo / Call / CallStream, JSON over gRPC) coexists with HTTP in the same process via `take_grpc_server`, authentication reuses the `[auth]` section SHA256 digests, and graceful shutdown shares the same signal as HTTP.
 
 ---
 
 ## 📚 As a Library Dependency
 
-`fluxgate` is both an executable gateway and a Rust library (`src/lib.rs` exports the public API). The default `full` feature includes the server components; the client SDK is provided by the `sdk` feature (included in `full`, also independently enableable).
+`fluxweir` is both an executable gateway and a Rust library (`src/lib.rs` exports the public API). The default `full` feature includes the server components; the client SDK is provided by the `sdk` feature (included in `full`, also independently enableable).
 
 **Embedded startup** (hosting the gateway inside your own app):
 
@@ -306,10 +306,10 @@ Fluxgate is also a **library-first** component set: the server assembly chain li
 
 ```rust
 #[tokio::main]
-async fn main() -> Result<(), fluxgate::error::FluxgateError> {
+async fn main() -> Result<(), fluxweir::error::FluxweirError> {
     // Assembly (config/database/vendors/routing) + serving + graceful-shutdown
     // flush are all handled by the library
-    fluxgate::server::run(Some("config.toml".into())).await
+    fluxweir::server::run(Some("config.toml".into())).await
 }
 ```
 
@@ -321,13 +321,13 @@ async fn main() -> Result<(), fluxgate::error::FluxgateError> {
 <summary>📄 Code · rust</summary>
 
 ```rust
-use fluxgate::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, FluxgateClientBuilder};
+use fluxweir::sdk::{ChatMessage, ChatRequest, ChatTool, ChatToolChoice, ChatToolDefinition, FluxweirClientBuilder};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = FluxgateClientBuilder::new()
+    let client = FluxweirClientBuilder::new()
         .base_url("http://127.0.0.1:8080")
-        .api_key(std::env::var("FLUXGATE_API_KEY")?)
+        .api_key(std::env::var("FLUXWEIR_API_KEY")?)
         .build()?;
 
     // Convenience constructor + request-level config
@@ -375,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Standalone (default, sqlite)   | `cargo run`                                                                   |
 | Standalone (PostgreSQL)        | `cargo build --no-default-features --features "full,db-postgres"`             |
 | Standalone (MySQL)             | `cargo build --no-default-features --features "full,db-mysql"`                |
-| Embedded library (own backend) | `fluxgate = { default-features = false, features = ["full", "db-postgres"] }` |
+| Embedded library (own backend) | `fluxweir = { default-features = false, features = ["full", "db-postgres"] }` |
 
 </details>
 
@@ -383,7 +383,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - On the config side, `[database] url` (a full connection URL) takes precedence when set; when empty, `path` falls back to the sqlite file store (without the db-sqlite feature the startup fails with `database-backend-missing` and a rebuild hint).
 - Schema and column migrations dispatch on the connected backend (`schema.postgres.sql` / `schema.mysql.sql` are dialect projections of `schema.sql`; keep all three in sync when adding tables/columns).
 
-> The SDK is an "HTTP client" (calling the gateway REST API, including SSE streaming), not an in-process route-core binding; for embedding use `fluxgate::server` and `fluxgate::api` directly.
+> The SDK is an "HTTP client" (calling the gateway REST API, including SSE streaming), not an in-process route-core binding; for embedding use `fluxweir::server` and `fluxweir::api` directly.
 
 ---
 
@@ -402,10 +402,10 @@ Unit tests live inline in `src/` (`#[cfg(test)]`); integration tests are organiz
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-# Non-default backend matrix (must scope to this package with `-p fluxgate`,
+# Non-default backend matrix (must scope to this package with `-p fluxweir`,
 # otherwise the examples member pulls in db-sqlite and the backends collide)
-cargo check -p fluxgate --no-default-features --features "full,db-postgres"
-cargo check -p fluxgate --no-default-features --features "full,db-mysql"
+cargo check -p fluxweir --no-default-features --features "full,db-postgres"
+cargo check -p fluxweir --no-default-features --features "full,db-mysql"
 ```
 
 </details>
@@ -460,7 +460,7 @@ The `subscription-vendor` feature allows OAuth subscription accounts (e.g. Claud
 
 ### 🚨 Reporting a vulnerability
 
-Please do not report security vulnerabilities through public issues. Use the GitHub [Security Advisories](https://github.com/Kirky-X/fluxgate/security/policy) private disclosure channel instead. The project commits to acknowledging within 48 hours and providing an initial assessment within 7 days.
+Please do not report security vulnerabilities through public issues. Use the GitHub [Security Advisories](https://github.com/Kirky-X/fluxweir/security/policy) private disclosure channel instead. The project commits to acknowledging within 48 hours and providing an initial assessment within 7 days.
 
 ---
 
@@ -501,7 +501,7 @@ Please do not report security vulnerabilities through public issues. Use the Git
 # dynamic dependency resolves before the image is published
 # Note: -f points at the Dockerfile while the build context stays at the repo
 # root (bind mounts and .dockerignore resolve against the context root)
-docker build -t fluxgate:0.1.0 -f docker/Dockerfile .
+docker build -t fluxweir:0.1.0 -f docker/Dockerfile .
 
 # Run (SQLite data persists under /app/data; put the config at data/config.toml)
 # ⚠️ Never use a single-file read-only mount `-v $(pwd)/config.toml:/app/config.toml:ro`:
@@ -509,7 +509,7 @@ docker build -t fluxgate:0.1.0 -f docker/Dockerfile .
 # mounts — POST /admin/config and model-entry write-backs all fail with 500
 # (same note in the compose file). Mount the whole directory or use compose:
 docker run -d -p 8080:8080 \
-  -v $(pwd)/data:/app/data fluxgate:0.1.0 \
+  -v $(pwd)/data:/app/data fluxweir:0.1.0 \
   /bin/server /app/data/config.toml
 
 # Or one-command deployment with resource limits
@@ -522,8 +522,8 @@ docker compose -f docker/docker-compose.yml up -d
 > Health check: provided solely by the **image-level HEALTHCHECK** (compose no
 > longer duplicates it), probing the registered path `/api/v1/health`;
 > docker-compose ships with resource limits (2 CPUs / 512M) and a non-root
-> runtime. The image tag defaults to `fluxgate:0.1.0`, overridable via
-> `FLUXGATE_IMAGE_TAG` (see [📖 User Guide · Docker](docs/USER_GUIDE.md)).
+> runtime. The image tag defaults to `fluxweir:0.1.0`, overridable via
+> `FLUXWEIR_IMAGE_TAG` (see [📖 User Guide · Docker](docs/USER_GUIDE.md)).
 
 ---
 
@@ -544,7 +544,7 @@ Toolchain baseline: MSRV floor **1.97.1** (declared in `Cargo.toml` via `rust-ve
 ### 🐛 Report a bug
 
 Found an issue?<br>
-<a href="https://github.com/Kirky-X/fluxgate/issues/new">Open an issue</a>
+<a href="https://github.com/Kirky-X/fluxweir/issues/new">Open an issue</a>
 
 </td>
 <td width="33%" align="center" style="padding: 16px">
@@ -552,7 +552,7 @@ Found an issue?<br>
 ### 💡 Suggest a feature
 
 Have an idea?<br>
-<a href="https://github.com/Kirky-X/fluxgate/discussions">Start a discussion</a>
+<a href="https://github.com/Kirky-X/fluxweir/discussions">Start a discussion</a>
 
 </td>
 <td width="33%" align="center" style="padding: 16px">
@@ -560,7 +560,7 @@ Have an idea?<br>
 ### 🔧 Submit a PR
 
 Want to contribute code?<br>
-<a href="https://github.com/Kirky-X/fluxgate/pulls">Fork and open a PR</a>
+<a href="https://github.com/Kirky-X/fluxweir/pulls">Fork and open a PR</a>
 
 </td>
 </tr>
@@ -593,7 +593,7 @@ This project is licensed under the [MIT License](LICENSE).
 
 ### 🌟 Core dependencies (sibling libraries)
 
-Fluxgate integrates the following self-developed libraries through the crates.io registry (versions declared in the root `Cargo.toml`, checksums locked in `Cargo.lock`):
+Fluxweir integrates the following self-developed libraries through the crates.io registry (versions declared in the root `Cargo.toml`, checksums locked in `Cargo.lock`):
 
 <details>
 <summary>📋 Table</summary>
@@ -612,7 +612,7 @@ Fluxgate integrates the following self-developed libraries through the crates.io
 
 ### 💝 Special thanks
 
-Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/fluxgate/graphs/contributors).
+Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/fluxweir/graphs/contributors).
 
 ---
 
@@ -621,15 +621,15 @@ Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/f
 <table style="width:100%; max-width: 600px">
 <tr>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/fluxgate/issues"><b style="color:#991B1B">Issues</b></a><br>
+<a href="https://github.com/Kirky-X/fluxweir/issues"><b style="color:#991B1B">Issues</b></a><br>
 <span style="color:#64748B">Report problems and bugs</span>
 </td>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/fluxgate/discussions"><b style="color:#1E40AF">Discussions</b></a><br>
+<a href="https://github.com/Kirky-X/fluxweir/discussions"><b style="color:#1E40AF">Discussions</b></a><br>
 <span style="color:#64748B">Ask questions and share ideas</span>
 </td>
 <td align="center" width="33%">
-<a href="https://github.com/Kirky-X/fluxgate"><b style="color:#1E293B">GitHub</b></a><br>
+<a href="https://github.com/Kirky-X/fluxweir"><b style="color:#1E293B">GitHub</b></a><br>
 <span style="color:#64748B">Browse the source</span>
 </td>
 </tr>
@@ -639,7 +639,7 @@ Thanks to the Rust community and all [contributors](https://github.com/Kirky-X/f
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/fluxgate&type=Date)](https://star-history.com/#Kirky-X/fluxgate&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Kirky-X/fluxweir&type=Date)](https://star-history.com/#Kirky-X/fluxweir&Date)
 
 If this project helps you, please consider giving it a ⭐️!
 

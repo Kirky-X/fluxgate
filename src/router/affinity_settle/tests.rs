@@ -39,7 +39,7 @@ fn vendor(id: &str, cache_ttl_secs: u64, silent_cache: bool) -> VendorConfig {
         id: id.into(),
         name: id.into(),
         type_: "openai".into(),
-        api_key_env: "FLUXGATE_TEST_KEY".into(),
+        api_key_env: "FLUXWEIR_TEST_KEY".into(),
         api_key_envs: Vec::new(),
         extra_headers: Default::default(),
         api_base: String::new(),

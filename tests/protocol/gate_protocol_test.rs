@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 mod converter {
-    use fluxgate::protocol::{
+    use fluxweir::protocol::{
         AnthropicConverter, AnthropicStreamEncoder, OpenAIConverter, Protocol, ProtocolConverter,
         StreamChunk,
     };
@@ -65,7 +65,7 @@ mod converter {
     /// Anthropic 无对应槽：三项在出站静默丢弃（跨协议已知降级，不报错）。
     #[tokio::test]
     async fn test_anthropic_outbound_drops_responses_only_fields() {
-        use fluxgate::protocol::{
+        use fluxweir::protocol::{
             Message, MessageContent, Role, Tool, ToolFunction, UnifiedRequest,
         };
         let converter = AnthropicConverter::new();
@@ -299,7 +299,7 @@ mod converter {
         });
         let err = converter.to_unified(request).unwrap_err();
         assert_eq!(err.status_code(), 400, "超限 schema 请求级 400 拒绝");
-        assert!(matches!(err, fluxgate::GateError::Validation { .. }));
+        assert!(matches!(err, fluxweir::GateError::Validation { .. }));
     }
 
     #[tokio::test]
@@ -336,7 +336,7 @@ mod converter {
         });
         let err = converter.to_unified(request).unwrap_err();
         assert_eq!(err.status_code(), 400, "超深 schema 请求级 400 拒绝");
-        assert!(matches!(err, fluxgate::GateError::Validation { .. }));
+        assert!(matches!(err, fluxweir::GateError::Validation { .. }));
     }
 
     #[tokio::test]
@@ -369,7 +369,7 @@ mod converter {
 
         assert_eq!(unified.messages.len(), 3);
         let tool_msg = &unified.messages[2];
-        assert_eq!(tool_msg.role, fluxgate::protocol::Role::Tool);
+        assert_eq!(tool_msg.role, fluxweir::protocol::Role::Tool);
     }
 
     #[tokio::test]
@@ -473,7 +473,7 @@ mod converter {
         assert_eq!(parsed.choices.len(), 1);
         let msg = parsed.choices[0].message.as_ref().unwrap();
         match &msg.content {
-            fluxgate::protocol::MessageContent::ToolCalls(calls) => {
+            fluxweir::protocol::MessageContent::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].function.name, "get_weather");
             }
@@ -537,7 +537,7 @@ mod converter {
         let unified = converter.to_unified(request).unwrap();
 
         match &unified.tool_choice {
-            Some(fluxgate::protocol::ToolChoice::Specific { function, .. }) => {
+            Some(fluxweir::protocol::ToolChoice::Specific { function, .. }) => {
                 assert_eq!(function.name, "get_weather");
             }
             _ => panic!("Expected Specific tool_choice"),
@@ -546,7 +546,7 @@ mod converter {
 
     // 流式转换与 SSE 增量分帧
 
-    use fluxgate::protocol::sse_frame::SseFrameParser;
+    use fluxweir::protocol::sse_frame::SseFrameParser;
 
     /// 把上游 SSE 原文（可劈块）经分帧器取出的 data 负载串。
     fn parse_frames_to_data(payload: &str, split_at: Option<usize>) -> Vec<String> {
@@ -709,7 +709,7 @@ mod converter {
         assert!(matches!(
             text,
             StreamChunk::Content { ref delta, .. }
-                if matches!(delta, fluxgate::protocol::MessageContent::Text(t) if t == "hi")
+                if matches!(delta, fluxweir::protocol::MessageContent::Text(t) if t == "hi")
         ));
 
         let usage = converter
@@ -782,7 +782,7 @@ mod converter {
                     finish_reason: fr2, ..
                 },
             ) => {
-                assert!(matches!(d1, fluxgate::protocol::MessageContent::Text(t) if t == "Hel"));
+                assert!(matches!(d1, fluxweir::protocol::MessageContent::Text(t) if t == "Hel"));
                 assert_eq!(fr2.as_deref(), Some("stop"));
             }
             _ => panic!("expected two Content chunks"),
@@ -791,7 +791,7 @@ mod converter {
 
     // 协议断点修复
 
-    use fluxgate::protocol::Role;
+    use fluxweir::protocol::Role;
 
     /// Anthropic 多轮 tool_use+tool_result 历史往返保留工具调用。
     #[tokio::test]
@@ -822,7 +822,7 @@ mod converter {
         let assistant = &unified.messages[1];
         assert_eq!(assistant.role, Role::Assistant);
         match &assistant.content {
-            fluxgate::protocol::MessageContent::TextWithToolCalls {
+            fluxweir::protocol::MessageContent::TextWithToolCalls {
                 text, tool_calls, ..
             } => {
                 assert_eq!(text, "Let me check.");
@@ -837,7 +837,7 @@ mod converter {
         let tool_msg = &unified.messages[2];
         assert_eq!(tool_msg.role, Role::Tool);
         match &tool_msg.content {
-            fluxgate::protocol::MessageContent::ToolResult(result) => {
+            fluxweir::protocol::MessageContent::ToolResult(result) => {
                 assert_eq!(result.tool_call_id, "toolu_1");
                 assert_eq!(result.content, "Sunny, 25C");
             }
@@ -883,7 +883,7 @@ mod converter {
 
         let unified = converter.to_unified(request).expect("to_unified");
         match &unified.messages[0].content {
-            fluxgate::protocol::MessageContent::TextWithToolCalls {
+            fluxweir::protocol::MessageContent::TextWithToolCalls {
                 text, tool_calls, ..
             } => {
                 assert_eq!(text, "Let me check the weather.");
@@ -918,7 +918,7 @@ mod converter {
         let parsed = converter.parse_response(response).expect("parse_response");
         let msg = parsed.choices[0].message.as_ref().unwrap();
         match &msg.content {
-            fluxgate::protocol::MessageContent::TextWithToolCalls {
+            fluxweir::protocol::MessageContent::TextWithToolCalls {
                 text, tool_calls, ..
             } => {
                 assert_eq!(text, "Checking...");
@@ -947,7 +947,7 @@ mod converter {
         assert_eq!(unified.messages[0].role, Role::System);
         assert!(matches!(
             &unified.messages[0].content,
-            fluxgate::protocol::MessageContent::Text(s) if s == "You are a helpful assistant."
+            fluxweir::protocol::MessageContent::Text(s) if s == "You are a helpful assistant."
         ));
 
         // 出站 OpenAI：system 保持为 messages[0]
@@ -963,16 +963,16 @@ mod converter {
     #[tokio::test]
     async fn test_openai_system_message_lifted_to_anthropic_top_level() {
         let converter = AnthropicConverter::new();
-        let request = fluxgate::protocol::UnifiedRequest {
+        let request = fluxweir::protocol::UnifiedRequest {
             model: "claude-3-5-sonnet-20241022".into(),
             messages: vec![
-                fluxgate::protocol::Message {
+                fluxweir::protocol::Message {
                     role: Role::System,
-                    content: fluxgate::protocol::MessageContent::Text("Be terse.".into()),
+                    content: fluxweir::protocol::MessageContent::Text("Be terse.".into()),
                 },
-                fluxgate::protocol::Message {
+                fluxweir::protocol::Message {
                     role: Role::User,
-                    content: fluxgate::protocol::MessageContent::Text("Hi".into()),
+                    content: fluxweir::protocol::MessageContent::Text("Hi".into()),
                 },
             ],
             max_tokens: Some(10),
@@ -1032,22 +1032,22 @@ mod converter {
         assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
 
         // IR → Anthropic（反向）
-        let make_response = |finish: Option<&str>| fluxgate::protocol::UnifiedResponse {
+        let make_response = |finish: Option<&str>| fluxweir::protocol::UnifiedResponse {
             id: "m".into(),
             object: "message".into(),
             created: 0,
             model: "claude-x".into(),
-            choices: vec![fluxgate::protocol::Choice {
+            choices: vec![fluxweir::protocol::Choice {
                 index: 0,
-                message: Some(fluxgate::protocol::Message {
+                message: Some(fluxweir::protocol::Message {
                     role: Role::Assistant,
-                    content: fluxgate::protocol::MessageContent::Text("ok".into()),
+                    content: fluxweir::protocol::MessageContent::Text("ok".into()),
                 }),
                 finish_reason: finish.map(|s| s.to_string()),
                 finish: None,
                 logprobs: None,
             }],
-            usage: fluxgate::protocol::TokenUsage::default(),
+            usage: fluxweir::protocol::TokenUsage::default(),
             stop_sequence: None,
         };
 
@@ -1128,12 +1128,12 @@ mod converter {
 
     // 覆盖缺口补测：AnthropicConverter 边角分支
 
-    use fluxgate::protocol::{
+    use fluxweir::protocol::{
         Choice, ContentBlock, ImageSource, Message, MessageContent, TokenUsage, Tool, ToolCall,
         ToolCallFunction, ToolChoice, ToolChoiceFunction, ToolFunction, ToolResult, UnifiedRequest,
         UnifiedResponse,
     };
-    use fluxgate::GateError;
+    use fluxweir::GateError;
 
     /// 构造仅含 model + 单条 user 文本消息的最小 UnifiedRequest（其余字段缺省）。
     fn minimal_unified_request(model: &str, text: &str) -> UnifiedRequest {
@@ -2568,7 +2568,7 @@ mod converter {
 
     // IR 一次补全
 
-    use fluxgate::protocol::{EffortLevel, FinishReason, SamplingParams, ThinkingConfig};
+    use fluxweir::protocol::{EffortLevel, FinishReason, SamplingParams, ThinkingConfig};
 
     /// UnifiedRequest 全字段字面量构造（覆盖 IR serde default 之外的显式路径）。
     fn full_unified_request() -> UnifiedRequest {
@@ -4449,7 +4449,7 @@ mod converter {
 
 mod embedding {
     // embedding_response_from_openai 已删除，用例退役；embedding_request_to_openai 仍在使用。
-    use fluxgate::protocol::embedding_request_to_openai;
+    use fluxweir::protocol::embedding_request_to_openai;
     use serde_json::json;
 
     #[test]
@@ -4551,7 +4551,7 @@ mod embedding {
 }
 
 mod unified {
-    use fluxgate::protocol::*;
+    use fluxweir::protocol::*;
     use serde_json::json;
 
     // Role Tests

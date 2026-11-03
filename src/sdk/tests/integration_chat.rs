@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use crate::sdk::client::FluxgateClientBuilder;
-use crate::sdk::error::{ApiError, ApiErrorKind, FluxgateSdkError};
+use crate::sdk::client::FluxweirClientBuilder;
+use crate::sdk::error::{ApiError, ApiErrorKind, FluxweirSdkError};
 use crate::sdk::ChatRequest;
 use std::time::Duration;
 
-fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
-    FluxgateClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxweirClient {
+    FluxweirClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -213,7 +213,7 @@ async fn chat_401_returns_auth_error() {
 
     assert!(matches!(
         err,
-        FluxgateSdkError::Api(ApiError {
+        FluxweirSdkError::Api(ApiError {
             status: 401,
             kind: ApiErrorKind::Authentication,
             ..
@@ -238,7 +238,7 @@ async fn chat_500_returns_server_error() {
         .unwrap_err();
 
     match err {
-        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        FluxweirSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
         other => panic!("expected Api error, got {other:?}"),
     }
 }
@@ -264,20 +264,20 @@ async fn chat_sends_authorization_header() {
 
 #[tokio::test]
 async fn builder_missing_base_url_fails() {
-    let err = FluxgateClientBuilder::new()
+    let err = FluxweirClientBuilder::new()
         .api_key("key")
         .build()
         .unwrap_err();
-    assert!(matches!(err, FluxgateSdkError::Config { .. }));
+    assert!(matches!(err, FluxweirSdkError::Config { .. }));
 }
 
 #[tokio::test]
 async fn builder_missing_api_key_fails() {
-    let err = FluxgateClientBuilder::new()
+    let err = FluxweirClientBuilder::new()
         .base_url("http://localhost:8080")
         .build()
         .unwrap_err();
-    assert!(matches!(err, FluxgateSdkError::Config { .. }));
+    assert!(matches!(err, FluxweirSdkError::Config { .. }));
 }
 
 /// 裸 TCP HTTP 服务器：延迟 `delay` 后回单条 JSON 响应（mockito 1.7.2
@@ -315,7 +315,7 @@ async fn spawn_delayed_json_server(delay: Duration) -> String {
 #[tokio::test]
 async fn request_config_timeout_overrides_client_default() {
     let base_url = spawn_delayed_json_server(Duration::from_millis(600)).await;
-    let client = FluxgateClientBuilder::new()
+    let client = FluxweirClientBuilder::new()
         .base_url(&base_url)
         .api_key("test-key")
         .timeout(Duration::from_millis(300))
@@ -335,7 +335,7 @@ async fn request_config_timeout_overrides_client_default() {
 #[tokio::test]
 async fn request_config_timeout_tightens_window() {
     let base_url = spawn_delayed_json_server(Duration::from_millis(250)).await;
-    let client = FluxgateClientBuilder::new()
+    let client = FluxweirClientBuilder::new()
         .base_url(&base_url)
         .api_key("test-key")
         .timeout(Duration::from_secs(1))

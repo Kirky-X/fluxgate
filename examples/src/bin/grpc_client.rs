@@ -5,5 +5,5 @@
 
 #[tokio::main]
 async fn main() {
-    fluxgate_examples::grpc_client::run().await
+    fluxweir_examples::grpc_client::run().await
 }

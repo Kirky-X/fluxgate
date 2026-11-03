@@ -7,7 +7,7 @@
 //! 键 `resp:{api_key_sha256}:{vendor_id}:{model_id}:{sha256(canonical_body)}`：调用方 API key 摘要入键做租户隔离；canonical_body 递归按 key 排序，防客户端键序差异错命中。门控仅 `stream==false && tools 为空 && temperature==0 或缺省` 的确定性请求，`X-No-Cache: 1` 请求头强制回源（兼容 `X-Skip-Cache` 别名）；enabled/TTL 热读 `[cache]` 段（默认关闭，TTL 默认 300s）；single-flight 由 oxcache `Cache::get_or_with_ttl` 承载，入口 [`ResponseCache::get_or_response`]。
 
 use crate::config::{CacheSection, ConfigManager};
-use crate::error::{FluxgateError, GateError};
+use crate::error::{FluxweirError, GateError};
 use crate::i18n::t;
 use crate::utils::metrics::GlobalMetrics;
 use axum::http::HeaderMap;
@@ -24,11 +24,11 @@ use std::time::Duration;
 /// leader 超时转 Err 放行 followers（30s 自愈），钳制永久挂起面。
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// leader 闭包内派发失败的库错误携带标记（原始 `FluxgateError` 经 err_cell 取回）。
-const LEADER_DISPATCH_FAILED: &str = "fluxgate:leader-dispatch-failed";
+/// leader 闭包内派发失败的库错误携带标记（原始 `FluxweirError` 经 err_cell 取回）。
+const LEADER_DISPATCH_FAILED: &str = "fluxweir:leader-dispatch-failed";
 
 /// leader 闭包内派发超时的库错误携带标记（映射 `GateError::Timeout`）。
-const LEADER_DISPATCH_TIMEOUT: &str = "fluxgate:leader-dispatch-timeout";
+const LEADER_DISPATCH_TIMEOUT: &str = "fluxweir:leader-dispatch-timeout";
 
 /// 响应缓存键前缀 — 与亲和表的 `affinity:` 命名空间隔离
 pub const RESPONSE_KEY_PREFIX: &str = "resp:";
@@ -382,11 +382,11 @@ impl ResponseCache {
         model_id: &str,
         body: &Value,
         dispatch: F,
-    ) -> Result<CacheFlow<R>, FluxgateError>
+    ) -> Result<CacheFlow<R>, FluxweirError>
     where
         R: FinalRoute,
         F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<(Value, R), FluxgateError>>,
+        Fut: std::future::Future<Output = Result<(Value, R), FluxweirError>>,
     {
         // 未参与 = 闭包直派发（不经库、无超时）
         let participate =
@@ -429,7 +429,7 @@ impl ResponseCache {
         let computed = Arc::new(AtomicBool::new(false));
         let final_key_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let route_cell: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
-        let err_cell: Arc<Mutex<Option<FluxgateError>>> = Arc::new(Mutex::new(None));
+        let err_cell: Arc<Mutex<Option<FluxweirError>>> = Arc::new(Mutex::new(None));
 
         // 闭包经共享引用伴生（&F 为 Copy）：自愈回源路径还要再调一次
         let dispatch_ref = &dispatch;
@@ -460,7 +460,7 @@ impl ResponseCache {
                         Ok(value)
                     }
                     Ok(Err(e)) => {
-                        // 派发错误经 cell 伴生传递：原始 FluxgateError 由外层原样取回
+                        // 派发错误经 cell 伴生传递：原始 FluxweirError 由外层原样取回
                         *err_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
                         Err(OxCacheError::Operation(LEADER_DISPATCH_FAILED.to_string()))
                     }
@@ -497,13 +497,13 @@ impl ResponseCache {
                 })
             }
             Err(e) => {
-                // leader 自身错误：原始 FluxgateError 原样传播
+                // leader 自身错误：原始 FluxweirError 原样传播
                 if let Some(original) = err_cell.lock().unwrap_or_else(|e| e.into_inner()).take() {
                     return Err(original);
                 }
                 // leader 超时：504 语义（派发被 DISPATCH_TIMEOUT 钳制）
                 if Self::is_dispatch_timeout(&e) {
-                    return Err(FluxgateError::Gate(GateError::Timeout {
+                    return Err(FluxweirError::Gate(GateError::Timeout {
                         vendor: vendor_id.to_string(),
                     }));
                 }
@@ -537,11 +537,11 @@ impl ResponseCache {
         api_key_hash: &str,
         canonical: &str,
         initial_key: &str,
-    ) -> Result<CacheFlow<R>, FluxgateError>
+    ) -> Result<CacheFlow<R>, FluxweirError>
     where
         R: FinalRoute,
         F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<(Value, R), FluxgateError>>,
+        Fut: std::future::Future<Output = Result<(Value, R), FluxweirError>>,
     {
         let (value, route) = dispatch().await?;
         let final_key = self
@@ -1327,7 +1327,7 @@ mod get_or_flow_tests {
         // leader：闭包返回 Err（上游失败）
         let leader_cache = cache.clone();
         let leader_body = body.clone();
-        let leader: tokio::task::JoinHandle<Result<CacheFlow<TestRoute>, FluxgateError>> = {
+        let leader: tokio::task::JoinHandle<Result<CacheFlow<TestRoute>, FluxweirError>> = {
             let upstream_calls = Arc::clone(&upstream_calls);
             let entered_tx = entered_tx.clone();
             let release_rx = release_rx.clone();
@@ -1340,7 +1340,7 @@ mod get_or_flow_tests {
                         upstream_calls.fetch_add(1, Ordering::SeqCst);
                         let _ = entered_tx.send(());
                         let _ = release_rx.changed().await;
-                        Err(FluxgateError::Gate(GateError::VendorUnavailable {
+                        Err(FluxweirError::Gate(GateError::VendorUnavailable {
                             vendor: "v".into(),
                         }))
                     }
@@ -1380,7 +1380,7 @@ mod get_or_flow_tests {
         assert!(
             matches!(
                 leader_result,
-                Err(FluxgateError::Gate(GateError::VendorUnavailable { .. }))
+                Err(FluxweirError::Gate(GateError::VendorUnavailable { .. }))
             ),
             "leader 自身派发错误原样传播，got {leader_result:?}"
         );
@@ -1416,7 +1416,7 @@ mod get_or_flow_tests {
 
         let leader_cache = cache.clone();
         let leader_body = body.clone();
-        let leader: tokio::task::JoinHandle<Result<CacheFlow<TestRoute>, FluxgateError>> = {
+        let leader: tokio::task::JoinHandle<Result<CacheFlow<TestRoute>, FluxweirError>> = {
             let upstream_calls = Arc::clone(&upstream_calls);
             let entered_tx = entered_tx.clone();
             tokio::spawn(async move {
@@ -1464,7 +1464,7 @@ mod get_or_flow_tests {
         assert!(
             matches!(
                 leader_result,
-                Err(FluxgateError::Gate(GateError::Timeout { .. }))
+                Err(FluxweirError::Gate(GateError::Timeout { .. }))
             ),
             "leader 派发超时 → 504 语义错误，got {leader_result:?}"
         );

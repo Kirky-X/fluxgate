@@ -13,7 +13,7 @@
 
 #![cfg(all(feature = "cost-replay", feature = "db-sqlite"))]
 
-use fluxgate::database::{Database, RequestLog};
+use fluxweir::database::{Database, RequestLog};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -129,7 +129,7 @@ cache_creation_price = 3.75
 }
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_fluxgate-replay")
+    env!("CARGO_BIN_EXE_fluxweir-replay")
 }
 
 /// 正常路径：退出码 0，报告含窗口/基线/场景/假设关键字段。

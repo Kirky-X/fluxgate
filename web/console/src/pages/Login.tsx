@@ -42,7 +42,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center">
       <Card className="w-96">
         <CardHeader>
-          <CardTitle className="text-lg text-text-primary">Fluxgate 控制台</CardTitle>
+          <CardTitle className="text-lg text-text-primary">Fluxweir 控制台</CardTitle>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="space-y-3">

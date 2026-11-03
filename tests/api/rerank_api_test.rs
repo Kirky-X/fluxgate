@@ -11,15 +11,15 @@ mod common;
 mod tests {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use fluxgate::api::rerank::rerank;
-    use fluxgate::config::{
+    use fluxweir::api::rerank::rerank;
+    use fluxweir::config::{
         Config, ConfigManager, ModelCatalogEntry, ModelConfig, RateLimitConfig, VendorConfig,
     };
-    use fluxgate::database::{CostGroupBy, Repository, TokenPreAggregator};
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::database::{CostGroupBy, Repository, TokenPreAggregator};
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -99,7 +99,7 @@ mod tests {
             router: Arc::new(NexusRouter::new(config_manager, vendor_manager)),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database: Arc::new(fluxgate::database::Database {
+            database: Arc::new(fluxweir::database::Database {
                 pool,
                 repository: repository.clone(),
             }),
@@ -109,7 +109,7 @@ mod tests {
                 std::time::Duration::from_secs(3600),
             ))),
             affinity: Some(Arc::new(
-                fluxgate::router::affinity::AffinityTable::with_memory_backend(
+                fluxweir::router::affinity::AffinityTable::with_memory_backend(
                     std::time::Duration::from_secs(3600),
                 ),
             )),
@@ -134,7 +134,7 @@ mod tests {
         Router::new()
             .route(
                 "/v1/models",
-                axum::routing::get(fluxgate::api::models::list_models),
+                axum::routing::get(fluxweir::api::models::list_models),
             )
             .with_state(state)
     }

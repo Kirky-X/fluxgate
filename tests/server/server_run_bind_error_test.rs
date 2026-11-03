@@ -12,7 +12,7 @@
 
 #![recursion_limit = "256"]
 
-use fluxgate::error::FluxgateError;
+use fluxweir::error::FluxweirError;
 
 #[tokio::test]
 async fn run_maps_occupied_server_port_to_error() {
@@ -53,10 +53,10 @@ allowed_headers = ["*"]
     .expect("write run config");
 
     let config = config_path.to_string_lossy().to_string();
-    let result = fluxgate::server::run(Some(config)).await;
+    let result = fluxweir::server::run(Some(config)).await;
 
     match result {
-        Err(FluxgateError::Database { message }) => {
+        Err(FluxweirError::Database { message }) => {
             assert_ne!(
                 message, "error-io-source",
                 "io 错误键必须注册进 FTL 目录（缺键回退返回键名）"

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-// proto/sdforge.v1.proto 是 sdforge 仓库同名文件的逐字节副本：Fluxgate 的
+// proto/sdforge.v1.proto 是 sdforge 仓库同名文件的逐字节副本：Fluxweir 的
 // gRPC 门面即 sdforge 的 sdforge.v1.SdForgeService（无自有 proto），客户端只
 // 消费这份 wire 契约、不引网关内部 crate。门面消息/服务定义变更时需从
 // sdforge 重新同步本副本。

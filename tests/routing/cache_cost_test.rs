@@ -12,9 +12,9 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig};
-    use fluxgate::router::{RouteCtx, Router};
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig};
+    use fluxweir::router::{RouteCtx, Router};
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
     fn model(id: &str, weight: f64) -> ModelConfig {
@@ -34,7 +34,7 @@ mod tests {
         id: &str,
         models: Vec<ModelConfig>,
         supports_batch: bool,
-    ) -> fluxgate::config::VendorConfig {
+    ) -> fluxweir::config::VendorConfig {
         let mut v = common::base_vendor(id, String::new());
         v.models = models;
         v.supports_batch = supports_batch;
@@ -44,7 +44,7 @@ mod tests {
     fn make_config(
         prefix_affinity: bool,
         price_factor_mode: &str,
-        vendors: Vec<fluxgate::config::VendorConfig>,
+        vendors: Vec<fluxweir::config::VendorConfig>,
     ) -> Config {
         let mut config = Config {
             server: ServerConfig {
@@ -201,7 +201,7 @@ mod tests {
         ];
         let mut config = make_config(false, "nominal", vendors);
         config.model_catalog = vec![
-            fluxgate::config::ModelCatalogEntry {
+            fluxweir::config::ModelCatalogEntry {
                 model_id: "m-full".into(),
                 context_window: 128_000,
                 rerank_price_per_1k_docs: 0.0,
@@ -218,7 +218,7 @@ mod tests {
                 supports_thinking: false,
                 cache_breakpoints: None,
             },
-            fluxgate::config::ModelCatalogEntry {
+            fluxweir::config::ModelCatalogEntry {
                 model_id: "m-cache".into(),
                 context_window: 128_000,
                 rerank_price_per_1k_docs: 0.0,

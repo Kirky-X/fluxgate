@@ -15,32 +15,32 @@ use std::sync::Arc;
 
 mod common;
 
-use fluxgate::config::{
+use fluxweir::config::{
     loader::default_vendor_cache_ttl_secs, AffinitySection, ConfigManager, VendorConfig,
 };
-use fluxgate::router::affinity::{
+use fluxweir::router::affinity::{
     AffinityStickTable, AffinityTable, CacheUsage, DEFAULT_AFFINITY_TTL,
 };
-use fluxgate::router::affinity_settle::{decide, AffinityWriter};
-use fluxgate::storage::{AffinityStick, AffinityStickSink};
+use fluxweir::router::affinity_settle::{decide, AffinityWriter};
+use fluxweir::storage::{AffinityStick, AffinityStickSink};
 
 fn affinity_vendor(id: &str, cache_ttl_secs: u64, silent_cache: bool) -> VendorConfig {
     VendorConfig {
         id: id.into(),
         name: id.into(),
         type_: "openai".into(),
-        api_key_env: "FLUXGATE_BENCH_KEY".into(), // pragma: allowlist secret（仅 fixture 环境变量名，非凭证）
+        api_key_env: "FLUXWEIR_BENCH_KEY".into(), // pragma: allowlist secret（仅 fixture 环境变量名，非凭证）
         api_key_envs: Vec::new(),
         extra_headers: Default::default(),
         api_base: String::new(),
         enabled: true,
         priority: 1,
         models: vec![],
-        rate_limit: fluxgate::config::RateLimitConfig::Interval {
+        rate_limit: fluxweir::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         },
-        concurrency: fluxgate::config::ConcurrencyConfig::default(),
+        concurrency: fluxweir::config::ConcurrencyConfig::default(),
         timeout_ms: 60_000,
         stream_ttft_ms: 60_000,
         stream_idle_ms: 30_000,
@@ -71,7 +71,7 @@ fn writer_fixture(mode: &str) -> AffinityWriter {
         table,
         sticks,
         None,
-        Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+        Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
     )
 }
 
@@ -112,7 +112,7 @@ fn writer_fixture_with_sink(mode: &str) -> (AffinityWriter, Arc<CountingSink>) {
             table,
             sticks,
             Some(sink.clone()),
-            Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+            Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
         ),
         sink,
     )

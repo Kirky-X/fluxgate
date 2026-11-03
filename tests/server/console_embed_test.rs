@@ -17,8 +17,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use fluxgate::config::{AuthSection, Config, ConfigManager, ServerConfig};
-use fluxgate::server::build_app;
+use fluxweir::config::{AuthSection, Config, ConfigManager, ServerConfig};
+use fluxweir::server::build_app;
 use std::sync::Arc;
 use tower::ServiceExt;
 

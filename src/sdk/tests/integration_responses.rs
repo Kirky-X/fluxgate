@@ -5,13 +5,13 @@
 
 use futures::StreamExt as _;
 
-use crate::sdk::client::FluxgateClientBuilder;
+use crate::sdk::client::FluxweirClientBuilder;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::{ApiError, FluxgateSdkError};
+use crate::sdk::error::{ApiError, FluxweirSdkError};
 use crate::sdk::{ResponsesInputTokensRequest, ResponsesOutputItem, ResponsesRequest};
 
-fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
-    FluxgateClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxweirClient {
+    FluxweirClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -84,7 +84,7 @@ async fn responses_server_error_maps_to_sdk_error() {
     let client = build_client(&server.url());
     let error = client.responses(&request()).await.expect_err("必须报错");
     match error {
-        FluxgateSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
+        FluxweirSdkError::Api(ApiError { status, .. }) => assert_eq!(status, 500),
         other => panic!("期望 Api 错误: {other:?}"),
     }
 }
@@ -286,7 +286,7 @@ async fn input_tokens_estimates_and_validates() {
         ResponsesInputTokensRequest::new("gpt-4.1", serde_json::json!([])),
     ] {
         match client.input_tokens(&req).await.unwrap_err() {
-            FluxgateSdkError::Protocol { message } => {
+            FluxweirSdkError::Protocol { message } => {
                 assert!(
                     message.contains("model") || message.contains("input"),
                     "拒绝消息应定位字段: {message}"

@@ -559,7 +559,7 @@ fn call_site_shapes_parses_representative_forms() {
     // 样本落集成测试专用 TMPDIR（构建期保证可写、随 cargo clean 清理），
     // 不用 std::env::temp_dir——加固 CI 的 /tmp 可能只读。
     let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "fluxgate_i18n_shape_selfcheck_{}.rs",
+        "fluxweir_i18n_shape_selfcheck_{}.rs",
         std::process::id()
     ));
     fs::write(&path, sample).expect("写入自检样本失败");

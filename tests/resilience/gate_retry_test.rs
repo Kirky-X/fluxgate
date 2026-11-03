@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! Integration tests for `fluxgate::utils::retry` module。
+//! Integration tests for `fluxweir::utils::retry` module。
 //!
 //! 测试覆盖：
 //! - `ErrorCategory`、`extract_status_code`（无 feature 门控）
@@ -13,7 +13,7 @@
 //! 换 vendor fallback E2E 留 tests/retry_test.rs（全栈驱动，应用面）
 
 mod tests {
-    use fluxgate::utils::{extract_status_code, ErrorCategory};
+    use fluxweir::utils::{extract_status_code, ErrorCategory};
     #[cfg(feature = "vendor-management")]
     use std::time::Duration;
 
@@ -135,8 +135,8 @@ mod tests {
     #[cfg(feature = "vendor-management")]
     mod retry_delay_for_fn {
         use super::*;
-        use fluxgate::config::RetrySection;
-        use fluxgate::utils::retry::{retry_delay_for, spread_delay, RetryDelayPolicy};
+        use fluxweir::config::RetrySection;
+        use fluxweir::utils::retry::{retry_delay_for, spread_delay, RetryDelayPolicy};
         use rand::SeedableRng;
 
         /// spread_jitter=0 的存量断言不消耗 RNG；种子任意（固定以满足可复现）。
@@ -331,8 +331,8 @@ mod tests {
 
 #[cfg(test)]
 mod coverage {
-    use fluxgate::utils::extract_status_code;
-    use fluxgate::utils::retry::{ErrorCategory, RetryDelayPolicy};
+    use fluxweir::utils::extract_status_code;
+    use fluxweir::utils::retry::{ErrorCategory, RetryDelayPolicy};
     use std::time::Duration;
 
     // ErrorCategory 边界

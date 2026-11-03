@@ -32,7 +32,7 @@
 /// 验证 GateError 在所有组合下都可用（核心错误类型，常开）
 #[test]
 fn test_core_error_always_available() {
-    let err = fluxgate::GateError::Config {
+    let err = fluxweir::GateError::Config {
         message: "test".to_string(),
     };
     // 双轨约定：Display 恒英文规范串，本地化文案走 user_message（llm-gate error 模块）
@@ -42,7 +42,7 @@ fn test_core_error_always_available() {
 /// 验证 config 模块在所有组合下都可用（常开）
 #[test]
 fn test_config_always_available() {
-    let server_config = fluxgate::config::ServerConfig {
+    let server_config = fluxweir::config::ServerConfig {
         host: "0.0.0.0".to_string(),
         port: 8080,
     };
@@ -54,7 +54,7 @@ fn test_config_always_available() {
 #[cfg(feature = "protocol")]
 #[test]
 fn test_protocol_module_available() {
-    use fluxgate::protocol::UnifiedRequest;
+    use fluxweir::protocol::UnifiedRequest;
     let _ = std::marker::PhantomData::<UnifiedRequest>;
 }
 
@@ -62,7 +62,7 @@ fn test_protocol_module_available() {
 #[cfg(feature = "vendor-management")]
 #[test]
 fn test_vendor_module_available() {
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::vendor::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
@@ -70,7 +70,7 @@ fn test_vendor_module_available() {
 #[cfg(feature = "router")]
 #[test]
 fn test_router_module_available() {
-    use fluxgate::router::Router;
+    use fluxweir::router::Router;
     let _ = std::marker::PhantomData::<Router>;
 }
 
@@ -78,7 +78,7 @@ fn test_router_module_available() {
 #[cfg(feature = "router")]
 #[test]
 fn test_router_dependency_chain() {
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::vendor::VendorManager;
     let _ = std::marker::PhantomData::<VendorManager>;
 }
 
@@ -88,7 +88,7 @@ fn test_router_dependency_chain() {
 #[cfg(not(feature = "vendor-management"))]
 #[test]
 fn test_core_types_without_vendor_stack() {
-    use fluxgate::{Config, GateError};
+    use fluxweir::{Config, GateError};
     let err = GateError::Config {
         message: "core".to_string(),
     };

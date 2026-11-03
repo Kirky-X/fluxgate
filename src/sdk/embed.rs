@@ -5,9 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::sdk::client::FluxgateClient;
+use crate::sdk::client::FluxweirClient;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::transport::send_with_retry;
 
 /// Embedding 输入（官方 `input` 四形状：单字符串 / 字符串数组 /
@@ -137,9 +137,9 @@ struct EmbedPayload<'a> {
     params: crate::sdk::config::OpenAiParams,
 }
 
-impl FluxgateClient {
+impl FluxweirClient {
     /// 发送 embedding 请求。POST /v1/embeddings。
-    pub async fn embed(&self, req: &EmbedRequest) -> Result<EmbedResponse, FluxgateSdkError> {
+    pub async fn embed(&self, req: &EmbedRequest) -> Result<EmbedResponse, FluxweirSdkError> {
         let merged = self.default_config.merge(&req.config);
 
         let payload = EmbedPayload {
@@ -153,7 +153,7 @@ impl FluxgateClient {
         let url = self
             .base_url
             .join("v1/embeddings")
-            .map_err(|e| FluxgateSdkError::Config {
+            .map_err(|e| FluxweirSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 

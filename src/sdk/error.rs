@@ -3,12 +3,12 @@
 
 //! SDK 统一错误类型。
 //!
-//! - `reqwest::Error` 手写分流：`is_timeout` → [`FluxgateSdkError::Timeout`]，
-//!   其余 → [`FluxgateSdkError::Network`]（`#[from]` 只能标注一个变体，手写
+//! - `reqwest::Error` 手写分流：`is_timeout` → [`FluxweirSdkError::Timeout`]，
+//!   其余 → [`FluxweirSdkError::Network`]（`#[from]` 只能标注一个变体，手写
 //!   实现保证既有 `?` 调用点零改动且超时可判别）。
 //! - HTTP 非 2xx 统一构造 [`ApiError`]：status/kind/message/code/param/
 //!   request-id/retry-after/x-should-retry 全量可判别。
-//! - 流内错误（SSE `type:"error"` 事件等）走 [`FluxgateSdkError::Stream`]，
+//! - 流内错误（SSE `type:"error"` 事件等）走 [`FluxweirSdkError::Stream`]，
 //!   不构造 `ApiError`（无 HTTP status 语义）。
 
 use std::time::Duration;
@@ -20,7 +20,7 @@ use crate::sdk::retry::parse_retry_after;
 
 /// SDK 错误。
 #[derive(Error, Debug)]
-pub enum FluxgateSdkError {
+pub enum FluxweirSdkError {
     #[error("network error: {source}")]
     Network { source: reqwest::Error },
 
@@ -40,7 +40,7 @@ pub enum FluxgateSdkError {
     Config { message: String },
 }
 
-impl From<reqwest::Error> for FluxgateSdkError {
+impl From<reqwest::Error> for FluxweirSdkError {
     /// 传输层错误分流：超时 → `Timeout`，其余（连接/请求/body）→ `Network`。
     fn from(source: reqwest::Error) -> Self {
         if source.is_timeout() {
@@ -51,8 +51,8 @@ impl From<reqwest::Error> for FluxgateSdkError {
     }
 }
 
-impl FluxgateSdkError {
-    /// 上游非 2xx → [`FluxgateSdkError::Api`]。
+impl FluxweirSdkError {
+    /// 上游非 2xx → [`FluxweirSdkError::Api`]。
     ///
     /// `headers` 必须在消费 body 前获取（reqwest 响应头在 body 消费后仍可读，
     /// 但调用点约定先取头）；`body` 为已读出的原始文本。

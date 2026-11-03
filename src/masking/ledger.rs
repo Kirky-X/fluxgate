@@ -6,7 +6,7 @@
 //! `{ts, kind, finder, placeholder, hint}`，hint = 值首字符 + 字节长度。
 //! **值与占位符→原值映射不落盘**（反向映射仅内存，见 `placeholder` 模块）。
 //!
-//! 落盘：`~/.fluxgate/mask_ledger/ledger-YYYYMMDD.jsonl`（UTC 日界）。写入
+//! 落盘：`~/.fluxweir/mask_ledger/ledger-YYYYMMDD.jsonl`（UTC 日界）。写入
 //! 走 O_APPEND 打开 + 单次 `write_all`（同进程写入串行于内部互斥锁；POSIX
 //! append 模式下单次 write 追加位置原子）。每日首写触发裁剪：先删超出
 //! `retention_days` 的日文件，再在总量超 `max_total_bytes` 时从最旧日文件
@@ -22,7 +22,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// 台账目录名（home 下）：`~/.fluxgate/mask_ledger/`。
+/// 台账目录名（home 下）：`~/.fluxweir/mask_ledger/`。
 pub const LEDGER_DIR_NAME: &str = "mask_ledger";
 
 /// 单条台账记录（写入面；生产路径由 `gates.rs` 掩码命中回填）。
@@ -63,11 +63,11 @@ impl std::fmt::Debug for MaskingLedger {
 }
 
 impl MaskingLedger {
-    /// 生产构造：数据目录取 `~/.fluxgate/mask_ledger/`；home 不可得 →
+    /// 生产构造：数据目录取 `~/.fluxweir/mask_ledger/`；home 不可得 →
     /// 停用并 warn（观测旁路不因此失败）。
     pub fn from_config(config: Arc<ConfigManager>) -> Self {
         let dir = match std::env::home_dir() {
-            Some(home) => Some(home.join(".fluxgate").join(LEDGER_DIR_NAME)),
+            Some(home) => Some(home.join(".fluxweir").join(LEDGER_DIR_NAME)),
             None => {
                 tracing::warn!(
                     "{}",

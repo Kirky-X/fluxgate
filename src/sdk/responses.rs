@@ -11,9 +11,9 @@ use futures::stream::{BoxStream, Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use crate::sdk::client::FluxgateClient;
+use crate::sdk::client::FluxweirClient;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::stream::stream_error_message;
 use crate::sdk::transport::send_with_retry;
 
@@ -301,7 +301,7 @@ pub struct ResponsesStreamEvent {
 
 /// Responses 事件流。
 pub struct ResponsesStream {
-    inner: BoxStream<'static, Result<ResponsesStreamEvent, FluxgateSdkError>>,
+    inner: BoxStream<'static, Result<ResponsesStreamEvent, FluxweirSdkError>>,
 }
 
 impl ResponsesStream {
@@ -320,7 +320,7 @@ impl ResponsesStream {
                     // `event: error` 帧：不按事件解析，直接上抛（对齐官方
                     // SDK `error` 事件语义）
                     if event.event == "error" {
-                        return Some(Err(FluxgateSdkError::Stream {
+                        return Some(Err(FluxweirSdkError::Stream {
                             message: stream_error_message(&event.data),
                         }));
                     }
@@ -329,18 +329,18 @@ impl ResponsesStream {
                             // `type:"error"` 事件：流内事件无 HTTP status，
                             // 消息取 `message`；不得当作正常事件静默下发
                             if parsed.event_type == "error" {
-                                return Some(Err(FluxgateSdkError::Stream {
+                                return Some(Err(FluxweirSdkError::Stream {
                                     message: stream_error_message(&event.data),
                                 }));
                             }
                             Some(Ok(parsed))
                         }
-                        Err(error) => Some(Err(FluxgateSdkError::Stream {
+                        Err(error) => Some(Err(FluxweirSdkError::Stream {
                             message: format!("JSON parse error: {error}"),
                         })),
                     }
                 }
-                Err(error) => Some(Err(FluxgateSdkError::Stream {
+                Err(error) => Some(Err(FluxweirSdkError::Stream {
                     message: format!("SSE decode error: {error}"),
                 })),
             }
@@ -352,19 +352,19 @@ impl ResponsesStream {
 }
 
 impl Stream for ResponsesStream {
-    type Item = Result<ResponsesStreamEvent, FluxgateSdkError>;
+    type Item = Result<ResponsesStreamEvent, FluxweirSdkError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
     }
 }
 
-impl FluxgateClient {
+impl FluxweirClient {
     /// 非流式 `POST /v1/responses`。
     pub async fn responses(
         &self,
         req: &ResponsesRequest,
-    ) -> Result<ResponsesResponse, FluxgateSdkError> {
+    ) -> Result<ResponsesResponse, FluxweirSdkError> {
         let mut merged = self.default_config.merge(&req.config);
         // 请求级 extra_headers 覆盖客户端/配置默认（小写归一键）
         merged.extra_headers.extend(
@@ -376,7 +376,7 @@ impl FluxgateClient {
         let url = self
             .base_url
             .join("v1/responses")
-            .map_err(|error| FluxgateSdkError::Config {
+            .map_err(|error| FluxweirSdkError::Config {
                 message: format!("invalid URL: {error}"),
             })?;
         let request = self
@@ -396,7 +396,7 @@ impl FluxgateClient {
     pub async fn responses_stream(
         &self,
         req: &ResponsesRequest,
-    ) -> Result<ResponsesStream, FluxgateSdkError> {
+    ) -> Result<ResponsesStream, FluxweirSdkError> {
         let mut merged = self.default_config.merge(&req.config);
         merged.extra_headers.extend(
             req.extra_headers
@@ -407,7 +407,7 @@ impl FluxgateClient {
         let url = self
             .base_url
             .join("v1/responses")
-            .map_err(|error| FluxgateSdkError::Config {
+            .map_err(|error| FluxweirSdkError::Config {
                 message: format!("invalid URL: {error}"),
             })?;
         let request = self
@@ -424,11 +424,11 @@ impl FluxgateClient {
     }
 
     /// `GET /v1/responses/{id}`。
-    pub async fn get_response(&self, id: &str) -> Result<ResponsesResponse, FluxgateSdkError> {
+    pub async fn get_response(&self, id: &str) -> Result<ResponsesResponse, FluxweirSdkError> {
         let url = self
             .base_url
             .join(&format!("v1/responses/{id}"))
-            .map_err(|error| FluxgateSdkError::Config {
+            .map_err(|error| FluxweirSdkError::Config {
                 message: format!("invalid URL: {error}"),
             })?;
         let request = self
@@ -442,11 +442,11 @@ impl FluxgateClient {
     }
 
     /// `DELETE /v1/responses/{id}`。
-    pub async fn delete_response(&self, id: &str) -> Result<Value, FluxgateSdkError> {
+    pub async fn delete_response(&self, id: &str) -> Result<Value, FluxweirSdkError> {
         let url = self
             .base_url
             .join(&format!("v1/responses/{id}"))
-            .map_err(|error| FluxgateSdkError::Config {
+            .map_err(|error| FluxweirSdkError::Config {
                 message: format!("invalid URL: {error}"),
             })?;
         let request = self
@@ -461,11 +461,11 @@ impl FluxgateClient {
 
     /// `POST /v1/responses/{id}/cancel`：仅后台任务可取消（网关对非
     /// background 响应返回 400），返回 cancelled 响应对象。
-    pub async fn cancel_response(&self, id: &str) -> Result<ResponsesResponse, FluxgateSdkError> {
+    pub async fn cancel_response(&self, id: &str) -> Result<ResponsesResponse, FluxweirSdkError> {
         let url = self
             .base_url
             .join(&format!("v1/responses/{id}/cancel"))
-            .map_err(|error| FluxgateSdkError::Config {
+            .map_err(|error| FluxweirSdkError::Config {
                 message: format!("invalid URL: {error}"),
             })?;
         let request = self
@@ -483,9 +483,9 @@ impl FluxgateClient {
     pub async fn input_tokens(
         &self,
         req: &ResponsesInputTokensRequest,
-    ) -> Result<ResponsesInputTokensResponse, FluxgateSdkError> {
+    ) -> Result<ResponsesInputTokensResponse, FluxweirSdkError> {
         if req.model.trim().is_empty() {
-            return Err(FluxgateSdkError::Protocol {
+            return Err(FluxweirSdkError::Protocol {
                 message: "input_tokens requires non-empty `model`".to_string(),
             });
         }
@@ -496,7 +496,7 @@ impl FluxgateClient {
             _ => false,
         };
         if input_empty {
-            return Err(FluxgateSdkError::Protocol {
+            return Err(FluxweirSdkError::Protocol {
                 message: "input_tokens requires non-empty `input`".to_string(),
             });
         }
@@ -504,7 +504,7 @@ impl FluxgateClient {
         let url = self
             .base_url
             .join("v1/responses/input_tokens")
-            .map_err(|error| FluxgateSdkError::Config {
+            .map_err(|error| FluxweirSdkError::Config {
                 message: format!("invalid URL: {error}"),
             })?;
         let payload = json!({"model": req.model, "input": req.input});

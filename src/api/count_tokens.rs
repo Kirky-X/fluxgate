@@ -6,7 +6,7 @@
 //! 近似估算（字符数/4 + 结构开销，不引 tokenizer 依赖）。走既有鉴权与
 //! 统一错误体系；model 存在性不校验（估计与注册无关）
 
-use crate::error::{FluxgateError, GateError};
+use crate::error::{FluxweirError, GateError};
 use crate::i18n::t;
 use crate::utils::estimate_messages_tokens;
 use crate::ApiState;
@@ -18,20 +18,20 @@ use std::sync::Arc;
 pub async fn count_tokens(
     State(_state): State<Arc<ApiState>>,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     if body.get("model").and_then(Value::as_str).is_none() {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: t("api-count-tokens-model-invalid"),
         }));
     }
     match body.get("messages").and_then(Value::as_array) {
         None => {
-            return Err(FluxgateError::from(GateError::Validation {
+            return Err(FluxweirError::from(GateError::Validation {
                 field: t("api-count-tokens-messages-invalid"),
             }));
         }
         Some(messages) if messages.is_empty() => {
-            return Err(FluxgateError::from(GateError::Validation {
+            return Err(FluxweirError::from(GateError::Validation {
                 field: t("api-count-tokens-messages-empty"),
             }));
         }

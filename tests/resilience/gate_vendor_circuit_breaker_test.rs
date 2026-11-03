@@ -21,12 +21,12 @@ mod common;
 const OPEN_WINDOW_MS: u64 = 300;
 const WINDOW_SLEEP_MS: u64 = 400;
 
-use fluxgate::config::{Config, ConfigManager, RetrySection, VendorConfig};
-use fluxgate::error::GateError;
-use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use fluxgate::router::Router;
-use fluxgate::vendor::VendorManager;
-use fluxgate::vendor::VendorStatus;
+use fluxweir::config::{Config, ConfigManager, RetrySection, VendorConfig};
+use fluxweir::error::GateError;
+use fluxweir::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use fluxweir::router::Router;
+use fluxweir::vendor::VendorManager;
+use fluxweir::vendor::VendorStatus;
 use limiteron::error::CircuitState;
 use std::sync::Arc;
 use std::time::Duration;

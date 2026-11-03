@@ -11,7 +11,7 @@
 
 #![cfg(feature = "vendor-management")]
 
-use fluxgate::vendor::pool::ConnectionPool;
+use fluxweir::vendor::pool::ConnectionPool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

@@ -6,8 +6,8 @@
 //! 8 hex——0x00 分隔符防 tag/value 边界歧义）。
 //!
 //! pepper 三态来源（[`OnceLock`] 缓存，进程内恒定）：
-//! 1. env `FLUXGATE_MASK_PEPPER`（64 hex = 32 字节）；
-//! 2. `~/.fluxgate/mask_pepper.key`（0600；不存在则随机创建，仿
+//! 1. env `FLUXWEIR_MASK_PEPPER`（64 hex = 32 字节）；
+//! 2. `~/.fluxweir/mask_pepper.key`（0600；不存在则随机创建，仿
 //!    `vault/master_key.rs` 先例；创建失败降级下一级并 warn）；
 //! 3. 进程内随机（OS 熵种子派生；前两级都不可用时的降级面）。
 //!
@@ -48,7 +48,7 @@ pub const DEFAULT_CAPACITY: usize = 10_000;
 pub const ENTRY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// pepper 环境变量名（64 hex = 32 字节；最高优先级，覆盖 pepper 文件）。
-pub const MASK_PEPPER_ENV: &str = "FLUXGATE_MASK_PEPPER";
+pub const MASK_PEPPER_ENV: &str = "FLUXWEIR_MASK_PEPPER";
 
 /// 进程级 pepper：三态来源解析（env → pepper 文件 → 进程内随机），OnceLock
 /// 缓存进程内恒定。解析核心 [`resolve_mask_pepper`] 绝不失败——pepper 面
@@ -63,9 +63,9 @@ fn pepper() -> &'static [u8; 32] {
     })
 }
 
-/// 缺省 pepper 文件：`~/.fluxgate/mask_pepper.key`（home 不可得返回 None）。
+/// 缺省 pepper 文件：`~/.fluxweir/mask_pepper.key`（home 不可得返回 None）。
 fn default_pepper_path() -> Option<std::path::PathBuf> {
-    std::env::home_dir().map(|home| home.join(".fluxgate").join("mask_pepper.key"))
+    std::env::home_dir().map(|home| home.join(".fluxweir").join("mask_pepper.key"))
 }
 
 /// pepper 三态解析核心（env 值与文件路径注入，便于测试隔离）：

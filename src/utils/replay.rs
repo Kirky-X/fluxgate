@@ -12,7 +12,7 @@
 
 use crate::config::model_catalog::ModelCatalogEntry;
 use crate::config::unit::{source_price_to_catalog_price, MICROS_PER_UNIT};
-use crate::error::FluxgateError;
+use crate::error::FluxweirError;
 use dbnexus::DbPool;
 use sea_orm::{ConnectionTrait, QueryResult, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -85,9 +85,9 @@ pub fn session_key_of(row: &ReplayRow, ordinal: u64) -> SessionKey {
 /// （`sqlite://…`、`postgres://…`、`mysql://…`）。
 ///
 /// 注意：本函数不校验目标是否存在，也不改写 URL 的 `mode`——控制只读语义
-/// 是调用方的责任（`fluxgate-replay` CLI 对 sqlite 强制 `mode=ro` 且要求
+/// 是调用方的责任（`fluxweir-replay` CLI 对 sqlite 强制 `mode=ro` 且要求
 /// 文件已存在，见其 `resolve_db_url`）。
-pub async fn open_pool(url: &str) -> Result<DbPool, FluxgateError> {
+pub async fn open_pool(url: &str) -> Result<DbPool, FluxweirError> {
     let config = dbnexus::DbConfig {
         url: url.to_string(),
         pool_config: dbnexus::PoolConfig {
@@ -124,7 +124,7 @@ pub async fn load_rows(
     from: i64,
     to: i64,
     max_rows: u64,
-) -> Result<Vec<ReplayRow>, FluxgateError> {
+) -> Result<Vec<ReplayRow>, FluxweirError> {
     let session = pool.get_session("admin").await?;
     let conn = session.connection()?;
     let probe = max_rows.saturating_add(1).min(i64::MAX as u64) as i64;
@@ -143,7 +143,7 @@ pub async fn load_rows(
         .await
         .map_err(dbnexus::DbError::from)?;
     if rows.len() as u64 > max_rows {
-        return Err(FluxgateError::Database {
+        return Err(FluxweirError::Database {
             message: crate::i18n::t_args(
                 "replay-window-too-large",
                 &[
@@ -161,16 +161,16 @@ pub async fn load_rows(
 /// 列读取失败**不吞**（规则 4 失败显性化）：类型漂移/列改名会让整次装载
 /// 报错，而不是把 token 静默当成 0、把金额静默低估。可空列（`session_key`、
 /// `cost_usd`）保留 NULL 语义；token 计数列 NULL 按 0（schema 可空）。
-fn map_replay_row(row: &QueryResult) -> Result<ReplayRow, FluxgateError> {
-    fn decode(col: &str, err: sea_orm::DbErr) -> FluxgateError {
-        FluxgateError::Database {
+fn map_replay_row(row: &QueryResult) -> Result<ReplayRow, FluxweirError> {
+    fn decode(col: &str, err: sea_orm::DbErr) -> FluxweirError {
+        FluxweirError::Database {
             message: crate::i18n::t_args(
                 "replay-row-decode-failed",
                 &[("column", col.to_string()), ("error", err.to_string())],
             ),
         }
     }
-    let u64_of = |col: &str| -> Result<u64, FluxgateError> {
+    let u64_of = |col: &str| -> Result<u64, FluxweirError> {
         let raw: Option<i64> = row
             .try_get::<Option<i64>>("", col)
             .map_err(|e| decode(col, e))?;

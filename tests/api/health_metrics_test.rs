@@ -10,7 +10,7 @@
 
 use axum::{body::Body, http::Request, http::StatusCode, Router};
 use dbnexus::{DbConfig, DbPool};
-use fluxgate::{
+use fluxweir::{
     api::create_router,
     config::{Config, ConfigManager, DatabaseConfig},
     database::Database,
@@ -27,7 +27,7 @@ fn make_config() -> Config {
         web_search: Default::default(),
         vendor_budgets: Vec::new(),
         key_budgets: Default::default(),
-        server: fluxgate::config::ServerConfig {
+        server: fluxweir::config::ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
         },
@@ -42,18 +42,18 @@ fn make_config() -> Config {
         model_catalog: Vec::new(),
         auth: None,
         cors: None,
-        retry: fluxgate::config::RetrySection::default(),
-        routing: fluxgate::config::RoutingSection::default(),
-        cache: fluxgate::config::CacheSection::default(),
+        retry: fluxweir::config::RetrySection::default(),
+        routing: fluxweir::config::RoutingSection::default(),
+        cache: fluxweir::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),
         grpc: None,
-        resilience: fluxgate::config::ResilienceSection::default(),
+        resilience: fluxweir::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
         responses: Default::default(),
-        rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
+        rate_limit: fluxweir::config::RateLimitSection { rules: vec![] },
         otlp: Default::default(),
         usage_insights: Default::default(),
         catalog_sync: Default::default(),
@@ -84,13 +84,13 @@ async fn build_app() -> (Router, Arc<ApiState>, DbPool) {
     let pool = memory_pool().await;
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(fluxgate::database::Repository::new(pool.clone())),
+        repository: Arc::new(fluxweir::database::Repository::new(pool.clone())),
     });
-    let router = Arc::new(fluxgate::router::Router::new(
+    let router = Arc::new(fluxweir::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
-    let response_cache = Arc::new(fluxgate::api::response_cache::ResponseCache::new(
+    let response_cache = Arc::new(fluxweir::api::response_cache::ResponseCache::new(
         Arc::new(oxcache::backend::default_memory_backend()),
         config_manager.clone(),
         vendor_manager.metrics().clone(),
@@ -157,7 +157,7 @@ fn payload_check_names(body: &serde_json::Value) -> Vec<(String, bool)> {
 #[tokio::test]
 async fn readyz_reflects_component_health() {
     let (app, state, pool) = build_app().await;
-    fluxgate::api::readiness::register_readiness_checks(&state, &pool);
+    fluxweir::api::readiness::register_readiness_checks(&state, &pool);
 
     let resp = get(app.clone(), "/readyz").await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -288,13 +288,13 @@ async fn admin_metrics_exposes_quota_counters() {
     let mut config = make_config();
     let good_key_digest =
         "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303".to_string();
-    config.auth = Some(fluxgate::config::AuthSection {
+    config.auth = Some(fluxweir::config::AuthSection {
         enabled: true,
         api_keys: vec![good_key_digest.clone()],
         header: Default::default(),
-        keys: vec![fluxgate::config::AuthKeyEntry {
+        keys: vec![fluxweir::config::AuthKeyEntry {
             hash: good_key_digest,
-            tier: fluxgate::config::AuthTier::Elastic,
+            tier: fluxweir::config::AuthTier::Elastic,
             token_quota: 1,
             cost_quota_millicents: 0,
         }],
@@ -307,9 +307,9 @@ async fn admin_metrics_exposes_quota_counters() {
     let pool = memory_pool().await;
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(fluxgate::database::Repository::new(pool.clone())),
+        repository: Arc::new(fluxweir::database::Repository::new(pool.clone())),
     });
-    let router = Arc::new(fluxgate::router::Router::new(
+    let router = Arc::new(fluxweir::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
@@ -326,7 +326,7 @@ async fn admin_metrics_exposes_quota_counters() {
         affinity: None,
         response_cache: None,
         bandit: None,
-        quota: Some(Arc::new(fluxgate::middleware::quota::QuotaState::new())),
+        quota: Some(Arc::new(fluxweir::middleware::quota::QuotaState::new())),
         difficulty: None,
         responses: None,
         #[cfg(feature = "web-search")]
@@ -468,7 +468,7 @@ async fn admin_metrics_exposes_subscription_counters() {
 #[cfg(feature = "masking")]
 #[test]
 fn admin_metrics_snapshot_exposes_masking_counters() {
-    let metrics = fluxgate::utils::metrics::GlobalMetrics::new();
+    let metrics = fluxweir::utils::metrics::GlobalMetrics::new();
 
     // 未接线：四字段在场且为 0
     let snapshot = metrics.snapshot();

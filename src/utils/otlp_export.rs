@@ -8,7 +8,7 @@
 //! - 请求入站解析 W3C `traceparent`（无/非法 → 新建 root span）；
 //! - 每个 vendor attempt 一个子 span，属性：`vendor`/`model`/`attempt`/
 //!   `status_code`/`error_class`/`cost_details.estimate_usd`；fallback 实际
-//!   命中者的 span 标 `fluxgate.served=true`；
+//!   命中者的 span 标 `fluxweir.served=true`；
 //! - 出站请求注入 `traceparent`（本尝试 span 上下文）；
 //! - 双零默认关：`[otlp].tracing.enabled=false`（不装 provider）或
 //!   `sample_ratio=0.0`（全不采样）→ 零 span、零网络导出；
@@ -39,9 +39,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// root span 名（request 域）。
-const REQUEST_SPAN_NAME: &str = "fluxgate.request";
+const REQUEST_SPAN_NAME: &str = "fluxweir.request";
 /// attempt 子 span 名。
-const ATTEMPT_SPAN_NAME: &str = "fluxgate.attempt";
+const ATTEMPT_SPAN_NAME: &str = "fluxweir.attempt";
 
 /// 尝试级追踪装配参数（`[otlp].tracing` 段映射而来）。
 #[derive(Debug, Clone)]
@@ -78,7 +78,7 @@ pub fn trace_from_section(section: &OtlpTracingSection) -> TraceSpawn {
     }
 }
 
-/// 追踪控制器：SdkTracerProvider + fluxgate tracer（本地持有，不进
+/// 追踪控制器：SdkTracerProvider + fluxweir tracer（本地持有，不进
 /// opentelemetry global——测试可逐实例注入 in-memory exporter）。
 pub struct TraceController {
     provider: SdkTracerProvider,
@@ -121,7 +121,7 @@ impl TraceController {
 
     /// 以既有 provider 装配（测试注入 InMemorySpanExporter 用）。
     pub(crate) fn with_provider(provider: SdkTracerProvider) -> Self {
-        let tracer = provider.tracer("fluxgate.trace");
+        let tracer = provider.tracer("fluxweir.trace");
         Self { provider, tracer }
     }
 
@@ -309,7 +309,7 @@ impl AttemptSpan {
         estimate_usd: Option<f64>,
     ) {
         let Some(mut span) = self.span else { return };
-        span.set_attribute(KeyValue::new("fluxgate.served", served));
+        span.set_attribute(KeyValue::new("fluxweir.served", served));
         if let Some(code) = status_code {
             span.set_attribute(KeyValue::new("status_code", i64::from(code)));
         }
@@ -448,7 +448,7 @@ mod tests {
             .map(|s| {
                 s.attributes
                     .iter()
-                    .find(|kv| kv.key.as_str() == "fluxgate.served")
+                    .find(|kv| kv.key.as_str() == "fluxweir.served")
                     .and_then(attr_bool)
                     .unwrap_or(false)
             })

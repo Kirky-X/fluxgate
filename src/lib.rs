@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! FluxGate：智能 LLM 路由代理核心库（多厂商统一管理、协议转换、路由调度与可观测性）。
+//! FluxWeir：智能 LLM 路由代理核心库（多厂商统一管理、协议转换、路由调度与可观测性）。
 
 // config 单 struct 承载全部段：拆段会分裂 POST /admin/config 热更新语义
 pub mod config;
 pub mod error;
-// i18n 引擎：crate 内外统一经 fluxgate::i18n 访问
+// i18n 引擎：crate 内外统一经 fluxweir::i18n 访问
 pub mod i18n;
 // utils：metrics / retry / cost_tracker
 pub mod utils;
@@ -51,7 +51,7 @@ pub use config::{
     Config, ConfigManager, DatabaseConfig, DocsSection, ModelConfig, PricingConfig, ServerConfig,
     VendorConfig,
 };
-pub use error::{FluxgateError, GateError};
+pub use error::{FluxweirError, GateError};
 
 #[cfg(feature = "web-server")]
 pub use api::ApiState;

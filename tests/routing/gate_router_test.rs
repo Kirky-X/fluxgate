@@ -9,11 +9,11 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, DatabaseConfig, ModelConfig, RateLimitConfig, ServerConfig,
     };
-    use fluxgate::router::{Router, RoutingStrategy};
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::router::{Router, RoutingStrategy};
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
     fn create_router_test_config() -> Config {
@@ -291,14 +291,14 @@ mod tests {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            retry: fluxgate::config::RetrySection::default(),
-            routing: fluxgate::config::RoutingSection::default(),
-            cache: fluxgate::config::CacheSection::default(),
+            retry: fluxweir::config::RetrySection::default(),
+            routing: fluxweir::config::RoutingSection::default(),
+            cache: fluxweir::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: fluxgate::config::ResilienceSection::default(),
+            resilience: fluxweir::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
@@ -339,14 +339,14 @@ mod tests {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            retry: fluxgate::config::RetrySection::default(),
-            routing: fluxgate::config::RoutingSection::default(),
-            cache: fluxgate::config::CacheSection::default(),
+            retry: fluxweir::config::RetrySection::default(),
+            routing: fluxweir::config::RoutingSection::default(),
+            cache: fluxweir::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: fluxgate::config::ResilienceSection::default(),
+            resilience: fluxweir::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
@@ -408,9 +408,9 @@ mod tests {
 #[cfg(test)]
 mod scheduling_weight {
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig};
-    use fluxgate::router::{compute_weight, Router, RoutingStrategy};
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::config::{Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig};
+    use fluxweir::router::{compute_weight, Router, RoutingStrategy};
+    use fluxweir::vendor::VendorManager;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -479,7 +479,7 @@ mod scheduling_weight {
         let router = Router::new(config_manager.clone(), vendor_manager.clone());
 
         let request =
-            serde_json::from_value::<fluxgate::protocol::UnifiedRequest>(serde_json::json!({
+            serde_json::from_value::<fluxweir::protocol::UnifiedRequest>(serde_json::json!({
                 "model": "shared-model",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 8
@@ -616,7 +616,7 @@ mod scheduling_weight {
         }
 
         let request =
-            serde_json::from_value::<fluxgate::protocol::UnifiedRequest>(serde_json::json!({
+            serde_json::from_value::<fluxweir::protocol::UnifiedRequest>(serde_json::json!({
                 "model": "shared-model",
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 8
@@ -775,7 +775,7 @@ mod scheduling_weight {
             w_window: 0.0,
             ..RoutingSection::default()
         };
-        let exhausted = fluxgate::vendor::WindowInfo {
+        let exhausted = fluxweir::vendor::WindowInfo {
             max_tokens: Some(100),
             used_tokens: 100,
             window_end: None,
@@ -1264,10 +1264,10 @@ mod scheduling_weight {
 #[cfg(test)]
 mod session_affinity {
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, ModelConfig, ServerConfig};
-    use fluxgate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use fluxgate::router::Router;
-    use fluxgate::vendor::{VendorManager, VendorStatus};
+    use fluxweir::config::{Config, ConfigManager, ModelConfig, ServerConfig};
+    use fluxweir::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1471,9 +1471,9 @@ mod session_affinity {
 #[cfg(test)]
 mod failure_rate_gate {
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, ModelConfig, ResilienceSection, ServerConfig};
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::config::{Config, ConfigManager, ModelConfig, ResilienceSection, ServerConfig};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -1596,13 +1596,13 @@ mod failure_rate_gate {
 #[cfg(test)]
 mod cooldown_improvements {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, ModelConfig, RateLimitConfig, RoutingSection, ServerConfig,
         VendorConfig,
     };
-    use fluxgate::error::GateError;
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::error::GateError;
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
     fn make_vendor(id: &str, weight: f64, max_tokens: u64) -> VendorConfig {
@@ -1892,12 +1892,12 @@ mod cooldown_improvements {
 #[cfg(test)]
 mod soft_affinity {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use fluxgate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use fluxgate::router::{apply_affinity_boost, Router, RoutingStrategy};
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use fluxweir::router::{apply_affinity_boost, Router, RoutingStrategy};
+    use fluxweir::vendor::VendorManager;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -2134,12 +2134,12 @@ mod soft_affinity {
 #[cfg(test)]
 mod sla_virtual_queue {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, ModelConfig, PricingConfig, RoutingSection, ServerConfig,
         VendorConfig,
     };
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -2504,12 +2504,12 @@ mod sla_virtual_queue {
 #[cfg(test)]
 mod linucb_selection {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use fluxgate::router::bandit::{linucb_features, BanditState};
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::router::bandit::{linucb_features, BanditState};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
     /// 单位特征（截距 1、其余 0）——选择与奖励灌账共用。
@@ -2853,11 +2853,11 @@ mod linucb_selection {
 #[cfg(test)]
 mod lps_lookahead {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -3076,15 +3076,15 @@ mod lps_lookahead {
 #[cfg(test)]
 mod route_gap_coverage {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, GlobalModelConfig, ModelConfig, PricingConfig, ResilienceSection,
         RoutingSection, ServerConfig, VendorConfig,
     };
-    use fluxgate::error::GateError;
-    use fluxgate::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
-    use fluxgate::router::bandit::{linucb_features, BanditState};
-    use fluxgate::router::{compute_weight, Router, RoutingStrategy};
-    use fluxgate::vendor::{VendorManager, VendorStatus};
+    use fluxweir::error::GateError;
+    use fluxweir::router::affinity::{AffinityTable, DEFAULT_AFFINITY_TTL};
+    use fluxweir::router::bandit::{linucb_features, BanditState};
+    use fluxweir::router::{compute_weight, Router, RoutingStrategy};
+    use fluxweir::vendor::{VendorManager, VendorStatus};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::sync::Arc;
@@ -3866,7 +3866,7 @@ mod route_gap_coverage {
                 ..Default::default()
             },
             vec![single_shared("gx-a")],
-            vec![fluxgate::config::PricingConfig {
+            vec![fluxweir::config::PricingConfig {
                 vendor_id: "gx-a".into(),
                 model_id: "shared-model".into(),
                 input_per_1k_tokens: 0.05,
@@ -4183,12 +4183,12 @@ mod route_gap_coverage {
 #[cfg(test)]
 mod embedding_compat_group {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ConfigManager, ModelConfig, RoutingSection, ServerConfig, VendorConfig,
     };
-    use fluxgate::router::affinity::AffinityTable;
-    use fluxgate::router::{EmbeddingPin, Router, RoutingStrategy};
-    use fluxgate::vendor::{VendorManager, VendorStatus};
+    use fluxweir::router::affinity::AffinityTable;
+    use fluxweir::router::{EmbeddingPin, Router, RoutingStrategy};
+    use fluxweir::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
 
     /// 单模型嵌入 vendor：指定 abstract / model_id / 组 / 权重
@@ -4914,16 +4914,16 @@ mod embedding_compat_group {
 #[cfg(test)]
 mod quota_factor {
     use crate::common;
-    use fluxgate::config::{
+    use fluxweir::config::{
         Config, ModelConfig, QuotaFactorSection, QuotaWindowConfig, VendorBudgetConfig,
     };
-    use fluxgate::database::QuotaLedgerRow;
-    use fluxgate::middleware::quota::QuotaState;
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::database::QuotaLedgerRow;
+    use fluxweir::middleware::quota::QuotaState;
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
-    fn vendor(id: &str) -> fluxgate::config::VendorConfig {
+    fn vendor(id: &str) -> fluxweir::config::VendorConfig {
         let mut v = common::base_vendor(id, String::new());
         v.models = vec![ModelConfig {
             model_id: "shared-model".into(),
@@ -4987,9 +4987,9 @@ mod quota_factor {
         state: Option<Arc<QuotaState>>,
     ) -> (
         Vec<(String, f64)>,
-        Arc<fluxgate::utils::metrics::GlobalMetrics>,
+        Arc<fluxweir::utils::metrics::GlobalMetrics>,
     ) {
-        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
         let vm = Arc::new(VendorManager::new(cm.clone()));
         let mut router = Router::new(cm.clone(), vm.clone());
         if let Some(state) = state {
@@ -5120,7 +5120,7 @@ mod quota_factor {
 
     // ---- 配额时钟补全（R-budget-002）：平局打破 + 两级降档 ----
 
-    use fluxgate::config::QuotaFactorSection as Qfs;
+    use fluxweir::config::QuotaFactorSection as Qfs;
 
     /// 平局打破用配置：early/late 两 vendor 同 token 预算，rolling 周期
     /// 各异（3600/7200）——同起点可造出「score 相同、reset_at 不同」的
@@ -5160,7 +5160,7 @@ mod quota_factor {
     }
 
     async fn weights_from(config: &Config, state: Arc<QuotaState>) -> Vec<(String, f64)> {
-        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
         let vm = Arc::new(VendorManager::new(cm.clone()));
         let router = Router::new(cm.clone(), vm.clone()).with_quota_state(state);
         let candidates = vec!["early", "late"]
@@ -5196,12 +5196,12 @@ mod quota_factor {
             ],
         );
         // 打分单点直接断言：early 是平局打破生效者
-        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
         let vm = Arc::new(VendorManager::new(cm.clone()));
         let router = Router::new(cm, vm).with_quota_state(state.clone());
         let candidates: Vec<(
-            fluxgate::config::VendorConfig,
-            fluxgate::config::ModelConfig,
+            fluxweir::config::VendorConfig,
+            fluxweir::config::ModelConfig,
         )> = vec!["early", "late"]
             .into_iter()
             .map(|id| {
@@ -5210,8 +5210,8 @@ mod quota_factor {
             })
             .collect();
         let (_, views) = router.quota_factor_views(&candidates).await;
-        let scoring = fluxgate::router::quota_factor_scores(
-            fluxgate::config::QuotaFactorMode::Smart,
+        let scoring = fluxweir::router::quota_factor_scores(
+            fluxweir::config::QuotaFactorMode::Smart,
             &views,
             &config.routing.quota_factor,
         );
@@ -5270,12 +5270,12 @@ mod quota_factor {
                 ledger_row("late", 3000, 100),
             ],
         );
-        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
         let vm = Arc::new(VendorManager::new(cm.clone()));
         let router = Router::new(cm, vm).with_quota_state(state.clone());
         let candidates: Vec<(
-            fluxgate::config::VendorConfig,
-            fluxgate::config::ModelConfig,
+            fluxweir::config::VendorConfig,
+            fluxweir::config::ModelConfig,
         )> = vec!["early", "late"]
             .into_iter()
             .map(|id| {
@@ -5284,8 +5284,8 @@ mod quota_factor {
             })
             .collect();
         let (_, views) = router.quota_factor_views(&candidates).await;
-        let scoring = fluxgate::router::quota_factor_scores(
-            fluxgate::config::QuotaFactorMode::Smart,
+        let scoring = fluxweir::router::quota_factor_scores(
+            fluxweir::config::QuotaFactorMode::Smart,
             &views,
             &config.routing.quota_factor,
         );
@@ -5338,12 +5338,12 @@ mod quota_factor {
                 ledger_row("deep", 100, 990),
             ],
         );
-        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
         let vm = Arc::new(VendorManager::new(cm.clone()));
         let router = Router::new(cm, vm).with_quota_state(state.clone());
         let candidates: Vec<(
-            fluxgate::config::VendorConfig,
-            fluxgate::config::ModelConfig,
+            fluxweir::config::VendorConfig,
+            fluxweir::config::ModelConfig,
         )> = vec!["control", "mid", "deep"]
             .into_iter()
             .map(|id| {
@@ -5352,8 +5352,8 @@ mod quota_factor {
             })
             .collect();
         let (_, views) = router.quota_factor_views(&candidates).await;
-        let scoring = fluxgate::router::quota_factor_scores(
-            fluxgate::config::QuotaFactorMode::Smart,
+        let scoring = fluxweir::router::quota_factor_scores(
+            fluxweir::config::QuotaFactorMode::Smart,
             &views,
             &config.routing.quota_factor,
         );
@@ -5385,12 +5385,12 @@ mod quota_factor {
     }
 
     async fn weights_from3(config: &Config, state: Arc<QuotaState>) -> Vec<(String, f64)> {
-        let cm = Arc::new(fluxgate::config::ConfigManager::new(config.clone()));
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
         let vm = Arc::new(VendorManager::new(cm.clone()));
         let router = Router::new(cm, vm).with_quota_state(state);
         let candidates: Vec<(
-            fluxgate::config::VendorConfig,
-            fluxgate::config::ModelConfig,
+            fluxweir::config::VendorConfig,
+            fluxweir::config::ModelConfig,
         )> = vec!["control", "mid", "deep"]
             .into_iter()
             .map(|id| {
@@ -5410,7 +5410,7 @@ mod quota_factor {
     /// 独立于租户（生效窗解析产物断言）。
     #[test]
     fn window_limits_fall_back_to_per_key_quota() {
-        use fluxgate::config::{AuthKeyEntry, AuthSection, AuthTier, QuotaSection};
+        use fluxweir::config::{AuthKeyEntry, AuthSection, AuthTier, QuotaSection};
 
         let mut config = common::test_config(vec![]);
         config.auth = Some(AuthSection {
@@ -5442,7 +5442,7 @@ mod quota_factor {
             ],
             ..Default::default()
         };
-        let resolved = fluxgate::middleware::quota::resolve_windows(&config, "tenant");
+        let resolved = fluxweir::middleware::quota::resolve_windows(&config, "tenant");
         let inherit = resolved.iter().find(|w| w.id == "inherit").unwrap();
         assert_eq!(inherit.tokens_limit, 500, "0 限额落回 per-key");
         assert_eq!(inherit.cost_limit_millicents, 700);

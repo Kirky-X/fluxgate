@@ -1,9 +1,9 @@
-# Fluxgate REST API 文档
+# Fluxweir REST API 文档
 
 **文档基线**: v0.1.0（以 Cargo.toml 为准）
 **Base URL**: `http://0.0.0.0:8080`（默认配置，实际以 `[server]` 段 host/port 为准）
 **内容类型**: `application/json`（流式响应为 `text/event-stream`）
-**内容协商**: 错误消息文案支持中英文（服务端 i18n，跟随 `FLUXGATE_LANG`/`LANG` 环境变量，检测链为 `FLUXGATE_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG`）
+**内容协商**: 错误消息文案支持中英文（服务端 i18n，跟随 `FLUXWEIR_LANG`/`LANG` 环境变量，检测链为 `FLUXWEIR_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG`）
 
 ---
 
@@ -99,13 +99,13 @@
 
 HTTP 状态码：`401 Unauthorized`（无效 key 时 `message` 为 `"Invalid API key"`）。
 
-> 认证中间件的放行路径为代码事实（认证白名单判定，`src/middleware/auth.rs`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/admin/subscription/callback`（OAuth 302 回跳裸 GET）、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共十个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。`/healthz` 与 `/readyz` 由 sdforge 在**全部中间件之后**挂载（`build_with_config`；Fluxgate 的认证/限流/超时层只包业务路由，故探针不经过它们），**免认证免限流**（实测无 key 返回 200）；`/readyz` 每请求真跑 DB 与缓存探针，仅建议内网暴露；`/ready` 未注册（404），仅在限流豁免表里留存。
+> 认证中间件的放行路径为代码事实（认证白名单判定，`src/middleware/auth.rs`）：`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/admin/subscription/callback`（OAuth 302 回跳裸 GET）、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*` 共十个条目显式放行。其中 `/api/v1/health` 是健康检查的实际注册路径（见[健康检查](#健康检查)）；`/health` 等裸探针路径未注册路由（请求会 404），但仍保留在白名单中（免认证）。`/healthz` 与 `/readyz` 由 sdforge 在**全部中间件之后**挂载（`build_with_config`；Fluxweir 的认证/限流/超时层只包业务路由，故探针不经过它们），**免认证免限流**（实测无 key 返回 200）；`/readyz` 每请求真跑 DB 与缓存探针，仅建议内网暴露；`/ready` 未注册（404），仅在限流豁免表里留存。
 
 ---
 
 ## 通用错误响应
 
-Fluxgate 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/mod.rs` 中的 `IntoResponse` 实现）；未注册路径的 404 由 sdforge 兜底，形状为 `{"code":"NOT_FOUND","message":"Route not found","trace_id":…}`。
+Fluxweir 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/mod.rs` 中的 `IntoResponse` 实现）；未注册路径的 404 由 sdforge 兜底，形状为 `{"code":"NOT_FOUND","message":"Route not found","trace_id":…}`。
 
 ```json
 {
@@ -127,7 +127,7 @@ Fluxgate 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/
 
 ## 错误码映射
 
-以下映射来源于 `src/error/mod.rs` 中 `FluxgateError::into_response` 的实际实现（代码为准）。
+以下映射来源于 `src/error/mod.rs` 中 `FluxweirError::into_response` 的实际实现（代码为准）。
 
 | 错误类型 (`error.type`) | HTTP 状态码 | 触发场景 |
 |---|---|---|
@@ -152,7 +152,7 @@ Fluxgate 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/
 > - 全局规则超速 → `429 Too Many Requests` + `Retry-After` 头（窗口剩余秒），文案同上；旧 `Governor` 路径的无头 429 与 `403` 封禁分支已删除（规则 ban 恒为 None）。
 > - 限流白名单路径（不进入限流检查，`is_quota_exempt_path` 共十条）：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`。
 > - 每次响应（含 429）均回传 **`X-Request-Id`** 响应头：透传客户端所带 ID，未带时网关生成（`req-` 前缀）；同请求 tracing span 携带该 ID。
-> - **换路观测响应头**（`[resilience].expose_fallback_headers`，默认 `false`、✅热更；关闭时响应逐字节与现状一致）：开启后成功响应附 `x-fluxgate-vendor`（最终命中厂商 id）、`x-fluxgate-model`（成交模型 id）、`x-fluxgate-attempts`（总尝试次数）、`x-fluxgate-fallbacks`（逗号分隔尝试链，含最终命中者；流式在响应头阶段写入）。缓存命中早退不附头（无实际尝试）。
+> - **换路观测响应头**（`[resilience].expose_fallback_headers`，默认 `false`、✅热更；关闭时响应逐字节与现状一致）：开启后成功响应附 `x-fluxweir-vendor`（最终命中厂商 id）、`x-fluxweir-model`（成交模型 id）、`x-fluxweir-attempts`（总尝试次数）、`x-fluxweir-fallbacks`（逗号分隔尝试链，含最终命中者；流式在响应头阶段写入）。缓存命中早退不附头（无实际尝试）。
 > - **配额层**（按 key 的 token/成本固定窗口，`src/middleware/quota.rs`）：`[quota].enabled`（默认 `false`）
 >   开启且 `[[auth.keys]]` 的 `token_quota`/`cost_quota_millicents` 任一 > 0 时生效；作用于全部计费
 >   数据面：`/v1/chat/completions`、`/v1/messages`、`/v1/rerank`、`/v1/responses` 与 Gemini
@@ -648,7 +648,7 @@ Google 官方 SDK 可将 base URL 指向网关根地址，直接使用 Gemini �
 
 ```bash
 curl http://localhost:8080/v1beta/models/gemini-2.5-pro:generateContent \
-  -H "x-goog-api-key: $FLUXGATE_API_KEY" \
+  -H "x-goog-api-key: $FLUXWEIR_API_KEY" \
   -H "content-type: application/json" \
   -d '{
     "systemInstruction": {"parts": [{"text": "回答不超过 80 字"}]},
@@ -704,7 +704,7 @@ OpenAI 模型列表兼容端点。模型集合 = `[[model_catalog]]` 目录 ∪ 
   "object": "list",
   "data": [
     {"id": "gpt-4", "object": "model", "owned_by": "openai"},
-    {"id": "my-catalog-model", "object": "model", "owned_by": "fluxgate"}
+    {"id": "my-catalog-model", "object": "model", "owned_by": "fluxweir"}
   ]
 }
 ```
@@ -713,7 +713,7 @@ OpenAI 模型列表兼容端点。模型集合 = `[[model_catalog]]` 目录 ∪ 
 |---|---|
 | `data[].id` | 模型 ID |
 | `data[].object` | 恒为 `"model"` |
-| `data[].owned_by` | 认领 vendor 的 ID；目录独有条目为 `"fluxgate"` |
+| `data[].owned_by` | 认领 vendor 的 ID；目录独有条目为 `"fluxweir"` |
 
 **curl 示例**:
 
@@ -930,7 +930,7 @@ curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
 
 | 头 | 说明 |
 |---|---|
-| `x-fluxgate-cost-key` | 请求方 key 原文（服务端哈希后过滤该 key 的分账；空值/缺省 = 不过滤）。不用 query 参数传递，避免 key 进访问日志 |
+| `x-fluxweir-cost-key` | 请求方 key 原文（服务端哈希后过滤该 key 的分账；空值/缺省 = 不过滤）。不用 query 参数传递，避免 key 进访问日志 |
 
 **响应**:
 
@@ -963,7 +963,7 @@ curl "http://localhost:8080/admin/stats/tokens?vendor=mock-openai" \
 ```bash
 curl "http://localhost:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-10-09" \
   -H "Authorization: Bearer $API_KEY" \
-  -H "x-fluxgate-cost-key: $FILTER_KEY"
+  -H "x-fluxweir-cost-key: $FILTER_KEY"
 ```
 
 ---
@@ -2068,7 +2068,7 @@ curl -X DELETE http://localhost:8080/admin/vault/keys/vk_01H... \
 }
 ```
 
-> 台账只记元数据：`ts`/`kind`/`finder`（inklog pattern 名、`custom_rule_N` 或 `word`）/`placeholder`/`hint`（**首字符** + 字节长度）——**值与占位符→原值映射不落盘**。按天文件 `~/.fluxgate/mask_ledger/ledger-YYYYMMDD.jsonl`，每日首写触发裁剪（`retention_days` 按天 + `max_total_bytes` 总量删最旧）。
+> 台账只记元数据：`ts`/`kind`/`finder`（inklog pattern 名、`custom_rule_N` 或 `word`）/`placeholder`/`hint`（**首字符** + 字节长度）——**值与占位符→原值映射不落盘**。按天文件 `~/.fluxweir/mask_ledger/ledger-YYYYMMDD.jsonl`，每日首写触发裁剪（`retention_days` 按天 + `max_total_bytes` 总量删最旧）。
 
 **错误码**: `validation_error`(400, date 非法)；台账未启用 → 404（`masking_ledger_disabled`）
 
@@ -2375,15 +2375,15 @@ enabled = true
 
 ## Rust SDK 客户端
 
-随仓 Rust SDK（`fluxgate::sdk`，`sdk` feature，含于 `full`；`src/sdk/`）覆盖 chat（含流式聚合）、embeddings、rerank、responses（含 cancel / input_tokens）、models 与 admin 端点。以下为对齐官方 SDK 后的参数面、错误体系、重试/超时与路由头映射。
+随仓 Rust SDK（`fluxweir::sdk`，`sdk` feature，含于 `full`；`src/sdk/`）覆盖 chat（含流式聚合）、embeddings、rerank、responses（含 cancel / input_tokens）、models 与 admin 端点。以下为对齐官方 SDK 后的参数面、错误体系、重试/超时与路由头映射。
 
 ### 客户端构造
 
 ```rust
 use std::collections::BTreeMap;
-use fluxgate::sdk::FluxgateClientBuilder;
+use fluxweir::sdk::FluxweirClientBuilder;
 
-let client = FluxgateClientBuilder::new()
+let client = FluxweirClientBuilder::new()
     .base_url("http://localhost:8080")   // 必填
     .api_key("网关签发的 key")            // 必填（Authorization: Bearer）
     .default_headers(BTreeMap::new())    // 客户端级附加头（可选）
@@ -2406,7 +2406,7 @@ let client = FluxgateClientBuilder::new()
 
 ### 错误体系
 
-`FluxgateSdkError` 六变体（旧 `Auth` / `Server` 变体已删除、统一收敛进 `Api`；BREAKING 见 CHANGELOG）：
+`FluxweirSdkError` 六变体（旧 `Auth` / `Server` 变体已删除、统一收敛进 `Api`；BREAKING 见 CHANGELOG）：
 
 | 变体 | 触发 | 备注 |
 |---|---|---|
@@ -2418,11 +2418,11 @@ let client = FluxgateClientBuilder::new()
 | `Config { message }` | 构造/URL 错误 | 不重试 |
 
 ```rust
-use fluxgate::sdk::{ApiError, FluxgateSdkError};
+use fluxweir::sdk::{ApiError, FluxweirSdkError};
 
 match client.chat(&req).await {
     Ok(resp) => println!("{}", resp.content),
-    Err(FluxgateSdkError::Api(ApiError { status: 401, message, .. })) => {
+    Err(FluxweirSdkError::Api(ApiError { status: 401, message, .. })) => {
         eprintln!("认证失败：{message}");
     }
     Err(err) => return Err(err),

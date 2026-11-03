@@ -1182,7 +1182,7 @@ pub struct ResilienceSection {
     #[serde(default = "default_circuit_open_timeout_ms")]
     pub circuit_open_timeout_ms: u64,
     /// 回退链可观测响应头：默认 false；开启时成功响应附
-    /// x-fluxgate-vendor / model / attempts / fallbacks。热更段
+    /// x-fluxweir-vendor / model / attempts / fallbacks。热更段
     #[serde(default)]
     pub expose_fallback_headers: bool,
 }

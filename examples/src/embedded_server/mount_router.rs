@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use axum::routing::get;
 use axum::{Json, Router};
-use fluxgate::config::loader::ConfigLoader;
-use fluxgate::server::build_app;
+use fluxweir::config::loader::ConfigLoader;
+use fluxweir::server::build_app;
 use serde_json::json;
 
 /// 运行目录（CWD）须有 config.toml，可从仓库根 config.example.toml 复制为起点；
@@ -27,7 +27,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         get(|| async {
             Json(json!({
                 "example": "embedded-server/mount_router",
-                "gateway": "fluxgate",
+                "gateway": "fluxweir",
             }))
         }),
     ));

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::config::ConfigManager;
-use crate::error::FluxgateError;
+use crate::error::FluxweirError;
 use crate::error::GateError;
 use crate::i18n::{t, t_args};
 use crate::server::bootstrap;
@@ -27,7 +27,7 @@ use crate::server::handle::ServerHandle;
 /// 同进程二次调用即 panic（重复装配是调用方 bug）。
 pub async fn build_app(
     config_manager: Arc<ConfigManager>,
-) -> Result<(Router, ServerHandle), FluxgateError> {
+) -> Result<(Router, ServerHandle), FluxweirError> {
     let assembly = bootstrap::assemble(config_manager.clone()).await?;
     let app = assemble_router(&config_manager, &assembly).await?;
     // gRPC 装配（grpc feature）：禁用/缺段为 None；登记入句柄，由调用方 take 后启动
@@ -44,7 +44,7 @@ pub async fn build_app(
 /// # Panics
 ///
 /// 同 [`build_app`]：经 `init_global_state`，同进程二次调用 panic。
-pub async fn run(config_path: Option<String>) -> Result<(), FluxgateError> {
+pub async fn run(config_path: Option<String>) -> Result<(), FluxweirError> {
     // 进程级日志句柄：活到 run 返回
     let _logger = bootstrap::init_logger().await?;
     let config_manager = bootstrap::load_config(config_path)?;
@@ -71,7 +71,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), FluxgateError> {
             .host
             .parse()
             .map_err(|e: std::net::AddrParseError| {
-                FluxgateError::from(GateError::Config {
+                FluxweirError::from(GateError::Config {
                     message: t_args(
                         "main-invalid-server-host",
                         &[
@@ -135,7 +135,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), FluxgateError> {
                     &[("error", e.to_string())]
                 )
             );
-            return Err(FluxgateError::from(GateError::Config {
+            return Err(FluxweirError::from(GateError::Config {
                 message: t_args("main-server-error", &[("error", e.to_string())]),
             }));
         }
@@ -149,7 +149,7 @@ pub async fn run(config_path: Option<String>) -> Result<(), FluxgateError> {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(e))) => return Err(e),
             Ok(Err(join_err)) => {
-                return Err(FluxgateError::from(GateError::Config {
+                return Err(FluxweirError::from(GateError::Config {
                     message: t_args("main-grpc-server-error", &[("error", join_err.to_string())]),
                 }));
             }
@@ -205,7 +205,7 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
             request_timeout_secs: 300,
             max_body_size: 10 * 1024 * 1024,
             cors,
-            // Fluxgate 不经 sdforge 终结 TLS（明文监听，TLS 由外部反代承担）
+            // Fluxweir 不经 sdforge 终结 TLS（明文监听，TLS 由外部反代承担）
             tls: None,
         },
         // 认证由自建 api_auth_middleware 承担（[auth] SHA256 摘要制）；
@@ -222,14 +222,14 @@ fn sdforge_config(config_manager: &Arc<ConfigManager>) -> sdforge::config::SdFor
 async fn assemble_router(
     config_manager: &Arc<ConfigManager>,
     assembly: &bootstrap::Assembly,
-) -> Result<Router, FluxgateError> {
+) -> Result<Router, FluxweirError> {
     // 双栈语言对齐：sdforge 框架栈（OpenAPI/health 描述串与框架 HTTP 响应）有
-    // 独立检测链（SDFORGE_LANG 起步），不自动继承 FLUXGATE_LANG——在此显式同步
+    // 独立检测链（SDFORGE_LANG 起步），不自动继承 FLUXWEIR_LANG——在此显式同步
     // 为业务栈当前 locale，README 承诺的单一语言入口对两栈一致（set_locale
     // 优先于其检测缓存，晚于首次 get_locale 也能覆盖）。
     sdforge::i18n::set_locale(&crate::i18n::current_locale().to_string());
     let sdforge_config = sdforge_config(config_manager);
-    // sdforge rc.10 起框架入口带 base 路由参数（应用路由先合并）——fluxgate
+    // sdforge rc.10 起框架入口带 base 路由参数（应用路由先合并）——fluxweir
     // 以空 base 起步，语义与旧 build_with_config 等价
     let mut app = sdforge::http::build_with_config_ext(axum::Router::new(), &sdforge_config)?;
     app = app.merge(crate::api::create_router(assembly.api_state.clone()).await);

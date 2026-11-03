@@ -3,7 +3,7 @@
 
 //! 协议转换语义保真参数化回归（表驱动：每语义点至少一条用例）。
 
-use fluxgate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
+use fluxweir::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
 use serde_json::{json, Value};
 
 fn openai() -> OpenAIConverter {

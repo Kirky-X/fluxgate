@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #![cfg(all(feature = "web-server", feature = "logging"))]
 
-//! server 模块冒烟 — 库化装配链 `fluxgate::server::build_app` 的最小行为
+//! server 模块冒烟 — 库化装配链 `fluxweir::server::build_app` 的最小行为
 //! 契约（oneshot，无网络依赖）。完整装配矩阵由 assembly_smoke_test.rs
 //! 承载，此处不重复其断言；本文件锁定 server 门控模块自身可达且行为正确：
 //! 1. test_config 装配 → build_app 不 panic
@@ -19,8 +19,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use fluxgate::config::{AuthSection, Config, ConfigManager, ServerConfig};
-use fluxgate::server::build_app;
+use fluxweir::config::{AuthSection, Config, ConfigManager, ServerConfig};
+use fluxweir::server::build_app;
 use std::sync::Arc;
 use tower::ServiceExt;
 

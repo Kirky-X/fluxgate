@@ -51,7 +51,7 @@ impl LayaClassifier {
             );
         }
         let config = ModelConfig {
-            name: "fluxgate-difficulty".to_string(),
+            name: "fluxweir-difficulty".to_string(),
             engine_type: EngineType::Candle,
             model_path: model_path.into(),
             task: ModelTask::Decision,

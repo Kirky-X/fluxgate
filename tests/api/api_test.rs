@@ -14,7 +14,7 @@ mod endpoints {
         routing::{get, post},
         Router,
     };
-    use fluxgate::{
+    use fluxweir::{
         api::{chat_completions, messages},
         config::{Config, ConfigManager, DatabaseConfig, ModelConfig, ServerConfig},
         database::Database,
@@ -33,7 +33,7 @@ mod endpoints {
         let mut openai_main = common::base_vendor("openai_main", "");
         openai_main.name = "OpenAI Main".into();
         openai_main.api_key_env = "OPENAI_API_KEY".into();
-        openai_main.rate_limit = fluxgate::config::RateLimitConfig::Interval {
+        openai_main.rate_limit = fluxweir::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         };
@@ -53,7 +53,7 @@ mod endpoints {
             compat_group: None,
             model_type: None,
         }];
-        anthropic_main.rate_limit = fluxgate::config::RateLimitConfig::Interval {
+        anthropic_main.rate_limit = fluxweir::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         };
@@ -94,10 +94,10 @@ mod endpoints {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
 
-        let router = Arc::new(fluxgate::router::Router::new(
+        let router = Arc::new(fluxweir::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -266,16 +266,16 @@ mod endpoints {
     async fn test_unified_to_openai_response() {
         let state = create_api_state().await;
 
-        let unified_response = fluxgate::protocol::unified::UnifiedResponse {
+        let unified_response = fluxweir::protocol::unified::UnifiedResponse {
             id: "test-123".to_string(),
             object: "chat.completion".to_string(),
             created: 1234567890,
             model: "gpt-4".to_string(),
-            choices: vec![fluxgate::protocol::unified::Choice {
+            choices: vec![fluxweir::protocol::unified::Choice {
                 index: 0,
-                message: Some(fluxgate::protocol::unified::Message {
-                    role: fluxgate::protocol::unified::Role::Assistant,
-                    content: fluxgate::protocol::unified::MessageContent::Text(
+                message: Some(fluxweir::protocol::unified::Message {
+                    role: fluxweir::protocol::unified::Role::Assistant,
+                    content: fluxweir::protocol::unified::MessageContent::Text(
                         "Hello!".to_string(),
                     ),
                 }),
@@ -283,7 +283,7 @@ mod endpoints {
                 finish: None,
                 logprobs: None,
             }],
-            usage: fluxgate::protocol::unified::TokenUsage {
+            usage: fluxweir::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
@@ -341,7 +341,7 @@ mod endpoints {
 
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
-        let router = Arc::new(fluxgate::router::Router::new(
+        let router = Arc::new(fluxweir::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -358,7 +358,7 @@ mod endpoints {
 
         let config_manager = Arc::new(ConfigManager::new(config));
         let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
-        let router = Arc::new(fluxgate::router::Router::new(
+        let router = Arc::new(fluxweir::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -371,12 +371,12 @@ mod endpoints {
 
 mod integration {
     use crate::common;
-    use fluxgate::api::ApiState;
-    use fluxgate::config::{Config, ConfigManager, DatabaseConfig, ServerConfig};
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::api::ApiState;
+    use fluxweir::config::{Config, ConfigManager, DatabaseConfig, ServerConfig};
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -387,7 +387,7 @@ mod integration {
         let mut v = common::base_vendor("openai_main", "");
         v.name = "OpenAI Main".into();
         v.api_key_env = "OPENAI_API_KEY".into();
-        v.rate_limit = fluxgate::config::RateLimitConfig::Interval {
+        v.rate_limit = fluxweir::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         };
@@ -429,7 +429,7 @@ mod integration {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
 
         Arc::new(ApiState {
@@ -567,16 +567,16 @@ mod integration {
     async fn test_unified_response_to_openai_format() {
         let converter = OpenAIConverter::new();
 
-        let unified_response = fluxgate::protocol::unified::UnifiedResponse {
+        let unified_response = fluxweir::protocol::unified::UnifiedResponse {
             id: "test-123".to_string(),
             object: "chat.completion".to_string(),
             created: 1234567890,
             model: "gpt-4".to_string(),
-            choices: vec![fluxgate::protocol::unified::Choice {
+            choices: vec![fluxweir::protocol::unified::Choice {
                 index: 0,
-                message: Some(fluxgate::protocol::unified::Message {
-                    role: fluxgate::protocol::unified::Role::Assistant,
-                    content: fluxgate::protocol::unified::MessageContent::Text(
+                message: Some(fluxweir::protocol::unified::Message {
+                    role: fluxweir::protocol::unified::Role::Assistant,
+                    content: fluxweir::protocol::unified::MessageContent::Text(
                         "Hello!".to_string(),
                     ),
                 }),
@@ -584,7 +584,7 @@ mod integration {
                 finish: None,
                 logprobs: None,
             }],
-            usage: fluxgate::protocol::unified::TokenUsage {
+            usage: fluxweir::protocol::unified::TokenUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
@@ -675,8 +675,8 @@ mod auth {
         routing::get,
         Router,
     };
-    use fluxgate::middleware::auth::api_auth_middleware;
-    use fluxgate::middleware::ApiAuthState;
+    use fluxweir::middleware::auth::api_auth_middleware;
+    use fluxweir::middleware::ApiAuthState;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -892,16 +892,16 @@ mod admin {
     use axum::extract::{Path, State};
     use axum::response::IntoResponse;
     use axum::Json;
-    use fluxgate::api::admin;
-    use fluxgate::api::ApiState;
-    use fluxgate::config::{
+    use fluxweir::api::admin;
+    use fluxweir::api::ApiState;
+    use fluxweir::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ServerConfig, VendorConfig,
     };
-    use fluxgate::database::Database;
-    use fluxgate::error::{FluxgateError, GateError};
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::database::Database;
+    use fluxweir::error::{FluxweirError, GateError};
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter, ProtocolConverter};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
 
     /// 差异覆盖（其余字段继承 common 基座）：server 0.0.0.0:8080、
@@ -911,7 +911,7 @@ mod admin {
         let mut v = common::base_vendor("openai_main", "");
         v.name = "OpenAI Main".into();
         v.api_key_env = "OPENAI_API_KEY".into();
-        v.rate_limit = fluxgate::config::RateLimitConfig::Interval {
+        v.rate_limit = fluxweir::config::RateLimitConfig::Interval {
             hours: 1,
             sliding: false,
         };
@@ -952,7 +952,7 @@ mod admin {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
 
         let router = Arc::new(Router::new(config_manager.clone(), vendor_manager.clone()));
@@ -1092,11 +1092,11 @@ mod admin {
             enabled: true,
             priority: 1,
             models: vec![],
-            rate_limit: fluxgate::config::RateLimitConfig::Interval {
+            rate_limit: fluxweir::config::RateLimitConfig::Interval {
                 hours: 1,
                 sliding: false,
             },
-            concurrency: fluxgate::config::ConcurrencyConfig {
+            concurrency: fluxweir::config::ConcurrencyConfig {
                 requests_per_second: 10,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -1114,7 +1114,7 @@ mod admin {
         match result {
             // admin-vendor-routes-fix：资源不存在是调用方错误，Validation(400)
             // 承载（原 Config/500）；文案仍点名 id（zh/en 双语，断言走字段值）
-            Err(FluxgateError::Gate(GateError::Validation { field })) => {
+            Err(FluxweirError::Gate(GateError::Validation { field })) => {
                 assert!(
                     field.contains("nonexistent"),
                     "message should name the missing id: {}",
@@ -1136,7 +1136,7 @@ mod admin {
         let result =
             admin::update_model(State(state), Path("non-global".to_string()), Json(model)).await;
         match result {
-            Err(FluxgateError::Gate(GateError::Config { message })) => {
+            Err(FluxweirError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("global"),
                     "message should mention 'global': {}",
@@ -1195,7 +1195,7 @@ mod admin {
     async fn test_admin_update_config_reports_restart_required_for_cors() {
         // update_config 返回 impl IntoResponse（Ok 分支为 Json<Value>），
         // 经 into_response 读 body 解析 JSON
-        async fn body_json<R: IntoResponse>(resp: Result<R, FluxgateError>) -> serde_json::Value {
+        async fn body_json<R: IntoResponse>(resp: Result<R, FluxweirError>) -> serde_json::Value {
             let bytes =
                 axum::body::to_bytes(resp.unwrap().into_response().into_body(), 1024 * 1024)
                     .await
@@ -1250,7 +1250,7 @@ mod admin {
     /// rate_limit（Router 构造期消费，config.example.toml ❌ 标注）。
     #[tokio::test]
     async fn test_admin_update_config_reports_restart_required_for_docs_and_difficulty() {
-        async fn body_json<R: IntoResponse>(resp: Result<R, FluxgateError>) -> serde_json::Value {
+        async fn body_json<R: IntoResponse>(resp: Result<R, FluxweirError>) -> serde_json::Value {
             let bytes =
                 axum::body::to_bytes(resp.unwrap().into_response().into_body(), 1024 * 1024)
                     .await
@@ -1277,7 +1277,7 @@ mod admin {
 
         // 新增一条 rate_limit 规则：Router 构造期消费，改后须重启
         let mut next = state.config.get_config();
-        next.rate_limit.rules.push(fluxgate::config::RateLimitRule {
+        next.rate_limit.rules.push(fluxweir::config::RateLimitRule {
             id: "restart-probe".to_string(),
             path: None,
             per_tenant: false,
@@ -1332,7 +1332,7 @@ mod admin {
         let mut next = state.config.get_config();
         next.vendors[0].name = "renamed-after-external-edit".to_string();
         match admin::update_config(State(state.clone()), Json(next)).await {
-            Err(FluxgateError::Gate(GateError::Config { message })) => {
+            Err(FluxweirError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("config.toml"),
                     "错误必须点名被外部修改的文件: {message}"
@@ -1398,13 +1398,13 @@ mod admin {
 mod streaming_error_propagation {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use fluxgate::api::{chat_completions, messages};
-    use fluxgate::config::{Config, ConfigManager, ModelConfig, ServerConfig, VendorConfig};
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::api::{chat_completions, messages};
+    use fluxweir::config::{Config, ConfigManager, ModelConfig, ServerConfig, VendorConfig};
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use serde_json::json;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -1461,7 +1461,7 @@ mod streaming_error_propagation {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
 
         let router = Arc::new(NexusRouter::new(
@@ -1793,15 +1793,15 @@ mod streaming_error_propagation {
 mod logging_pipeline {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use fluxgate::api::{chat_completions, ApiState};
-    use fluxgate::config::{CacheSection, Config, ConfigManager, ServerConfig};
-    use fluxgate::database::{
+    use fluxweir::api::{chat_completions, ApiState};
+    use fluxweir::config::{CacheSection, Config, ConfigManager, ServerConfig};
+    use fluxweir::database::{
         AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, TokenPreAggregator,
     };
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::storage::UsageSink;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::storage::UsageSink;
+    use fluxweir::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1880,7 +1880,7 @@ mod logging_pipeline {
             Duration::from_secs(60),
         ));
 
-        let database = Arc::new(fluxgate::database::Database {
+        let database = Arc::new(fluxweir::database::Database {
             pool,
             repository: repository.clone(),
         });
@@ -2152,7 +2152,7 @@ mod logging_pipeline {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn anthropic_usage_keys_are_mapped_end_to_end() {
         use axum::routing::post as post_route;
-        use fluxgate::api::messages;
+        use fluxweir::api::messages;
 
         let mut server = mockito::Server::new_async().await;
         server
@@ -2205,7 +2205,7 @@ mod logging_pipeline {
             router: Arc::new(NexusRouter::new(config_manager, vendor_manager)),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database: Arc::new(fluxgate::database::Database {
+            database: Arc::new(fluxweir::database::Database {
                 pool,
                 repository: repository.clone(),
             }),
@@ -2320,15 +2320,15 @@ mod embeddings_governance {
         routing::post,
         Router,
     };
-    use fluxgate::api::{admin, embeddings, ApiState};
-    use fluxgate::config::{
+    use fluxweir::api::{admin, embeddings, ApiState};
+    use fluxweir::config::{
         CacheSection, Config, ConfigManager, ModelConfig, RateLimitConfig, ServerConfig,
         VendorConfig,
     };
-    use fluxgate::database::{AsyncLogger, AsyncLoggerHandle, Repository, TokenPreAggregator};
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::database::{AsyncLogger, AsyncLoggerHandle, Repository, TokenPreAggregator};
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -2397,11 +2397,11 @@ mod embeddings_governance {
             vendor_manager: vendor_manager.clone(),
             router: Arc::new(
                 NexusRouter::new(config_manager, vendor_manager)
-                    .with_embedding_pin(Arc::new(fluxgate::router::EmbeddingPin::new())),
+                    .with_embedding_pin(Arc::new(fluxweir::router::EmbeddingPin::new())),
             ),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database: Arc::new(fluxgate::database::Database {
+            database: Arc::new(fluxweir::database::Database {
                 pool,
                 repository: repository.clone(),
             }),
@@ -2938,15 +2938,15 @@ mod embeddings_governance {
 mod response_cache_tests {
     use crate::common;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use fluxgate::api::{chat_completions, response_cache::ResponseCache};
-    use fluxgate::config::{
+    use fluxweir::api::{chat_completions, response_cache::ResponseCache};
+    use fluxweir::config::{
         CacheSection, Config, ConfigManager, ModelConfig, ServerConfig, VendorConfig,
     };
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use serde_json::json;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -3008,7 +3008,7 @@ mod response_cache_tests {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
 
         let router = Arc::new(NexusRouter::new(
@@ -3030,7 +3030,7 @@ mod response_cache_tests {
             response_cache: Some(Arc::new(ResponseCache::new(
                 Arc::new(oxcache::backend::default_memory_backend()),
                 config_manager.clone(),
-                Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+                Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
             ))),
             bandit: None,
             quota: None,
@@ -3341,12 +3341,12 @@ mod linucb_reward_chain {
     //! 无 record_linucb_reward 调用、handler→奖励链路零覆盖。
 
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, RoutingSection, ServerConfig};
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::bandit::BanditState;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::config::{Config, ConfigManager, RoutingSection, ServerConfig};
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::bandit::BanditState;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -3394,11 +3394,11 @@ mod linucb_reward_chain {
         .unwrap();
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
         let bandit = Arc::new(BanditState::new(1.0));
         let router = Arc::new(
-            fluxgate::router::Router::new(config_manager.clone(), vendor_manager.clone())
+            fluxweir::router::Router::new(config_manager.clone(), vendor_manager.clone())
                 .with_bandit(bandit.clone()),
         );
         let state = Arc::new(ApiState {
@@ -3428,7 +3428,7 @@ mod linucb_reward_chain {
         axum::Router::new()
             .route(
                 "/v1/chat/completions",
-                post(fluxgate::api::completions::chat_completions),
+                post(fluxweir::api::completions::chat_completions),
             )
             .with_state(state)
     }
@@ -3505,12 +3505,12 @@ mod global_model_switch {
     //! 端口，路由成功后执行失败 → 非 4xx 客户端错误）。
 
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, GlobalModelConfig, ServerConfig};
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::config::{Config, ConfigManager, GlobalModelConfig, ServerConfig};
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -3549,7 +3549,7 @@ mod global_model_switch {
         .unwrap();
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
         Arc::new(ApiState {
             affinity_writer: None,
@@ -3577,7 +3577,7 @@ mod global_model_switch {
         let app = axum::Router::new()
             .route(
                 "/v1/chat/completions",
-                post(fluxgate::api::completions::chat_completions),
+                post(fluxweir::api::completions::chat_completions),
             )
             .with_state(state);
         app.oneshot(
@@ -3642,22 +3642,22 @@ mod api_handler_coverage {
     use axum::extract::{Query, State};
     use axum::response::IntoResponse;
     use axum::{body::Body, http::Request, routing::post, Router};
-    use fluxgate::api::admin::{self, LogQuery};
-    use fluxgate::api::response_cache::{cache_api_key_hash, ResponseCache};
-    use fluxgate::api::{
+    use fluxweir::api::admin::{self, LogQuery};
+    use fluxweir::api::response_cache::{cache_api_key_hash, ResponseCache};
+    use fluxweir::api::{
         chat_completions, embeddings, get_global_state, init_global_state, messages, ApiState,
     };
-    use fluxgate::config::{
+    use fluxweir::config::{
         CacheSection, Config, ConfigManager, GlobalModelConfig, ModelConfig, RateLimitConfig,
         ServerConfig, VendorConfig,
     };
-    use fluxgate::database::{
+    use fluxweir::database::{
         AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, TokenPreAggregator,
     };
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::bandit::BanditState;
-    use fluxgate::router::{AffinityTable, Router as NexusRouter};
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::bandit::BanditState;
+    use fluxweir::router::{AffinityTable, Router as NexusRouter};
+    use fluxweir::vendor::VendorManager;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::Duration;
@@ -3746,7 +3746,7 @@ mod api_handler_coverage {
         repository.initialize().await.expect("schema init");
 
         let logger = wire.logger.then(|| {
-            let sink: Arc<dyn fluxgate::storage::RequestLogSink> =
+            let sink: Arc<dyn fluxweir::storage::RequestLogSink> =
                 Arc::new(AsyncLoggerHandle::new(AsyncLogger::new(
                     repository.clone(),
                     1024,
@@ -3755,7 +3755,7 @@ mod api_handler_coverage {
             sink
         });
         let pre_aggregator = wire.pre_aggregator.then(|| {
-            let sink: Arc<dyn fluxgate::storage::UsageSink> = Arc::new(TokenPreAggregator::new(
+            let sink: Arc<dyn fluxweir::storage::UsageSink> = Arc::new(TokenPreAggregator::new(
                 repository.clone(),
                 Duration::from_secs(60),
             ));
@@ -3769,10 +3769,10 @@ mod api_handler_coverage {
         // 缓存经济学亲和写入器（`[routing.affinity]`）：与亲和表同源；
         // sticky 记账表 + 无落盘通道（内存态，断言走 affinity 表）
         let affinity_writer = wire.affinity.then(|| {
-            Arc::new(fluxgate::router::affinity_settle::AffinityWriter::new(
+            Arc::new(fluxweir::router::affinity_settle::AffinityWriter::new(
                 config_manager.clone(),
                 affinity.clone().expect("affinity wired"),
-                Arc::new(fluxgate::router::affinity::AffinityStickTable::new()),
+                Arc::new(fluxweir::router::affinity::AffinityStickTable::new()),
                 None,
                 vendor_manager.metrics().clone(),
             ))
@@ -3781,7 +3781,7 @@ mod api_handler_coverage {
             Arc::new(ResponseCache::new(
                 Arc::new(oxcache::backend::default_memory_backend()),
                 config_manager.clone(),
-                Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+                Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
             ))
         });
         let bandit = wire.bandit.then(|| Arc::new(BanditState::new(1.0)));
@@ -3807,7 +3807,7 @@ mod api_handler_coverage {
             router: Arc::new(router),
             openai_converter: Arc::new(OpenAIConverter::new()),
             anthropic_converter: Arc::new(AnthropicConverter::new()),
-            database: Arc::new(fluxgate::database::Database { pool, repository }),
+            database: Arc::new(fluxweir::database::Database { pool, repository }),
             logger,
             pre_aggregator,
             affinity,
@@ -5522,7 +5522,7 @@ mod api_handler_coverage {
 
         // 最终失败必须解除亲和绑定（messages 兜底会话键）
         let session_key =
-            fluxgate::api::routing_hints::fallback_session_key(&chat_body("gpt-4", false))
+            fluxweir::api::routing_hints::fallback_session_key(&chat_body("gpt-4", false))
                 .expect("messages 兜底键");
         let affinity = state.affinity.as_ref().unwrap();
         assert!(
@@ -6478,16 +6478,16 @@ mod api_handler_coverage {
 mod data_plane_endpoints {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode};
-    use fluxgate::api::{create_router, response_cache::ResponseCache};
-    use fluxgate::config::{
+    use fluxweir::api::{create_router, response_cache::ResponseCache};
+    use fluxweir::config::{
         AuthSection, CacheSection, Config, ConfigManager, ModelCatalogEntry, ModelConfig,
         VendorConfig,
     };
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -6542,7 +6542,7 @@ mod data_plane_endpoints {
         })
         .await
         .unwrap();
-        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let router = Arc::new(NexusRouter::new(
@@ -6553,7 +6553,7 @@ mod data_plane_endpoints {
             Arc::new(ResponseCache::new(
                 Arc::new(oxcache::backend::default_memory_backend()),
                 config_manager.clone(),
-                Arc::new(fluxgate::utils::metrics::GlobalMetrics::new()),
+                Arc::new(fluxweir::utils::metrics::GlobalMetrics::new()),
             ))
         });
 
@@ -6668,7 +6668,7 @@ mod data_plane_endpoints {
             .collect();
         assert_eq!(ids, vec!["aaa-catalog", "mmm-shared", "zzz-vendor"]);
         assert_eq!(body["data"][1]["owned_by"], "vendor-a");
-        assert_eq!(body["data"][0]["owned_by"], "fluxgate");
+        assert_eq!(body["data"][0]["owned_by"], "fluxweir");
     }
 
     /// 真机回归：声明 abstract_id 的 vendor 模型，目录必须列路由可解析的
@@ -6935,15 +6935,15 @@ mod data_plane_endpoints {
 mod fallback_observation_headers {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, routing::post, Router};
-    use fluxgate::api::{chat_completions, ApiState};
-    use fluxgate::config::{
+    use fluxweir::api::{chat_completions, ApiState};
+    use fluxweir::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
         ServerConfig, VendorConfig,
     };
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -6961,7 +6961,7 @@ mod fallback_observation_headers {
             id: id.into(),
             name: format!("Test {id}"),
             type_: "openai".into(),
-            api_key_env: "FLUXGATE_TEST_KEY".into(),
+            api_key_env: "FLUXWEIR_TEST_KEY".into(),
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base: api_base.into(),
@@ -6977,12 +6977,12 @@ mod fallback_observation_headers {
                 compat_group: None,
                 model_type: None,
             }],
-            rate_limit: fluxgate::config::RateLimitConfig::Token {
+            rate_limit: fluxweir::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
                 window_hours: None,
                 sliding: false,
             },
-            concurrency: fluxgate::config::ConcurrencyConfig {
+            concurrency: fluxweir::config::ConcurrencyConfig {
                 requests_per_second: 1000,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -7037,7 +7037,7 @@ mod fallback_observation_headers {
         })
         .await
         .unwrap();
-        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let router = Arc::new(NexusRouter::new(
@@ -7109,10 +7109,10 @@ mod fallback_observation_headers {
 
     fn assert_no_obs_headers(response: &axum::response::Response) {
         for name in [
-            "x-fluxgate-vendor",
-            "x-fluxgate-model",
-            "x-fluxgate-attempts",
-            "x-fluxgate-fallbacks",
+            "x-fluxweir-vendor",
+            "x-fluxweir-model",
+            "x-fluxweir-attempts",
+            "x-fluxweir-fallbacks",
         ] {
             assert!(
                 header(response, name).is_none(),
@@ -7137,10 +7137,10 @@ mod fallback_observation_headers {
         let state = make_state(make_config(vec![make_vendor("solo-a", server.url())], true)).await;
         let response = post_chat(state, None, chat_body(false)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("solo-a"));
-        assert_eq!(header(&response, "x-fluxgate-model"), Some("gpt-4"));
-        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("1"));
-        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("solo-a"));
+        assert_eq!(header(&response, "x-fluxweir-vendor"), Some("solo-a"));
+        assert_eq!(header(&response, "x-fluxweir-model"), Some("gpt-4"));
+        assert_eq!(header(&response, "x-fluxweir-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-fluxweir-fallbacks"), Some("solo-a"));
 
         mock.assert_async().await;
     }
@@ -7161,9 +7161,9 @@ mod fallback_observation_headers {
         let state = make_state(make_config(vec![make_vendor("solo-a", server.url())], true)).await;
         let response = post_chat(state, None, chat_body(true)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("solo-a"));
-        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("1"));
-        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("solo-a"));
+        assert_eq!(header(&response, "x-fluxweir-vendor"), Some("solo-a"));
+        assert_eq!(header(&response, "x-fluxweir-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-fluxweir-fallbacks"), Some("solo-a"));
 
         mock.assert_async().await;
     }
@@ -7199,9 +7199,9 @@ mod fallback_observation_headers {
         .await;
         let response = post_chat(state, Some("fb-a"), chat_body(false)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("fb-b"));
-        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("2"));
-        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("fb-a,fb-b"));
+        assert_eq!(header(&response, "x-fluxweir-vendor"), Some("fb-b"));
+        assert_eq!(header(&response, "x-fluxweir-attempts"), Some("2"));
+        assert_eq!(header(&response, "x-fluxweir-fallbacks"), Some("fb-a,fb-b"));
 
         mock_a.assert_async().await;
         mock_b.assert_async().await;
@@ -7238,9 +7238,9 @@ mod fallback_observation_headers {
         .await;
         let response = post_chat(state, Some("fb-a"), chat_body(true)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("fb-b"));
-        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("2"));
-        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("fb-a,fb-b"));
+        assert_eq!(header(&response, "x-fluxweir-vendor"), Some("fb-b"));
+        assert_eq!(header(&response, "x-fluxweir-attempts"), Some("2"));
+        assert_eq!(header(&response, "x-fluxweir-fallbacks"), Some("fb-a,fb-b"));
 
         mock_a.assert_async().await;
         mock_b.assert_async().await;
@@ -7280,13 +7280,13 @@ mod fallback_observation_headers {
 mod route_explain {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode};
-    use fluxgate::api::create_router;
-    use fluxgate::config::{AuthSection, ConfigManager, ModelConfig, RoutingSection, VendorConfig};
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::{AffinityTable, Router as NexusRouter};
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::api::create_router;
+    use fluxweir::config::{AuthSection, ConfigManager, ModelConfig, RoutingSection, VendorConfig};
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::{AffinityTable, Router as NexusRouter};
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::Duration;
@@ -7351,7 +7351,7 @@ mod route_explain {
         })
         .await
         .unwrap();
-        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let affinity = wire.affinity.clone();
@@ -7363,10 +7363,10 @@ mod route_explain {
         // 缓存经济学写入器与亲和表同源（生产 bootstrap 同款接线）：解释块的
         // worth_tokens / ttl_secs 来自它的粘性记账，未接线时这两个字段无从产生
         let affinity_writer = affinity.as_ref().map(|table| {
-            Arc::new(fluxgate::router::affinity_settle::AffinityWriter::new(
+            Arc::new(fluxweir::router::affinity_settle::AffinityWriter::new(
                 config_manager.clone(),
                 table.clone(),
-                Arc::new(fluxgate::router::affinity::AffinityStickTable::new()),
+                Arc::new(fluxweir::router::affinity::AffinityStickTable::new()),
                 None,
                 vendor_manager.metrics().clone(),
             ))
@@ -7648,7 +7648,7 @@ mod route_explain {
             compat_group: None,
             model_type: None,
         }];
-        v.rate_limit = fluxgate::config::RateLimitConfig::Token {
+        v.rate_limit = fluxweir::config::RateLimitConfig::Token {
             max_tokens: 0,
             window_hours: None,
             sliding: false,
@@ -8020,7 +8020,7 @@ mod route_explain {
         )
         .await;
         // 认证关闭时租户摘要归 anonymous（与路由/绑定同源），绑定写在该键空间
-        let tenant = fluxgate::utils::tenant::api_key_digest(&axum::http::HeaderMap::new());
+        let tenant = fluxweir::utils::tenant::api_key_digest(&axum::http::HeaderMap::new());
         table.bind(Some(&tenant), "sess-ts", "ts-a").await;
 
         let (status, body) = read_json(
@@ -8074,7 +8074,7 @@ mod route_explain {
                 None,
                 Some("sess-worth"),
                 &vendor,
-                fluxgate::router::affinity::CacheUsage {
+                fluxweir::router::affinity::CacheUsage {
                     prompt_tokens: 0,
                     cache_read_tokens: 5_000,
                     cache_creation_tokens: 0,
@@ -8146,15 +8146,15 @@ mod route_explain {
 mod fallback_observation_headers_anthropic {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, routing::post, Router};
-    use fluxgate::api::{messages, ApiState};
-    use fluxgate::config::{
+    use fluxweir::api::{messages, ApiState};
+    use fluxweir::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, ResilienceSection,
         ServerConfig, VendorConfig,
     };
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::{AffinityTable, Router as NexusRouter};
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::{AffinityTable, Router as NexusRouter};
+    use fluxweir::vendor::VendorManager;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::Duration;
@@ -8220,7 +8220,7 @@ mod fallback_observation_headers_anthropic {
         })
         .await
         .unwrap();
-        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let database = Arc::new(Database { pool, repository });
         let affinity = Arc::new(AffinityTable::with_memory_backend(Duration::from_secs(
@@ -8310,10 +8310,10 @@ mod fallback_observation_headers_anthropic {
         let state = make_state(make_config(vec![make_vendor("ax-a", server.url())], true)).await;
         let response = post_messages(state, None, messages_body(false)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("ax-a"));
-        assert_eq!(header(&response, "x-fluxgate-model"), Some("claude-x"));
-        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("1"));
-        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("ax-a"));
+        assert_eq!(header(&response, "x-fluxweir-vendor"), Some("ax-a"));
+        assert_eq!(header(&response, "x-fluxweir-model"), Some("claude-x"));
+        assert_eq!(header(&response, "x-fluxweir-attempts"), Some("1"));
+        assert_eq!(header(&response, "x-fluxweir-fallbacks"), Some("ax-a"));
 
         mock.assert_async().await;
     }
@@ -8358,10 +8358,10 @@ mod fallback_observation_headers_anthropic {
             .await;
         let response = post_messages(state, Some("obs-sess"), messages_body(true)).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(header(&response, "x-fluxgate-vendor"), Some("ax-b"));
-        assert_eq!(header(&response, "x-fluxgate-model"), Some("claude-x"));
-        assert_eq!(header(&response, "x-fluxgate-attempts"), Some("2"));
-        assert_eq!(header(&response, "x-fluxgate-fallbacks"), Some("ax-a,ax-b"));
+        assert_eq!(header(&response, "x-fluxweir-vendor"), Some("ax-b"));
+        assert_eq!(header(&response, "x-fluxweir-model"), Some("claude-x"));
+        assert_eq!(header(&response, "x-fluxweir-attempts"), Some("2"));
+        assert_eq!(header(&response, "x-fluxweir-fallbacks"), Some("ax-a,ax-b"));
 
         mock_a.assert_async().await;
         mock_b.assert_async().await;
@@ -8384,10 +8384,10 @@ mod fallback_observation_headers_anthropic {
         let response = post_messages(state, None, messages_body(false)).await;
         assert_eq!(response.status(), StatusCode::OK);
         for name in [
-            "x-fluxgate-vendor",
-            "x-fluxgate-model",
-            "x-fluxgate-attempts",
-            "x-fluxgate-fallbacks",
+            "x-fluxweir-vendor",
+            "x-fluxweir-model",
+            "x-fluxweir-attempts",
+            "x-fluxweir-fallbacks",
         ] {
             assert!(header(&response, name).is_none(), "关闭时 {name} 不得存在");
         }
@@ -8402,11 +8402,11 @@ mod otlp_gate {
     #[cfg(feature = "otlp")]
     #[test]
     fn otlp_disabled_by_default_no_task() {
-        use fluxgate::utils::cost_tracker::CostTracker;
-        use fluxgate::utils::otlp::{bridge_from_section, BridgeSpawn};
+        use fluxweir::utils::cost_tracker::CostTracker;
+        use fluxweir::utils::otlp::{bridge_from_section, BridgeSpawn};
         use std::sync::Arc;
 
-        let section = fluxgate::config::OtlpSection::default();
+        let section = fluxweir::config::OtlpSection::default();
         assert!(matches!(
             bridge_from_section(&section, Arc::new(CostTracker::new())),
             BridgeSpawn::Disabled
@@ -8416,11 +8416,11 @@ mod otlp_gate {
     #[cfg(feature = "otlp")]
     #[test]
     fn otlp_enabled_builds_and_stops_bridge() {
-        use fluxgate::utils::cost_tracker::CostTracker;
-        use fluxgate::utils::otlp::{bridge_from_section, BridgeSpawn};
+        use fluxweir::utils::cost_tracker::CostTracker;
+        use fluxweir::utils::otlp::{bridge_from_section, BridgeSpawn};
         use std::sync::Arc;
 
-        let section = fluxgate::config::OtlpSection {
+        let section = fluxweir::config::OtlpSection {
             enabled: true,
             // 不可达端点（discard 端口）：末次导出必失败，SDK 以 InternalFailure
             // 汇报——这是接收端不可用时的正常出口，不代表 provider 未停。
@@ -8446,7 +8446,7 @@ mod otlp_gate {
 #[cfg(feature = "catalog-sync")]
 mod catalog_sync_fetch {
     use axum::{response::IntoResponse, Router};
-    use fluxgate::config::catalog_sync::{CatalogSyncer, FetchError, FetchOutcome};
+    use fluxweir::config::catalog_sync::{CatalogSyncer, FetchError, FetchOutcome};
     use std::time::Duration;
 
     /// 嵌入式上游：axum 服务挂在 127.0.0.1 随机端口，返回 (status, headers, body)。
@@ -8554,9 +8554,9 @@ mod catalog_sync_fetch {
 #[cfg(feature = "catalog-sync")]
 mod catalog_sync_admin {
     use axum::{extract::State, response::IntoResponse, Json};
-    use fluxgate::api::admin;
-    use fluxgate::config::{ConfigManager, GlobalModelConfig};
-    use fluxgate::{ApiState, VendorManager};
+    use fluxweir::api::admin;
+    use fluxweir::config::{ConfigManager, GlobalModelConfig};
+    use fluxweir::{ApiState, VendorManager};
     use std::sync::Arc;
 
     const FIXTURE: &str = include_str!(concat!(
@@ -8610,7 +8610,7 @@ mod catalog_sync_admin {
             affinity_writer: None,
             config: config_manager.clone(),
             vendor_manager: vendor_manager.clone(),
-            router: Arc::new(fluxgate::router::Router::new(
+            router: Arc::new(fluxweir::router::Router::new(
                 config_manager,
                 vendor_manager,
             )),
@@ -8624,9 +8624,9 @@ mod catalog_sync_admin {
             responses: None,
             #[cfg(feature = "web-search")]
             web_search: None,
-            openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
-            anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
-            database: Arc::new(fluxgate::database::Database {
+            openai_converter: Arc::new(fluxweir::protocol::OpenAIConverter::new()),
+            anthropic_converter: Arc::new(fluxweir::protocol::AnthropicConverter::new()),
+            database: Arc::new(fluxweir::database::Database {
                 pool: dbnexus::DbPool::with_config(dbnexus::DbConfig {
                     url: "sqlite::memory:".to_string(),
                     pool_config: dbnexus::PoolConfig {
@@ -8652,7 +8652,7 @@ mod catalog_sync_admin {
                     })
                     .await
                     .unwrap();
-                    Arc::new(fluxgate::database::Repository::new(pool))
+                    Arc::new(fluxweir::database::Repository::new(pool))
                 },
             }),
         });
@@ -8669,7 +8669,7 @@ mod catalog_sync_admin {
 
         let response = admin::catalog_sync(
             State(state.clone()),
-            Json(fluxgate::api::admin::CatalogSyncRequest { dry_run: true }),
+            Json(fluxweir::api::admin::CatalogSyncRequest { dry_run: true }),
         )
         .await
         .unwrap();
@@ -8717,7 +8717,7 @@ mod catalog_sync_admin {
 
         let response = admin::catalog_sync(
             State(state.clone()),
-            Json(fluxgate::api::admin::CatalogSyncRequest { dry_run: false }),
+            Json(fluxweir::api::admin::CatalogSyncRequest { dry_run: false }),
         )
         .await
         .unwrap();
@@ -8737,7 +8737,7 @@ mod catalog_sync_admin {
         // 二次同步：既有条目全 skipped、目录零改动（只增不改硬策略）
         let response = admin::catalog_sync(
             State(state.clone()),
-            Json(fluxgate::api::admin::CatalogSyncRequest { dry_run: false }),
+            Json(fluxweir::api::admin::CatalogSyncRequest { dry_run: false }),
         )
         .await
         .unwrap();
@@ -8774,7 +8774,7 @@ mod catalog_sync_admin {
         let (state, _disk_path) = create_state(format!("http://{addr}/api.json")).await;
         let response = admin::catalog_sync(
             State(state.clone()),
-            Json(fluxgate::api::admin::CatalogSyncRequest { dry_run: false }),
+            Json(fluxweir::api::admin::CatalogSyncRequest { dry_run: false }),
         )
         .await
         .unwrap();
@@ -8803,10 +8803,10 @@ mod subscription_outbound {
         routing::{get, post},
         Router,
     };
-    use fluxgate::vault::FileKeyStore;
-    use fluxgate::vendor::subscription::pool::AccountPool;
-    use fluxgate::vendor::subscription::{SubscriptionError, SubscriptionProvider, TokenSet};
-    use fluxgate::{
+    use fluxweir::vault::FileKeyStore;
+    use fluxweir::vendor::subscription::pool::AccountPool;
+    use fluxweir::vendor::subscription::{SubscriptionError, SubscriptionProvider, TokenSet};
+    use fluxweir::{
         api::{chat_completions, ApiState},
         config::{Config, ConfigManager, ServerConfig},
         protocol::{AnthropicConverter, OpenAIConverter},
@@ -8927,7 +8927,7 @@ mod subscription_outbound {
         })
     }
 
-    fn subscription_vendor(id: &str, api_base: String) -> fluxgate::config::VendorConfig {
+    fn subscription_vendor(id: &str, api_base: String) -> fluxweir::config::VendorConfig {
         let mut v = common::base_vendor(id, api_base);
         v.type_ = "anthropic".into();
         v.concurrency.requests_per_second = 1000;
@@ -8949,11 +8949,11 @@ mod subscription_outbound {
         })
         .await
         .unwrap();
-        let database = Arc::new(fluxgate::database::Database {
+        let database = Arc::new(fluxweir::database::Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
-        let router = Arc::new(fluxgate::router::Router::new(
+        let router = Arc::new(fluxweir::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -8983,7 +8983,7 @@ mod subscription_outbound {
         oauth_base: String,
     ) -> (Arc<AccountPool>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store: Arc<dyn fluxgate::vault::KeyStore> = Arc::new(
+        let store: Arc<dyn fluxweir::vault::KeyStore> = Arc::new(
             FileKeyStore::open(vec![7u8; 32], dir.path().join("vault.bin")).expect("file store"),
         );
         let pool = AccountPool::new(
@@ -8999,7 +8999,7 @@ mod subscription_outbound {
     }
 
     fn app(state: Arc<ApiState>) -> Router {
-        use fluxgate::api::admin::subscription_admin;
+        use fluxweir::api::admin::subscription_admin;
         Router::new()
             .route("/v1/chat/completions", post(chat_completions))
             .route(
@@ -9080,7 +9080,7 @@ mod subscription_outbound {
         })
     }
 
-    fn subscription_config(vendor: fluxgate::config::VendorConfig) -> Config {
+    fn subscription_config(vendor: fluxweir::config::VendorConfig) -> Config {
         let mut config = Config {
             server: ServerConfig {
                 host: "127.0.0.1".into(),
@@ -9116,7 +9116,7 @@ mod subscription_outbound {
             .await;
 
         let mut vendor = subscription_vendor("claude_main", upstream.url());
-        vendor.models = vec![fluxgate::config::ModelConfig {
+        vendor.models = vec![fluxweir::config::ModelConfig {
             model_id: "target-model".into(),
             abstract_id: Some("gpt-4".into()),
             weight: 1.0,
@@ -9173,7 +9173,7 @@ mod subscription_outbound {
             .await;
 
         let mut vendor = subscription_vendor("claude_main", upstream.url());
-        vendor.models = vec![fluxgate::config::ModelConfig {
+        vendor.models = vec![fluxweir::config::ModelConfig {
             model_id: "target-model".into(),
             abstract_id: Some("gpt-4".into()),
             weight: 1.0,

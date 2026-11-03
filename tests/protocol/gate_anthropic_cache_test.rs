@@ -3,9 +3,9 @@
 
 //! Anthropic 自动缓存断点注入：位置/数量与超限回退（保留锚序尾部）。
 
-use fluxgate::config::model_catalog::{cache_policy_for, CacheBreakpointPolicy};
-use fluxgate::config::{ModelCatalogEntry, PricingCurrency};
-use fluxgate::protocol::{
+use fluxweir::config::model_catalog::{cache_policy_for, CacheBreakpointPolicy};
+use fluxweir::config::{ModelCatalogEntry, PricingCurrency};
+use fluxweir::protocol::{
     AnthropicConverter, Message, MessageContent, ProtocolConverter, Role, UnifiedRequest,
 };
 use serde_json::{json, Value};

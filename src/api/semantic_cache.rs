@@ -167,7 +167,7 @@ impl BgeEmbedder {
     /// 加载 BGE embedding checkpoint（阻塞，bootstrap 一次性）
     pub fn load(model_path: &str) -> Result<Self, String> {
         let config = vecboost::config::model::ModelConfig {
-            name: "fluxgate-semantic-cache".to_string(),
+            name: "fluxweir-semantic-cache".to_string(),
             engine_type: vecboost::config::model::EngineType::Candle,
             model_path: model_path.into(),
             task: vecboost::config::model::ModelTask::Embedding,

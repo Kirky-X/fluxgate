@@ -19,7 +19,7 @@ pub(crate) const MASTER_KEY_BYTES: usize = 32;
 
 /// 域分隔 seed：固定常量，非口令 KDF 盐。cocoon `from_key` 要求恰好 32 字节，
 /// 长度不符运行时 panic——常量文本必须维持 32 字节（改名等文本编辑不得缩短）。
-const KDF_SEED: &[u8] = b"fluxgate.vault.kdf.seed.v1.00000";
+const KDF_SEED: &[u8] = b"fluxweir.vault.kdf.seed.v1.00000";
 
 /// fingerprint / id 共用的 hex 截断长度。
 const FINGERPRINT_LEN: usize = 16;

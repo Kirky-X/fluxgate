@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use crate::sdk::client::FluxgateClientBuilder;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::client::FluxweirClientBuilder;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::stream::ChatStream;
 use crate::sdk::ChatRequest;
 use bytes::Bytes;
@@ -117,7 +117,7 @@ async fn spawn_chunked_sse_server(gap: Duration) -> String {
 #[tokio::test]
 async fn stream_survives_beyond_total_timeout() {
     let base_url = spawn_chunked_sse_server(Duration::from_millis(300)).await;
-    let client = FluxgateClientBuilder::new()
+    let client = FluxweirClientBuilder::new()
         .base_url(&base_url)
         .api_key("test-key")
         .timeout(Duration::from_millis(100))
@@ -147,7 +147,7 @@ async fn stream_survives_beyond_total_timeout() {
 #[tokio::test]
 async fn stream_errors_when_stall_exceeds_read_timeout() {
     let base_url = spawn_chunked_sse_server(Duration::from_secs(1)).await;
-    let client = FluxgateClientBuilder::new()
+    let client = FluxweirClientBuilder::new()
         .base_url(&base_url)
         .api_key("test-key")
         .read_timeout(Duration::from_millis(200))
@@ -173,7 +173,7 @@ async fn stream_errors_when_stall_exceeds_read_timeout() {
         .expect("read_timeout 必须切断停滞，不能拖到外层兜底");
     let err = second.expect("停滞切断后流应以错误帧收尾").unwrap_err();
     assert!(
-        matches!(err, FluxgateSdkError::Stream { .. }),
+        matches!(err, FluxweirSdkError::Stream { .. }),
         "停滞切断应以上游读取错误呈现，实际: {err:?}"
     );
 }

@@ -18,7 +18,7 @@ pub use gate::GateError;
 /// 错误双轨：`#[error]` Display 恒英文规范串（日志/错误链），HTTP 展示走 `user_message`
 ///（FTL，随 locale）；`Gate` 变体 `transparent` 透传英文规范串。
 #[derive(Error, Debug)]
-pub enum FluxgateError {
+pub enum FluxweirError {
     #[error("Database error: {message}")]
     Database { message: String },
 
@@ -32,21 +32,21 @@ pub enum FluxgateError {
 }
 
 #[cfg(feature = "web-server")]
-impl IntoResponse for FluxgateError {
+impl IntoResponse for FluxweirError {
     fn into_response(self) -> axum::response::Response {
         // AllVendorsThrottled 额外携带 Retry-After 响应头
         let retry_after_secs = match &self {
-            FluxgateError::Gate(e) => e.retry_after_secs(),
-            FluxgateError::Database { .. } => None,
+            FluxweirError::Gate(e) => e.retry_after_secs(),
+            FluxweirError::Database { .. } => None,
             #[cfg(feature = "vault")]
-            FluxgateError::Vault(_) => None,
+            FluxweirError::Vault(_) => None,
         };
         let status = match &self {
-            FluxgateError::Database { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            FluxgateError::Gate(e) => axum::http::StatusCode::from_u16(e.status_code())
+            FluxweirError::Database { .. } => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            FluxweirError::Gate(e) => axum::http::StatusCode::from_u16(e.status_code())
                 .expect("GateError::status_code must yield a valid HTTP status code"),
             #[cfg(feature = "vault")]
-            FluxgateError::Vault(e) => match e {
+            FluxweirError::Vault(e) => match e {
                 crate::vault::VaultError::NotFound(_) => axum::http::StatusCode::NOT_FOUND,
                 crate::vault::VaultError::UnknownVendor(_) => axum::http::StatusCode::CONFLICT,
                 _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -73,16 +73,16 @@ impl IntoResponse for FluxgateError {
 }
 
 #[cfg(feature = "web-server")]
-impl FluxgateError {
+impl FluxweirError {
     /// 本地化用户消息（展示轨道）：随 locale 查 FTL 目录。
     pub(crate) fn user_message(&self) -> String {
         match self {
-            FluxgateError::Database { message } => {
+            FluxweirError::Database { message } => {
                 t_args("error-database", &[("message", message.clone())])
             }
-            FluxgateError::Gate(e) => e.user_message(),
+            FluxweirError::Gate(e) => e.user_message(),
             #[cfg(feature = "vault")]
-            FluxgateError::Vault(e) => match e {
+            FluxweirError::Vault(e) => match e {
                 crate::vault::VaultError::NotFound(id) => {
                     t_args("error-vault-not-found", &[("id", id.clone())])
                 }
@@ -97,35 +97,35 @@ impl FluxgateError {
     /// 固定的错误类型代码字符串（不暴露内部枚举结构）
     fn error_code(&self) -> &'static str {
         match self {
-            FluxgateError::Database { .. } => "database_error",
-            FluxgateError::Gate(e) => e.error_code(),
+            FluxweirError::Database { .. } => "database_error",
+            FluxweirError::Gate(e) => e.error_code(),
             #[cfg(feature = "vault")]
-            FluxgateError::Vault(_) => "vault_error",
+            FluxweirError::Vault(_) => "vault_error",
         }
     }
 }
 
 #[cfg(feature = "database")]
-impl From<dbnexus::DbError> for FluxgateError {
+impl From<dbnexus::DbError> for FluxweirError {
     fn from(e: dbnexus::DbError) -> Self {
-        FluxgateError::Database {
+        FluxweirError::Database {
             message: t_args("error-database-source", &[("error", e.to_string())]),
         }
     }
 }
 
-impl From<std::io::Error> for FluxgateError {
+impl From<std::io::Error> for FluxweirError {
     fn from(e: std::io::Error) -> Self {
-        FluxgateError::Database {
+        FluxweirError::Database {
             message: t_args("error-io-source", &[("error", e.to_string())]),
         }
     }
 }
 
 #[cfg(feature = "sdforge-integration")]
-impl From<sdforge::config::ConfigError> for FluxgateError {
+impl From<sdforge::config::ConfigError> for FluxweirError {
     fn from(e: sdforge::config::ConfigError) -> Self {
-        FluxgateError::Gate(GateError::Config {
+        FluxweirError::Gate(GateError::Config {
             message: e.to_string(),
         })
     }
@@ -147,7 +147,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_validation_to_response() {
-        let response = FluxgateError::from(GateError::Validation {
+        let response = FluxweirError::from(GateError::Validation {
             field: "model".to_string(),
         })
         .into_response();
@@ -156,7 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_vendor_unavailable_to_response() {
-        let response = FluxgateError::from(GateError::VendorUnavailable {
+        let response = FluxweirError::from(GateError::VendorUnavailable {
             vendor: "openai".to_string(),
         })
         .into_response();
@@ -165,7 +165,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_timeout_to_response() {
-        let response = FluxgateError::from(GateError::Timeout {
+        let response = FluxweirError::from(GateError::Timeout {
             vendor: "openai".to_string(),
         })
         .into_response();
@@ -174,7 +174,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_rate_limited_to_response() {
-        let response = FluxgateError::from(GateError::RateLimited {
+        let response = FluxweirError::from(GateError::RateLimited {
             vendor: "anthropic".to_string(),
         })
         .into_response();
@@ -183,7 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_config_to_response() {
-        let response = FluxgateError::from(GateError::Config {
+        let response = FluxweirError::from(GateError::Config {
             message: "bad config".to_string(),
         })
         .into_response();
@@ -192,7 +192,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_protocol_to_response() {
-        let response = FluxgateError::from(GateError::Protocol {
+        let response = FluxweirError::from(GateError::Protocol {
             source: "openai".to_string(),
             inner: None,
         })
@@ -202,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_database_to_response() {
-        let response = FluxgateError::Database {
+        let response = FluxweirError::Database {
             message: "connection lost".to_string(),
         }
         .into_response();
@@ -211,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_routing_to_response() {
-        let response = FluxgateError::from(GateError::Routing {
+        let response = FluxweirError::from(GateError::Routing {
             message: "no vendor".to_string(),
         })
         .into_response();
@@ -221,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_all_vendors_throttled_to_response_with_retry_after() {
         // AllVendorsThrottled → 429 + Retry-After 头：秒数原样带出 + 固定错误代码
-        let response = FluxgateError::from(GateError::AllVendorsThrottled {
+        let response = FluxweirError::from(GateError::AllVendorsThrottled {
             retry_after_secs: 30,
         })
         .into_response();
@@ -247,7 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_response_body_structure() {
-        let err = FluxgateError::from(GateError::Validation {
+        let err = FluxweirError::from(GateError::Validation {
             field: "model".to_string(),
         });
         // error.message 走本地化轨道：必须等于 user_message 的输出
@@ -274,9 +274,9 @@ mod tests {
     async fn test_error_from_dbnexus_error() {
         let db_err = dbnexus::DbError::Config("table missing".to_string());
         let rendered = db_err.to_string();
-        let err: FluxgateError = db_err.into();
+        let err: FluxweirError = db_err.into();
         match err {
-            FluxgateError::Database { message } => {
+            FluxweirError::Database { message } => {
                 assert!(
                     message.contains("table missing"),
                     "message should contain the original error text: {}",
@@ -297,9 +297,9 @@ mod tests {
     async fn test_error_from_io_error() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file gone");
         let rendered = io_err.to_string();
-        let err: FluxgateError = io_err.into();
+        let err: FluxweirError = io_err.into();
         match err {
-            FluxgateError::Database { message } => {
+            FluxweirError::Database { message } => {
                 assert!(
                     message.contains("file gone"),
                     "message should contain the original error text: {}",
@@ -322,9 +322,9 @@ mod tests {
         let cfg_err = sdforge::config::ConfigError::FileNotFound {
             path: "/etc/config.toml".to_string(),
         };
-        let err: FluxgateError = cfg_err.into();
+        let err: FluxweirError = cfg_err.into();
         match err {
-            FluxgateError::Gate(GateError::Config { message }) => {
+            FluxweirError::Gate(GateError::Config { message }) => {
                 assert!(
                     message.contains("/etc/config.toml"),
                     "message should contain the original path: {}",

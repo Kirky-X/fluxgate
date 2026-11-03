@@ -13,11 +13,11 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use fluxgate::config::{
+use fluxweir::config::{
     ConfigManager, ModelCatalogEntry, ModelConfig, PricingCurrency, VendorConfig,
 };
-use fluxgate::router::Router;
-use fluxgate::vendor::VendorManager;
+use fluxweir::router::Router;
+use fluxweir::vendor::VendorManager;
 use std::sync::Arc;
 
 fn vendor_with_model(id: &str, model_id: &str) -> VendorConfig {

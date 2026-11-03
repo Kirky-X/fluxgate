@@ -3,7 +3,7 @@
 
 use crate::config::DatabaseConfig;
 use crate::database::Repository;
-use crate::error::FluxgateError;
+use crate::error::FluxweirError;
 use crate::i18n::t_args;
 use dbnexus::{DbConfig, DbPool};
 
@@ -18,14 +18,14 @@ impl Database {
     /// 调用方经 [`resolve_database_url`] 从配置解析（bootstrap 单一出口）；
     /// sqlite 文件库的父目录自举仅对 sqlite 形态生效，其余后端无文件系统
     /// 语义直接跳过。
-    pub async fn new(url: &str, pool_size: u32) -> Result<Self, FluxgateError> {
+    pub async fn new(url: &str, pool_size: u32) -> Result<Self, FluxweirError> {
         ensure_sqlite_parent_dir(url)?;
 
         let config = db_config(url, pool_size);
 
         let pool = DbPool::with_config(config)
             .await
-            .map_err(|e| FluxgateError::Database {
+            .map_err(|e| FluxweirError::Database {
                 message: t_args("database-connect", &[("error", e.to_string())]),
             })?;
 
@@ -33,7 +33,7 @@ impl Database {
         // 选择方言投影；MySQL 幂等建索引见 repository::init_schema）
         crate::database::repository::init_schema(&pool)
             .await
-            .map_err(|e| FluxgateError::Database {
+            .map_err(|e| FluxweirError::Database {
                 message: t_args("database-init-schema", &[("error", e.to_string())]),
             })?;
 
@@ -75,7 +75,7 @@ fn db_config(url: &str, pool_size: u32) -> DbConfig {
 /// 存在的目录）。仅 sqlite 文件形态有文件系统语义；从 URL 提取路径时剥掉
 /// scheme 前缀与 query（mode=rwc 等）。
 #[cfg(feature = "db-sqlite")]
-fn ensure_sqlite_parent_dir(url: &str) -> Result<(), FluxgateError> {
+fn ensure_sqlite_parent_dir(url: &str) -> Result<(), FluxweirError> {
     if url.contains(":memory:") {
         return Ok(());
     }
@@ -85,7 +85,7 @@ fn ensure_sqlite_parent_dir(url: &str) -> Result<(), FluxgateError> {
     let path = path.split('?').next().unwrap_or(path);
     if let Some(parent) = std::path::Path::new(path).parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| FluxgateError::Database {
+            std::fs::create_dir_all(parent).map_err(|e| FluxweirError::Database {
                 message: t_args("database-create-dir", &[("error", e.to_string())]),
             })?;
         }
@@ -95,19 +95,19 @@ fn ensure_sqlite_parent_dir(url: &str) -> Result<(), FluxgateError> {
 
 /// 非 sqlite 构建无文件系统语义，恒成功。
 #[cfg(not(feature = "db-sqlite"))]
-fn ensure_sqlite_parent_dir(_url: &str) -> Result<(), FluxgateError> {
+fn ensure_sqlite_parent_dir(_url: &str) -> Result<(), FluxweirError> {
     Ok(())
 }
 
 /// 解析数据库连接 URL：config.url 非空时原样优先；否则回退 path 按
 /// sqlite 文件库归一（需启用 db-sqlite feature，未启用返回带指引的错误）
-pub fn resolve_database_url(config: &DatabaseConfig) -> Result<String, FluxgateError> {
+pub fn resolve_database_url(config: &DatabaseConfig) -> Result<String, FluxweirError> {
     if !config.url.is_empty() {
         return Ok(config.url.clone());
     }
     #[cfg(not(feature = "db-sqlite"))]
     {
-        Err(FluxgateError::Database {
+        Err(FluxweirError::Database {
             message: t_args("database-backend-missing", &[("path", config.path.clone())]),
         })
     }
@@ -265,11 +265,11 @@ mod tests {
         let config = DatabaseConfig {
             path: "./data/llm_proxy.db".to_string(),
             pool_size: 10,
-            url: "postgres://db.internal:5432/fluxgate".to_string(),
+            url: "postgres://db.internal:5432/fluxweir".to_string(),
         };
         assert_eq!(
             resolve_database_url(&config).expect("resolve ok"),
-            "postgres://db.internal:5432/fluxgate"
+            "postgres://db.internal:5432/fluxweir"
         );
     }
 
@@ -356,8 +356,8 @@ mod redact_db_url_tests {
     fn userinfo_credentials_are_stripped_with_marker() {
         assert_eq!(
             // 假夹具口令，非真实凭证：验证的正是脱敏行为本身
-            redact_db_url("postgres://alice:s3cret@db.internal:5432/fluxgate"), // pragma: allowlist secret
-            "postgres://[REDACTED]@db.internal:5432/fluxgate"
+            redact_db_url("postgres://alice:s3cret@db.internal:5432/fluxweir"), // pragma: allowlist secret
+            "postgres://[REDACTED]@db.internal:5432/fluxweir"
         );
     }
 
@@ -365,8 +365,8 @@ mod redact_db_url_tests {
     #[test]
     fn user_only_userinfo_is_stripped_too() {
         assert_eq!(
-            redact_db_url("mysql://alice@db.internal/fluxgate"),
-            "mysql://[REDACTED]@db.internal/fluxgate"
+            redact_db_url("mysql://alice@db.internal/fluxweir"),
+            "mysql://[REDACTED]@db.internal/fluxweir"
         );
     }
 
@@ -374,8 +374,8 @@ mod redact_db_url_tests {
     #[test]
     fn url_without_userinfo_is_untouched() {
         assert_eq!(
-            redact_db_url("postgres://db.internal:5432/fluxgate"),
-            "postgres://db.internal:5432/fluxgate"
+            redact_db_url("postgres://db.internal:5432/fluxweir"),
+            "postgres://db.internal:5432/fluxweir"
         );
         assert_eq!(
             redact_db_url("sqlite://./data/llm_proxy.db?mode=rwc"),
@@ -400,7 +400,7 @@ mod db_config_tests {
 
     #[test]
     fn retry_activation_and_pool_bounds_are_pinned() {
-        let config = db_config("postgres://db.internal:5432/fluxgate", 3);
+        let config = db_config("postgres://db.internal:5432/fluxweir", 3);
         assert!(
             config.retry_policy.is_some(),
             "read 路径自动重试依赖显式激活的 retry_policy（DbConfig 默认 None）"

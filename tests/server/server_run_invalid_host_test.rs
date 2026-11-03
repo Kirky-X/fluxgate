@@ -12,7 +12,7 @@
 
 #![recursion_limit = "256"]
 
-use fluxgate::error::{FluxgateError, GateError};
+use fluxweir::error::{FluxweirError, GateError};
 
 #[tokio::test]
 async fn run_rejects_non_ipv4_server_host_with_localized_message() {
@@ -45,10 +45,10 @@ enabled = false
     .expect("write run config");
 
     let config = config_path.to_string_lossy().to_string();
-    let result = fluxgate::server::run(Some(config)).await;
+    let result = fluxweir::server::run(Some(config)).await;
 
     match result {
-        Err(FluxgateError::Gate(GateError::Config { message })) => {
+        Err(FluxweirError::Gate(GateError::Config { message })) => {
             assert!(
                 message.contains("not-an-ipv4-host"),
                 "错误消息必须插值携带非法 host: {message}"

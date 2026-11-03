@@ -46,7 +46,7 @@ pub use anthropic::messages;
 pub use completions::{chat_completions, embeddings};
 pub use global_state::{get_global_state, init_global_state};
 
-use crate::error::{FluxgateError, GateError};
+use crate::error::{FluxweirError, GateError};
 #[cfg(feature = "resilience")]
 use crate::i18n::t;
 use crate::i18n::t_args; // 仅 resilience 特性分支的重试预算代码（execute_request_with_fallback 等）使用
@@ -166,10 +166,10 @@ pub(crate) fn truncate_payload(s: String) -> String {
 
 /// 从错误中提取上游真实状态码 — VendorUnavailable 的 vendor 字段携带上游
 /// 状态（格式 "id (500 ...)"），RateLimited 即 429；提取不到返回 None。
-pub(crate) fn upstream_status_code(err: &FluxgateError) -> Option<i32> {
+pub(crate) fn upstream_status_code(err: &FluxweirError) -> Option<i32> {
     match err {
-        FluxgateError::Gate(GateError::RateLimited { .. }) => Some(429),
-        FluxgateError::Gate(GateError::VendorUnavailable { vendor }) => {
+        FluxweirError::Gate(GateError::RateLimited { .. }) => Some(429),
+        FluxweirError::Gate(GateError::VendorUnavailable { vendor }) => {
             let inner = vendor.rsplit('(').next()?;
             let digits: String = inner.chars().take_while(|c| c.is_ascii_digit()).collect();
             digits.parse().ok()
@@ -180,12 +180,12 @@ pub(crate) fn upstream_status_code(err: &FluxgateError) -> Option<i32> {
 
 /// 失败路径落库的 status_code — 优先上游真实状态码，否则核心错误固定
 /// 映射（GateError::status_code，与 IntoResponse 同源）；Database 错误 500。
-pub(crate) fn status_code_for_error(err: &FluxgateError) -> i32 {
+pub(crate) fn status_code_for_error(err: &FluxweirError) -> i32 {
     upstream_status_code(err).unwrap_or(match err {
-        FluxgateError::Gate(e) => e.status_code() as i32,
-        FluxgateError::Database { .. } => 500,
+        FluxweirError::Gate(e) => e.status_code() as i32,
+        FluxweirError::Database { .. } => 500,
         #[cfg(feature = "vault")]
-        FluxgateError::Vault(e) => match e {
+        FluxweirError::Vault(e) => match e {
             crate::vault::VaultError::NotFound(_) => 404,
             crate::vault::VaultError::UnknownVendor(_) => 409,
             _ => 500,
@@ -387,10 +387,10 @@ pub(crate) fn fallback_observation_headers(
     }
     // 头值为受控字符（vendor/model id 为配置 slugs），解析失败时跳过该项（不使成功响应失败）
     let pairs = [
-        ("x-fluxgate-vendor", decision.vendor.id.clone()),
-        ("x-fluxgate-model", decision.model.model_id.clone()),
-        ("x-fluxgate-attempts", trail.attempts().to_string()),
-        ("x-fluxgate-fallbacks", trail.fallbacks_value()),
+        ("x-fluxweir-vendor", decision.vendor.id.clone()),
+        ("x-fluxweir-model", decision.model.model_id.clone()),
+        ("x-fluxweir-attempts", trail.attempts().to_string()),
+        ("x-fluxweir-fallbacks", trail.fallbacks_value()),
     ];
     for (name, value) in pairs {
         if let (Ok(n), Ok(v)) = (
@@ -794,7 +794,7 @@ mod fallback_guard_tests {
         AsyncLogger, AsyncLoggerHandle, Database, Repository, TokenPreAggregator,
     };
     use crate::protocol::{AnthropicConverter, OpenAIConverter};
-    use crate::router::Router as FluxgateRouter;
+    use crate::router::Router as FluxweirRouter;
     use crate::storage::{RequestLogSink, UsageSink};
     use crate::vendor::VendorManager;
     use dbnexus::{DbConfig, DbPool};
@@ -803,7 +803,7 @@ mod fallback_guard_tests {
     use std::time::Duration;
 
     fn make_vendor(id: &str, priority: u8, cap: Option<usize>) -> VendorConfig {
-        std::env::set_var("FLUXGATE_TEST_KEY", "test-key-for-mockito");
+        std::env::set_var("FLUXWEIR_TEST_KEY", "test-key-for-mockito");
         VendorConfig {
             cache_ttl_secs: 300,
             silent_cache: false,
@@ -815,7 +815,7 @@ mod fallback_guard_tests {
             id: id.into(),
             name: format!("Vendor {id}"),
             type_: "openai".into(),
-            api_key_env: "FLUXGATE_TEST_KEY".into(),
+            api_key_env: "FLUXWEIR_TEST_KEY".into(),
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base: String::new(),
@@ -925,7 +925,7 @@ mod fallback_guard_tests {
             pool,
             repository: repository.clone(),
         });
-        let router = Arc::new(FluxgateRouter::new(
+        let router = Arc::new(FluxweirRouter::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -1136,11 +1136,11 @@ mod cooldown_retry_after {
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// 本模块内 FluxgateRouter 别名（镜像 fallback_guard_tests 的 use 形式）
-    use crate::router::Router as FluxgateRouter;
+    /// 本模块内 FluxweirRouter 别名（镜像 fallback_guard_tests 的 use 形式）
+    use crate::router::Router as FluxweirRouter;
 
     fn make_vendor(id: &str, priority: u8, max_tokens: u64, api_base: &str) -> VendorConfig {
-        std::env::set_var("FLUXGATE_TEST_KEY", "test-key-for-mockito");
+        std::env::set_var("FLUXWEIR_TEST_KEY", "test-key-for-mockito");
         VendorConfig {
             cache_ttl_secs: 300,
             silent_cache: false,
@@ -1152,7 +1152,7 @@ mod cooldown_retry_after {
             id: id.to_string(),
             name: format!("Vendor {id}"),
             type_: "openai".to_string(),
-            api_key_env: "FLUXGATE_TEST_KEY".to_string(),
+            api_key_env: "FLUXWEIR_TEST_KEY".to_string(),
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base: api_base.to_string(),
@@ -1266,7 +1266,7 @@ mod cooldown_retry_after {
             pool,
             repository: repository.clone(),
         });
-        let router = Arc::new(FluxgateRouter::new(
+        let router = Arc::new(FluxweirRouter::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));
@@ -1394,9 +1394,9 @@ mod cooldown_retry_after {
             &mut crate::vendor::resilience::AttemptTrail::new(true),
         )
         .await;
-        let err = FluxgateError::from(result.expect_err("两 vendor 限流必须失败"));
+        let err = FluxweirError::from(result.expect_err("两 vendor 限流必须失败"));
         let secs = match &err {
-            FluxgateError::Gate(GateError::AllVendorsThrottled { retry_after_secs }) => {
+            FluxweirError::Gate(GateError::AllVendorsThrottled { retry_after_secs }) => {
                 *retry_after_secs
             }
             other => panic!("期望 AllVendorsThrottled，实际 {other}"),

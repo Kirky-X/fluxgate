@@ -375,8 +375,8 @@ struct SeriesPoint {
 }
 
 /// OTLP 桥：把 `/metrics` 渲染文本（单一真源）解析为观测型仪表回读缓存，
-/// CostTracker 快照单独出 `fluxgate.cost_usd_total`（counter）与
-/// `fluxgate.cost_usd`（gauge）。成本点集：无 label 总点 + `{vendor}` 点 +
+/// CostTracker 快照单独出 `fluxweir.cost_usd_total`（counter）与
+/// `fluxweir.cost_usd`（gauge）。成本点集：无 label 总点 + `{vendor}` 点 +
 /// `{model}` 点（快照只有边际维度，无配对维度）。
 pub struct OtlpBridge {
     provider: SdkMeterProvider,
@@ -410,7 +410,7 @@ impl OtlpBridge {
 
     /// 以既有 provider 装配（测试注入 InMemoryMetricExporter 用）。
     fn with_provider(provider: SdkMeterProvider, cost_tracker: Arc<CostTracker>) -> Self {
-        let meter = provider.meter("fluxgate.otlp");
+        let meter = provider.meter("fluxweir.otlp");
         let bridge = Self {
             provider,
             meter,
@@ -451,12 +451,12 @@ impl OtlpBridge {
         self.publish_export_fail();
     }
 
-    /// 把本桥的导出失败计数并入 store（`fluxgate.otlp_export_fail_total`），
+    /// 把本桥的导出失败计数并入 store（`fluxweir.otlp_export_fail_total`），
     /// 使接收端能观测到「桥自己失效」这件事——否则端点挂掉后该计数永远
     /// 只存在于进程内存。
     fn publish_export_fail(&self) {
         let total = self.export_fail_total();
-        let name = "fluxgate.otlp_export_fail_total";
+        let name = "fluxweir.otlp_export_fail_total";
         let is_new = {
             let mut store = self.lock_store();
             store
@@ -555,13 +555,13 @@ impl OtlpBridge {
     fn register_cost_instruments(&self) {
         let tracker = Arc::clone(&self.cost_tracker);
         self.meter
-            .f64_observable_counter("fluxgate.cost_usd_total")
+            .f64_observable_counter("fluxweir.cost_usd_total")
             .with_description("Cumulative upstream cost in USD")
             .with_callback(move |inst| observe_cost(inst, &tracker.snapshot()))
             .build();
         let tracker = Arc::clone(&self.cost_tracker);
         self.meter
-            .f64_observable_gauge("fluxgate.cost_usd")
+            .f64_observable_gauge("fluxweir.cost_usd")
             .with_description("Upstream cost in USD")
             .with_callback(move |inst| observe_cost(inst, &tracker.snapshot()))
             .build();
@@ -608,10 +608,10 @@ fn observe_cost(inst: &dyn AsyncInstrument<f64>, snap: &CostSnapshot) {
     }
 }
 
-/// 样本 → OTLP 序列（`fluxgate.` 前缀字面拼接；histogram 分解为
+/// 样本 → OTLP 序列（`fluxweir.` 前缀字面拼接；histogram 分解为
 /// `_bucket`/`_sum`/`_count` 三 gauge 序列，le 作标签保留原文）。
 fn decompose(sample: &MetricSample) -> Vec<(String, SeriesKind, SeriesPoint)> {
-    const PREFIX: &str = "fluxgate.";
+    const PREFIX: &str = "fluxweir.";
     match sample {
         MetricSample::Counter {
             name,
@@ -900,7 +900,7 @@ mod bridge_tests {
 
         assert_eq!(
             norm(
-                sum_points(&finished, "fluxgate.sdforge_http_requests_total")
+                sum_points(&finished, "fluxweir.sdforge_http_requests_total")
                     .expect("counter bridged")
             ),
             norm(vec![(
@@ -916,7 +916,7 @@ mod bridge_tests {
             norm(
                 gauge_points(
                     &finished,
-                    "fluxgate.sdforge_http_request_duration_seconds_bucket"
+                    "fluxweir.sdforge_http_request_duration_seconds_bucket"
                 )
                 .expect("buckets bridged")
             ),
@@ -943,7 +943,7 @@ mod bridge_tests {
             norm(
                 gauge_points(
                     &finished,
-                    "fluxgate.sdforge_http_request_duration_seconds_sum"
+                    "fluxweir.sdforge_http_request_duration_seconds_sum"
                 )
                 .expect("sum bridged")
             ),
@@ -959,7 +959,7 @@ mod bridge_tests {
             norm(
                 gauge_points(
                     &finished,
-                    "fluxgate.sdforge_http_request_duration_seconds_count"
+                    "fluxweir.sdforge_http_request_duration_seconds_count"
                 )
                 .expect("count bridged")
             ),
@@ -972,7 +972,7 @@ mod bridge_tests {
             )])
         );
         assert_eq!(
-            norm(sum_points(&finished, "fluxgate.cost_usd_total").expect("cost counter")),
+            norm(sum_points(&finished, "fluxweir.cost_usd_total").expect("cost counter")),
             norm(vec![
                 (vec![("vendor".to_string(), "openai".to_string())], 1.25),
                 (vec![("model".to_string(), "gpt-x".to_string())], 1.25),
@@ -980,7 +980,7 @@ mod bridge_tests {
             ])
         );
         assert_eq!(
-            norm(gauge_points(&finished, "fluxgate.cost_usd").expect("cost gauge")),
+            norm(gauge_points(&finished, "fluxweir.cost_usd").expect("cost gauge")),
             norm(vec![
                 (vec![("vendor".to_string(), "openai".to_string())], 1.25),
                 (vec![("model".to_string(), "gpt-x".to_string())], 1.25),
@@ -1021,7 +1021,7 @@ mod bridge_tests {
         bridge.update_from_text(SDFORGE_TEXT);
         let points = {
             let store = bridge.lock_store();
-            store.get("fluxgate.otlp_export_fail_total").cloned()
+            store.get("fluxweir.otlp_export_fail_total").cloned()
         };
         let points = points.expect("失败计数必须进导出面");
         assert_eq!(points.len(), 1);

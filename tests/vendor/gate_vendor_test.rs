@@ -6,7 +6,7 @@
 mod common;
 
 mod status {
-    use fluxgate::vendor::{VendorState, VendorStatus};
+    use fluxweir::vendor::{VendorState, VendorStatus};
 
     #[test]
     fn test_vendor_state_new() {
@@ -126,7 +126,7 @@ mod status {
 }
 
 mod rate_limiter {
-    use fluxgate::vendor::{ConcurrencyLimiter, TokenBucket};
+    use fluxweir::vendor::{ConcurrencyLimiter, TokenBucket};
     use std::time::Duration;
 
     #[tokio::test]
@@ -196,10 +196,10 @@ mod manager {
     //! 执行完整 HTTP 流程）。
 
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
-    use fluxgate::error::GateError;
-    use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
-    use fluxgate::vendor::{VendorManager, VendorStatus};
+    use fluxweir::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
+    use fluxweir::error::GateError;
+    use fluxweir::protocol::{Message, MessageContent, Role, UnifiedRequest};
+    use fluxweir::vendor::{VendorManager, VendorStatus};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -627,7 +627,7 @@ mod manager {
             .execute_passthrough_request_with_options(
                 "anthropic-beta",
                 serde_json::json!({"model": "claude", "messages": []}),
-                fluxgate::vendor::VendorCallOptions {
+                fluxweir::vendor::VendorCallOptions {
                     served_key_sink: None,
                     traceparent: None,
                     #[cfg(feature = "otlp")]
@@ -670,7 +670,7 @@ mod manager {
             .execute_passthrough_request_with_options(
                 "anthropic-beta-off",
                 serde_json::json!({"model": "claude", "messages": []}),
-                fluxgate::vendor::VendorCallOptions {
+                fluxweir::vendor::VendorCallOptions {
                     served_key_sink: None,
                     traceparent: None,
                     #[cfg(feature = "otlp")]
@@ -726,7 +726,7 @@ mod manager {
         manager.initialize().await.expect("init");
 
         let mut request = make_unified_request();
-        request.sampling = Some(fluxgate::protocol::SamplingParams {
+        request.sampling = Some(fluxweir::protocol::SamplingParams {
             top_k: Some(40),
             ..Default::default()
         });
@@ -768,7 +768,7 @@ mod manager {
         manager.initialize().await.expect("init");
 
         let mut request = make_unified_request();
-        request.sampling = Some(fluxgate::protocol::SamplingParams {
+        request.sampling = Some(fluxweir::protocol::SamplingParams {
             top_k: Some(40),
             ..Default::default()
         });
@@ -1236,10 +1236,10 @@ mod manager {
 
     mod metrics_paths {
         use crate::common;
-        use fluxgate::config::{Config, ConfigManager, ServerConfig, VendorConfig};
-        use fluxgate::error::GateError;
-        use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
-        use fluxgate::vendor::VendorManager;
+        use fluxweir::config::{Config, ConfigManager, ServerConfig, VendorConfig};
+        use fluxweir::error::GateError;
+        use fluxweir::protocol::{Message, MessageContent, Role, UnifiedRequest};
+        use fluxweir::vendor::VendorManager;
         use std::sync::Arc;
         use std::time::Duration;
 
@@ -1644,8 +1644,8 @@ mod manager {
 }
 
 mod queue {
-    use fluxgate::protocol::{UnifiedRequest, UnifiedResponse};
-    use fluxgate::vendor::{PendingRequest, VendorQueue};
+    use fluxweir::protocol::{UnifiedRequest, UnifiedResponse};
+    use fluxweir::vendor::{PendingRequest, VendorQueue};
     use serde_json::json;
 
     fn sample_request() -> UnifiedRequest {
@@ -1654,7 +1654,7 @@ mod queue {
 
     fn sample_pending() -> PendingRequest {
         let (tx, _rx) =
-            tokio::sync::oneshot::channel::<Result<UnifiedResponse, fluxgate::error::GateError>>();
+            tokio::sync::oneshot::channel::<Result<UnifiedResponse, fluxweir::error::GateError>>();
         PendingRequest {
             request: sample_request(),
             options: Default::default(),
@@ -1720,8 +1720,8 @@ mod advanced_rate_limiter {
     //! - should_reset/reset 已删除：窗口由 limiteron FixedWindowLimiter
     //!   check_and_reset_window 惰性重置（用例①回归"永久 Throttled"缺陷）
 
-    use fluxgate::config::RateLimitConfig;
-    use fluxgate::vendor::AdvancedRateLimiter;
+    use fluxweir::config::RateLimitConfig;
+    use fluxweir::vendor::AdvancedRateLimiter;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -1943,7 +1943,7 @@ mod advanced_rate_limiter {
 
 mod time_window {
     use chrono::NaiveTime;
-    use fluxgate::vendor::rate_limiter::time_window_active;
+    use fluxweir::vendor::rate_limiter::time_window_active;
 
     fn t(h: u32, m: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -1997,8 +1997,8 @@ mod sliding_window {
     //! 滑动窗口消除双花的行为锁定。MockClock::with_instant 固定初始
     //! UNIX 锚（10_0000s）保证 fixed 翻越点与滑动窗覆盖的确定性。
 
-    use fluxgate::config::RateLimitConfig;
-    use fluxgate::vendor::AdvancedRateLimiter;
+    use fluxweir::config::RateLimitConfig;
+    use fluxweir::vendor::AdvancedRateLimiter;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -2120,8 +2120,8 @@ mod token_weighted_tickets {
     //! 第三张）、全链路挤压（32k 长会话独占容量）。
 
     use crate::common;
-    use fluxgate::vendor::manager::{estimate_cost_json, estimate_cost_unified, TicketPolicy};
-    use fluxgate::vendor::{ConcurrencyLimiter, VendorManager};
+    use fluxweir::vendor::manager::{estimate_cost_json, estimate_cost_unified, TicketPolicy};
+    use fluxweir::vendor::{ConcurrencyLimiter, VendorManager};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -2139,19 +2139,19 @@ mod token_weighted_tickets {
     fn estimate_unified_clamp_edges() {
         let p = policy();
         // 缺 max_tokens（None）→ default(200) 兜底（messages 空 → 0 字节）
-        let bare = serde_json::from_str::<fluxgate::protocol::UnifiedRequest>(
+        let bare = serde_json::from_str::<fluxweir::protocol::UnifiedRequest>(
             r#"{"model":"m","messages":[]}"#,
         )
         .unwrap();
         assert_eq!(estimate_cost_unified(&bare, &p), 200, "缺省兜底 default");
         // 超长：max_tokens 巨大 → max 封顶
-        let huge = serde_json::from_str::<fluxgate::protocol::UnifiedRequest>(
+        let huge = serde_json::from_str::<fluxweir::protocol::UnifiedRequest>(
             r#"{"model":"m","messages":[],"max_tokens":999999}"#,
         )
         .unwrap();
         assert_eq!(estimate_cost_unified(&huge, &p), 1000, "max 封顶");
         // 零成本：显式 max_tokens=0 → min 托底
-        let zero = serde_json::from_str::<fluxgate::protocol::UnifiedRequest>(
+        let zero = serde_json::from_str::<fluxweir::protocol::UnifiedRequest>(
             r#"{"model":"m","messages":[],"max_tokens":0}"#,
         )
         .unwrap();
@@ -2163,7 +2163,7 @@ mod token_weighted_tickets {
     #[test]
     fn estimate_two_forms_same_magnitude() {
         let p = policy();
-        let unified: fluxgate::protocol::UnifiedRequest = serde_json::from_str(
+        let unified: fluxweir::protocol::UnifiedRequest = serde_json::from_str(
             r#"{"model":"m","messages":[{"role":"user","content":"hello world"}],"max_tokens":100}"#,
         )
         .unwrap();
@@ -2287,7 +2287,7 @@ mod token_weighted_tickets {
 
     async fn make_weighted_manager(api_base: String, weighted: bool) -> Arc<VendorManager> {
         common::ensure_test_api_key();
-        let config = fluxgate::config::Config {
+        let config = fluxweir::config::Config {
             masking: Default::default(),
             subscription: Default::default(),
             subscription_accounts: Vec::new(),
@@ -2295,16 +2295,16 @@ mod token_weighted_tickets {
             rate_limit: Default::default(),
             vendor_budgets: Vec::new(),
             key_budgets: Default::default(),
-            server: fluxgate::config::ServerConfig {
+            server: fluxweir::config::ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
             },
-            database: fluxgate::config::DatabaseConfig {
+            database: fluxweir::config::DatabaseConfig {
                 path: ":memory:".into(),
                 pool_size: 1,
                 url: String::new(),
             },
-            vendors: vec![fluxgate::config::VendorConfig {
+            vendors: vec![fluxweir::config::VendorConfig {
                 cache_ttl_secs: 300,
                 silent_cache: false,
                 timeout_ms: 2_000,
@@ -2316,19 +2316,19 @@ mod token_weighted_tickets {
                 supports_batch: false,
                 name: "V1".into(),
                 type_: "openai".into(),
-                api_key_env: "FLUXGATE_TEST_KEY".into(),
+                api_key_env: "FLUXWEIR_TEST_KEY".into(),
                 api_key_envs: Vec::new(),
                 extra_headers: Default::default(),
                 api_base,
                 enabled: true,
                 priority: 1,
                 models: vec![],
-                rate_limit: fluxgate::config::RateLimitConfig::Token {
+                rate_limit: fluxweir::config::RateLimitConfig::Token {
                     max_tokens: 1_000_000,
                     window_hours: None,
                     sliding: false,
                 },
-                concurrency: fluxgate::config::ConcurrencyConfig {
+                concurrency: fluxweir::config::ConcurrencyConfig {
                     requests_per_second: 1000,
                     max_concurrent_requests: Some(100),
                     token_weighted: weighted,
@@ -2345,14 +2345,14 @@ mod token_weighted_tickets {
             model_catalog: Vec::new(),
             auth: None,
             cors: None,
-            retry: fluxgate::config::RetrySection::default(),
-            routing: fluxgate::config::RoutingSection::default(),
-            cache: fluxgate::config::CacheSection::default(),
+            retry: fluxweir::config::RetrySection::default(),
+            routing: fluxweir::config::RoutingSection::default(),
+            cache: fluxweir::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: fluxgate::config::ResilienceSection::default(),
+            resilience: fluxweir::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
@@ -2361,7 +2361,7 @@ mod token_weighted_tickets {
             catalog_sync: Default::default(),
             metrics: Default::default(),
         };
-        let cm = Arc::new(fluxgate::config::ConfigManager::new(config));
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config));
         let vm = Arc::new(VendorManager::new(cm));
         vm.initialize().await.expect("init vendors");
         vm
@@ -2374,8 +2374,8 @@ mod token_weighted_tickets {
 #[tokio::test]
 async fn sliding_empty_window_not_ending_soon_in_window_info() {
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, RateLimitConfig, ServerConfig};
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::config::{Config, ConfigManager, RateLimitConfig, ServerConfig};
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
     let mut v = common::base_vendor("v-slide", "");
     // 本文件语义差异，显式覆盖：展示名 V、空模型表、空窗 sliding 小额度窗口、
@@ -2420,10 +2420,10 @@ async fn sliding_empty_window_not_ending_soon_in_window_info() {
 
 mod manager_paths {
     use crate::common;
-    use fluxgate::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
-    use fluxgate::error::GateError;
-    use fluxgate::protocol::{Message, MessageContent, Role, StreamChunk, UnifiedRequest};
-    use fluxgate::vendor::VendorManager;
+    use fluxweir::config::{Config, ConfigManager, RateLimitConfig, ServerConfig, VendorConfig};
+    use fluxweir::error::GateError;
+    use fluxweir::protocol::{Message, MessageContent, Role, StreamChunk, UnifiedRequest};
+    use fluxweir::vendor::VendorManager;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -2776,8 +2776,8 @@ mod manager_paths {
     /// api key 环境变量缺失处失败——全程无网络请求。
     #[tokio::test]
     async fn default_api_base_resolution_then_missing_api_key_fails() {
-        const MISSING_ANTHROPIC: &str = "FLUXGATE_UNSET_KEY_ANTHROPIC_Q7";
-        const MISSING_OPENAI: &str = "FLUXGATE_UNSET_KEY_OPENAI_Q7";
+        const MISSING_ANTHROPIC: &str = "FLUXWEIR_UNSET_KEY_ANTHROPIC_Q7";
+        const MISSING_OPENAI: &str = "FLUXWEIR_UNSET_KEY_OPENAI_Q7";
         std::env::remove_var(MISSING_ANTHROPIC);
         std::env::remove_var(MISSING_OPENAI);
 

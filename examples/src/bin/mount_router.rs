@@ -5,5 +5,5 @@
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    fluxgate_examples::embedded_server::mount_router::run().await
+    fluxweir_examples::embedded_server::mount_router::run().await
 }

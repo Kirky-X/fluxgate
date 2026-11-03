@@ -4,6 +4,6 @@
 //! embedding 入口：启动 tokio 运行时并转发到 sdk_usage::embed::run。
 
 #[tokio::main]
-async fn main() -> Result<(), fluxgate::sdk::FluxgateSdkError> {
-    fluxgate_examples::sdk_usage::embed::run().await
+async fn main() -> Result<(), fluxweir::sdk::FluxweirSdkError> {
+    fluxweir_examples::sdk_usage::embed::run().await
 }

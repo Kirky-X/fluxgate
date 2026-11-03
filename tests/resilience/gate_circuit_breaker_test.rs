@@ -12,8 +12,8 @@
 
 #![cfg(all(feature = "resilience", feature = "vendor-management"))]
 
-use fluxgate::error::GateError;
-use fluxgate::vendor::resilience::{from_circuit_call, is_circuit_open_error, GateErrorClassifier};
+use fluxweir::error::GateError;
+use fluxweir::vendor::resilience::{from_circuit_call, is_circuit_open_error, GateErrorClassifier};
 use limiteron::circuit::{
     CircuitBreaker, CircuitBreakerConfig, CircuitCallError, FailureClassifier,
 };

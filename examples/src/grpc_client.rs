@@ -1,16 +1,16 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! Fluxgate gRPC 门面客户端样例。
+//! Fluxweir gRPC 门面客户端样例。
 //!
 //! 网关侧（`cargo run --features grpc` + config.toml `[grpc] enabled = true`）
 //! 暴露 sdforge 的 `sdforge.v1.SdForgeService` 门面（GetInfo / Call /
 //! CallStream，JSON over gRPC）。本样例演示：GetInfo 免认证直取服务信息；
-//! Call 无凭据与带凭据两条路径——凭据从 `FLUXGATE_API_KEY` 环境变量读取，
+//! Call 无凭据与带凭据两条路径——凭据从 `FLUXWEIR_API_KEY` 环境变量读取，
 //! 源码不落任何 key 材料。
 //!
 //! 与 HTTP `/health` 白名单的差异以代码为准：门面仅对 Call/CallStream 挂
-//! auth_verifier，GetInfo 免认证（Fluxgate src/server/grpc.rs 模块文档；
+//! auth_verifier，GetInfo 免认证（Fluxweir src/server/grpc.rs 模块文档；
 //! sdforge src/grpc/grpc_impl.rs `get_info` 不经过 `authenticate`）。
 //!
 //! 本模块整体由 `grpc` feature 门控（见 lib.rs），代码生成经 build.rs 在启用
@@ -31,7 +31,7 @@ use tonic::Request;
 const ENDPOINT: &str = "http://127.0.0.1:50051";
 
 /// Call 的 method 名对应网关注册的 `#[forge(grpc_method = "...")]` 处理器。
-/// Fluxgate 当前未注册任何业务 grpc_method，因此本样例的 Call 预期终点是
+/// Fluxweir 当前未注册任何业务 grpc_method，因此本样例的 Call 预期终点是
 /// `NotFound`；网关注册业务方法后替换为真实方法名，成功响应的 `data` 字段
 /// 即 handler 返回值的 JSON 文本。
 const DEMO_METHOD: &str = "demo_method";
@@ -112,18 +112,18 @@ pub async fn run() {
     // 带凭据 Call——`x-api-key` 裸值（服务器侧优先提取）；等价形态是
     // `authorization` metadata 携带 `Bearer <key>`。网关对明文 key 现场算
     // SHA256 摘要后与 [auth].api_keys 常量时间比较。
-    let api_key = match std::env::var("FLUXGATE_API_KEY") {
+    let api_key = match std::env::var("FLUXWEIR_API_KEY") {
         Ok(key) if !key.is_empty() => key,
         Ok(_) => {
-            println!("[带凭据 Call] FLUXGATE_API_KEY 为空，跳过");
+            println!("[带凭据 Call] FLUXWEIR_API_KEY 为空，跳过");
             return;
         }
         Err(std::env::VarError::NotPresent) => {
-            println!("[带凭据 Call] 未设置 FLUXGATE_API_KEY，跳过");
+            println!("[带凭据 Call] 未设置 FLUXWEIR_API_KEY，跳过");
             return;
         }
         Err(e) => {
-            eprintln!("[带凭据 Call] FLUXGATE_API_KEY 读取失败: {e}");
+            eprintln!("[带凭据 Call] FLUXWEIR_API_KEY 读取失败: {e}");
             std::process::exit(1);
         }
     };

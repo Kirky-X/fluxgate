@@ -13,21 +13,21 @@
 mod common;
 
 use axum::{body::Body, http::Request, http::StatusCode};
-use fluxgate::api::create_router;
-use fluxgate::config::{
+use fluxweir::api::create_router;
+use fluxweir::config::{
     AuthSection, AuthTier, Config, ConfigManager, ModelCatalogEntry, ModelConfig, PricingConfig,
     QuotaSection, RateLimitRule, RateLimitSection, VendorConfig,
 };
-use fluxgate::database::Database;
-use fluxgate::i18n::t;
-use fluxgate::middleware::quota::{
+use fluxweir::database::Database;
+use fluxweir::i18n::t;
+use fluxweir::middleware::quota::{
     actual_cost_millicents, precharge_for, UsageCostInput, MILLICENTS_PER_USD,
 };
-use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-use fluxgate::router::Router as NexusRouter;
-use fluxgate::utils::estimate_messages_tokens;
-use fluxgate::vendor::VendorManager;
-use fluxgate::ApiState;
+use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+use fluxweir::router::Router as NexusRouter;
+use fluxweir::utils::estimate_messages_tokens;
+use fluxweir::vendor::VendorManager;
+use fluxweir::ApiState;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -157,7 +157,7 @@ fn quota_config_full(
         enabled: true,
         api_keys: vec![GOOD_KEY_DIGEST.to_string()],
         header: Default::default(),
-        keys: vec![fluxgate::config::AuthKeyEntry {
+        keys: vec![fluxweir::config::AuthKeyEntry {
             hash: GOOD_KEY_DIGEST.to_string(),
             tier: AuthTier::Elastic,
             token_quota,
@@ -197,15 +197,15 @@ async fn make_state_with_cache(config: Config, with_quota: bool) -> Arc<ApiState
     })
     .await
     .unwrap();
-    let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+    let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
     repository.initialize().await.expect("schema init");
     let database = Arc::new(Database { pool, repository });
     let router = Arc::new(NexusRouter::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
-    let quota = with_quota.then(|| Arc::new(fluxgate::middleware::quota::QuotaState::new()));
-    let response_cache = Arc::new(fluxgate::api::response_cache::ResponseCache::new(
+    let quota = with_quota.then(|| Arc::new(fluxweir::middleware::quota::QuotaState::new()));
+    let response_cache = Arc::new(fluxweir::api::response_cache::ResponseCache::new(
         Arc::new(oxcache::backend::default_memory_backend()),
         config_manager.clone(),
         vendor_manager.metrics().clone(),
@@ -255,20 +255,20 @@ async fn make_state_inner(
     })
     .await
     .unwrap();
-    let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+    let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
     repository.initialize().await.expect("schema init");
     let database = Arc::new(Database { pool, repository });
     let pre_aggregator = with_usage_sink.then(|| {
-        Arc::new(fluxgate::database::TokenPreAggregator::new(
+        Arc::new(fluxweir::database::TokenPreAggregator::new(
             database.repository.clone(),
             Duration::from_secs(60),
-        )) as Arc<dyn fluxgate::storage::UsageSink>
+        )) as Arc<dyn fluxweir::storage::UsageSink>
     });
     let router = Arc::new(NexusRouter::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
-    let quota = with_quota.then(|| Arc::new(fluxgate::middleware::quota::QuotaState::new()));
+    let quota = with_quota.then(|| Arc::new(fluxweir::middleware::quota::QuotaState::new()));
 
     Arc::new(ApiState {
         affinity_writer: None,
@@ -1290,7 +1290,7 @@ fn admission_stacked_config(api_base: String, admission_enabled: bool, token_quo
         3600,
         Vec::new(),
     );
-    config.admission = fluxgate::config::AdmissionSection {
+    config.admission = fluxweir::config::AdmissionSection {
         enabled: admission_enabled,
         ..Default::default()
     };
@@ -1305,7 +1305,7 @@ fn admission_stacked_config(api_base: String, admission_enabled: bool, token_quo
     }
     if let Some(auth) = config.auth.as_mut() {
         auth.api_keys.push(dedicated.clone());
-        auth.keys.push(fluxgate::config::AuthKeyEntry {
+        auth.keys.push(fluxweir::config::AuthKeyEntry {
             hash: dedicated,
             tier: AuthTier::Dedicated,
             token_quota: 0,
@@ -1447,7 +1447,7 @@ async fn quota_windows_are_isolated_per_key() {
     let mut config = quota_config(vec![openai_vendor("iso-a", server.url())], tight, 3600);
     if let Some(auth) = config.auth.as_mut() {
         auth.api_keys.push(second_hash.clone());
-        auth.keys.push(fluxgate::config::AuthKeyEntry {
+        auth.keys.push(fluxweir::config::AuthKeyEntry {
             hash: second_hash,
             tier: AuthTier::Elastic,
             token_quota: ample,
@@ -1490,8 +1490,8 @@ async fn quota_windows_are_isolated_per_key() {
 ///（R-quota-003 验收：重启后已用量不清零）。
 #[tokio::test]
 async fn ledger_survives_restart_and_keeps_adjudicating() {
-    use fluxgate::middleware::quota::QuotaState;
-    use fluxgate::middleware::quota_persist::QuotaLedgerPersister;
+    use fluxweir::middleware::quota::QuotaState;
+    use fluxweir::middleware::quota_persist::QuotaLedgerPersister;
 
     let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
         url: "sqlite::memory:".to_string(),
@@ -1505,13 +1505,13 @@ async fn ledger_survives_restart_and_keeps_adjudicating() {
     })
     .await
     .expect("memory pool");
-    let repository = std::sync::Arc::new(fluxgate::database::Repository::new(pool));
+    let repository = std::sync::Arc::new(fluxweir::database::Repository::new(pool));
     repository.initialize().await.expect("init schema");
 
     // 进程 A：quota 配置（旧单窗语义 = default rolling 3600；租户限额经
     // 窗口显式声明，恢复读取与配置解耦）。
     let mut config = quota_config_full(vec![], 0, 0, 3600, Vec::new());
-    config.quota.windows = vec![fluxgate::config::QuotaWindowConfig {
+    config.quota.windows = vec![fluxweir::config::QuotaWindowConfig {
         id: "default".into(),
         rolling_secs: 3600,
         tokens_limit: 1_000,
@@ -1521,13 +1521,13 @@ async fn ledger_survives_restart_and_keeps_adjudicating() {
     let state_a = QuotaState::new();
     let persister_a = std::sync::Arc::new(QuotaLedgerPersister::new(
         repository.clone(),
-        fluxgate::middleware::quota_persist::DEFAULT_LEDGER_SLOTS,
+        fluxweir::middleware::quota_persist::DEFAULT_LEDGER_SLOTS,
         None,
     ));
     state_a.set_ledger_persister(persister_a.clone());
 
     // 预扣 800 → 结算实际 600（窗内已用 600）。
-    let windows = fluxgate::middleware::quota::resolve_windows(&config, "tenant-digest");
+    let windows = fluxweir::middleware::quota::resolve_windows(&config, "tenant-digest");
     assert_eq!(windows.len(), 1, "单窗生效");
     state_a
         .consume("tenant-digest", &windows, 800, 0)
@@ -1560,7 +1560,7 @@ async fn ledger_survives_restart_and_keeps_adjudicating() {
     );
 
     // 判定继续生效：窗内余量 400，扣 401 拒、扣 400 过。
-    let windows_b = fluxgate::middleware::quota::resolve_windows(&config, "tenant-digest");
+    let windows_b = fluxweir::middleware::quota::resolve_windows(&config, "tenant-digest");
     let refusal = state_b
         .consume("tenant-digest", &windows_b, 401, 0)
         .expect_err("恢复后余量不足必须拒");
@@ -1581,8 +1581,8 @@ async fn ledger_survives_restart_and_keeps_adjudicating() {
 
 // ---- 网关键成本预算（[key_budgets]，R-budget-001 集成三面）----
 
-use fluxgate::config::{KeyBudgetRule, KeyBudgetsSection};
-use fluxgate::middleware::key_budget::KeyBudgetLedger;
+use fluxweir::config::{KeyBudgetRule, KeyBudgetsSection};
+use fluxweir::middleware::key_budget::KeyBudgetLedger;
 
 /// 预算专用状态构造：QuotaState 换装注入的 KeyBudgetLedger（fail-closed/
 /// fail-open 用容量 0 触发 Unavailable 分支），其余与 make_state 同形。
@@ -1603,14 +1603,14 @@ async fn make_state_with_budget_ledger(config: Config, ledger: KeyBudgetLedger) 
     })
     .await
     .unwrap();
-    let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+    let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
     repository.initialize().await.expect("schema init");
     let database = Arc::new(Database { pool, repository });
     let router = Arc::new(NexusRouter::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
-    let mut quota_state = fluxgate::middleware::quota::QuotaState::new();
+    let mut quota_state = fluxweir::middleware::quota::QuotaState::new();
     quota_state.key_budgets = ledger;
     let quota = Some(Arc::new(quota_state));
 

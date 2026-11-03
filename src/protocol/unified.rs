@@ -694,10 +694,10 @@ pub(crate) fn absorb_vendor_extensions(
 ///
 /// `protocol` 为目标协议；`field` 为被丢弃字段/块型的定位锚（如
 /// `"content[2].redacted_thinking"`、`"tools[0].type"`）；`reason` 为丢弃
-/// 原因。target 固定为 `fluxgate::protocol`，运维可按
-/// `RUST_LOG=fluxgate::protocol=debug` 检索。
+/// 原因。target 固定为 `fluxweir::protocol`，运维可按
+/// `RUST_LOG=fluxweir::protocol=debug` 检索。
 pub(crate) fn drop_unsupported(protocol: super::Protocol, field: &str, reason: &str) {
-    tracing::debug!(target: "fluxgate::protocol", ?protocol, field, reason, "unsupported field dropped");
+    tracing::debug!(target: "fluxweir::protocol", ?protocol, field, reason, "unsupported field dropped");
 }
 
 /// 出站透传 [`UnifiedRequest::vendor_extensions`] → 顶层键。

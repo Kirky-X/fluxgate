@@ -21,7 +21,7 @@ use axum::{
     http::Request,
     Json,
 };
-use fluxgate::{
+use fluxweir::{
     api::{
         create_router,
         vault::{delete_key, list_keys, put_key, ListKeysQuery, PutKeyRequest},
@@ -72,7 +72,7 @@ async fn setup(
     let config = common::test_config(vec![common::base_vendor("openai", "http://127.0.0.1:1")]);
     let mut config = config;
     if auth_enabled {
-        config.auth = Some(fluxgate::config::AuthSection {
+        config.auth = Some(fluxweir::config::AuthSection {
             enabled: true,
             api_keys: vec![AUTH_KEY_HASH.to_string()],
             header: Default::default(),
@@ -98,7 +98,7 @@ async fn setup(
         affinity_writer: None,
         config: config_manager.clone(),
         vendor_manager: vendor_manager.clone(),
-        router: Arc::new(fluxgate::router::Router::new(
+        router: Arc::new(fluxweir::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         )),
@@ -112,11 +112,11 @@ async fn setup(
         responses: None,
         #[cfg(feature = "web-search")]
         web_search: None,
-        openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
-        anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
-        database: Arc::new(fluxgate::Database {
+        openai_converter: Arc::new(fluxweir::protocol::OpenAIConverter::new()),
+        anthropic_converter: Arc::new(fluxweir::protocol::AnthropicConverter::new()),
+        database: Arc::new(fluxweir::Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         }),
     });
     (store, vendor_manager, config_manager, state)
@@ -191,7 +191,7 @@ async fn unknown_vendor_conflicts_and_empty_key_validates() {
     .expect_err("unknown vendor must 409");
     assert!(matches!(
         err,
-        fluxgate::error::FluxgateError::Vault(VaultError::UnknownVendor(_))
+        fluxweir::error::FluxweirError::Vault(VaultError::UnknownVendor(_))
     ));
 
     let err = put_key(
@@ -206,7 +206,7 @@ async fn unknown_vendor_conflicts_and_empty_key_validates() {
     .expect_err("empty key must 400");
     assert!(matches!(
         err,
-        fluxgate::error::FluxgateError::Gate(fluxgate::error::GateError::Validation { .. })
+        fluxweir::error::FluxweirError::Gate(fluxweir::error::GateError::Validation { .. })
     ));
 }
 
@@ -214,7 +214,7 @@ async fn unknown_vendor_conflicts_and_empty_key_validates() {
 async fn restart_with_same_master_key_recovers_reveal() {
     // db 柜重启恢复：同库 + 同 master key 重建后 reveal 一致
     // Database::new 内建 V3 schema（init_schema 私有，经公开构造器走同一路径）
-    let db = fluxgate::Database::new("sqlite::memory:", 1)
+    let db = fluxweir::Database::new("sqlite::memory:", 1)
         .await
         .expect("memory db with V3 schema");
     let pool = db.pool;

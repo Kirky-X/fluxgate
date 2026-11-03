@@ -10,7 +10,7 @@
 //! flush（见 `Repository::log_requests_batch`），停机时补最终 flush。
 
 use crate::database::{Repository, RequestLog};
-use crate::error::FluxgateError;
+use crate::error::FluxweirError;
 use crate::i18n::{t, t_args};
 use async_channel::{bounded, Receiver, Sender};
 // inklog rc.12 起 SecretScanGate/DataMasker 下沉 trait-kit，且 mask_checked 的
@@ -224,9 +224,9 @@ impl AsyncLogger {
 
     /// 写入日志（非阻塞 push：channel 满即丢弃并计数，绝不等待）；
     /// 返回 Err 仅表示 logger 已 shutdown
-    pub fn log(&self, log: RequestLog) -> Result<(), FluxgateError> {
+    pub fn log(&self, log: RequestLog) -> Result<(), FluxweirError> {
         if self.closed.load(Ordering::Relaxed) {
-            return Err(FluxgateError::Database {
+            return Err(FluxweirError::Database {
                 message: t("database-logger-shutdown"),
             });
         }
@@ -236,7 +236,7 @@ impl AsyncLogger {
                 self.dropped_logs.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            Err(async_channel::TrySendError::Closed(_)) => Err(FluxgateError::Database {
+            Err(async_channel::TrySendError::Closed(_)) => Err(FluxweirError::Database {
                 message: t("database-logger-channel-closed"),
             }),
         }
@@ -254,9 +254,9 @@ impl AsyncLogger {
         total_tokens: i64,
         cache_read_tokens: Option<i64>,
         cache_write_tokens: Option<i64>,
-    ) -> Result<(), FluxgateError> {
+    ) -> Result<(), FluxweirError> {
         if self.closed.load(Ordering::Relaxed) {
-            return Err(FluxgateError::Database {
+            return Err(FluxweirError::Database {
                 message: t("database-logger-shutdown"),
             });
         }
@@ -274,7 +274,7 @@ impl AsyncLogger {
                 self.dropped_logs.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            Err(async_channel::TrySendError::Closed(_)) => Err(FluxgateError::Database {
+            Err(async_channel::TrySendError::Closed(_)) => Err(FluxweirError::Database {
                 message: t("database-logger-channel-closed"),
             }),
         }
@@ -294,17 +294,17 @@ impl AsyncLogger {
     /// 优雅关闭：置 closed 标志（后续 log 拒绝）→ 发 Shutdown 命令 →
     /// 等待 writer_loop flush 剩余缓冲并退出——返回即最终 flush 已落库，
     /// 停机拆除顺序不依赖调用方自行估算宽限时长。
-    pub async fn shutdown(&self) -> Result<(), FluxgateError> {
+    pub async fn shutdown(&self) -> Result<(), FluxweirError> {
         self.closed.store(true, Ordering::Relaxed);
         self.sender
             .send(LogCommand::Shutdown)
             .await
-            .map_err(|_| FluxgateError::Database {
+            .map_err(|_| FluxweirError::Database {
                 message: t("database-logger-channel-closed"),
             })?;
         let handle = self.writer.lock().await.take();
         if let Some(handle) = handle {
-            handle.await.map_err(|e| FluxgateError::Database {
+            handle.await.map_err(|e| FluxweirError::Database {
                 message: t_args("database-logger-join-failed", &[("error", e.to_string())]),
             })?;
         }
@@ -484,7 +484,7 @@ impl AsyncLoggerHandle {
     }
 
     /// 写入日志（非阻塞，同 [`AsyncLogger::log`]）
-    pub fn log(&self, log: RequestLog) -> Result<(), FluxgateError> {
+    pub fn log(&self, log: RequestLog) -> Result<(), FluxweirError> {
         self.inner.log(log)
     }
 
@@ -499,7 +499,7 @@ impl AsyncLoggerHandle {
         total_tokens: i64,
         cache_read_tokens: Option<i64>,
         cache_write_tokens: Option<i64>,
-    ) -> Result<(), FluxgateError> {
+    ) -> Result<(), FluxweirError> {
         self.inner.update_stream_usage(
             request_id,
             response,
@@ -523,7 +523,7 @@ impl AsyncLoggerHandle {
 
     /// 关闭日志写入器（幂等：重复 shutdown 第二次返回 Err channel closed ——
     /// 与 shutdown 语义一致，调用方以 Ok/Err 判断首闭）
-    pub async fn shutdown(&self) -> Result<(), FluxgateError> {
+    pub async fn shutdown(&self) -> Result<(), FluxweirError> {
         self.inner.shutdown().await
     }
 }
@@ -810,7 +810,7 @@ mod tests {
         let result = handle.log(sample_log());
         assert!(result.is_err());
         match result.unwrap_err() {
-            FluxgateError::Database { message } => {
+            FluxweirError::Database { message } => {
                 // message 经 FTL（随 locale），与直接查表结果一致
                 assert_eq!(message, t("database-logger-shutdown"));
             }

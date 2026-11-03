@@ -3,14 +3,14 @@
 
 //! Rerank：按 task 过滤列出 rerank 模型，再对一批文档重排并打印 top 结果。
 
-use fluxgate::sdk::{FluxgateClientBuilder, FluxgateSdkError, RequestConfig, RerankRequest};
+use fluxweir::sdk::{FluxweirClientBuilder, FluxweirSdkError, RequestConfig, RerankRequest};
 
 use super::require_env;
 
-pub async fn run() -> Result<(), FluxgateSdkError> {
-    let client = FluxgateClientBuilder::new()
-        .base_url(require_env("FLUXGATE_BASE_URL"))
-        .api_key(require_env("FLUXGATE_API_KEY"))
+pub async fn run() -> Result<(), FluxweirSdkError> {
+    let client = FluxweirClientBuilder::new()
+        .base_url(require_env("FLUXWEIR_BASE_URL"))
+        .api_key(require_env("FLUXWEIR_API_KEY"))
         .build()?;
 
     // ?task=rerank：只列出具备重排能力的模型（无此参数时返回全部）
@@ -24,7 +24,7 @@ pub async fn run() -> Result<(), FluxgateSdkError> {
 
     let req = RerankRequest {
         model: model.into(),
-        query: "Fluxgate 如何做成本分账？".into(),
+        query: "Fluxweir 如何做成本分账？".into(),
         documents: vec![
             "按 vendor/model/api_key_hash/小时预聚合四类 token 与分项成本。".into(),
             "重排请求按文档数计价，成本归入 input_cost 分项。".into(),

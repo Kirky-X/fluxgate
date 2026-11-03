@@ -6,8 +6,8 @@
 
 use serde::Deserialize;
 
-use crate::sdk::client::FluxgateClient;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::client::FluxweirClient;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::transport::send_with_retry;
 
 /// 模型能力目录条目 — 对齐网关 `GET /admin/models`（目录）。
@@ -238,10 +238,10 @@ pub struct ContextStatsResponse {
 /// 目录条目模型 URL — `model_id` 经 `path_segments_mut.push` 自动
 /// 百分号编码（审查 MEDIUM：字符串 join 对 `../` 类输入产生路径穿越，
 /// `push` 将段内 `/` 编码为 `%2F`，穿越Neutral 化）。
-fn admin_model_url(base_url: &url::Url, model_id: &str) -> Result<url::Url, FluxgateSdkError> {
+fn admin_model_url(base_url: &url::Url, model_id: &str) -> Result<url::Url, FluxweirSdkError> {
     let mut url = base_url.clone();
     url.path_segments_mut()
-        .map_err(|_| FluxgateSdkError::Config {
+        .map_err(|_| FluxweirSdkError::Config {
             message: "base_url cannot be a base".into(),
         })?
         .push("admin")
@@ -250,17 +250,17 @@ fn admin_model_url(base_url: &url::Url, model_id: &str) -> Result<url::Url, Flux
     Ok(url)
 }
 
-impl FluxgateClient {
+impl FluxweirClient {
     /// GET /admin/models — 模型能力目录列表（目录，含定价/能力位）。
     ///
     /// 失配修复：旧实现打 `GET /v1/models`——网关**未注册**该
     /// 路由（恒 404），且 `{data:[{id,vendor}]}` 形状无对应实现；现对齐
     /// 目录路由语义。
-    pub async fn models(&self) -> Result<Vec<ModelCatalogInfo>, FluxgateSdkError> {
+    pub async fn models(&self) -> Result<Vec<ModelCatalogInfo>, FluxweirSdkError> {
         let url = self
             .base_url
             .join("admin/models")
-            .map_err(|e| FluxgateSdkError::Config {
+            .map_err(|e| FluxweirSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 
@@ -283,7 +283,7 @@ impl FluxgateClient {
         &self,
         model_id: &str,
         entry: &ModelCatalogUpsert,
-    ) -> Result<(), FluxgateSdkError> {
+    ) -> Result<(), FluxweirSdkError> {
         let url = admin_model_url(&self.base_url, model_id)?;
 
         let request = self
@@ -299,8 +299,8 @@ impl FluxgateClient {
     }
 
     /// DELETE /admin/models/{model_id} — 目录下条（缺失条目网关返回
-    /// validation_error 400，映射 [`FluxgateSdkError::Api`]）。
-    pub async fn delete_model(&self, model_id: &str) -> Result<(), FluxgateSdkError> {
+    /// validation_error 400，映射 [`FluxweirSdkError::Api`]）。
+    pub async fn delete_model(&self, model_id: &str) -> Result<(), FluxweirSdkError> {
         let url = admin_model_url(&self.base_url, model_id)?;
 
         let request = self
@@ -316,11 +316,11 @@ impl FluxgateClient {
 
     /// GET /admin/vendors — vendor 运行时状态列表（真实形状：状态机词 +
     /// 队列深度 + key 池观测；**非**配置面 {name,enabled}）。
-    pub async fn vendors(&self) -> Result<Vec<VendorStatusInfo>, FluxgateSdkError> {
+    pub async fn vendors(&self) -> Result<Vec<VendorStatusInfo>, FluxweirSdkError> {
         let url = self
             .base_url
             .join("admin/vendors")
-            .map_err(|e| FluxgateSdkError::Config {
+            .map_err(|e| FluxweirSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 
@@ -338,15 +338,15 @@ impl FluxgateClient {
     /// GET /admin/sessions — 会话级聚合（成本/token/请求数/首末时间/标题）。
     ///
     /// `[usage_insights].enabled=false` 时网关返回 404，映射
-    /// [`FluxgateSdkError::Api`]；`limit` 缺省由服务端取 50、上限 500。
+    /// [`FluxweirSdkError::Api`]；`limit` 缺省由服务端取 50、上限 500。
     pub async fn list_sessions(
         &self,
         limit: Option<u32>,
-    ) -> Result<SessionsResponse, FluxgateSdkError> {
+    ) -> Result<SessionsResponse, FluxweirSdkError> {
         let mut url =
             self.base_url
                 .join("admin/sessions")
-                .map_err(|e| FluxgateSdkError::Config {
+                .map_err(|e| FluxweirSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
         if let Some(limit) = limit {
@@ -366,11 +366,11 @@ impl FluxgateClient {
     }
 
     /// GET /admin/context-stats — 按模型聚合上下文占用率与缓存份额。
-    pub async fn context_stats(&self) -> Result<ContextStatsResponse, FluxgateSdkError> {
+    pub async fn context_stats(&self) -> Result<ContextStatsResponse, FluxweirSdkError> {
         let url =
             self.base_url
                 .join("admin/context-stats")
-                .map_err(|e| FluxgateSdkError::Config {
+                .map_err(|e| FluxweirSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
 
@@ -387,11 +387,11 @@ impl FluxgateClient {
 
     /// GET /api/v1/health — 服务健康状态（JSON 健康面在 /api/v1/health，
     /// 非 /admin/health）
-    pub async fn health(&self) -> Result<HealthStatus, FluxgateSdkError> {
+    pub async fn health(&self) -> Result<HealthStatus, FluxweirSdkError> {
         let url = self
             .base_url
             .join("api/v1/health")
-            .map_err(|e| FluxgateSdkError::Config {
+            .map_err(|e| FluxweirSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 
@@ -411,11 +411,11 @@ impl FluxgateClient {
     pub async fn quota_ledger(
         &self,
         key: Option<&str>,
-    ) -> Result<QuotaLedgerResponse, FluxgateSdkError> {
+    ) -> Result<QuotaLedgerResponse, FluxweirSdkError> {
         let mut url =
             self.base_url
                 .join("admin/quota/ledger")
-                .map_err(|e| FluxgateSdkError::Config {
+                .map_err(|e| FluxweirSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
         if let Some(key) = key {
@@ -434,11 +434,11 @@ impl FluxgateClient {
     }
 
     /// GET /admin/vendor-budgets — vendor 预算状态（占用/消耗率/重置倒计时）。
-    pub async fn vendor_budgets(&self) -> Result<VendorBudgetsResponse, FluxgateSdkError> {
+    pub async fn vendor_budgets(&self) -> Result<VendorBudgetsResponse, FluxweirSdkError> {
         let url =
             self.base_url
                 .join("admin/vendor-budgets")
-                .map_err(|e| FluxgateSdkError::Config {
+                .map_err(|e| FluxweirSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
 
@@ -455,15 +455,15 @@ impl FluxgateClient {
 
     /// POST /admin/catalog/sync — 触发模型目录自动同步（add-only 合并）。
     /// `dry_run=true` 只取 diff 不落盘；409 = 同步进行中、502/413 = 拉取
-    /// 失败（映射 [`FluxgateSdkError::Api`]）。
+    /// 失败（映射 [`FluxweirSdkError::Api`]）。
     pub async fn sync_catalog(
         &self,
         dry_run: bool,
-    ) -> Result<CatalogSyncResponse, FluxgateSdkError> {
+    ) -> Result<CatalogSyncResponse, FluxweirSdkError> {
         let url =
             self.base_url
                 .join("admin/catalog/sync")
-                .map_err(|e| FluxgateSdkError::Config {
+                .map_err(|e| FluxweirSdkError::Config {
                     message: format!("invalid URL: {e}"),
                 })?;
 
@@ -481,10 +481,10 @@ impl FluxgateClient {
 
     /// admin 写路径的 success 断言（2xx 由重试层
     /// [`send_with_retry`] 保证；`success=false` → Protocol 错误显性）。
-    async fn assert_admin_ok(resp: reqwest::Response) -> Result<(), FluxgateSdkError> {
+    async fn assert_admin_ok(resp: reqwest::Response) -> Result<(), FluxweirSdkError> {
         let body: AdminActionResponse = resp.json().await?;
         if !body.success {
-            return Err(FluxgateSdkError::Protocol {
+            return Err(FluxweirSdkError::Protocol {
                 message: format!("admin action failed: {}", body.message),
             });
         }

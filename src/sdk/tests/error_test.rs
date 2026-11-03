@@ -4,7 +4,7 @@
 //! SDK 错误体系单测：ApiError 解析（header/body）、分类、可重试判定、
 //! 超时/网络分流。
 
-use crate::sdk::error::{ApiErrorKind, FluxgateSdkError};
+use crate::sdk::error::{ApiErrorKind, FluxweirSdkError};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ fn header_map(pairs: &[(&str, &str)]) -> HeaderMap {
 
 #[test]
 fn api_display_contains_status_and_message() {
-    let err = FluxgateSdkError::from_http_error(500, &HeaderMap::new(), "boom");
+    let err = FluxweirSdkError::from_http_error(500, &HeaderMap::new(), "boom");
     let s = err.to_string();
     assert!(s.contains("500"), "{s}");
     assert!(s.contains("boom"), "{s}");
@@ -33,9 +33,9 @@ fn api_display_contains_status_and_message() {
 fn oversized_error_message_is_truncated() {
     let huge = "x".repeat(10_000);
     let body = format!(r#"{{"error":{{"message":"{huge}"}}}}"#);
-    let err = FluxgateSdkError::from_http_error(500, &HeaderMap::new(), &body);
+    let err = FluxweirSdkError::from_http_error(500, &HeaderMap::new(), &body);
     match &err {
-        FluxgateSdkError::Api(api) => {
+        FluxweirSdkError::Api(api) => {
             assert_eq!(api.message.chars().count(), 512);
             assert!(api.message.starts_with("xxx"));
         }
@@ -45,13 +45,13 @@ fn oversized_error_message_is_truncated() {
 
 #[test]
 fn auth_error_display_via_api_variant() {
-    let err = FluxgateSdkError::from_http_error(
+    let err = FluxweirSdkError::from_http_error(
         401,
         &HeaderMap::new(),
         r#"{"error":{"message":"bad key"}}"#,
     );
     match &err {
-        FluxgateSdkError::Api(api) => {
+        FluxweirSdkError::Api(api) => {
             assert_eq!(api.status, 401);
             assert_eq!(api.kind, ApiErrorKind::Authentication);
         }
@@ -69,13 +69,13 @@ fn structured_body_and_headers_are_parsed() {
         ("x-request-id", "req_123"),
         ("x-should-retry", "true"),
     ]);
-    let err = FluxgateSdkError::from_http_error(
+    let err = FluxweirSdkError::from_http_error(
         429,
         &headers,
         r#"{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit","param":"input"}}"#,
     );
     match err {
-        FluxgateSdkError::Api(api) => {
+        FluxweirSdkError::Api(api) => {
             assert_eq!(api.status, 429);
             assert_eq!(api.kind, ApiErrorKind::RateLimit);
             assert_eq!(api.message, "rate limited");
@@ -97,9 +97,9 @@ fn anthropic_request_id_and_millis_retry_after() {
         ("retry-after-ms", "1500"),
         ("retry-after", "9"),
     ]);
-    let err = FluxgateSdkError::from_http_error(529, &headers, "");
+    let err = FluxweirSdkError::from_http_error(529, &headers, "");
     match err {
-        FluxgateSdkError::Api(api) => {
+        FluxweirSdkError::Api(api) => {
             assert_eq!(api.kind, ApiErrorKind::Overloaded);
             assert_eq!(api.request_id.as_deref(), Some("req_anthropic"));
             assert_eq!(
@@ -117,9 +117,9 @@ fn anthropic_request_id_and_millis_retry_after() {
 fn retry_after_http_date_is_parsed() {
     // 远期 HTTP-date（IMF-fixdate）
     let headers = header_map(&[("retry-after", "Fri, 01 Jan 2100 00:00:00 GMT")]);
-    let err = FluxgateSdkError::from_http_error(503, &headers, "x");
+    let err = FluxweirSdkError::from_http_error(503, &headers, "x");
     match err {
-        FluxgateSdkError::Api(api) => {
+        FluxweirSdkError::Api(api) => {
             let remaining = api.retry_after.expect("远期日期可解析");
             assert!(remaining > Duration::from_secs(3600), "{remaining:?}");
         }
@@ -128,26 +128,26 @@ fn retry_after_http_date_is_parsed() {
 
     // 已过的日期 → None（无有用提示）
     let headers = header_map(&[("retry-after", "Mon, 01 Jan 2001 00:00:00 GMT")]);
-    let err = FluxgateSdkError::from_http_error(503, &headers, "x");
+    let err = FluxweirSdkError::from_http_error(503, &headers, "x");
     match err {
-        FluxgateSdkError::Api(api) => assert!(api.retry_after.is_none()),
+        FluxweirSdkError::Api(api) => assert!(api.retry_after.is_none()),
         other => panic!("expected Api error, got {other:?}"),
     }
 
     // 不可解析 → None
     let headers = header_map(&[("retry-after", "not-a-date")]);
-    let err = FluxgateSdkError::from_http_error(503, &headers, "x");
+    let err = FluxweirSdkError::from_http_error(503, &headers, "x");
     match err {
-        FluxgateSdkError::Api(api) => assert!(api.retry_after.is_none()),
+        FluxweirSdkError::Api(api) => assert!(api.retry_after.is_none()),
         other => panic!("expected Api error, got {other:?}"),
     }
 }
 
 #[test]
 fn non_json_body_falls_back_to_raw_text() {
-    let err = FluxgateSdkError::from_http_error(502, &HeaderMap::new(), "<html>bad gateway</html>");
+    let err = FluxweirSdkError::from_http_error(502, &HeaderMap::new(), "<html>bad gateway</html>");
     match err {
-        FluxgateSdkError::Api(api) => {
+        FluxweirSdkError::Api(api) => {
             assert_eq!(api.kind, ApiErrorKind::Server);
             assert_eq!(api.message, "<html>bad gateway</html>");
             assert!(api.code.is_none() && api.param.is_none());
@@ -158,17 +158,17 @@ fn non_json_body_falls_back_to_raw_text() {
     }
 
     // error 为字符串的兼容形态
-    let err = FluxgateSdkError::from_http_error(400, &HeaderMap::new(), r#"{"error":"plain"}"#);
+    let err = FluxweirSdkError::from_http_error(400, &HeaderMap::new(), r#"{"error":"plain"}"#);
     match err {
-        FluxgateSdkError::Api(api) => assert_eq!(api.message, "plain"),
+        FluxweirSdkError::Api(api) => assert_eq!(api.message, "plain"),
         other => panic!("expected Api error, got {other:?}"),
     }
 
     // 超长文本截断 512 字符
     let long = "x".repeat(1000);
-    let err = FluxgateSdkError::from_http_error(500, &HeaderMap::new(), &long);
+    let err = FluxweirSdkError::from_http_error(500, &HeaderMap::new(), &long);
     match err {
-        FluxgateSdkError::Api(api) => assert_eq!(api.message.len(), 512),
+        FluxweirSdkError::Api(api) => assert_eq!(api.message.len(), 512),
         other => panic!("expected Api error, got {other:?}"),
     }
 }
@@ -190,9 +190,9 @@ fn kind_from_status_matrix() {
         (599, ApiErrorKind::Server),
         (302, ApiErrorKind::Other),
     ] {
-        let err = FluxgateSdkError::from_http_error(status, &HeaderMap::new(), "x");
+        let err = FluxweirSdkError::from_http_error(status, &HeaderMap::new(), "x");
         match err {
-            FluxgateSdkError::Api(api) => {
+            FluxweirSdkError::Api(api) => {
                 assert_eq!(api.kind, expected, "status {status}");
             }
             other => panic!("expected Api error, got {other:?}"),
@@ -212,9 +212,9 @@ fn is_retryable_status_and_header_matrix() {
         (500, true),
         (529, true),
     ] {
-        let err = FluxgateSdkError::from_http_error(status, &HeaderMap::new(), "x");
+        let err = FluxweirSdkError::from_http_error(status, &HeaderMap::new(), "x");
         match err {
-            FluxgateSdkError::Api(api) => {
+            FluxweirSdkError::Api(api) => {
                 assert_eq!(api.is_retryable(), retryable, "status {status}");
             }
             other => panic!("expected Api error, got {other:?}"),
@@ -223,9 +223,9 @@ fn is_retryable_status_and_header_matrix() {
 
     // x-should-retry 显式否决优先（500 也不重试）
     let err =
-        FluxgateSdkError::from_http_error(500, &header_map(&[("x-should-retry", "false")]), "x");
+        FluxweirSdkError::from_http_error(500, &header_map(&[("x-should-retry", "false")]), "x");
     match err {
-        FluxgateSdkError::Api(api) => {
+        FluxweirSdkError::Api(api) => {
             assert_eq!(api.should_retry, Some(false));
             assert!(!api.is_retryable(), "显式 false 优先否决");
         }
@@ -234,17 +234,17 @@ fn is_retryable_status_and_header_matrix() {
 
     // x-should-retry 显式放行（400 也重试）
     let err =
-        FluxgateSdkError::from_http_error(400, &header_map(&[("x-should-retry", "true")]), "x");
+        FluxweirSdkError::from_http_error(400, &header_map(&[("x-should-retry", "true")]), "x");
     match err {
-        FluxgateSdkError::Api(api) => assert!(api.is_retryable(), "显式 true 放行"),
+        FluxweirSdkError::Api(api) => assert!(api.is_retryable(), "显式 true 放行"),
         other => panic!("expected Api error, got {other:?}"),
     }
 
     // 无效值 → None（回落 status 判定）
     let err =
-        FluxgateSdkError::from_http_error(400, &header_map(&[("x-should-retry", "maybe")]), "x");
+        FluxweirSdkError::from_http_error(400, &header_map(&[("x-should-retry", "maybe")]), "x");
     match err {
-        FluxgateSdkError::Api(api) => {
+        FluxweirSdkError::Api(api) => {
             assert_eq!(api.should_retry, None);
             assert!(!api.is_retryable());
         }
@@ -260,5 +260,5 @@ fn from_reqwest_error_implemented() {
         U: From<T>,
     {
     }
-    assert_from_impl::<reqwest::Error, FluxgateSdkError>();
+    assert_from_impl::<reqwest::Error, FluxweirSdkError>();
 }

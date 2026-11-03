@@ -1,5 +1,5 @@
 # en/error-database-utils: src/error.rs + src/{database,utils} 用户可见消息。
-# error-*: FluxgateError 变体本地化消息（IntoResponse 展示轨道，Display 恒英文规范串）。
+# error-*: FluxweirError 变体本地化消息（IntoResponse 展示轨道，Display 恒英文规范串）。
 error-config = Configuration error: { $message }
 error-io = I/O error: { $message }
 error-protocol = Protocol conversion error: { $source }
@@ -56,7 +56,7 @@ vault-sync-file-failed = sync vault file failed: { $error }
 vault-replace-file-failed = replace vault file failed: { $error }
 # crypto.rs
 vault-seal-blob-failed = seal failed: { $error }
-vault-open-blob-failed = open failed: { $error } — the stored entry cannot be decrypted with the current master key (FLUXGATE_MASTER_KEY / master key file changed since it was stored); entries are unrecoverable after a master key change, re-enter vendor keys
+vault-open-blob-failed = open failed: { $error } — the stored entry cannot be decrypted with the current master key (FLUXWEIR_MASTER_KEY / master key file changed since it was stored, or the vault format / KDF domain-separation constant changed); entries are unrecoverable after a master key change, re-enter vendor keys
 vault-decrypted-not-utf8 = decrypted bytes are not utf-8: { $error }
 # db_store.rs
 vault-db-access-failed = vault db access failed: { $error }
@@ -77,8 +77,8 @@ masking-blocked = Request blocked: sensitive data of kind { $kind } is not allow
 masking-pepper-degraded = Mask pepper degraded to in-process random ({ $stage }: { $detail }); placeholder determinism across processes/restarts does not hold
 masking-ledger-io-failed = Masking ledger IO failed ({ $op }: { $detail }); observability side-path degraded without affecting requests
 
-# ---- cost-replay: 离线成本回放 CLI（bin fluxgate-replay）----
-replay-cli-usage = usage: fluxgate-replay --db <sqlite-path|url> --from <unix|RFC3339> --to <unix|RFC3339> [--config <path>] [--scenario affinity|cache_ttl|all] [--max-rows <n>] [--json]
+# ---- cost-replay: 离线成本回放 CLI（bin fluxweir-replay）----
+replay-cli-usage = usage: fluxweir-replay --db <sqlite-path|url> --from <unix|RFC3339> --to <unix|RFC3339> [--config <path>] [--scenario affinity|cache_ttl|all] [--max-rows <n>] [--json]
 replay-cli-missing-arg = missing required argument: { $arg }
 replay-cli-missing-value = argument { $arg } requires a value
 replay-cli-unknown-arg = unknown argument: { $arg }

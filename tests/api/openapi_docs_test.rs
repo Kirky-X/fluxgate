@@ -7,7 +7,7 @@
 
 use axum::{body::Body, http::Request, http::StatusCode, Router};
 use dbnexus::{DbConfig, DbPool};
-use fluxgate::{
+use fluxweir::{
     api::create_router,
     config::{Config, ConfigManager, DatabaseConfig},
     database::Database,
@@ -22,7 +22,7 @@ fn make_config(docs_enabled: bool) -> Config {
     Config {
         masking: Default::default(),
         web_search: Default::default(),
-        server: fluxgate::config::ServerConfig {
+        server: fluxweir::config::ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
         },
@@ -37,18 +37,18 @@ fn make_config(docs_enabled: bool) -> Config {
         model_catalog: Vec::new(),
         auth: None,
         cors: None,
-        retry: fluxgate::config::RetrySection::default(),
-        routing: fluxgate::config::RoutingSection::default(),
-        cache: fluxgate::config::CacheSection::default(),
+        retry: fluxweir::config::RetrySection::default(),
+        routing: fluxweir::config::RoutingSection::default(),
+        cache: fluxweir::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),
         grpc: None,
-        resilience: fluxgate::config::ResilienceSection::default(),
-        docs: fluxgate::config::DocsSection {
+        resilience: fluxweir::config::ResilienceSection::default(),
+        docs: fluxweir::config::DocsSection {
             enabled: docs_enabled,
         },
-        rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
+        rate_limit: fluxweir::config::RateLimitSection { rules: vec![] },
         lexcompress: Default::default(),
         responses: Default::default(),
         otlp: Default::default(),
@@ -79,9 +79,9 @@ async fn build_app(docs_enabled: bool) -> Router {
     .unwrap();
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(fluxgate::database::Repository::new(pool)),
+        repository: Arc::new(fluxweir::database::Repository::new(pool)),
     });
-    let router = Arc::new(fluxgate::router::Router::new(
+    let router = Arc::new(fluxweir::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));

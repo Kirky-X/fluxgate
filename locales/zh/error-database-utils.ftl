@@ -1,5 +1,5 @@
 # zh/error-database-utils: src/error.rs + src/{database,utils} 用户可见消息。
-# error-*: FluxgateError 变体本地化消息（IntoResponse 展示轨道，Display 恒英文规范串）。
+# error-*: FluxweirError 变体本地化消息（IntoResponse 展示轨道，Display 恒英文规范串）。
 error-config = 配置错误：{ $message }
 error-io = I/O 错误：{ $message }
 error-protocol = 协议转换错误：{ $source }
@@ -56,7 +56,7 @@ vault-sync-file-failed = 同步保密柜文件失败：{ $error }
 vault-replace-file-failed = 替换保密柜文件失败：{ $error }
 # crypto.rs
 vault-seal-blob-failed = 密封失败：{ $error }
-vault-open-blob-failed = 解密失败：{ $error } —— 当前主钥无法解密该条目（存入后 FLUXGATE_MASTER_KEY / 主钥文件已变更；主钥变更后条目不可恢复，请重新录入厂商密钥）
+vault-open-blob-failed = 解密失败：{ $error } —— 当前主钥无法解密该条目（存入后 FLUXWEIR_MASTER_KEY / 主钥文件已变更，或 vault 柜格式 / KDF 域分隔常量变更；主钥变更后条目不可恢复，请重新录入厂商密钥）
 vault-decrypted-not-utf8 = 解密结果不是 UTF-8：{ $error }
 # db_store.rs
 vault-db-access-failed = 访问保密柜数据库失败：{ $error }
@@ -77,8 +77,8 @@ masking-blocked = 请求被拦截：{ $kind } 类敏感数据禁止出站
 masking-pepper-degraded = 掩码 pepper 加载降级为进程内随机（{ $stage }：{ $detail }），占位符跨进程/重启确定性不成立
 masking-ledger-io-failed = 掩码台账 IO 失败（{ $op }：{ $detail }），观测旁路降级不影响请求
 
-# ---- cost-replay: 离线成本回放 CLI（bin fluxgate-replay）----
-replay-cli-usage = 用法：fluxgate-replay --db <sqlite 路径|URL> --from <unix|RFC3339> --to <unix|RFC3339> [--config <路径>] [--scenario affinity|cache_ttl|all] [--max-rows <n>] [--json]
+# ---- cost-replay: 离线成本回放 CLI（bin fluxweir-replay）----
+replay-cli-usage = 用法：fluxweir-replay --db <sqlite 路径|URL> --from <unix|RFC3339> --to <unix|RFC3339> [--config <路径>] [--scenario affinity|cache_ttl|all] [--max-rows <n>] [--json]
 replay-cli-missing-arg = 缺少必需参数：{ $arg }
 replay-cli-missing-value = 参数 { $arg } 需要一个取值
 replay-cli-unknown-arg = 未知参数：{ $arg }

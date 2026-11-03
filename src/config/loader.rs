@@ -2279,7 +2279,7 @@ impl AdminSecretProvider {
     fn insert(&mut self, key: String, secret: &str) {
         let annotated = AnnotatedValue::new(
             ConfigValue::string(secret),
-            SourceId::new("fluxgate-config"),
+            SourceId::new("fluxweir-config"),
             key.clone(),
         );
         self.entries.insert(key, annotated);
@@ -2356,7 +2356,7 @@ fn validate_admin_secrets(config: &Config) -> Result<(), GateError> {
                     // 启动，但必须留痕：规则内核后续增强新增违规时不会被
                     // 零痕迹吞掉（错误显性化纪律）
                     tracing::debug!(
-                        target: "fluxgate::config",
+                        target: "fluxweir::config",
                         key = %key,
                         severity = ?violation.severity,
                         "{}",

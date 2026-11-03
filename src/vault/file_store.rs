@@ -20,14 +20,14 @@ use crate::vault::crypto;
 use crate::vault::{KeyStore, SecretKeyRecord, VaultError};
 
 /// 文件头：magic + 格式版本，将来 cipher/结构演进由此行承载。
-const VAULT_FILE_MAGIC: &[u8] = b"FLUXGATE-VAULT1\n";
+const VAULT_FILE_MAGIC: &[u8] = b"FLUXWEIR-VAULT1\n";
 
-/// 默认柜文件：`~/.fluxgate/vault.bin`。
+/// 默认柜文件：`~/.fluxweir/vault.bin`。
 pub fn home_vault_path() -> Result<PathBuf, VaultError> {
     let home = std::env::home_dir().ok_or_else(|| VaultError::Storage {
         message: t("vault-home-not-found"),
     })?;
-    Ok(home.join(".fluxgate").join("vault.bin"))
+    Ok(home.join(".fluxweir").join("vault.bin"))
 }
 
 /// 柜内条目：blob 为 `crypto::seal` 产出的 self-contained 密文。

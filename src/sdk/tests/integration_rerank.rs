@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use crate::sdk::client::FluxgateClientBuilder;
+use crate::sdk::client::FluxweirClientBuilder;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::{ApiError, FluxgateSdkError};
+use crate::sdk::error::{ApiError, FluxweirSdkError};
 use crate::sdk::RerankRequest;
 
-fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
-    FluxgateClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxweirClient {
+    FluxweirClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()
@@ -63,7 +63,7 @@ async fn rerank_500_maps_to_server_error() {
     let client = build_client(&server.url());
     let err = client.rerank(&request()).await.unwrap_err();
     match err {
-        FluxgateSdkError::Api(ApiError {
+        FluxweirSdkError::Api(ApiError {
             status, message, ..
         }) => {
             assert_eq!(status, 500);

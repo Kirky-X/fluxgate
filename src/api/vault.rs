@@ -14,18 +14,18 @@ use axum::Json;
 use secrecy::SecretString;
 use serde::Deserialize;
 
-use crate::error::{FluxgateError, GateError};
+use crate::error::{FluxweirError, GateError};
 use crate::vault::{SecretKeyRecord, VaultError};
 use crate::ApiState;
 
 /// vault 未接线（feature 关闭或装配失败）时的统一错误。
-fn vault_unavailable() -> FluxgateError {
-    FluxgateError::Gate(GateError::VendorUnavailable {
+fn vault_unavailable() -> FluxweirError {
+    FluxweirError::Gate(GateError::VendorUnavailable {
         vendor: "vault".to_string(),
     })
 }
 
-fn store_of(state: &ApiState) -> Result<Arc<dyn crate::vault::KeyStore>, FluxgateError> {
+fn store_of(state: &ApiState) -> Result<Arc<dyn crate::vault::KeyStore>, FluxweirError> {
     state.vendor_manager.vault().ok_or_else(vault_unavailable)
 }
 
@@ -41,10 +41,10 @@ pub struct PutKeyRequest {
 pub async fn put_key(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<PutKeyRequest>,
-) -> Result<Json<SecretKeyRecord>, FluxgateError> {
+) -> Result<Json<SecretKeyRecord>, FluxweirError> {
     let store = store_of(&state)?;
     if body.key.trim().is_empty() {
-        return Err(FluxgateError::Gate(GateError::Validation {
+        return Err(FluxweirError::Gate(GateError::Validation {
             field: "key".to_string(),
         }));
     }
@@ -55,7 +55,7 @@ pub async fn put_key(
         .iter()
         .any(|v| v.id == body.vendor_id);
     if !known {
-        return Err(FluxgateError::Vault(VaultError::UnknownVendor(
+        return Err(FluxweirError::Vault(VaultError::UnknownVendor(
             body.vendor_id.clone(),
         )));
     }
@@ -72,7 +72,7 @@ pub async fn put_key(
 pub async fn list_keys(
     State(state): State<Arc<ApiState>>,
     axum::extract::Query(query): axum::extract::Query<ListKeysQuery>,
-) -> Result<Json<ListKeysResponse>, FluxgateError> {
+) -> Result<Json<ListKeysResponse>, FluxweirError> {
     let store = store_of(&state)?;
     let keys = store.list(query.vendor_id.as_deref()).await?;
     Ok(Json(ListKeysResponse { keys }))
@@ -94,7 +94,7 @@ pub struct ListKeysResponse {
 pub async fn delete_key(
     State(state): State<Arc<ApiState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<Json<DeleteKeyResponse>, FluxgateError> {
+) -> Result<Json<DeleteKeyResponse>, FluxweirError> {
     let store = store_of(&state)?;
     // 删除前定位 vendor（remove 后条目不可查）
     let target_vendor = store

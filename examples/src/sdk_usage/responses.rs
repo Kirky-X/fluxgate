@@ -4,18 +4,18 @@
 //! Responses：非流式两轮（`previous_response_id` 回放）+ background/cancel +
 //! input_tokens 估算 + 流式事件打印。
 
-use fluxgate::sdk::{
-    FluxgateClientBuilder, FluxgateSdkError, RequestConfig, ResponsesInputTokensRequest,
+use fluxweir::sdk::{
+    FluxweirClientBuilder, FluxweirSdkError, RequestConfig, ResponsesInputTokensRequest,
     ResponsesRequest,
 };
 use futures::StreamExt as _;
 
 use super::require_env;
 
-pub async fn run() -> Result<(), FluxgateSdkError> {
-    let client = FluxgateClientBuilder::new()
-        .base_url(require_env("FLUXGATE_BASE_URL"))
-        .api_key(require_env("FLUXGATE_API_KEY"))
+pub async fn run() -> Result<(), FluxweirSdkError> {
+    let client = FluxweirClientBuilder::new()
+        .base_url(require_env("FLUXWEIR_BASE_URL"))
+        .api_key(require_env("FLUXWEIR_API_KEY"))
         .build()?;
 
     let models = client.list_models(Some("chat")).await?;

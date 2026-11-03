@@ -1,8 +1,8 @@
-# Fluxgate 安全文档
+# Fluxweir 安全文档
 
 [🤝 贡献指南](./CONTRIBUTING.md) · [📜 更新日志](./CHANGELOG.md) · [📖 用户指南](./USER_GUIDE.md) · [🏗️ 架构文档](./ARCHITECTURE.md) · [📖 README](../README.md)
 
-Fluxgate 将安全性作为核心设计目标。本文档介绍 Fluxgate 的安全策略、漏洞报告流程、内置安全机制与已知安全边界。
+Fluxweir 将安全性作为核心设计目标。本文档介绍 Fluxweir 的安全策略、漏洞报告流程、内置安全机制与已知安全边界。
 
 ## 📋 目录
 
@@ -24,7 +24,7 @@ Fluxgate 将安全性作为核心设计目标。本文档介绍 Fluxgate 的安�
 
 ## 🛡️ 安全模型总览
 
-一个请求进入 Fluxgate 后依次穿过五道防线，任何一道都可以独立拒绝请求：
+一个请求进入 Fluxweir 后依次穿过五道防线，任何一道都可以独立拒绝请求：
 
 ```mermaid
 flowchart LR
@@ -105,7 +105,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 部署要求
 
-**`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单共十条（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/admin/subscription/callback`（OAuth 302 回跳裸 GET）、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/middleware/auth.rs` 认证白名单判定）；其余**业务路由**（含全部 `/admin/*`）均需认证。`/healthz` 与 `/readyz` 虽列在白名单中，实际由 sdforge 在全部中间件**之后**挂载，不经过 Fluxgate 的认证/限流/超时层（免认证免限流；白名单条目是纵深防御冗余，二者不经过本中间件）；`/readyz` 每请求真跑 DB 与缓存探针，故仅建议内网暴露。
+**`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单共十条（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/admin/subscription/callback`（OAuth 302 回跳裸 GET）、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/middleware/auth.rs` 认证白名单判定）；其余**业务路由**（含全部 `/admin/*`）均需认证。`/healthz` 与 `/readyz` 虽列在白名单中，实际由 sdforge 在全部中间件**之后**挂载，不经过 Fluxweir 的认证/限流/超时层（免认证免限流；白名单条目是纵深防御冗余，二者不经过本中间件）；`/readyz` 每请求真跑 DB 与缓存探针，故仅建议内网暴露。
 
 ### Admin 端点暴露面与生产隔离要求（评审 M2）
 
@@ -120,7 +120,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
   独立的管理面认证（mTLS / SSO / IP allowlist）；
 - 或将管理面 key 仅下发给运维/管理员，数据面调用方持不同 key——并接受「数据面 key 等于
   管理面 key」的模型边界（本段即为该边界的显性声明，非缺陷瞒报）；
-- `/admin/cost` 的 key 过滤参数经请求头 `x-fluxgate-cost-key` 传明文（服务端哈希后比对），
+- `/admin/cost` 的 key 过滤参数经请求头 `x-fluxweir-cost-key` 传明文（服务端哈希后比对），
   **禁止**把 key 放 URL 查询串（会落入反代/访问日志，CWE-598）。
 
 ---
@@ -239,7 +239,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 - **console 通路**：inklog console sink 挂接含出站门的 masker（`bootstrap.rs` 装配）；
 - **落库通路**：`async_logger` 写入 `request_logs` 前经同一 gate 构造脱敏（敏感面最大的持久化管道）。
 
-含裸 secret（无键名前缀，仅 PII/键名规则覆盖不到的值形态）的日志内容会被掩码为 `***REDACTED***` 类标记后再写出/落库；结合常规键名 PII 掩码（email/phone/卡号/敏感字段名）构成双层防线。规则集由 inklog `secret-scan` feature 的内置 `SecretPatternRegistry` 提供，Fluxgate 不维护第二份词表。
+含裸 secret（无键名前缀，仅 PII/键名规则覆盖不到的值形态）的日志内容会被掩码为 `***REDACTED***` 类标记后再写出/落库；结合常规键名 PII 掩码（email/phone/卡号/敏感字段名）构成双层防线。规则集由 inklog `secret-scan` feature 的内置 `SecretPatternRegistry` 提供，Fluxweir 不维护第二份词表。
 
 ### 管理端点
 
@@ -266,7 +266,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 | 数据库 TLS | dbnexus 以 `runtime-tokio-rustls` 特性编译（rustls 栈） |
 | 网关自身 TLS | 不经 sdforge 终结 TLS——自建 axum 明文监听，**TLS 由外部反向代理承担**（部署责任） |
 | 容器运行时 | `alpine:3.24` 最小化镜像（主仓支持至 2028-06），多阶段构建；产物 musl 静态链接，应用不依赖 OpenSSL（TLS 栈为纯 rustls；libssl3/libcrypto3 由 alpine 基础镜像自带，已从 apk add 显式清单移除），运行阶段 `ldd` 回验依赖全部可解 |
-| 非 root | 专用用户 `appuser`（UID/GID 10001），无登录 shell；HOME=/home/appuser/.fluxgate（Dockerfile 补建并授权，vault 主钥文件回退路径） |
+| 非 root | 专用用户 `appuser`（UID/GID 10001），无登录 shell；HOME=/home/appuser/.fluxweir（Dockerfile 补建并授权，vault 主钥文件回退路径） |
 | 数据卷 | `/app/data`（SQLite 数据库），属主 appuser |
 | 健康检查 | Dockerfile `HEALTHCHECK` 探测 `/api/v1/health`（实际注册路径带 sdforge 版本前缀） |
 
@@ -280,7 +280,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 |:-----|:----------|:---------|
 | 格式检查 | `cargo fmt --all -- --check` | 每次 push / PR |
 | 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings` | 每次 push / PR |
-| 编译检查 | `cargo check --workspace` + 非默认后端特性矩阵（`cargo check -p fluxgate --no-default-features --features "full,db-postgres"` / `"full,db-mysql"`） | 每次 push / PR |
+| 编译检查 | `cargo check --workspace` + 非默认后端特性矩阵（`cargo check -p fluxweir --no-default-features --features "full,db-postgres"` / `"full,db-mysql"`） | 每次 push / PR |
 | 依赖漏洞扫描 | `cargo audit`（`taiki-e/install-action` 安装后直接运行） | 每次 push / PR + **每日定时**（cron `37 5 * * *`） |
 | 全量测试 | `cargo test --workspace` | 每次 push / PR |
 
@@ -339,7 +339,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 | 方式 | 渠道 | 响应时间 |
 |:-----|:-----|:---------|
-| **GitHub 安全通告（推荐）** | [通过 GH Advisory 私密报告](https://github.com/Kirky-X/fluxgate/security/policy) | 48 小时内确认 |
+| **GitHub 安全通告（推荐）** | [通过 GH Advisory 私密报告](https://github.com/Kirky-X/fluxweir/security/policy) | 48 小时内确认 |
 
 ### 报告内容
 

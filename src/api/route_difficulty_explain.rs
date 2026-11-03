@@ -7,7 +7,7 @@
 //! 的 Validation 错误（与 route/explain 的未知模型同口径）。
 
 use crate::api::state::ApiState;
-use crate::error::{FluxgateError, GateError};
+use crate::error::{FluxweirError, GateError};
 use axum::extract::State;
 use axum::Json;
 use serde_json::Value;
@@ -16,19 +16,19 @@ use std::sync::Arc;
 pub async fn route_difficulty_explain(
     State(state): State<Arc<ApiState>>,
     Json(payload): Json<Value>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let model = payload
         .get("model")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            FluxgateError::from(GateError::Validation {
+            FluxweirError::from(GateError::Validation {
                 field: crate::i18n::t("api-route-explain-model-invalid"),
             })
         })?;
     let body = payload.get("body").cloned().unwrap_or(Value::Null);
 
     let difficulty = state.difficulty.as_ref().ok_or_else(|| {
-        FluxgateError::from(GateError::Validation {
+        FluxweirError::from(GateError::Validation {
             field: crate::i18n::t_args(
                 "api-route-explain-model-unknown",
                 &[("model", model.to_string())],
@@ -36,7 +36,7 @@ pub async fn route_difficulty_explain(
         })
     })?;
     let explanation = difficulty.explain(model, &body).await.ok_or_else(|| {
-        FluxgateError::from(GateError::Validation {
+        FluxweirError::from(GateError::Validation {
             field: crate::i18n::t_args(
                 "api-route-explain-model-unknown",
                 &[("model", model.to_string())],

@@ -1,5 +1,5 @@
 [package]
-name = "fluxgate"
+name = "fluxweir"
 version = "0.1.0"
 edition = "2021"
 # MSRV 单一事实源：cargo 解析期据此硬拒更低工具链；CI 用此下限，Docker/release 用当前 stable。
@@ -16,7 +16,7 @@ autotests = false
 autobenches = false
 description = "智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度 | Intelligent multi-provider LLM routing gateway"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
-repository = "https://github.com/Kirky-X/fluxgate"
+repository = "https://github.com/Kirky-X/fluxweir"
 keywords = ["llm", "gateway", "proxy", "openai", "anthropic", "routing"]
 categories = ["network-programming", "web-programming::http-server", "api-bindings"]
 
@@ -24,15 +24,15 @@ categories = ["network-programming", "web-programming::http-server", "api-bindin
 path = "src/lib.rs"
 
 [[bin]]
-name = "fluxgate"
+name = "fluxweir"
 path = "src/main.rs"
 required-features = ["full"]
 
 # 离线成本回放工具（cost-replay）：读 request_logs 历史回放 counterfactual 成本，
 # 只报告不改配置。默认产物不含（需 cost-replay + 一个 db 后端）。
 [[bin]]
-name = "fluxgate-replay"
-path = "src/bin/fluxgate-replay.rs"
+name = "fluxweir-replay"
+path = "src/bin/fluxweir-replay.rs"
 required-features = ["cost-replay", "db-sqlite"]
 
 [features]
@@ -113,7 +113,7 @@ web-search = ["dep:reqwest", "netguard"]
 # 离线成本回放（cost-replay）：读 request_logs 逐请求历史，按场景（affinity/
 # cache_ttl）重放 counterfactual 成本——纯显式代码，不调模型、不开服务、不写库。
 # 不进 full：离线分析工具默认产物不含，构建时显式启用并搭配一个 db 后端
-# （bin fluxgate-replay 的 required-features 另含 db-sqlite）。
+# （bin fluxweir-replay 的 required-features 另含 db-sqlite）。
 cost-replay = ["database", "dep:dbnexus", "dep:sea-orm"]
 # 内置控制台前端（console）：rust-embed 嵌入 web/console/dist（Vite 产物），
 # src/server/console.rs 挂 GET /console 与 /console/* 静态服务 + SPA fallback。

@@ -3,14 +3,14 @@
 
 //! 运维端点：health / vendors / models。
 
-use fluxgate::sdk::{FluxgateClientBuilder, FluxgateSdkError};
+use fluxweir::sdk::{FluxweirClientBuilder, FluxweirSdkError};
 
 use super::require_env;
 
-pub async fn run() -> Result<(), FluxgateSdkError> {
-    let client = FluxgateClientBuilder::new()
-        .base_url(require_env("FLUXGATE_BASE_URL"))
-        .api_key(require_env("FLUXGATE_API_KEY"))
+pub async fn run() -> Result<(), FluxweirSdkError> {
+    let client = FluxweirClientBuilder::new()
+        .base_url(require_env("FLUXWEIR_BASE_URL"))
+        .api_key(require_env("FLUXWEIR_API_KEY"))
         .build()?;
 
     let health = client.health().await?;

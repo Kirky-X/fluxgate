@@ -12,7 +12,7 @@
 
 use axum::{body::Body, http::Request, http::StatusCode, Router};
 use dbnexus::{DbConfig, DbPool};
-use fluxgate::{
+use fluxweir::{
     api::create_router,
     config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, RateLimitRule, RateLimitSection,
@@ -121,14 +121,14 @@ fn make_config_with(rules: Vec<RateLimitRule>, vendors: Vec<VendorConfig>) -> Co
         // 请求携带的 Bearer key 摘要分桶，无 key 归入 anonymous）
         auth: None,
         cors: None,
-        retry: fluxgate::config::RetrySection::default(),
-        routing: fluxgate::config::RoutingSection::default(),
-        cache: fluxgate::config::CacheSection::default(),
+        retry: fluxweir::config::RetrySection::default(),
+        routing: fluxweir::config::RoutingSection::default(),
+        cache: fluxweir::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),
         grpc: None,
-        resilience: fluxgate::config::ResilienceSection::default(),
+        resilience: fluxweir::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
         responses: Default::default(),
@@ -164,10 +164,10 @@ async fn build_app_with_vendors(rules: Vec<RateLimitRule>, vendors: Vec<VendorCo
 
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(fluxgate::database::Repository::new(pool)),
+        repository: Arc::new(fluxweir::database::Repository::new(pool)),
     });
 
-    let router = Arc::new(fluxgate::router::Router::new(
+    let router = Arc::new(fluxweir::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
@@ -440,7 +440,7 @@ async fn global_rule_rejection_carries_retry_after_and_standard_body() {
         .unwrap();
     assert_eq!(
         body,
-        fluxgate::i18n::t("router-rate-limit-exceeded"),
+        fluxweir::i18n::t("router-rate-limit-exceeded"),
         "global 429 body must match the standard rate-limit body"
     );
 }
@@ -536,7 +536,7 @@ async fn stream_request_is_adjudicated_at_entry_only() {
 /// 得到 429）。
 #[tokio::test]
 async fn auth_runs_before_rate_limit_layers() {
-    use fluxgate::config::AuthSection;
+    use fluxweir::config::AuthSection;
     let mut config = make_config(vec![rate_rule("global-cap", None, 1)]);
     config.auth = Some(AuthSection {
         enabled: true,
@@ -564,9 +564,9 @@ async fn auth_runs_before_rate_limit_layers() {
     .unwrap();
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(fluxgate::database::Repository::new(pool)),
+        repository: Arc::new(fluxweir::database::Repository::new(pool)),
     });
-    let router = Arc::new(fluxgate::router::Router::new(
+    let router = Arc::new(fluxweir::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));

@@ -7,9 +7,9 @@
 //!
 //! 全部走公开 API，错误分支断言 GateError 变体与插值参数。
 
-use fluxgate::config::loader::ConfigLoader;
-use fluxgate::config::{Config, ConfigManager, RateLimitConfig, RoutingSection, ServerConfig};
-use fluxgate::error::GateError;
+use fluxweir::config::loader::ConfigLoader;
+use fluxweir::config::{Config, ConfigManager, RateLimitConfig, RoutingSection, ServerConfig};
+use fluxweir::error::GateError;
 use std::path::PathBuf;
 
 #[path = "../common/mod.rs"]
@@ -394,7 +394,7 @@ concurrency = {{ requests_per_second = 1 }}
 "#
             ),
         );
-        let expected = fluxgate::i18n::t_args("config-vendor-id-empty", &[]);
+        let expected = fluxweir::i18n::t_args("config-vendor-id-empty", &[]);
         match load_from(&path).map(|_| ()) {
             Err(GateError::Config { message }) => {
                 assert_eq!(message, expected, "空白 vendor id 必须报空白键原文");
@@ -407,7 +407,7 @@ concurrency = {{ requests_per_second = 1 }}
 /// 路由查找键空白拒绝（model_id）：同 vendor 内空白 model_id 加载即拒。
 #[test]
 fn loader_rejects_blank_model_id() {
-    let expected = fluxgate::i18n::t_args(
+    let expected = fluxweir::i18n::t_args(
         "config-model-id-empty",
         &[("vendor", "blank_model_vendor".to_string())],
     );
@@ -440,7 +440,7 @@ model_id = "  "
 /// 路由查找键空白拒绝（abstract_id）：声明的 abstract_id 为空白时加载即拒。
 #[test]
 fn loader_rejects_blank_abstract_id() {
-    let expected = fluxgate::i18n::t_args(
+    let expected = fluxweir::i18n::t_args(
         "config-abstract-id-empty",
         &[
             ("vendor", "blank_abstract_vendor".to_string()),

@@ -24,11 +24,11 @@ use axum::{
     http::Request,
     Json,
 };
-use fluxgate::{
+use fluxweir::{
     api::{admin, create_router},
     config::{ConfigManager, GlobalModelConfig, ModelCatalogEntry, PricingCurrency},
     database::Database,
-    error::FluxgateError,
+    error::FluxweirError,
     protocol::{AnthropicConverter, OpenAIConverter},
     router::Router,
     vendor::VendorManager,
@@ -102,7 +102,7 @@ async fn create_state() -> Arc<ApiState> {
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         }),
     })
 }
@@ -211,7 +211,7 @@ async fn delete_removes_entry_and_absent_is_explicit_error() {
     // DELETE 缺条 → 显性错误（GateError 无 NotFound 变体，冻结约束下以
     // Validation 承载——映射 400 客户端请求问题，禁止静默成功）
     match admin::delete_model(State(state.clone()), Path("ghost-model".to_string())).await {
-        Err(FluxgateError::Gate(fluxgate::error::GateError::Validation { field })) => {
+        Err(FluxweirError::Gate(fluxweir::error::GateError::Validation { field })) => {
             assert!(
                 field.contains("ghost-model"),
                 "缺失错误携带 model_id: {field}"
@@ -239,7 +239,7 @@ async fn upsert_zero_context_window_rejected() {
     )
     .await
     {
-        Err(FluxgateError::Gate(fluxgate::error::GateError::Config { message })) => {
+        Err(FluxweirError::Gate(fluxweir::error::GateError::Config { message })) => {
             assert!(
                 message.contains("bad-model"),
                 "校验错误携带 model_id: {message}"
@@ -332,7 +332,7 @@ async fn put_and_delete_global_are_rejected_explicitly() {
                 .map(|_| ()),
         };
         match result {
-            Err(FluxgateError::Gate(fluxgate::error::GateError::Validation { field })) => {
+            Err(FluxweirError::Gate(fluxweir::error::GateError::Validation { field })) => {
                 assert!(
                     field.contains("global"),
                     "保留键错误显性化（Validation → 400）: {field}"
@@ -465,7 +465,7 @@ async fn reset_vendor_clears_blacklist_and_cooldown() {
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         }),
     });
 
@@ -495,7 +495,7 @@ async fn reset_vendor_clears_blacklist_and_cooldown() {
     );
     assert_eq!(
         vendor_manager.get_status("reset-v").await,
-        fluxgate::vendor::VendorStatus::Available,
+        fluxweir::vendor::VendorStatus::Available,
         "reset 必须清除冷却状态"
     );
 
@@ -578,7 +578,7 @@ async fn vendor_config_endpoints_read_and_update() {
         anthropic_converter: Arc::new(AnthropicConverter::new()),
         database: Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         }),
     });
     let app = create_router(state).await;
@@ -735,13 +735,13 @@ async fn vendor_config_endpoints_read_and_update() {
 mod cost_endpoint {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode};
-    use fluxgate::api::create_router;
-    use fluxgate::config::{AuthSection, Config, ConfigManager, GlobalModelConfig};
-    use fluxgate::database::{Database, KeyedUsage, TokenPreAggregator};
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::api::create_router;
+    use fluxweir::config::{AuthSection, Config, ConfigManager, GlobalModelConfig};
+    use fluxweir::database::{Database, KeyedUsage, TokenPreAggregator};
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use serde_json::Value;
     use std::sync::Arc;
     use std::time::Duration;
@@ -796,7 +796,7 @@ mod cost_endpoint {
         })
         .await
         .unwrap();
-        let repository = Arc::new(fluxgate::database::Repository::new(pool.clone()));
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
         repository.initialize().await.expect("schema init");
         let pre_aggregator = Arc::new(TokenPreAggregator::new(
             repository.clone(),
@@ -843,7 +843,7 @@ mod cost_endpoint {
         get_with_headers(state, uri, key, &[]).await
     }
 
-    /// key 过滤参数（M1）经 `x-fluxgate-cost-key` 请求头传明文——
+    /// key 过滤参数（M1）经 `x-fluxweir-cost-key` 请求头传明文——
     /// 明文 key 不进 URL 查询串（CWE-598：反代/访问日志）。
     async fn get_with_headers(
         state: Arc<ApiState>,
@@ -889,13 +889,13 @@ mod cost_endpoint {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["rows"].as_array().unwrap().len(), 2);
 
-        // key 过滤（M1）：明文经 x-fluxgate-cost-key 头传递、服务端哈希
+        // key 过滤（M1）：明文经 x-fluxweir-cost-key 头传递、服务端哈希
         // 比对——test-good-key 只见 v-a；查询串不再承载 key（无 api_key 参数）。
         let (status, body) = get_with_headers(
             state.clone(),
             "/admin/cost?group_by=vendor",
             None,
-            &[("x-fluxgate-cost-key", "test-good-key")],
+            &[("x-fluxweir-cost-key", "test-good-key")],
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -912,7 +912,7 @@ mod cost_endpoint {
             state.clone(),
             "/admin/cost?group_by=vendor",
             None,
-            &[("x-fluxgate-cost-key", "  ")],
+            &[("x-fluxweir-cost-key", "  ")],
         )
         .await;
         assert_eq!(status, StatusCode::OK);

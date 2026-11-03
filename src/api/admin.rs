@@ -8,7 +8,7 @@ use crate::i18n::{t, t_args};
 // `vendor_budget_view` 由 `VendorBudgetSource` trait 提供（QuotaState 反向实现），
 // 需 trait 在作用域内才可调用。
 use crate::quota_contract::VendorBudgetSource as _;
-use crate::{error::FluxgateError, ApiState};
+use crate::{error::FluxweirError, ApiState};
 use axum::{
     extract::{Path, Query, State},
     response::IntoResponse,
@@ -34,7 +34,7 @@ const ADMIN_LIST_MAX_LIMIT: u32 = 1000;
 pub async fn logs(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<LogQuery>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let filter = LogFilter {
         start_time: params.start_time,
         end_time: params.end_time,
@@ -51,7 +51,7 @@ pub async fn logs(
 pub async fn search_logs(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<LogQuery>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let keyword = params.vendor.unwrap_or_default();
     let limit = params.limit.unwrap_or(100).min(ADMIN_LIST_MAX_LIMIT);
 
@@ -63,7 +63,7 @@ pub async fn search_logs(
 pub async fn token_stats(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<LogQuery>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let vendor = params.vendor.as_deref();
     // token 统计表由预聚合器管理（N2 存储缝）：读经 UsageSink，
     // 未接线（测试降级场景）显式拒绝而非虚构空表
@@ -89,7 +89,7 @@ pub struct CostQuery {
 }
 
 /// key 过滤请求头（明文 key 原文；服务端哈希后过滤，明文不落盘）。
-const COST_KEY_HEADER: &str = "x-fluxgate-cost-key";
+const COST_KEY_HEADER: &str = "x-fluxweir-cost-key";
 
 /// 日期格式校验（`YYYY-MM-DD`：长度/分隔符/数字位 + 月日范围；语义
 /// 日历合法性（如 2 月 30 日）由 SQL 字典序比较承载，非法日期仅得空
@@ -111,19 +111,19 @@ fn valid_cost_date(value: &str) -> bool {
 }
 
 /// GET /admin/cost — 成本分账聚合查询：从预聚合表按维度求和，空窗口
-/// 返回空数组；可选 key 过滤经 `x-fluxgate-cost-key` 请求头
+/// 返回空数组；可选 key 过滤经 `x-fluxweir-cost-key` 请求头
 #[axum::debug_handler]
 pub async fn cost_usage(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Query(params): Query<CostQuery>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     use crate::storage::CostGroupBy;
     let group_by = match params.group_by.as_deref() {
         Some("vendor") => CostGroupBy::Vendor,
         Some("model") => CostGroupBy::Model,
         _ => {
-            return Err(FluxgateError::from(crate::error::GateError::Validation {
+            return Err(FluxweirError::from(crate::error::GateError::Validation {
                 field: t("admin-cost-group-by-invalid"),
             }));
         }
@@ -131,7 +131,7 @@ pub async fn cost_usage(
     for (name, value) in [("from", &params.from), ("to", &params.to)] {
         if let Some(date) = value {
             if !valid_cost_date(date) {
-                return Err(FluxgateError::from(crate::error::GateError::Validation {
+                return Err(FluxweirError::from(crate::error::GateError::Validation {
                     field: t_args(
                         "admin-cost-date-format-invalid",
                         &[("name", name.to_string())],
@@ -212,7 +212,7 @@ fn insights_disabled_response() -> axum::response::Response {
 pub async fn sessions(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<SessionsQuery>,
-) -> Result<axum::response::Response, FluxgateError> {
+) -> Result<axum::response::Response, FluxweirError> {
     use axum::response::IntoResponse;
     if !state.config.read().usage_insights.enabled {
         return Ok(insights_disabled_response());
@@ -235,7 +235,7 @@ pub async fn sessions(
 pub async fn context_stats(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<SessionsQuery>,
-) -> Result<axum::response::Response, FluxgateError> {
+) -> Result<axum::response::Response, FluxweirError> {
     use axum::response::IntoResponse;
     if !state.config.read().usage_insights.enabled {
         return Ok(insights_disabled_response());
@@ -253,7 +253,7 @@ pub async fn context_stats(
 /// 全局指标快照：请求计数、错误率、平均延迟、各厂商细分、缓存命中计数，
 /// 及日志背压/secret gate 丢弃计数
 #[axum::debug_handler]
-pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, FluxgateError> {
+pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, FluxweirError> {
     let snapshot = state.vendor_manager.metrics().snapshot();
     let mut value = serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({}));
     value["dropped_logs"] =
@@ -292,7 +292,7 @@ pub async fn metrics(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
 pub async fn quota_ledger(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let Some(quota) = state.quota.as_ref() else {
         return Ok(Json(serde_json::json!({ "rows": [] })));
     };
@@ -321,7 +321,7 @@ pub async fn quota_ledger(
 /// 时返回配置面空 rows（只读端点，无副作用）。
 pub async fn vendor_budgets(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let snapshot = state.config.read();
     let rows: Vec<Value> = snapshot
         .vendor_budgets
@@ -348,7 +348,7 @@ pub async fn vendor_budgets(
 }
 
 #[axum::debug_handler]
-pub async fn vendors(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, FluxgateError> {
+pub async fn vendors(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, FluxweirError> {
     let statuses = state.vendor_manager.get_all_status();
 
     let vendors: Vec<Value> = statuses
@@ -376,7 +376,7 @@ pub async fn vendors(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, 
 pub async fn vendor_status(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let status = state.vendor_manager.get_status(&id).await;
     let queue_len = state.vendor_manager.get_queue_length(&id);
     // key 池观测只暴露 env 名/数量/下标/指纹，绝不暴露 key 原文
@@ -398,11 +398,11 @@ pub async fn vendor_status(
 pub async fn reset_vendor(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, FluxgateError> {
+) -> Result<impl IntoResponse, FluxweirError> {
     // 恢复通道：清空该 vendor 的 key 池黑名单（含游标）与冷却状态。
     // limiteron 限流状态仍自动管理（令牌桶 refill），此处不触限流器。
     if !state.vendor_manager.reset_key_pool_state(&id) {
-        return Err(FluxgateError::from(crate::error::GateError::Validation {
+        return Err(FluxweirError::from(crate::error::GateError::Validation {
             field: t_args("admin-vendor-reset-unknown-vendor", &[("id", id.clone())]),
         }));
     }
@@ -428,7 +428,7 @@ fn require_embedding_pin(state: &ApiState) -> Result<&Arc<crate::router::Embeddi
 #[axum::debug_handler]
 pub async fn embedding_pins(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let pin = require_embedding_pin(&state)?;
     let entries: Vec<Value> = pin
         .list()
@@ -454,7 +454,7 @@ pub async fn embedding_pins(
 pub async fn reset_embedding_pin(
     State(state): State<Arc<ApiState>>,
     Path(abstract_id): Path<String>,
-) -> Result<impl IntoResponse, FluxgateError> {
+) -> Result<impl IntoResponse, FluxweirError> {
     let pin = require_embedding_pin(&state)?;
     let normalized = crate::router::bandit::linucb_arm_key(&abstract_id);
     let cleared = pin.clear_one(&normalized);
@@ -479,7 +479,7 @@ pub async fn reset_embedding_pin(
 
 // Config Admin Functions
 #[axum::debug_handler]
-pub async fn get_config(State(state): State<Arc<ApiState>>) -> Result<Json<Config>, FluxgateError> {
+pub async fn get_config(State(state): State<Arc<ApiState>>) -> Result<Json<Config>, FluxweirError> {
     let config = state.config.get_config();
     Ok(Json(config))
 }
@@ -488,7 +488,7 @@ pub async fn get_config(State(state): State<Arc<ApiState>>) -> Result<Json<Confi
 pub async fn update_config(
     State(state): State<Arc<ApiState>>,
     Json(config): Json<Config>,
-) -> Result<impl IntoResponse, FluxgateError> {
+) -> Result<impl IntoResponse, FluxweirError> {
     // 对比建站期消费的段（server/cors/rate_limit 在 create_router 期固化，
     // database/grpc/cache.semantic 在 bootstrap 装配一次，global_model 无热读点），
     // 变更时显式告知需重启，消除"静默失效"误判；口径与 config.example.toml 的
@@ -582,7 +582,7 @@ pub async fn update_config(
 #[axum::debug_handler]
 pub async fn get_vendors(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Vec<VendorConfig>>, FluxgateError> {
+) -> Result<Json<Vec<VendorConfig>>, FluxweirError> {
     let config = state.config.get_config();
     Ok(Json(config.vendors))
 }
@@ -592,7 +592,7 @@ pub async fn update_vendor(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
     Json(vendor): Json<VendorConfig>,
-) -> Result<impl IntoResponse, FluxgateError> {
+) -> Result<impl IntoResponse, FluxweirError> {
     // 原子 RMW：读-改-校验-落盘在 ConfigManager 写锁内完成，
     // 并发与其他 update_* 端点互斥，不丢失更新
     state.config.update_config_with(|config| {
@@ -618,7 +618,7 @@ pub async fn update_vendor(
 #[axum::debug_handler]
 pub async fn get_models(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Vec<ModelCatalogEntry>>, FluxgateError> {
+) -> Result<Json<Vec<ModelCatalogEntry>>, FluxweirError> {
     // 审查性能 LOW：只克隆目录段，免去全量 Config 深克隆（13 段逐字段复制）
     Ok(Json(state.config.read().model_catalog.clone()))
 }
@@ -628,7 +628,7 @@ pub async fn update_model(
     State(state): State<Arc<ApiState>>,
     Path(id): Path<String>,
     Json(model): Json<GlobalModelConfig>,
-) -> Result<impl IntoResponse, FluxgateError> {
+) -> Result<impl IntoResponse, FluxweirError> {
     // Config 只有单例 global_model: Option<GlobalModelConfig>（无 ID 字段），
     // 约定 id == "global" 更新全局模型策略（目录条目走 PUT/DELETE）
     if id == "global" {
@@ -642,7 +642,7 @@ pub async fn update_model(
             "message": t("admin-global-model-updated")
         })))
     } else {
-        Err(FluxgateError::from(GateError::Config {
+        Err(FluxweirError::from(GateError::Config {
             message: t("admin-only-global-model-supported"),
         }))
     }
@@ -655,12 +655,12 @@ pub async fn upsert_model(
     State(state): State<Arc<ApiState>>,
     Path(model_id): Path<String>,
     Json(mut entry): Json<ModelCatalogEntry>,
-) -> Result<impl IntoResponse, FluxgateError> {
+) -> Result<impl IntoResponse, FluxweirError> {
     // 审查：global 为全局策略段保留键（update_model 的 POST 契约），
     // 目录面显式拒绝——禁止借 PUT/DELETE 旁路改写策略段。Validation 变体
     // 映射 400（客户端侧请求问题；Config 变体映射 500 是服务端故障语义）
     if model_id == "global" {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: format!("model_id={model_id} (reserved for global strategy)"),
         }));
     }
@@ -688,10 +688,10 @@ pub async fn upsert_model(
 pub async fn delete_model(
     State(state): State<Arc<ApiState>>,
     Path(model_id): Path<String>,
-) -> Result<impl IntoResponse, FluxgateError> {
+) -> Result<impl IntoResponse, FluxweirError> {
     // 审查：global 保留键（同 upsert_model，Validation → 400）
     if model_id == "global" {
-        return Err(FluxgateError::from(GateError::Validation {
+        return Err(FluxweirError::from(GateError::Validation {
             field: format!("model_id={model_id} (reserved for global strategy)"),
         }));
     }
@@ -750,7 +750,7 @@ fn catalog_sync_error(
 pub async fn catalog_sync(
     State(state): State<Arc<ApiState>>,
     Json(request): Json<CatalogSyncRequest>,
-) -> Result<axum::response::Response, FluxgateError> {
+) -> Result<axum::response::Response, FluxweirError> {
     use crate::config::catalog_sync::{self, FetchError, SyncError};
     if !state.config.read().catalog_sync.enabled {
         return Ok(catalog_sync_error(
@@ -795,7 +795,7 @@ pub async fn catalog_sync(
             t_args("catalog-sync-failed", &[("reason", detail.clone())]),
             Some("parse"),
         )),
-        Err(SyncError::Persist(e)) => Err(FluxgateError::from(e)),
+        Err(SyncError::Persist(e)) => Err(FluxweirError::from(e)),
         Ok(outcome) => match outcome {
             crate::config::catalog_sync::PlanOutcome::NotModified => Ok((
                 axum::http::StatusCode::OK,
@@ -814,8 +814,8 @@ pub async fn catalog_sync(
                 catalog_sync::persist_plan(&state.config, &plan, metrics.as_ref()).map_err(
                     |e| match e {
                         // persist 只有 Persist(GateError) 一个失败形态
-                        SyncError::Persist(gate) => FluxgateError::from(gate),
-                        other => FluxgateError::from(GateError::Config {
+                        SyncError::Persist(gate) => FluxweirError::from(gate),
+                        other => FluxweirError::from(GateError::Config {
                             message: t_args(
                                 "catalog-sync-failed",
                                 &[("reason", other.to_string())],
@@ -845,13 +845,13 @@ pub mod subscription_admin {
     use axum::extract::Path;
 
     /// 池未装配（feature 关或 bootstrap 未注入）时的统一错误。
-    fn pool_unavailable() -> FluxgateError {
-        FluxgateError::Gate(GateError::VendorUnavailable {
+    fn pool_unavailable() -> FluxweirError {
+        FluxweirError::Gate(GateError::VendorUnavailable {
             vendor: "subscription".to_string(),
         })
     }
 
-    fn pool_of(state: &ApiState) -> Result<Arc<AccountPool>, FluxgateError> {
+    fn pool_of(state: &ApiState) -> Result<Arc<AccountPool>, FluxweirError> {
         state
             .vendor_manager
             .subscription_pool()
@@ -885,15 +885,15 @@ pub mod subscription_admin {
     }
 
     /// OAuth 错误 → HTTP 语义：回调无效 400、供应商拒绝/降级 503、账号未知 400。
-    fn subscription_error(e: SubscriptionError) -> FluxgateError {
+    fn subscription_error(e: SubscriptionError) -> FluxweirError {
         match e {
-            SubscriptionError::InvalidCallback => FluxgateError::Gate(GateError::Validation {
+            SubscriptionError::InvalidCallback => FluxweirError::Gate(GateError::Validation {
                 field: t("subscription-callback-invalid"),
             }),
-            SubscriptionError::UnknownAccount(id) => FluxgateError::Gate(GateError::Validation {
+            SubscriptionError::UnknownAccount(id) => FluxweirError::Gate(GateError::Validation {
                 field: t_args("subscription-account-unknown", &[("account", id)]),
             }),
-            other => FluxgateError::Gate(GateError::VendorUnavailable {
+            other => FluxweirError::Gate(GateError::VendorUnavailable {
                 vendor: format!("subscription: {other}"),
             }),
         }
@@ -935,13 +935,13 @@ pub mod subscription_admin {
     pub async fn authorize(
         State(state): State<Arc<ApiState>>,
         Json(body): Json<AuthorizeRequest>,
-    ) -> Result<axum::response::Response, FluxgateError> {
+    ) -> Result<axum::response::Response, FluxweirError> {
         use axum::response::IntoResponse;
         if let Err(response) = require_enabled(&state) {
             return Ok(*response);
         }
         if state.config.read().subscription.client_id.trim().is_empty() {
-            return Err(FluxgateError::Gate(GateError::Validation {
+            return Err(FluxweirError::Gate(GateError::Validation {
                 field: t("subscription-client-id-missing"),
             }));
         }
@@ -952,7 +952,7 @@ pub mod subscription_admin {
             .iter()
             .any(|v| v.id == body.vendor)
         {
-            return Err(FluxgateError::Gate(GateError::Validation {
+            return Err(FluxweirError::Gate(GateError::Validation {
                 field: t_args(
                     "subscription-account-unknown-vendor",
                     &[("vendor", body.vendor.clone())],
@@ -988,7 +988,7 @@ pub mod subscription_admin {
     pub async fn callback(
         State(state): State<Arc<ApiState>>,
         axum::extract::Query(query): axum::extract::Query<CallbackQuery>,
-    ) -> Result<axum::response::Response, FluxgateError> {
+    ) -> Result<axum::response::Response, FluxweirError> {
         use axum::response::IntoResponse;
         if let Err(response) = require_enabled(&state) {
             return Ok(*response);
@@ -1009,7 +1009,7 @@ pub mod subscription_admin {
     /// 过期时间戳，零 token 片段）。
     pub async fn accounts(
         State(state): State<Arc<ApiState>>,
-    ) -> Result<axum::response::Response, FluxgateError> {
+    ) -> Result<axum::response::Response, FluxweirError> {
         use axum::response::IntoResponse;
         if let Err(response) = require_enabled(&state) {
             return Ok(*response);
@@ -1023,9 +1023,9 @@ pub mod subscription_admin {
     pub async fn revoke(
         State(state): State<Arc<ApiState>>,
         Path(account_id): Path<String>,
-    ) -> Result<Json<serde_json::Value>, FluxgateError> {
+    ) -> Result<Json<serde_json::Value>, FluxweirError> {
         if require_enabled(&state).is_err() {
-            return Err(FluxgateError::Gate(GateError::Validation {
+            return Err(FluxweirError::Gate(GateError::Validation {
                 field: t("subscription-admin-disabled"),
             }));
         }
@@ -1061,7 +1061,7 @@ pub mod subscription_admin {
 #[cfg(feature = "masking")]
 pub async fn masking_stats(
     State(state): State<Arc<ApiState>>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     let gate = state.vendor_manager.mask_gate();
     let enabled = gate.as_ref().is_some_and(|g| g.enabled());
     let mut kinds = serde_json::Map::new();

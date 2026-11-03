@@ -4,7 +4,7 @@
 
 // SSE 编码器与增量分帧器单元测试（阶段一）
 
-use fluxgate::api::sse::{
+use fluxweir::api::sse::{
     encode_sse_done, encode_sse_error, encode_sse_event, reframe_passthrough_stream, SseFrame,
     SseFrameParser,
 };
@@ -385,15 +385,15 @@ async fn reframe_passthrough_empty_stream_ends_promptly() {
 
 #[cfg(all(test, feature = "sdk"))]
 mod sdk_client_coverage {
-    use fluxgate::sdk::{
-        ApiError, ApiErrorKind, ChatRequest, ChatRole, FluxgateClient, FluxgateClientBuilder,
-        FluxgateSdkError, RequestConfig,
+    use fluxweir::sdk::{
+        ApiError, ApiErrorKind, ChatRequest, ChatRole, FluxweirClient, FluxweirClientBuilder,
+        FluxweirSdkError, RequestConfig,
     };
     use futures::StreamExt;
     use std::time::Duration;
 
-    fn build_client(base_url: &str) -> FluxgateClient {
-        FluxgateClientBuilder::new()
+    fn build_client(base_url: &str) -> FluxweirClient {
+        FluxweirClientBuilder::new()
             .base_url(base_url)
             .api_key("test-key")
             .build()
@@ -408,22 +408,22 @@ mod sdk_client_coverage {
     /// 缺 base_url / URL 非法 / 缺 api_key → Config 错误显性化，不 panic。
     #[test]
     fn builder_rejects_incomplete_or_invalid_configuration() {
-        let err = FluxgateClientBuilder::new()
+        let err = FluxweirClientBuilder::new()
             .api_key("k")
             .build()
             .unwrap_err();
         assert!(
-            matches!(err, FluxgateSdkError::Config { .. }),
+            matches!(err, FluxweirSdkError::Config { .. }),
             "缺 base_url"
         );
 
-        let err = FluxgateClientBuilder::new()
+        let err = FluxweirClientBuilder::new()
             .base_url("::not a url::")
             .api_key("k")
             .build()
             .unwrap_err();
         match err {
-            FluxgateSdkError::Config { message } => {
+            FluxweirSdkError::Config { message } => {
                 assert!(
                     message.contains("invalid base_url"),
                     "非法 URL 须指明: {message}"
@@ -432,11 +432,11 @@ mod sdk_client_coverage {
             other => panic!("expected Config error, got {other:?}"),
         }
 
-        let err = FluxgateClientBuilder::new()
+        let err = FluxweirClientBuilder::new()
             .base_url("http://127.0.0.1:8080")
             .build()
             .unwrap_err();
-        assert!(matches!(err, FluxgateSdkError::Config { .. }), "缺 api_key");
+        assert!(matches!(err, FluxweirSdkError::Config { .. }), "缺 api_key");
     }
 
     /// api_key 是 Bearer 凭证：Debug 输出必须脱敏为 [REDACTED]。
@@ -454,8 +454,8 @@ mod sdk_client_coverage {
         );
     }
 
-    fn build_client_with(base_url: &str, key: &str) -> FluxgateClient {
-        FluxgateClientBuilder::new()
+    fn build_client_with(base_url: &str, key: &str) -> FluxweirClient {
+        FluxweirClientBuilder::new()
             .base_url(base_url)
             .api_key(key)
             .build()
@@ -488,7 +488,7 @@ mod sdk_client_coverage {
         // 网关响应无 vendor 键
         assert_eq!(
             resp.finish_reason,
-            fluxgate::sdk::ChatFinishReason::Standard(fluxgate::sdk::StandardFinishReason::Stop)
+            fluxweir::sdk::ChatFinishReason::Standard(fluxweir::sdk::StandardFinishReason::Stop)
         );
     }
 
@@ -513,7 +513,7 @@ mod sdk_client_coverage {
             .create_async()
             .await;
 
-        let client = FluxgateClientBuilder::new()
+        let client = FluxweirClientBuilder::new()
             .base_url(server.url())
             .api_key("test-key")
             .default_config(RequestConfig {
@@ -525,7 +525,7 @@ mod sdk_client_coverage {
             .unwrap();
         let req = ChatRequest {
             model: "gpt-4".into(),
-            messages: vec![fluxgate::sdk::ChatMessage {
+            messages: vec![fluxweir::sdk::ChatMessage {
                 role: ChatRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
@@ -561,7 +561,7 @@ mod sdk_client_coverage {
         assert!(
             matches!(
                 err,
-                FluxgateSdkError::Api(ApiError {
+                FluxweirSdkError::Api(ApiError {
                     status: 401,
                     kind: ApiErrorKind::Authentication,
                     ..
@@ -581,7 +581,7 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         match err {
-            FluxgateSdkError::Api(ApiError {
+            FluxweirSdkError::Api(ApiError {
                 status, message, ..
             }) => {
                 assert_eq!(status, 503);
@@ -608,7 +608,7 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         match err {
-            FluxgateSdkError::Protocol { message } => {
+            FluxweirSdkError::Protocol { message } => {
                 assert_eq!(message, "missing choices array");
             }
             other => panic!("expected Protocol error, got {other:?}"),
@@ -626,7 +626,7 @@ mod sdk_client_coverage {
             .await
             .unwrap_err();
         match err {
-            FluxgateSdkError::Protocol { message } => {
+            FluxweirSdkError::Protocol { message } => {
                 assert_eq!(message, "empty choices array");
             }
             other => panic!("expected Protocol error, got {other:?}"),
@@ -640,7 +640,7 @@ mod sdk_client_coverage {
         let client = build_client("mailto:user@example.com");
         let err = client.chat(&ChatRequest::new("m", "hi")).await.unwrap_err();
         match err {
-            FluxgateSdkError::Config { message } => {
+            FluxweirSdkError::Config { message } => {
                 assert!(
                     message.contains("invalid URL"),
                     "须指明 URL 拼接失败: {message}"
@@ -676,7 +676,7 @@ mod sdk_client_coverage {
         let client = build_client(&server.url());
         let req = ChatRequest {
             model: "gpt-4".into(),
-            messages: vec![fluxgate::sdk::ChatMessage {
+            messages: vec![fluxweir::sdk::ChatMessage {
                 role: ChatRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
@@ -706,8 +706,8 @@ mod sdk_client_coverage {
         );
         assert_eq!(
             second.finish_reason,
-            Some(fluxgate::sdk::ChatFinishReason::Standard(
-                fluxgate::sdk::StandardFinishReason::Stop
+            Some(fluxweir::sdk::ChatFinishReason::Standard(
+                fluxweir::sdk::StandardFinishReason::Stop
             ))
         );
 
@@ -728,7 +728,7 @@ mod sdk_client_coverage {
             .chat_stream(&ChatRequest::new("m", "hi"))
             .await
         {
-            Err(FluxgateSdkError::Api(ApiError {
+            Err(FluxweirSdkError::Api(ApiError {
                 status: 401,
                 kind: ApiErrorKind::Authentication,
                 ..
@@ -747,7 +747,7 @@ mod sdk_client_coverage {
             .chat_stream(&ChatRequest::new("m", "hi"))
             .await
         {
-            Err(FluxgateSdkError::Api(ApiError {
+            Err(FluxweirSdkError::Api(ApiError {
                 status, message, ..
             })) => {
                 assert_eq!(status, 500);
@@ -761,7 +761,7 @@ mod sdk_client_coverage {
             .chat_stream(&ChatRequest::new("m", "hi"))
             .await
         {
-            Err(FluxgateSdkError::Config { .. }) => {}
+            Err(FluxweirSdkError::Config { .. }) => {}
             Err(other) => panic!("expected Config error, got {other:?}"),
             Ok(_) => panic!("非法 base_url 必须报错而非返回流"),
         }
@@ -835,7 +835,7 @@ mod sdk_client_coverage {
             .await;
         let err = build_client(&server.url()).models().await.unwrap_err();
         match err {
-            FluxgateSdkError::Api(ApiError {
+            FluxweirSdkError::Api(ApiError {
                 status, message, ..
             }) => {
                 assert_eq!(status, 503);
@@ -852,7 +852,7 @@ mod sdk_client_coverage {
             .await;
         let err = build_client(&server.url()).health().await.unwrap_err();
         match err {
-            FluxgateSdkError::Api(ApiError {
+            FluxweirSdkError::Api(ApiError {
                 status, message, ..
             }) => {
                 assert_eq!(status, 500);
@@ -873,7 +873,7 @@ mod sdk_client_coverage {
             client.health().await.unwrap_err(),
         ] {
             match err {
-                FluxgateSdkError::Config { message } => {
+                FluxweirSdkError::Config { message } => {
                     assert!(message.contains("invalid URL"), "{message}");
                 }
                 other => panic!("expected Config error, got {other:?}"),
@@ -906,7 +906,7 @@ mod sdk_client_coverage {
     async fn read_timeout_intercepts_stalled_connection() {
         let base = spawn_delayed_server(Duration::from_millis(1_500)).await;
         // max_retries(0)：本测只关心停滞拦截上界（< 1s），排除重试退避干扰
-        let client = FluxgateClientBuilder::new()
+        let client = FluxweirClientBuilder::new()
             .base_url(&base)
             .api_key("k")
             .read_timeout(Duration::from_millis(200))
@@ -917,7 +917,7 @@ mod sdk_client_coverage {
         let started = std::time::Instant::now();
         let err = client.chat(&ChatRequest::new("m", "hi")).await.unwrap_err();
         match err {
-            FluxgateSdkError::Timeout { .. } => {}
+            FluxweirSdkError::Timeout { .. } => {}
             other => panic!("expected Timeout error, got {other:?}"),
         }
         assert!(

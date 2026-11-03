@@ -8,13 +8,13 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use fluxgate::config::{
+use fluxweir::config::{
     AdmissionSection, AuthKeyEntry, AuthSection, AuthTier, Config, ConfigManager, ServerConfig,
 };
-use fluxgate::middleware::admission::{
+use fluxweir::middleware::admission::{
     admission_priority, tier_for_request, tier_weight, AdmissionState, RETRY_AFTER_SECS,
 };
-use fluxgate::vendor::VendorManager;
+use fluxweir::vendor::VendorManager;
 use std::sync::Arc;
 
 fn section() -> AdmissionSection {
@@ -88,7 +88,7 @@ fn priority_debt_suppression_exact() {
 
 // AdmissionState 行为
 
-fn vendor_config(id: &str, max_concurrent: Option<usize>) -> fluxgate::config::VendorConfig {
+fn vendor_config(id: &str, max_concurrent: Option<usize>) -> fluxweir::config::VendorConfig {
     common::ensure_test_api_key();
     // 与共享基座的差异字段（显式保留原值）：max_concurrent 是拥塞 shed 的
     // 驱动值（测试语义主体，必须留在覆盖处）；空模型列表与 "Vendor {id}"
@@ -416,14 +416,14 @@ mod full_chain {
     use crate::common;
     use axum::{body::Body, http::Request, http::StatusCode, Router};
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::api::create_router;
-    use fluxgate::config::{
+    use fluxweir::api::create_router;
+    use fluxweir::config::{
         AdmissionSection, AuthKeyEntry, AuthSection, AuthTier, Config, ConfigManager, ServerConfig,
     };
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -446,7 +446,7 @@ mod full_chain {
         vendor.stream_idle_ms = 1_500;
         vendor.name = "V1".into();
         vendor.models = if with_model {
-            vec![fluxgate::config::ModelConfig {
+            vec![fluxweir::config::ModelConfig {
                 model_id: "gpt-4".to_string(),
                 abstract_id: Some("gpt-4".to_string()),
                 weight: 1.0,
@@ -519,9 +519,9 @@ mod full_chain {
         .unwrap();
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
-        let router = Arc::new(fluxgate::router::Router::new(
+        let router = Arc::new(fluxweir::router::Router::new(
             config_manager.clone(),
             vendor_manager.clone(),
         ));

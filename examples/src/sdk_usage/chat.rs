@@ -5,17 +5,17 @@
 
 use std::time::Duration;
 
-use fluxgate::sdk::{
-    ApiError, ChatMessage, ChatRequest, FluxgateClientBuilder, FluxgateSdkError, RequestConfig,
+use fluxweir::sdk::{
+    ApiError, ChatMessage, ChatRequest, FluxweirClientBuilder, FluxweirSdkError, RequestConfig,
 };
 
 use super::require_env;
 
-pub async fn run() -> Result<(), FluxgateSdkError> {
+pub async fn run() -> Result<(), FluxweirSdkError> {
     // timeout 只约束非流式请求的总时长；流式行为见 stream_chat 的 read_timeout
-    let client = FluxgateClientBuilder::new()
-        .base_url(require_env("FLUXGATE_BASE_URL"))
-        .api_key(require_env("FLUXGATE_API_KEY"))
+    let client = FluxweirClientBuilder::new()
+        .base_url(require_env("FLUXWEIR_BASE_URL"))
+        .api_key(require_env("FLUXWEIR_API_KEY"))
         .timeout(Duration::from_secs(60))
         .build()?;
 
@@ -49,16 +49,16 @@ pub async fn run() -> Result<(), FluxgateSdkError> {
     // 认证失败单列提示（最常见故障是 key 配错），其余错误原样上抛
     let resp = match client.chat(&req).await {
         Ok(resp) => resp,
-        Err(FluxgateSdkError::Api(ApiError {
+        Err(FluxweirSdkError::Api(ApiError {
             status: 401,
             message,
             ..
         })) => {
-            eprintln!("认证失败（{message}）：检查 FLUXGATE_API_KEY 是否为网关签发的 key");
+            eprintln!("认证失败（{message}）：检查 FLUXWEIR_API_KEY 是否为网关签发的 key");
             std::process::exit(1);
         }
         // 新版错误体系：超时从 Network 单列（重试已耗尽才会到这里）
-        Err(err @ FluxgateSdkError::Timeout { .. }) => {
+        Err(err @ FluxweirSdkError::Timeout { .. }) => {
             eprintln!("请求超时（重试已耗尽）：{err}");
             std::process::exit(1);
         }

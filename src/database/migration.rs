@@ -707,11 +707,11 @@ pub(crate) fn core_migration_file(
         }
     };
     let content = format!(
-        "-- UP fluxgate core v{version} ({label})\n{up}\n-- DOWN fluxgate core v{version} ({label})\n{down}\n"
+        "-- UP fluxweir core v{version} ({label})\n{up}\n-- DOWN fluxweir core v{version} ({label})\n{down}\n"
     );
     Ok(MigrationFile::new(
         version,
-        format!("fluxgate core tables v{version} ({label})"),
+        format!("fluxweir core tables v{version} ({label})"),
         PathBuf::from(format!("embedded:core_v{version}_{label}.sql")),
         content,
     ))
@@ -787,8 +787,8 @@ pub(crate) async fn acquire_migration_lock(
             "SELECT pg_advisory_unlock(hashtextextended(current_database(), 0)) AS unlocked",
         ),
         DatabaseBackend::MySql => (
-            "SELECT GET_LOCK(CONCAT('fluxgate_migration_', DATABASE()), 0) AS locked",
-            "SELECT RELEASE_LOCK(CONCAT('fluxgate_migration_', DATABASE())) AS unlocked",
+            "SELECT GET_LOCK(CONCAT('fluxweir_migration_', DATABASE()), 0) AS locked",
+            "SELECT RELEASE_LOCK(CONCAT('fluxweir_migration_', DATABASE())) AS unlocked",
         ),
         _ => return Ok(MigrationLock { lock_pool: None }),
     };

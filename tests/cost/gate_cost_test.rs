@@ -12,8 +12,8 @@
 
 #![cfg(feature = "vendor-management")]
 
-use fluxgate::config::PricingConfig;
-use fluxgate::vendor::cost::{CostCalculator, PricingEntry};
+use fluxweir::config::PricingConfig;
+use fluxweir::vendor::cost::{CostCalculator, PricingEntry};
 
 #[test]
 fn test_calculate_cost_with_known_pricing() {

@@ -113,7 +113,7 @@ async fn run_serves_http_until_sigterm_then_flushes() {
     std::fs::write(&config_path, run_config_toml(http_port, grpc_port)).expect("write run config");
 
     let config = config_path.to_string_lossy().to_string();
-    let run_task = tokio::spawn(async move { fluxgate::server::run(Some(config)).await });
+    let run_task = tokio::spawn(async move { fluxweir::server::run(Some(config)).await });
 
     wait_http_ready(format!("127.0.0.1:{http_port}").parse().unwrap()).await;
 

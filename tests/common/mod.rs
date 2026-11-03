@@ -12,14 +12,14 @@
 
 #![allow(dead_code)]
 
-use fluxgate::config::{
+use fluxweir::config::{
     ConcurrencyConfig, Config, DatabaseConfig, GlobalModelConfig, ModelConfig, RateLimitConfig,
     ServerConfig, VendorConfig,
 };
 use std::sync::Once;
 
 /// mock 厂商凭证的环境变量名（各测试装配统一走它，值恒定）
-pub const TEST_API_KEY_ENV: &str = "FLUXGATE_TEST_KEY";
+pub const TEST_API_KEY_ENV: &str = "FLUXWEIR_TEST_KEY";
 
 /// mock 厂商凭证值（出站鉴权断言复用）。
 pub const TEST_API_KEY_VALUE: &str = "test-key-for-mockito";

@@ -11,7 +11,7 @@ use crate::api::request_cost_usd;
 use crate::api::RoutingHints;
 use crate::config::{ModelTask, VendorProtocol};
 use crate::database::RequestLog;
-use crate::error::{FluxgateError, GateError};
+use crate::error::{FluxweirError, GateError};
 use crate::i18n::{t, t_args};
 use crate::protocol::gemini::types::{normalize_model, GeminiAction};
 use crate::protocol::gemini::{convert_in, convert_out, GeminiStreamEncoder};
@@ -76,7 +76,7 @@ async fn dispatch_inner(
     headers: HeaderMap,
     model_action: String,
     body: Value,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     let (model_raw, action_raw) = model_action
         .split_once(':')
         .ok_or_else(|| validation("api-gemini-action-required"))?;
@@ -156,7 +156,7 @@ fn model_entries(state: &Arc<ApiState>) -> Vec<Value> {
 }
 
 /// `:countTokens`：本地估算（不发上游），字符/4 + 结构开销。
-fn count_tokens(state: Arc<ApiState>, body: Value) -> Result<Response, FluxgateError> {
+fn count_tokens(state: Arc<ApiState>, body: Value) -> Result<Response, FluxweirError> {
     let contents = body
         .get("contents")
         .and_then(Value::as_array)
@@ -186,7 +186,7 @@ async fn generate_content(
     headers: HeaderMap,
     model: String,
     body: Value,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     let ctx = make_ctx(&state, &headers, &model, &body, false);
     if gemini_native_only(&body) {
         return native_nonstream(state, headers, model, body, ctx).await;
@@ -224,7 +224,7 @@ async fn stream_generate_content(
     headers: HeaderMap,
     model: String,
     body: Value,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     let ctx = make_ctx(&state, &headers, &model, &body, true);
     if gemini_native_only(&body) {
         return native_stream(state, headers, model, body, ctx).await;
@@ -251,7 +251,7 @@ async fn native_nonstream(
     model: String,
     body: Value,
     ctx: GeminiCtx,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     ensure_native_vendor(&state, &ctx)?;
     let decision = state
         .router
@@ -269,7 +269,7 @@ async fn native_nonstream(
                 .vendor_manager
                 .metrics()
                 .record_gemini_upstream_failure();
-            let error = FluxgateError::from(error);
+            let error = FluxweirError::from(error);
             log_failure(&state, &ctx, &decision, &error).await;
             return Err(error);
         }
@@ -293,7 +293,7 @@ async fn native_stream(
     model: String,
     body: Value,
     ctx: GeminiCtx,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     ensure_native_vendor(&state, &ctx)?;
     let decision = state
         .router
@@ -322,7 +322,7 @@ async fn native_stream(
                 .vendor_manager
                 .metrics()
                 .record_gemini_upstream_failure();
-            let error = FluxgateError::from(error);
+            let error = FluxweirError::from(error);
             log_failure(&state, &ctx, &decision, &error).await;
             return Err(error);
         }
@@ -386,7 +386,7 @@ async fn stream_ir(
     body: Value,
     decision: RoutingDecision,
     unified: crate::protocol::UnifiedRequest,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     #[cfg(feature = "resilience")]
     let mut fallback_trail = crate::vendor::resilience::AttemptTrail::new(
         state.config.read().resilience.expose_fallback_headers,
@@ -468,7 +468,7 @@ async fn stream_ir(
         Ok(pair) => pair,
         Err(boxed) => {
             let (error, decision) = *boxed;
-            let error = FluxgateError::from(error);
+            let error = FluxweirError::from(error);
             log_failure(state, ctx, &decision, &error).await;
             return Err(error);
         }
@@ -580,7 +580,7 @@ fn gemini_native_only(body: &Value) -> bool {
 }
 
 /// X-Vendor 点名必须是 Gemini 厂商；否则不发请求直接 400。
-fn ensure_native_vendor(state: &Arc<ApiState>, ctx: &GeminiCtx) -> Result<(), FluxgateError> {
+fn ensure_native_vendor(state: &Arc<ApiState>, ctx: &GeminiCtx) -> Result<(), FluxweirError> {
     let Some(vendor) = ctx.preferred_vendor.as_deref() else {
         return Ok(());
     };
@@ -669,7 +669,7 @@ async fn resolve_route(
     session_key: Option<&str>,
     api_key_hash: &str,
     body: &Value,
-) -> Result<RoutingDecision, FluxgateError> {
+) -> Result<RoutingDecision, FluxweirError> {
     let linucb_x = if state.bandit.is_some()
         && state
             .config
@@ -728,7 +728,7 @@ async fn dispatch_nonstream(
     #[cfg_attr(not(feature = "resilience"), allow(unused_variables))] model: &str,
     decision: RoutingDecision,
     request: crate::protocol::UnifiedRequest,
-) -> Result<(crate::protocol::UnifiedResponse, RoutingDecision), FluxgateError> {
+) -> Result<(crate::protocol::UnifiedResponse, RoutingDecision), FluxweirError> {
     #[cfg(feature = "resilience")]
     {
         let initial = decision.clone();
@@ -753,7 +753,7 @@ async fn dispatch_nonstream(
         {
             Ok(pair) => Ok(pair),
             Err(error) => {
-                let error = FluxgateError::from(error);
+                let error = FluxweirError::from(error);
                 log_failure(state, ctx, &initial, &error).await;
                 Err(error)
             }
@@ -768,7 +768,7 @@ async fn dispatch_nonstream(
         {
             Ok(response) => Ok((response, decision)),
             Err(error) => {
-                let error = FluxgateError::from(error);
+                let error = FluxweirError::from(error);
                 log_failure(state, ctx, &decision, &error).await;
                 Err(error)
             }
@@ -776,7 +776,7 @@ async fn dispatch_nonstream(
     }
 }
 
-fn gemini_error(error: FluxgateError) -> Response {
+fn gemini_error(error: FluxweirError) -> Response {
     let code = crate::api::status_code_for_error(&error);
     let status = gemini_status(code);
     (
@@ -863,7 +863,7 @@ async fn log_failure(
     state: &Arc<ApiState>,
     ctx: &GeminiCtx,
     decision: &RoutingDecision,
-    error: &FluxgateError,
+    error: &FluxweirError,
 ) {
     crate::api::clear_session_affinity(state, &ctx.api_key_hash, ctx.session_key.as_deref()).await;
     log_request(
@@ -948,8 +948,8 @@ async fn log_request(
 
 fn with_route_headers(mut response: Response, decision: &RoutingDecision) -> Response {
     for (name, value) in [
-        ("x-fluxgate-vendor", decision.vendor.id.as_str()),
-        ("x-fluxgate-model", decision.model.model_id.as_str()),
+        ("x-fluxweir-vendor", decision.vendor.id.as_str()),
+        ("x-fluxweir-model", decision.model.model_id.as_str()),
     ] {
         if let (Ok(name), Ok(value)) = (
             axum::http::HeaderName::from_bytes(name.as_bytes()),
@@ -983,7 +983,7 @@ async fn embed_content(
     headers: HeaderMap,
     model: String,
     body: Value,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     check_body_model(&body, &model)?;
     let text = embed_text(body.get("content"))?;
     let dimensions = body
@@ -1024,7 +1024,7 @@ async fn batch_embed_contents(
     headers: HeaderMap,
     model: String,
     body: Value,
-) -> Result<Response, FluxgateError> {
+) -> Result<Response, FluxweirError> {
     let requests = body
         .get("requests")
         .and_then(Value::as_array)
@@ -1091,7 +1091,7 @@ async fn batch_embed_contents(
     Ok(Json(json!({"embeddings": embeddings})).into_response())
 }
 
-fn check_body_model(body: &Value, model: &str) -> Result<(), FluxgateError> {
+fn check_body_model(body: &Value, model: &str) -> Result<(), FluxweirError> {
     if let Some(body_model) = body.get("model").and_then(Value::as_str) {
         if normalize_model(body_model) != model {
             return Err(GateError::Validation {
@@ -1110,7 +1110,7 @@ fn check_body_model(body: &Value, model: &str) -> Result<(), FluxgateError> {
 }
 
 /// `content.parts[].text` 拼接；非文本 part / 空文本 → 400。
-fn embed_text(content: Option<&Value>) -> Result<String, FluxgateError> {
+fn embed_text(content: Option<&Value>) -> Result<String, FluxweirError> {
     let parts = content
         .and_then(|content| content.get("parts"))
         .and_then(Value::as_array)

@@ -6,8 +6,8 @@
 //! 注入，四组基准覆盖转换路径的逐帧与逐请求热点。
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use fluxgate::protocol::anthropic_converter::inject_cache_control;
-use fluxgate::protocol::{AnthropicConverter, AnthropicStreamEncoder, OpenAIStreamEncoder};
+use fluxweir::protocol::anthropic_converter::inject_cache_control;
+use fluxweir::protocol::{AnthropicConverter, AnthropicStreamEncoder, OpenAIStreamEncoder};
 // criterion 0.8 起 `criterion::black_box` 已废弃（-D warnings 下会红），改用标准库实现。
 use std::hint::black_box;
 

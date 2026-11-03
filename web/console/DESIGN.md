@@ -1,4 +1,4 @@
-# Fluxgate Console — DESIGN.md
+# Fluxweir Console — DESIGN.md
 
 > 轻档产出（预授权降级）：本文件即设计系统单源。模板取向 = 数据仪表盘型（运维控制台语境），深色优先——网关运维场景多为长时驻留、夜间值守与暗机房投屏，深色基底降低视觉疲劳并突出状态色信号。
 
@@ -152,7 +152,7 @@ a11y：primary.solid 底 + 深色文字（#0E1116）对比度 7.8:1；primary.so
 
 ## 登录页（无壳态，/login）
 
-- 居中单卡：标题「Fluxgate 控制台」+ API Key 输入框（type=password）+「连接」按钮。
+- 居中单卡：标题「Fluxweir 控制台」+ API Key 输入框（type=password）+「连接」按钮。
 - 提交逻辑：key 存内存 state（不写 localStorage/sessionStorage），跳转 `/`。
 - 验证方式：登录后首个请求（GET /admin/metrics）401 时回登录页并提示「key 无效」。
 

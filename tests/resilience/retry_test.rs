@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #![cfg(all(feature = "web-server", feature = "resilience"))]
 
-//! 换 vendor fallback E2E（HTTP 全链路，留在 fluxgate 应用面）。
+//! 换 vendor fallback E2E（HTTP 全链路，留在 fluxweir 应用面）。
 //!
 //! 自 retry_test 拆出（N1 workspace 化）：纯 utils/retry 单元与策略构造
 //! 测试随 llm-gate 走（tests/retry_test.rs），本文件只留经 api/ApiState
@@ -14,16 +14,16 @@ mod common;
 mod vendor_fallback_integration {
     use axum::{body::Body, http::Request, routing::post, Router};
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::api::{chat_completions, messages};
-    use fluxgate::config::{
+    use fluxweir::api::{chat_completions, messages};
+    use fluxweir::config::{
         Config, ConfigManager, DatabaseConfig, GlobalModelConfig, ModelConfig, RetrySection,
         ServerConfig, VendorConfig,
     };
-    use fluxgate::database::Database;
-    use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-    use fluxgate::router::Router as NexusRouter;
-    use fluxgate::vendor::VendorManager;
-    use fluxgate::ApiState;
+    use fluxweir::database::Database;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
     use serde_json::json;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -44,7 +44,7 @@ mod vendor_fallback_integration {
             supports_batch: false,
             name: format!("Test {}", id),
             type_: "anthropic".into(),
-            api_key_env: "FLUXGATE_TEST_KEY".into(),
+            api_key_env: "FLUXWEIR_TEST_KEY".into(),
             api_key_envs: Vec::new(),
             extra_headers: Default::default(),
             api_base,
@@ -60,12 +60,12 @@ mod vendor_fallback_integration {
                 compat_group: None,
                 model_type: None,
             }],
-            rate_limit: fluxgate::config::RateLimitConfig::Token {
+            rate_limit: fluxweir::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
                 window_hours: None,
                 sliding: false,
             },
-            concurrency: fluxgate::config::ConcurrencyConfig {
+            concurrency: fluxweir::config::ConcurrencyConfig {
                 requests_per_second: 100,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -113,13 +113,13 @@ mod vendor_fallback_integration {
                 jitter: 0.0,
                 ..Default::default()
             },
-            routing: fluxgate::config::RoutingSection::default(),
-            cache: fluxgate::config::CacheSection::default(),
+            routing: fluxweir::config::RoutingSection::default(),
+            cache: fluxweir::config::CacheSection::default(),
             admission: Default::default(),
             health: Default::default(),
             quota: Default::default(),
             grpc: None,
-            resilience: fluxgate::config::ResilienceSection::default(),
+            resilience: fluxweir::config::ResilienceSection::default(),
             docs: Default::default(),
             lexcompress: Default::default(),
             responses: Default::default(),
@@ -149,7 +149,7 @@ mod vendor_fallback_integration {
 
         let database = Arc::new(Database {
             pool: pool.clone(),
-            repository: Arc::new(fluxgate::database::Repository::new(pool)),
+            repository: Arc::new(fluxweir::database::Repository::new(pool)),
         });
 
         let router = Arc::new(NexusRouter::new(

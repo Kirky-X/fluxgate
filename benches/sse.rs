@@ -25,7 +25,7 @@ fn bench_sse_parsing(c: &mut Criterion) {
         b.iter(|| {
             let mut mapped = 0usize;
             for payload in &openai_payloads {
-                if fluxgate::protocol::openai_converter::parse_sse_frame_to_chunk(payload).is_some()
+                if fluxweir::protocol::openai_converter::parse_sse_frame_to_chunk(payload).is_some()
                 {
                     mapped += 1;
                 }
@@ -45,7 +45,7 @@ fn bench_sse_parsing(c: &mut Criterion) {
         b.iter(|| {
             let mut mapped = 0usize;
             for payload in &anthropic_payloads {
-                if fluxgate::protocol::anthropic_converter::parse_sse_frame_to_chunk(payload)
+                if fluxweir::protocol::anthropic_converter::parse_sse_frame_to_chunk(payload)
                     .is_some()
                 {
                     mapped += 1;
@@ -63,7 +63,7 @@ fn bench_sse_parsing(c: &mut Criterion) {
 /// 占位符回填）。量化流式还原的每事件开销。
 #[cfg(feature = "masking")]
 fn bench_stream_restore(c: &mut Criterion) {
-    use fluxgate::masking::{MaskKind, PlaceholderRegistry, StreamRestorer};
+    use fluxweir::masking::{MaskKind, PlaceholderRegistry, StreamRestorer};
     use std::sync::Arc;
 
     let mut group = c.benchmark_group("sse_masking");

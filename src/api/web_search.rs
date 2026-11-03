@@ -152,8 +152,8 @@ pub struct SearchRequest {
 pub async fn search(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<SearchRequest>,
-) -> Result<Response, FluxgateErrorResponse> {
-    let runtime = gate(&state).map_err(|r| FluxgateErrorResponse(*r))?;
+) -> Result<Response, FluxweirErrorResponse> {
+    let runtime = gate(&state).map_err(|r| FluxweirErrorResponse(*r))?;
     let query = body.query.trim().to_string();
     if query.is_empty() {
         return Err(GateError::Validation {
@@ -291,8 +291,8 @@ fn search_success(hits: Vec<Hit>, kind: &str) -> Response {
 /// 脱敏面：只回 key_idx 序号，零 key 材料（明文/env 名/vault id 不出面）。
 pub async fn admin_stats(
     State(state): State<Arc<ApiState>>,
-) -> Result<Response, FluxgateErrorResponse> {
-    let runtime = gate(&state).map_err(|r| FluxgateErrorResponse(*r))?;
+) -> Result<Response, FluxweirErrorResponse> {
+    let runtime = gate(&state).map_err(|r| FluxweirErrorResponse(*r))?;
     let mut providers: Vec<serde_json::Value> = Vec::new();
     let mut by_provider: BTreeMap<String, Vec<(usize, u64, u64)>> = BTreeMap::new();
     for ((provider, key_idx), (ok, fail)) in runtime.stats().snapshot() {
@@ -364,8 +364,8 @@ fn web_search_disabled() -> Response {
 pub async fn fetch(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<FetchRequest>,
-) -> Result<Response, FluxgateErrorResponse> {
-    let runtime = gate(&state).map_err(|r| FluxgateErrorResponse(*r))?;
+) -> Result<Response, FluxweirErrorResponse> {
+    let runtime = gate(&state).map_err(|r| FluxweirErrorResponse(*r))?;
     let url = body.url.trim().to_string();
     if url.is_empty() {
         return Err(GateError::Validation {
@@ -459,27 +459,27 @@ pub async fn fetch(
 
 /// handler 双返回形态的桥：404 门响应（手造）与 GateError（IntoResponse 面）
 /// 统一为 Response。
-pub struct FluxgateErrorResponse(Response);
+pub struct FluxweirErrorResponse(Response);
 
-impl From<GateError> for FluxgateErrorResponse {
+impl From<GateError> for FluxweirErrorResponse {
     fn from(e: GateError) -> Self {
-        Self(crate::error::FluxgateError::from(e).into_response())
+        Self(crate::error::FluxweirError::from(e).into_response())
     }
 }
 
-impl From<crate::error::FluxgateError> for FluxgateErrorResponse {
-    fn from(e: crate::error::FluxgateError) -> Self {
+impl From<crate::error::FluxweirError> for FluxweirErrorResponse {
+    fn from(e: crate::error::FluxweirError) -> Self {
         Self(e.into_response())
     }
 }
 
-impl From<Response> for FluxgateErrorResponse {
+impl From<Response> for FluxweirErrorResponse {
     fn from(r: Response) -> Self {
         Self(r)
     }
 }
 
-impl axum::response::IntoResponse for FluxgateErrorResponse {
+impl axum::response::IntoResponse for FluxweirErrorResponse {
     fn into_response(self) -> Response {
         self.0
     }

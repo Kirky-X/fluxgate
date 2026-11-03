@@ -5,7 +5,7 @@
 //! 模型去重（仅 enabled，按 id 排序确定性输出）。走既有鉴权与统一错误
 //! 体系；响应不进缓存（模型列表始终现算）
 
-use crate::error::FluxgateError;
+use crate::error::FluxweirError;
 use crate::ApiState;
 use axum::{
     extract::{Query, State},
@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// 目录独有条目的 `owned_by` 归属标记（无 vendor 认领时）。
-const CATALOG_OWNER: &str = "fluxgate";
+const CATALOG_OWNER: &str = "fluxweir";
 
 /// `GET /v1/models` 查询参数：按任务类型过滤（缺省不过滤）。
 #[derive(Debug, Deserialize)]
@@ -32,14 +32,14 @@ const TASK_FILTERS: [&str; 3] = ["chat", "embedding", "rerank"];
 pub async fn list_models(
     State(state): State<Arc<ApiState>>,
     Query(query): Query<ModelsQuery>,
-) -> Result<Json<Value>, FluxgateError> {
+) -> Result<Json<Value>, FluxweirError> {
     // task 过滤：trim 后空 = 未声明；白名单外显式 400（不静默忽略）
     let task_filter = match query.task.as_deref().map(str::trim) {
         None | Some("") => None,
         Some(value) => {
             let normalized = value.to_ascii_lowercase();
             if !TASK_FILTERS.contains(&normalized.as_str()) {
-                return Err(FluxgateError::from(crate::error::GateError::Validation {
+                return Err(FluxweirError::from(crate::error::GateError::Validation {
                     field: "task".to_string(),
                 }));
             }

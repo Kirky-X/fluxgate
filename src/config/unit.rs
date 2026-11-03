@@ -1,14 +1,14 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! 定价单位换算单点 — 外部源口径与 fluxgate 计价口径的换算常量集中处
+//! 定价单位换算单点 — 外部源口径与 fluxweir 计价口径的换算常量集中处
 //!（catalog-sync 映射与后续 cost-replay 共享本模块；design：换算单位
 //! 错误风险集中在单点 + 对照测试钉死）。
 //!
 //! 口径对照：
 //! - 外部源（models.dev `cost.*`）：**currency 每 1M tokens**（如 3.0 =
 //!   $3 / 1M input tokens）；
-//! - fluxgate `[[model_catalog]]` 四价字段：**currency 每 1M tokens**
+//! - fluxweir `[[model_catalog]]` 四价字段：**currency 每 1M tokens**
 //!   （`src/config/model_catalog.rs`）。
 //!
 //! 数值等价性：`1 currency / 1M tokens ≡ 1 micro-currency / token`

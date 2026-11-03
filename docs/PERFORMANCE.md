@@ -1,4 +1,4 @@
-# Fluxgate 性能基线
+# Fluxweir 性能基线
 
 > 首轮 Criterion 组件级基线（转换 / SSE 帧解析 / 路由决策路径 / 缓存经济学亲和），随 `roadmap-gap-closure` 与 `cache-economy-affinity` 变更建立。
 > 数值为 `cargo bench` 实际输出誊录（mean = criterion 点估计中点值，吞吐 = 每迭代元素数 / 时间）；

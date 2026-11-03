@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! master key 分层解析：env `FLUXGATE_MASTER_KEY` 优先，缺失时自动生成
-//! `~/.fluxgate/vault_master.key`（0600）。master key 丢失 = 柜内密钥全部
+//! master key 分层解析：env `FLUXWEIR_MASTER_KEY` 优先，缺失时自动生成
+//! `~/.fluxweir/vault_master.key`（0600）。master key 丢失 = 柜内密钥全部
 //! 不可恢复（无找回路径，设计使然）；部署方负责文件备份。
 
 use rand::RngExt;
@@ -12,12 +12,12 @@ use crate::vault::crypto::MASTER_KEY_BYTES;
 use crate::vault::VaultError;
 
 /// 主钥环境变量名。
-pub const MASTER_KEY_ENV: &str = "FLUXGATE_MASTER_KEY";
+pub const MASTER_KEY_ENV: &str = "FLUXWEIR_MASTER_KEY";
 
-/// 主钥文件路径环境变量名（覆盖默认 `~/.fluxgate/vault_master.key`）：
+/// 主钥文件路径环境变量名（覆盖默认 `~/.fluxweir/vault_master.key`）：
 /// 容器部署应指向持久卷，否则容器重建时重新生成主钥，柜内密文全部不可解
 ///（启动期 reveal 失败即 fail-fast 重启循环）。
-pub const MASTER_KEY_FILE_ENV: &str = "FLUXGATE_MASTER_KEY_FILE";
+pub const MASTER_KEY_FILE_ENV: &str = "FLUXWEIR_MASTER_KEY_FILE";
 
 /// hex 编码后 64 字符（32 字节）。
 const MASTER_KEY_HEX_LEN: usize = MASTER_KEY_BYTES * 2;
@@ -29,8 +29,8 @@ pub fn load_or_create_master_key() -> Result<Vec<u8>, VaultError> {
     load_or_create_at(env_value.as_deref(), &path)
 }
 
-/// 主钥文件路径：`FLUXGATE_MASTER_KEY_FILE` 优先（容器部署指向持久卷），
-/// 缺省回落 `~/.fluxgate/vault_master.key`。
+/// 主钥文件路径：`FLUXWEIR_MASTER_KEY_FILE` 优先（容器部署指向持久卷），
+/// 缺省回落 `~/.fluxweir/vault_master.key`。
 pub fn master_key_path() -> Result<std::path::PathBuf, VaultError> {
     resolve_master_key_path(
         std::env::var(MASTER_KEY_FILE_ENV).ok().as_deref(),
@@ -47,7 +47,7 @@ fn resolve_master_key_path(
         return Ok(std::path::PathBuf::from(path));
     }
     let home = home.ok_or_else(|| VaultError::MasterKey(t("vault-home-not-found")))?;
-    Ok(home.join(".fluxgate").join("vault_master.key"))
+    Ok(home.join(".fluxweir").join("vault_master.key"))
 }
 
 /// 分层解析核心（路径与 env 值注入，便于测试隔离）：
@@ -201,7 +201,7 @@ mod tests {
         for blank in [Some(""), Some("   "), None] {
             assert_eq!(
                 resolve_master_key_path(blank, Some(home)).expect("home fallback"),
-                home.join(".fluxgate").join("vault_master.key"),
+                home.join(".fluxweir").join("vault_master.key"),
                 "{blank:?} 不得覆盖 home 缺省"
             );
         }

@@ -7,7 +7,7 @@
 use bytes::Bytes;
 use futures::StreamExt;
 
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::stream::ChatStream;
 
 fn byte_stream(
@@ -20,9 +20,9 @@ fn byte_stream(
     futures::stream::iter(owned)
 }
 
-fn expect_stream_error_message(err: &FluxgateSdkError) -> String {
+fn expect_stream_error_message(err: &FluxweirSdkError) -> String {
     match err {
-        FluxgateSdkError::Stream { message } => message.clone(),
+        FluxweirSdkError::Stream { message } => message.clone(),
         other => panic!("expected Stream error, got {other:?}"),
     }
 }
@@ -86,8 +86,8 @@ async fn null_error_field_is_not_an_error_frame() {
     assert!(stream.next().await.is_none());
 }
 
-fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
-    crate::sdk::client::FluxgateClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxweirClient {
+    crate::sdk::client::FluxweirClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()

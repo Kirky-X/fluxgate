@@ -10,10 +10,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use axum::Router;
-use fluxgate::api::web_search::WebSearchRuntime;
-use fluxgate::utils::netguard::{GuardedFetcher, Resolver};
-use fluxgate::vendor::VendorManager;
-use fluxgate::{ApiState, Config, ConfigManager};
+use fluxweir::api::web_search::WebSearchRuntime;
+use fluxweir::utils::netguard::{GuardedFetcher, Resolver};
+use fluxweir::vendor::VendorManager;
+use fluxweir::{ApiState, Config, ConfigManager};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,19 +33,19 @@ impl Resolver for LoopbackResolver {
 fn permissive_fetcher(timeout_ms: u64, max_bytes: usize) -> GuardedFetcher {
     GuardedFetcher::with_parts(
         Arc::new(LoopbackResolver),
-        Arc::new(|_| fluxgate::utils::netguard::Verdict::Allow),
+        Arc::new(|_| fluxweir::utils::netguard::Verdict::Allow),
         Duration::from_millis(timeout_ms),
         max_bytes,
     )
 }
 
-fn make_config_with(section: fluxgate::config::WebSearchSection) -> Config {
-    fluxgate::config::Config {
-        server: fluxgate::config::ServerConfig {
+fn make_config_with(section: fluxweir::config::WebSearchSection) -> Config {
+    fluxweir::config::Config {
+        server: fluxweir::config::ServerConfig {
             host: "0.0.0.0".into(),
             port: 8080,
         },
-        database: fluxgate::config::DatabaseConfig {
+        database: fluxweir::config::DatabaseConfig {
             path: ":memory:".into(),
             pool_size: 1,
             url: String::new(),
@@ -56,16 +56,16 @@ fn make_config_with(section: fluxgate::config::WebSearchSection) -> Config {
         model_catalog: Vec::new(),
         auth: None,
         cors: None,
-        retry: fluxgate::config::RetrySection::default(),
-        routing: fluxgate::config::RoutingSection::default(),
-        cache: fluxgate::config::CacheSection::default(),
+        retry: fluxweir::config::RetrySection::default(),
+        routing: fluxweir::config::RoutingSection::default(),
+        cache: fluxweir::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),
         grpc: None,
-        resilience: fluxgate::config::ResilienceSection::default(),
+        resilience: fluxweir::config::ResilienceSection::default(),
         docs: Default::default(),
-        rate_limit: fluxgate::config::RateLimitSection { rules: vec![] },
+        rate_limit: fluxweir::config::RateLimitSection { rules: vec![] },
         lexcompress: Default::default(),
         responses: Default::default(),
         otlp: Default::default(),
@@ -82,7 +82,7 @@ fn make_config_with(section: fluxgate::config::WebSearchSection) -> Config {
 }
 
 fn make_config(web_search_enabled: bool) -> Config {
-    make_config_with(fluxgate::config::WebSearchSection {
+    make_config_with(fluxweir::config::WebSearchSection {
         enabled: web_search_enabled,
         providers: vec![],
     })
@@ -107,11 +107,11 @@ async fn build_app_with(config: Config, fetcher: GuardedFetcher) -> Router {
     })
     .await
     .unwrap();
-    let database = Arc::new(fluxgate::database::Database {
+    let database = Arc::new(fluxweir::database::Database {
         pool: pool.clone(),
-        repository: Arc::new(fluxgate::database::Repository::new(pool)),
+        repository: Arc::new(fluxweir::database::Repository::new(pool)),
     });
-    let router = Arc::new(fluxgate::router::Router::new(
+    let router = Arc::new(fluxweir::router::Router::new(
         config_manager.clone(),
         vendor_manager.clone(),
     ));
@@ -120,8 +120,8 @@ async fn build_app_with(config: Config, fetcher: GuardedFetcher) -> Router {
         vendor_manager,
         router,
         affinity_writer: None,
-        openai_converter: Arc::new(fluxgate::protocol::OpenAIConverter::new()),
-        anthropic_converter: Arc::new(fluxgate::protocol::AnthropicConverter::new()),
+        openai_converter: Arc::new(fluxweir::protocol::OpenAIConverter::new()),
+        anthropic_converter: Arc::new(fluxweir::protocol::AnthropicConverter::new()),
         database,
         logger: None,
         pre_aggregator: None,
@@ -133,7 +133,7 @@ async fn build_app_with(config: Config, fetcher: GuardedFetcher) -> Router {
         responses: None,
         web_search: Some(Arc::new(WebSearchRuntime::with_fetcher(fetcher))),
     });
-    fluxgate::api::create_router(state).await
+    fluxweir::api::create_router(state).await
 }
 
 async fn post_fetch(app: Router, url: &str) -> Response {
@@ -298,17 +298,17 @@ async fn search_falls_through_providers() {
         .create_async()
         .await;
 
-    let config = make_config_with(fluxgate::config::WebSearchSection {
+    let config = make_config_with(fluxweir::config::WebSearchSection {
         enabled: true,
         providers: vec![
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "tavily".into(),
                 api_key_env: "WEB_SEARCH_T009_KEY".into(),
                 api_key_envs: vec![],
                 api_key_vault_ref: String::new(),
                 base_url: format!("{}/t1", server.url()),
             },
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "searxng".into(),
                 api_key_env: String::new(),
                 api_key_envs: vec![],
@@ -345,17 +345,17 @@ async fn search_all_failed_returns_502_with_summary() {
         .with_status(500)
         .create_async()
         .await;
-    let config = make_config_with(fluxgate::config::WebSearchSection {
+    let config = make_config_with(fluxweir::config::WebSearchSection {
         enabled: true,
         providers: vec![
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "tavily".into(),
                 api_key_env: "WEB_SEARCH_T009_KEY".into(),
                 api_key_envs: vec![],
                 api_key_vault_ref: String::new(),
                 base_url: format!("{}/t1", server.url()),
             },
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "searxng".into(),
                 api_key_env: String::new(),
                 api_key_envs: vec![],
@@ -388,17 +388,17 @@ async fn search_provider_param_selects_single_source() {
         .with_status(500)
         .create_async()
         .await;
-    let config = make_config_with(fluxgate::config::WebSearchSection {
+    let config = make_config_with(fluxweir::config::WebSearchSection {
         enabled: true,
         providers: vec![
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "tavily".into(),
                 api_key_env: "WEB_SEARCH_T009_KEY".into(),
                 api_key_envs: vec![],
                 api_key_vault_ref: String::new(),
                 base_url: format!("{}/t1", server.url()),
             },
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "searxng".into(),
                 api_key_env: String::new(),
                 api_key_envs: vec![],
@@ -440,17 +440,17 @@ async fn admin_web_search_stats_reports_counts_without_key_material() {
         .with_body(r#"{"results":[{"title":"R","url":"https://r.example","content":"S"}]}"#)
         .create_async()
         .await;
-    let config = make_config_with(fluxgate::config::WebSearchSection {
+    let config = make_config_with(fluxweir::config::WebSearchSection {
         enabled: true,
         providers: vec![
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "tavily".into(),
                 api_key_env: "WEB_SEARCH_T011_KEY".into(),
                 api_key_envs: vec![],
                 api_key_vault_ref: String::new(),
                 base_url: format!("{}/t1", server.url()),
             },
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "searxng".into(),
                 api_key_env: String::new(),
                 api_key_envs: vec![],
@@ -526,17 +526,17 @@ async fn metrics_record_web_search_and_netguard_denials() {
 
     // 真 guard：fetch 解析到私网 → 400 netguard_blocked（同一 ApiState 共享
     // GlobalMetrics，搜索与拒绝两类计数同池可断言）
-    let config = make_config_with(fluxgate::config::WebSearchSection {
+    let config = make_config_with(fluxweir::config::WebSearchSection {
         enabled: true,
         providers: vec![
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "tavily".into(),
                 api_key_env: "WEB_SEARCH_T013_KEY".into(),
                 api_key_envs: vec![],
                 api_key_vault_ref: String::new(),
                 base_url: format!("{}/t1", server.url()),
             },
-            fluxgate::config::WebSearchProviderConfig {
+            fluxweir::config::WebSearchProviderConfig {
                 kind: "searxng".into(),
                 api_key_env: String::new(),
                 api_key_envs: vec![],
@@ -547,7 +547,7 @@ async fn metrics_record_web_search_and_netguard_denials() {
     });
     let guarded_fetcher = GuardedFetcher::with_parts(
         Arc::new(PrivateResolver),
-        Arc::new(fluxgate::utils::netguard::guard),
+        Arc::new(fluxweir::utils::netguard::guard),
         Duration::from_secs(2),
         4096,
     );

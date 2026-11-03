@@ -4,17 +4,17 @@
 //! Embedding：一次请求两条文本，打印每条向量维度与 token 用量
 //!（`EmbedInput` 多形态与 `EmbeddingValue` 双编码展示）。
 
-use fluxgate::sdk::{
-    EmbedInput, EmbedRequest, EmbeddingValue, FluxgateClientBuilder, FluxgateSdkError,
+use fluxweir::sdk::{
+    EmbedInput, EmbedRequest, EmbeddingValue, FluxweirClientBuilder, FluxweirSdkError,
     RequestConfig,
 };
 
 use super::require_env;
 
-pub async fn run() -> Result<(), FluxgateSdkError> {
-    let client = FluxgateClientBuilder::new()
-        .base_url(require_env("FLUXGATE_BASE_URL"))
-        .api_key(require_env("FLUXGATE_API_KEY"))
+pub async fn run() -> Result<(), FluxweirSdkError> {
+    let client = FluxweirClientBuilder::new()
+        .base_url(require_env("FLUXWEIR_BASE_URL"))
+        .api_key(require_env("FLUXWEIR_API_KEY"))
         .build()?;
 
     let req = EmbedRequest {
@@ -22,7 +22,7 @@ pub async fn run() -> Result<(), FluxgateSdkError> {
         model: "text-embedding-3-small".into(),
         // 输入四形态可选：Text / Strings / Tokens / NestedTokens
         input: EmbedInput::Strings(vec![
-            "Fluxgate 是智能 LLM 路由网关。".into(),
+            "Fluxweir 是智能 LLM 路由网关。".into(),
             "流式响应经 SSE 分帧后逐块送达。".into(),
         ]),
         // 可选：dimensions 降维（模型支持时生效）、encoding_format 切 base64

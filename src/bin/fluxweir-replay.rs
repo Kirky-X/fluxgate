@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! `fluxgate-replay` — 离线成本回放 CLI（`cost-replay` feature）。
+//! `fluxweir-replay` — 离线成本回放 CLI（`cost-replay` feature）。
 //!
 //! 读既有 `request_logs` 历史，按时间窗重放 affinity/cache_ttl 场景的
 //! counterfactual 成本，stdout 出 Markdown（或 `--json`）。纯只读：不开服务、
@@ -16,9 +16,9 @@
 
 #![cfg(all(feature = "cost-replay", feature = "db-sqlite"))]
 
-use fluxgate::database::redact_db_url;
-use fluxgate::i18n::{t, t_args};
-use fluxgate::utils::replay::{self, ReplayReport};
+use fluxweir::database::redact_db_url;
+use fluxweir::i18n::{t, t_args};
+use fluxweir::utils::replay::{self, ReplayReport};
 use std::path::PathBuf;
 
 /// 场景选择。
@@ -244,7 +244,7 @@ async fn run(args: &Args) -> Result<String, String> {
     let url = resolve_db_url(&args.db)?;
 
     // 目录单价正源：既有 config.toml 的 [[model_catalog]]（只读解析）。
-    let catalog = fluxgate::config::loader::load_config_from_path(&PathBuf::from(&args.config))
+    let catalog = fluxweir::config::loader::load_config_from_path(&PathBuf::from(&args.config))
         .map_err(|e| t_args("replay-cli-config-load-failed", &[("error", e.to_string())]))?
         .model_catalog;
 

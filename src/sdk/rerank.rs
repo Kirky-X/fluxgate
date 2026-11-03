@@ -5,9 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::sdk::client::FluxgateClient;
+use crate::sdk::client::FluxweirClient;
 use crate::sdk::config::RequestConfig;
-use crate::sdk::error::FluxgateSdkError;
+use crate::sdk::error::FluxweirSdkError;
 use crate::sdk::transport::send_with_retry;
 
 /// Rerank 请求（documents 为纯文本数组；对象形态由 REST 直接使用）。
@@ -71,9 +71,9 @@ struct RerankPayload<'a> {
     instruction: Option<&'a str>,
 }
 
-impl FluxgateClient {
+impl FluxweirClient {
     /// 发送 rerank 请求。POST /v1/rerank（非流式，无采样参数）。
-    pub async fn rerank(&self, req: &RerankRequest) -> Result<RerankResponse, FluxgateSdkError> {
+    pub async fn rerank(&self, req: &RerankRequest) -> Result<RerankResponse, FluxweirSdkError> {
         let merged = self.default_config.merge(&req.config);
         let payload = RerankPayload {
             model: &req.model,
@@ -86,7 +86,7 @@ impl FluxgateClient {
         let url = self
             .base_url
             .join("v1/rerank")
-            .map_err(|e| FluxgateSdkError::Config {
+            .map_err(|e| FluxweirSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
 
@@ -107,11 +107,11 @@ impl FluxgateClient {
     pub async fn list_models(
         &self,
         task: Option<&str>,
-    ) -> Result<serde_json::Value, FluxgateSdkError> {
+    ) -> Result<serde_json::Value, FluxweirSdkError> {
         let mut url = self
             .base_url
             .join("v1/models")
-            .map_err(|e| FluxgateSdkError::Config {
+            .map_err(|e| FluxweirSdkError::Config {
                 message: format!("invalid URL: {e}"),
             })?;
         if let Some(task) = task {

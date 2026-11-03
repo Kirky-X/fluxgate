@@ -27,14 +27,14 @@ use axum::{
     Router,
 };
 use dbnexus::{DbConfig, DbPool};
-use fluxgate::api::create_router;
-use fluxgate::config::{AuthSection, Config, ConfigManager};
-use fluxgate::database::Database;
-use fluxgate::middleware::ApiAuthState;
-use fluxgate::protocol::{AnthropicConverter, OpenAIConverter};
-use fluxgate::router::Router as ModelRouter;
-use fluxgate::vendor::VendorManager;
-use fluxgate::ApiState;
+use fluxweir::api::create_router;
+use fluxweir::config::{AuthSection, Config, ConfigManager};
+use fluxweir::database::Database;
+use fluxweir::middleware::ApiAuthState;
+use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+use fluxweir::router::Router as ModelRouter;
+use fluxweir::vendor::VendorManager;
+use fluxweir::ApiState;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -109,7 +109,7 @@ async fn build_state() -> Arc<ApiState> {
 
     let database = Arc::new(Database {
         pool: pool.clone(),
-        repository: Arc::new(fluxgate::database::Repository::new(pool)),
+        repository: Arc::new(fluxweir::database::Repository::new(pool)),
     });
 
     let router = Arc::new(ModelRouter::new(

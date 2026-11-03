@@ -3,8 +3,8 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-use fluxgate::config::DatabaseConfig;
-use fluxgate::database::resolve_database_url;
+use fluxweir::config::DatabaseConfig;
+use fluxweir::database::resolve_database_url;
 
 /// 测试路径 → 解析后 URL（与 bootstrap 同一解析出口，sqlite 回退分支）。
 /// 文件作用域：batch_tx / database_gap 等兄弟模块经 `crate::resolve_sqlite_url` 复用。
@@ -20,7 +20,7 @@ fn resolve_sqlite_url(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::database::{Database, LogFilter, Repository, RequestLog};
+    use fluxweir::database::{Database, LogFilter, Repository, RequestLog};
     use std::sync::Arc;
 
     async fn create_test_pool() -> DbPool {
@@ -603,7 +603,7 @@ mod tests {
 mod batch_tx {
     use crate::resolve_sqlite_url;
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::database::{Database, LogFilter, Repository, RequestLog};
+    use fluxweir::database::{Database, LogFilter, Repository, RequestLog};
     use std::sync::Arc;
 
     async fn create_test_pool() -> DbPool {
@@ -705,8 +705,8 @@ mod batch_tx {
 #[cfg(test)]
 mod preagg {
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::database::{Repository, TokenPreAggregator, TokenPreAggregatorHandle};
-    use fluxgate::protocol::TokenUsage;
+    use fluxweir::database::{Repository, TokenPreAggregator, TokenPreAggregatorHandle};
+    use fluxweir::protocol::TokenUsage;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -898,7 +898,7 @@ mod preagg {
 #[cfg(test)]
 mod repository_gap {
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::database::{LogFilter, Repository, RequestLog};
+    use fluxweir::database::{LogFilter, Repository, RequestLog};
     use std::sync::Arc;
 
     async fn create_test_pool() -> DbPool {
@@ -1074,9 +1074,9 @@ mod repository_gap {
 #[cfg(test)]
 mod async_logger_gap {
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::database::{AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, RequestLog};
-    use fluxgate::error::FluxgateError;
-    use fluxgate::i18n::t;
+    use fluxweir::database::{AsyncLogger, AsyncLoggerHandle, LogFilter, Repository, RequestLog};
+    use fluxweir::error::FluxweirError;
+    use fluxweir::i18n::t;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1134,7 +1134,7 @@ mod async_logger_gap {
 
         let err = logger.log(sample_log("after-shutdown")).unwrap_err();
         match err {
-            FluxgateError::Database { message } => {
+            FluxweirError::Database { message } => {
                 assert_eq!(message, t("database-logger-shutdown"));
             }
             other => panic!("Expected Database error, got {other:?}"),
@@ -1180,7 +1180,7 @@ mod async_logger_gap {
 
         let err = logger.shutdown().await.unwrap_err();
         match err {
-            FluxgateError::Database { message } => {
+            FluxweirError::Database { message } => {
                 assert_eq!(message, t("database-logger-channel-closed"));
             }
             other => panic!("Expected Database error, got {other:?}"),
@@ -1262,8 +1262,8 @@ mod async_logger_gap {
 #[cfg(test)]
 mod database_gap {
     use crate::resolve_sqlite_url;
-    use fluxgate::database::{Database, LogFilter, RequestLog};
-    use fluxgate::error::FluxgateError;
+    use fluxweir::database::{Database, LogFilter, RequestLog};
+    use fluxweir::error::FluxweirError;
 
     fn sample_log() -> RequestLog {
         RequestLog {
@@ -1326,7 +1326,7 @@ mod database_gap {
             Database::new(&resolve_sqlite_url(db_path.to_string_lossy().as_ref()), 1).await;
 
         match result {
-            Err(FluxgateError::Database { .. }) => {}
+            Err(FluxweirError::Database { .. }) => {}
             Err(other) => panic!("Expected Database error, got {other:?}"),
             Ok(_) => panic!("父路径是文件时必须失败"),
         }
@@ -1344,7 +1344,7 @@ mod database_gap {
 
         let result = Database::new(&resolve_sqlite_url(dir.to_str().unwrap()), 1).await;
         match result {
-            Err(FluxgateError::Database { .. }) => {}
+            Err(FluxweirError::Database { .. }) => {}
             Err(other) => panic!("Expected Database error, got {other:?}"),
             Ok(_) => panic!("库路径是目录时必须失败"),
         }
@@ -1358,7 +1358,7 @@ mod database_gap {
 #[cfg(test)]
 mod cost_ledger {
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::database::{CostGroupBy, KeyedUsage, Repository, TokenPreAggregator};
+    use fluxweir::database::{CostGroupBy, KeyedUsage, Repository, TokenPreAggregator};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1530,8 +1530,8 @@ mod cost_ledger {
 #[cfg(test)]
 mod usage_observability_columns {
     use dbnexus::{DbConfig, DbPool};
-    use fluxgate::database::{Repository, RequestLog};
-    use fluxgate::storage::LogFilter;
+    use fluxweir::database::{Repository, RequestLog};
+    use fluxweir::storage::LogFilter;
 
     async fn pool() -> DbPool {
         let config = DbConfig {
@@ -1791,7 +1791,7 @@ mod usage_observability_columns {
 /// 未过期读取上限与租户隔离 + 过期清理。
 #[cfg(test)]
 mod affinity_sticks {
-    use fluxgate::storage::AffinityStick;
+    use fluxweir::storage::AffinityStick;
 
     async fn pool() -> dbnexus::DbPool {
         dbnexus::DbPool::with_config(dbnexus::DbConfig {
@@ -1822,7 +1822,7 @@ mod affinity_sticks {
     #[tokio::test]
     async fn v6_migration_creates_affinity_sticks_idempotently() {
         let pool = pool().await;
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
         repo.initialize().await.expect("首次迁移");
         repo.initialize().await.expect("重跑幂等");
 
@@ -1839,7 +1839,7 @@ mod affinity_sticks {
     #[tokio::test]
     async fn upsert_overwrites_and_tenant_scopes() {
         let pool = pool().await;
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
         repo.initialize().await.expect("init");
 
         repo.upsert_affinity_sticks(&[
@@ -1869,7 +1869,7 @@ mod affinity_sticks {
     #[tokio::test]
     async fn read_unexpired_orders_desc_and_limits() {
         let pool = pool().await;
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
         repo.initialize().await.expect("init");
 
         let rows: Vec<AffinityStick> = (0..5)
@@ -1892,7 +1892,7 @@ mod affinity_sticks {
     #[tokio::test]
     async fn purge_expired_removes_only_stale_rows() {
         let pool = pool().await;
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
         repo.initialize().await.expect("init");
 
         repo.upsert_affinity_sticks(&[
@@ -1916,7 +1916,7 @@ mod affinity_sticks {
     #[tokio::test]
     async fn empty_upsert_is_noop() {
         let pool = pool().await;
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
         repo.initialize().await.expect("init");
         repo.upsert_affinity_sticks(&[]).await.expect("空批必须 Ok");
         let rows = repo.read_affinity_sticks(0, 10).await.expect("read");
@@ -1928,17 +1928,17 @@ mod affinity_sticks {
 ///
 /// 上面 `affinity_sticks` 模块全走 `sqlite::memory:`；三方言建表与
 /// `ON CONFLICT` / `ON DUPLICATE KEY UPDATE` 此前只有纯函数字符串断言。
-/// 本用例要求环境变量 `FLUXGATE_TEST_DB_URL` 指向被测实例（无则 `#[ignore]`
+/// 本用例要求环境变量 `FLUXWEIR_TEST_DB_URL` 指向被测实例（无则 `#[ignore]`
 /// 跳过；CI 的 `server-backend` 作业注入该变量后以 `-- --ignored` 运行）。
 ///
 /// 单函数串行完成全部断言：服务端实例是共享的，多测试并行会互相看到对方的行。
 #[cfg(test)]
 mod affinity_sticks_server {
-    use fluxgate::storage::AffinityStick;
+    use fluxweir::storage::AffinityStick;
 
     fn server_url() -> String {
-        std::env::var("FLUXGATE_TEST_DB_URL")
-            .expect("本用例需要 FLUXGATE_TEST_DB_URL 指向 postgres/mysql 实例")
+        std::env::var("FLUXWEIR_TEST_DB_URL")
+            .expect("本用例需要 FLUXWEIR_TEST_DB_URL 指向 postgres/mysql 实例")
     }
 
     fn stick(tenant: &str, session: &str, vendor: &str, expires_at: i64) -> AffinityStick {
@@ -1952,14 +1952,14 @@ mod affinity_sticks_server {
     }
 
     #[tokio::test]
-    #[ignore = "需要 FLUXGATE_TEST_DB_URL 指向 postgres/mysql 实例（CI server-backend 作业注入）"]
+    #[ignore = "需要 FLUXWEIR_TEST_DB_URL 指向 postgres/mysql 实例（CI server-backend 作业注入）"]
     async fn v6_and_upsert_run_on_server_backend() {
         let url = server_url();
         assert!(
             url.starts_with("postgres://")
                 || url.starts_with("postgresql://")
                 || url.starts_with("mysql://"),
-            "FLUXGATE_TEST_DB_URL 必须指向 postgres:// 或 mysql://（实际 {url}）"
+            "FLUXWEIR_TEST_DB_URL 必须指向 postgres:// 或 mysql://（实际 {url}）"
         );
 
         let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
@@ -1974,7 +1974,7 @@ mod affinity_sticks_server {
         })
         .await
         .expect("连接被测服务端实例");
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
 
         // ① 建表迁移在真实方言上可重入（V6 DDL + 索引创建）
         repo.initialize().await.expect("首次迁移");
@@ -2041,7 +2041,7 @@ mod affinity_sticks_server {
 /// 去重）+ 全量读取（启动恢复读侧）。
 #[cfg(test)]
 mod quota_ledger {
-    use fluxgate::database::QuotaLedgerRow;
+    use fluxweir::database::QuotaLedgerRow;
 
     async fn pool() -> dbnexus::DbPool {
         dbnexus::DbPool::with_config(dbnexus::DbConfig {
@@ -2073,7 +2073,7 @@ mod quota_ledger {
     #[tokio::test]
     async fn v7_migration_creates_quota_ledger_idempotently() {
         let pool = pool().await;
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
         repo.initialize().await.expect("首次迁移");
         repo.initialize().await.expect("重跑幂等");
 
@@ -2120,7 +2120,7 @@ mod quota_ledger {
     #[tokio::test]
     async fn empty_upsert_is_noop() {
         let pool = pool().await;
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
         repo.initialize().await.expect("init");
         repo.upsert_quota_ledger(&[]).await.expect("空批必须 Ok");
         assert!(
@@ -2131,22 +2131,22 @@ mod quota_ledger {
 }
 
 /// V7 建表与 UPSERT 的**服务端方言**运行时验证（postgres / mysql）——与
-/// affinity_sticks_server 同约定：`FLUXGATE_TEST_DB_URL` 指向被测实例，
+/// affinity_sticks_server 同约定：`FLUXWEIR_TEST_DB_URL` 指向被测实例，
 /// CI server-backend 作业以 `-- --ignored` 运行；单函数串行防并行互染。
 #[cfg(test)]
 mod quota_ledger_server {
-    use fluxgate::database::QuotaLedgerRow;
+    use fluxweir::database::QuotaLedgerRow;
 
     #[tokio::test]
-    #[ignore = "需要 FLUXGATE_TEST_DB_URL 指向 postgres/mysql 实例（CI server-backend 作业注入）"]
+    #[ignore = "需要 FLUXWEIR_TEST_DB_URL 指向 postgres/mysql 实例（CI server-backend 作业注入）"]
     async fn v7_and_upsert_run_on_server_backend() {
-        let url = std::env::var("FLUXGATE_TEST_DB_URL")
-            .expect("本用例需要 FLUXGATE_TEST_DB_URL 指向 postgres/mysql 实例");
+        let url = std::env::var("FLUXWEIR_TEST_DB_URL")
+            .expect("本用例需要 FLUXWEIR_TEST_DB_URL 指向 postgres/mysql 实例");
         assert!(
             url.starts_with("postgres://")
                 || url.starts_with("postgresql://")
                 || url.starts_with("mysql://"),
-            "FLUXGATE_TEST_DB_URL 必须指向 postgres:// 或 mysql://（实际 {url}）"
+            "FLUXWEIR_TEST_DB_URL 必须指向 postgres:// 或 mysql://（实际 {url}）"
         );
 
         let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
@@ -2161,7 +2161,7 @@ mod quota_ledger_server {
         })
         .await
         .expect("连接被测服务端实例");
-        let repo = fluxgate::database::Repository::new(pool);
+        let repo = fluxweir::database::Repository::new(pool);
         // ① 建表迁移在真实方言上可重入（V7 DDL）
         repo.initialize().await.expect("首次迁移");
         repo.initialize().await.expect("重跑幂等");
@@ -2229,7 +2229,7 @@ mod quota_ledger_server {
 #[cfg(test)]
 mod v9_key_attribution {
     use dbnexus::{DbConfig, DbPool, PoolConfig};
-    use fluxgate::database::{LogFilter, Repository, RequestLog};
+    use fluxweir::database::{LogFilter, Repository, RequestLog};
     use std::sync::Arc;
 
     async fn repo() -> Arc<Repository> {

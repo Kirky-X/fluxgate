@@ -18,8 +18,8 @@ mod di_container {
 
     use dbnexus::foundation::config::DbConfig;
     use dbnexus::integrations::kit::DbNexusModule;
-    use fluxgate::di::{build_kit_with_config, verify_kit};
-    use fluxgate::error::{FluxgateError, GateError};
+    use fluxweir::di::{build_kit_with_config, verify_kit};
+    use fluxweir::error::{FluxweirError, GateError};
     use inklog::integrations::kit::InklogModule;
     use limiteron::integrations::kit::LimiteronModule;
     use oxcache::integrations::kit::{OxcacheConfig, OxcacheModule};
@@ -91,7 +91,7 @@ mod di_container {
     }
 
     /// build 失败（数据库 URL 非法 → 池构建回调 Err）→ 映射为
-    /// FluxgateError::Config 且消息带 "DI kit build failed" 前缀。
+    /// FluxweirError::Config 且消息带 "DI kit build failed" 前缀。
     #[tokio::test]
     async fn build_failure_maps_to_config_error() {
         let bad_config = DbConfig {
@@ -107,13 +107,13 @@ mod di_container {
             .await
             .expect_err("非法 db url 必须让 build 失败");
         match err {
-            FluxgateError::Gate(GateError::Config { message }) => {
+            FluxweirError::Gate(GateError::Config { message }) => {
                 assert!(
                     message.starts_with("DI kit build failed"),
                     "错误消息必须带 build 失败前缀: {message}"
                 );
             }
-            other => panic!("必须映射为 FluxgateError::Gate(GateError::Config): {other:?}"),
+            other => panic!("必须映射为 FluxweirError::Gate(GateError::Config): {other:?}"),
         }
     }
 
@@ -123,14 +123,14 @@ mod di_container {
         let kit = AsyncKit::new().build().await.expect("空 kit 可构建");
         let result = verify_kit(&kit);
         match result {
-            Err(FluxgateError::Gate(GateError::Config { message })) => {
+            Err(FluxweirError::Gate(GateError::Config { message })) => {
                 assert!(
                     message.contains("DI require"),
                     "错误消息必须指明 require 失败: {message}"
                 );
             }
             Ok(()) => panic!("空 kit 不得通过 verify_kit"),
-            other => panic!("必须映射为 FluxgateError::Gate(GateError::Config): {other:?}"),
+            other => panic!("必须映射为 FluxweirError::Gate(GateError::Config): {other:?}"),
         }
     }
 }

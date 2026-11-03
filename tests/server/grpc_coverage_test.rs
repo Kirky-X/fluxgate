@@ -14,12 +14,12 @@
 //! build_app 内部执行 init_global_state（OnceCell 二次 set 即 panic），
 //! 全部断言收敛在单一 #[tokio::test] 内。
 
-use fluxgate::config::{
+use fluxweir::config::{
     Config, ConfigManager, DatabaseConfig, GlobalModelConfig, GrpcConfig, ModelConfig,
     ServerConfig, VendorConfig,
 };
-use fluxgate::error::{FluxgateError, GateError};
-use fluxgate::server::build_app;
+use fluxweir::error::{FluxweirError, GateError};
+use fluxweir::server::build_app;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,12 +63,12 @@ fn test_config(grpc_port: u16) -> Config {
                 compat_group: None,
                 model_type: None,
             }],
-            rate_limit: fluxgate::config::RateLimitConfig::Token {
+            rate_limit: fluxweir::config::RateLimitConfig::Token {
                 max_tokens: 1_000_000,
                 window_hours: None,
                 sliding: false,
             },
-            concurrency: fluxgate::config::ConcurrencyConfig {
+            concurrency: fluxweir::config::ConcurrencyConfig {
                 requests_per_second: 1000,
                 max_concurrent_requests: None,
                 token_weighted: false,
@@ -88,9 +88,9 @@ fn test_config(grpc_port: u16) -> Config {
         model_catalog: Vec::new(),
         auth: None,
         cors: None,
-        retry: fluxgate::config::RetrySection::default(),
-        routing: fluxgate::config::RoutingSection::default(),
-        cache: fluxgate::config::CacheSection::default(),
+        retry: fluxweir::config::RetrySection::default(),
+        routing: fluxweir::config::RoutingSection::default(),
+        cache: fluxweir::config::CacheSection::default(),
         admission: Default::default(),
         health: Default::default(),
         quota: Default::default(),
@@ -104,7 +104,7 @@ fn test_config(grpc_port: u16) -> Config {
             http2_keepalive_interval_secs: Some(15),
             http2_keepalive_timeout_secs: Some(5),
         }),
-        resilience: fluxgate::config::ResilienceSection::default(),
+        resilience: fluxweir::config::ResilienceSection::default(),
         docs: Default::default(),
         lexcompress: Default::default(),
         responses: Default::default(),
@@ -175,7 +175,7 @@ async fn grpc_serve_maps_bind_failure_and_handle_semantics() {
     .await
     .expect("端口被占时 serve 必须快速失败而非挂起");
     match result {
-        Err(FluxgateError::Gate(GateError::Config { message })) => {
+        Err(FluxweirError::Gate(GateError::Config { message })) => {
             assert_ne!(
                 message, "main-grpc-server-error",
                 "错误键必须注册进 FTL 目录（缺键回退返回键名）"

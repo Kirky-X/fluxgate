@@ -10,9 +10,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use fluxgate::config::{Config, ConfigManager, HealthSection, VendorConfig};
-use fluxgate::protocol::{Message, MessageContent, Role, UnifiedRequest};
-use fluxgate::vendor::{probe, VendorManager, VendorStatus};
+use fluxweir::config::{Config, ConfigManager, HealthSection, VendorConfig};
+use fluxweir::protocol::{Message, MessageContent, Role, UnifiedRequest};
+use fluxweir::vendor::{probe, VendorManager, VendorStatus};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -189,8 +189,8 @@ async fn all_mode_probes_healthy_and_failure_keeps_state() {
 /// 其余 key 全程继续服务。
 #[tokio::test]
 async fn minimal_call_recovers_blacklisted_key() {
-    const ENV_A: &str = "FLUXGATE_HP_KEY_A";
-    const ENV_B: &str = "FLUXGATE_HP_KEY_B";
+    const ENV_A: &str = "FLUXWEIR_HP_KEY_A";
+    const ENV_B: &str = "FLUXWEIR_HP_KEY_B";
     const KEY_A: &str = "hp-key-a";
     const KEY_B: &str = "hp-key-b";
     std::env::set_var(ENV_A, KEY_A);

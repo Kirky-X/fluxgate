@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-//! Fluxgate i18n 基座：Fluent 双束（en/zh）+ 语言检测链。
+//! Fluxweir i18n 基座：Fluent 双束（en/zh）+ 语言检测链。
 //!
-//! - **检测链**：`FLUXGATE_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG`
+//! - **检测链**：`FLUXWEIR_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG`
 //!   → sys-locale → `"en"`；`zh*` 归一 `zh`，`C`/`POSIX`/未知语言继续走链。
 //! - **消息目录**：`locales/{en,zh}/*.ftl` 编译期内嵌，双束静态缓存。
 //! - **结果域**：仅 `{en, zh}`，一切回退终结 en，默认英文。
@@ -11,7 +11,7 @@
 //! # 示例
 //!
 //! ```rust,ignore
-//! use fluxgate::i18n;
+//! use fluxweir::i18n;
 //!
 //! i18n::init();                          // 可选预热
 //! i18n::t("vendor-upstream-stream-interrupted");

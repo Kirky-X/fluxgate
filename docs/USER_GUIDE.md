@@ -1,6 +1,6 @@
-# Fluxgate 用户指南
+# Fluxweir 用户指南
 
-**Fluxgate** 是一个智能 LLM 路由代理系统：多厂商统一管理、格式转换、智能调度。基于 Rust + Axum 0.8 + sdforge 构建，把多个上游 LLM 供应商抽象为单一接入点，提供加权路由、限流熔断、请求日志、Token 统计等生产级能力。本指南覆盖从编译启动到部署运维的完整操作路径。
+**Fluxweir** 是一个智能 LLM 路由代理系统：多厂商统一管理、格式转换、智能调度。基于 Rust + Axum 0.8 + sdforge 构建，把多个上游 LLM 供应商抽象为单一接入点，提供加权路由、限流熔断、请求日志、Token 统计等生产级能力。本指南覆盖从编译启动到部署运维的完整操作路径。
 
 > 相关文档：[FAQ](./FAQ.md) · [API 参考](./API_REFERENCE.md) · [README](../README.md)
 
@@ -433,7 +433,7 @@ api_base = "https://api.openai.com/v1"
 | `failure_rate_threshold`   | `0.5`   | 失败率阈值（(0,1]）                                                           |
 | `failure_rate_penalty`     | `0.1`   | 软降权乘子（权重 ×penalty）                                                   |
 | `circuit_open_timeout_ms`  | `30000` | 熔断 Open→HalfOpen 超时窗口（毫秒；测试可注入短窗口）                          |
-| `expose_fallback_headers`  | `false` | 回退链可观测响应头开关（✅ 热更；开启时成功响应附 `x-fluxgate-vendor` / `model` / `attempts` / `fallbacks`，缓存命中早退不附头） |
+| `expose_fallback_headers`  | `false` | 回退链可观测响应头开关（✅ 热更；开启时成功响应附 `x-fluxweir-vendor` / `model` / `attempts` / `fallbacks`，缓存命中早退不附头） |
 
 ### 熔断器行为
 
@@ -575,7 +575,7 @@ curl "http://127.0.0.1:8080/admin/cost?group_by=vendor&from=2026-10-01&to=2026-1
 # 不进 URL：查询串会落入反代/访问日志）
 curl "http://127.0.0.1:8080/admin/cost?group_by=vendor" \
   -H "Authorization: Bearer $API_KEY" \
-  -H "x-fluxgate-cost-key: <调用方 key 原文>"
+  -H "x-fluxweir-cost-key: <调用方 key 原文>"
 ```
 
 ### 会话与上下文利用率 `[usage_insights]`
@@ -624,15 +624,15 @@ curl "http://127.0.0.1:8080/admin/context-stats" -H "Authorization: Bearer $API_
 | `interval_secs` | `60`    | 推送周期（1..=86400）                                                     |
 | `timeout_secs`  | `10`    | 单次导出超时（1..=300）                                                   |
 
-指标名前缀 `fluxgate.`；histogram 分解为 `_bucket`/`_sum`/`_count` 三序列，`le` 标签原样保留。
-成本面额外导出 `fluxgate.cost_usd_total{vendor,model}`（counter）与 `fluxgate.cost_usd{vendor,model}`（gauge）。
+指标名前缀 `fluxweir.`；histogram 分解为 `_bucket`/`_sum`/`_count` 三序列，`le` 标签原样保留。
+成本面额外导出 `fluxweir.cost_usd_total{vendor,model}`（counter）与 `fluxweir.cost_usd{vendor,model}`（gauge）。
 
 > **fail-open**：接收端不可达或返回非 2xx 时只累计 `otlp_export_fail_total` 并 warn，
 > **不阻塞任何请求路径**，也不影响服务启动。构建失败同样 fail-open（服务照常起，日志告警）。
 
 ### OTLP 尝试级追踪 `[otlp.tracing]`
 
-vendor attempt 级分布式追踪（trace 面，与上面的 metrics 桥独立开关）。入站解析 W3C `traceparent`（无则建 root span）；每个 vendor attempt 一个子 span，属性 `vendor`/`model`/`attempt`（序号）/`status_code`/`error_class`/`cost_details.estimate_usd`（成功按响应 usage 计价、失败按请求字节/4 估输入腿，与计费 `estimate_cost_from_catalog` 同源）；fallback 实际命中者的 span 标 `fluxgate.served=true`；出站请求注入 `traceparent`。**请求/响应体默认不导出**（无 body 事件、无临时文件落盘）。
+vendor attempt 级分布式追踪（trace 面，与上面的 metrics 桥独立开关）。入站解析 W3C `traceparent`（无则建 root span）；每个 vendor attempt 一个子 span，属性 `vendor`/`model`/`attempt`（序号）/`status_code`/`error_class`/`cost_details.estimate_usd`（成功按响应 usage 计价、失败按请求字节/4 估输入腿，与计费 `estimate_cost_from_catalog` 同源）；fallback 实际命中者的 span 标 `fluxweir.served=true`；出站请求注入 `traceparent`。**请求/响应体默认不导出**（无 body 事件、无临时文件落盘）。
 
 | 字段                 | 默认值  | 说明                                                                        |
 | :------------------- | :------ | :-------------------------------------------------------------------------- |
@@ -804,20 +804,20 @@ window = "daily"                    # daily | monthly（UTC 日历）
 
 ## 💹 离线成本回放 cost-replay
 
-`cost-replay` 是**离线只读分析工具**（独立 bin `fluxgate-replay`，不进 `full`）：读既有 `request_logs` 逐请求历史，对"如果当时就开着缓存保 warm / 换个 TTL"这类反事实（counterfactual）算一遍钱——回答"缓存参数调优到底省了多少"。纯显式代码（规则 7）：无随机、无时钟依赖（时间全取日志 `timestamp`），同一输入同一输出；**不开服务、不写库、不调模型**。
+`cost-replay` 是**离线只读分析工具**（独立 bin `fluxweir-replay`，不进 `full`）：读既有 `request_logs` 逐请求历史，对"如果当时就开着缓存保 warm / 换个 TTL"这类反事实（counterfactual）算一遍钱——回答"缓存参数调优到底省了多少"。纯显式代码（规则 7）：无随机、无时钟依赖（时间全取日志 `timestamp`），同一输入同一输出；**不开服务、不写库、不调模型**。
 
 ### 构建
 
 ```bash
 # feature 不进 full，且 bin 需搭配一个 db 后端（required-features）。
 cargo build --release --features "cost-replay,db-sqlite"
-# 产物：target/release/fluxgate-replay
+# 产物：target/release/fluxweir-replay
 ```
 
 ### 用法
 
 ```bash
-fluxgate-replay \
+fluxweir-replay \
   --db ./data/llm_proxy.db \      # sqlite 文件路径或 sqlite:// URL；必须已存在（工具不建库）
   --from 1730000000 \             # 起点（unix 秒或 RFC3339）
   --to   1730086400 \             # 终点（unix 秒或 RFC3339）
@@ -826,7 +826,7 @@ fluxgate-replay \
   --max-rows 1000000 \            # 窗内装载行数上限（缺省 1000000，超出即报错）
   --json                          # 机器可读（缺省 stdout Markdown）
 
-fluxgate-replay --help            # 用法打到 stdout，退出码 0
+fluxweir-replay --help            # 用法打到 stdout，退出码 0
 ```
 
 > **后端说明**：独立 bin 以 `db-sqlite` 构建（`required-features = ["cost-replay","db-sqlite"]`），
@@ -981,7 +981,7 @@ email = "warn"                  # warn = 只计数不改写
 ### 行为语义
 
 - **检测面**：inklog 扩展形态表（9 类裸 secret + email/密码赋值）+ 高熵 token 扫描 + 自定义词/正则；
-- **确定性占位符**：同值同种类在**同一 pepper 下**跨请求/跨进程同串（哈希掺 pepper——三态来源：env `FLUXGATE_MASK_PEPPER` → `~/.fluxgate/mask_pepper.key`（0600，不存在随机创建）→ 进程内随机降级并 warn）。多副本共享同一 pepper 文件（或统一 env）即跨实例一致——上游前缀缓存命中、多轮对话字节稳定；pepper 各异时占位符漂移（前缀缓存失效，不出正确性问题），上游无法离线预计算或跨实例关联同值；
+- **确定性占位符**：同值同种类在**同一 pepper 下**跨请求/跨进程同串（哈希掺 pepper——三态来源：env `FLUXWEIR_MASK_PEPPER` → `~/.fluxweir/mask_pepper.key`（0600，不存在随机创建）→ 进程内随机降级并 warn）。多副本共享同一 pepper 文件（或统一 env）即跨实例一致——上游前缀缓存命中、多轮对话字节稳定；pepper 各异时占位符漂移（前缀缓存失效，不出正确性问题），上游无法离线预计算或跨实例关联同值；
 - **请求域还原**：回程只还原**本请求掩码登记过**的占位符——上游编造或他请求回显的占位符原样透传（跨请求还原预言机闭合）；
 - **三档动作**：mask（替换）/ warn（只计数）/ block（400 + `masking-blocked` 文案）；
 - **fail-closed**：检测/掩码/还原任一步故障 → 503（`masking-unavailable`），绝不原文出站；
@@ -991,7 +991,7 @@ email = "warn"                  # warn = 只计数不改写
 
 ### 掩码审计台账 `[masking.ledger]`（默认关）
 
-掩码命中的**明细事实源**：按天 JSONL 追加 `~/.fluxgate/mask_ledger/ledger-YYYYMMDD.jsonl`（UTC 日界），每条记 `ts`/`kind`/`finder`（检测来源：inklog pattern 名、`custom_rule_N` 或 `word`）/`placeholder`/`hint`（**首字符**+字节长度）——**值与占位符→原值映射不落盘**。每日首写触发裁剪（`retention_days` 按天窗口 + `max_total_bytes` 总量上限，删最旧日文件）。查询：`GET /admin/masking/ledger?date=&page=&page_size=`（per-kind 聚合 + 明细分页；台账关时 404）。
+掩码命中的**明细事实源**：按天 JSONL 追加 `~/.fluxweir/mask_ledger/ledger-YYYYMMDD.jsonl`（UTC 日界），每条记 `ts`/`kind`/`finder`（检测来源：inklog pattern 名、`custom_rule_N` 或 `word`）/`placeholder`/`hint`（**首字符**+字节长度）——**值与占位符→原值映射不落盘**。每日首写触发裁剪（`retention_days` 按天窗口 + `max_total_bytes` 总量上限，删最旧日文件）。查询：`GET /admin/masking/ledger?date=&page=&page_size=`（per-kind 聚合 + 明细分页；台账关时 404）。
 
 ```toml
 [masking.ledger]
@@ -1094,7 +1094,7 @@ flowchart TB
 
 ### 全量写回语义（重要）
 
-`persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。不要在 config.toml 里放 Fluxgate 不认识的自定义段。
+`persist` 以 `toml::to_string_pretty` **全量写回 config.toml**：所有段必须进入 `Config` 结构体，**未进结构体的自定义段会在 TOML 反序列化时被丢弃**，首次热更写回后即从磁盘消失（`src/config/mod.rs` 的 `Config` 字段文档注释）。不要在 config.toml 里放 Fluxweir 不认识的自定义段。
 
 ### 文件监听热重载
 
@@ -1136,7 +1136,7 @@ flowchart TB
 
 | 项            | 值                                                                                                                                                                                                               |
 | :------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 服务名 / 镜像 | `app` / `fluxgate:${FLUXGATE_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签）                                                                                                           |
+| 服务名 / 镜像 | `app` / `fluxweir:${FLUXWEIR_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签）                                                                                                           |
 | 端口          | `8080:8080`                                                                                                                                                                                                      |
 | 数据挂载      | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。compose 启动前先 `cp config.example.toml data/config.toml`——compose 的 `command` 已指向 `/app/data/config.toml`（见 docker/docker-compose.yml）；勿用单文件只读挂载，管理面写回经 rename 原子覆盖会 EBUSY） |
 | 资源限制      | `cpus: '2.00'` / `memory: 512M`（预留 `0.50` / `128M`）                                                                                                                                                          |
@@ -1184,7 +1184,7 @@ healthcheck:
 
 ### 日志语言
 
-管理端点与错误消息支持中英双语，由环境变量 **`FLUXGATE_LANG=en|zh`** 控制；未设置时按 `LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置检测，无法识别回退 `en`（`src/i18n/locale.rs`）。
+管理端点与错误消息支持中英双语，由环境变量 **`FLUXWEIR_LANG=en|zh`** 控制；未设置时按 `LC_ALL` → `LC_MESSAGES` → `LANG` → 系统区域设置检测，无法识别回退 `en`（`src/i18n/locale.rs`）。
 
 ### 故障排查速查
 
@@ -1229,7 +1229,7 @@ use sdforge::grpc::sdforge_v1::{CallRequest, sd_forge_service_client::SdForgeSer
 
 let mut client = SdForgeServiceClient::connect("http://127.0.0.1:50051").await?;
 let mut request = tonic::Request::new(CallRequest {
-    method: "fluxgate.health".into(),   // 任意 #[forge(grpc_method)] 注册的方法名
+    method: "fluxweir.health".into(),   // 任意 #[forge(grpc_method)] 注册的方法名
     parameters: Default::default(),
     data: r#"{"prompt":"hi"}"#.into(),   // JSON 载荷经门面分发到 handler
 });
@@ -1247,8 +1247,8 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 
 | 项       | 内容                                                                                                                                                                                                                                                                                                                                                         |
 | :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 启用方式 | `fluxgate = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` + `url` 随该 feature 引入）                                                                                                                                                                                                                                                            |
-| 模块     | `chat` / `embed` / `stream` / `client`（`FluxgateClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error`                                                                                                                                                                                                                                        |
+| 启用方式 | `fluxweir = { features = ["sdk"] }`（`reqwest` + `eventsource-stream` + `url` 随该 feature 引入）                                                                                                                                                                                                                                                            |
+| 模块     | `chat` / `embed` / `stream` / `client`（`FluxweirClient` 及 Builder）/ `config`（`RequestConfig`）/ `admin` / `error`                                                                                                                                                                                                                                        |
 | 类型导出 | `ChatMessage`（多模态 `ChatContent::Parts` / tool_calls）/ `ChatRequest`（tools / tool_choice / vendor_extensions / penalties）/ `ChatResponse`（结构化 finish_reason + 含 cache_read 的 usage + tool_calls）/ `EmbedRequest` / `EmbedResponse` / `ChatStream`（tool_calls 增量片段 + usage 尾帧）/ 目录 CRUD（`ModelCatalogInfo` / `ModelCatalogUpsert`）等 |
 | 示例     | 见 [README「作为库依赖」](../README.md#-作为库依赖)                                                                                                                                                                                                                                                                                                          |
 
@@ -1261,7 +1261,7 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 > vendor 字段**（网关不注入，已移除恒空字段）；`finish_reason` 为结构化
 > 四变体枚举 + 自定义词透传。
 
-> `FluxgateSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。超时模型：非流式请求（chat / embed）总超时缺省 **600s**（`FluxgateClientBuilder::timeout`，`DEFAULT_REQUEST_TIMEOUT`），可被 `RequestConfig.timeout` 逐请求覆盖；`chat_stream` 流式**不设总超时**（SSE 长流不被切断），连接停滞由 read_timeout（缺省 600s，按读重置，`DEFAULT_READ_TIMEOUT`）看护。
+> `FluxweirSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。超时模型：非流式请求（chat / embed）总超时缺省 **600s**（`FluxweirClientBuilder::timeout`，`DEFAULT_REQUEST_TIMEOUT`），可被 `RequestConfig.timeout` 逐请求覆盖；`chat_stream` 流式**不设总超时**（SSE 长流不被切断），连接停滞由 read_timeout（缺省 600s，按读重置，`DEFAULT_READ_TIMEOUT`）看护。
 
 ---
 

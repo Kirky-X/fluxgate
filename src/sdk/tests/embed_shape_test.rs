@@ -7,13 +7,13 @@
 
 use serde_json::json;
 
-use crate::sdk::client::FluxgateClientBuilder;
+use crate::sdk::client::FluxweirClientBuilder;
 use crate::sdk::config::RequestConfig;
 use crate::sdk::embed::{EmbedEncodingFormat, EmbedInput, EmbeddingValue};
 use crate::sdk::EmbedRequest;
 
-fn build_client(base_url: &str) -> crate::sdk::FluxgateClient {
-    FluxgateClientBuilder::new()
+fn build_client(base_url: &str) -> crate::sdk::FluxweirClient {
+    FluxweirClientBuilder::new()
         .base_url(base_url)
         .api_key("test-key")
         .build()

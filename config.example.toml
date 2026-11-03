@@ -42,7 +42,7 @@ port = 8080
 path = "./data/llm_proxy.db"
 # url = "postgres://127.0.0.1:5432/fluxgate"
 # url = "mysql://127.0.0.1:3306/fluxgate"
-pool_size = 5
+pool_size = 10
 
 # ✅ 热生效 —— per-model 能力/定价目录（字段对齐 agentstem ModelEntry）。
 # 定价单位 =「currency 计价，每 1M tokens」（对齐 estimate_usage_cost 的计价
@@ -140,6 +140,7 @@ prefix = "Bearer"
 [cors]
 enabled = true
 allowed_origins = ["*"]
+# 演示值（非默认）：代码默认仅 GET/POST/OPTIONS，PUT/DELETE 为追加项
 allowed_methods = ["GET", "POST", "OPTIONS", "PUT", "DELETE"]
 allowed_headers = ["*"]
 allow_credentials = false
@@ -777,6 +778,7 @@ cost_restore_window_hours = 24
 # - timeout_secs: 单次导出超时（1-300 秒，默认 10）。
 [otlp]
 enabled = false
+# 演示值（非默认）：默认空串，enabled = true 时必填
 endpoint = "http://localhost:4318/v1/metrics"
 interval_secs = 60
 timeout_secs = 10
@@ -866,6 +868,7 @@ host = "0.0.0.0"
 port = 50051
 timeout_seconds = 30
 max_connections = 1000
+# 演示值（非默认）：两项默认 None（不设置，交由 tonic 内建行为）
 http2_keepalive_interval_secs = 30
 http2_keepalive_timeout_secs = 10
 

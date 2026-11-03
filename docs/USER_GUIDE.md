@@ -50,7 +50,7 @@ cargo run --release
 cargo run --release -- /path/to/config.toml
 ```
 
-配置路径参数解析见 `src/main.rs`（`std::env::args().nth(1)`，缺省 `config.toml`）。服务器默认监听 `0.0.0.0:8080`（`[server]` 段默认值，见 `src/config/mod.rs`）。**`config.example.toml` 是随仓的带注释全量参考**：`Config` 结构体的每个段、每个字段都在那里并标注默认值与热更新可用性（可选段如 `[[model_catalog]]` 以注释模板给出，按需取消注释），显式值与 serde default 逐位一致（复制即得默认行为）；`config.toml` 本身不入库（`.gitignore` 已列），干净检出必须自行复制。新增配置项须同步该文件与 `tests/config/config_toml_example_test.rs`。
+配置路径参数解析见 `src/main.rs`（`std::env::args().nth(1)`，缺省 `config.toml`）。服务器默认监听 `0.0.0.0:8080`（`[server]` 段默认值，见 `src/config/mod.rs`）。**`config.example.toml` 是随仓的带注释全量参考**：`Config` 结构体的每个段、每个字段都在那里并标注默认值与热更新可用性（可选段如 `[[model_catalog]]` 以注释模板给出，按需取消注释），除注明「演示值（非默认）」的条目外，显式值与 serde default 一致（复制即得默认行为）；`config.toml` 本身不入库（`.gitignore` 已列），干净检出必须自行复制。新增配置项须同步该文件与 `tests/config/config_toml_example_test.rs`。
 
 ### 验证服务
 
@@ -145,7 +145,7 @@ bind_key_hash = "<64 位 hex，必须存在于 api_keys>"
 
 - 客户端携带 **`Authorization: Bearer <key>`**（优先）或 **`x-api-key: <key>`**（备用），提取逻辑见 `src/utils/tenant.rs`（`auth.rs` 仅 re-export）。
 - 认证状态**每请求从热配置现读**：吊销 / 轮换 key、切换 `enabled`，`POST /admin/config` 后立即生效，无需重启。
-- 认证豁免路径（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/middleware/auth.rs:159-168`）无需 key；`/healthz` 与 `/readyz` 另由 sdforge 在认证层之后挂载，**免认证免限流**（实测无 key 返回 200），`/ready` 未注册（404）。
+- 认证豁免路径（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/admin/subscription/callback`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/middleware/auth.rs` 认证白名单判定）无需 key；`/healthz` 与 `/readyz` 另由 sdforge 在认证层之后挂载，**免认证免限流**（实测无 key 返回 200），`/ready` 未注册（404）。
 
 ---
 
@@ -173,6 +173,11 @@ bind_key_hash = "<64 位 hex，必须存在于 api_keys>"
 | `stream_idle_ms` | u64    | `30000`                  | 流式相邻 chunk 间 idle 超时（毫秒），`0` = 不限时                                                                                                                                                                                       |
 | `cache_ttl_secs` | u64    | `300`                    | 上游前缀缓存存活时长（秒，合法范围 1–86400）：`[routing.affinity] mode = "auto"` 判定值得粘时以此作为粘持 TTL；1h 缓存部署配 `3600`                                                                                                     |
 | `silent_cache`   | bool   | `false`                  | 沉默缓存厂商标记：usage 不报 cache 列的上游（OpenAI 前缀缓存、Gemini 隐式缓存）置 `true`，auto 模式把 `prompt_tokens` 当写入值计入缓存价值，否则这类厂商 worth 恒 0、永不粘                                                             |
+| `supports_batch` | bool   | `false`                  | batch 端点支持标记（`X-Batch: 1` 路由的过滤标记）                                                                                                                                                                                        |
+| `chat_path`      | 无     | 缺省走历史规则           | 跳过 `/v1` 自动拼接规则、直用该路径（None/缺省走历史拼接；与 `api_style` 路径语义歧义时拒绝加载）                                                                                                                                         |
+| `anthropic_version` | 无  | 缺省 → `"2023-06-01"`    | Anthropic 面 version 头覆写；缺省用内置默认值                                                                                                                                                                                            |
+| `forward_beta_headers` | bool | `false`              | 将客户端 beta 头透传到上游（默认关闭）                                                                                                                                                                                                   |
+| `send_nonstandard_params` | bool | `false`            | 非标参数原样发送上游（透传路径恒不触碰请求体，仅转换路径消费该开关）                                                                                                                                                                      |
 
 配置定义见 `src/config/mod.rs`（`VendorConfig`）。
 
@@ -186,6 +191,7 @@ bind_key_hash = "<64 位 hex，必须存在于 api_keys>"
 | `enabled`      | `true` | 模型开关                                                                                                                                                                                                      |
 | `dimensions`   | 无     | 嵌入向量维度（声明该字段 = 嵌入条目）。仅用于同 `compat_group` 内一致性校验与响应维度守门基准，不影响路由选择                                                                                                 |
 | `compat_group` | 无     | 嵌入兼容组名（声明任一嵌入字段 = 嵌入条目）。同组条目 = 同一向量空间、故障时允许组内迁移；未声明 = 单例组（不与其他厂商互换）                                                                                 |
+| `model_type`   | 无     | 任务类型闭集：`chat` / `embedding` / `rerank`（与 `api_style` 同构、历史 `matches!` 严格小写口径；`type_ = "rerank"` 厂商的路由依赖该声明）                                                                    |
 
 #### 嵌入兼容组路由（`POST /v1/embeddings`）
 
@@ -225,7 +231,7 @@ pin 可经 `POST /admin/embedding-pins/{abstract_id}/reset` 重置；配置热�
 | `enabled`  | `true`       | auto 档开关（每请求热读）。`false` 时 `model = "auto"` 以 `validation_error`(400) 拒绝，全局池不参与选路；显式模型名与 `X-Vendor`/`X-Model` 提示（均为显式指定）不受影响。缺 `[global_model]` 段 = 启用（沿用历史兜底） |
 | `strategy` | `"weighted"` | 全局池策略档位声明；当前选路统一由 `[routing]`（加权 / `selection` 档）决定，该字段暂无独立消费者，保留档位语义                                                                                                         |
 
-> ⚠️ `global_model` 段无热重载点：直接改 `config.toml` 被结构门拒绝（旧快照继续服务），需重启进程；`POST /admin/models/global` 的写入在当前进程内即时生效（开关每请求热读）。
+> ⚠️ `global_model` 段的**文件热重载被结构门拒绝**（直接改 `config.toml` 不生效，旧快照继续服务，需重启进程）；`POST /admin/config` 写入在内存切换后下一请求生效（`enabled` 经 `ConfigManager::is_global_model_enabled` 每请求热读，路由决策时消费），但响应会附 `restart_required` 保守提示。另注意 `POST /admin/models/global` 是模型目录路由（更新 `[[model_catalog]]` 的 global 策略条目，热生效），与本段配置是两回事。
 
 ---
 
@@ -246,6 +252,7 @@ flowchart TB
 
 | 字段                         | 默认值                                                                                                                                                                   | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | :--------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rerank_score_normalization` | `"none"`                                                                                                                                                                 | rerank 分数归一化：`none`（原样透传）/ `sigmoid` / `minmax`；仅影响 `/v1/rerank` 响应分数，不改排序与 index                                                                                                                                                                                                                                                                                                                                          |
 | `w_model`                    | `0.4`                                                                                                                                                                    | 配置权重维系数                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `w_queue`                    | `0.3`                                                                                                                                                                    | 负载维系数（输入由 `load_signal` 决定）                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `w_window`                   | `0.3`                                                                                                                                                                    | Token 预算 / 窗口维系数                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -425,10 +432,12 @@ api_base = "https://api.openai.com/v1"
 | `failure_rate_min_samples` | `5`     | 触发软降权的最小窗口样本数（防小样本误杀）                                    |
 | `failure_rate_threshold`   | `0.5`   | 失败率阈值（(0,1]）                                                           |
 | `failure_rate_penalty`     | `0.1`   | 软降权乘子（权重 ×penalty）                                                   |
+| `circuit_open_timeout_ms`  | `30000` | 熔断 Open→HalfOpen 超时窗口（毫秒；测试可注入短窗口）                          |
+| `expose_fallback_headers`  | `false` | 回退链可观测响应头开关（✅ 热更；开启时成功响应附 `x-fluxgate-vendor` / `model` / `attempts` / `fallbacks`，缓存命中早退不附头） |
 
 ### 熔断器行为
 
-per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `src/vendor/manager.rs:135-145`。
+per-vendor 熔断器（limiteron CircuitBreaker）：**连续 5 次失败打开，打开 30 秒后进入 half-open，连续 3 次成功恢复**。慢调用判定线抬高到 60 秒 / 100%（防止 LLM 常态长调用被误判为慢），生产配置单点见 `src/vendor/manager.rs` 的 `gate_circuit_config`。
 
 ---
 
@@ -504,7 +513,7 @@ max_requests = 100
 
 - `rules` 为空（缺省）= 单层共享 `TokenBucket(100, 10/s)` 兜底（与旧 `Governor::new()` 默认逐位一致），无端点表。
 - 超限返回 `429 + Retry-After`（取窗口重置剩余秒数）；限流器内部故障放行（fail-open）。
-- 限流豁免路径（`is_quota_exempt_path` 十条：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/api/router_builder.rs:55-64`）。
+- 限流豁免路径（`is_quota_exempt_path` 十条：`/health`、`/healthz`、`/ready`、`/api/v1/health`、`/readyz`、`/metrics`、`/api-docs`与`/api-docs/*`、`/swagger-ui`与`/swagger-ui/*`，见 `src/api/router_builder.rs` 限流豁免表）。
 - 端点表条目有硬上限（1024），auth 关闭时达到上限后新租户退化到共享桶，内存有界。
 
 ### [admission] 拥塞感知优先级准入
@@ -967,6 +976,8 @@ custom = "block"                # block = 整请求 400 拒绝
 email = "warn"                  # warn = 只计数不改写
 ```
 
+> `kinds` / `actions` 键的合法值集共 **7 类**（`src/masking/kinds.rs` 闭集）：`api_key`、`private_key`、`token`、`email`、`card`、`id`、`custom`；`kinds` 缺省 = 全启用，上例仅演示两键。
+
 ### 行为语义
 
 - **检测面**：inklog 扩展形态表（9 类裸 secret + email/密码赋值）+ 高熵 token 扫描 + 自定义词/正则；
@@ -989,6 +1000,60 @@ enabled = false          # 默认关（观测旁路；IO 失败 warn 降级，�
 # max_total_bytes = 104857600   # 总量上限（≥4096；超限从最旧日文件删起）
 ```
 
+## 🧩 其余配置段速览
+
+正文章节未展开的五个段，字段与默认值如下（完整注释见 `config.example.toml`）。
+
+### [health] 主动健康探针
+
+| 字段             | 默认值  | 说明                                                                                             |
+| :--------------- | :------ | :----------------------------------------------------------------------------------------------- |
+| `mode`           | `"off"` | `off` = 不探测（默认零行为）；探针结果写入厂商健康面，参与熔断前的主动判定                        |
+| `interval_secs`  | `300`   | 探测周期（秒）                                                                                   |
+| `timeout_ms`     | `5000`  | 单次探测超时（毫秒）                                                                             |
+| `probe_strategy` | `"free"` | 探针策略档（优先消耗空闲并发位）                                                                 |
+
+✅ 热读（`mode` 等变更见配置热更新表）。
+
+### [lexcompress] 词法压缩
+
+| 字段            | 默认值 | 说明                                                                                     |
+| :-------------- | :----- | :--------------------------------------------------------------------------------------- |
+| `enabled`       | `false` | 默认关；`X-Compress: 1` 请求头触发，仅对单条消息超阈值时生效                              |
+| `min_chars`     | `4000`  | 单条消息触发压缩的最小字符数                                                             |
+| `ratio_ceiling` | `0.5`   | 压缩比上限（防过度压缩丢语义）                                                           |
+
+✅ 热读（每请求热读）。
+
+### [cache.semantic] 语义缓存（`semantic-cache` feature，不进 `full`）
+
+| 字段          | 默认值                     | 说明                                                                 |
+| :------------ | :------------------------- | :------------------------------------------------------------------- |
+| `enabled`     | `false`                    | 默认关；bootstrap 装配一次（enabled 时加载 BGE 模型），**启停与参数变更均需重启** |
+| `similarity`  | `0.92`                     | 语义相似度命中阈值                                                   |
+| `max_entries` | `1000`                     | 内存条目上限                                                         |
+| `model_path`  | `"BAAI-bge-small-zh-v1.5"` | 嵌入模型标识                                                         |
+
+### [database] 存储后端
+
+| 字段        | 默认值                  | 说明                                                                                                                       |
+| :---------- | :---------------------- | :------------------------------------------------------------------------------------------------------------------------- |
+| `path`      | `"./data/llm_proxy.db"` | SQLite 文件路径（`url` 留空时生效；需 `db-sqlite`，后端缺失启动报 `database-backend-missing` 并附重建指引） |
+| `url`       | `""`（注释模板给出）    | 非空时优先生效：`postgres://…`（需 `db-postgres`）/ `mysql://…`（需 `db-mysql`）；切换后端不做数据迁移，新后端空库起步      |
+| `pool_size` | `10`                    | 连接池大小                                                                                                                 |
+
+❌ 需重启（启动期建池）。
+
+### [docs] OpenAPI/Swagger 出口
+
+| 字段      | 默认值  | 说明                                                                                        |
+| :-------- | :------ | :------------------------------------------------------------------------------------------ |
+| `enabled` | `false` | 默认关（`/api-docs` 与 Swagger UI 路由不存在，404）；显式打开后可达（静态文档面，免认证免限流） |
+
+❌ 需重启（路由建站期挂载）。
+
+---
+
 ## 🔄 配置热更新操作指南
 
 ### 操作入口
@@ -1009,7 +1074,7 @@ RMW（读-改-写）端点在 `ConfigManager` 写锁内完成读-改-校验-落�
 | 热生效 | `auth`（每请求热读）、`retry`（每请求热读）、`routing`（每次路由热读）、`cache`（精确缓存，每次操作热读）、`resilience`、`admission`、`quota`、`health`、`pricing`、`global_model`、`lexcompress`（每请求热读）、`masking`（每请求热读，words/rules 变更检测器惰性重建） | `POST /admin/config` 后下一请求即用新值 |
 | 需重启 | `server` / `cors`（建站期被 sdforge 固化）、`rate_limit`（Router 构造期消费）、vendor `concurrency`（vendor 实例构造期消费）、`database`（启动期建池）、`docs`（文档路由建站期挂载）、`vendors`（实例拓扑）、`cache.semantic`（语义层 bootstrap 装配一次）               | 修改后须重启进程                        |
 
-> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组检测 `server` / `cors` / `rate_limit` / `database` / `grpc` / `global_model` / `cache.semantic` / `docs.enabled` / `routing.difficulty.enabled`（`src/api/admin.rs:333-395`），另在 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键变更时加入对应键名（分类器 bootstrap 装配一次，热更后惰性直到重启）。数组之外仍有两类需重启面：vendor `concurrency` 与 `vendors` 拓扑——改这些段后请自行安排重启。
+> ⚠️ `POST /admin/config` 的响应含 **`restart_required` 数组**；该数组检测 `server` / `cors` / `rate_limit` / `database` / `grpc` / `otlp` / `global_model` / `cache.semantic` / `docs.enabled` / `routing.difficulty.enabled`（`src/api/admin.rs` 的 update_config 差分段），另在 `routing.difficulty.classifier` 的 `model_path` / `engine` / `cache_ttl_secs` 三个键变更时加入对应键名（分类器 bootstrap 装配一次，热更后惰性直到重启）。数组之外仍有两类需重启面：vendor `concurrency` 与 `vendors` 拓扑——改这些段后请自行安排重启。
 
 ```mermaid
 flowchart TB
@@ -1047,14 +1112,16 @@ flowchart TB
 
 Docker 相关文件位于 `docker/` 目录：`docker/Dockerfile`（构建定义）与 `docker/docker-compose.yml`（部署编排）；`.dockerignore` 留在仓库根——构建上下文是仓库根，忽略规则按上下文根解析。构建命令见 [README](../README.md#-docker-部署)。
 
-两阶段构建：`rust:1.99-alpine3.24`（编译）→ `alpine:3.24`（运行），运行态 apk 清单为 sqlite / sqlite-libs / ca-certificates（仅供容器内用 sqlite3 CLI 查库与读根证书：产物 musl 静态链接，本身不需要任何额外库；TLS 栈为纯 rustls，不再显式声明 libssl3/libcrypto3—该两包由 alpine 基础镜像自带），以非 root 用户 `appuser`（UID/GID 10001）运行，`EXPOSE 8080`，数据目录 `/app/data`。实测镜像 78.9 MB。
+> ⚠️ **vecboost 附加上下文是构建前置**：根 manifest 的 optional path 依赖 `../vecboost`（`--locked` 即使 default 口径不编译它也要读其 manifest），构建命令必须带 `--build-context vecboost=../vecboost`（compose 侧对应 `build.additional_contexts`），漏挂即 `failed to read /vecboost/Cargo.toml`。同理 `locales/`（i18n 编译期内嵌）与 `examples/`（workspace 成员）也必须在 bind mount 清单内，缺一即编译失败。
+
+两阶段构建：`rust:1.99-alpine3.24`（编译）→ `alpine:3.24`（运行），运行态 apk 清单为 sqlite / sqlite-libs / ca-certificates（仅供容器内用 sqlite3 CLI 查库与读根证书：产物 musl 静态链接，本身不需要任何额外库；TLS 栈为纯 rustls，不再显式声明 libssl3/libcrypto3—该两包由 alpine 基础镜像自带），以非 root 用户 `appuser`（UID/GID 10001）运行，`EXPOSE 8080`，数据目录 `/app/data`。
 
 两个阶段的 alpine 后缀建议同一分支升级：产物为 musl 静态链接（实测 `ldd /bin/server` 只留 `ld-musl` 一条，sqlite 已静态内嵌），因此不存在 sqlite 符号跨版本风险；对齐两侧是为了运行期 loader 与 apk 包不跳分支。运行阶段的 `ldd /bin/server` 门禁作回验：一旦基座或依赖图改为动态链接（如引入 glibc 基座或 OpenSSL 绑定）而运行阶段没装对应包，构建直接失败而不是到容器启动时才暴露。
 
 ```mermaid
 flowchart TB
     subgraph S1["阶段 1：构建 rust:1.99-alpine3.24"]
-        A["绑定 src / Cargo.toml / Cargo.lock"] --> B["cargo build --locked --release<br/>（BuildKit 缓存挂载）"]
+        A["绑定 src / locales / examples<br/>Cargo.toml / Cargo.lock<br/>附加上下文 vecboost → /vecboost"] --> B["cargo build --locked --release<br/>（BuildKit 缓存挂载）"]
         B --> C["产物复制为 /bin/server"]
     end
     subgraph S2["阶段 2：运行 alpine:3.24"]
@@ -1071,14 +1138,14 @@ flowchart TB
 | :------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 服务名 / 镜像 | `app` / `fluxgate:${FLUXGATE_IMAGE_TAG:-0.1.0}`（不再用 `:latest`，tag 同时透传为 `APP_VERSION` 标签）                                                                                                           |
 | 端口          | `8080:8080`                                                                                                                                                                                                      |
-| 数据挂载      | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。宿主机侧 `config.toml` 不入库（`.gitignore` 已列），compose 启动前必须先 `cp config.example.toml config.toml`，否则挂载缺文件） |
+| 数据挂载      | `../data:/app/data`（相对 compose 文件目录解析，仍为仓库 `data/`；SQLite 持久化。compose 启动前先 `cp config.example.toml data/config.toml`——compose 的 `command` 已指向 `/app/data/config.toml`（见 docker/docker-compose.yml）；勿用单文件只读挂载，管理面写回经 rename 原子覆盖会 EBUSY） |
 | 资源限制      | `cpus: '2.00'` / `memory: 512M`（预留 `0.50` / `128M`）                                                                                                                                                          |
 | 重启策略      | `unless-stopped`                                                                                                                                                                                                 |
 | 密钥注入      | 环境变量（如 `OPENAI_API_KEY=${OPENAI_API_KEY}`）                                                                                                                                                                |
 
 ### ✅ 健康检查路径
 
-健康检查**只有镜像层一处定义**（`Dockerfile` 的 `HEALTHCHECK`，`--start-period=10s`）：`docker run` 直接继承，compose 不再重复声明（原先两处 `start-period` 5s/10s 不一致且 compose 会静默覆盖镜像值）。已对齐实际注册路径 **`/api/v1/health`**（裸 `/health` 未注册路由，仅存在于 auth 与限流白名单中）。自建部署如需自定义探针（如改调度间隔或换 k8s 探针），保持探测该路径：
+健康检查**只有镜像层一处定义**（`Dockerfile` 的 `HEALTHCHECK`，`--start-period=120s --interval=15s`）：`docker run` 直接继承，compose 不再重复声明。已对齐实际注册路径 **`/api/v1/health`**（裸 `/health` 未注册路由，仅存在于 auth 与限流白名单中）。自建部署如需自定义探针（如改调度间隔或换 k8s 探针），保持探测该路径：
 
 ```yaml
 healthcheck:
@@ -1089,7 +1156,7 @@ healthcheck:
       "--no-verbose",
       "--tries=1",
       "--spider",
-      "http://localhost:8080/api/v1/health",
+      "http://127.0.0.1:8080/api/v1/health",
     ]
   interval: 30s
   timeout: 10s
@@ -1108,12 +1175,12 @@ healthcheck:
 | 端点                                                          | 说明                                                                                                                                                  |
 | :------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /admin/logs?start_time=&end_time=&vendor=&model=&limit=` | 请求日志查询（默认 `limit=100`，上限 1000——超限夹断）。时间过滤为闭区间 `[start_time, end_time]`，两端含边界（Unix 秒，`src/database/repository.rs`） |
-| `GET /admin/logs/search?vendor=<关键词>&limit=`               | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs:54`）                            |
+| `GET /admin/logs/search?vendor=<关键词>&limit=`               | 关键词搜索：**`vendor` 参数即搜索关键词**（历史设计，对 `messages` / `error_message` 做 LIKE 匹配，`src/api/admin.rs` 的 `search_logs`）                            |
 | `GET /admin/stats/tokens?vendor=`                             | 小时级 Token 用量统计（`token_usage` 预聚合表）                                                                                                       |
 | `GET /admin/metrics`                                          | 全局指标快照：请求计数、错误率、平均延迟、各厂商细分，含 `dropped_logs`（日志通道背压丢弃计数）                                                       |
 | `GET /admin/vendors`                                          | 全部厂商状态与队列长度                                                                                                                                |
 | `GET /admin/vendors/{id}/status`                              | 单厂商状态                                                                                                                                            |
-| `POST /admin/vendors/{id}/reset`                              | 清空该厂商 key 池黑名单、轮换游标与冷却状态；未知 vendor 400 `validation_error`（`src/api/admin.rs:241-256` → `reset_key_pool_state`）                |
+| `POST /admin/vendors/{id}/reset`                              | 清空该厂商 key 池黑名单、轮换游标与冷却状态；未知 vendor 400 `validation_error`（`src/api/admin.rs` 的 reset_vendor → `reset_key_pool_state`）                |
 
 ### 日志语言
 
@@ -1194,7 +1261,7 @@ SDK 已并入主 crate 的 `src/sdk` 模块（`sdk` feature 门控，默认 `ful
 > vendor 字段**（网关不注入，已移除恒空字段）；`finish_reason` 为结构化
 > 四变体枚举 + 自定义词透传。
 
-> `FluxgateSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。超时模型：非流式请求（chat / embed）总超时缺省 30s（`FluxgateClientBuilder::timeout`），可被 `RequestConfig.timeout` 逐请求覆盖；`chat_stream` 流式**不设总超时**（SSE 长流不被切断），连接停滞由 read_timeout（缺省 30s，按读重置）看护。
+> `FluxgateSdkError` 的 `Network` 变体与 `ChatStream::from_bytes_stream` 在 `sdk` feature 下恒可用。超时模型：非流式请求（chat / embed）总超时缺省 **600s**（`FluxgateClientBuilder::timeout`，`DEFAULT_REQUEST_TIMEOUT`），可被 `RequestConfig.timeout` 逐请求覆盖；`chat_stream` 流式**不设总超时**（SSE 长流不被切断），连接停滞由 read_timeout（缺省 600s，按读重置，`DEFAULT_READ_TIMEOUT`）看护。
 
 ---
 

@@ -87,3 +87,4 @@ out/
 # 控制台前端构建产物（cargo build.rs 自动生成，不入库）
 web/console/dist/
 web/console/tsconfig.tsbuildinfo
+web/console/.fluxgate-build-stamp

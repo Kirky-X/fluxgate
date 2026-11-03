@@ -16,11 +16,6 @@
 - `[routing] price_factor_mode = "cache_expected"`（默认 `nominal`；取值 `nominal` / `cache_expected`，未知值按 `nominal`——选路自动偏向缓存定价友好的厂商）。
 - 命中观测：`/admin/metrics` 的 `cache_read_tokens_sum / cache_input_tokens_sum`。
 
-## 历史版本
-
-- 记录变更历史、生成时间、参数配置。
-- 输出报告（结论、数据支撑、置信度）。
-
 ## 实测结论（2026-10-15，真实厂商验证）
 
 - **Zhipu 直连（glm-4.5-flash，免费档）**：同前缀重复请求 1340 token 中命中 1330（**99.3%**），延迟 1136ms → 568-883ms；实测到一次缓存逐出后自动重建（命中归零再恢复）。回包 `usage.prompt_tokens_details.cached_tokens` 逐请求可观测——O2 观测链路对它有效。

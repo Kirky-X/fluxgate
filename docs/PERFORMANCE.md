@@ -10,7 +10,7 @@
 |:---|:---|
 | 机器 | AMD Ryzen 9 9950X 16-Core（16 逻辑核），WSL2（kernel `6.6.87.2-microsoft-standard-WSL2`） |
 | 工具链 | rustc 1.97.1 / cargo 1.97.1 |
-| 代码版本 | HEAD `bc5cc3b`（转换/SSE/路由组）/ `1f3089b` + 本修复批（affinity 组） |
+| 代码版本 | HEAD `bc5cc3b`（转换/SSE/路由组）/ `1f3089b` + 本修复批（affinity 组）；基线建立后代码持续演进（当前 HEAD `fbd6a3c`，2026-11-04），数值代表性随演进衰减，比较前请复跑 |
 | 基准框架 | criterion 0.8（dev-dependency；关默认特性仅保留 `cargo_bench_support`，统计单线程） |
 | 构建 profile | `cargo bench`（bench profile 继承 release：`opt-level=3` / `lto=true` / `codegen-units=1`） |
 | 复跑命令 | `cargo bench --bench conversion` / `--bench sse` / `--bench routing` / `--bench affinity`（各基准均 `harness = false`） |
@@ -31,8 +31,10 @@
 |:-----|-----:|-----:|:---------|
 | `openai_parse_sse_frame_to_chunk` | 1.6132 µs | 3.10 Melem/s | 尾段 5 帧（data: 前缀 + `[DONE]` 终止帧） |
 | `anthropic_parse_sse_frame_to_chunk` | 1.4827 µs | 4.72 Melem/s | 尾段 7 帧（event:/data: 前缀 + message_stop 收束） |
+| `restore_off_passthrough` | —（`masking` feature 门控组，首轮未记录） | | 掩码关闭时流式回程原样透传 |
+| `restore_on_placeholder_stream` | —（`masking` feature 门控组，首轮未记录） | | 掩码开启时占位符流式还原 |
 
-> 透传路径以帧解析为组件级代理：入站协议与上游一致时走零拷贝透传，流式内存热点在逐帧解析。
+> 透传路径以帧解析为组件级代理：入站协议与上游一致时走零拷贝透传，流式内存热点在逐帧解析。`benches/sse.rs` 另含 `masking` feature 门控的 `sse_masking` 组（`restore_off_passthrough` / `restore_on_placeholder_stream`），随 `--features masking` 编译与运行。
 
 ## 路由决策 routing
 

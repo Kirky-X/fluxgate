@@ -231,5 +231,19 @@ async fn assemble_router(
     let sdforge_config = sdforge_config(config_manager);
     let mut app = sdforge::http::build_with_config(&sdforge_config)?;
     app = app.merge(crate::api::create_router(assembly.api_state.clone()).await);
+    // 内置控制台（console feature）：/console 与 /console/* 静态服务 +
+    // SPA fallback。合并点与 create_router 同级（sdforge 站点侧），不经
+    // 业务 auth/限流层——静态壳无密钥面，控制台内数据请求仍走 /admin/*
+    // 原有认证。feature 关闭时整段 cfg 掉，零路由。
+    #[cfg(feature = "console")]
+    {
+        use axum::routing::get;
+        app = app.route("/console", get(crate::server::console::console_index));
+        app = app.route("/console/", get(crate::server::console::console_index));
+        app = app.route(
+            "/console/{*path}",
+            get(crate::server::console::console_asset),
+        );
+    }
     Ok(app)
 }

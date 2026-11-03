@@ -115,6 +115,12 @@ web-search = ["dep:reqwest", "netguard"]
 # 不进 full：离线分析工具默认产物不含，构建时显式启用并搭配一个 db 后端
 # （bin fluxgate-replay 的 required-features 另含 db-sqlite）。
 cost-replay = ["database", "dep:dbnexus", "dep:sea-orm"]
+# 内置控制台前端（console）：rust-embed 嵌入 web/console/dist（Vite 产物），
+# src/server/console.rs 挂 GET /console 与 /console/* 静态服务 + SPA fallback。
+# 不进 full：嵌入使二进制体积按前端产物体积增长（约 +213KB 原始字节；线上 gzip 传输约 70KB），且
+# build.rs 会触发 npm 工具链依赖——默认产物与 CI 不应背上前端构建前提，
+# 演示/部署按需显式 --features console。
+console = ["web-server", "dep:rust-embed"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openapi"))'] }
@@ -212,6 +218,9 @@ secrecy = { version = "0.10", default-features = false, optional = true }
 opentelemetry = { version = "0.33", default-features = false, features = ["metrics", "trace"], optional = true }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["metrics", "trace"], optional = true }
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "grpc-tonic", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
+
+# 内置控制台嵌入（console feature）：编译期打包 web/console/dist 目录
+rust-embed = { version = "8", default-features = false, features = ["mime-guess"], optional = true }
 
 # JWT 验签（oidc feature，auth-and-masking R-auth-001/002）：RS256/ES256 走
 # rust_crypto 纯 Rust 集（rsa+p256+sha2+hmac），免 C 工具链；use_pem 不启用
@@ -414,6 +423,10 @@ path = "tests/server/server_run_invalid_host_test.rs"
 [[test]]
 name = "server_smoke_test"
 path = "tests/server/server_smoke_test.rs"
+[[test]]
+name = "console_embed_test"
+path = "tests/server/console_embed_test.rs"
+required-features = ["console"]
 
 # ---- i18n：键位守卫（en/zh 对齐 + 引用存在性 + 零 Junk）----
 [[test]]

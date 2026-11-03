@@ -12,6 +12,8 @@ pub use http::{build_app, run};
 
 mod affinity_restore;
 mod bootstrap;
+#[cfg(feature = "console")]
+mod console;
 mod handle;
 mod hot_reload;
 mod http;

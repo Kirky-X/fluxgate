@@ -131,7 +131,7 @@ axum = { version = "0.8", default-features = false, features = ["macros", "http1
 # tokio 关默认，按直用面取最小集；fs/process/io-std 零调用
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tower = { version = "0.5", default-features = false, optional = true }
-tower-http = { version = "0.7", default-features = false, features = ["cors", "trace", "request-id"], optional = true }
+tower-http = { version = "0.7", default-features = false, features = ["cors", "trace", "request-id", "compression-gzip"], optional = true }
 
 # 数据库层：kit 模块 + pool-warmup + retry（database.rs 直用 RetryPolicy）
 # 后端与 runtime 不在此写死：Cargo feature 只加不减，写死会锁死单后端，由 db-* 三组透传按构建选择。

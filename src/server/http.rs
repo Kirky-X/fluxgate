@@ -238,12 +238,18 @@ async fn assemble_router(
     #[cfg(feature = "console")]
     {
         use axum::routing::get;
-        app = app.route("/console", get(crate::server::console::console_index));
-        app = app.route("/console/", get(crate::server::console::console_index));
-        app = app.route(
-            "/console/{*path}",
-            get(crate::server::console::console_asset),
-        );
+        use tower_http::compression::CompressionLayer;
+        // 子路由 + CompressionLayer 后合并：压缩只作用于 console 静态面，
+        // 业务/SSE 流不经压缩层（压缩会缓冲破坏流式语义）。
+        let console = axum::Router::new()
+            .route("/console", get(crate::server::console::console_index))
+            .route("/console/", get(crate::server::console::console_index))
+            .route(
+                "/console/{*path}",
+                get(crate::server::console::console_asset),
+            )
+            .layer(CompressionLayer::new());
+        app = app.merge(console);
     }
     Ok(app)
 }

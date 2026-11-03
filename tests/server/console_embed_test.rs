@@ -131,6 +131,7 @@ async fn console_routes_serve_embedded_assets() {
 
     // 3. /api/v1/health 仍 200：console 合并不影响既有路由
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/health")
@@ -143,6 +144,51 @@ async fn console_routes_serve_embedded_assets() {
         response.status(),
         StatusCode::OK,
         "/api/v1/health must remain 200 after console merge"
+    );
+
+    // 4. gzip 协商：CompressionLayer 仅作用于 console 路由，Accept-Encoding:
+    //    gzip 时响应体须为 gzip 编码
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/console")
+                .header("accept-encoding", "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should not fail");
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok()),
+        Some("gzip"),
+        "console shell must be gzip-negotiable"
+    );
+    let etag = response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .expect("console response must carry an ETag")
+        .to_string();
+
+    // 5. If-None-Match 命中 → 304（缓存验证器与缓存策略头照常下发）
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/console")
+                .header("if-none-match", etag.as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should not fail");
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_MODIFIED,
+        "matching If-None-Match must yield 304"
     );
 
     handle.shutdown().await;

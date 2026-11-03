@@ -51,6 +51,7 @@
   - [DELETE /admin/vault/keys/:id](#delete-adminvaultkeysid)
   - [POST /admin/route/explain](#post-adminrouteexplain)
   - [POST /admin/route/difficulty-explain](#post-adminroutedifficulty-explain)
+- [内置控制台（console feature）](#内置控制台console-feature)
 - [健康检查](#健康检查)
   - [GET /api/v1/health](#get-apiv1health)
   - [GET /readyz](#get-readyz)
@@ -141,6 +142,7 @@ Fluxgate 处理器返回的非 2xx 响应均使用以下结构（见 `src/error/
 >   `/v1/chat/completions` 与 `/v1/messages`。入口预扣（预估输入 token×输入单价 + `max_tokens`×输出单价，
 >   单价以 `[[model_catalog]]` 四档为准，未登记模型回退 `[[pricing]]`），响应/流结束后按实际 usage 回补差额；
 >   超限返回 `429 Too Many Requests` + `Retry-After`（窗口剩余秒），文案随 locale（zh `"配额已耗尽，请稍后重试"`）。
+> - **网关键成本预算**（`[key_budgets]` 段配置时）：入站 key 成本超限同样返回 `429` + `Retry-After`（预算窗口余量换算）；预算源不可达时 `fail_open=false`（默认）拒绝并 warn、`fail_open=true` 放行；段缺省=功能整体关闭，行为零变化。
 >   非流式、转换流与**透传流**均回补；透传流断流、`event: error` 终止或全程无 usage（OpenAI 不带
 >   `stream_options.include_usage`）时保持预扣不回补；入口被拒与上游失败的预扣一律不返还。
 > - **配额余量响应头**：规格 Out of Scope（X-RateLimit-\* 形态，本期不做），不提供该响应面；余量观测走
@@ -162,7 +164,7 @@ OpenAI Chat Completions 兼容端点。根据请求体中的 `model` 字段进�
 
 | Header | 必填 | 说明 |
 |---|---|---|
-| `Authorization` | 是 | `Bearer <api_key>` |
+| `Authorization` | 是 | `Bearer <api_key>`；配置 `[auth.oidc_rules]` 时也接受 OIDC 短时键（CI/自动化经 OIDC provider 换发，TTL 默认 1h，继承母键全部限制；无规则时行为不变） |
 | `Content-Type` | 是 | `application/json` |
 | `X-Vendor` | 否 | 路由提示：优先使用的厂商 ID（ID 匹配大小写不敏感） |
 | `X-Model` | 否 | 路由提示：优先使用的模型 ID（ID 匹配大小写不敏感） |
@@ -1664,7 +1666,7 @@ curl http://localhost:8080/admin/models \
 
 ### PUT /admin/models/:id
 
-upsert 单条目录条目：条目存在则整体替换，不存在则追加。原子 RMW（读-改-校验-落盘在写锁内完成），校验规则（唯一性 / 非零窗口 / 价格有限非负 / 条目上限 / `model_id` 非空白）与配置加载同源，两路同拒。
+upsert 单条目录条目：条目存在则整体替换，不存在则追加。原子 RMW（读-改-校验-落盘在写锁内完成），校验规则（唯一性 / 非零窗口 / 价格有限非负（含第 5 价位 `cache_creation_1h_price`）/ 条目上限 / `model_id` 非空白）与配置加载同源，两路同拒。价格面：`long_context_input_price` + `long_context_threshold_tokens` 启用长上下文阶梯计价（输入 token 超阈值时输入腿整体切换，与路由因子同判定条件）；`cache_creation_1h_price` 为 1h 档 cache write 价位（协议侧 1h tokens 解析落地前计费暂不消费，0.0=未配置）。
 
 **认证**: 需要 Bearer Token
 
@@ -2086,6 +2088,19 @@ curl -X POST http://localhost:8080/admin/route/difficulty-explain \
 
 ---
 
+## 内置控制台（console feature）
+
+`--features console` 构建时，网关内置管理控制台前端（Vite+React 产物编译期嵌入，无外部文件依赖）：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /console` | 控制台 SPA 壳（登录页输入 API key，仅存内存态） |
+| `GET /console/{path}` | 静态资产精确命中；未命中路径回落 `index.html`（前端路由） |
+
+静态壳本身免认证（无密钥面）；控制台内的数据请求仍走 `/admin/*` 各端点的 Bearer 认证。feature 关闭（默认）时不产生任何路由。页面：仪表盘（health+metrics）、Vendors（配置编辑/状态/重置）、请求日志（过滤分页）、路由解释（含 `quota.tie_break`/`degrade_tier`）、模型目录。
+
+---
+
 ## 健康检查
 
 ### GET /api/v1/health
@@ -2256,7 +2271,7 @@ LLM 推理端点（`/v1/chat/completions` 与 `/v1/messages`）均解析路由�
 |---|---|---|
 | `X-Vendor` | 优先使用的厂商 ID（直连路由，不查厂商实时状态过滤） | 非空即生效 |
 | `X-Model` | 优先使用的模型 ID | 非空即生效 |
-| `X-Session-Id` | 会话亲和键——同键请求粘住同一成功厂商 | 非空即生效；缺失时自动兜底（见下） |
+| `X-Session-Id` | 会话亲和键——同键请求粘住同一成功厂商 | 非空即生效；缺失时自动兜底（见下）。**别名可配**：`[routing.affinity].session_headers` 列表整体替换头来源（如纳 `X-Conversation-ID` 等 agent 原生头；按序取首个存在且非空者，大小写不敏感；缺省仅 `x-session-id` 零配置行为不变） |
 | `X-Weight` | 请求级权重（浮点数） | 仅接受**有限正数**（非数值 / 负数 / NaN / Infinity 一律忽略）；且需服务端 `[routing].allow_request_weight` 开启（默认 `false`，关闭时忽略） |
 
 **X-Session-Id 兜底规则**：请求未携带 `X-Session-Id` 时，以 `serde_json::to_string(messages[0])` 的前 2KB（UTF-8 字符边界安全截断）计算 SHA256，hex 编码后截取前 16 字符作为会话键——同前缀开头的对话自动粘住同一厂商；请求体无 `messages` 时无兜底键，该请求不参与亲和。

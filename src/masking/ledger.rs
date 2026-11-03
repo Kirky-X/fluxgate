@@ -161,9 +161,11 @@ impl MaskingLedger {
                 "placeholder": record.placeholder,
                 "hint": {"first": record.first, "len": record.len},
             });
-            // 单次 write_all 一行（含换行）：O_APPEND 下追加位置原子
-            file.write_all(line.to_string().as_bytes())?;
-            file.write_all(b"\n")?;
+            // 单次 write_all 一行含换行（O_APPEND 下追加位置原子——多进程
+            // 同文件追加时整行不交错的原子性前提）
+            let mut row = line.to_string();
+            row.push('\n');
+            file.write_all(row.as_bytes())?;
         }
         Ok(())
     }

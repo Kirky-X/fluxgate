@@ -728,6 +728,8 @@ impl VendorManager {
         config: &Arc<ConfigManager>,
         traceparent: Option<&str>,
     ) -> Option<std::sync::Arc<crate::utils::otlp_export::RequestTrace>> {
+        // 未装配先退：model_catalog 深拷贝不得落在默认关的热路径上
+        crate::utils::otlp_export::installed()?;
         let catalog = std::sync::Arc::new(config.read().model_catalog.clone());
         let estimator: crate::utils::otlp_export::Estimator =
             std::sync::Arc::new(move |model: &str, vendor_type: &str, input| {

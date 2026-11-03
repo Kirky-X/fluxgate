@@ -229,7 +229,9 @@ async fn assemble_router(
     // 优先于其检测缓存，晚于首次 get_locale 也能覆盖）。
     sdforge::i18n::set_locale(&crate::i18n::current_locale().to_string());
     let sdforge_config = sdforge_config(config_manager);
-    let mut app = sdforge::http::build_with_config(&sdforge_config)?;
+    // sdforge rc.10 起框架入口带 base 路由参数（应用路由先合并）——fluxgate
+    // 以空 base 起步，语义与旧 build_with_config 等价
+    let mut app = sdforge::http::build_with_config_ext(axum::Router::new(), &sdforge_config)?;
     app = app.merge(crate::api::create_router(assembly.api_state.clone()).await);
     // 内置控制台（console feature）：/console 与 /console/* 静态服务 +
     // SPA fallback。合并点与 create_router 同级（sdforge 站点侧），不经

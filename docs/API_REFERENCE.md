@@ -1745,7 +1745,7 @@ curl -X POST http://localhost:8080/admin/config \
 | `input_price` / `output_price` | f64 | 输入/输出单价（currency，每 1M tokens） |
 | `cache_read_price` / `cache_creation_price` | f64 | 缓存读/写单价（同单位；无独立计价填 0） |
 | `rerank_price_per_1k_docs` | f64 | rerank 每千文档单价（同单位；0 = 未配置） |
-| `cache_creation_1h_price` | f64 | 1h 档 cache write 单价（同单位；0.0 = 未配置，协议侧 1h tokens 解析落地前计费暂不消费） |
+| `cache_creation_1h_price` | f64 | 1h 档 cache write 单价（同单位；0.0 = 未配置。上游响应带 `usage.cache_creation.ephemeral_1h_input_tokens` 拆分时，1h 写入按此价、其余写入按基础写价计费；拆分缺失或价未配置则整体按基础写价） |
 | `long_context_input_price` / `long_context_threshold_tokens` | f64 / u64 | 长上下文阶梯计价：输入 token 超阈值时输入腿改用此价（0/缺省不启用） |
 | `currency` | string | `usd` \| `cny`（四价共用币种） |
 | `max_output_tokens` | u64 \| null | 最大输出 tokens（null = 厂商未公布） |
@@ -1767,7 +1767,7 @@ curl http://localhost:8080/admin/models \
 
 ### PUT /admin/models/:id
 
-upsert 单条目录条目：条目存在则整体替换，不存在则追加。原子 RMW（读-改-校验-落盘在写锁内完成），校验规则（唯一性 / 非零窗口 / 价格有限非负（含第 5 价位 `cache_creation_1h_price`）/ 条目上限 / `model_id` 非空白）与配置加载同源，两路同拒。价格面：`long_context_input_price` + `long_context_threshold_tokens` 启用长上下文阶梯计价（输入 token 超阈值时输入腿整体切换，与路由因子同判定条件）；`cache_creation_1h_price` 为 1h 档 cache write 价位（协议侧 1h tokens 解析落地前计费暂不消费，0.0=未配置）。
+upsert 单条目录条目：条目存在则整体替换，不存在则追加。原子 RMW（读-改-校验-落盘在写锁内完成），校验规则（唯一性 / 非零窗口 / 价格有限非负（含第 5 价位 `cache_creation_1h_price`）/ 条目上限 / `model_id` 非空白）与配置加载同源，两路同拒。价格面：`long_context_input_price` + `long_context_threshold_tokens` 启用长上下文阶梯计价（输入 token 超阈值时输入腿整体切换，与路由因子同判定条件）；`cache_creation_1h_price` 为 1h 档 cache write 价位（协议侧已解析 `usage.cache_creation.ephemeral_1h_input_tokens` 拆分：1h 写入按此价、其余按基础写价；拆分缺失或 0.0=未配置时整体按基础写价）。
 
 **认证**: 需要 Bearer Token
 

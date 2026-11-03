@@ -14,6 +14,11 @@
 
 - **项目更名 fluxgate → fluxweir**：crates.io 上 `fluxgate` 已被第三方占位包占用，经候选评分选定 fluxweir（保留 flux 血脉，weir=堰，控流分流语义）。全链路重命名且为**破坏性变更**：crate/bin（`fluxweir`、`fluxweir-replay`）、公开类型（`FluxweirError`/`FluxweirClient` 等 7 族前缀）、HTTP 头（`x-fluxweir-*`）、env 前缀（`FLUXWEIR_*`）、配置目录（`~/.fluxweir/`）、构建戳与锁名、GitHub 仓库 `Kirky-X/fluxweir`。**数据面破坏点（存量数据不可直接沿用）**：vault 柜魔数改为 `FLUXWEIR-VAULT1`、KDF 域分隔常量随名改写——存量 `~/.fluxgate/vault.bin` 拒读且旧密文不可解，厂商密钥需重录或经 env 首装重灌（主钥文件为纯 hex，`mv ~/.fluxgate/vault_master.key ~/.fluxweir/` 可直接迁移）；masking pepper 缺省路径迁移至 `~/.fluxweir/mask_pepper.key`，pepper 变更会使脱敏占位符漂移、上游前缀缓存失效。0.1.0 未发布故不做任何旧名兼容层。
 
+### Fixed（magpie 吸收审计收口）
+
+- **1h 档 cache write 计费生效**（R-catalog-002 推迟项闭环）：协议层解析 Anthropic `usage.cache_creation.ephemeral_1h_input_tokens`（统一 usage 新增 `cache_creation_1h_tokens`，非流式 IR + 流式 SSE 帧 + 结算响应体全链透出）；计费分支按「1h 部分用 `cache_creation_1h_price`、其余写入用基础写价」拆分计价，拆分缺失或价未配置时整体按基础写价。
+- 测试强度补强：vault `.bak` 崩溃恢复接线补端到端故障注入测试（主文件写坏→重开→恢复）；`/admin/logs` 补 `upstream_key_fingerprint` 透出断言（HTTP 层 + handler 直调双形态，防字段白名单化静默消失）。
+
 ### Changed（依赖全面升级）
 
 - **Rust**：三方依赖 pin 全部抬到 minor 级最新写法（tokio 1.54、serde 1.0、uuid 1.29、dashmap 6.2、toml 1.1、rust-embed 8.13、tempfile 3.27 等 15 处）+ `cargo update` 全量 patch（69 个传递依赖，0 新增 RUSTSEC）；自研 7 库升至最新 rc（dbnexus rc.11/inklog rc.12/confers rc.12/sdforge rc.10/limiteron rc.10/oxcache rc.12/trait-kit rc.12；inklog 与 trait-kit 的 rc.9→rc.12 升级在本段补记），sdforge rc.10 框架入口改 `build_with_config_ext`（空 base 等价适配）。

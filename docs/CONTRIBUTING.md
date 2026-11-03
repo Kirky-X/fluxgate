@@ -24,7 +24,7 @@
 
 | 依赖 | 版本要求 | 说明 |
 |:-----|:---------|:-----|
-| Rust | **1.97.1+**（MSRV） | 下限声明在根 `Cargo.toml` 的 `rust-version`（与 7 个兄弟库一致）。ci.yml 按 MSRV 安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1` + `toolchain: 1.97`），既守住下限也让 clippy lint 集合可复现；`docker/Dockerfile` 用当前受支持 stable（1.99）。**clippy 的 MSRV 只取各包自己的 `rust-version`**：`clippy.toml` 不重复 `msrv` 键（曾写 1.75，与下限冲突——clippy 告警令 `-D warnings` 必红，且 MSRV 门控 lint 按旧基线静默抑制），成员 crate `examples` 也显式声明同值 `rust-version`，否则其 lint 基线会回落到运行时 stable 而漂移。改 MSRV 后验证 clippy 需先 `cargo clean -p fluxgate -p fluxgate-examples`：cargo 不把 `clippy.toml` 纳入 fingerprint，不清理则复用缓存诊断 |
+| Rust | **1.97.1+**（MSRV） | 下限声明在根 `Cargo.toml` 的 `rust-version`（与 7 个兄弟库一致）。ci.yml 按 MSRV 安装工具链（`dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1`，以 ci.yml 为准 + `toolchain: 1.97`），既守住下限也让 clippy lint 集合可复现；`docker/Dockerfile` 用当前受支持 stable（1.99）。**clippy 的 MSRV 只取各包自己的 `rust-version`**：`clippy.toml` 不重复 `msrv` 键（曾写 1.75，与下限冲突——clippy 告警令 `-D warnings` 必红，且 MSRV 门控 lint 按旧基线静默抑制），成员 crate `examples` 也显式声明同值 `rust-version`，否则其 lint 基线会回落到运行时 stable 而漂移。改 MSRV 后验证 clippy 需先 `cargo clean -p fluxgate -p fluxgate-examples`：cargo 不把 `clippy.toml` 纳入 fingerprint，不清理则复用缓存诊断 |
 | Git | 任意近期版本 | 版本控制 |
 
 安装 Rust 工具链：
@@ -36,7 +36,7 @@ rustup component add rustfmt clippy
 
 ### 🧩 自研库依赖（crates.io registry）
 
-Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——版本声明在根 `Cargo.toml` 的 `[dependencies]`、校验和锁定在 `Cargo.lock`，cargo 自动拉取。**克隆本仓库即可 `cargo build`，无需把 7 个库放到同级目录**；CI 各作业同理，无兄弟库克隆步骤。Docker 构建不在 CI 内，在本机执行 `docker build -f docker/Dockerfile .`（镜像同为纯 registry 依赖，不取兄弟库源码）。
+Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——版本声明在根 `Cargo.toml` 的 `[dependencies]`、校验和锁定在 `Cargo.lock`，cargo 自动拉取。**克隆本仓库即可 `cargo build`（default 口径无需把 7 个库放到同级目录）**；CI 各作业同理，无兄弟库克隆步骤。两个例外：可选 feature `difficulty-classifier` / `semantic-cache` 经 path 依赖 `../vecboost`（启用时需同级 checkout）；Docker 构建恒需 vecboost 附加上下文——`docker build --build-context vecboost=../vecboost -f docker/Dockerfile .`（compose 侧对应 `build.additional_contexts`），漏挂即解析期报 `failed to read /vecboost/Cargo.toml`。
 
 （历史形态：迁移期以 `path = "../<lib>"` + `[patch.crates-io]` 统一身份以保证 trait 身份一致，该形态与配套的 CI 克隆步骤、Dockerfile `SIBLING_PINS` 机制已随全量切 registry 一并移除。）
 
@@ -67,6 +67,7 @@ Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 |------|------|
 | 通用修复器 | 尾随空白、文件末尾换行（命中即自动改写并拦截提交，`git add` 后重提即可） |
 | `detect-private-key` | 私钥字节级检测（本仓上游凭证只存 `api_key_env` 环境变量名，无夹具排除） |
+| `gitleaks` | 密钥历史扫描（v8.30.1，默认提交前拦截，与 detect-secrets 互补） |
 | `detect-secrets` | 密钥扫描，基线 `.secrets.baseline` 内为已人工核实的误报（`api_key_env` 变量名、测试夹具、SHA256 摘要），基线外新发现会阻断 |
 | `typos` | 拼写检查（带自动改写），白名单在 `typos.toml`（测试夹具词 `abd`/`ot`/`ded`/`Hel`、mermaid 节点 `THR`、`out/` 产物目录） |
 | `cargo-fmt` / `cargo-check` / `cargo-clippy` | 与 CI 完全同口径（`--workspace` / `-D warnings`） |
@@ -78,7 +79,7 @@ Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 
 ## 🏗️ 项目结构
 
-`src/` 共 138 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），按目录职责划分：
+`src/` 共 177 个 `.rs` 文件（原 `crates/llm-gate/` 纯路由核心库已并回单 crate，`fluxgate::config` 等公开路径不变），按目录职责划分：
 
 | 目录 | 职责 | 关键文件 |
 |:-----|:-----|:---------|
@@ -101,7 +102,7 @@ Fluxgate 深度依赖 7 个自研库，经 **crates.io registry** 集成——�
 |:-----|:-----|
 | `src/server` | **服务器装配链**库模块（`all(web-server, logging)` 门控）：bootstrap / http / handle / shutdown，`run()` 起服、`build_app()` 返回 `(Router, ServerHandle)`（停机 flush 收尾，幂等；同进程二次装配 panic，见 `# Panics` 文档） |
 | `src/sdk` | **Rust 客户端 SDK** 模块（`sdk` feature 门控）：chat / embed / models / vendors / health，含 SSE 流式（原顶层 `sdk/` 独立 crate 已并入） |
-| `tests/` | **集成测试**（按功能域目录化，57 个 `.rs` 文件 = 56 个测试二进制 + `common/mod.rs` helper：HTTP 全链路 / 路由 / 协议转换 / 厂商 / 熔断 / 重试 / 成本 / 配置示例断言 / feature 组合矩阵 / 死代码守卫等；grpc_smoke / grpc_coverage 带 `required-features`，随 `grpc` 特性编译，default 口径无空壳二进制） |
+| `tests/` | **集成测试**（按功能域目录化，67 个 `.rs` 文件 = 66 个测试二进制 + `common/mod.rs` helper：HTTP 全链路 / 路由 / 协议转换 / 厂商 / 熔断 / 重试 / 成本 / 配置示例断言 / feature 组合矩阵 / 死代码守卫等；grpc_smoke / grpc_coverage 带 `required-features`，随 `grpc` 特性编译，default 口径无空壳二进制） |
 
 > 架构惯例：`mod.rs` 只保留接口与 re-export，具体实现放独立文件（如 `router/router.rs`、`config/manager.rs`）。新增代码请遵循同一惯例。
 
@@ -138,8 +139,10 @@ cargo build --release
 
 | 类型 | 数量 | 位置 | 写法 |
 |:-----|:-----|:-----|:-----|
-| 单元测试 | **881 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
-| 集成测试 | **997 个** | `tests/`（57 个 `.rs` 文件 = 56 个测试二进制 + `common/mod.rs`） | HTTP 全链路 / 跨模块行为 |
+| 单元测试 | **993 个** | `src/` 各模块内 | `#[cfg(test)] mod tests { ... }` 内联 |
+| 集成测试 | **1092 个（64 个 default 口径二进制）** | `tests/`（67 个 `.rs` 文件 = 66 个测试二进制 + `common/mod.rs`；grpc_smoke / grpc_coverage 随 `grpc` 特性编译） | HTTP 全链路 / 跨模块行为 |
+
+> 口径：`cargo test --workspace --no-fail-fast` 实测于 2026-11-04——执行 2085、通过 2081；4 个失败均为错误文案 i18n 断言在 zh locale 回中文所致（英文环境为绿），非功能缺陷；另有 1 个 hot-reload watcher 用例存在 kqueue 平台抖动（复跑通过）。详见 `logs/docs-r2-test-baseline.txt`。
 
 约定与工具：
 
@@ -164,7 +167,7 @@ cargo test --test gate_router_test             # 单个集成测试二进制（�
 
 ## 🚩 Feature 纪律
 
-`Cargo.toml` 定义 **21 条 feature 声明**（含 `default`，即 20 个非 default；其中 `full` 预设内含下表 12 个 feature），`default = ["full", "db-sqlite"]`（全启用 + sqlite 后端）：
+`Cargo.toml` 定义 **30 条 feature 声明**（其中 `full` 预设内含下表 12 个 feature），`default = ["full", "db-sqlite"]`（全启用 + sqlite 后端）：
 
 | Feature | 门控内容 |
 |:--------|:---------|
@@ -197,9 +200,11 @@ cargo test --test gate_router_test             # 单个集成测试二进制（�
 
 ```text
 feat(cost): add CostTracker with dashmap sharding and atomic accumulation
-fix(security): fix critical security issues from security review
-refactor(database): 用 dbnexus 替换 sqlx 数据库层
+fix(security): fix critical security issues from diting review (T042)
+refactor(database): [T021-T023] 用 dbnexus 替换 sqlx 数据库层
 ```
+
+（示例取自真实提交 `4ca8afe` / `893156a`——任务编号按红线写进 message，不写进源码注释。）
 
 | 类型 | 用途 |
 |:-----|:-----|
@@ -216,6 +221,7 @@ refactor(database): 用 dbnexus 替换 sqlx 数据库层
 
 - **禁止 `git commit --no-verify`** 跳过任何本地检查钩子
 - 一个 commit 一个逻辑变更；任务编号等追踪信息写进 commit message，不写进源码注释
+- 参与社区互动前请阅读 [行为准则](./CODE_OF_CONDUCT.md)（举报渠道见该文档）
 
 ---
 

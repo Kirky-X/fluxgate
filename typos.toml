@@ -34,6 +34,10 @@ Ba = "Ba"
 # b"fo" → "Zm8" 是 RFC 4648 §10 规范样例，PKCE challenge 实现的验收锚点。
 fo = "fo"
 
+# 真实提交哈希（docs/CONTRIBUTING.md 提交规范示例 `4ca8afe`）：
+# "afe" 是 SHA 的一段，不是 "safe" 的笔误，改写会损坏哈希。
+afe = "afe"
+
 [files]
 # out/ 为提交在库的研究报告工具产物（含大量有意缩写与英文笔误），非源码。
 extend-exclude = ["out"]

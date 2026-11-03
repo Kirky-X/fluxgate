@@ -48,6 +48,8 @@ flowchart LR
 
 健康检查路径在认证与限流两处均有独立白名单，永不卸载。
 
+另有三类可选安全能力（feature 门控，默认不进构建面）：**netguard**（零依赖 SSRF 出站判定，`netguard` feature / `web-search` 消费）、**出站掩码 masking**（prompt 内敏感值替换为确定性占位符、回程还原，厂商永不落真值）、**OIDC 短时凭据**（`oidc` feature，外部 IdP 签发进程内短时网关键，不落盘）；**密钥保密柜 vault**（`vault` feature，含于 `full`——上游 LLM 密钥 AEAD 加密持久化，明文边界仅输入/使用/拼装瞬间，见 [上游密钥隔离](#️-上游密钥隔离)）。
+
 ---
 
 ## 🔑 API Key 认证设计
@@ -103,7 +105,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 部署要求
 
-**`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单共九条（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/middleware/auth.rs:159-168`）；其余**业务路由**（含全部 `/admin/*`）均需认证。另有两个免认证例外：`/healthz` 与 `/readyz` 由 sdforge 在全部中间件**之后**挂载，不经过 Fluxgate 的认证/限流/超时层（免认证免限流）；`/readyz` 每请求真跑 DB 与缓存探针，故仅建议内网暴露。
+**`[auth]` 段缺省等于认证禁用**（配置中无该段时 `enabled=false`，所有请求放行）。生产部署必须显式配置 `[auth]` 段。认证侧白名单共十条（`/health`、`/api/v1/health`、`/`、`/readyz`、`/metrics`、`/admin/subscription/callback`（OAuth 302 回跳裸 GET）、`/api-docs` 与 `/api-docs/*`、`/swagger-ui` 与 `/swagger-ui/*`，见 `src/middleware/auth.rs` 认证白名单判定）；其余**业务路由**（含全部 `/admin/*`）均需认证。`/healthz` 与 `/readyz` 虽列在白名单中，实际由 sdforge 在全部中间件**之后**挂载，不经过 Fluxgate 的认证/限流/超时层（免认证免限流；白名单条目是纵深防御冗余，二者不经过本中间件）；`/readyz` 每请求真跑 DB 与缓存探针，故仅建议内网暴露。
 
 ### Admin 端点暴露面与生产隔离要求（评审 M2）
 
@@ -180,7 +182,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 熔断器
 
-`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `src/vendor/manager.rs:135-147`）：
+`limiteron::circuit` 三态机（生产配置单一构造点 `gate_circuit_config()`，见 `src/vendor/manager.rs`）：
 
 | 参数 | 值 | 语义 |
 |:-----|:---|:-----|
@@ -241,7 +243,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 ### 管理端点
 
-`/admin/config`（GET/POST）与其他全部 `/admin/*` 路由都在认证中间件之下，**需认证访问**；认证白名单除九条显式条目外，另有 sdforge 平面的 `/healthz` 与 `/readyz`（在全部中间件之后挂载，免认证免限流，仅建议内网暴露）。
+`/admin/config`（GET/POST）与其他全部 `/admin/*` 路由都在认证中间件之下，**需认证访问**；认证白名单共十条显式条目，另有 sdforge 平面的 `/healthz` 与 `/readyz`（在全部中间件之后挂载，免认证免限流，仅建议内网暴露）。
 
 ---
 
@@ -264,7 +266,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 | 数据库 TLS | dbnexus 以 `runtime-tokio-rustls` 特性编译（rustls 栈） |
 | 网关自身 TLS | 不经 sdforge 终结 TLS——自建 axum 明文监听，**TLS 由外部反向代理承担**（部署责任） |
 | 容器运行时 | `alpine:3.24` 最小化镜像（主仓支持至 2028-06），多阶段构建；产物 musl 静态链接，应用不依赖 OpenSSL（TLS 栈为纯 rustls；libssl3/libcrypto3 由 alpine 基础镜像自带，已从 apk add 显式清单移除），运行阶段 `ldd` 回验依赖全部可解 |
-| 非 root | 专用用户 `appuser`（UID/GID 10001），无 home、无登录 shell |
+| 非 root | 专用用户 `appuser`（UID/GID 10001），无登录 shell；HOME=/home/appuser/.fluxgate（Dockerfile 补建并授权，vault 主钥文件回退路径） |
 | 数据卷 | `/app/data`（SQLite 数据库），属主 appuser |
 | 健康检查 | Dockerfile `HEALTHCHECK` 探测 `/api/v1/health`（实际注册路径带 sdforge 版本前缀） |
 
@@ -286,7 +288,18 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 镜像构建与 Trivy 扫描未纳入 CI，本机构建命令见 [USER_GUIDE · Docker 部署](./USER_GUIDE.md#-docker-部署)。镜像现为纯 registry 依赖（自研库经 crates.io 拉取，不取兄弟库源码），可独立构建；`docker/Dockerfile` 亦已移除兄弟库克隆与 `SIBLING_PINS` 机制。
 
-工具链基线：MSRV 下限 `rust-version = "1.97.1"` 写在根 `Cargo.toml`（与 7 个兄弟库声明一致，cargo 在依赖解析期硬拒更低工具链），ci.yml 按该下限安装工具链（`dtolnay/rust-toolchain@e2a55d2f # v1`）以固定 clippy lint 集合，`docker/Dockerfile` 用当前受支持 stable（1.99）。基础镜像与 Rust 依赖由 `.github/dependabot.yml` 的 `cargo` / `github-actions` / `docker` 三个生态位每周跟踪，因此构建产物可追溯到具体基线版本。
+工具链基线：MSRV 下限 `rust-version = "1.97.1"` 写在根 `Cargo.toml`（与 7 个兄弟库声明一致，cargo 在依赖解析期硬拒更低工具链），ci.yml 按该下限安装工具链（`dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1`，以 ci.yml 为准）以固定 clippy lint 集合，`docker/Dockerfile` 用当前受支持 stable（1.99）。基础镜像与 Rust 依赖由 `.github/dependabot.yml` 的 `cargo` / `github-actions` / `docker` 三个生态位每周跟踪，因此构建产物可追溯到具体基线版本。
+
+### 受支持版本矩阵
+
+| 项 | 范围 | 备注 |
+|:---|:-----|:-----|
+| 源码版本 | 仅 `main` HEAD（当前 `0.1.0`，尚无 release tag） | 漏洞报告请填写实际构建的 commit SHA |
+| MSRV | `1.97.1`（`Cargo.toml` rust-version） | 更低工具链在依赖解析期即拒 |
+| Docker 构建镜像 | `rust:1.99-alpine3.24` | stable 线，随 dependabot 跟踪 |
+| Docker 运行镜像 | `alpine:3.24`（支持期约至 2028-06，以 alpine 官方为准） | 产物 musl 静态链接 |
+
+（核对日期 2026-11-04；外部支持期以官方页面为准。）
 
 ---
 
@@ -310,7 +323,7 @@ key 的摘要跨重启稳定（分账归属与缓存键的正确性依赖这一�
 
 | 边界 | 说明 | 部署建议 |
 |:-----|:-----|:---------|
-| 成本聚合分两层 | 持久层：`token_usage` 表按 `(vendor, model, api_key_hash, date, hour)` 落库四档成本列（`input_cost`/`output_cost`/`cache_read_cost`/`cache_creation_cost`，`src/database/pre_aggregator.rs`），`GET /admin/cost` 可聚合查询，跨重启保留。内存层：进程内 `CostTracker`（`by_vendor`/`by_model`，`src/utils/cost_tracker.rs`）仅在内存累积、**重启清零**；逐请求日志 `request_logs.cost_usd` 仍恒写 `None`（该列仅历史库兼容保留） | 长期成本账以落库 `token_usage` + `GET /admin/cost` 为准；进程内 `CostTracker` 仅作当前进程粗观测，不应作为唯一成本来源 |
+| 成本聚合分两层 | 持久层：`token_usage` 表按 `(vendor, model, api_key_hash, date, hour)` 落库四档成本列（`input_cost`/`output_cost`/`cache_read_cost`/`cache_creation_cost`，`src/database/pre_aggregator.rs`），`GET /admin/cost` 可聚合查询，跨重启保留。内存层：进程内 `CostTracker`（`by_vendor`/`by_model`，`src/utils/cost_tracker.rs`）在内存累积，启动时按 `[metrics].cost_restore_window_hours`（默认 24h）自 `token_usage` 恢复（`restore_from_db`；内存库 warn 跳过）；逐请求日志 `request_logs.cost_usd` 已落库（五个数据面入口按 usage 四档求和 × 目录单价计算，无 usage 记 `None`） | 长期成本账以落库 `token_usage` + `GET /admin/cost` 为准；进程内 `CostTracker` 为恢复窗口内的粗观测，不应作为唯一成本来源 |
 | 请求消息明文落库 | `request_logs.messages` 列**明文存储请求消息**（含用户对话内容，见 `src/database/schema.sql`） | 部署者需自行加密磁盘（如 LUKS / 云盘加密）并严格控制数据库文件访问权限 |
 | 日志搜索为 LIKE 查询 | `GET /admin/logs/search` 对 `messages` / `error_message` 做关键词 LIKE 匹配；查询经参数化绑定（`Statement::from_sql_and_values`），**无 SQL 注入**，但关键词匹配会放大敏感内容读取面 | 限制 `/admin/*` 的网络暴露面，认证 key 仅发给可信运维 |
 

@@ -4,7 +4,7 @@
 
 本格式基于 [Keep a Changelog 1.0.0](https://keepachangelog.com/en/1.0.0/)，版本号遵循语义化版本。
 
-> **注**：`v0.1.0` tag 随本版本发布推送，以下版本对应 `Cargo.toml` 的版本线（当前 `version = "0.1.0"`）。
+> **注**：以下版本对应 `Cargo.toml` 的版本线（当前 `version = "0.1.0"`）。`v0.1.0` tag 尚未推送（本地与远端均无 tag），打 tag / release 为独立发布动作。
 
 ---
 
@@ -12,26 +12,13 @@
 
 ### Changed（依赖全面升级）
 
-- **Rust**：三方依赖 pin 全部抬到 minor 级最新写法（tokio 1.54、serde 1.0、uuid 1.29、dashmap 6.2、toml 1.1、rust-embed 8.13、tempfile 3.27 等 15 处）+ `cargo update` 全量 patch（69 个传递依赖，0 新增 RUSTSEC）；自研 5 库升至最新 rc（dbnexus rc.11/confers rc.12/sdforge rc.10/limiteron rc.10/oxcache rc.12），sdforge rc.10 框架入口改 `build_with_config_ext`（空 base 等价适配）。
+- **Rust**：三方依赖 pin 全部抬到 minor 级最新写法（tokio 1.54、serde 1.0、uuid 1.29、dashmap 6.2、toml 1.1、rust-embed 8.13、tempfile 3.27 等 15 处）+ `cargo update` 全量 patch（69 个传递依赖，0 新增 RUSTSEC）；自研 7 库升至最新 rc（dbnexus rc.11/inklog rc.12/confers rc.12/sdforge rc.10/limiteron rc.10/oxcache rc.12/trait-kit rc.12；inklog 与 trait-kit 的 rc.9→rc.12 升级在本段补记），sdforge rc.10 框架入口改 `build_with_config_ext`（空 base 等价适配）。
 - **前端（web/console）**：React 18→19、react-router-dom 6→7、Vite 5→8、TypeScript 5→7、Tailwind CSS 3→4（config.js → CSS-first `@theme` 迁移，token 与类名面不变）、tailwind-merge 2→3；新增 `vite-env.d.ts` 闭合 TS7 类型面；bundle 66→96KB gzip（预算 200KB 内）。
 
 ### Added（控制台复审残留收口）
 
 - **/console 静态面缓存与传输**：内容哈希弱 ETag + `If-None-Match` 304、哈希资产 `immutable`/壳 `no-cache`、gzip 协商（CompressionLayer 仅作用于 console 路由）；安全响应头 `nosniff`/`frame-ancestors 'self'`/`X-Frame-Options: DENY`。
 - **前端构建工程化**：build.rs 新鲜度改内容戳（免疫 cp -p/时钟偏差假新鲜）、识别 Windows `npm.cmd`、本地增量路径 `npm ci --dry-run` 前置校验锁一致性（拒绝自由解析漂移）；控制台窄屏导航折顶栏横排 + 顶栏当前页标题（DESIGN 对齐）。
-
-### Added（magpie-absorb-r1：magpie 调研吸收十项）
-
-- **上游键用量归因**：`request_logs` 新增 `upstream_key_fingerprint` 列（迁移 V9，三方言同步），记录 fallback 后**实际服务请求**的键池指纹；`GET /admin/logs` 透出（历史行/未走键池为 NULL）。
-- **长上下文阶梯计价接入计费**：prompt tokens 超过 `long_context_threshold_tokens` 时计费与路由同用 `long_context_input_price`；`[[model_catalog]]` 补第 5 价位 `cache_creation_1h_price`（Claude 1h cache write，默认 0.0）并接入 catalog-sync 映射。
-- **会话头别名**：`[routing.affinity].session_headers` 按序取第一个存在的头作亲和键源（默认 `["x-session-id"]`，零配置零回归）。
-- **崩溃安全状态读**：`state_file::read_with_recovery` 三态（主文件坏 → `.bad-<ts>` 隔离 → 回退 `.bak`，全坏 fail-closed 报错）；vault 文件柜接入（config 人写错误仍原样上报）。
-- **网关键成本预算** `[key_budgets]`：按 API key 的成本上限 + daily/monthly 窗口 + 在飞预留（请求字节/4 + 滑动均值估输出）；超限 429+Retry-After；`fail_open` 可配（默认 fail-closed）。
-- **OIDC 换短时网关键**（`oidc` feature，不进 full）：`[auth.oidc_rules]` 每条 issuer+audience+claims **精确匹配**（通配加载拒绝）+ 绑定母键；JWKS 按 kid 缓存（TTL 10 分钟）；签发进程内 TTL 短时键（不落盘、重启失效、继承母键 tier）。
-- **配额时钟平局打破与两级降档**：分差 <ε 且剩余 >10% 时 reset 更早者先用；剩余 ≤90%/≤98% 两档乘数（阈值乘数可配）；`/admin/route/explain` 的 `quota.{tie_break, degrade_tier}` 透出。
-- **占位符 pepper 持久化**：env `FLUXGATE_MASK_PEPPER` → `~/.fluxgate/mask_pepper.key`（0600）→ 进程内随机降级 warn——同 pepper 下占位符跨进程/多副本稳定（上游前缀缓存友好）。
-- **掩码审计台账** `[masking.ledger]`（默认关）：按天 JSONL 记掩码命中元数据（ts/kind/finder/占位符/首字符 hint，**值不落盘**），双上限裁剪；`GET /admin/masking/ledger` 聚合+分页。
-- **OTLP 尝试级追踪** `[otlp.tracing]`（双零默认关）：入站 traceparent 解析、每 vendor attempt 一个子 span（vendor/model/attempt/状态/错误分类/估算成本，实际命中者标 `fluxgate.served`）、出站注入；`docs/ARCHITECTURE.md` 可观测性节划界 metrics 桥与 trace 面。
 
 ## [0.1.0] - 2026-11-03
 
@@ -43,6 +30,19 @@ Gemini/Responses/Embeddings/Rerank，含 SSE 流式）、六因子加权智能�
 崩溃安全状态读（.bak 回退）、i18n（zh/en）、Rust SDK、热重载、gRPC、
 Docker。安全面：API Key 仅存摘要常量时间比较、netguard SSRF 防护、
 出站脱敏。详见各文档。
+
+#### Added（magpie-absorb-r1：magpie 调研吸收十项，2026-11-03 并入本版本）
+
+- **上游键用量归因**：`request_logs` 新增 `upstream_key_fingerprint` 列（迁移 V9，三方言同步），记录 fallback 后**实际服务请求**的键池指纹；`GET /admin/logs` 透出（历史行/未走键池为 NULL）。
+- **长上下文阶梯计价接入计费**：prompt tokens 超过 `long_context_threshold_tokens` 时计费与路由同用 `long_context_input_price`；`[[model_catalog]]` 补第 5 价位 `cache_creation_1h_price`（Claude 1h cache write，默认 0.0）并接入 catalog-sync 映射。
+- **会话头别名**：`[routing.affinity].session_headers` 按序取第一个存在的头作亲和键源（默认 `["x-session-id"]`，零配置零回归）。
+- **崩溃安全状态读**：`state_file::read_with_recovery` 三态（主文件坏 → `.bad-<ts>` 隔离 → 回退 `.bak`，全坏 fail-closed 报错）；vault 文件柜接入（config 人写错误仍原样上报）。
+- **网关键成本预算** `[key_budgets]`：按 API key 的成本上限 + daily/monthly 窗口 + 在飞预留（请求字节/4 + 滑动均值估输出）；超限 429+Retry-After；`fail_open` 可配（默认 fail-closed）。
+- **OIDC 换短时网关键**（`oidc` feature，不进 full）：`[auth.oidc_rules]` 每条 issuer+audience+claims **精确匹配**（通配加载拒绝）+ 绑定母键；JWKS 按 kid 缓存（TTL 10 分钟）；签发进程内 TTL 短时键（不落盘、重启失效、继承母键 tier）。
+- **配额时钟平局打破与两级降档**：分差 <ε 且剩余 >10% 时 reset 更早者先用；剩余 ≤90%/≤98% 两档乘数（阈值乘数可配）；`/admin/route/explain` 的 `quota.{tie_break, degrade_tier}` 透出。
+- **占位符 pepper 持久化**：env `FLUXGATE_MASK_PEPPER` → `~/.fluxgate/mask_pepper.key`（0600）→ 进程内随机降级 warn——同 pepper 下占位符跨进程/多副本稳定（上游前缀缓存友好）。
+- **掩码审计台账** `[masking.ledger]`（默认关）：按天 JSONL 记掩码命中元数据（ts/kind/finder/占位符/首字符 hint，**值不落盘**），双上限裁剪；`GET /admin/masking/ledger` 聚合+分页。
+- **OTLP 尝试级追踪** `[otlp.tracing]`（双零默认关）：入站 traceparent 解析、每 vendor attempt 一个子 span（vendor/model/attempt/状态/错误分类/估算成本，实际命中者标 `fluxgate.served`）、出站注入；`docs/ARCHITECTURE.md` 可观测性节划界 metrics 桥与 trace 面。
 
 ### Added
 
@@ -128,9 +128,9 @@ Docker。安全面：API Key 仅存摘要常量时间比较、netguard SSRF 防�
 
 ---
 
-## [0.1.0] - 2026-10-12
+## 初始批次（2026-10-12，并入 [0.1.0]）
 
-自初始提交起在 0.1.0 版本线上落地的全部变更（首次发布：下含近期批次与初始批次）。
+自初始提交（2026-04-04）起到 2026-10-12 批次为止、随 [0.1.0] 一并交付的全部变更；版本号统一收敛到 [0.1.0]（2026-11-03），本节保留批次史不再单独占版本号。
 
 ### Changed
 

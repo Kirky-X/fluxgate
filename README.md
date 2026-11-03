@@ -81,7 +81,7 @@
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🔥 <b>配置热更新</b><br><span style="color:#64748B">基于 confers DynamicField 的无锁热读；写路径事务语义（校验 → 原子落盘 → 切换内存态），自动快照备份到 <code>config-backups/</code>（保留 10 份、密钥打码）；<code>server</code>/<code>cors</code>/<code>rate_limit</code>/<code>database</code>/<code>grpc</code>/<code>global_model</code>/<code>cache.semantic</code>/<code>docs.enabled</code>/<code>routing.difficulty.enabled</code> 及 <code>routing.difficulty.classifier</code> 的 <code>model_path</code>/<code>engine</code>/<code>cache_ttl_secs</code> 变更会在响应 <code>restart_required</code> 中显式提示（vendor <code>concurrency</code> 等其余需重启面无此字段，需自行重启）</span></td>
-<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">19 个管理/健康方法端点：日志查询/搜索、Token 统计、成本分账查询、全局指标（含亲和命中率、丢弃计数）、厂商状态与密钥池重置、路由解释、配置与模型管理、健康检查</span></td>
+<td width="50%" style="vertical-align:top; padding: 12px">🌐 <b>管理端点与可观测</b><br><span style="color:#64748B">52 个方法端点（feature 全开口径：数据面 14 + 搜索/抓取 2 + 管理面 35 + 健康 1，其中 11 个随 feature 门控；另有 <code>/readyz</code>、<code>/metrics</code> 运维出口与 <code>/console</code> 控制台）：日志查询/搜索、Token 统计、成本分账查询、全局指标（含亲和命中率、丢弃计数）、厂商状态与密钥池重置、路由解释、配置与模型管理、订阅/掩码/目录同步（feature 门控）、健康检查</span></td>
 </tr>
 <tr>
 <td width="50%" style="vertical-align:top; padding: 12px">🗣️ <b>国际化</b><br><span style="color:#64748B">Fluent 双语束（en/zh）覆盖全部业务消息与错误文案，<code>FLUXGATE_LANG</code> → 系统环境 → 回退 en 检测链</span></td>
@@ -157,7 +157,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 
 ## ⚙️ 配置概览
 
-运行时配置为单个 `config.toml`（**不入库**——`.gitignore` 已列（承载 API Key 摘要与上游地址等部署私有物），干净检出先 `cp config.example.toml config.toml` 起步，每段每字段带默认值），共 19 个顶层段（`model_catalog` 逐条字段见 [📖 用户指南](docs/USER_GUIDE.md)）：
+运行时配置为单个 `config.toml`（**不入库**——`.gitignore` 已列（承载 API Key 摘要与上游地址等部署私有物），干净检出先 `cp config.example.toml config.toml` 起步，每段每字段带默认值），共 30 个顶层字段/段（`model_catalog` 逐条字段见 [📖 用户指南](docs/USER_GUIDE.md)）：
 
 <details>
 <summary>📋 表格</summary>
@@ -165,7 +165,7 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 | 段                                       | 作用                                                                                                                                                                                                                                                                                                                                                                                                                     | 热更新                                                                      |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
 | `server` / `database`                    | 监听地址与 SQLite 路径/池大小                                                                                                                                                                                                                                                                                                                                                                                            | ❌ 需重启                                                                   |
-| `vendors` / `global_model`               | 厂商、模型、权重、限流三形态                                                                                                                                                                                                                                                                                                                                                                                             | ✅ 热读（`global_model` 仅经 admin 写入路径热生效，直接改文件被结构门拒绝） |
+| `vendors` / `global_model`               | 厂商、模型、权重、限流三形态                                                                                                                                                                                                                                                                                                                                                                                             | `vendors` ✅ 热读 / `global_model` ⚠️ 文件热重载被结构门拒绝（需重启）；admin 写入内存即时生效（`enabled` 每请求热读）但附 `restart_required` 保守提示 |
 | `auth` / `cors`                          | API Key 摘要与 CORS                                                                                                                                                                                                                                                                                                                                                                                                      | auth ✅ / cors ❌                                                           |
 | `routing` / `retry` / `resilience`       | 路由系数与选择算法、重试策略、韧性覆盖面（含 `[routing.difficulty]` 难度定档子段）                                                                                                                                                                                                                                                                                                                                       | ✅                                                                          |
 | `cache` / `rate_limit` / `admission`     | 响应缓存、入站限流、拥塞准入                                                                                                                                                                                                                                                                                                                                                                                             | cache/admission ✅ / rate_limit ❌                                          |
@@ -177,6 +177,8 @@ curl -X POST http://127.0.0.1:8080/v1/messages/count_tokens \
 | `web_search`                             | 搜索注入与守护抓取（`web-search` feature，不进 `full`；`netguard` 零依赖 SSRF 判定单开可用）。`POST /v1/search` 多源搜索（Tavily/Brave/Exa/SearXNG，多 key 轮换）、`POST /v1/fetch` 守护抓取、`GET /admin/web-search/stats` 观测                                                                                                                                                                                                       | ✅ 热读                                                                     |
 | `catalog_sync`                           | 模型目录自动同步（`catalog-sync` feature，不进 `full`）：从外部目录源（默认 models.dev）拉取定价/上下文窗口映射进 `[[model_catalog]]`，**只增不改**（既有条目含用户定价永不覆盖）；`POST /admin/catalog/sync`（dry_run 出 diff）+ 可选周期任务，失败 fail-open 计数                                                                                                                                                      | ✅ 热读                                                                     |
 | `masking`                                | 出站请求掩码（`masking` feature，不进 `full`；`[masking]` 双门控默认关）：发送上游前把出站 JSON 中的敏感值（API key/私钥/JWT/邮箱/自定义词与正则）替换为确定性占位符 `{{FLUX_<KIND>_<8HEX>}}`（掺 pepper——env/0600 文件/进程内随机三态来源，同 pepper 下跨进程一致），回程只还原**本请求登记过**的占位符（伪造/跨请求回显原样透传）——厂商永不落真值；Mask/Warn/Block 三档动作、fail-closed（故障 503 拒绝不原文出站）、`/admin/masking/stats` 观测与可选审计台账（值不落盘） | ✅ 热读                                                                     |
+| `responses` / `metrics` / `usage_insights` / `key_budgets` | Responses API 面（存储 TTL/上限等）、指标导出（含成本恢复窗）、会话用量洞察开关、API key 预算档位 | ✅ 热读                                                                     |
+| `otlp`                                   | OTLP/HTTP-Proto 指标导出（`otlp` feature，不进 `full`；默认关）                                                                                                                                                                                                                                                                                                                                                          | ❌ 需重启（endpoint/interval/timeout 变更入 `restart_required`）             |
 
 </details>
 
@@ -236,7 +238,7 @@ model_type = "rerank"
 | 文档                                 | 说明                                                                   |
 | ------------------------------------ | ---------------------------------------------------------------------- |
 | [📖 用户指南](docs/USER_GUIDE.md)    | 从配置、部署到运维的完整使用教程                                       |
-| [📘 API 参考](docs/API_REFERENCE.md) | 全部 33 个方法端点（数据面 14 + 管理 18 + 健康 1）的参数、响应与错误码 |
+| [📘 API 参考](docs/API_REFERENCE.md) | 全部方法端点（数据面 14 + 搜索/抓取 2 + 管理面 35 + 健康 1，feature 全开口径共 52 个）的参数、响应与错误码 |
 | [🏗️ 架构文档](docs/ARCHITECTURE.md)  | 设计原则、路由决策体系、弹性与热更新机制                               |
 | [🔒 安全文档](docs/SECURITY.md)      | 安全设计、供应链门禁与漏洞处理流程                                     |
 | [❓ FAQ](docs/FAQ.md)                | 常见问题与已知边界                                                     |
@@ -385,7 +387,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 🎯 测试策略
 
-单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard / vault，共 57 个 `.rs` 文件——56 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变；grpc_smoke / grpc_coverage 两个按 `required-features` 随 `grpc` 特性编译，default 口径不产出空壳二进制），Mock 使用 mockito（HTTP 上游线级桩）+ 手写 fake（进程内替身，如 `MockDifficultyClassifier`），时间敏感测试注入 limiteron MockClock 假时钟。
+单元测试内联于 `src/`（`#[cfg(test)]`），集成测试按功能域组织在 `tests/` 子目录（api / routing / resilience / config / database / protocol / vendor / cost / server / i18n / matrix / utils / guard / vault / masking / replay，共 67 个 `.rs` 文件——66 个测试二进制 + `tests/common/mod.rs` helper，由根 `Cargo.toml` 的 `[[test]]` 逐二进制显式注册；一文件一二进制，进程独占语义不变；grpc_smoke / grpc_coverage 两个按 `required-features` 随 `grpc` 特性编译，default 口径不产出空壳二进制），Mock 使用 mockito（HTTP 上游线级桩）+ 手写 fake（进程内替身，如 `MockDifficultyClassifier`），时间敏感测试注入 limiteron MockClock 假时钟。
 
 ### ▶️ 运行命令（与 CI 一致）
 
@@ -407,7 +409,7 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 
 ### 📊 测试规模
 
-截至当前版本（`cargo test --workspace` 实测）：**1878 个用例通过、0 失败**——单元测试 881 个（`src/` 内联）+ 集成测试 997 个（`tests/` 56 个测试二进制，default 口径实际编译 54 个——grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；另有 1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
+截至 2026-11-04（`cargo test --workspace --no-fail-fast` 实测，本机 zh locale 口径）：**执行 2085 个用例、通过 2081**——单元测试 993 个（`src/` 内联）+ 集成测试 1092 个（`tests/` 64 个 default 口径测试二进制，grpc_smoke / grpc_coverage 随 `grpc` 特性编译）；4 个失败均为错误文案 i18n 断言在 zh locale 回中文所致（英文环境为绿），非功能缺陷；另有 1 个 hot-reload watcher 用例存在 kqueue 平台抖动（复跑通过，76bc09f 已串行化缓解）。1 个 `rust,ignore` 示例 doctest 列出但不执行。整体行覆盖率以 `cargo llvm-cov --workspace` 实测为准。主要分布：
 
 <details>
 <summary>📋 表格</summary>
@@ -415,16 +417,16 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 | 测试域                                                                        | 用例数       | 位置                              | 覆盖范围                                                                                                                               |
 | ----------------------------------------------------------------------------- | ------------ | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | protocol_test                                                                 | 160          | tests/protocol/                   | OpenAI ↔ Anthropic 转换 / 流式全变体 / SSE 分帧                                                                                        |
-| api_test                                                                      | 138          | tests/api/                        | 端点集成 / 缓存 / 换路 / 亲和 / admin                                                                                                  |
+| api_test                                                                      | 148          | tests/api/                        | 端点集成 / 缓存 / 换路 / 亲和 / admin                                                                                                  |
 | vendor_test                                                                   | 116          | tests/vendor/                     | 厂商管理 / 限流 / 流式超时 / 健康与指标                                                                                                |
-| router_test                                                                   | 115          | tests/routing/                    | 加权选择 / 亲和 / 提示路由 / 边界                                                                                                      |
+| router_test                                                                   | 122          | tests/routing/                    | 加权选择 / 亲和 / 提示路由 / 边界                                                                                                      |
 | difficulty_tier_test                                                          | 6            | tests/routing/                    | 难度定档改写 → 既有路由链集成                                                                                                          |
-| database / sse                                                                | 41 / 40      | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK                                                                                                        |
-| config / utils_coverage                                                       | 29 / 19      | tests/config/ · tests/utils/      | 配置加载 / 指标与限流边界                                                                                                              |
+| database / sse                                                                | 54 / 40      | tests/database/ · tests/protocol/ | 落库查询与预聚合 / 流分帧与 SDK                                                                                                        |
+| config / utils_coverage                                                       | 80 / 19      | tests/config/ · tests/utils/      | 配置加载 / 指标与限流边界                                                                                                              |
 | retry / config_coverage                                                       | 23 / 20      | tests/resilience/ · tests/config/ | 重试分类与延迟策略 / loader·manager 分支                                                                                               |
-| quota / fallback / admission                                                  | 20 / 17 / 19 | tests/resilience/                 | 配额窗 / 换路链 / 准入                                                                                                                 |
-| bandit / model_catalog_admin                                                  | 13 / 13      | tests/routing/ · tests/api/       | bandit 路由 / 模型目录 admin                                                                                                           |
-| server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点 / key 池等 | 其余 208     | tests/server/ 等                  | server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点与厂商 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
+| quota / fallback / admission                                                  | 25 / 10 / 19 | tests/resilience/                 | 配额窗 / 换路链 / 准入                                                                                                                 |
+| bandit / model_catalog_admin                                                  | 13 / 14      | tests/routing/ · tests/api/       | bandit 路由 / 模型目录 admin                                                                                                           |
+| server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点 / key 池等 | 其余 223     | tests/server/ 等                  | server·grpc 起服 / 装配冒烟 / feature 矩阵 / Responses·Gemini 端点与厂商 / key 池 / 价格因子 / 模型目录 admin / i18n 守卫 / 死代码守卫 |
 
 </details>
 
@@ -432,7 +434,7 @@ cargo check -p fluxgate --no-default-features --features "full,db-mysql"
 
 ## ⚡ 性能设计
 
-首轮 Criterion 组件级基线已发布（转换 / SSE 帧解析 / 路由决策路径 / 缓存经济学亲和，含 mean 与吞吐数据）：见 [⚡ 性能基线](docs/PERFORMANCE.md)。以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 arc-swap 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载（响应缓存的并发 single-flight 亦由 oxcache `get_or` 注册表/watch 唤醒承载，派发经 30s 超时钳制、leader 失败 follower 自愈回源）。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
+首轮 Criterion 组件级基线已发布（转换 / SSE 帧解析 / 路由决策路径 / 缓存经济学亲和，含 mean 与吞吐数据）：见 [⚡ 性能基线](docs/PERFORMANCE.md)。以下为可复核的设计要点：同协议请求零拷贝透传（跳过转换开销）、配置经 confers DynamicField 无锁热读（读路径 O(1)）、日志与预聚合全异步（批量事务落库，满载丢弃计数不阻塞响应）、出站连接复用单 reqwest 客户端 + 信号量并发上限、会话亲和与响应缓存由 oxcache 内存后端承载（响应缓存的并发 single-flight 亦由 oxcache `get_or` 注册表/watch 唤醒承载，派发经 30s 超时钳制、leader 失败 follower 自愈回源）。设计细节见 [🏗️ 架构文档 · 性能设计](docs/ARCHITECTURE.md)。
 
 ---
 
@@ -464,7 +466,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 
 <table style="width:100%; border-collapse: collapse">
 <tr><th style="text-align:center">状态</th><th style="text-align:left">方向</th><th style="text-align:left">条目</th></tr>
-<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic / Responses / Gemini 协议互转、SSE 流式、零拷贝透传、33 个方法端点（数据面 14 + 管理 18 + 健康 1）</td></tr>
+<tr><td align="center">✅</td><td>核心网关</td><td>OpenAI / Anthropic / Responses / Gemini 协议互转、SSE 流式、零拷贝透传、52 个方法端点（数据面 14 + 搜索/抓取 2 + 管理面 35 + 健康 1，feature 全开口径）</td></tr>
 <tr><td align="center">✅</td><td>智能路由</td><td>6 因子加权（第 6 项配额预算因子，mode 默认 off）+ 温度平滑、缓存经济学会话亲和（auto 按缓存价值粘 + 落盘恢复，legacy 默认）、LinUCB、Power-of-Two、SLA / LPS 可选层；难度定档三档路由（规则 + 进程内决策引擎融合，<code>difficulty-classifier</code> feature 门控）；缓存成本套件（前缀亲和 PoTC / 语义缓存默认关，缓存价因子默认开）</td></tr>
 <tr><td align="center">✅</td><td>弹性容错</td><td>limiteron 熔断 / 重试 / Fallback 换路链、拥塞感知准入、key 档位</td></tr>
 <tr><td align="center">✅</td><td>可观测与成本</td><td>异步日志、Token 小时级预聚合、全局指标、`[[model_catalog]]` 四档计价与成本分账</td></tr>
@@ -472,7 +474,7 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 <tr><td align="center">✅</td><td>国际化</td><td>Fluent en/zh 双语束覆盖全部业务消息</td></tr>
 <tr><td align="center">✅</td><td>成本查询 API</td><td>成本分账落库（<code>token_usage</code> 四档成本列，V2 迁移）+ <code>/admin/cost</code> 聚合查询端点（预聚合表按 vendor/model 分组）+ 逐请求成本落库（<code>request_logs.cost_usd</code>：四档求和 × 目录单价，rerank 按每千文档价）；进程内 <code>CostTracker</code> 启动自 <code>token_usage</code> 恢复（<code>[metrics].cost_restore_window_hours</code>，默认 24h；内存库启动跳过、恢复失败 warn 继续）</td></tr>
 <tr><td align="center">✅</td><td>用量洞察与 OTLP</td><td>会话级成本聚合（<code>GET /admin/sessions</code>：成本/token/请求数/首末时间 + 首条消息 80 字符标题）与上下文利用率分析（<code>GET /admin/context-stats</code>：平均占用率、缓存份额、五桶分布），<code>[usage_insights]</code> 运行时开关（默认开，关闭时四列写 NULL 且端点 404）；<code>request_logs</code> 新增 <code>session_key</code>/<code>context_window_tokens</code>/<code>cache_read_tokens</code>/<code>cache_write_tokens</code> 四列（V5 迁移，三方言）；OTLP/HTTP-Proto 指标导出（<code>otlp</code> feature，不进 <code>full</code>，<code>[otlp]</code> 默认关，导出失败 fail-open 计数）</td></tr>
-<tr><td align="center">✅</td><td>Rust SDK</td><td>sdk 并入 <code>src/sdk</code>（<code>sdk</code> feature 门控，原 workspace 继承断裂已消除）：chat / stream / embed / admin</td></tr>
+<tr><td align="center">✅</td><td>Rust SDK</td><td>sdk 并入 <code>src/sdk</code>（<code>sdk</code> feature 门控，原 workspace 继承断裂已消除）：chat / stream / embed / rerank / responses / admin</td></tr>
 <tr><td align="center">✅</td><td>性能基准</td><td>Criterion 组件级基线（转换 / SSE 帧解析 / 路由决策路径 / 缓存经济学亲和）已建立，首轮数据见 <a href="docs/PERFORMANCE.md">PERFORMANCE.md</a></td></tr>
 <tr><td align="center">✅</td><td>日志查询补全</td><td><code>/admin/logs</code> 的 end_time 过滤已落 SQL（闭区间 <code>[start_time, end_time]</code>，两端含边界）</td></tr>
 <tr><td align="center">✅</td><td>订阅账号上游</td><td>OAuth 订阅账号（PKCE 授权码流程）并入 vendor 出站凭证池（<code>subscription-vendor</code> feature，<strong>不进 <code>full</code></strong>，<code>[subscription]</code> 默认关双门控）；refresh token 只存 vault（AEAD）、access token 仅内存 + 到期前 5 分钟单飞刷新；刷新失败降级 30 分钟冷却重试一次仍败摘除；admin 四端点（authorize / callback / accounts / 吊销）。<strong>合规警示见「安全」节</strong></td></tr>
@@ -494,10 +496,13 @@ API Key 仅以 SHA256 摘要存储并常量时间比较、上游密钥只存环�
 # 注意：-f 指定 Dockerfile，构建上下文仍为仓库根（bind mount 与 .dockerignore 按根解析）
 docker build -t fluxgate:0.1.0 -f docker/Dockerfile .
 
-# 运行容器（配置只读挂载 + SQLite 数据持久化于 /app/data）
+# 运行容器（SQLite 数据持久化于 /app/data；配置放 data/config.toml）
+# ⚠️ 不要用 `-v $(pwd)/config.toml:/app/config.toml:ro` 单文件只读挂载——
+# 管理面写回经 rename 原子覆盖，单文件挂载会 EBUSY，POST /admin/config 与
+# 模型条目写回全部 500（compose 文件同款注释）；要么整目录挂载，要么用 compose
 docker run -d -p 8080:8080 \
-  -v $(pwd)/config.toml:/app/config.toml:ro \
-  -v $(pwd)/data:/app/data fluxgate:0.1.0
+  -v $(pwd)/data:/app/data fluxgate:0.1.0 \
+  /bin/server /app/data/config.toml
 
 # 或使用 docker-compose 一键部署（含资源限制；compose 文件位于 docker/ 下）
 docker compose -f docker/docker-compose.yml up -d
@@ -559,7 +564,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 | 版本  | 日期       | 要点                                                                                                                                                                |
 | ----- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0.1.0 | 2026-10-12 | 初始发布并持续迭代（63 commits）：协议互转网关、5 因子加权路由与可选智能层、limiteron 弹性体系、异步日志与预聚合、成本追踪、confers 热更新底座、i18n、35 项优化落地 |
+| 0.1.0 | 2026-11-03 | 初始发布（含 2026-10-12 初始批次）并持续迭代：协议互转网关、6 因子加权路由（含配额预算因子）与可选智能层、limiteron 弹性体系、异步日志与预聚合、成本追踪、confers 热更新底座、i18n |
 
 </details>
 

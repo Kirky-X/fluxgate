@@ -12,7 +12,7 @@
 - [路由调优 routing](#-路由调优-routing)
 - [Responses API responses](#-responses-api-responses)
 - [Gemini 原生端点 gemini](#-gemini-原生端点-gemini)
-- [重试与韧性 retryresilience](#-重试与韧性-retry--resilience)
+- [重试与韧性 retryresilience](#️-重试与韧性-retry--resilience)
 - [响应缓存 cache](#-响应缓存-cache)
 - [入站限流与准入 ratelimitadmission](#-入站限流与准入-ratelimit--admission)
 - [定价与成本 pricing](#-定价与成本-pricing)

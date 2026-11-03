@@ -68,6 +68,11 @@ fn copyright_header_present_exactly_once() {
 
     let mut violations = Vec::new();
     for f in &files {
+        // 自排除：本守卫源码必然引用 MARK（头部声明 + 常量定义 + 文档
+        // 说明），计自身会把守卫自己判成违规
+        if f == Path::new("tests/guard/copyright_guard.rs") {
+            continue;
+        }
         let content = fs::read_to_string(f).unwrap_or_else(|e| panic!("read {f:?}: {e}"));
         let count = content.matches(MARK).count();
         if count != 1 {

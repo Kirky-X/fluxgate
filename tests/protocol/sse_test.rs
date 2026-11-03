@@ -1,4 +1,6 @@
 #![cfg(feature = "web-server")]
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
 
 // SSE 编码器与增量分帧器单元测试（阶段一）
 

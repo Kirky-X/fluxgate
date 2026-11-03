@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 import { createElement, useSyncExternalStore, type ReactNode } from "react";
 import { setApiKey } from "./api";
 

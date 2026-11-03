@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { BrowserRouter } from "react-router-dom";
 import { logout, AuthGate } from "./state";

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useEffect, useState } from "react";
 import { getHealth, getMetrics, type HealthResponse, type MetricsSnapshot } from "../api";
 import { Button } from "../components/ui/button";

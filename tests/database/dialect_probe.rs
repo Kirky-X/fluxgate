@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 //! 临时方言探针（跑完即删）：对 FLUXGATE_TEST_DB_URL 指向的真实后端
 //! 跑全迁移链 + 四列写读 + COUNT/SUM CAST 读回 + UTF-8 标题。
 #![cfg(feature = "database")]

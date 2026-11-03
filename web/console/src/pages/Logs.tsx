@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { getLogs, type RequestLog } from "../api";
 import { Button } from "../components/ui/button";

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Kirky.X🌠
+# SPDX-License-Identifier: MIT
+
 # 全仓密钥门禁 — 固定扫描集（git ls-files 减排除），账本 = 全仓发现的稳定快照。
 #
 # 取代 detect-secrets-hook「扫描集 = 本次暂存文件」的固有行为：那一模式下账本

@@ -483,6 +483,10 @@ name = "comment_hygiene_test"
 path = "tests/guard/comment_hygiene_test.rs"
 
 [[test]]
+name = "copyright_guard"
+path = "tests/guard/copyright_guard.rs"
+
+[[test]]
 name = "ignore_filter_guard"
 path = "tests/guard/ignore_filter_guard.rs"
 

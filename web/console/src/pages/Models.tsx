@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useEffect, useState } from "react";
 import { getModelCatalog, type ModelCatalogEntry } from "../api";
 import { Button } from "../components/ui/button";

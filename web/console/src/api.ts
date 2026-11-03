@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 // fluxgate admin API 封装：单文件 fetch 客户端。key 只存内存 state
 // （src/state.ts），任何响应/请求体不得回传或记录 key 原文。
 

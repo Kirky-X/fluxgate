@@ -1,4 +1,6 @@
 #![cfg(feature = "web-server")]
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
 
 // 拥塞感知优先级准入 — 纯函数单元 + AdmissionState 行为 +
 // 中间件集成（构建于 #3 的 InboundLimitState / create_router 测试模式）。

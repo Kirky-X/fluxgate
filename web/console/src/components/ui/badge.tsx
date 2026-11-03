@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 import type { HTMLAttributes } from "react";
 import { cn } from "../../lib/utils";
 

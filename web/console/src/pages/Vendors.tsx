@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   getVendorConfigs,

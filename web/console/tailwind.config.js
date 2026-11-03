@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Kirky.X🌠
+// SPDX-License-Identifier: MIT
+
 /** @type {import('tailwindcss').Config} */
 // 色值与 DESIGN.md token 表一一对应（深色优先单主题，无亮色切换）
 export default {

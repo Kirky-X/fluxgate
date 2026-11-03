@@ -273,6 +273,10 @@ path = "tests/api/health_metrics_test.rs"
 [[test]]
 name = "model_catalog_admin_test"
 path = "tests/api/model_catalog_admin_test.rs"
+
+[[test]]
+name = "admin_logs_fingerprint_test"
+path = "tests/api/admin_logs_fingerprint_test.rs"
 [[test]]
 name = "openapi_docs_test"
 path = "tests/api/openapi_docs_test.rs"

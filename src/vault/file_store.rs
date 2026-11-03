@@ -254,6 +254,32 @@ mod tests {
         assert!(!store.remove(&record.id).await.expect("remove again"));
     }
 
+    /// 端到端故障注入（吸收审计 D3）：主文件损坏 → 重新打开必须经 .bak
+    /// 恢复而非报错/空柜——单测五路径之外验证接线处的真实文件行为
+    #[tokio::test]
+    async fn corrupted_primary_recovers_from_bak_on_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault.bin");
+        let master = vec![7u8; 32];
+        let store = FileKeyStore::open(master.clone(), &path).expect("open");
+        let record = put_key(&store, "openai", None, "sk-live-abcdef123").await;
+        drop(store);
+
+        std::fs::write(&path, b"corrupted-not-a-vault").expect("corrupt primary");
+        let reopened = FileKeyStore::open(master, &path).expect("reopen must recover");
+        let listed = reopened.list(Some("openai")).await.expect("list");
+        assert_eq!(listed.len(), 1, ".bak 恢复后条目仍在");
+        assert_eq!(listed[0].id, record.id);
+        assert_eq!(
+            reopened
+                .reveal(&record.id)
+                .await
+                .expect("reveal")
+                .expose_secret(),
+            "sk-live-abcdef123"
+        );
+    }
+
     #[tokio::test]
     async fn entries_survive_reopen() {
         let dir = tempfile::tempdir().expect("tempdir");

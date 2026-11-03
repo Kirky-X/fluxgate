@@ -10,6 +10,11 @@
 
 ## [Unreleased]
 
+### Added（控制台复审残留收口）
+
+- **/console 静态面缓存与传输**：内容哈希弱 ETag + `If-None-Match` 304、哈希资产 `immutable`/壳 `no-cache`、gzip 协商（CompressionLayer 仅作用于 console 路由）；安全响应头 `nosniff`/`frame-ancestors 'self'`/`X-Frame-Options: DENY`。
+- **前端构建工程化**：build.rs 新鲜度改内容戳（免疫 cp -p/时钟偏差假新鲜）、识别 Windows `npm.cmd`、本地增量路径 `npm ci --dry-run` 前置校验锁一致性（拒绝自由解析漂移）；控制台窄屏导航折顶栏横排 + 顶栏当前页标题（DESIGN 对齐）。
+
 ### Added（magpie-absorb-r1：magpie 调研吸收十项）
 
 - **上游键用量归因**：`request_logs` 新增 `upstream_key_fingerprint` 列（迁移 V9，三方言同步），记录 fallback 后**实际服务请求**的键池指纹；`GET /admin/logs` 透出（历史行/未走键池为 NULL）。

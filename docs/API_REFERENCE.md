@@ -2099,6 +2099,8 @@ curl -X POST http://localhost:8080/admin/route/difficulty-explain \
 
 静态壳本身免认证（无密钥面）；控制台内的数据请求仍走 `/admin/*` 各端点的 Bearer 认证。feature 关闭（默认）时不产生任何路由。页面：仪表盘（health+metrics）、Vendors（配置编辑/状态/重置）、请求日志（过滤分页）、路由解释（含 `quota.tie_break`/`degrade_tier`）、模型目录。
 
+> **缓存与协商**：响应带内容哈希弱 ETag（命中 `If-None-Match` 回 304）、`X-Content-Type-Options: nosniff`、`CSP: frame-ancestors 'self'` 与 `X-Frame-Options: DENY`；带内容哈希的资产 `Cache-Control: immutable`，SPA 壳 `no-cache`；`Accept-Encoding: gzip` 时按协商 gzip 传输（仅 console 路由，业务/SSE 流不经压缩层）。
+
 ---
 
 ## 健康检查

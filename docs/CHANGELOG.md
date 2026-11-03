@@ -10,6 +10,11 @@
 
 ## [Unreleased]
 
+### Changed（依赖全面升级）
+
+- **Rust**：三方依赖 pin 全部抬到 minor 级最新写法（tokio 1.54、serde 1.0、uuid 1.29、dashmap 6.2、toml 1.1、rust-embed 8.13、tempfile 3.27 等 15 处）+ `cargo update` 全量 patch（69 个传递依赖，0 新增 RUSTSEC）；自研 5 库升至最新 rc（dbnexus rc.11/confers rc.12/sdforge rc.10/limiteron rc.10/oxcache rc.12），sdforge rc.10 框架入口改 `build_with_config_ext`（空 base 等价适配）。
+- **前端（web/console）**：React 18→19、react-router-dom 6→7、Vite 5→8、TypeScript 5→7、Tailwind CSS 3→4（config.js → CSS-first `@theme` 迁移，token 与类名面不变）、tailwind-merge 2→3；新增 `vite-env.d.ts` 闭合 TS7 类型面；bundle 66→96KB gzip（预算 200KB 内）。
+
 ### Added（控制台复审残留收口）
 
 - **/console 静态面缓存与传输**：内容哈希弱 ETag + `If-None-Match` 304、哈希资产 `immutable`/壳 `no-cache`、gzip 协商（CompressionLayer 仅作用于 console 路由）；安全响应头 `nosniff`/`frame-ancestors 'self'`/`X-Frame-Options: DENY`。

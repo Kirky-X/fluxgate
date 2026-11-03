@@ -1,16 +1,54 @@
 /* Copyright (c) 2026 Kirky.X🌠 */
 /* SPDX-License-Identifier: MIT */
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind v4 CSS-first：token 表与 DESIGN.md 一一对应（原 tailwind.config.js
+   的 colors/fontFamily/fontSize 全量平移进 @theme）。类名不变：嵌套
+   bg.base → 扁平 --color-bg-base 生成同名 bg-bg-base 工具类。 */
+@import "tailwindcss";
+
+@theme {
+  --color-bg-base: #0e1116;
+  --color-bg-elevated: #161b22;
+  --color-bg-overlay: #1c2330;
+  --color-bg-inset: #0a0d11;
+  --color-bg-hover: #20293a;
+  --color-text-primary: #e6e9ef;
+  --color-text-secondary: #b8c0ce;
+  --color-text-muted: #8a93a5;
+  --color-text-disabled: #555e6e;
+  --color-primary-solid: #3b82f6;
+  --color-primary-hover: #2f6fe0;
+  --color-primary-subtle: #1b2a44;
+  --color-primary-border: #2e4a73;
+  --color-success-solid: #22c55e;
+  --color-success-subtle: #12291c;
+  --color-success-text: #7ee2a8;
+  --color-danger-solid: #ef4444;
+  --color-danger-subtle: #2c1414;
+  --color-danger-text: #f09a9a;
+  --color-warning-solid: #f59e0b;
+  --color-warning-subtle: #2b2110;
+  --color-warning-text: #f2c879;
+
+  --font-mono: "JetBrains Mono", "SFMono-Regular", "Menlo", monospace;
+
+  --text-display: 22px;
+  --text-display--font-weight: 700;
+  --text-body: 14px;
+  --text-body--font-weight: 400;
+  --text-small: 12px;
+  --text-small--font-weight: 400;
+  --text-mono: 13px;
+  --text-mono--font-weight: 400;
+}
 
 @layer base {
   body {
-    @apply bg-bg-base text-text-primary;
+    background-color: var(--color-bg-base);
+    color: var(--color-text-primary);
   }
   :focus-visible {
-    outline: 2px solid theme("colors.primary.border");
+    outline: 2px solid var(--color-primary-border);
     outline-offset: 1px;
   }
 }

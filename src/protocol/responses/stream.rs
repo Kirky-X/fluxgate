@@ -554,6 +554,7 @@ pub fn parse_stream_frame(data: &str) -> Option<StreamChunk> {
                     .as_ref()
                     .map(|details| details.cached_tokens)
                     .unwrap_or(0),
+                cache_creation_1h_tokens: 0,
                 cache_creation_tokens: 0,
                 finish_reason: Some(finish_reason.to_string()),
             })
@@ -656,6 +657,7 @@ mod tests {
             total_tokens: 7,
             cache_read_tokens: 1,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             finish_reason: None,
         }));
         events.extend(encoder.finish());

@@ -632,6 +632,15 @@ impl ProtocolConverter for AnthropicConverter {
             .and_then(|v| v.get("cache_creation_input_tokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        // 1h/5m 写档拆分（magpie-absorb-r1 R-catalog-002 计费消费前提）：
+        // 聚合 cache_creation_input_tokens 不分档，拆分只在嵌套
+        // cache_creation 对象里；缺失（旧上游/非 Anthropic 形状）时 1h 档
+        // 为 0，计费整体走基础写价
+        let cache_creation_1h_tokens = usage
+            .and_then(|v| v.get("cache_creation"))
+            .and_then(|v| v.get("ephemeral_1h_input_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
         Ok(UnifiedResponse {
             id,
@@ -651,6 +660,7 @@ impl ProtocolConverter for AnthropicConverter {
                 total_tokens: prompt_tokens + completion_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 cost_usd: None,
                 cost_cny: None,
                 ..Default::default()
@@ -774,6 +784,7 @@ impl ProtocolConverter for AnthropicConverter {
                 total_tokens: _,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens: _,
                 finish_reason,
             } => {
                 // finish_reason 随 Usage 到达时透传进 delta.stop_reason
@@ -971,12 +982,18 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
                 .get("cache_creation_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
+            let cache_creation_1h_tokens = usage
+                .get("cache_creation")
+                .and_then(|v| v.get("ephemeral_1h_input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
             Some(StreamChunk::Usage {
                 prompt_tokens: input,
                 completion_tokens: output,
                 total_tokens: input + output,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 finish_reason: None,
             })
         }
@@ -1008,12 +1025,18 @@ pub fn parse_sse_frame_to_chunk(data: &str) -> Option<StreamChunk> {
                 .and_then(|v| v.as_u64())
                 .map(|u| u as u32)
                 .unwrap_or(0);
+            let cache_creation_1h_tokens = usage
+                .and_then(|u| u.get("cache_creation"))
+                .and_then(|v| v.get("ephemeral_1h_input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
             Some(StreamChunk::Usage {
                 prompt_tokens: input,
                 completion_tokens: output,
                 total_tokens: input + output,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 finish_reason,
             })
         }
@@ -3065,6 +3088,45 @@ mod tests {
         assert!(body["stop_sequence"].is_null());
     }
 
+    /// 非流式 usage 解析带出 1h/5m 写档拆分（R-catalog-002 计费消费前提）；
+    /// 嵌套对象缺失（旧上游/混合代理）时 1h 档为 0、聚合不受影响
+    #[test]
+    fn usage_parses_one_hour_cache_creation_split() {
+        let converter = AnthropicConverter::new();
+        let response = serde_json::json!({
+            "id": "msg_1",
+            "model": "claude-sonnet-4-20250514",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "cache_read_input_tokens": 5,
+                "cache_creation_input_tokens": 30,
+                "cache_creation": {
+                    "ephemeral_1h_input_tokens": 12,
+                    "ephemeral_5m_input_tokens": 18
+                }
+            }
+        });
+        let unified = converter.parse_response(response).expect("parse");
+        assert_eq!(unified.usage.cache_creation_tokens, 30);
+        assert_eq!(unified.usage.cache_creation_1h_tokens, 12);
+
+        let legacy = serde_json::json!({
+            "id": "msg_2",
+            "model": "claude-sonnet-4-20250514",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 7}
+        });
+        let unified = converter.parse_response(legacy).expect("parse legacy");
+        assert_eq!(unified.usage.cache_creation_tokens, 7);
+        assert_eq!(unified.usage.cache_creation_1h_tokens, 0);
+    }
+
     #[test]
     fn stream_thinking_and_signature_deltas_parse_to_reasoning() {
         // thinking_delta → Reasoning{text}
@@ -3134,6 +3196,7 @@ mod tests {
                 total_tokens: 7,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 finish_reason: Some("stop".into()),
             },
         ] {

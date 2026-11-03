@@ -3161,6 +3161,7 @@ impl VendorManager {
                     total_tokens: _,
                     cache_read_tokens: r1,
                     cache_creation_tokens: cr1,
+                    cache_creation_1h_tokens: h1,
                     finish_reason: f1,
                 },
                 StreamChunk::Usage {
@@ -3169,6 +3170,7 @@ impl VendorManager {
                     total_tokens: _,
                     cache_read_tokens: r2,
                     cache_creation_tokens: cr2,
+                    cache_creation_1h_tokens: h2,
                     finish_reason: f2,
                 },
             ) => {
@@ -3183,6 +3185,7 @@ impl VendorManager {
                     total_tokens: prompt_tokens.saturating_add(completion_tokens),
                     cache_read_tokens: r1.max(r2),
                     cache_creation_tokens: cr1.max(cr2),
+                    cache_creation_1h_tokens: h1.max(h2),
                     finish_reason: f2.or(f1),
                 }
             }
@@ -4049,6 +4052,7 @@ mod tests {
             total_tokens: 4,
             cache_read_tokens: 2,
             cache_creation_tokens: 1,
+            cache_creation_1h_tokens: 0,
             finish_reason: None,
         };
         let delta = StreamChunk::Usage {
@@ -4057,6 +4061,7 @@ mod tests {
             total_tokens: 2,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             finish_reason: Some("stop".into()),
         };
         match VendorManager::merge_stream_usage(start, delta) {
@@ -4066,6 +4071,7 @@ mod tests {
                 total_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 finish_reason,
             } => {
                 assert_eq!(prompt_tokens, 3);
@@ -4073,6 +4079,7 @@ mod tests {
                 assert_eq!(total_tokens, 5, "total 按合并后两档重算");
                 assert_eq!(cache_read_tokens, 2);
                 assert_eq!(cache_creation_tokens, 1);
+                assert_eq!(cache_creation_1h_tokens, 0);
                 assert_eq!(finish_reason.as_deref(), Some("stop"));
             }
             other => panic!("expected Usage, got {other:?}"),

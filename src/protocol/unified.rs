@@ -575,6 +575,11 @@ pub struct TokenUsage {
     /// 缓存创建 token 数（prompt cache miss / new cache entries；u64 对齐 core）
     #[serde(default)]
     pub cache_creation_tokens: u64,
+    /// 缓存创建 1h TTL 档 token 数（Anthropic
+    /// `usage.cache_creation.ephemeral_1h_input_tokens`；聚合字段仍为两档
+    /// 总和，其余创建量按 5m 基础档计价）
+    #[serde(default)]
+    pub cache_creation_1h_tokens: u64,
     /// USD 计价成本（协议 wire 无成本字段，仅 IR/serde 承载）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
@@ -635,6 +640,10 @@ pub enum StreamChunk {
         cache_read_tokens: u32,
         #[serde(default)]
         cache_creation_tokens: u32,
+        /// 1h TTL 写档拆分（Anthropic `usage.cache_creation.ephemeral_1h_input_tokens`；
+        /// 其余协议恒 0，聚合 `cache_creation_tokens` 仍为两档总和）
+        #[serde(default)]
+        cache_creation_1h_tokens: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         finish_reason: Option<String>,
     },
@@ -1470,6 +1479,7 @@ mod tests {
                 total_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 finish_reason,
             } => {
                 assert_eq!(
@@ -1477,6 +1487,7 @@ mod tests {
                     (10, 5, 15)
                 );
                 assert_eq!((cache_read_tokens, cache_creation_tokens), (0, 0));
+                assert_eq!(cache_creation_1h_tokens, 0);
                 assert_eq!(finish_reason, None);
             }
             other => panic!("expected Usage, got {other:?}"),
@@ -1489,11 +1500,13 @@ mod tests {
             total_tokens: 34,
             cache_read_tokens: 12,
             cache_creation_tokens: 4,
+            cache_creation_1h_tokens: 2,
             finish_reason: Some("tool_calls".into()),
         };
         let json = serde_json::to_value(&chunk).unwrap();
         assert_eq!(json["cache_read_tokens"], 12);
         assert_eq!(json["cache_creation_tokens"], 4);
+        assert_eq!(json["cache_creation_1h_tokens"], 2);
         assert_eq!(json["finish_reason"], "tool_calls");
         let back: StreamChunk = serde_json::from_value(json).unwrap();
         assert!(matches!(

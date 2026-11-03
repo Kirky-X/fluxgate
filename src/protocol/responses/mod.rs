@@ -295,6 +295,7 @@ impl ProtocolConverter for ResponsesConverter {
                     },
                 ),
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 cost_usd: None,
                 cost_cny: None,
             },

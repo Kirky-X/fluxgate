@@ -40,6 +40,7 @@ struct FrameUsage {
     completion: u64,
     cache_read: u64,
     cache_creation: u64,
+    cache_creation_1h: u64,
 }
 
 impl FrameUsage {
@@ -49,6 +50,7 @@ impl FrameUsage {
             completion: self.completion.max(other.completion),
             cache_read: self.cache_read.max(other.cache_read),
             cache_creation: self.cache_creation.max(other.cache_creation),
+            cache_creation_1h: self.cache_creation_1h.max(other.cache_creation_1h),
         }
     }
 }
@@ -94,12 +96,19 @@ fn extract_frame_usage(protocol: StreamProtocol, value: &Value) -> Option<FrameU
                 .map(|details| u64_field(details, "cached_tokens"))
                 .unwrap_or_default(),
             cache_creation: 0,
+            cache_creation_1h: 0,
         },
         StreamProtocol::Anthropic => FrameUsage {
             prompt: u64_field(usage, "input_tokens"),
             completion: u64_field(usage, "output_tokens"),
             cache_read: u64_field(usage, "cache_read_input_tokens"),
             cache_creation: u64_field(usage, "cache_creation_input_tokens"),
+            // 1h TTL 写档拆分（嵌套 cache_creation 对象）；缺失恒 0
+            cache_creation_1h: usage
+                .get("cache_creation")
+                .and_then(|v| v.get("ephemeral_1h_input_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
         },
         // Responses 用 `input_tokens_details.cached_tokens`（真实 wire 形
         // 状），兼容 Anthropic 形状（历史/混合代理）；无 cache_creation 概念。
@@ -113,6 +122,7 @@ fn extract_frame_usage(protocol: StreamProtocol, value: &Value) -> Option<FrameU
                 .or_else(|| usage.get("cache_read_input_tokens").and_then(Value::as_u64))
                 .unwrap_or_default(),
             cache_creation: 0,
+            cache_creation_1h: 0,
         },
         // 思考 token 按输出计费：与 parse_usage_detailed 的
         // `candidates + thoughts` 口径一致；形状拼装不再写 thoughts 字段。
@@ -122,6 +132,7 @@ fn extract_frame_usage(protocol: StreamProtocol, value: &Value) -> Option<FrameU
                 .saturating_add(u64_field(usage, "thoughtsTokenCount")),
             cache_read: u64_field(usage, "cachedContentTokenCount"),
             cache_creation: 0,
+            cache_creation_1h: 0,
         },
     })
 }
@@ -144,6 +155,12 @@ fn usage_response_value(protocol: StreamProtocol, usage: &FrameUsage) -> Value {
                 "output_tokens": usage.completion,
                 "cache_read_input_tokens": usage.cache_read,
                 "cache_creation_input_tokens": usage.cache_creation,
+                "cache_creation": {
+                    "ephemeral_1h_input_tokens": usage.cache_creation_1h,
+                    "ephemeral_5m_input_tokens": usage
+                        .cache_creation
+                        .saturating_sub(usage.cache_creation_1h),
+                },
             }
         }),
         // Responses 形状用 input_tokens_details.cached_tokens（与其真实
@@ -234,6 +251,7 @@ impl StreamUsageRecorder {
             frame.completion,
             frame.cache_read,
             frame.cache_creation,
+            frame.cache_creation_1h,
         );
     }
 
@@ -246,12 +264,14 @@ impl StreamUsageRecorder {
         completion: u64,
         cache_read: u64,
         cache_creation: u64,
+        cache_creation_1h: u64,
     ) {
         let frame = FrameUsage {
             prompt,
             completion,
             cache_read,
             cache_creation,
+            cache_creation_1h,
         };
         let mut guard = self
             .inner
@@ -399,6 +419,7 @@ where
                 completion_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 ..
             }) = &item
             {
@@ -407,6 +428,7 @@ where
                     u64::from(*completion_tokens),
                     u64::from(*cache_read_tokens),
                     u64::from(*cache_creation_tokens),
+                    u64::from(*cache_creation_1h_tokens),
                 );
             }
             yield item;
@@ -502,6 +524,7 @@ mod tests {
             completion: 6,
             cache_read: 3,
             cache_creation: 2,
+            cache_creation_1h: 0,
         };
         for protocol in [
             StreamProtocol::OpenAI,

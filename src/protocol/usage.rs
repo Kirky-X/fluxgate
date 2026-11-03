@@ -6,6 +6,17 @@
 //! OpenAI、Anthropic 与 Gemini 的 usage 形态属协议知识，配额侧与分账侧共用同一
 //! 实现，禁止第二套提数逻辑。
 
+/// 1h TTL 写档拆分提取（Anthropic 嵌套 `usage.cache_creation.ephemeral_1h_input_tokens`）；
+/// 其余协议/旧上游恒 0。与 [`parse_usage_detailed`] 同模块单源，禁止第二套提数。
+pub(crate) fn parse_usage_1h_creation(response: &serde_json::Value) -> u64 {
+    response
+        .get("usage")
+        .and_then(|usage| usage.get("cache_creation"))
+        .and_then(|cache| cache.get("ephemeral_1h_input_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+}
+
 /// 分账用量提取：OpenAI / Anthropic / Gemini 三形态，返回
 /// (prompt, completion, cache_read, cache_creation)，u64 饱和钳 u32。无可用 usage → None（调用方跳过记账，保持预扣）。
 pub(crate) fn parse_usage_detailed(response: &serde_json::Value) -> Option<(u32, u32, u32, u32)> {

@@ -187,7 +187,22 @@ pub fn estimate_cost_from_catalog(
     let input_cost = per_million(base as u64, input_price);
     let output_cost = per_million(usage.completion_tokens as u64, entry.output_price);
     let cache_read_cost = per_million(usage.cache_read_tokens, entry.cache_read_price);
-    let cache_creation_cost = per_million(usage.cache_creation_tokens, entry.cache_creation_price);
+    // 1h/5m 写档分价（R-catalog-002 计费侧消费）：协议层解析出的 1h 拆分
+    // 量>0 且 1h 价已配置时，1h 部分按 cache_creation_1h_price、其余创建量
+    // 按基础写价；拆分缺失或价未配置（0.0）时整体按基础写价——宁少列不
+    // 把 5m 写入错按 1h 高价计
+    let cache_creation_cost =
+        if usage.cache_creation_1h_tokens > 0 && entry.cache_creation_1h_price > 0.0 {
+            let rest = usage
+                .cache_creation_tokens
+                .saturating_sub(usage.cache_creation_1h_tokens);
+            per_million(
+                usage.cache_creation_1h_tokens,
+                entry.cache_creation_1h_price,
+            ) + per_million(rest, entry.cache_creation_price)
+        } else {
+            per_million(usage.cache_creation_tokens, entry.cache_creation_price)
+        };
     Some(CatalogCostEstimate {
         input_cost,
         output_cost,
@@ -237,6 +252,78 @@ mod catalog_pricing_tests {
             cost_cny: None,
             ..Default::default()
         }
+    }
+
+    fn usage_1h(
+        prompt: u32,
+        completion: u32,
+        cache_read: u64,
+        cache_creation: u64,
+        creation_1h: u64,
+    ) -> TokenUsage {
+        TokenUsage {
+            cache_creation_1h_tokens: creation_1h,
+            ..usage(prompt, completion, cache_read, cache_creation)
+        }
+    }
+
+    /// 1h/5m 分价（R-catalog-002 计费消费）：1h 部分按 1h 价、其余按基础价
+    #[test]
+    fn one_hour_write_billed_at_1h_price_rest_at_base() {
+        let mut entry = claude_entry();
+        entry.cache_creation_1h_price = 6.0;
+        let est = estimate_cost_from_catalog(
+            &[entry],
+            "claude-sonnet-4-20250514",
+            &usage_1h(1000, 100, 0, 300, 100),
+            PromptCacheSemantics::Exclusive,
+        )
+        .expect("registered");
+        let expected = (100.0 / 1_000_000.0) * 6.0 + (200.0 / 1_000_000.0) * 3.75;
+        assert!(
+            (est.cache_creation_cost - expected).abs() < 1e-12,
+            "1h 拆分计价错误: {} vs {expected}",
+            est.cache_creation_cost
+        );
+    }
+
+    /// 拆分缺失（1h=0）或 1h 价未配置（0.0）→ 整体按基础写价（宁少列不错列）
+    #[test]
+    fn one_hour_unpriced_or_missing_falls_back_to_base() {
+        let mut priced = claude_entry();
+        priced.cache_creation_1h_price = 6.0;
+        let est = estimate_cost_from_catalog(
+            &[priced],
+            "claude-sonnet-4-20250514",
+            &usage_1h(1000, 100, 0, 300, 0),
+            PromptCacheSemantics::Exclusive,
+        )
+        .expect("registered");
+        assert!((est.cache_creation_cost - (300.0 / 1_000_000.0) * 3.75).abs() < 1e-12);
+
+        let est = estimate_cost_from_catalog(
+            &[claude_entry()],
+            "claude-sonnet-4-20250514",
+            &usage_1h(1000, 100, 0, 300, 100),
+            PromptCacheSemantics::Exclusive,
+        )
+        .expect("registered");
+        assert!((est.cache_creation_cost - (300.0 / 1_000_000.0) * 3.75).abs() < 1e-12);
+    }
+
+    /// 拆分>聚合（上游数据矛盾）：saturating_sub 钳 0，不产生负账
+    #[test]
+    fn one_hour_split_exceeding_aggregate_saturates() {
+        let mut entry = claude_entry();
+        entry.cache_creation_1h_price = 6.0;
+        let est = estimate_cost_from_catalog(
+            &[entry],
+            "claude-sonnet-4-20250514",
+            &usage_1h(1000, 100, 0, 100, 300),
+            PromptCacheSemantics::Exclusive,
+        )
+        .expect("registered");
+        assert!((est.cache_creation_cost - (300.0 / 1_000_000.0) * 6.0).abs() < 1e-12);
     }
 
     #[test]

@@ -545,6 +545,7 @@ impl ProtocolConverter for OpenAIConverter {
                 total_tokens,
                 cache_read_tokens,
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 cost_usd: None,
                 cost_cny: None,
                 prompt_tokens_details,
@@ -621,6 +622,7 @@ impl ProtocolConverter for OpenAIConverter {
                 total_tokens,
                 cache_read_tokens,
                 cache_creation_tokens: _,
+                cache_creation_1h_tokens: _,
                 finish_reason,
             } => {
                 // cache_creation 无 OpenAI 槽；finish_reason 有值时写入本帧
@@ -764,6 +766,7 @@ fn parse_usage_tail_frame(json: &Value) -> Option<StreamChunk> {
         total_tokens: total,
         cache_read_tokens,
         cache_creation_tokens: 0,
+        cache_creation_1h_tokens: 0,
         finish_reason: None,
     })
 }

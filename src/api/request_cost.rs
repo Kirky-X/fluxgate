@@ -29,6 +29,7 @@ pub(crate) fn request_cost_usd(
         completion_tokens: completion,
         cache_read_tokens: cache_read as u64,
         cache_creation_tokens: cache_creation as u64,
+        cache_creation_1h_tokens: crate::protocol::parse_usage_1h_creation(response),
         ..Default::default()
     };
     let semantics = crate::vendor::cost::prompt_cache_semantics(vendor_type);

@@ -1512,6 +1512,7 @@ mod converter {
                 total_tokens: 10,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 finish_reason: None,
             })
             .expect("usage");
@@ -1552,6 +1553,7 @@ mod converter {
             total_tokens: 7,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             finish_reason: None,
         }));
 
@@ -2173,6 +2175,7 @@ mod converter {
                 total_tokens: 8,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 finish_reason: None,
             })
             .expect("usage chunk");
@@ -2871,11 +2874,13 @@ mod converter {
                 total_tokens: _,
                 cache_read_tokens,
                 cache_creation_tokens,
+                cache_creation_1h_tokens,
                 finish_reason,
             } => {
                 assert_eq!((prompt_tokens, completion_tokens), (10, 7));
                 assert_eq!(cache_read_tokens, 6);
                 assert_eq!(cache_creation_tokens, 0);
+                assert_eq!(cache_creation_1h_tokens, 0);
                 assert_eq!(finish_reason, None);
             }
             other => panic!("expected Usage chunk, got {other:?}"),
@@ -4059,6 +4064,7 @@ mod converter {
             total_tokens: 3,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             finish_reason: Some("tool_calls".into()),
         }));
         events.extend(encoder.finish());
@@ -4136,6 +4142,7 @@ mod converter {
             total_tokens: 3,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             finish_reason: Some("tool_calls".into()),
         });
         let types: Vec<String> = events
@@ -5102,6 +5109,7 @@ mod unified {
                 total_tokens: 15,
                 cache_read_tokens: 4,
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 finish_reason: finish_reason.clone(),
             })
             .expect("openai 出站编码");
@@ -5125,6 +5133,7 @@ mod unified {
                 total_tokens: 2,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
                 finish_reason: None,
             })
             .expect("openai 原生出站");
@@ -5245,6 +5254,7 @@ mod unified {
             total_tokens: 15,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             finish_reason: None,
         };
         let json = serde_json::to_value(&chunk).unwrap();

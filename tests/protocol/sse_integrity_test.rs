@@ -86,6 +86,7 @@ fn anthropic_text_and_tool_stream_sequence_integrity() {
             total_tokens: 20,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             finish_reason: None,
         }),
     );
@@ -179,6 +180,7 @@ fn openai_stream_sequence_integrity() {
             total_tokens: 8,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
             finish_reason: None,
         },
     ];

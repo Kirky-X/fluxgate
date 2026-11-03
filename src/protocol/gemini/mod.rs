@@ -253,6 +253,7 @@ mod tests {
                 prompt_tokens: 1,
                 completion_tokens: 2,
                 total_tokens: 3,
+                cache_creation_1h_tokens: 0,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
                 finish_reason: Some("length".into()),

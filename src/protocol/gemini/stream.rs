@@ -28,6 +28,7 @@ pub fn parse_stream_frame(data: &str) -> Option<StreamChunk> {
                 .min(u32::MAX as u64) as u32,
             total_tokens: usage.total_token_count.min(u32::MAX as u64) as u32,
             cache_read_tokens: usage.cached_content_token_count.min(u32::MAX as u64) as u32,
+            cache_creation_1h_tokens: 0,
             cache_creation_tokens: 0,
             finish_reason: finish_wire.map(str::to_string),
         });
@@ -498,6 +499,7 @@ mod tests {
             prompt_tokens: 3,
             completion_tokens: 4,
             total_tokens: 7,
+            cache_creation_1h_tokens: 0,
             cache_read_tokens: 1,
             cache_creation_tokens: 0,
             finish_reason: Some("stop".into()),

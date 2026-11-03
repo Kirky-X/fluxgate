@@ -17,7 +17,7 @@ pub mod unified;
 pub(crate) mod usage;
 
 #[cfg(feature = "web-server")]
-pub(crate) use usage::parse_usage_detailed;
+pub(crate) use usage::{parse_usage_1h_creation, parse_usage_detailed};
 
 pub use anthropic_converter::{AnthropicConverter, AnthropicStreamEncoder};
 pub use embedding_converter::embedding_request_to_openai;

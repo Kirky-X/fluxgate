@@ -1,7 +1,14 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import {
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import { BrowserRouter } from "react-router-dom";
 import { logout, AuthGate } from "./state";
 import DashboardPage from "./pages/Dashboard";
@@ -21,41 +28,62 @@ const NAV_ITEMS = [
 
 function Shell() {
   const navigate = useNavigate();
+  const location = useLocation();
+  // DESIGN 承诺：顶栏左侧显示当前页标题（display 档）
+  const pageTitle =
+    NAV_ITEMS.find((item) =>
+      item.end
+        ? location.pathname === item.to
+        : location.pathname.startsWith(item.to),
+    )?.label ?? "仪表盘";
   return (
-    <div className="flex min-h-screen">
-      <nav className="w-[200px] shrink-0 border-r border-text-disabled/30 bg-bg-elevated">
-        <div className="px-4 py-4 text-base font-semibold">Fluxgate</div>
-        <ul className="space-y-1 px-2">
-          {NAV_ITEMS.map((item) => (
-            <li key={item.to}>
-              <NavLink
-                to={item.to}
-                end={item.end}
-                className={({ isActive }) =>
-                  "flex h-11 items-center rounded-md px-3 text-sm " +
-                  (isActive
-                    ? "bg-primary-subtle text-primary-solid"
-                    : "text-text-secondary hover:bg-bg-hover hover:text-text-primary")
-                }
-              >
-                {item.label}
-              </NavLink>
-            </li>
-          ))}
-        </ul>
+    <div className="flex min-h-screen flex-col md:flex-row">
+      {/* 窄屏（<768px）导航折为顶部横排（可横向滚动），≥md 恢复左侧 200px 固定列 */}
+      <nav className="shrink-0 border-b border-text-disabled/30 bg-bg-elevated md:w-[200px] md:border-b-0 md:border-r">
+        <div className="flex items-center gap-2 px-2 py-2 md:block md:px-0 md:py-0">
+          <span className="px-2 text-base font-semibold">Fluxgate</span>
+          <ul className="flex items-center gap-1 overflow-x-auto md:mt-1 md:block md:px-2 md:py-4">
+            {NAV_ITEMS.map((item) => (
+              <li key={item.to} className="whitespace-nowrap">
+                <NavLink
+                  to={item.to}
+                  end={item.end}
+                  className={({ isActive }) =>
+                    "flex h-11 items-center rounded-md px-3 text-sm " +
+                    (isActive
+                      ? "bg-primary-subtle text-primary-solid"
+                      : "text-text-secondary hover:bg-bg-hover hover:text-text-primary")
+                  }
+                >
+                  {item.label}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </div>
       </nav>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-text-disabled/30 px-6">
-          <span className="text-sm text-text-muted">运维控制台</span>
-          <button
-            className="text-sm text-text-secondary hover:text-text-primary"
-            onClick={() => {
-              logout();
-              navigate("/login");
-            }}
-          >
-            登出
-          </button>
+          <span className="text-display text-text-primary">{pageTitle}</span>
+          <div className="flex items-center gap-3">
+            {/* DESIGN 承诺：右侧登录态（「已连接」点 + 登出按钮） */}
+            <span className="flex items-center gap-1.5 text-small text-text-muted">
+              <span
+                className="h-2 w-2 rounded-full bg-success-solid"
+                aria-hidden="true"
+              />
+              已连接
+            </span>
+            <button
+              className="text-sm text-text-secondary hover:text-text-primary"
+              onClick={() => {
+                logout();
+                navigate("/login");
+              }}
+            >
+              登出
+            </button>
+          </div>
         </header>
         <main className="flex-1 overflow-auto p-6">
           <Routes>

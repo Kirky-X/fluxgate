@@ -46,6 +46,14 @@ export default {
       fontFamily: {
         mono: ["JetBrains Mono", "SFMono-Regular", "Menlo", "monospace"],
       },
+      // DESIGN.md font-size token 表：display=页标题 22px/700、body=表格
+      // 正文 14px/400、small=徽章/辅助 12px/400、mono=模型 ID/JSON 13px
+      fontSize: {
+        display: ["22px", { fontWeight: "700" }],
+        body: ["14px", { fontWeight: "400" }],
+        small: ["12px", { fontWeight: "400" }],
+        mono: ["13px", { fontWeight: "400" }],
+      },
     },
   },
   plugins: [],

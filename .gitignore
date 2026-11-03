@@ -83,3 +83,7 @@ out/
 
 # codenexus 本地索引库（AI 工具产物，不入仓库）
 .codenexus/
+
+# 控制台前端构建产物（cargo build.rs 自动生成，不入库）
+web/console/dist/
+web/console/tsconfig.tsbuildinfo

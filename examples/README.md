@@ -2,7 +2,7 @@
 
 `examples/` 是 Fluxgate 各种使用方式的样例集合：从裸 HTTP 直连、Rust SDK 客户端、库形态嵌入到 gRPC 门面调用，覆盖网关的四种典型接入形态。
 
-拆分前这里是四个各自独立的 workspace 成员 crate；现已合并为**单一 crate `fluxgate-examples`**（本目录 `Cargo.toml`），示例逻辑按功能收拢为 lib 模块（`rest_http` / `sdk_usage` / `embedded_server` / `grpc_client`），每个模块由各自 feature 门控，`src/bin/` 下保留八个二进制入口点。本 crate 是 workspace 成员（根 `Cargo.toml` 的 `[workspace].members`），并声明 `publish = false`——禁止发布，不会随任何 crate 发布流出。
+拆分前这里是四个各自独立的 workspace 成员 crate；现已合并为**单一 crate `fluxgate-examples`**（本目录 `Cargo.toml`），示例逻辑按功能收拢为 lib 模块（`rest_http` / `sdk_usage` / `embedded_server` / `grpc_client`），每个模块由各自 feature 门控，`src/bin/` 下保留十个二进制入口点。本 crate 是 workspace 成员（根 `Cargo.toml` 的 `[workspace].members`），并声明 `publish = false`——禁止发布，不会随任何 crate 发布流出。
 
 > 注意：根包 `fluxgate` 已设 `autoexamples = false`，因为 `examples/` 现在是独立成员 crate 的目录，不再充当根包的示例约定目录。
 
@@ -11,7 +11,7 @@
 | feature（默认开？） | lib 模块 | bin 入口 | 演示形态 | 依赖的 fluxgate feature |
 | --- | --- | --- | --- | --- |
 | `rest`（默认） | `rest_http` | `rest_http` | 裸 HTTP 直连网关，不经 SDK | 无（不声明 fluxgate 依赖） |
-| `sdk`（默认） | `sdk_usage`（chat / stream_chat / embed / admin） | `chat` / `stream_chat` / `embed` / `admin` | SDK 客户端调用已部署网关 | `sdk`（`default-features = false`） |
+| `sdk`（默认） | `sdk_usage`（chat / stream_chat / embed / rerank / responses / admin） | `chat` / `stream_chat` / `embed` / `rerank` / `responses` / `admin` | SDK 客户端调用已部署网关 | `sdk`（`default-features = false`） |
 | `embedded`（默认） | `embedded_server`（standalone / mount_router） | `standalone` / `mount_router` | 库形态嵌入宿主应用 | `full` + `db-sqlite` |
 | `grpc`（非默认） | `grpc_client` | `grpc_client` | tonic gRPC 客户端调用门面 | 无（不依赖 fluxgate 本体；网关侧需 `grpc` feature） |
 
@@ -27,6 +27,8 @@ cargo run -p fluxgate-examples --bin rest_http                       # 裸 HTTP 
 cargo run -p fluxgate-examples --bin chat                            # SDK 非流式 chat
 cargo run -p fluxgate-examples --bin stream_chat                    # SDK SSE 流式
 cargo run -p fluxgate-examples --bin embed                          # SDK embedding
+cargo run -p fluxgate-examples --bin rerank                         # SDK rerank
+cargo run -p fluxgate-examples --bin responses                      # SDK Responses API
 cargo run -p fluxgate-examples --bin admin                          # SDK 运维端点
 cargo run -p fluxgate-examples --bin standalone                     # 库形态一行起服
 cargo run -p fluxgate-examples --bin mount_router                   # 库形态挂载宿主路由
@@ -49,7 +51,7 @@ cd examples/assets/rest-http && npm install openai && FLUXGATE_API_KEY=你的key
 
 **是什么**：不经过 SDK，直接对网关线级协议编程。`src/rest_http.rs` 用 reqwest 依次跑四步：健康检查 → 非流式 chat（`X-Vendor`/`X-Model` 提示头）→ Anthropic 格式 `/v1/messages`（验证协议互转）→ SSE 流式（`bytes_stream` 手工解析）。curl / Python / Node.js 三语言对照组（`assets/rest-http/`）与 Rust 版一一对应，任何语言都可对照移植。
 
-**依赖**：`rest` feature 不声明 `fluxgate` 依赖（裸 HTTP 不经 SDK）。第三方依赖全部 `default-features = false` + 显式 features：`reqwest 0.13 [json, stream]`、`tokio 1`、`futures-util 0.3 [std]`、`serde_json 1 [std]`、`anyhow 1 [std]`，版本对齐根 `Cargo.toml` / `Cargo.lock` 以复用构建缓存。
+**依赖**：`rest` feature 不声明 `fluxgate` 依赖（裸 HTTP 不经 SDK）。第三方依赖全部 `default-features = false` + 显式 features：`reqwest 0.13 [json, stream, default-tls]`（`default-tls` 必带：缺它时 `-p fluxgate-examples --no-default-features --features rest` 的 https 调用运行期失败）、`tokio 1`、`futures-util 0.3 [std]`、`serde_json 1 [std]`、`anyhow 1 [std]`，版本对齐根 `Cargo.toml` / `Cargo.lock` 以复用构建缓存。
 
 **前置条件**：
 
@@ -59,15 +61,15 @@ cd examples/assets/rest-http && npm install openai && FLUXGATE_API_KEY=你的key
 
 **协议事实与勘误**（编写时以源码核实）：
 
-- `GET /v1/models` 已在网关注册（`src/api/router_builder.rs:703`）：OpenAI list 格式，返回「模型目录 ∪ vendor 配置模型」去重排序、需鉴权、始终现算不缓存。`GET /admin/models` 是另一个端点——`[[model_catalog]]` 能力目录（含定价/能力位），管理员鉴权，二者用途不同。SDK 的 `FluxgateClient::models`（`src/sdk/admin.rs:140-143`）打的是 `GET /admin/models`（旧版误打未注册的 `/v1/models` 恒 404 的失配已修复），已无 SDK 偏差。
-- 路由提示头按端点区分：`X-Vendor`/`X-Model` **仅 OpenAI 兼容端点消费**（`hints.has_hints()` 时走 `route_with_hints`，`src/api/completions.rs:692-698`），`/v1/messages` 保持无 hints 语义、忽略这两个头（`src/api/anthropic.rs:64`、`:702` 走 `route_weighted`）；`X-Session-Id` / `X-Weight` 两个推理端点均生效（头提取统一在 `RoutingHints::from_headers`，`src/api/routing_hints.rs`）。
-- SSE 错误帧 `event: error` 之后网关不补 `[DONE]`（`src/api/completions.rs:876-918`、`src/protocol/sse_frame.rs:25-46`），客户端解析器按失败终止，不要等待 `[DONE]`。
+- `GET /v1/models` 已在网关注册（`src/api/router_builder.rs` 端点注册区）：OpenAI list 格式，返回「模型目录 ∪ vendor 配置模型」去重排序、需鉴权、始终现算不缓存。`GET /admin/models` 是另一个端点——`[[model_catalog]]` 能力目录（含定价/能力位），管理员鉴权，二者用途不同。SDK 的 `FluxgateClient::models`（`src/sdk/admin.rs` 的 `models()`）打的是 `GET /admin/models`（旧版误打未注册的 `/v1/models` 恒 404 的失配已修复），已无 SDK 偏差。
+- 路由提示头按端点区分：`X-Vendor`/`X-Model` **仅 OpenAI 兼容端点消费**（`hints.has_hints()` 时走 `route_with_hints`，`src/api/completions.rs` 的 `route_with_hints` 分支），`/v1/messages` 保持无 hints 语义、忽略这两个头（`src/api/anthropic.rs` 走 `route_weighted`）；`X-Session-Id` / `X-Weight` 两个推理端点均生效（头提取统一在 `RoutingHints::from_headers`，`src/api/routing_hints.rs`）。
+- SSE 错误帧 `event: error` 之后网关不补 `[DONE]`（`src/api/completions.rs` 的 SSE 错误帧处理、`src/protocol/sse_frame.rs` 分帧校验），客户端解析器按失败终止，不要等待 `[DONE]`。
 
 ---
 
 ## sdk-usage — Rust SDK 客户端调用已部署网关（`mod sdk_usage`）
 
-**是什么**：`chat` 非流式（完整 `ChatRequest` + `RequestConfig` 路由提示头，打印 token 用量与实际 vendor）、`stream_chat` 流式（`chat_stream` 逐 chunk 消费 SSE）、`embed` embedding（向量维度与用量）、`admin` 运维（health / vendors / models）。四个 `run` 共用 `sdk_usage::require_env`：任一环境变量缺失或为空即报错退出，不带空值发请求。
+**是什么**：`chat` 非流式（完整 `ChatRequest` + `RequestConfig` 路由提示头，打印 token 用量与实际 vendor）、`stream_chat` 流式（`chat_stream` 逐 chunk 消费 SSE）、`embed` embedding（向量维度与用量）、`rerank` 重排（Cohere 兼容调用）、`responses` Responses API（创建与检索）、`admin` 运维（health / vendors / models）。六个 `run` 共用 `sdk_usage::require_env`：任一环境变量缺失或为空即报错退出，不带空值发请求。
 
 **依赖**：`sdk` feature = `fluxgate` 的 `sdk` 门面（`default-features = false`），只引 HTTP 客户端不拉起网关本体；`futures`（stream_chat 的 `StreamExt`）、`tokio`。
 
@@ -104,7 +106,7 @@ cd examples/assets/rest-http && npm install openai && FLUXGATE_API_KEY=你的key
 
 **是什么**：`build.rs`（启用 `grpc` feature 时）经 tonic-prost-build 0.14 从 vendored proto（`proto/sdforge.v1.proto`，sdforge 仓库同名文件的逐字节副本）生成 `sdforge.v1.SdForgeService` 客户端 stub；`src/grpc_client.rs` 依次演示三条路径：GetInfo 免认证直取服务信息、Call 无凭据撞认证门（`Unauthenticated`）、Call 带 `x-api-key` 凭据（库存网关终点 `NotFound`，gRPC Status details 携带 UnifiedError JSON）。三路径均在真实网关端到端实测。
 
-**依赖与 feature**：本样例不依赖 fluxgate 本体（客户端只消费 proto wire 契约），故 `grpc` feature 不声明 fluxgate；演示的网关侧配置是 fluxgate 的 `grpc = ["dep:sdforge", "sdforge/grpc"]`（根 `Cargo.toml`，独立门控不进 `full`），以 `cargo build --features grpc` 启用。样例自身依赖（均 `default-features = false`）：`tonic 0.14 [transport, codegen]`、`tonic-prost 0.14`、`prost 0.14 [derive]`、`tokio 1`；build-dependencies 与 sdforge build.rs 同套：`tonic-build 0.14` + `tonic-prost-build 0.14`。版本与 Fluxgate `Cargo.lock` 对齐，零新增外部包。
+**依赖与 feature**：本样例不依赖 fluxgate 本体（客户端只消费 proto wire 契约），故 `grpc` feature 不声明 fluxgate；演示的网关侧配置是 fluxgate 的 `grpc = ["dep:sdforge", "sdforge/grpc"]`（根 `Cargo.toml`，独立门控不进 `full`），以 `cargo build --features grpc` 启用。样例自身依赖（均 `default-features = false`）：`tonic 0.14 [channel, codegen]`（弃 `transport` 防拖入 h2/socket2 服务端栈）、`tonic-prost 0.14`、`prost 0.14 [derive]`、`tokio 1`；build-dependencies 与 sdforge build.rs 同套：`tonic-build 0.14` + `tonic-prost-build 0.14`。版本与 Fluxgate `Cargo.lock` 对齐，零新增外部包。
 
 **前置条件**：
 
@@ -113,7 +115,7 @@ cd examples/assets/rest-http && npm install openai && FLUXGATE_API_KEY=你的key
 
 **三点注意**（均以代码为准）：
 
-1. 仓库 `config.toml` 注释称 GetInfo 也要求 key，与代码行为不符——sdforge `src/grpc/grpc_impl.rs` 的 `get_info` 不经 `authenticate`，Fluxgate `src/server/grpc.rs:19-21` 模块文档确认 **GetInfo 免认证**。
+1. 仓库 `config.toml` 注释称 GetInfo 也要求 key，与代码行为不符——sdforge `src/grpc/grpc_impl.rs` 的 `get_info` 不经 `authenticate`，Fluxgate `src/server/grpc.rs` 模块文档确认 **GetInfo 免认证**。
 2. 库存网关未注册任何业务 `grpc_method`，Call 的预期终点是 `NotFound`；把 `DEMO_METHOD` 换成真实方法名即得 `success = true` + JSON `data`。
 3. 取舍：样例不依赖 fluxgate 本体，避免把整个网关栈拖进客户端构建（fluxgate 无 gRPC 客户端 API）；代价是网关侧启用（feature + `[grpc]` 段）只能经本 README 与配置片段表达，而非依赖声明。
 

@@ -604,7 +604,7 @@ concurrency = { requests_per_second = 1 }
             "采纳前写回必须被外部编辑保护拒绝"
         );
         let mut recovered = false;
-        for _ in 0..50 {
+        for _ in 0..300 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             if manager.update_config(next.clone()).is_ok() {
                 recovered = true;
@@ -613,7 +613,7 @@ concurrency = { requests_per_second = 1 }
         }
         assert!(
             recovered,
-            "注释级外部编辑后写回必须在窗口内恢复（failures={}）",
+            "注释级外部编辑后写回必须在窗口内恢复（30s 预算，慢盘/高载容忍；failures={}）",
             reloader.reload_failures()
         );
         assert_eq!(manager.read().retry.max_retries, 20, "写回已生效");

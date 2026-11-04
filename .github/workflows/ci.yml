@@ -335,8 +335,12 @@ jobs:
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
+      # macos 腿移至 nightly：私有仓 macOS runner 池排队系统性取消
+      # （runner_id=0，连续两轮 queued 后被 cancel，rerun ×2 同因），push
+      # 门禁保 ubuntu/windows 双腿编译面；macos 编译面由 nightly 兜底 +
+      # 开发机 arm64 全绿覆盖。与 full-features 的 nightly 设计同款。
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ github.event_name == 'schedule' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

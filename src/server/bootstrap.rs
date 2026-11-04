@@ -1138,7 +1138,7 @@ mod tests {
         }
 
         let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
-        let subscriber = tracing_subscriber::registry().with(BridgeCaptureLayer(gate_sink));
+        let subscriber = tracing_subscriber::registry().with(BridgeCaptureLayer(gate_sink.clone()));
         tracing::subscriber::with_default(subscriber, || {
             log::info!(target: "fluxweir::bridge_test", "gateway boot token {secret}");
         });
@@ -1165,5 +1165,9 @@ mod tests {
             "脱敏标记必须可见: {}",
             written[0].message
         );
+
+        // flush/shutdown 委托路径：RecordingSink 实现体此前从未被驱动
+        futures::executor::block_on(gate_sink.flush()).expect("flush 委托");
+        futures::executor::block_on(gate_sink.shutdown()).expect("shutdown 委托");
     }
 }

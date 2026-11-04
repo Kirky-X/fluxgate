@@ -9326,3 +9326,366 @@ mod subscription_outbound {
         );
     }
 }
+
+/// admin 未接线降级面 + 装配期段 restart 提示 + quota 账本/预算读侧。
+/// 基座与上方 admin 模块同源；差异：quota / vendor_budgets / usage sink /
+/// embedding pin 的接线形态按用例注入。
+mod admin_unwired_and_restart_sections {
+    use crate::common;
+    use axum::extract::{Path, Query, State};
+    use axum::response::IntoResponse;
+    use axum::Json;
+    use fluxweir::api::{admin, ApiState};
+    use fluxweir::config::{
+        Config, ConfigManager, DatabaseConfig, GlobalModelConfig, GrpcConfig, ServerConfig,
+        VendorBudgetConfig,
+    };
+    use fluxweir::error::{FluxweirError, GateError};
+    use fluxweir::middleware::quota::{Period, QuotaState, RuntimeWindow};
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router;
+    use fluxweir::vendor::VendorManager;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_config(vendor_budgets: Vec<VendorBudgetConfig>) -> Config {
+        let mut v = common::base_vendor("openai_main", "");
+        v.api_key_env = "OPENAI_API_KEY".into();
+        Config {
+            server: ServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            database: DatabaseConfig {
+                path: "./test.db".to_string(),
+                pool_size: 5,
+                url: String::new(),
+            },
+            vendor_budgets,
+            ..common::test_config(vec![v])
+        }
+    }
+
+    /// quota 可注入；router 恒不带 embedding pin（421-422 被测面）。
+    async fn make_state(config: Config, quota: Option<Arc<QuotaState>>) -> Arc<ApiState> {
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        vendor_manager.initialize().await.unwrap();
+        let router = Arc::new(Router::new(config_manager.clone(), vendor_manager.clone()));
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repository = Arc::new(fluxweir::database::Repository::new(pool.clone()));
+
+        Arc::new(ApiState {
+            affinity_writer: None,
+            config: config_manager,
+            vendor_manager,
+            router,
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database: Arc::new(fluxweir::database::Database { pool, repository }),
+            logger: None,
+            pre_aggregator: None,
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota,
+            difficulty: None,
+            responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
+        })
+    }
+
+    async fn body_json<R: IntoResponse>(resp: Result<R, FluxweirError>) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(resp.unwrap().into_response().into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn empty_log_query() -> admin::LogQuery {
+        admin::LogQuery {
+            start_time: None,
+            end_time: None,
+            vendor: None,
+            model: None,
+            limit: None,
+        }
+    }
+
+    /// token_stats 在预聚合未接线（测试降级形态）时显式拒绝，不虚构空表。
+    #[tokio::test]
+    async fn token_stats_without_usage_sink_returns_config_error() {
+        let state = make_state(make_config(Vec::new()), None).await;
+        let result = admin::token_stats(State(state), Query(empty_log_query())).await;
+        match result {
+            Err(FluxweirError::Gate(GateError::Config { message })) => {
+                assert!(!message.is_empty(), "未接线错误必须携带可读信息");
+            }
+            other => panic!("expected Config error, got {:?}", other.err()),
+        }
+    }
+
+    /// cost_usage 日期格式校验先于 sink 接线检查：非法数字位（"202a-01-01"）
+    /// 必须回 Validation，而不是回未接线的 Config——运维可区分"参数错"与
+    /// "装配缺"。
+    #[tokio::test]
+    async fn cost_usage_rejects_non_digit_date_before_sink_check() {
+        let state = make_state(make_config(Vec::new()), None).await;
+        let params = admin::CostQuery {
+            from: Some("202a-01-01".to_string()),
+            to: None,
+            group_by: Some("vendor".to_string()),
+        };
+        let result =
+            admin::cost_usage(State(state), axum::http::HeaderMap::new(), Query(params)).await;
+        match result {
+            Err(FluxweirError::Gate(GateError::Validation { .. })) => {}
+            other => panic!(
+                "非法日期必须先回 Validation（参数错先于装配缺）, got {:?}",
+                other.err()
+            ),
+        }
+    }
+
+    /// cost_usage 在预聚合未接线时显式拒绝（与 token_stats 同语义）。
+    #[tokio::test]
+    async fn cost_usage_without_usage_sink_returns_config_error() {
+        let state = make_state(make_config(Vec::new()), None).await;
+        let params = admin::CostQuery {
+            from: Some("2026-01-01".to_string()),
+            to: Some("2026-01-31".to_string()),
+            group_by: Some("vendor".to_string()),
+        };
+        let result =
+            admin::cost_usage(State(state), axum::http::HeaderMap::new(), Query(params)).await;
+        match result {
+            Err(FluxweirError::Gate(GateError::Config { .. })) => {}
+            other => panic!("expected Config error, got {:?}", other.err()),
+        }
+    }
+
+    /// quota_ledger 账本未接线：空 rows（账本态是运行事实，不视作错误）。
+    #[tokio::test]
+    async fn quota_ledger_unwired_returns_empty_rows() {
+        let state = make_state(make_config(Vec::new()), None).await;
+        let value = body_json(admin::quota_ledger(State(state), Query(HashMap::new())).await).await;
+        assert_eq!(value["rows"].as_array().unwrap().len(), 0);
+    }
+
+    /// quota_ledger 读侧：租户窗 + 全局窗逐窗快照（scope 分类 / 占用 /
+    /// 重置时刻），key 过滤命中与不命中两分支。
+    #[tokio::test]
+    async fn quota_ledger_lists_windows_with_scope_and_key_filter() {
+        const TENANT: &str = "kp-admin-digest-1";
+        let quota = Arc::new(QuotaState::new());
+        let windows = vec![
+            RuntimeWindow {
+                id: "w-tenant-hour".to_string(),
+                global: false,
+                period: Period::Rolling(3600),
+                tz_offset_secs: 0,
+                tokens_limit: 1_000_000,
+                cost_limit_millicents: 0,
+            },
+            RuntimeWindow {
+                id: "w-global-day".to_string(),
+                global: true,
+                period: Period::Daily,
+                tz_offset_secs: 0,
+                tokens_limit: 0,
+                cost_limit_millicents: 5_000,
+            },
+        ];
+        quota
+            .consume(TENANT, &windows, 120, 30)
+            .expect("seed consume");
+
+        let state = make_state(make_config(Vec::new()), Some(quota)).await;
+
+        let value =
+            body_json(admin::quota_ledger(State(state.clone()), Query(HashMap::new())).await).await;
+        let rows = value["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "租户窗 + 全局窗各一行: {rows:?}");
+        let scopes: Vec<&str> = rows.iter().map(|r| r["scope"].as_str().unwrap()).collect();
+        assert!(
+            scopes.contains(&"tenant") && scopes.contains(&"global"),
+            "{scopes:?}"
+        );
+        let tenant_row = rows
+            .iter()
+            .find(|r| r["scope"] == "tenant")
+            .expect("tenant row");
+        assert_eq!(tenant_row["api_key_hash"], TENANT);
+        assert_eq!(tenant_row["window_id"], "w-tenant-hour");
+        assert_eq!(tenant_row["tokens_used"], 120);
+        assert_eq!(tenant_row["cost_used_millicents"], 30);
+        assert!(
+            tenant_row["reset_at"].as_i64().unwrap() > 0,
+            "重置时刻必须为正 Unix 秒"
+        );
+
+        // key 过滤：命中租户摘要 → 恰一行；不命中 → 空
+        let value = body_json(
+            admin::quota_ledger(
+                State(state.clone()),
+                Query(HashMap::from([("key".to_string(), TENANT.to_string())])),
+            )
+            .await,
+        )
+        .await;
+        let rows = value["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "key 命中只留该租户行: {rows:?}");
+        assert_eq!(rows[0]["api_key_hash"], TENANT);
+
+        let value = body_json(
+            admin::quota_ledger(
+                State(state),
+                Query(HashMap::from([(
+                    "key".to_string(),
+                    "no-such-digest".to_string(),
+                )])),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(value["rows"].as_array().unwrap().len(), 0, "key 不命中为空");
+    }
+
+    /// vendor_budgets 账本未接线：仍报声明限额（配置面），用量视图像零值
+    /// （tokens_used/cost_used/reset_secs/period_secs 均缺省 0）。
+    #[tokio::test]
+    async fn vendor_budgets_unwired_quota_reports_limits_with_zero_usage() {
+        let config = make_config(vec![budget("openai_main")]);
+        let state = make_state(config, None).await;
+        let value = body_json(admin::vendor_budgets(State(state)).await).await;
+        let rows = value["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["vendor_id"], "openai_main");
+        assert_eq!(rows[0]["tokens_limit"], 1000);
+        assert_eq!(rows[0]["cost_limit_millicents"], 2500);
+        assert_eq!(rows[0]["tokens_used"], 0);
+        assert_eq!(rows[0]["cost_used_millicents"], 0);
+        assert_eq!(rows[0]["pace_ratio"], 0.0);
+        assert_eq!(rows[0]["depleted"], false);
+        assert_eq!(rows[0]["reset_secs"], 0, "quota 未接线时无运行事实");
+        assert_eq!(rows[0]["period_secs"], 0);
+    }
+
+    /// vendor_budgets 账本接线（无用量）：daily 日历窗的读侧视图像——
+    /// period_secs=86400、reset_secs∈[0,86400]（UTC 日界可为 0）、零用量不耗尽。
+    #[tokio::test]
+    async fn vendor_budgets_wired_quota_reports_calendar_window_view() {
+        let config = make_config(vec![budget("openai_main")]);
+        let state = make_state(config, Some(Arc::new(QuotaState::new()))).await;
+        let value = body_json(admin::vendor_budgets(State(state)).await).await;
+        let rows = value["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["period_secs"], 86_400, "daily 日历窗长");
+        let reset_secs = rows[0]["reset_secs"].as_u64().unwrap();
+        assert!(reset_secs <= 86_400, "重置秒数在窗内: {reset_secs}");
+        assert_eq!(rows[0]["tokens_used"], 0, "零流量零占用");
+        assert_eq!(rows[0]["depleted"], false, "零用量不耗尽");
+    }
+
+    /// embedding pin 未装配（router 未 with_embedding_pin）：读/复位均显式
+    /// 拒绝（参照 usage sink 未接线语义），不静默回空表。
+    #[tokio::test]
+    async fn embedding_pins_and_reset_reject_when_pin_unwired() {
+        let state = make_state(make_config(Vec::new()), None).await;
+        match admin::embedding_pins(State(state.clone())).await {
+            Err(FluxweirError::Gate(GateError::Config { .. })) => {}
+            other => panic!("expected Config error, got {:?}", other.err()),
+        }
+        match admin::reset_embedding_pin(State(state), Path("text-embedding-3-small".to_string()))
+            .await
+        {
+            Err(FluxweirError::Gate(GateError::Config { .. })) => {}
+            other => panic!("expected Config error, got {:?}", other.err()),
+        }
+    }
+
+    /// 装配期/一次性消费段经 POST 修改后必须进 restart_required（消除
+    /// "已生效"误判）：database / grpc / otlp 参数 / global_model /
+    /// cache.semantic / routing.difficulty.classifier 三键。
+    #[tokio::test]
+    async fn update_config_flags_assembly_scoped_sections_for_restart() {
+        let state = make_state(make_config(Vec::new()), None).await;
+        let tmpdir = tempfile::tempdir().expect("tempdir creatable");
+        let path = tmpdir.path().join("config.toml");
+        std::fs::write(&path, "seed").unwrap();
+        state.config.set_path(path);
+
+        let mut next = state.config.get_config();
+        next.database.path = "./test-restart.db".to_string();
+        next.grpc = Some(GrpcConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        next.otlp.endpoint = "http://127.0.0.1:4318/v1/metrics".to_string();
+        // 基座 global_model 已是 Some(weighted)——换策略才构成段变更
+        next.global_model = Some(GlobalModelConfig {
+            enabled: true,
+            strategy: "round_robin".to_string(),
+        });
+        next.cache.semantic.max_entries += 1;
+        next.routing.difficulty.classifier.model_path = "models/difficulty-alt".to_string();
+        next.routing.difficulty.classifier.engine = "onnx".to_string();
+        next.routing.difficulty.classifier.cache_ttl_secs += 1;
+
+        let value = body_json(admin::update_config(State(state), Json(next)).await).await;
+        assert_eq!(value["success"], true, "{value}");
+        let required: Vec<&str> = value["restart_required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for section in [
+            "database",
+            "grpc",
+            "otlp",
+            "global_model",
+            "cache.semantic",
+            "routing.difficulty.classifier.model_path",
+            "routing.difficulty.classifier.engine",
+            "routing.difficulty.classifier.cache_ttl_secs",
+        ] {
+            assert!(
+                required.contains(&section),
+                "装配期段 {section} 变更必须提示需重启: {required:?}"
+            );
+        }
+        assert!(
+            value["applies_to_new_instances"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "本组段不含实例级生效语义: {value}"
+        );
+    }
+
+    fn budget(vendor_id: &str) -> VendorBudgetConfig {
+        VendorBudgetConfig {
+            vendor_id: vendor_id.to_string(),
+            tokens_limit: 1000,
+            cost_limit_millicents: 2500,
+            period: "calendar".to_string(),
+            rolling_secs: 0,
+            calendar: "daily".to_string(),
+            tz_offset_secs: 0,
+        }
+    }
+}

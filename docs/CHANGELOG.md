@@ -4,11 +4,11 @@
 
 本格式基于 [Keep a Changelog 1.0.0](https://keepachangelog.com/en/1.0.0/)，版本号遵循语义化版本。
 
-> **注**：以下版本对应 `Cargo.toml` 的版本线（当前 `version = "0.1.0"`）。`v0.1.0` tag 尚未推送（本地与远端均无 tag），打 tag / release 为独立发布动作。
+> **注**：以下版本对应 `Cargo.toml` 的版本线（当前 `version = "0.1.0"`）。
 
 ---
 
-## [Unreleased]
+## [0.1.0] - 2026-11-04
 
 ### Changed（项目更名）
 
@@ -29,9 +29,25 @@
 - **/console 静态面缓存与传输**：内容哈希弱 ETag + `If-None-Match` 304、哈希资产 `immutable`/壳 `no-cache`、gzip 协商（CompressionLayer 仅作用于 console 路由）；安全响应头 `nosniff`/`frame-ancestors 'self'`/`X-Frame-Options: DENY`。
 - **前端构建工程化**：build.rs 新鲜度改内容戳（免疫 cp -p/时钟偏差假新鲜）、识别 Windows `npm.cmd`、本地增量路径 `npm ci --dry-run` 前置校验锁一致性（拒绝自由解析漂移）；控制台窄屏导航折顶栏横排 + 顶栏当前页标题（DESIGN 对齐）。
 
-## [0.1.0] - 2026-11-03
+### 首版概述
 
 首个公开发布版本。核心能力：多厂商统一接入与协议互转（OpenAI/Anthropic/
+Gemini/Responses/Embeddings/Rerank，含 SSE 流式）、六因子加权智能路由
+（LinUCB/缓存经济学亲和/难度定档/SLA 队列）、熔断重试与 Fallback 链、
+限流与拥塞准入、密钥保密柜（AEAD）、响应缓存与语义缓存、请求日志预聚合
+与成本追踪（含长上下文阶梯计价）、上游键归因（V9 列）、会话头别名、
+崩溃安全状态读（.bak 回退）、i18n（zh/en）、Rust SDK、热重载、gRPC、
+Docker。安全面：API Key 仅存摘要常量比较、netguard SSRF 防护、
+出站脱敏。详见各文档。
+
+### Added（发布链）
+
+- **GitHub Release 附 x86_64-linux-musl 静态二进制与 checksums.txt**：`release.yml` 重构为四段链——`verify`（semver 校验/换行清洗/tag 存在性/tag commit 的 manifest 版本一致性/vecboost registry 版本推导，全部 job 一律 checkout tag 指向 commit 构建，源码包/二进制/crates.io 包三者同源）→ `build-binary`（alpine 容器与 `docker/Dockerfile` build 阶段同源构建 + lld 链接 + vecboost 从 crates.io 下载并 sha256 钉校验）→ `create-release`（附产物 + O(1) 幂等守卫）→ `publish-crate`（`CARGO_REGISTRY_TOKEN` secret 存在时发布 crates.io，已发布版本幂等跳过）。权限最小化（workflow 级 `contents: read`，唯 release job 提写）。
+- **crates.io 发布就绪**：`Cargo.toml` 补 `license = "MIT"`；vecboost 改 `path+version` 双写（本地解析仍走 `../vecboost` 保留演进策略，publish 校验走 registry 0.3.0-rc.3 同版包）。
+- CI 基建 action 四项升级（rust-cache 2.9.3 / install-action 2.87.32 / zizmor-action 0.8.0 / gitleaks-action v3.0.0，SHA 钉）。
+- `cargo audit` 豁免配置（`.cargo/audit.toml`）：rsa 链两条 RUSTSEC 逐条理由注释（2023-0071 上游无修复版、仅公钥验签面无解密路径；2026-0387 修复版被 rsa 0.9.10 锁死 0.5 线）。
+
+核心能力：多厂商统一接入与协议互转（OpenAI/Anthropic/
 Gemini/Responses/Embeddings/Rerank，含 SSE 流式）、六因子加权智能路由
 （LinUCB/缓存经济学亲和/难度定档/SLA 队列）、熔断重试与 Fallback 链、
 限流与拥塞准入、密钥保密柜（AEAD）、响应缓存与语义缓存、请求日志预聚合

@@ -839,6 +839,18 @@ mod tests {
         };
         assert_eq!(cached, response);
     }
+
+    /// 参与标志：Disabled 不带 X-Cache 头；Hit/Miss 均参与。
+    #[test]
+    fn cache_outcome_participated_only_for_hit_and_miss() {
+        assert!(!CacheOutcome::Disabled.participated());
+        assert!(CacheOutcome::Hit(Value::Null).participated());
+        assert!(CacheOutcome::Miss(CacheKeyParts {
+            api_key_hash: "h".into(),
+            canonical: "{}".into(),
+        })
+        .participated());
+    }
 }
 
 #[cfg(test)]
@@ -968,6 +980,27 @@ mod ttl_load_linking_tests {
             ..Default::default()
         });
         assert_eq!(cache.ttl("cold-vendor", "m1"), Duration::from_secs(300));
+    }
+
+    /// 非有限 β_max 与无效目标值（NaN/0）走防御分支：TTL 回退基线。
+    #[test]
+    fn ttl_load_linked_invalid_inputs_fall_back_to_base() {
+        let (cache, _m) = make_cache(CacheSection {
+            enabled: true,
+            ttl_secs: 300,
+            ttl_load_linked: true,
+            w_l: 1.0,
+            w_q: 1.0,
+            l_target: f64::NAN,
+            q_target: 0.0,
+            beta_max: f64::NAN,
+            ..Default::default()
+        });
+        assert_eq!(
+            cache.ttl("v1", "m1"),
+            Duration::from_secs(300),
+            "非有限 β_max / 无效目标值不产生放大"
+        );
     }
 }
 
@@ -1481,5 +1514,273 @@ mod get_or_flow_tests {
             2,
             "leader 超时 1 次 + follower 自愈 1 次"
         );
+    }
+
+    fn enabled_manager() -> Arc<ConfigManager> {
+        let toml = "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 0\n\n\
+                    [database]\npath = \":memory:\"\n\n\
+                    [cache]\nenabled = true\nttl_secs = 300\n";
+        let config = crate::config::parse_config_content(std::path::Path::new("config.toml"), toml)
+            .expect("缓存测试配置必须合法");
+        Arc::new(ConfigManager::new(config))
+    }
+
+    /// 点亮并求值 tracing 事件（registry + 全字段格式化层）：无订阅者时
+    /// debug 宏跳过惰性字段求值（i18n 文案行不入覆盖）。线程本地安装避免
+    /// 与并行测试的全局订阅者竞争。
+    fn install_evaluating_subscriber() -> tracing::subscriber::DefaultGuard {
+        struct FormatAllLayer;
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FormatAllLayer {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct FormatAll;
+                impl tracing::field::Visit for FormatAll {
+                    fn record_debug(
+                        &mut self,
+                        _field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        let _ = format!("{value:?}");
+                    }
+                }
+                let mut visitor = FormatAll;
+                event.record(&mut visitor);
+            }
+        }
+
+        use tracing_subscriber::layer::SubscriberExt as _;
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(FormatAllLayer))
+    }
+
+    struct RefundEmbedder;
+
+    impl crate::api::semantic_cache::SemanticEmbedder for RefundEmbedder {
+        // 词面无关的固定向量：不同文本同方向，验证语义命中不依赖原文相等
+        fn embed(&self, _text: &str) -> Result<Vec<f32>, String> {
+            Ok(vec![1.0, 0.0])
+        }
+    }
+
+    /// leader 成功回写语义层；同租户不同文本但同嵌入方向 → 语义命中免派发。
+    #[tokio::test]
+    async fn get_or_semantic_hit_skips_dispatch_after_leader_stores_entry() {
+        let semantic = Arc::new(crate::api::semantic_cache::SemanticCacheLayer::new(
+            0.92,
+            4,
+            Arc::new(RefundEmbedder),
+        ));
+        let cache = ResponseCache::with_semantic(
+            Arc::new(oxcache::backend::default_memory_backend()),
+            enabled_manager(),
+            Arc::new(GlobalMetrics::new()),
+            Some(semantic),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let body_a = serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "I want a refund"}],
+        });
+        let dispatch_a = {
+            let calls = Arc::clone(&calls);
+            move || {
+                let calls = Arc::clone(&calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok((serde_json::json!({"id": "sem-1"}), route("v-sem", "m")))
+                }
+            }
+        };
+        let flow = cache
+            .get_or_response(&HeaderMap::new(), "v-sem", "m", &body_a, dispatch_a)
+            .await
+            .expect("leader 必须成功");
+        assert!(flow.participated);
+        assert!(flow.computed, "leader 计算");
+        assert!(!flow.semantic, "精确 leader 非语义命中");
+
+        let body_b = serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "refund please"}],
+        });
+        let dispatch_b = || async { panic!("语义命中不得派发") };
+        let flow: CacheFlow<TestRoute> = cache
+            .get_or_response(&HeaderMap::new(), "v-sem", "m", &body_b, dispatch_b)
+            .await
+            .expect("语义命中");
+        assert!(flow.semantic, "X-Cache: SEMANTIC-HIT");
+        assert!(!flow.computed, "语义复用非本次计算");
+        assert!(flow.final_route.is_none(), "语义复用不携带路由");
+        assert_eq!(flow.value, serde_json::json!({"id": "sem-1"}));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "语义命中不再派发");
+    }
+
+    /// leader 换路到不同 vendor/model 且响应为 Null：写最终键 + 负缓存 TTL，
+    /// 并清理初始键。
+    #[tokio::test]
+    async fn get_or_leader_rekeys_and_writes_null_under_final_route() {
+        let cache = enabled_cache();
+        let body = test_body();
+        let dispatch = || async { Ok((Value::Null, route("vendor-b", "model-y"))) };
+        let flow = cache
+            .get_or_response(&HeaderMap::new(), "vendor-a", "model-x", &body, dispatch)
+            .await
+            .expect("leader 成功");
+        assert!(flow.computed);
+        assert_eq!(flow.value, Value::Null);
+        assert_eq!(
+            flow.final_route.as_ref().map(|r| r.vendor.as_str()),
+            Some("vendor-b"),
+            "携带最终路由"
+        );
+        assert!(
+            matches!(
+                cache
+                    .check(&HeaderMap::new(), "vendor-a", "model-x", &body)
+                    .await,
+                CacheOutcome::Miss(_)
+            ),
+            "初始键已清理"
+        );
+        assert!(
+            matches!(
+                cache
+                    .check(&HeaderMap::new(), "vendor-b", "model-y", &body)
+                    .await,
+                CacheOutcome::Hit(Value::Null)
+            ),
+            "最终键写入负缓存"
+        );
+    }
+
+    /// 库侧损坏值（反序列化失败）→ 记库故障文案后自愈回源，最终键写入、
+    /// 初始损坏键删除。
+    #[tokio::test]
+    async fn get_or_library_fault_redispatches_and_cleans_initial_key() {
+        let _eval = install_evaluating_subscriber();
+
+        let backend: Arc<dyn CacheBackend + Send + Sync> =
+            Arc::new(oxcache::backend::default_memory_backend());
+        let cache = ResponseCache::with_semantic(
+            backend.clone(),
+            enabled_manager(),
+            Arc::new(GlobalMetrics::new()),
+            None,
+        );
+        let body = test_body();
+        let canonical = canonical_body(&body);
+        let initial_key = response_cache_key(
+            &cache_api_key_hash(&HeaderMap::new()),
+            "vendor-a",
+            "model-x",
+            &canonical,
+        );
+        backend
+            .set(
+                Arc::from(initial_key.as_str()),
+                Arc::new(b"not-json".to_vec()),
+                None,
+            )
+            .await
+            .expect("seed 损坏值");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dispatch = {
+            let calls = Arc::clone(&calls);
+            move || {
+                let calls = Arc::clone(&calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok((
+                        serde_json::json!({"id": "healed"}),
+                        route("vendor-b", "model-y"),
+                    ))
+                }
+            }
+        };
+        let flow = cache
+            .get_or_response(&HeaderMap::new(), "vendor-a", "model-x", &body, dispatch)
+            .await
+            .expect("缓存故障降级为回源");
+        assert_eq!(flow.value, serde_json::json!({"id": "healed"}));
+        assert!(flow.computed);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "仅自愈回源 1 次");
+        assert!(
+            backend
+                .get(&initial_key)
+                .await
+                .expect("backend 读")
+                .is_none(),
+            "损坏的初始键已删除"
+        );
+        assert!(
+            matches!(
+                cache
+                    .check(&HeaderMap::new(), "vendor-b", "model-y", &body)
+                    .await,
+                CacheOutcome::Hit(_)
+            ),
+            "最终键已写入"
+        );
+    }
+
+    /// follower 收到 leader-not-cached → 自愈回源。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn get_or_follower_leader_not_cached_self_heals() {
+        let cache = enabled_cache();
+        let body = test_body();
+        let (entered_tx, entered_rx) = tokio::sync::watch::channel(());
+        let (release_tx, release_rx) = tokio::sync::watch::channel(());
+
+        let leader_cache = cache.clone();
+        let leader_body = body.clone();
+        let leader: tokio::task::JoinHandle<Result<CacheFlow<TestRoute>, FluxweirError>> =
+            tokio::spawn(async move {
+                let dispatch = move || {
+                    let entered_tx = entered_tx.clone();
+                    let mut release_rx = release_rx.clone();
+                    async move {
+                        let _ = entered_tx.send(());
+                        let _ = release_rx.changed().await;
+                        Err(FluxweirError::Gate(GateError::VendorUnavailable {
+                            vendor: "v".into(),
+                        }))
+                    }
+                };
+                leader_cache
+                    .get_or_response(&HeaderMap::new(), "v-lnc", "m", &leader_body, dispatch)
+                    .await
+            });
+
+        let mut entered_rx = entered_rx;
+        let _ = tokio::time::timeout(Duration::from_secs(5), entered_rx.changed()).await;
+        let follower_cache = cache.clone();
+        let follower = tokio::spawn(async move {
+            let dispatch =
+                || async { Ok((serde_json::json!({"id": "healed"}), route("v-lnc-2", "m"))) };
+            follower_cache
+                .get_or_response(&HeaderMap::new(), "v-lnc", "m", &body, dispatch)
+                .await
+        });
+        let _ = release_tx.send(());
+
+        let leader_result = tokio::time::timeout(Duration::from_secs(10), leader)
+            .await
+            .expect("leader join 超时")
+            .expect("leader 任务 panic");
+        assert!(matches!(
+            leader_result,
+            Err(FluxweirError::Gate(GateError::VendorUnavailable { .. }))
+        ));
+        let flow = tokio::time::timeout(Duration::from_secs(10), follower)
+            .await
+            .expect("follower join 超时")
+            .expect("follower 任务 panic")
+            .expect("follower 自愈回源必须成功");
+        assert_eq!(flow.value, serde_json::json!({"id": "healed"}));
+        assert!(flow.computed);
     }
 }

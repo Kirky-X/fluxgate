@@ -1008,3 +1008,1905 @@ fn gemini_stream_frame_parse_and_encode() {
         "Gemini 流不发 [DONE]"
     );
 }
+
+/// Responses 入站 wire 形状边界：字段类型错报 body、空白 model、
+/// input null / 非字符串非数组显式拒绝。
+#[test]
+fn responses_convert_in_wire_shape_edges() {
+    use fluxweir::protocol::ResponsesConverter;
+    let converter = ResponsesConverter::new();
+
+    let err = converter
+        .to_unified(json!({
+            "model": "m",
+            "input": "x",
+            "max_output_tokens": "not-a-number",
+        }))
+        .expect_err("max_output_tokens 类型错必须拒绝");
+    assert!(err.to_string().contains("body"), "{err}");
+
+    let err = converter
+        .to_unified(json!({"model": "   ", "input": "x", "max_output_tokens": 16}))
+        .expect_err("空白 model 必须拒绝");
+    assert!(err.to_string().contains("model"), "{err}");
+
+    let err = converter
+        .to_unified(json!({"model": "m", "input": null, "max_output_tokens": 16}))
+        .expect_err("input null 必须拒绝");
+    assert!(err.to_string().contains("input"), "{err}");
+
+    let err = converter
+        .to_unified(json!({"model": "m", "input": 42, "max_output_tokens": 16}))
+        .expect_err("input 数字必须拒绝");
+    assert!(err.to_string().contains("input"), "{err}");
+}
+
+/// Responses input 条数上限：当前回合超限与合并历史超限都显性拒绝
+///（上限 10000，不静默截断）。
+#[test]
+fn responses_input_item_limit_and_merged_history_overflow() {
+    use fluxweir::protocol::responses::{parse_request, to_unified_request};
+    use fluxweir::protocol::ResponsesConverter;
+
+    let oversized: Vec<Value> = (0..10_001)
+        .map(|i| json!({"role": "user", "content": format!("m{i}")}))
+        .collect();
+    let err = ResponsesConverter::new()
+        .to_unified(json!({"model": "m", "max_output_tokens": 16, "input": oversized}))
+        .expect_err("input 超过 10000 items 必须拒绝");
+    assert!(err.to_string().contains("exceeds limit"), "{err}");
+
+    let parsed = parse_request(&json!({"model": "m", "max_output_tokens": 16, "input": "x"}))
+        .expect("小请求解析");
+    let merged: Vec<Value> = (0..10_001)
+        .map(|i| json!({"role": "user", "content": format!("h{i}")}))
+        .collect();
+    let err = to_unified_request(&parsed, &merged).expect_err("合并历史超限必须拒绝");
+    assert!(err.to_string().contains("exceeds limit"), "{err}");
+}
+
+/// Responses 原生直通判定与工具形状：prompt 标记 native_only、缺 type
+/// 工具不判 native 但在 parse_tools 拒绝、内置工具 IR 转换显性拒绝。
+#[test]
+fn responses_native_only_and_tool_shape_edges() {
+    use fluxweir::protocol::responses::parse_request;
+    use fluxweir::protocol::ResponsesConverter;
+    let converter = ResponsesConverter::new();
+
+    let parsed = parse_request(&json!({
+        "model": "m", "max_output_tokens": 16, "input": "x",
+        "prompt": {"id": "pmpt_1"}
+    }))
+    .expect("prompt 请求可解析");
+    assert_eq!(parsed.native_only.as_deref(), Some("prompt"));
+
+    let parsed = parse_request(&json!({
+        "model": "m", "max_output_tokens": 16, "input": "x",
+        "tools": [{"name": "no_type"}]
+    }))
+    .expect("缺 type 的工具不触发 native_only");
+    assert!(parsed.native_only.is_none());
+
+    let err = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16, "input": "x",
+            "tools": [{"name": "no_type"}]
+        }))
+        .expect_err("缺 type 工具必须拒绝");
+    assert!(err.to_string().contains("tools[0]"), "{err}");
+
+    let err = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16, "input": "x",
+            "tools": [{"type": "web_search"}]
+        }))
+        .expect_err("内置工具走原生路径，IR 转换拒绝");
+    assert!(err.to_string().contains("native"), "{err}");
+}
+
+/// Responses 函数调用历史边界：arguments 对象序列化、重复 output 拒绝、
+/// reasoning 项丢弃、item_reference 必须先解析、output 数组/缺省/标量。
+#[test]
+fn responses_function_history_edges() {
+    use fluxweir::protocol::{MessageContent, ResponsesConverter};
+    let converter = ResponsesConverter::new();
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [
+                {"role": "user", "content": "q"},
+                {"type": "function_call", "call_id": "c1", "name": "f",
+                 "arguments": {"a": 1}},
+                {"type": "function_call_output", "call_id": "c1",
+                 "output": [
+                     {"type": "output_text", "text": "part1"},
+                     "raw tail",
+                     {"type": "skipped"}
+                 ]}
+            ]
+        }))
+        .expect("arguments 对象可转换");
+    assert!(
+        matches!(
+            &unified.messages[1].content,
+            MessageContent::ToolCalls(calls)
+                if calls[0].function.arguments == "{\"a\":1}"
+        ),
+        "{:?}",
+        unified.messages[1].content
+    );
+    assert!(
+        matches!(
+            &unified.messages[2].content,
+            MessageContent::ToolResult(r) if r.content == "part1\nraw tail"
+        ),
+        "{:?}",
+        unified.messages[2].content
+    );
+
+    let err = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [
+                {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "a"},
+                {"type": "function_call_output", "call_id": "c1", "output": "b"}
+            ]
+        }))
+        .expect_err("重复 output 必须拒绝");
+    assert!(err.to_string().contains("duplicate"), "{err}");
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [{"role": "user", "content": "q"}, {"type": "reasoning"}]
+        }))
+        .expect("reasoning 项跳过");
+    assert_eq!(unified.messages.len(), 1, "reasoning 不产消息");
+
+    let err = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [{"type": "item_reference", "id": "msg_9"}]
+        }))
+        .expect_err("item_reference 必须先解析");
+    assert!(err.to_string().contains("item_reference"), "{err}");
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [
+                {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1"}
+            ]
+        }))
+        .expect("缺省 output 可转换");
+    assert!(matches!(
+        &unified.messages[1].content,
+        MessageContent::ToolResult(r) if r.content.is_empty()
+    ));
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [
+                {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": 42}
+            ]
+        }))
+        .expect("数字 output 可转换");
+    assert!(matches!(
+        &unified.messages[1].content,
+        MessageContent::ToolResult(r) if r.content == "42"
+    ));
+}
+
+/// Responses content blocks：未知块型拒绝、无 type 块跳过、单文本块折叠、
+/// null/标量 content、直链图片走 Url 形态。
+#[test]
+fn responses_content_block_edges() {
+    use fluxweir::protocol::{ContentBlock, ImageSource, MessageContent, ResponsesConverter};
+    let converter = ResponsesConverter::new();
+
+    let err = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [{"role": "user", "content": [{"type": "summary_text", "text": "x"}]}]
+        }))
+        .expect_err("未知块型在 chat 上游拒绝");
+    assert!(err.to_string().contains("summary_text"), "{err}");
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [{"role": "user", "content": [{"text": "no-type-block"}]}]
+        }))
+        .expect("无 type 块跳过");
+    assert!(matches!(
+        &unified.messages[0].content,
+        MessageContent::Text(t) if t.is_empty()
+    ));
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "only"}]}]
+        }))
+        .expect("单文本块折叠");
+    assert!(matches!(
+        &unified.messages[0].content,
+        MessageContent::Text(t) if t == "only"
+    ));
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [{"role": "user"}]
+        }))
+        .expect("content 缺省为空文本");
+    assert!(matches!(
+        &unified.messages[0].content,
+        MessageContent::Text(t) if t.is_empty()
+    ));
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [{"role": "user", "content": 7}]
+        }))
+        .expect("标量 content 文本化");
+    assert!(matches!(
+        &unified.messages[0].content,
+        MessageContent::Text(t) if t == "7"
+    ));
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16,
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": "look"},
+                {"type": "input_image", "image_url": "https://example.com/a.png"},
+                {"type": "input_image", "image_url": "data:application/pdf,AAAA"},
+                {"type": "input_image", "image_url": "data:nocomma"}
+            ]}]
+        }))
+        .expect("直链图片可转换");
+    assert!(
+        matches!(
+            &unified.messages[0].content,
+            MessageContent::MultiModal(blocks)
+                if matches!(
+                    &blocks[1],
+                    ContentBlock::Image {
+                        source: ImageSource::Url { url }, ..
+                    } if url == "https://example.com/a.png"
+                ) && matches!(
+                    &blocks[2],
+                    ContentBlock::Image {
+                        source: ImageSource::Url { url }, ..
+                    } if url == "data:application/pdf,AAAA"
+                ) && matches!(
+                    &blocks[3],
+                    ContentBlock::Image {
+                        source: ImageSource::Url { url }, ..
+                    } if url == "data:nocomma"
+                )
+        ),
+        "{:?}",
+        unified.messages[0].content
+    );
+}
+
+/// Responses 工具与杂项槽：nested function 工具、tool_choice 四形态、
+/// text.format 非 json_schema 原样、metadata/service_tier 等进
+/// vendor_extensions。
+#[test]
+fn responses_tools_choice_and_vendor_extras() {
+    use fluxweir::protocol::{ResponsesConverter, ToolChoice};
+    let converter = ResponsesConverter::new();
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16, "input": "x",
+            "tools": [{
+                "type": "function",
+                "function": {"name": "f", "description": "d",
+                             "parameters": {"type": "object"}, "strict": true}
+            }],
+            "metadata": {"trace": "t1"},
+            "service_tier": "priority",
+            "safety_identifier": "u1",
+            "max_tool_calls": 5,
+            "include": ["reasoning.encrypted_content"],
+            "truncation": "auto"
+        }))
+        .expect("nested 工具可转换");
+    assert_eq!(unified.tools[0].function.name, "f");
+    assert_eq!(unified.tools[0].function.strict, Some(true));
+    assert_eq!(
+        unified.vendor_extensions.get("metadata").unwrap()["trace"],
+        "t1"
+    );
+    assert_eq!(
+        unified.vendor_extensions.get("service_tier").unwrap(),
+        "priority"
+    );
+    assert_eq!(unified.vendor_extensions.get("truncation").unwrap(), "auto");
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16, "input": "x",
+            "tool_choice": "required"
+        }))
+        .expect("字符串 tool_choice");
+    assert!(matches!(
+        unified.tool_choice,
+        Some(ToolChoice::Strategy(ref s)) if s == "required"
+    ));
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16, "input": "x",
+            "tool_choice": {"type": "function", "function": {"name": "nested_f"}}
+        }))
+        .expect("nested function.name 兜底");
+    assert!(matches!(
+        unified.tool_choice,
+        Some(ToolChoice::Specific { ref function, .. }) if function.name == "nested_f"
+    ));
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16, "input": "x",
+            "tool_choice": 5
+        }))
+        .expect("非法 tool_choice 回落 auto");
+    assert!(matches!(
+        unified.tool_choice,
+        Some(ToolChoice::Strategy(ref s)) if s == "auto"
+    ));
+
+    let unified = converter
+        .to_unified(json!({
+            "model": "m", "max_output_tokens": 16, "input": "x",
+            "text": {"format": {"type": "text"}}
+        }))
+        .expect("text format 原样");
+    assert_eq!(unified.response_format.unwrap()["type"], "text");
+}
+
+/// Gemini 出站工具/奇形消息：名字缺失拒绝、Tool 文本消息跳过、
+/// TextWithToolCalls 名字回查、Reasoning 丢弃、assistant ToolResult 直映射。
+#[test]
+fn gemini_request_tool_result_shapes() {
+    use fluxweir::protocol::gemini::convert_out::request_to_gemini;
+    use fluxweir::protocol::{
+        Message, MessageContent, Role, ToolCall, ToolCallFunction, ToolResult, UnifiedRequest,
+    };
+
+    fn with(messages: Vec<Message>) -> UnifiedRequest {
+        UnifiedRequest {
+            model: "gemini-2.5-pro".into(),
+            messages,
+            ..Default::default()
+        }
+    }
+    fn user() -> Message {
+        Message {
+            role: Role::User,
+            content: MessageContent::Text("hi".into()),
+        }
+    }
+
+    let err = request_to_gemini(&with(vec![
+        user(),
+        Message {
+            role: Role::Tool,
+            content: MessageContent::ToolResult(ToolResult {
+                tool_call_id: "ghost".into(),
+                function_name: String::new(),
+                content: "42".into(),
+                is_error: false,
+            }),
+        },
+    ]))
+    .expect_err("无名 functionResponse 必须拒绝");
+    assert!(
+        matches!(err, fluxweir::GateError::Validation { .. }),
+        "{err}"
+    );
+
+    let body = request_to_gemini(&with(vec![
+        user(),
+        Message {
+            role: Role::Tool,
+            content: MessageContent::Text("junk".into()),
+        },
+    ]))
+    .expect("Tool 文本消息跳过");
+    assert_eq!(body["contents"].as_array().unwrap().len(), 1, "{body}");
+
+    let call = ToolCall {
+        id: "c1".into(),
+        call_type: "function".into(),
+        function: ToolCallFunction {
+            name: "weather".into(),
+            arguments: "{}".into(),
+        },
+    };
+    let body = request_to_gemini(&with(vec![
+        user(),
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::TextWithToolCalls {
+                text: "calling".into(),
+                tool_calls: vec![call],
+                reasoning: None,
+            },
+        },
+        Message {
+            role: Role::Tool,
+            content: MessageContent::ToolResult(ToolResult {
+                tool_call_id: "c1".into(),
+                function_name: String::new(),
+                content: "sunny".into(),
+                is_error: false,
+            }),
+        },
+    ]))
+    .expect("TextWithToolCalls 可转换");
+    let contents = body["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 3, "{body}");
+    assert_eq!(contents[1]["role"], "model");
+    assert_eq!(contents[1]["parts"][0]["text"], "calling");
+    assert_eq!(contents[1]["parts"][1]["functionCall"]["name"], "weather");
+    assert_eq!(
+        contents[2]["parts"][0]["functionResponse"]["name"], "weather",
+        "名字按 call_id 回查: {body}"
+    );
+
+    let body = request_to_gemini(&with(vec![
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Reasoning {
+                text: "think".into(),
+                signature: None,
+            },
+        },
+        user(),
+    ]))
+    .expect("Reasoning 消息丢弃");
+    assert_eq!(body["contents"].as_array().unwrap().len(), 1, "{body}");
+
+    let body = request_to_gemini(&with(vec![
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::ToolResult(ToolResult {
+                tool_call_id: "c2".into(),
+                function_name: "fn".into(),
+                content: "ok".into(),
+                is_error: false,
+            }),
+        },
+        user(),
+    ]))
+    .expect("assistant ToolResult 可转换");
+    assert_eq!(body["contents"][0]["role"], "model", "{body}");
+    assert_eq!(
+        body["contents"][0]["parts"][0]["functionResponse"]["name"],
+        "fn"
+    );
+}
+
+/// Gemini system 多块聚合与未知块降级：MultiModal 文本拼接、非文本
+/// system 忽略、未知块型文本占位、jpg/webp/gif MIME 推断。
+#[test]
+fn gemini_request_system_blocks_and_mime() {
+    use fluxweir::protocol::gemini::convert_out::request_to_gemini;
+    use fluxweir::protocol::{
+        ContentBlock, ImageSource, Message, MessageContent, Role, ToolCall, ToolCallFunction,
+        UnifiedRequest,
+    };
+
+    fn with(messages: Vec<Message>) -> UnifiedRequest {
+        UnifiedRequest {
+            model: "m".into(),
+            messages,
+            ..Default::default()
+        }
+    }
+    fn user() -> Message {
+        Message {
+            role: Role::User,
+            content: MessageContent::Text("hi".into()),
+        }
+    }
+
+    let body = request_to_gemini(&with(vec![
+        Message {
+            role: Role::System,
+            content: MessageContent::MultiModal(vec![
+                ContentBlock::Text { text: "s1".into() },
+                ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://x/s.png".into(),
+                    },
+                    detail: None,
+                },
+                ContentBlock::Text { text: "s2".into() },
+            ]),
+        },
+        user(),
+    ]))
+    .expect("system 多文本块拼接");
+    assert_eq!(
+        body["systemInstruction"]["parts"][0]["text"], "s1s2",
+        "非文本块不参与拼接: {body}"
+    );
+
+    let body = request_to_gemini(&with(vec![
+        Message {
+            role: Role::System,
+            content: MessageContent::ToolCalls(vec![ToolCall {
+                id: "c1".into(),
+                call_type: "function".into(),
+                function: ToolCallFunction {
+                    name: "f".into(),
+                    arguments: "{}".into(),
+                },
+            }]),
+        },
+        user(),
+    ]))
+    .expect("非文本 system 忽略");
+    assert!(body.get("systemInstruction").is_none(), "{body}");
+
+    let body = request_to_gemini(&with(vec![Message {
+        role: Role::User,
+        content: MessageContent::MultiModal(vec![ContentBlock::Type("video".into())]),
+    }]))
+    .expect("未知块降级");
+    let text = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+    assert!(text.contains("video"), "占位文本含原块信息: {text}");
+
+    for (url, mime) in [
+        ("https://x/a.jpg", "image/jpeg"),
+        ("https://x/a.webp", "image/webp"),
+        ("https://x/a.gif", "image/gif"),
+    ] {
+        let body = request_to_gemini(&with(vec![Message {
+            role: Role::User,
+            content: MessageContent::MultiModal(vec![ContentBlock::Image {
+                source: ImageSource::Url { url: url.into() },
+                detail: None,
+            }]),
+        }]))
+        .expect("url 图片");
+        assert_eq!(
+            body["contents"][0]["parts"][0]["fileData"]["mimeType"], mime,
+            "{url}"
+        );
+    }
+}
+
+/// Gemini generationConfig 与 toolConfig 全槽：采样参数、stop、惩罚、
+/// null 参数工具省略 parameters、tool_choice 策略词、response_format 三形态。
+#[test]
+fn gemini_request_sampling_and_tool_config() {
+    use fluxweir::protocol::gemini::convert_out::request_to_gemini;
+    use fluxweir::protocol::{
+        Message, MessageContent, Role, SamplingParams, Tool, ToolChoice, ToolFunction,
+        UnifiedRequest,
+    };
+
+    let mut request = UnifiedRequest {
+        model: "m".into(),
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("hi".into()),
+        }],
+        temperature: Some(0.7),
+        top_p: Some(0.9),
+        stop: vec!["END".into()],
+        sampling: Some(SamplingParams {
+            top_k: Some(40),
+            frequency_penalty: Some(0.1),
+            presence_penalty: Some(0.2),
+            ..Default::default()
+        }),
+        tools: vec![
+            Tool {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "full".into(),
+                    description: "d".into(),
+                    parameters: json!({"type": "object"}),
+                    strict: None,
+                },
+                ..Default::default()
+            },
+            Tool {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "bare".into(),
+                    description: String::new(),
+                    parameters: Value::Null,
+                    strict: None,
+                },
+                ..Default::default()
+            },
+        ],
+        tool_choice: Some(ToolChoice::Strategy("none".into())),
+        ..Default::default()
+    };
+    let body = request_to_gemini(&request).expect("全槽请求");
+    let gen = &body["generationConfig"];
+    for (key, want) in [
+        ("temperature", 0.7f64),
+        ("topP", 0.9),
+        ("frequencyPenalty", 0.1),
+        ("presencePenalty", 0.2),
+    ] {
+        let got = gen[key].as_f64().unwrap();
+        assert!((got - want).abs() < 1e-6, "{key}: {got}");
+    }
+    assert_eq!(gen["topK"], 40);
+    assert_eq!(gen["stopSequences"][0], "END");
+    let decls = body["tools"][0]["functionDeclarations"].as_array().unwrap();
+    assert!(decls[0].get("parameters").is_some(), "带参工具: {decls:?}");
+    assert!(
+        decls[1].get("parameters").is_none(),
+        "null 参数省略: {decls:?}"
+    );
+    assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "NONE");
+
+    request.tool_choice = Some(ToolChoice::Strategy("required".into()));
+    let body = request_to_gemini(&request).expect("required 策略");
+    assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+
+    request.tool_choice = Some(ToolChoice::Strategy("banana".into()));
+    let body = request_to_gemini(&request).expect("未知策略不写 toolConfig");
+    assert!(body.get("toolConfig").is_none(), "{body}");
+
+    request.tool_choice = None;
+    request.response_format = Some(json!({"type": "json_schema"}));
+    let body = request_to_gemini(&request).expect("无 schema 的 json_schema");
+    assert_eq!(
+        body["generationConfig"]["responseMimeType"],
+        "application/json"
+    );
+    assert!(
+        body["generationConfig"].get("responseSchema").is_none(),
+        "{}",
+        body
+    );
+
+    request.response_format = Some(json!({"type": "json_object"}));
+    let body = request_to_gemini(&request).expect("json_object");
+    assert_eq!(
+        body["generationConfig"]["responseMimeType"],
+        "application/json"
+    );
+
+    request.response_format = Some(json!({"type": "text"}));
+    let body = request_to_gemini(&request).expect("text format 无 mime");
+    assert!(
+        body.get("generationConfig").is_none()
+            || body["generationConfig"].get("responseMimeType").is_none(),
+        "{}",
+        body
+    );
+}
+
+/// Gemini 响应候选边角：无 content/空 parts、inlineData/fileData、
+/// 无 args functionCall、finishReason 词表、回写 message 缺省与 SAFETY。
+#[test]
+fn gemini_response_candidate_edges() {
+    use fluxweir::protocol::gemini::convert_out::{parse_gemini_response, response_to_gemini};
+    use fluxweir::protocol::{
+        Choice, ContentBlock, FinishReason, ImageSource, Message, MessageContent, Role, TokenUsage,
+        UnifiedResponse,
+    };
+
+    let unified = parse_gemini_response(
+        &json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"text": "look"},
+                    {"inlineData": {"mimeType": "image/png", "data": "AA"}},
+                    {"fileData": {"fileUri": "gs://b/f.png"}},
+                    {}
+                ]},
+                "finishReason": "STOP"
+            }]
+        }),
+        "m",
+    )
+    .expect("混合 parts 可解析");
+    let message = unified.choices[0].message.as_ref().unwrap();
+    assert!(
+        matches!(
+            &message.content,
+            MessageContent::MultiModal(blocks)
+                if matches!(&blocks[0], ContentBlock::Text { text } if text == "look")
+                    && matches!(
+                        &blocks[1],
+                        ContentBlock::Image {
+                            source: ImageSource::Base64 { media_type, .. }, ..
+                        } if media_type == "image/png"
+                    )
+                    && matches!(
+                        &blocks[2],
+                        ContentBlock::Image {
+                            source: ImageSource::Url { url }, ..
+                        } if url == "gs://b/f.png"
+                    )
+        ),
+        "{:?}",
+        message.content
+    );
+
+    // candidates 类型错 → 反序列化失败，整体显性拒绝
+    assert!(
+        parse_gemini_response(&json!({"candidates": 5}), "m").is_err(),
+        "畸形 candidates 拒绝"
+    );
+
+    let unified = parse_gemini_response(
+        &json!({"candidates": [{"content": {"role": "model", "parts": [
+            {"inlineData": {"mimeType": "image/jpeg", "data": "BB"}}
+        ]}}]}),
+        "m",
+    )
+    .expect("纯图可解析");
+    let message = unified.choices[0].message.as_ref().unwrap();
+    assert!(
+        matches!(
+            &message.content,
+            MessageContent::MultiModal(blocks) if blocks.len() == 1
+                && matches!(&blocks[0], ContentBlock::Image { .. })
+        ),
+        "{:?}",
+        message.content
+    );
+
+    let unified = parse_gemini_response(
+        &json!({"candidates": [{"index": 0, "finishReason": "STOP"}]}),
+        "m",
+    )
+    .expect("无 content 候选可解析");
+    let choice = &unified.choices[0];
+    assert!(
+        matches!(
+            choice.message.as_ref().unwrap().content,
+            MessageContent::Text(ref t) if t.is_empty()
+        ),
+        "{:?}",
+        choice.message
+    );
+
+    let unified = parse_gemini_response(
+        &json!({"candidates": [{"content": {"role": "model", "parts": []},
+                                 "finishReason": "STOP"}]}),
+        "m",
+    )
+    .expect("空 parts 可解析");
+    assert!(matches!(
+        unified.choices[0].message.as_ref().unwrap().content,
+        MessageContent::Text(ref t) if t.is_empty()
+    ));
+
+    let unified = parse_gemini_response(
+        &json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "x"}]}}]}),
+        "m",
+    )
+    .expect("无 finishReason 可解析");
+    let choice = &unified.choices[0];
+    assert!(choice.finish.is_none() && choice.finish_reason.is_none());
+
+    let unified = parse_gemini_response(
+        &json!({"candidates": [{
+            "content": {"role": "model", "parts": [{"functionCall": {"name": "f"}}]},
+            "finishReason": "MALFORMED_FUNCTION_CALL"
+        }]}),
+        "m",
+    )
+    .expect("无 args functionCall 可解析");
+    let choice = &unified.choices[0];
+    assert_eq!(choice.finish_reason.as_deref(), Some("tool_calls"));
+    assert!(choice.finish.is_none());
+    match &choice.message.as_ref().unwrap().content {
+        MessageContent::TextWithToolCalls { tool_calls, .. } => {
+            assert_eq!(tool_calls[0].function.arguments, "{}");
+        }
+        other => panic!("期望 TextWithToolCalls: {other:?}"),
+    }
+
+    let unified = parse_gemini_response(
+        &json!({"candidates": [{
+            "content": {"role": "model", "parts": [{"text": "a"}]},
+            "finishReason": "WEIRD"
+        }]}),
+        "m",
+    )
+    .expect("未知 finishReason 保真");
+    let choice = &unified.choices[0];
+    assert_eq!(choice.finish_reason.as_deref(), Some("WEIRD"));
+    assert!(choice.finish.is_none());
+
+    let response = UnifiedResponse {
+        id: "r1".into(),
+        object: "chat.completion".into(),
+        created: 1,
+        model: "m".into(),
+        choices: vec![Choice {
+            index: 0,
+            message: None,
+            finish_reason: None,
+            finish: None,
+            logprobs: None,
+        }],
+        usage: TokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+            ..Default::default()
+        },
+        stop_sequence: None,
+    };
+    let body = response_to_gemini(&response);
+    assert_eq!(body["candidates"][0]["finishReason"], "STOP");
+    assert!(body["candidates"][0]["content"]["parts"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let response = UnifiedResponse {
+        id: "r2".into(),
+        object: "chat.completion".into(),
+        created: 1,
+        model: "m".into(),
+        choices: vec![Choice {
+            index: 0,
+            message: Some(Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("hi".into()),
+            }),
+            finish_reason: None,
+            finish: Some(FinishReason::ContentFilter),
+            logprobs: None,
+        }],
+        usage: TokenUsage::default(),
+        stop_sequence: None,
+    };
+    let body = response_to_gemini(&response);
+    assert_eq!(body["candidates"][0]["finishReason"], "SAFETY");
+}
+
+/// Gemini 流帧多形态与编码器变体：不可映射帧 None、多工具调用聚合、
+/// 思考增量丢弃、ToolResult 帧、未知终止词 OTHER、SAFETY 入站映射。
+#[test]
+fn gemini_stream_parse_and_encoder_variants() {
+    use fluxweir::protocol::gemini::stream::parse_stream_frame;
+    use fluxweir::protocol::{
+        ContentBlock, GeminiStreamEncoder, ImageSource, MessageContent, StreamChunk, ToolCall,
+        ToolCallFunction, ToolResult,
+    };
+
+    assert!(
+        parse_stream_frame(
+            r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AA"}}]}}]}"#
+        )
+        .is_none(),
+        "无文本无终止的不可映射帧返回 None"
+    );
+
+    let chunk =
+        parse_stream_frame(r#"{"candidates":[{"finishReason":"STOP"}]}"#).expect("无 content 帧");
+    assert!(
+        matches!(
+            &chunk,
+            StreamChunk::Content {
+                delta: MessageContent::Text(ref t),
+                finish_reason: Some(ref f),
+                ..
+            } if t.is_empty() && f == "stop"
+        ),
+        "{chunk:?}"
+    );
+
+    let chunk = parse_stream_frame(
+        r#"{"candidates":[{"index":2,"content":{"parts":[
+            {"functionCall":{"name":"a"}},{"functionCall":{"name":"b"}}]}}]}"#,
+    )
+    .expect("单帧双工具调用");
+    assert!(
+        matches!(
+            &chunk,
+            StreamChunk::Content {
+                index: 2,
+                delta: MessageContent::ToolCalls(ref calls),
+                ..
+            } if calls.len() == 2
+        ),
+        "{chunk:?}"
+    );
+
+    let chunk = parse_stream_frame(
+        &json!({"candidates": [{"content": {"parts": [
+            {"text": "ans"},
+            {"functionCall": {"name": "f", "args": {"x": 1}}}
+        ]}}]})
+        .to_string(),
+    )
+    .expect("文本 + 工具调用同帧");
+    assert!(
+        matches!(
+            &chunk,
+            StreamChunk::Content {
+                delta: MessageContent::TextWithToolCalls {
+                    text, tool_calls, ..
+                },
+                ..
+            } if text == "ans" && tool_calls.len() == 1
+        ),
+        "{chunk:?}"
+    );
+
+    let chunk = parse_stream_frame(
+        r#"{"candidates":[{"content":{"parts":[{"text":"a"}]},"finishReason":"SAFETY"}]}"#,
+    )
+    .expect("SAFETY 帧可解析");
+    assert!(
+        matches!(
+            &chunk,
+            StreamChunk::Content { finish_reason: Some(ref f), .. } if f == "content_filter"
+        ),
+        "{chunk:?}"
+    );
+
+    let mut encoder = GeminiStreamEncoder::default();
+    let frames = encoder.encode(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::MultiModal(vec![
+            ContentBlock::Text { text: "v".into() },
+            ContentBlock::Image {
+                source: ImageSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: "AA".into(),
+                },
+                detail: None,
+            },
+        ]),
+        finish_reason: None,
+        logprobs: None,
+    });
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        frames[0]["candidates"][0]["content"]["parts"][0]["text"],
+        "v"
+    );
+    assert_eq!(
+        frames[0]["candidates"][0]["content"]["parts"][1]["inlineData"]["mimeType"],
+        "image/png"
+    );
+
+    let frames = encoder.encode(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::ToolCalls(vec![ToolCall {
+            id: "c1".into(),
+            call_type: "function".into(),
+            function: ToolCallFunction {
+                name: "f".into(),
+                arguments: "{\"x\":9}".into(),
+            },
+        }]),
+        finish_reason: None,
+        logprobs: None,
+    });
+    assert!(frames.is_empty(), "工具片段先缓冲");
+
+    let frames = encoder.encode(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::Text(String::new()),
+        finish_reason: Some("tool_calls".into()),
+        logprobs: None,
+    });
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        frames[0]["candidates"][0]["content"]["parts"][0]["functionCall"]["name"],
+        "f"
+    );
+    assert_eq!(
+        frames[0]["candidates"][0]["content"]["parts"][0]["functionCall"]["args"]["x"],
+        9
+    );
+    assert_eq!(frames[0]["candidates"][0]["finishReason"], "STOP");
+
+    let mut encoder = GeminiStreamEncoder::new();
+    let frames = encoder.encode(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::TextWithToolCalls {
+            text: "calling".into(),
+            tool_calls: vec![ToolCall {
+                id: "c2".into(),
+                call_type: "function".into(),
+                function: ToolCallFunction {
+                    name: "g".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+            reasoning: None,
+        },
+        finish_reason: None,
+        logprobs: None,
+    });
+    assert_eq!(frames.len(), 1, "文本帧即时发出");
+    assert_eq!(
+        frames[0]["candidates"][0]["content"]["parts"][0]["text"],
+        "calling"
+    );
+    let frames = encoder.finish();
+    assert!(
+        frames
+            .iter()
+            .any(|f| f["candidates"][0]["content"]["parts"][0]["functionCall"]["name"] == "g"),
+        "{frames:?}"
+    );
+
+    let mut encoder = GeminiStreamEncoder::new();
+    let frames = encoder.encode(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::ToolResult(ToolResult {
+            tool_call_id: "c1".into(),
+            function_name: "fn".into(),
+            content: "{\"ok\":true}".into(),
+            is_error: false,
+        }),
+        finish_reason: None,
+        logprobs: None,
+    });
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        frames[0]["candidates"][0]["content"]["parts"][0]["functionResponse"]["response"]["ok"],
+        true
+    );
+
+    let frames = encoder.encode(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::Reasoning {
+            text: "hidden".into(),
+            signature: None,
+        },
+        finish_reason: None,
+        logprobs: None,
+    });
+    assert!(frames.is_empty(), "思考帧无 Gemini 对应，不产帧");
+
+    let mut encoder = GeminiStreamEncoder::new();
+    let frames = encoder.encode(StreamChunk::Usage {
+        prompt_tokens: 1,
+        completion_tokens: 1,
+        total_tokens: 2,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cache_creation_1h_tokens: 0,
+        finish_reason: Some("bizarre".into()),
+    });
+    assert!(
+        frames
+            .iter()
+            .any(|f| f["candidates"][0]["finishReason"] == "OTHER"),
+        "{frames:?}"
+    );
+}
+
+/// OpenAI 流编码器与片段解析边角：Default 等价、无 id 帧原样、
+/// 无内容首帧不补 role、退化工具片段、非对象 tool_call 回退 None。
+#[test]
+fn openai_stream_encoder_and_fragment_edges() {
+    use fluxweir::protocol::{OpenAIStreamEncoder, StreamChunk};
+
+    let mut encoder = OpenAIStreamEncoder::default();
+    let frame = json!({
+        "id": "chunk-1",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": null}]
+    });
+    let normalized = encoder.normalize(frame);
+    let id = normalized["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("chatcmpl-"), "流 id 收敛: {id}");
+    assert_eq!(
+        normalized["choices"][0]["delta"]["role"], "assistant",
+        "首内容帧补 role"
+    );
+
+    let again = encoder.normalize(json!({
+        "id": "chunk-2", "created": 2,
+        "choices": [{"index": 0, "delta": {"content": "yo"}, "finish_reason": null}]
+    }));
+    assert_eq!(again["id"].as_str().unwrap(), id, "全流 id 固定");
+    assert!(
+        again["choices"][0]["delta"].get("role").is_none(),
+        "role 只补一次"
+    );
+
+    let raw = json!({":": ""});
+    let out = encoder.normalize(raw.clone());
+    assert_eq!(out, raw, "非 chunk 帧不归一");
+
+    let mut encoder = OpenAIStreamEncoder::new();
+    let out = encoder.normalize(json!({
+        "id": "x", "created": 1,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    }));
+    assert!(
+        out["choices"][0]["delta"].get("role").is_none(),
+        "无内容 delta 不补 role: {out}"
+    );
+
+    let mut encoder = OpenAIStreamEncoder::new();
+    let out = encoder.normalize(json!({
+        "id": "y", "created": 1, "choices": []
+    }));
+    assert_eq!(out["choices"].as_array().unwrap().len(), 0, "{out}");
+
+    let out = openai()
+        .stream_chunk_to_external(StreamChunk::ToolCall {
+            index: 0,
+            id: String::new(),
+            name: None,
+            arguments: None,
+        })
+        .expect("退化片段可编码");
+    let fragment = &out["choices"][0]["delta"]["tool_calls"][0];
+    assert_eq!(fragment["index"], 0);
+    assert_eq!(fragment["type"], "function");
+    assert!(fragment.get("id").is_none(), "{fragment}");
+    assert!(fragment.get("function").is_none(), "{fragment}");
+
+    assert!(
+        openai()
+            .parse_stream_frame(r#"{"choices":[{"index":0,"delta":{"tool_calls":["oops"]}}]}"#)
+            .is_none(),
+        "非对象片段无载荷返回 None"
+    );
+}
+
+/// OpenAI 出站：非文本 System 消息原位保留；sampling 段补缺省 flat 槽。
+#[test]
+fn openai_request_system_merge_and_sampling_backfill() {
+    use fluxweir::protocol::{
+        ContentBlock, ImageSource, Message, MessageContent, Role, SamplingParams,
+    };
+
+    let mut unified = openai()
+        .to_unified(base_openai_request())
+        .expect("to unified");
+    unified.system_prompt = Some("base".into());
+    unified.messages.insert(
+        0,
+        Message {
+            role: Role::System,
+            content: MessageContent::MultiModal(vec![
+                ContentBlock::Text {
+                    text: "block-sys".into(),
+                },
+                ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://x/i.png".into(),
+                    },
+                    detail: None,
+                },
+            ]),
+        },
+    );
+    let external = openai().request_to_external(unified).expect("to external");
+    let messages = external["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "{external}");
+    assert_eq!(messages[0]["role"], "system");
+    assert_eq!(messages[0]["content"], "base", "合并 system 在前");
+    assert_eq!(messages[1]["role"], "system", "非文本 system 原位保留");
+    assert!(messages[1]["content"].is_array(), "{}", messages[1]);
+
+    let mut unified = openai()
+        .to_unified(base_openai_request())
+        .expect("to unified");
+    unified.sampling = Some(SamplingParams {
+        temperature: Some(0.3),
+        top_p: Some(0.8),
+        top_k: Some(40),
+        frequency_penalty: Some(0.1),
+        presence_penalty: Some(0.2),
+    });
+    let external = openai()
+        .request_to_external(unified.clone())
+        .expect("to external");
+    for (key, want) in [
+        ("temperature", 0.3f64),
+        ("top_p", 0.8),
+        ("frequency_penalty", 0.1),
+        ("presence_penalty", 0.2),
+    ] {
+        let got = external[key].as_f64().unwrap();
+        assert!((got - want).abs() < 1e-6, "{key}: {got}");
+    }
+    assert_eq!(external["top_k"], 40, "top_k 直出");
+
+    // flat 惩罚槽优先：sampling 同槽不覆写
+    unified.frequency_penalty = Some(0.9);
+    unified.presence_penalty = Some(0.8);
+    let external = openai().request_to_external(unified).expect("to external");
+    for (key, want) in [("frequency_penalty", 0.9f64), ("presence_penalty", 0.8)] {
+        let got = external[key].as_f64().unwrap();
+        assert!((got - want).abs() < 1e-6, "{key}: {got}");
+    }
+}
+
+/// OpenAI 内容块与 tool_choice 边角：非 base64 data URL 保 Url、file 直链
+/// 与非 base64 data URL 落 octet-stream、Document cache_control 丢弃、
+/// 缺 arguments 空串、none/banana tool_choice。
+#[test]
+fn openai_content_blocks_files_and_choices() {
+    use fluxweir::protocol::{ContentBlock, ImageSource, MessageContent, ToolChoice};
+
+    let unified = openai()
+        .to_unified(json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:application/pdf,AAAA"}},
+                {"type": "file", "file": {"file_data": "https://x/f.bin", "filename": "f.bin"}},
+                {"type": "file", "file": {"file_data": "data:text/plain,hi"}}
+            ]}]
+        }))
+        .expect("文件与图片块可解析");
+    match &unified.messages[0].content {
+        MessageContent::MultiModal(blocks) => {
+            assert!(
+                matches!(
+                    &blocks[0],
+                    ContentBlock::Image {
+                        source: ImageSource::Url { url }, ..
+                    } if url == "data:application/pdf,AAAA"
+                ),
+                "{blocks:?}"
+            );
+            assert!(
+                matches!(
+                    &blocks[1],
+                    ContentBlock::Document {
+                        source: ImageSource::Url { url },
+                        media_type,
+                        title,
+                        ..
+                    } if url == "https://x/f.bin"
+                        && media_type == "application/octet-stream"
+                        && title.as_deref() == Some("f.bin")
+                ),
+                "{blocks:?}"
+            );
+            assert!(
+                matches!(
+                    &blocks[2],
+                    ContentBlock::Document {
+                        source: ImageSource::Url { url },
+                        media_type,
+                        ..
+                    } if url == "data:text/plain,hi"
+                        && media_type == "application/octet-stream"
+                ),
+                "{blocks:?}"
+            );
+        }
+        other => panic!("期望多模态: {other:?}"),
+    }
+
+    let mut unified = openai()
+        .to_unified(base_openai_request())
+        .expect("to unified");
+    unified.messages[0].content = MessageContent::MultiModal(vec![ContentBlock::Document {
+        source: ImageSource::Base64 {
+            media_type: "application/pdf".into(),
+            data: "QUJD".into(),
+        },
+        media_type: "application/pdf".into(),
+        title: Some("doc.pdf".into()),
+        cache_control: Some(json!({"type": "ephemeral"})),
+    }]);
+    let external = openai().request_to_external(unified).expect("to external");
+    let part = &external["messages"][0]["content"][0];
+    assert_eq!(part["type"], "file");
+    assert_eq!(
+        part["file"]["file_data"],
+        "data:application/pdf;base64,QUJD"
+    );
+    assert_eq!(part["file"]["filename"], "doc.pdf");
+    assert!(part["file"].get("cache_control").is_none(), "{part}");
+
+    let unified = openai()
+        .to_unified(json!({
+            "model": "gpt-4",
+            "messages": [{"role": "assistant", "content": null,
+                "tool_calls": [{"id": "c1", "type": "function",
+                                "function": {"name": "f"}}]}]
+        }))
+        .expect("缺 arguments 可解析");
+    // 缺 arguments 的片段被整体丢弃（与流式路径的空串占位不同，
+    // 静默丢弃无 drop_unsupported 日志——疑似缺陷，见交付报告）
+    assert!(
+        matches!(
+            &unified.messages[0].content,
+            MessageContent::Text(text) if text.is_empty()
+        ),
+        "{:?}",
+        unified.messages[0].content
+    );
+
+    let mut request = base_openai_request();
+    request["tool_choice"] = json!({"type": "none"});
+    let unified = openai().to_unified(request).expect("none 保留");
+    assert!(matches!(
+        unified.tool_choice,
+        Some(ToolChoice::Strategy(ref s)) if s == "none"
+    ));
+
+    let mut request = base_openai_request();
+    request["tool_choice"] = json!({"type": "banana"});
+    let unified = openai().to_unified(request).expect("未知形态回落 auto");
+    assert!(matches!(
+        unified.tool_choice,
+        Some(ToolChoice::Strategy(ref s)) if s == "auto"
+    ));
+}
+
+/// OpenAI usage 明细空对象视为缺省；Reasoning 带 signature 出站丢弃
+/// signature 只回写 reasoning_content。
+#[test]
+fn openai_usage_empty_details_and_reasoning_signature() {
+    use fluxweir::protocol::{MessageContent, StreamChunk};
+
+    let unified = openai()
+        .parse_response(json!({
+            "id": "chatcmpl-e", "model": "gpt-4",
+            "choices": [{"index": 0,
+                         "message": {"role": "assistant", "content": "hi"},
+                         "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6,
+                "prompt_tokens_details": {},
+                "completion_tokens_details": {}
+            }
+        }))
+        .expect("空明细对象可解析");
+    assert_eq!(unified.usage.cache_read_tokens, 0, "空对象视为缺省");
+
+    let out = openai()
+        .stream_chunk_to_external(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::Reasoning {
+                text: "th".into(),
+                signature: Some("sig-1".into()),
+            },
+            finish_reason: None,
+            logprobs: None,
+        })
+        .expect("reasoning 增量可编码");
+    assert_eq!(out["choices"][0]["delta"]["reasoning_content"], "th");
+    assert!(
+        out["choices"][0]["delta"].get("signature").is_none(),
+        "signature 无 OpenAI 槽"
+    );
+}
+
+/// Anthropic 缓存断点策略注入；flat top_p 抑制 sampling 补位（现状语义）。
+#[test]
+fn anthropic_request_cache_policy_and_top_p_flat() {
+    use fluxweir::config::model_catalog::CacheBreakpointPolicy;
+
+    let mut unified = anthropic()
+        .to_unified(base_anthropic_request())
+        .expect("to unified");
+    unified.system_prompt = Some("sys".into());
+    let policy = CacheBreakpointPolicy {
+        enabled: true,
+        max_breakpoints: 4,
+        anchors: vec!["system".into()],
+    };
+    let external = anthropic()
+        .request_to_external_with_cache_policy(unified, &policy)
+        .expect("policy 请求");
+    assert_eq!(
+        external["system"][0]["cache_control"]["type"], "ephemeral",
+        "system 字符串提升为断点块: {external}"
+    );
+
+    let mut unified = anthropic()
+        .to_unified(base_anthropic_request())
+        .expect("to unified");
+    unified.top_p = Some(0.5);
+    unified.sampling = Some(fluxweir::protocol::SamplingParams {
+        top_p: Some(0.9),
+        top_k: Some(7),
+        ..Default::default()
+    });
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    // flat top_p 抑制 sampling 补位，但 flat 值本身也不写出——出站路径
+    // 没有 flat top_p 写槽（疑似缺陷，见交付报告），此处按现状断言
+    assert!(
+        external.get("top_p").is_none(),
+        "flat top_p 既不覆写也不透传: {external}"
+    );
+    assert_eq!(external["top_k"], 7);
+}
+
+/// Anthropic 无状态单块路径：非文本 delta 产空 text_delta；Usage 帧带
+/// 缓存读写计数字段。
+#[test]
+fn anthropic_stream_chunk_stateless_shapes() {
+    use fluxweir::protocol::{ContentBlock, ImageSource, MessageContent, StreamChunk};
+
+    let out = anthropic()
+        .stream_chunk_to_external(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::MultiModal(vec![ContentBlock::Image {
+                source: ImageSource::Url {
+                    url: "https://x/i.png".into(),
+                },
+                detail: None,
+            }]),
+            finish_reason: None,
+            logprobs: None,
+        })
+        .expect("图片 delta 可编码");
+    assert_eq!(out["delta"]["text"], "", "无状态路径只产 text_delta: {out}");
+
+    let out = anthropic()
+        .stream_chunk_to_external(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::Reasoning {
+                text: "t".into(),
+                signature: None,
+            },
+            finish_reason: None,
+            logprobs: None,
+        })
+        .expect("reasoning delta 可编码");
+    assert_eq!(out["delta"]["text"], "");
+
+    let out = anthropic()
+        .stream_chunk_to_external(StreamChunk::Usage {
+            prompt_tokens: 3,
+            completion_tokens: 4,
+            total_tokens: 7,
+            cache_read_tokens: 5,
+            cache_creation_tokens: 6,
+            cache_creation_1h_tokens: 0,
+            finish_reason: Some("stop".into()),
+        })
+        .expect("usage 帧可编码");
+    assert_eq!(out["type"], "message_delta");
+    assert_eq!(out["usage"]["cache_read_input_tokens"], 5);
+    assert_eq!(out["usage"]["cache_creation_input_tokens"], 6);
+}
+
+/// Anthropic 流编码器：工具片段先行 flush 时补 message_start、文本→思考
+/// 块切换先闭块、signature 单独开块、思考帧携带终止即闭块。
+#[test]
+fn anthropic_stream_encoder_thinking_and_tools() {
+    use fluxweir::protocol::{AnthropicStreamEncoder, MessageContent, StreamChunk};
+
+    fn parse(events: &[String]) -> Vec<Value> {
+        events
+            .iter()
+            .map(|e| serde_json::from_str(e).unwrap())
+            .collect()
+    }
+
+    let mut encoder = AnthropicStreamEncoder::new();
+    assert!(encoder
+        .encode_chunk(StreamChunk::ToolCall {
+            index: 0,
+            id: "c1".into(),
+            name: Some("f".into()),
+            arguments: Some("{\"x\":".into()),
+        })
+        .is_empty());
+    let events = parse(&encoder.finish());
+    assert_eq!(events[0]["type"], "message_start", "{events:?}");
+    assert!(
+        events.iter().any(|e| e["type"] == "content_block_start"
+            && e["content_block"]["type"] == "tool_use"),
+        "{events:?}"
+    );
+    assert!(events.iter().any(|e| e["type"] == "message_stop"));
+
+    let mut encoder = AnthropicStreamEncoder::new();
+    encoder.encode_chunk(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::Text("hi".into()),
+        finish_reason: None,
+        logprobs: None,
+    });
+    let events = parse(&encoder.encode_chunk(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::Reasoning {
+            text: "th".into(),
+            signature: None,
+        },
+        finish_reason: None,
+        logprobs: None,
+    }));
+    let think_start = events
+        .iter()
+        .position(|e| {
+            e["type"] == "content_block_start" && e["content_block"]["type"] == "thinking"
+        })
+        .expect("思考块开启");
+    assert!(
+        events[..think_start]
+            .iter()
+            .any(|e| e["type"] == "content_block_stop"),
+        "文本块先闭合: {events:?}"
+    );
+    assert!(
+        events[think_start..]
+            .iter()
+            .any(|e| e["type"] == "content_block_delta" && e["delta"]["type"] == "thinking_delta"),
+        "{events:?}"
+    );
+
+    let mut encoder = AnthropicStreamEncoder::new();
+    let events = parse(&encoder.encode_chunk(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::Reasoning {
+            text: String::new(),
+            signature: Some("sig".into()),
+        },
+        finish_reason: None,
+        logprobs: None,
+    }));
+    assert!(
+        events.iter().any(|e| e["type"] == "content_block_start"
+            && e["content_block"]["type"] == "thinking"),
+        "signature 单独开块: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| e["type"] == "content_block_delta"
+            && e["delta"]["type"] == "signature_delta"
+            && e["delta"]["signature"] == "sig"),
+        "{events:?}"
+    );
+
+    let mut encoder = AnthropicStreamEncoder::new();
+    encoder.encode_chunk(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::Reasoning {
+            text: "t".into(),
+            signature: None,
+        },
+        finish_reason: None,
+        logprobs: None,
+    });
+    let events = parse(&encoder.encode_chunk(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::Reasoning {
+            text: String::new(),
+            signature: None,
+        },
+        finish_reason: Some("stop".into()),
+        logprobs: None,
+    }));
+    assert!(
+        events.iter().any(|e| e["type"] == "content_block_stop"),
+        "终止到达闭思考块: {events:?}"
+    );
+}
+
+/// Anthropic 入站丢弃与回落边角：tool_result 同消息未知块忽略、图片/文档
+/// 未知 source 丢弃、纯非文本 system 不产 system、空 tool_choice 回落
+/// auto、未知 thinking 类型丢弃。
+#[test]
+fn anthropic_inbound_drop_and_choice_edges() {
+    use fluxweir::protocol::{ContentBlock, ImageSource, Message, MessageContent, Role};
+
+    let mut request = base_anthropic_request();
+    request["messages"] = json!([{"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA"}}
+    ]}]);
+    let unified = anthropic().to_unified(request).expect("聚合可解析");
+    assert!(
+        matches!(
+            &unified.messages[0].content,
+            MessageContent::ToolResult(r) if r.content == "ok"
+        ),
+        "{:?}",
+        unified.messages[0].content
+    );
+
+    let mut request = base_anthropic_request();
+    request["messages"] = json!([{"role": "user", "content": [
+        {"type": "text", "text": "x"},
+        {"type": "image", "source": {"type": "file", "file_id": "f_1"}},
+        {"type": "document", "source": {"type": "bytes", "data": "AA"}}
+    ]}]);
+    let unified = anthropic()
+        .to_unified(request)
+        .expect("未知 source 丢弃不报错");
+    let dumped = serde_json::to_string(&unified.messages).unwrap();
+    assert!(dumped.contains("x"), "{dumped}");
+    assert!(
+        !dumped.contains("f_1") && !dumped.contains("bytes"),
+        "{dumped}"
+    );
+
+    let mut unified = anthropic()
+        .to_unified(base_anthropic_request())
+        .expect("to unified");
+    unified.system_prompt = None;
+    unified.messages.insert(
+        0,
+        Message {
+            role: Role::System,
+            content: MessageContent::MultiModal(vec![ContentBlock::Image {
+                source: ImageSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: "AA".into(),
+                },
+                detail: None,
+            }]),
+        },
+    );
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    assert!(external.get("system").is_none(), "{external}");
+
+    let mut request = base_anthropic_request();
+    request["tool_choice"] = json!({});
+    let unified = anthropic().to_unified(request).expect("空对象回落 auto");
+    let rendered = serde_json::to_value(unified.tool_choice.unwrap())
+        .unwrap()
+        .to_string();
+    assert!(rendered.contains("auto"), "{rendered}");
+
+    let mut request = base_anthropic_request();
+    request["thinking"] = json!({"type": "quantum"});
+    let unified = anthropic()
+        .to_unified(request)
+        .expect("未知 thinking 可解析");
+    assert!(unified.thinking_config.is_none());
+}
+
+/// Anthropic 缓存断点注入：system 数组标记尾块、未知锚名忽略。
+#[test]
+fn anthropic_cache_breakpoint_injection_edges() {
+    use fluxweir::config::model_catalog::CacheBreakpointPolicy;
+    use fluxweir::protocol::anthropic_converter::inject_cache_control;
+
+    let mut body = json!({
+        "model": "claude-x",
+        "system": [
+            {"type": "text", "text": "a"},
+            {"type": "text", "text": "b"}
+        ],
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let policy = CacheBreakpointPolicy {
+        enabled: true,
+        max_breakpoints: 4,
+        anchors: vec!["bogus".into(), "system".into()],
+    };
+    let injected = inject_cache_control(&mut body, &policy);
+    assert_eq!(injected, 1, "未知锚忽略，system 尾块标记一次: {body}");
+    assert!(body["system"][0].get("cache_control").is_none(), "{body}");
+    assert_eq!(body["system"][1]["cache_control"]["type"], "ephemeral");
+}
+
+/// Anthropic 缓存路径 debug 日志的字段求值：tracing 字段在无订阅者时
+/// 惰性跳过，挂线程级全兴趣订阅者后 policy 注入与未知锚路径完整求值。
+#[test]
+fn anthropic_cache_debug_logging_paths() {
+    use fluxweir::config::model_catalog::CacheBreakpointPolicy;
+    use fluxweir::protocol::anthropic_converter::inject_cache_control;
+    use tracing_subscriber::prelude::*;
+
+    struct AllInterest;
+    impl tracing_subscriber::Layer<tracing_subscriber::Registry> for AllInterest {
+        fn register_callsite(
+            &self,
+            _metadata: &'static tracing::Metadata<'static>,
+        ) -> tracing::subscriber::Interest {
+            tracing::subscriber::Interest::always()
+        }
+        fn enabled(
+            &self,
+            _metadata: &tracing::Metadata<'_>,
+            _: tracing_subscriber::layer::Context<'_, tracing_subscriber::Registry>,
+        ) -> bool {
+            true
+        }
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, tracing_subscriber::Registry>,
+        ) {
+            struct ConsumeAll;
+            impl tracing::field::Visit for ConsumeAll {
+                fn record_debug(
+                    &mut self,
+                    _field: &tracing::field::Field,
+                    _value: &dyn std::fmt::Debug,
+                ) {
+                }
+            }
+            let mut visitor = ConsumeAll;
+            event.record(&mut visitor);
+        }
+    }
+
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(AllInterest));
+
+    let mut unified = anthropic()
+        .to_unified(base_anthropic_request())
+        .expect("to unified");
+    unified.system_prompt = Some("s".into());
+    let policy = CacheBreakpointPolicy {
+        enabled: true,
+        max_breakpoints: 4,
+        anchors: vec!["system".into()],
+    };
+    let external = anthropic()
+        .request_to_external_with_cache_policy(unified, &policy)
+        .expect("policy 请求");
+    assert_eq!(external["system"][0]["cache_control"]["type"], "ephemeral");
+
+    let mut body = json!({
+        "system": [{"type": "text", "text": "a"}],
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let policy = CacheBreakpointPolicy {
+        enabled: true,
+        max_breakpoints: 4,
+        anchors: vec!["bogus".into()],
+    };
+    assert_eq!(
+        inject_cache_control(&mut body, &policy),
+        0,
+        "未知锚不注入: {body}"
+    );
+}
+
+/// Gemini 出站 message_parts 全分支：MultiModal 块、ToolCalls arguments 非法
+/// JSON 回退 {"raw":...}、ToolResult 非 JSON 回退 {"result":...}、Reasoning 丢弃。
+#[test]
+fn gemini_converter_multimodal_reasoning_and_fallbacks() {
+    use fluxweir::protocol::unified::ContentBlock;
+    use fluxweir::protocol::{
+        GeminiConverter, Message, MessageContent, Role, ToolCall, ToolCallFunction, ToolResult,
+        UnifiedRequest,
+    };
+    let converter = GeminiConverter::new();
+    let request = UnifiedRequest {
+        model: "gemini-2.5-pro".into(),
+        messages: vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::MultiModal(vec![
+                    ContentBlock::Text {
+                        text: "look".into(),
+                    },
+                    ContentBlock::Image {
+                        source: fluxweir::protocol::unified::ImageSource::Url {
+                            url: "https://x.example/a.png".into(),
+                        },
+                        detail: None,
+                    },
+                ]),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::ToolCalls(vec![ToolCall {
+                    id: "c1".into(),
+                    call_type: "function".into(),
+                    function: ToolCallFunction {
+                        name: "bad_json_fn".into(),
+                        arguments: "not-json{".into(),
+                    },
+                }]),
+            },
+            Message {
+                role: Role::Tool,
+                content: MessageContent::ToolResult(ToolResult {
+                    tool_call_id: "c1".into(),
+                    function_name: "bad_json_fn".into(),
+                    content: "plain text result".into(),
+                    is_error: false,
+                }),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Reasoning {
+                    text: "hidden thought".into(),
+                    signature: None,
+                },
+            },
+        ],
+        ..Default::default()
+    };
+    let body = converter.request_to_external(request).expect("to gemini");
+    let dumped = body["contents"].to_string();
+    assert!(dumped.contains("look"), "MultiModal 文本 part: {dumped}");
+    assert!(dumped.contains("image"), "MultiModal 图片 part: {dumped}");
+    assert!(dumped.contains("bad_json_fn"), "tool 名存活: {dumped}");
+    assert!(
+        dumped.contains(r#""raw":"not-json{""#),
+        "非法 JSON arguments 回退 raw 形态: {dumped}"
+    );
+    assert!(
+        dumped.contains(r#""result":"plain text result""#),
+        "ToolResult 非对象回退 result 形态: {dumped}"
+    );
+    assert!(
+        !dumped.contains("hidden thought"),
+        "Reasoning 无 Gemini part 必须丢弃: {dumped}"
+    );
+}
+
+/// Responses 出站 tools/format 映射：Tool 的 parameters/strict 变体、
+/// ToolChoice 双形态、response_format→text.format。
+#[test]
+fn responses_converter_tools_and_format_mapping() {
+    use fluxweir::protocol::{
+        ResponsesConverter, Tool, ToolChoice, ToolChoiceFunction, ToolFunction, UnifiedRequest,
+    };
+    let converter = ResponsesConverter::new();
+
+    let tool_with_schema = Tool {
+        tool_type: "function".into(),
+        function: ToolFunction {
+            name: "search".into(),
+            description: "search things".into(),
+            parameters: json!({"type": "object"}),
+            strict: Some(true),
+        },
+        raw: None,
+        cache_control: None,
+    };
+    let base = UnifiedRequest {
+        model: "m".into(),
+        tools: vec![tool_with_schema],
+        ..Default::default()
+    };
+
+    // tool_choice=strategy + json_schema format
+    let mut request = base.clone();
+    request.tool_choice = Some(ToolChoice::Strategy("required".into()));
+    request.response_format = Some(
+        json!({"type": "json_schema", "json_schema": {"name": "r", "schema": {"type": "object"}}}),
+    );
+    let external = converter.request_to_external(request).expect("to external");
+    let tools = external["tools"].as_array().expect("tools 数组");
+    assert_eq!(tools[0]["type"], "function");
+    assert_eq!(tools[0]["name"], "search");
+    assert_eq!(tools[0]["parameters"]["type"], "object");
+    assert_eq!(tools[0]["strict"], true);
+    assert_eq!(external["tool_choice"], "required", "Strategy 形态");
+    assert_eq!(external["text"]["format"]["type"], "json_schema");
+
+    // tool_choice=specific
+    let mut request = base;
+    request.tool_choice = Some(ToolChoice::Specific {
+        choice_type: "function".into(),
+        function: ToolChoiceFunction {
+            name: "search".into(),
+        },
+    });
+    let external = converter.request_to_external(request).expect("to external");
+    assert_eq!(external["tool_choice"]["type"], "function");
+    assert_eq!(external["tool_choice"]["name"], "search");
+}

@@ -1192,4 +1192,394 @@ mod tests {
         assert_eq!(second.status(), 200);
         replay.assert();
     }
+    /// native + x-vendor 点名合法 responses 厂商：路由钉到该厂商。
+    #[tokio::test]
+    async fn native_xvendor_hint_routes_to_named_responses_vendor() {
+        use mockito::Matcher;
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::Regex("web_search".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"resp_hint","object":"response","created_at":1,"status":"completed",
+                    "model":"gpt-4",
+                    "output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant",
+                        "content":[{"type":"output_text","text":"hinted","annotations":[]}]}],
+                    "usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}"#,
+            )
+            .expect(1)
+            .create();
+        let state = make_state(vec![
+            responses_vendor("other", "http://127.0.0.1:1/v1".into()),
+            responses_vendor("rr", format!("{}/v1", server.url())),
+        ])
+        .await;
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("x-vendor", "rr")
+                    .body(Body::from(
+                        json!({
+                            "model": "gpt-4", "input": "x", "max_output_tokens": 16,
+                            "tools": [{"type": "web_search"}]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "合法 hint 必须路由到点名厂商");
+        let body = response_json(response).await;
+        assert_eq!(body["id"], "resp_hint");
+        mock.assert();
+    }
+
+    /// native 流式上游失败：5xx 映射且不吞错误。
+    #[tokio::test]
+    async fn native_stream_upstream_failure_maps_5xx() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/responses")
+            .with_status(503)
+            .with_body("unavailable")
+            .expect(1)
+            .create();
+        let state = make_state(vec![responses_vendor("rr", format!("{}/v1", server.url()))]).await;
+        let response = post_responses(
+            state,
+            json!({
+                "model": "gpt-4", "input": "x", "max_output_tokens": 16,
+                "stream": true,
+                "tools": [{"type": "web_search"}]
+            }),
+        )
+        .await;
+        assert!(
+            response.status().as_u16() >= 500,
+            "上游 503 必须映射 5xx: {}",
+            response.status()
+        );
+    }
+
+    /// background 总开关关闭：显式 400 拒绝。
+    #[tokio::test]
+    async fn background_disabled_is_400() {
+        let state = make_state(Vec::new()).await;
+        let mut config = state.config.get_config();
+        config.responses.background_enabled = false;
+        state
+            .config
+            .swap_memory(config)
+            .expect("关闭 background 段");
+        let response = post_responses(
+            state,
+            json!({
+                "model": "gpt-4", "input": "x", "max_output_tokens": 16,
+                "background": true
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 400, "background 关闭必须显式拒绝");
+    }
+
+    /// 后台槽位满载：第二个 background 请求 429。
+    #[tokio::test]
+    async fn background_slots_exhausted_is_429() {
+        let mut server = mockito::Server::new_async().await;
+        // 挂起响应：占住首个后台任务直到测试结束（mockito 200 带延迟体）
+        let slow_body = std::io::Cursor::new(vec![0u8; 64]);
+        let _slow = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_file("/dev/null")
+            .create_async()
+            .await;
+        let _ = slow_body;
+        let state = make_state(vec![chat_vendor("v1", format!("{}/v1", server.url()))]).await;
+        let mut config = state.config.get_config();
+        config.responses.max_background_jobs = 1;
+        state.config.swap_memory(config).expect("单槽位");
+
+        let first = post_responses(
+            state.clone(),
+            json!({
+                "model": "gpt-4", "input": "x", "max_output_tokens": 16,
+                "background": true
+            }),
+        )
+        .await;
+        assert_eq!(first.status(), 200, "首个任务入队: {}", first.status());
+
+        let second = post_responses(
+            state,
+            json!({
+                "model": "gpt-4", "input": "y", "max_output_tokens": 16,
+                "background": true
+            }),
+        )
+        .await;
+        assert_eq!(second.status(), 429, "槽位满载必须 429");
+    }
+
+    /// 后台任务失败：状态回写 failed + error.code=background_failed。
+    #[tokio::test]
+    async fn background_job_failure_writes_failed_status() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_body("boom")
+            .expect_at_least(1)
+            .create_async()
+            .await;
+        let state = make_state(vec![chat_vendor("v1", format!("{}/v1", server.url()))]).await;
+        // 压缩生产重试退避：失败回写时延从 ~4s 降到毫秒级（断言语义不变）
+        let mut config = state.config.get_config();
+        config.retry.initial_delay_ms = 1;
+        config.retry.max_delay_ms = 2;
+        state.config.swap_memory(config).expect("压缩重试退避");
+
+        let queued = post_responses(
+            state.clone(),
+            json!({
+                "model": "gpt-4", "input": "x", "max_output_tokens": 16,
+                "background": true
+            }),
+        )
+        .await;
+        assert_eq!(queued.status(), 200, "任务入队");
+        let id = response_json(queued).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // 轮询直到状态 failed（含重试退避，预算 30s）
+        let mut final_body = None;
+        for _ in 0..150 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let fetched = app(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/v1/responses/{id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if fetched.status() == 200 {
+                let body = response_json(fetched).await;
+                if body["status"] == "failed" {
+                    final_body = Some(body);
+                    break;
+                }
+            }
+        }
+        let body = final_body.expect("失败状态必须回写（预算 30s）");
+        assert_eq!(body["error"]["code"], "background_failed", "{body}");
+    }
+    /// GET/DELETE 的错误面：disabled→404、未知 id→404、delete 未知→404。
+    #[tokio::test]
+    async fn get_delete_error_surfaces() {
+        let state = make_state(Vec::new()).await;
+        let missing = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/responses/resp_nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), 404, "未知 id 必须 404");
+
+        let deleted = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/responses/resp_nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), 404, "删除未知 id 必须 404");
+
+        let mut config = state.config.get_config();
+        config.responses.enabled = false;
+        state.config.swap_memory(config).expect("关闭 responses");
+        let disabled = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/responses/resp_any")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disabled.status(), 404, "disabled 时 GET 亦 404");
+    }
+
+    /// truncation="auto"：按 model_catalog 的 context_window 丢弃最旧 items。
+    #[tokio::test]
+    async fn truncation_auto_drops_oldest_items() {
+        use mockito::Matcher;
+        let mut server = mockito::Server::new_async().await;
+        // 断言上游只收到最后一条消息（旧 item 被裁）
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(json!({
+                "messages": [{"role": "user", "content": "newest"}]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"#,
+            )
+            .expect(1)
+            .create();
+        let state = make_state(vec![chat_vendor("v1", format!("{}/v1", server.url()))]).await;
+        let mut config = state.config.get_config();
+        // 极小 context_window：budget = 2*4 = 8 字符
+        config.model_catalog = vec![fluxweir::config::ModelCatalogEntry {
+            model_id: "gpt-4".into(),
+            context_window: 2,
+            ..Default::default()
+        }];
+        state.config.swap_memory(config).expect("注入目录");
+
+        let response = post_responses(
+            state,
+            json!({
+                "model": "gpt-4",
+                "input": [
+                    {"role": "user", "content": "oldest message with long text"},
+                    {"role": "user", "content": "newest"}
+                ],
+                "max_output_tokens": 16,
+                "truncation": "auto"
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 200, "裁剪后请求必须成功");
+        mock.assert();
+    }
+
+    /// background + X-Vendor hint：后台任务走 hint 路由分支并完成。
+    #[tokio::test]
+    async fn background_with_hint_completes() {
+        use mockito::Matcher;
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .match_body(Matcher::PartialJson(json!({
+                "messages": [{"role": "user", "content": "hi"}]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let state = make_state(vec![chat_vendor("v1", format!("{}/v1", server.url()))]).await;
+        let queued = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("x-vendor", "v1")
+                    .body(Body::from(
+                        json!({
+                            "model": "gpt-4", "input": "hi", "max_output_tokens": 16,
+                            "background": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(queued.status(), 200);
+        let id = response_json(queued).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mut completed = false;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let r = app(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/v1/responses/{id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if r.status() == 200 {
+                let body = response_json(r).await;
+                if body["status"] == "completed" {
+                    completed = true;
+                    break;
+                }
+            }
+        }
+        assert!(completed, "hint 路由的后台任务必须完成");
+        mock.assert_async().await;
+    }
+    /// cancel/delete 的 disabled 与未知 id 分支。
+    #[tokio::test]
+    async fn cancel_delete_disabled_and_unknown() {
+        let state = make_state(Vec::new()).await;
+        // cancel 未知 id → 404
+        let cancelled = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses/resp_nope/cancel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cancelled.status(), 404, "cancel 未知 id 必须 404");
+
+        let mut config = state.config.get_config();
+        config.responses.enabled = false;
+        state.config.swap_memory(config).expect("关闭 responses");
+        for (method, uri) in [
+            ("POST", "/v1/responses/resp_x/cancel"),
+            ("DELETE", "/v1/responses/resp_x"),
+        ] {
+            let r = app(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 404, "{method} {uri} 在 disabled 下 404");
+        }
+    }
 }

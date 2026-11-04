@@ -16,6 +16,41 @@ use fluxweir::error::FluxweirError;
 
 #[tokio::test]
 async fn run_maps_occupied_server_port_to_error() {
+    // 点亮并求值 tracing 事件（registry + 全字段格式化层）：无订阅者时宏
+    // 整体跳过；有订阅者但不记录时 message 的惰性格式化闭包（i18n 文案）
+    // 仍不求值——on_event 内 format 全部字段才迫使这些行执行。本配置
+    // [cache] 缺席（enabled=false），装配期「响应缓存未启用」日志分支的
+    // 参数求值靠本二进制补上。预装 log 门面桥：run 内 LogTracer::init
+    // 二次安装走「桥已装」告警分支。
+    {
+        struct FormatAllLayer;
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FormatAllLayer {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct FormatAll;
+                impl tracing::field::Visit for FormatAll {
+                    fn record_debug(
+                        &mut self,
+                        _field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        let _ = format!("{value:?}");
+                    }
+                }
+                let mut visitor = FormatAll;
+                event.record(&mut visitor);
+            }
+        }
+
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let _ = tracing_log::LogTracer::init();
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(FormatAllLayer),
+        );
+    }
     let blocker = std::net::TcpListener::bind("127.0.0.1:0").expect("bind blocker");
     let port = blocker.local_addr().unwrap().port();
 

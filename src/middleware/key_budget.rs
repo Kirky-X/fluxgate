@@ -650,4 +650,154 @@ mod tests {
         ledger.settle(&config, KEY_HASH, 10, 800, &res);
         assert_eq!(ledger.completion_mean(KEY_HASH), Some((400 * 3 + 800) / 4));
     }
+
+    /// Debug 快照只暴露窗口数与在飞数（admin 观测面，不含 key 原文）。
+    #[test]
+    fn debug_snapshot_reports_ledger_shape() {
+        let config = config(vec![rule("daily", 1_000)]);
+        let ledger = ledger_at(1_700_000_000);
+        assert_eq!(
+            format!("{ledger:?}"),
+            "KeyBudgetLedger { windows: 0, in_flight: 0 }"
+        );
+        assert!(matches!(
+            ledger.reserve(&config, KEY_HASH, 10),
+            ReserveOutcome::Admitted(_)
+        ));
+        let rendered = format!("{ledger:?}");
+        assert!(rendered.contains("windows: 1"), "{rendered}");
+        assert!(rendered.contains("in_flight: 1"), "{rendered}");
+    }
+
+    /// 容量 0：reserve 恒 Unavailable（fail-closed 注入形态），零落账。
+    #[test]
+    fn zero_capacity_rejects_with_unavailable() {
+        let config = config(vec![rule("daily", 1_000)]);
+        let ledger = KeyBudgetLedger::with_capacity(0);
+        assert_eq!(
+            ledger.reserve(&config, KEY_HASH, 1),
+            ReserveOutcome::Unavailable
+        );
+        assert_eq!(ledger.in_flight_count(), 0);
+        assert_eq!(view_used(&ledger, &config, KEY_HASH), Some(0));
+    }
+
+    /// 预留判定前窗已翻转：旧窗占用不得继续压额（判定前清零）。
+    #[test]
+    fn reserve_after_window_flip_resets_stale_cell() {
+        let config = config(vec![rule("daily", 1_000)]);
+        let ledger = ledger_at(1_700_000_000);
+        assert!(matches!(
+            ledger.reserve(&config, KEY_HASH, 900),
+            ReserveOutcome::Admitted(_)
+        ));
+        {
+            let mut now = ledger.now.lock().unwrap();
+            *now = Box::new(move || 1_700_000_000 + 86_400);
+        }
+        assert!(
+            matches!(
+                ledger.reserve(&config, KEY_HASH, 900),
+                ReserveOutcome::Admitted(_)
+            ),
+            "新窗起点必须清零旧窗 900 占用后再判定"
+        );
+        assert_eq!(view_used(&ledger, &config, KEY_HASH), Some(900));
+    }
+
+    /// FIFO 配对跳过「已按句柄结算」残留的陈旧 id（in_flight 已移除、队列未清）。
+    #[test]
+    fn fifo_settle_skips_ids_already_settled_by_handle() {
+        let config = config(vec![rule("daily", 1_000)]);
+        let ledger = ledger_at(1_700_000_000);
+        let first = match ledger.reserve(&config, KEY_HASH, 100) {
+            ReserveOutcome::Admitted(res) => res,
+            other => panic!("预期 Admitted，得 {other:?}"),
+        };
+        assert!(matches!(
+            ledger.reserve(&config, KEY_HASH, 200),
+            ReserveOutcome::Admitted(_)
+        ));
+        ledger.settle(&config, KEY_HASH, 100, 1, &first);
+        assert_eq!(ledger.in_flight_count(), 1);
+        assert!(
+            ledger.settle_fifo(&config, KEY_HASH, 200, 1),
+            "残留 id 跳过后必须配对 est=200 的在飞预留"
+        );
+        assert_eq!(ledger.in_flight_count(), 0);
+        assert_eq!(view_used(&ledger, &config, KEY_HASH), Some(300));
+    }
+
+    /// 结算时窗已翻转（读侧尚未收敛）：结算内联清零旧窗后记入实际用量。
+    #[test]
+    fn settle_after_window_flip_resets_stale_cell() {
+        let config = config(vec![rule("daily", 1_000)]);
+        let ledger = ledger_at(1_700_000_000);
+        let res = match ledger.reserve(&config, KEY_HASH, 500) {
+            ReserveOutcome::Admitted(res) => res,
+            other => panic!("预期 Admitted，得 {other:?}"),
+        };
+        {
+            let mut now = ledger.now.lock().unwrap();
+            *now = Box::new(move || 1_700_000_000 + 86_400);
+        }
+        ledger.settle(&config, KEY_HASH, 120, 3, &res);
+        assert_eq!(
+            view_used(&ledger, &config, KEY_HASH),
+            Some(120),
+            "旧窗 500 预留随窗消亡，实际 120 记入新窗"
+        );
+    }
+
+    /// 容量触顶：窗已翻转的在飞预留被清扫，容量回收后新预留准入。
+    #[test]
+    fn stale_sweep_reclaims_capacity_after_window_flip() {
+        let config = config(vec![rule("daily", 1_000)]);
+        let mut ledger = ledger_at(1_700_000_000);
+        ledger.max_in_flight = 1;
+        assert!(matches!(
+            ledger.reserve(&config, KEY_HASH, 10),
+            ReserveOutcome::Admitted(_)
+        ));
+        assert_eq!(
+            ledger.reserve(&config, KEY_HASH, 10),
+            ReserveOutcome::Unavailable,
+            "同窗预留非陈旧，容量 1 已满必拒"
+        );
+        {
+            let mut now = ledger.now.lock().unwrap();
+            *now = Box::new(move || 1_700_000_000 + 86_400);
+        }
+        // 读侧先收敛旧窗（sweep 以账本格起点判陈旧）
+        assert_eq!(view_used(&ledger, &config, KEY_HASH), Some(0));
+        assert!(
+            matches!(
+                ledger.reserve(&config, KEY_HASH, 10),
+                ReserveOutcome::Admitted(_)
+            ),
+            "陈旧预留清扫后容量必须回收"
+        );
+        assert_eq!(ledger.in_flight_count(), 1, "只剩新窗预留");
+        assert_eq!(view_used(&ledger, &config, KEY_HASH), Some(10));
+    }
+
+    /// 契约端口（`KeyBudgetSource`）委托同一账本：预留-结算-视图三面一致。
+    #[test]
+    fn key_budget_source_trait_ports_delegate() {
+        let config = config(vec![rule("daily", 1_000)]);
+        let ledger = ledger_at(1_700_000_000);
+        let res = match KeyBudgetSource::reserve(&ledger, &config, KEY_HASH, 300) {
+            ReserveOutcome::Admitted(res) => res,
+            other => panic!("预期 Admitted，得 {other:?}"),
+        };
+        assert_eq!(
+            KeyBudgetSource::view(&ledger, &config, KEY_HASH).map(|v| v.cost_used),
+            Some(300)
+        );
+        KeyBudgetSource::settle(&ledger, &config, KEY_HASH, 80, &res);
+        assert_eq!(
+            KeyBudgetSource::view(&ledger, &config, KEY_HASH).map(|v| v.cost_used),
+            Some(80)
+        );
+    }
 }

@@ -2497,6 +2497,25 @@ mod sla_virtual_queue {
         );
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    /// SLA 开启但候选全无定价：成本项中性化为 0（纯虚拟队列模式），
+    /// 不得因缺价把权重打成 0 或拒绝服务。
+    #[tokio::test]
+    async fn sla_unpriced_candidates_keep_cost_term_neutral() {
+        let (router, _vm, _cm) = make_router(make_config(
+            sla_on(1.0),
+            vec![make_vendor("v1")],
+            vec![], // 无 [[pricing]]
+        ))
+        .await;
+        let vendor = make_vendor("v1");
+        let candidates = vec![(vendor.clone(), vendor.models[0].clone())];
+        let w = weight_of(&router, "v1", candidates).await;
+        assert_eq!(
+            w, BASELINE,
+            "全无定价时成本项置 0、ŝ=1 时 Q 项为 0 → 与基线逐位相等"
+        );
+    }
 }
 
 // ============ LinUCB 选择档（selection 第三档）============
@@ -4176,6 +4195,199 @@ mod route_gap_coverage {
             "非法 ref 必须走中性 0.5（权重 1.0 而非退化的 0.85）: {w}"
         );
     }
+
+    // ---- 纯函数：配额 pace 带 / 前缀候选对 / 降档开关 ----
+
+    /// hints 缺省形态：仅 vendor 提示取首个启用模型；无任何提示走默认加权。
+    #[tokio::test]
+    async fn route_with_hints_falls_back_without_model_hint() {
+        let config = common::test_config(vec![common::base_vendor("hint-vendor", String::new())]);
+        let cm = Arc::new(ConfigManager::new(config));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm);
+
+        let by_vendor = router
+            .route_with_hints(
+                "gpt-4",
+                Some("hint-vendor"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("vendor 提示必须直选");
+        assert_eq!(by_vendor.vendor.id, "hint-vendor");
+        assert_eq!(
+            by_vendor.model.model_id, "gpt-4",
+            "无 model 提示必须取首个启用模型"
+        );
+
+        let default = router
+            .route_with_hints("gpt-4", None, None, None, None, None, None, None)
+            .await
+            .expect("无提示必须走默认加权路由");
+        assert_eq!(default.vendor.id, "hint-vendor");
+    }
+
+    /// 候选收集跳过未启用模型条目：同 abstract 下仍路由到启用条目。
+    #[tokio::test]
+    async fn route_skips_disabled_model_entries() {
+        let mut disabled = common::base_vendor("off-v", String::new());
+        disabled.models[0].abstract_id = Some("pick-me".into());
+        disabled.models[0].enabled = false;
+        let mut live = common::base_vendor("live-v", String::new());
+        live.models[0].abstract_id = Some("pick-me".into());
+        live.models[0].model_id = "live-model".into();
+        let config = common::test_config(vec![disabled, live]);
+        let cm = Arc::new(ConfigManager::new(config));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm);
+
+        let decision = router.route("pick-me").await.expect("启用条目必须可选");
+        assert_eq!(decision.vendor.id, "live-v");
+        assert_eq!(decision.model.model_id, "live-model");
+    }
+
+    /// pace 乘数：非有限比率按带内中性 1.0（NaN/±∞ 不得放大或缩小权重）。
+    #[test]
+    fn quota_pace_multiplier_neutral_for_non_finite_ratio() {
+        use fluxweir::router::router::quota_pace_multiplier;
+        assert_eq!(quota_pace_multiplier(f64::NAN), 1.0);
+        assert_eq!(quota_pace_multiplier(f64::INFINITY), 1.0);
+        assert_eq!(quota_pace_multiplier(f64::NEG_INFINITY), 1.0);
+        assert_eq!(quota_pace_multiplier(2.0), 0.5, "超带降权");
+        assert_eq!(quota_pace_multiplier(0.1), 1.2, "欠带升权");
+        assert_eq!(quota_pace_multiplier(1.0), 1.0, "带内不变");
+    }
+
+    /// 前缀候选对：n<2 无可选空间返回 None；n≥2 恒返回界内互异对。
+    #[test]
+    fn prefix_candidates_needs_at_least_two_candidates() {
+        use fluxweir::router::prefix_candidates;
+        assert_eq!(prefix_candidates(42, 0), None);
+        assert_eq!(prefix_candidates(42, 1), None);
+        let (i1, i2) = prefix_candidates(42, 3).expect("两候选可用");
+        assert!(i1 < 3 && i2 < 3, "索引必须界内: {i1}/{i2}");
+        assert_ne!(i1, i2, "候选对必须互异");
+    }
+
+    /// 降档关闭：任何视图（含剩余极少）不得产出乘数/档位。
+    #[test]
+    fn quota_factor_scores_without_degrade_yields_no_multiplier() {
+        use fluxweir::config::{QuotaFactorMode, QuotaFactorSection};
+        let views = vec![Some(fluxweir::quota_contract::VendorBudgetView {
+            tokens_used: 990,
+            tokens_limit: 1000,
+            cost_used: 0,
+            cost_limit: 0,
+            reset_secs: 10,
+            period_secs: 3600,
+            elapsed_secs: 3590,
+            not_started: false,
+        })];
+        let section = QuotaFactorSection {
+            degrade_enabled: false,
+            ..Default::default()
+        };
+        let scoring =
+            fluxweir::router::quota_factor_scores(QuotaFactorMode::Smart, &views, &section);
+        assert_eq!(scoring.degrade_multipliers, vec![None]);
+        assert_eq!(scoring.degrade_tiers, vec![None]);
+    }
+
+    // ---- hints 提示回落 / batch 带内收缩 / 前缀候选对越界 ----
+
+    /// 指定 vendor + 未命中 model 提示：回落该 vendor 首个启用模型（Direct），
+    /// 不得因提示打偏拒绝请求；禁用条目必须跳过。
+    #[tokio::test]
+    async fn hints_vendor_with_unmatched_model_hint_uses_first_enabled_model() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![vendor_with(
+                "gx-alias",
+                true,
+                vec![
+                    ("m-off", Some("m-alias"), 9.0, false),
+                    ("m-first", Some("m-alias"), 1.0, true),
+                    ("m-second", Some("m-alias"), 1.0, true),
+                ],
+            )],
+        )
+        .await;
+        let decision = router
+            .route_with_hints(
+                "shared-model",
+                Some("gx-alias"),
+                Some("ghost-model"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("提示未命中必须回落首模型而非拒绝");
+        assert_eq!(decision.vendor.id, "gx-alias");
+        assert_eq!(
+            decision.model.model_id, "m-first",
+            "无提示命中时取首个启用模型（禁用条目跳过）"
+        );
+        assert_eq!(decision.strategy, RoutingStrategy::Direct);
+    }
+
+    /// batch 标记但候选全部 supports_batch=false：带内收缩无实际收窄 → 保留
+    /// 全集（不得把候选清空导致选择器空转）。
+    #[tokio::test]
+    async fn batch_ctx_without_batch_vendor_keeps_full_candidate_set() {
+        let (router, _vm, _cm) = make_router(
+            RoutingSection::default(),
+            vec![single_shared("nb-a"), single_shared("nb-b")],
+        )
+        .await;
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..40 {
+            let ctx = fluxweir::router::RouteCtx {
+                prefix_hash: 0,
+                est_prompt_tokens: 8,
+                batch: true,
+            };
+            let decision = router
+                .route_weighted("shared-model", None, None, &[], None, None, None, Some(ctx))
+                .await
+                .expect("无 batch 能力厂商时必须回退全集");
+            seen.insert(decision.vendor.id);
+        }
+        assert_eq!(
+            seen.len(),
+            2,
+            "batch 收缩无候选时必须保留全集（两侧都应可被选中）"
+        );
+    }
+
+    /// 前缀候选对越界（公共注入入口）：忽略候选对回落常规加权选择，
+    /// 不得 panic 或取空。
+    #[tokio::test]
+    async fn weighted_select_with_out_of_range_pair_falls_back_to_roulette() {
+        let (router, _vm, _cm) =
+            make_router(RoutingSection::default(), vec![single_shared("pair-v")]).await;
+        let vendor = single_shared("pair-v");
+        let weighted = vec![(1.0, (vendor.clone(), vendor.models[0].clone()))];
+        let mut rng = StdRng::seed_from_u64(11);
+        let decision = router.weighted_select_with(
+            weighted,
+            RoutingStrategy::Abstract,
+            &mut rng,
+            Some((0, 9)),
+        );
+        assert_eq!(
+            decision.vendor.id, "pair-v",
+            "越界候选对必须被忽略，回落加权选择"
+        );
+        assert_eq!(decision.strategy, RoutingStrategy::Abstract);
+    }
 }
 
 // ---- 嵌入兼容组 pin 粘着路由（route_embedding）----
@@ -4906,6 +5118,281 @@ mod embedding_compat_group {
             "错误必须点名 gemini: {error}"
         );
     }
+
+    /// 同厂商多条目：厂商粒度成员标记合并（任一成员属组即保留该厂商），
+    /// 越组条目被选中时按厂商收缩重试，最终落组内条目。
+    #[tokio::test]
+    async fn multi_entry_vendor_cross_group_selection_shrinks_to_group() {
+        let multi = {
+            let mut vendor = embedding_vendor("multi", "emb-shared", "m-g1", Some("g1"), 0.001);
+            vendor.models = vec![
+                ModelConfig {
+                    model_id: "m-g1".into(),
+                    abstract_id: Some("emb-shared".into()),
+                    weight: 0.001,
+                    enabled: true,
+                    dimensions: None,
+                    compat_group: Some("g1".into()),
+                    model_type: None,
+                },
+                ModelConfig {
+                    model_id: "m-g2".into(),
+                    abstract_id: Some("emb-shared".into()),
+                    weight: 1000.0,
+                    enabled: true,
+                    dimensions: None,
+                    compat_group: Some("g2".into()),
+                    model_type: None,
+                },
+            ];
+            vendor
+        };
+        let solo = embedding_vendor("solo", "emb-shared", "m-g1-solo", Some("g1"), 0.001);
+        let (_vm, router, pin) = make_embedding_router(vec![multi, solo]);
+        pin.pin_or_get("emb-shared", "g1");
+
+        for i in 0..30 {
+            let decision = router
+                .route_embedding("emb-shared")
+                .await
+                .unwrap_or_else(|e| panic!("第 {i} 次路由失败: {e}"));
+            match (
+                decision.vendor.id.as_str(),
+                decision.model.model_id.as_str(),
+            ) {
+                ("multi", "m-g1") | ("solo", "m-g1-solo") => {}
+                other => panic!("越组条目不得返回（第 {i} 次）: {other:?}"),
+            }
+        }
+        assert_eq!(
+            pin.list(),
+            vec![("emb-shared".to_string(), "g1".to_string())],
+            "pin 不得因收缩重试改写"
+        );
+    }
+
+    // ---- 并发首写竞态（pin_or_get 的两条败者分支）----
+
+    /// 并发首写（同键多条目）：败者选中组与胜出组相同 → 直接采用本次决策，
+    /// 不重路由、不重复计数 pin 建立。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_first_writers_same_group_share_one_pin() {
+        // 同 vendor 双条目共用 (vendor, model, group) → 组键恒等
+        let mut vendor = embedding_vendor("emb-a", "emb-shared", "shared-model", None, 1.0);
+        vendor.models.push(ModelConfig {
+            model_id: "shared-model".to_string(),
+            abstract_id: Some("emb-shared".to_string()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        });
+        let (vm, router, pin) = make_embedding_router(vec![vendor]);
+        let router = Arc::new(router);
+
+        const CALLERS: usize = 16;
+        const ROUNDS: usize = 6;
+        for round in 0..ROUNDS {
+            let _ = pin.clear_all();
+            let barrier = Arc::new(tokio::sync::Barrier::new(CALLERS));
+            let mut handles = Vec::with_capacity(CALLERS);
+            for _ in 0..CALLERS {
+                let router = router.clone();
+                let barrier = barrier.clone();
+                handles.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    router.route_embedding("emb-shared").await
+                }));
+            }
+            for handle in handles {
+                let decision = handle.await.expect("task").expect("并发路由");
+                assert_eq!(
+                    decision.vendor.id, "emb-a",
+                    "第 {round} 轮：同组竞态败者不得改写选中的厂商"
+                );
+                assert_eq!(decision.model.model_id, "shared-model");
+            }
+            assert_eq!(
+                pin.list(),
+                vec![("emb-shared".to_string(), "emb-a/::shared-model".to_string())],
+                "第 {round} 轮：并发首写必须收敛到唯一 pin 组"
+            );
+        }
+        assert_eq!(
+            vm.metrics().snapshot().embedding_pin_set_total,
+            ROUNDS as u64,
+            "每轮仅首个写者计一次 pin 建立（竞态败者不重复计数）"
+        );
+    }
+
+    /// 并发首写（异组双厂商）：败者选中组与胜出组不同 → 在胜出组内重路由；
+    /// 批次内任何成功决策都不得越出最终 pin 组（pin 投毒防护）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_first_writers_never_escape_final_pin_group() {
+        let (vm, router, pin) = make_embedding_router(vec![
+            embedding_vendor("emb-a", "emb-shared", "shared-model", None, 1.0),
+            embedding_vendor("emb-b", "emb-shared", "shared-model", None, 1.0),
+        ]);
+        let router = Arc::new(router);
+
+        const CALLERS: usize = 16;
+        const ROUNDS: usize = 8;
+        for round in 0..ROUNDS {
+            let _ = pin.clear_all();
+            let barrier = Arc::new(tokio::sync::Barrier::new(CALLERS));
+            let mut handles = Vec::with_capacity(CALLERS);
+            for _ in 0..CALLERS {
+                let router = router.clone();
+                let barrier = barrier.clone();
+                handles.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    router.route_embedding("emb-shared").await
+                }));
+            }
+            let mut decisions = Vec::with_capacity(CALLERS);
+            for handle in handles {
+                decisions.push(handle.await.expect("task").expect("并发路由"));
+            }
+            let groups = pin.list();
+            assert_eq!(groups.len(), 1, "第 {round} 轮：pin 表必须只有一条记录");
+            // 单例组键 = "{vendor}/::{model}"，组内唯一厂商即前缀
+            let pinned_vendor = groups[0]
+                .1
+                .split("/::")
+                .next()
+                .expect("组键含厂商段")
+                .to_string();
+            for decision in decisions {
+                assert_eq!(
+                    decision.vendor.id, pinned_vendor,
+                    "第 {round} 轮：竞态败者必须重路由进胜出组（不得越组）"
+                );
+                assert_eq!(decision.model.model_id, "shared-model");
+            }
+        }
+        assert_eq!(
+            vm.metrics().snapshot().embedding_pin_set_total,
+            ROUNDS as u64,
+            "每轮仅首个写者计一次 pin 建立"
+        );
+    }
+
+    /// explain：队列深度达到饱和点（100）必须标 queue_over_limit 并从可入选
+    /// 集合摘除。队列靠「占住唯一并发 permit + 滞留入队请求」构造，不触达上游。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn explain_reports_queue_over_limit_at_saturation() {
+        use fluxweir::router::router::{QUEUE_SATURATION_LEN, REASON_QUEUE_OVER_LIMIT};
+
+        let mut busy = embedding_vendor("emb-busy", "emb-queue", "queue-model", None, 1.0);
+        busy.concurrency.max_concurrent_requests = Some(1);
+        busy.concurrency.requests_per_second = 1000;
+        let config = Config {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            ..common::test_config(vec![busy])
+        };
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        vendor_manager.initialize().await.expect("vendor init");
+        let router = Router::new(config_manager, vendor_manager.clone());
+
+        // 占住唯一 permit：worker 取走首条后阻塞在并发信号量，后续请求滞留队列
+        let permit = vendor_manager
+            .acquire_permit("emb-busy")
+            .await
+            .expect("唯一 permit");
+        let request =
+            serde_json::from_value::<fluxweir::protocol::UnifiedRequest>(serde_json::json!({
+                "model": "queue-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 8
+            }))
+            .expect("请求 fixture");
+        let mut handles = Vec::new();
+        for _ in 0..(QUEUE_SATURATION_LEN + 10) {
+            let vm = vendor_manager.clone();
+            let request = request.clone();
+            handles.push(tokio::spawn(async move {
+                vm.execute_request("emb-busy", request).await
+            }));
+        }
+
+        let mut queue_len = 0;
+        for _ in 0..200 {
+            queue_len = vendor_manager.get_queue_length("emb-busy");
+            if queue_len >= QUEUE_SATURATION_LEN {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            queue_len, QUEUE_SATURATION_LEN,
+            "滞留请求必须打满队列容量（饱和构造前置条件）"
+        );
+
+        let rows = router.explain_route("queue-model", None, None).await;
+        let row = rows
+            .iter()
+            .find(|r| r.vendor_id == "emb-busy")
+            .expect("vendor 必须出现在解释块");
+        assert!(!row.eligible, "队列饱和候选不得标为可入选");
+        assert_eq!(
+            row.reason_code, REASON_QUEUE_OVER_LIMIT,
+            "饱和必须报 queue_over_limit 而非可入选"
+        );
+        assert!(
+            row.detail.contains(&queue_len.to_string()),
+            "解释明细必须含实际队列深度 {queue_len}: {}",
+            row.detail
+        );
+
+        for handle in handles {
+            handle.abort();
+        }
+        drop(permit);
+    }
+
+    // ---- native 能力路由的直连形态（vendor.model）----
+
+    /// Responses 原生路由 + 直连形态：直连到非 responses 风格厂商时按 vendor
+    /// 收缩重试，候选耗尽显式 Validation（不得把非 native 厂商当 native 用）。
+    #[tokio::test]
+    async fn responses_native_direct_form_non_native_vendor_is_exhausted() {
+        let mut chat = embedding_vendor("rs-chat", "shared-rs", "m-chat", None, 1.0);
+        chat.api_style = None;
+        let (_vm, router, _pin) = make_embedding_router(vec![chat]);
+
+        let error = router
+            .route_responses_native("rs-chat.m-chat", None)
+            .await
+            .expect_err("非 responses 厂商必须显式失败");
+        assert_eq!(error.status_code(), 400, "能力耗尽映射 Validation 400");
+        assert!(
+            error.to_string().contains("rs-chat.m-chat"),
+            "错误必须点名请求模型: {error}"
+        );
+    }
+
+    /// Gemini 原生直通路由 + 直连形态：直连到非 gemini 厂商同样收缩耗尽，
+    /// 显式 Validation 且不回退到 chat 路径。
+    #[tokio::test]
+    async fn gemini_native_direct_form_non_gemini_vendor_is_exhausted() {
+        let chat = embedding_vendor("gm-chat", "shared-gm", "m-gm", None, 1.0);
+        let (_vm, router, _pin) = make_embedding_router(vec![chat]);
+
+        let error = router
+            .route_gemini_native("gm-chat.m-gm", None)
+            .await
+            .expect_err("非 gemini 厂商必须显式失败");
+        assert_eq!(error.status_code(), 400, "能力耗尽映射 Validation 400");
+        assert!(
+            error.to_string().contains("gm-chat.m-gm"),
+            "错误必须点名请求模型: {error}"
+        );
+    }
 }
 
 /// 配额感知路由因子（quota-aware-routing，R-vbr-002/003）：
@@ -5449,5 +5936,243 @@ mod quota_factor {
         let explicit = resolved.iter().find(|w| w.id == "explicit").unwrap();
         assert_eq!(explicit.tokens_limit, 9000, "显式限额独立于租户");
         assert_eq!(explicit.cost_limit_millicents, 700, "未声明维度仍回填");
+    }
+
+    /// explain：smart 模式下预算耗尽 vendor 标 quota_depleted（存在存活者时），
+    /// 存活者仍可入选；explain 不得改写账本。
+    #[tokio::test]
+    async fn explain_marks_depleted_vendor_quota_depleted() {
+        let state = seeded_state(vec![
+            ledger_row("gone", 100, 1000),
+            ledger_row("fresh", 100, 100),
+        ]);
+        let config = factor_config("smart", 1.0);
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm).with_quota_state(state);
+
+        let rows = router.explain_route("shared-model", None, None).await;
+        let gone = rows
+            .iter()
+            .find(|r| r.vendor_id == "gone")
+            .expect("gone 必须出现在解释块");
+        assert!(!gone.eligible, "耗尽 vendor 不得标为可入选");
+        assert_eq!(gone.reason_code, "quota_depleted", "耗尽原因必须显式");
+        let fresh = rows
+            .iter()
+            .find(|r| r.vendor_id == "fresh")
+            .expect("fresh 必须出现在解释块");
+        assert!(fresh.eligible, "有余量 vendor 必须保留可入选");
+    }
+
+    /// 摘除压缩：耗尽 vendor 位于候选首位时原位 swap 压缩（存活者前移）。
+    #[tokio::test]
+    async fn depleted_first_candidate_is_compacted_out() {
+        let state = seeded_state(vec![
+            ledger_row("gone", 100, 1000),
+            ledger_row("fresh", 100, 100),
+        ]);
+        let config = factor_config("smart", 1.0);
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm).with_quota_state(state);
+        let candidates: Vec<_> = ["gone", "fresh"]
+            .into_iter()
+            .map(|id| {
+                let vendor = config.vendors.iter().find(|v| v.id == id).unwrap();
+                (vendor.clone(), vendor.models[0].clone())
+            })
+            .collect();
+
+        let weights = router.calculate_weights(candidates).await;
+        let ids: Vec<&str> = weights.iter().map(|(_, (v, _))| v.id.as_str()).collect();
+        assert_eq!(ids, vec!["fresh"], "首位耗尽者被压缩摘除，存活者保留");
+    }
+
+    /// 同 vendor 多条目候选共享一次账本视图查询（第二候选走 cache 命中）。
+    #[tokio::test]
+    async fn quota_views_cache_hits_for_multi_entry_vendor() {
+        let state = seeded_state(vec![ledger_row("fresh", 100, 10)]);
+        let config = factor_config("smart", 1.0);
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm).with_quota_state(state);
+        let vendor = config
+            .vendors
+            .iter()
+            .find(|v| v.id == "fresh")
+            .unwrap()
+            .clone();
+        let candidates = vec![
+            (vendor.clone(), vendor.models[0].clone()),
+            (vendor.clone(), vendor.models[0].clone()),
+        ];
+
+        let (mode, views) = router.quota_factor_views(&candidates).await;
+        assert_eq!(mode, fluxweir::config::QuotaFactorMode::Smart);
+        assert_eq!(views.len(), 2, "视图与候选同序对齐");
+        assert_eq!(
+            views[0].as_ref().map(|v| v.tokens_limit),
+            views[1].as_ref().map(|v| v.tokens_limit),
+            "同 vendor 两次查询必须返回同一快照"
+        );
+    }
+
+    fn priced_vendor(id: &str, model_id: &str) -> fluxweir::config::VendorConfig {
+        let mut vendor = common::base_vendor(id, String::new());
+        vendor.models = vec![ModelConfig {
+            model_id: model_id.into(),
+            abstract_id: Some("shared-model".into()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        }];
+        vendor
+    }
+
+    /// cache_expected + 估算 tokens 超长上下文阈值：输入价切长上下文档
+    ///（价格因子相对权重按 5.5 倍差显现，而非 cache 档的 0.75）。
+    #[tokio::test]
+    async fn long_context_price_applies_above_threshold() {
+        let mut config = common::test_config(vec![
+            priced_vendor("cheap", "model-cheap"),
+            priced_vendor("long", "model-long"),
+        ]);
+        config.routing.price_factor_enabled = true;
+        config.routing.price_factor_mode = "cache_expected".into();
+        config.model_catalog = vec![
+            fluxweir::config::ModelCatalogEntry {
+                model_id: "model-cheap".into(),
+                context_window: 1_000_000,
+                input_price: 1.0,
+                output_price: 1.0,
+                ..Default::default()
+            },
+            fluxweir::config::ModelCatalogEntry {
+                model_id: "model-long".into(),
+                context_window: 1_000_000,
+                input_price: 1.0,
+                output_price: 1.0,
+                cache_read_price: 0.5,
+                long_context_threshold_tokens: 100_000,
+                long_context_input_price: 10.0,
+                ..Default::default()
+            },
+        ];
+        let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
+        let vm = Arc::new(VendorManager::new(cm.clone()));
+        let router = Router::new(cm, vm);
+        let candidates: Vec<_> = config
+            .vendors
+            .iter()
+            .map(|v| (v.clone(), v.models[0].clone()))
+            .collect();
+
+        let weights = router
+            .calculate_weights_overridden(
+                candidates,
+                None,
+                None,
+                Some(fluxweir::router::RouteCtx {
+                    prefix_hash: 0,
+                    est_prompt_tokens: 200_000,
+                    batch: false,
+                }),
+            )
+            .await;
+        let cheap = weights
+            .iter()
+            .find(|(_, (v, _))| v.id == "cheap")
+            .unwrap()
+            .0;
+        let long = weights.iter().find(|(_, (v, _))| v.id == "long").unwrap().0;
+        assert!(
+            (cheap / long - 5.5).abs() < 1e-6,
+            "长上下文输入价 10 必须替代 cache 价 0.5：cheap={cheap} long={long}"
+        );
+    }
+
+    /// 价格因子开启但目录为空：中性豁免（权重与关闭时逐项一致）。
+    #[tokio::test]
+    async fn price_factor_neutral_when_catalog_empty() {
+        let mut enabled = factor_config("off", 0.0);
+        enabled.routing.price_factor_enabled = true;
+        enabled.routing.price_factor_mode = "cache_expected".into();
+        enabled.model_catalog.clear();
+        let disabled = {
+            let mut config = enabled.clone();
+            config.routing.price_factor_enabled = false;
+            config
+        };
+        let weights_enabled = weights_of(&enabled, None).await;
+        let weights_disabled = weights_of(&disabled, None).await;
+        assert_eq!(
+            weights_enabled, weights_disabled,
+            "目录为空时价格因子必须整体中性"
+        );
+    }
+
+    /// sla_v>0 且无任何候选定价：成本项中性化（warn 一次），权重仍可计算。
+    #[tokio::test]
+    async fn sla_without_pricing_neutralizes_cost_term() {
+        let mut with_sla = factor_config("off", 0.0);
+        with_sla.routing.sla_v = 1.0;
+        let baseline = weights_of(&factor_config("off", 0.0), None).await;
+        let weights = weights_of(&with_sla, None).await;
+        assert_eq!(weights.len(), baseline.len());
+        assert!(
+            weights.iter().all(|(_, w)| w.is_finite() && *w > 0.0),
+            "缺价必须中性化成本项而非零权: {weights:?}"
+        );
+    }
+
+    /// 目录有登记但单价全为 0：min_p 非正 → 全候选中性豁免。
+    #[tokio::test]
+    async fn price_factor_neutral_when_all_prices_non_positive() {
+        let mut enabled = common::test_config(vec![
+            priced_vendor("zero-a", "model-zero-a"),
+            priced_vendor("zero-b", "model-zero-b"),
+        ]);
+        enabled.routing.price_factor_enabled = true;
+        enabled.routing.price_factor_mode = "price".into();
+        enabled.model_catalog = vec![
+            fluxweir::config::ModelCatalogEntry {
+                model_id: "model-zero-a".into(),
+                context_window: 1_000,
+                ..Default::default()
+            },
+            fluxweir::config::ModelCatalogEntry {
+                model_id: "model-zero-b".into(),
+                context_window: 1_000,
+                ..Default::default()
+            },
+        ];
+        let mut disabled = enabled.clone();
+        disabled.routing.price_factor_enabled = false;
+        let weights_for = |config: &Config| {
+            let cm = Arc::new(fluxweir::config::ConfigManager::new(config.clone()));
+            let vm = Arc::new(VendorManager::new(cm.clone()));
+            let router = Router::new(cm, vm);
+            let candidates: Vec<_> = config
+                .vendors
+                .iter()
+                .map(|v| (v.clone(), v.models[0].clone()))
+                .collect();
+            async move {
+                router
+                    .calculate_weights(candidates)
+                    .await
+                    .into_iter()
+                    .map(|(w, (v, _))| (v.id, w))
+                    .collect::<Vec<(String, f64)>>()
+            }
+        };
+        assert_eq!(
+            weights_for(&enabled).await,
+            weights_for(&disabled).await,
+            "单价全 0 时价格因子必须整体中性"
+        );
     }
 }

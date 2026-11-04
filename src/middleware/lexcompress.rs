@@ -184,4 +184,147 @@ mod tests {
         assert!(out.contains("正文开头"), "正文保留");
         assert!(!out.contains("=-=-="), "纯标点行剪除");
     }
+
+    fn config_with_lexcompress(
+        enabled: bool,
+        min_chars: usize,
+        ratio_ceiling: f64,
+    ) -> crate::config::ConfigManager {
+        let toml = format!(
+            "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 0\n\n\
+             [database]\npath = \":memory:\"\n\n\
+             [lexcompress]\nenabled = {enabled}\nmin_chars = {min_chars}\n\
+             ratio_ceiling = {ratio_ceiling}\n"
+        );
+        let config =
+            crate::config::parse_config_content(std::path::Path::new("config.toml"), &toml)
+                .expect("lexcompress 测试配置必须合法");
+        crate::config::ConfigManager::new(config)
+    }
+
+    fn compress_headers() -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-compress", "1".parse().expect("静态 header 值合法"));
+        headers
+    }
+
+    #[test]
+    fn compress_abandons_when_whitespace_pruning_breaks_floor() {
+        // 单行巨量尾随空白：空白归一后长度远低于下限 → 放弃压缩
+        let content = format!("a{}", " ".repeat(20_000));
+        assert_eq!(compress(&content, 10, 0.9), None);
+    }
+
+    #[test]
+    fn compress_rejects_noop_output() {
+        // 无可剪空间且 ratio_ceiling=0：floor=total，结果与原文等长 → None
+        let content = "abc\ndef\nghi";
+        assert_eq!(compress(content, 5, 0.0), None);
+    }
+
+    #[test]
+    fn compress_keeps_kana_middle_dot_line() {
+        // U+30FB 非字母数字但命中 is_cjk 区间 → 非纯标点行，保留
+        let prose = "中文    内容\n".repeat(600);
+        let content = format!("{prose}・");
+        let out = compress(&content, 4000, 0.5).expect("空白归一可压缩");
+        assert!(out.contains('・'), "片假名中点行保留");
+        assert!(!out.contains("    "), "空白已归一");
+    }
+
+    #[test]
+    fn apply_to_body_disabled_is_bypassed() {
+        let config = config_with_lexcompress(false, 10, 0.5);
+        let original = "中文    内容".repeat(50);
+        let mut body = serde_json::json!({
+            "messages": [{"role": "user", "content": original.clone()}],
+        });
+        assert!(!apply_to_body(&config, &compress_headers(), &mut body));
+        assert_eq!(
+            body["messages"][0]["content"], original,
+            "关闭时不改写 body"
+        );
+    }
+
+    #[test]
+    fn apply_to_body_requires_explicit_header() {
+        let config = config_with_lexcompress(true, 10, 0.5);
+        let original = "中文    内容".repeat(50);
+        let mut body = serde_json::json!({
+            "messages": [{"role": "user", "content": original.clone()}],
+        });
+        assert!(!apply_to_body(
+            &config,
+            &axum::http::HeaderMap::new(),
+            &mut body
+        ));
+        assert_eq!(
+            body["messages"][0]["content"], original,
+            "无 X-Compress 不改写"
+        );
+    }
+
+    #[test]
+    fn apply_to_body_without_messages_array_is_bypassed() {
+        let config = config_with_lexcompress(true, 10, 0.5);
+        let mut body = serde_json::json!({"input": "中文    内容".repeat(50)});
+        assert!(!apply_to_body(&config, &compress_headers(), &mut body));
+    }
+
+    #[test]
+    fn apply_to_body_ignores_messages_below_min_chars() {
+        let config = config_with_lexcompress(true, 10, 0.5);
+        let mut body = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": "系".repeat(500)},
+                {"role": "user", "content": "短消息"},
+            ],
+        });
+        assert!(
+            !apply_to_body(&config, &compress_headers(), &mut body),
+            "仅 system 超阈值不触发"
+        );
+    }
+
+    #[test]
+    fn apply_to_body_compresses_longest_non_system_message() {
+        let config = config_with_lexcompress(true, 10, 0.5);
+        let system = "系".repeat(500);
+        let long_user = "中文    内容\t带空白。".repeat(30);
+        let mut body = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": system.clone()},
+                {"role": "user", "content": "短"},
+                {"role": "assistant", "content": long_user.clone()},
+            ],
+        });
+        assert!(
+            apply_to_body(&config, &compress_headers(), &mut body),
+            "最长非 system 消息被压缩"
+        );
+        assert_eq!(body["messages"][0]["content"], system, "system 永不触碰");
+        assert_eq!(body["messages"][1]["content"], "短");
+        let compressed = body["messages"][2]["content"]
+            .as_str()
+            .expect("content 保持字符串");
+        assert!(
+            !compressed.contains("    ") && !compressed.contains('\t'),
+            "行内空白归一"
+        );
+        assert!(compressed.chars().count() < long_user.chars().count());
+    }
+
+    #[test]
+    fn apply_to_body_returns_false_when_compression_not_possible() {
+        let config = config_with_lexcompress(true, 10, 0.0);
+        let original = "abcdefghijklmnopqrstuvwxyz";
+        let mut body = serde_json::json!({
+            "messages": [{"role": "user", "content": original}],
+        });
+        assert!(
+            !apply_to_body(&config, &compress_headers(), &mut body),
+            "无可剪空间不压缩"
+        );
+        assert_eq!(body["messages"][0]["content"], original);
+    }
 }

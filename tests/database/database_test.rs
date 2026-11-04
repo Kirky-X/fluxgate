@@ -595,6 +595,116 @@ mod tests {
         println!("Logs matching model 'gpt-4': {}", logs.len());
         assert_eq!(logs.len(), 3); // Only first 3 have actual_model = "gpt-4"
     }
+
+    /// 上下文分桶零值边界：窗口 token 为 0 时占用率按 0 计，输入 token 为 0
+    /// 时缓存占比按 0 计（不产生除零/NaN）。
+    #[tokio::test]
+    async fn context_stats_zero_window_and_zero_input_yield_zero_ratios() {
+        let pool = create_test_pool().await;
+        let repository = Repository::new(pool);
+        repository.initialize().await.unwrap();
+        let log = RequestLog {
+            id: None,
+            request_id: "ctx-zero-001".to_string(),
+            timestamp: 100,
+            endpoint: "/v1/chat/completions".to_string(),
+            input_format: "openai".to_string(),
+            abstract_model: Some("ctx-zero".to_string()),
+            messages: "[]".to_string(),
+            actual_vendor: "v".to_string(),
+            actual_model: "ctx-zero".to_string(),
+            routing_strategy: "direct".to_string(),
+            status_code: Some(200),
+            response: None,
+            error_message: None,
+            prompt_tokens: Some(0),
+            completion_tokens: Some(0),
+            total_tokens: Some(0),
+            duration_ms: Some(1),
+            cost_usd: Some(0.0),
+            session_key: None,
+            context_window_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            upstream_key_fingerprint: None,
+        };
+        repository.log_request(&log).await.unwrap();
+
+        let stats = repository.query_context_stats(0).await.expect("stats");
+        let row = stats
+            .iter()
+            .find(|row| row.model == "ctx-zero")
+            .expect("零值模型行");
+        assert_eq!(row.avg_occupancy, 0.0, "窗口 0 不得除零");
+        assert_eq!(row.cache_read_share, 0.0, "输入 token 0 不得除零");
+        assert_eq!(row.request_count, 1);
+    }
+
+    /// 旧库补列迁移：cost_usd 列缺失时 initialize 重新补齐（探针缺列分支）。
+    #[tokio::test]
+    async fn reinitialize_re_adds_legacy_cost_usd_column() {
+        use sea_orm::{ConnectionTrait, Statement};
+        let pool = create_test_pool().await;
+        let repository = Repository::new(pool);
+        repository.initialize().await.expect("首次迁移");
+        {
+            let session = repository.pool.get_session("admin").await.expect("session");
+            session
+                .connection()
+                .expect("connection")
+                .execute_raw(Statement::from_string(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    "ALTER TABLE request_logs DROP COLUMN cost_usd".to_string(),
+                ))
+                .await
+                .expect("drop column");
+        }
+        repository.initialize().await.expect("重新补齐 cost_usd");
+
+        let log = RequestLog {
+            id: None,
+            request_id: "migrate-001".to_string(),
+            timestamp: 100,
+            endpoint: "/v1/chat/completions".to_string(),
+            input_format: "openai".to_string(),
+            abstract_model: Some("m".to_string()),
+            messages: "[]".to_string(),
+            actual_vendor: "v".to_string(),
+            actual_model: "m".to_string(),
+            routing_strategy: "direct".to_string(),
+            status_code: Some(200),
+            response: None,
+            error_message: None,
+            prompt_tokens: Some(1),
+            completion_tokens: Some(1),
+            total_tokens: Some(2),
+            duration_ms: Some(1),
+            cost_usd: Some(0.5),
+            session_key: None,
+            context_window_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            upstream_key_fingerprint: None,
+        };
+        repository
+            .log_request(&log)
+            .await
+            .expect("补列后 cost_usd 可写");
+        let logs = repository
+            .query_logs(&LogFilter {
+                start_time: None,
+                end_time: None,
+                vendor: None,
+                model: None,
+                limit: 10,
+            })
+            .await
+            .expect("read");
+        assert!(
+            logs.iter().any(|row| row.request_id == "migrate-001"),
+            "补列后写入的行必须可读"
+        );
+    }
 }
 
 // 单事务批量写入（Repository::log_requests_batch）
@@ -2126,6 +2236,32 @@ mod quota_ledger {
         assert!(
             repo.read_quota_ledger(0).await.expect("read").is_empty(),
             "空批不产行"
+        );
+    }
+
+    /// 保留清理：删除 `window_start` 早于下界的周期行，返回删除数；下界及
+    /// 之后的行（含全局作用域）保留。
+    #[tokio::test]
+    async fn purge_expired_removes_only_rows_before_lower_bound() {
+        let pool = pool().await;
+        let repo = fluxweir::database::Repository::new(pool);
+        repo.initialize().await.expect("init");
+        repo.upsert_quota_ledger(&[
+            row("k1", "daily", 1_000, 10, 0),
+            row("k1", "daily", 2_000, 20, 0),
+            row("__global__", "fleet", 2_000, 7, 3),
+        ])
+        .await
+        .expect("seed");
+
+        let removed = repo.purge_expired_quota_ledger(2_000).await.expect("purge");
+        assert_eq!(removed, 1, "只删除下界之前的行");
+
+        let rows = repo.read_quota_ledger(0).await.expect("read");
+        assert_eq!(rows.len(), 2, "下界及之后的行保留");
+        assert!(
+            rows.iter().all(|r| r.window_start >= 2_000),
+            "清后不得残留早于下界的行"
         );
     }
 }

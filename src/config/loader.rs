@@ -3516,4 +3516,165 @@ model_type = "rerank"
             "空白 vendor_id 必须拒绝"
         );
     }
+
+    // ---- 覆盖补测：模式机器码 / OIDC / affinity / catalog_sync ----
+
+    /// 两个模式枚举的机器码全量映射（指标标签与解释块同口径）。
+    #[test]
+    fn mode_machine_codes_cover_all_variants() {
+        use crate::config::{AffinityMode, QuotaFactorMode};
+        for (mode, code) in [
+            (AffinityMode::Legacy, "legacy"),
+            (AffinityMode::Auto, "auto"),
+            (AffinityMode::Turn, "turn"),
+            (AffinityMode::Off, "off"),
+        ] {
+            assert_eq!(mode.as_str(), code);
+        }
+        for (mode, code) in [
+            (QuotaFactorMode::Off, "off"),
+            (QuotaFactorMode::Smart, "smart"),
+            (QuotaFactorMode::Pace, "pace"),
+        ] {
+            assert_eq!(mode.as_str(), code);
+        }
+    }
+
+    fn oidc_rule(issuer: &str, audience: &str) -> crate::config::OidcRuleConfig {
+        crate::config::OidcRuleConfig {
+            issuer: issuer.into(),
+            audience: audience.into(),
+            claims: std::collections::HashMap::new(),
+            bind_key_hash: "a".repeat(64),
+            ttl_secs: 3600,
+        }
+    }
+
+    fn oidc_config(rules: Vec<crate::config::OidcRuleConfig>) -> Config {
+        let digest = "a".repeat(64);
+        let mut auth = auth_section(vec![digest], vec![]);
+        auth.oidc_rules = Some(crate::config::OidcRulesSection { rules });
+        config_with(false, Some(auth))
+    }
+
+    /// OIDC 规则逐类非法形态点名拒绝；合法规则通过。
+    #[test]
+    fn oidc_rules_validation_rejects_each_invalid_shape() {
+        let error = validate_oidc_rules(&oidc_config(vec![oidc_rule("issuer.example.com", "aud")]))
+            .expect_err("缺 scheme:// 的 issuer 必须拒绝");
+        assert!(error.to_string().contains("issuer.example.com"), "{error}");
+
+        let mut rule = oidc_rule("https://issuer.example.com", "aud");
+        rule.audience = "   ".into();
+        let error =
+            validate_oidc_rules(&oidc_config(vec![rule])).expect_err("空白 audience 必须拒绝");
+        assert!(error.to_string().contains("audience"), "{error}");
+
+        let mut rule = oidc_rule("https://issuer.example.com", "aud");
+        rule.claims.insert("  ".into(), "v".into());
+        let error =
+            validate_oidc_rules(&oidc_config(vec![rule])).expect_err("空白 claim 键必须拒绝");
+        assert!(error.to_string().contains("claims"), "{error}");
+
+        let mut rule = oidc_rule("https://issuer.example.com", "aud");
+        rule.claims.insert("sub".into(), "repo:*".into());
+        let error =
+            validate_oidc_rules(&oidc_config(vec![rule])).expect_err("claim 通配值必须拒绝");
+        assert!(error.to_string().contains("claims"), "{error}");
+
+        let duplicate = vec![
+            oidc_rule("https://issuer.example.com", "aud"),
+            oidc_rule("https://issuer.example.com", "aud"),
+        ];
+        let error = validate_oidc_rules(&oidc_config(duplicate))
+            .expect_err("同 issuer+audience 重复规则必须拒绝");
+        let message = error.to_string();
+        assert!(
+            message.contains("https://issuer.example.com") && message.contains("aud"),
+            "{message}"
+        );
+
+        validate_oidc_rules(&oidc_config(vec![oidc_rule(
+            "https://issuer.example.com",
+            "aud",
+        )]))
+        .expect("合法规则必须通过");
+    }
+
+    /// OTLP 端点缺 scheme:// 分隔符 → 非法 URL（与空 authority 不同分支）。
+    #[test]
+    fn otlp_endpoint_requires_scheme_separator() {
+        let error =
+            validate_otlp_endpoint("collector:4318/v1/traces").expect_err("缺 scheme:// 必须拒绝");
+        assert!(error.to_string().contains("collector"), "{error}");
+    }
+
+    /// affinity 会话头名 trim + 小写归一后判空；空白元素拒绝。
+    #[test]
+    fn affinity_session_headers_normalize_and_reject_blank() {
+        let mut config = config_with(false, None);
+        config.routing.affinity.session_headers =
+            Some(vec![" X-Session-ID ".into(), "X-Conversation-Id".into()]);
+        validate_affinity(&config).expect("非空头名归一后必须通过");
+
+        config.routing.affinity.session_headers = Some(vec!["  ".into()]);
+        let error = validate_affinity(&config).expect_err("空白头名必须拒绝");
+        assert!(error.to_string().contains("session_headers"), "{error}");
+    }
+
+    /// catalog_sync 校验：timeout 零、URL 缺 scheme、userinfo、alias 空白逐项拒绝；
+    /// loopback http 放行。
+    #[test]
+    fn catalog_sync_validation_rejects_each_invalid_shape() {
+        let mut config = config_with(false, None);
+        config.catalog_sync.enabled = true;
+        config.catalog_sync.timeout_secs = 0;
+        let error = validate_catalog_sync(&config).expect_err("enabled 且 timeout=0 必须拒绝");
+        assert!(error.to_string().contains("timeout_secs"), "{error}");
+
+        config.catalog_sync.timeout_secs = 10;
+        config.catalog_sync.source_url = "models.dev/api.json".into();
+        let error = validate_catalog_sync(&config).expect_err("缺 scheme:// 的 URL 必须拒绝");
+        assert!(error.to_string().contains("source_url"), "{error}");
+
+        config.catalog_sync.source_url = "http://localhost:8080/api.json".into();
+        validate_catalog_sync(&config).expect("loopback http 放行");
+
+        config.catalog_sync.source_url = "https://user:pass@models.dev/api.json".into();
+        let error = validate_catalog_sync(&config).expect_err("userinfo 必须拒绝");
+        assert!(error.to_string().contains("userinfo"), "{error}");
+
+        config.catalog_sync.source_url = "https://models.dev/api.json".into();
+        config.catalog_sync.alias.insert("   ".into(), "v".into());
+        let error = validate_catalog_sync(&config).expect_err("空白 alias 键必须拒绝");
+        assert!(error.to_string().contains("alias"), "{error}");
+    }
+
+    /// calendar 周期携带 rolling_secs 属两形态混用（与 rolling 带 calendar 对称）。
+    #[test]
+    fn quota_period_rejects_calendar_with_rolling_secs() {
+        let error = validate_quota_period("quota_window", "w1", "calendar", 3600, "daily", 0)
+            .expect_err("calendar + rolling_secs 必须拒绝");
+        let message = error.to_string();
+        assert!(
+            message.contains("w1") && message.contains("quota_window"),
+            "{message}"
+        );
+    }
+
+    /// 兼容组锚点后置声明：首条目未声明 dimensions/abstract_id 时，后续条目
+    /// 的声明就地补齐锚点（R2/R3 的合法对照面）。
+    #[test]
+    fn embedding_group_late_declarations_seed_dimension_and_abstract_anchors() {
+        let vendors = difficulty_vendor(
+            "v1",
+            "[[vendors.models]]\nmodel_id = \"text-embedding-3-large\"\ncompat_group = \"g1\"\n",
+        ) + &difficulty_vendor(
+            "v2",
+            &embedding_model("text-embedding-3-large", "emb-a", Some("g1"), Some(1024)),
+        );
+        let config =
+            parse_vendors_toml(&vendors).expect("后置的 dimensions/abstract 声明不得被拒绝");
+        assert_eq!(config.vendors.len(), 2);
+    }
 }

@@ -1020,5 +1020,239 @@ mod tests {
             "inner 只含先前的正常记录，flood 拒发后不得新增"
         );
         assert_eq!(sink.dropped(), 1);
+
+        // flush/shutdown 委托路径：inner 实现体此前从未被驱动
+        sink.flush().await.expect("flush 委托");
+        sink.shutdown().await.expect("shutdown 委托");
+    }
+
+    /// redact_value 递归形态：数组/对象下钻逐串脱敏，非字符串标量原样直通。
+    #[test]
+    fn test_redact_value_descends_into_arrays_and_objects() {
+        let masker = outbound_masker();
+        let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+        let mut value = serde_json::json!({
+            "list": [secret, 42, null],
+            "nested": { "inner": [secret] },
+            "scalar": 7,
+        });
+        redact_value(&masker, &mut value).expect("嵌套结构整树脱敏");
+        let obj = value.as_object().expect("顶层对象保持");
+        assert_eq!(
+            obj["list"][0],
+            serde_json::json!("***REDACTED_API_KEY***"),
+            "数组内字符串必须脱敏"
+        );
+        assert_eq!(obj["list"][1], serde_json::json!(42), "数字标量原样");
+        assert_eq!(obj["list"][2], serde_json::Value::Null, "null 原样");
+        assert_eq!(
+            obj["nested"]["inner"][0],
+            serde_json::json!("***REDACTED_API_KEY***"),
+            "对象内数组同样下钻"
+        );
+        assert_eq!(obj["scalar"], serde_json::json!(7), "标量不经 masker");
+    }
+
+    /// update_stream_usage 背压与关停语义：容量 1 + 首个 await 前连发 3 条，
+    /// 2/3 条确定性撞满槽（丢弃计数不报错）；shutdown 后再发拒绝并带
+    /// 固定 i18n 文案。
+    #[tokio::test]
+    async fn test_update_stream_usage_backpressure_and_post_shutdown_rejected() {
+        let repository = setup_repository().await;
+        let logger = AsyncLogger::new(repository.clone(), 1, Duration::from_secs(60));
+
+        let r1 = logger.update_stream_usage("req-1", "resp", 1, 2, 3, None, None);
+        let r2 = logger.update_stream_usage("req-2", "resp", 1, 2, 3, None, None);
+        let r3 = logger.update_stream_usage("req-3", "resp", 1, 2, 3, None, None);
+        assert!(
+            r1.is_ok() && r2.is_ok() && r3.is_ok(),
+            "满槽丢弃不是错误，三连发全部 Ok"
+        );
+        assert!(
+            logger.dropped_logs() >= 1,
+            "满槽必须丢弃并计数: dropped={}",
+            logger.dropped_logs()
+        );
+
+        logger.shutdown().await.expect("Shutdown failed");
+        let rejected = logger.update_stream_usage("req-4", "resp", 1, 2, 3, None, None);
+        match rejected {
+            Err(FluxweirError::Database { message }) => {
+                assert_eq!(message, t("database-logger-shutdown"));
+            }
+            other => panic!("Expected Database error, got {:?}", other),
+        }
+    }
+
+    /// RequestLogSink trait 面（句柄的 trait impl）：透传读数 + 关停后
+    /// log/update_stream_usage/二次 shutdown 均以 GateError::Config 包装。
+    #[tokio::test]
+    async fn test_request_log_sink_trait_surface_and_post_shutdown_errors() {
+        use crate::error::GateError;
+        use crate::storage::RequestLogSink;
+
+        let repository = setup_repository().await;
+        let handle = AsyncLoggerHandle::new(AsyncLogger::new(
+            repository.clone(),
+            100,
+            Duration::from_secs(60),
+        ));
+
+        RequestLogSink::log(&handle, sample_log())
+            .await
+            .expect("trait log 推送");
+        assert_eq!(
+            RequestLogSink::dropped_logs(&handle),
+            0,
+            "trait dropped_logs 透传"
+        );
+        assert_eq!(
+            RequestLogSink::secret_scan_dropped(&handle),
+            0,
+            "trait secret_scan_dropped 透传"
+        );
+
+        RequestLogSink::shutdown(&handle)
+            .await
+            .expect("trait shutdown");
+
+        match RequestLogSink::log(&handle, sample_log()).await {
+            Err(GateError::Config { message }) => assert!(
+                message.contains("async log push failed"),
+                "log 包装文案: {message}"
+            ),
+            other => panic!("关停后 trait log 应为 Config 错误，实际 {other:?}"),
+        }
+        match RequestLogSink::update_stream_usage(&handle, "r", "x", 1, 1, 2, None, None).await {
+            Err(GateError::Config { message }) => assert!(
+                message.contains("async stream usage update failed"),
+                "update 包装文案: {message}"
+            ),
+            other => panic!("关停后 trait update 应为 Config 错误，实际 {other:?}"),
+        }
+        match RequestLogSink::shutdown(&handle).await {
+            Err(GateError::Config { message }) => assert!(
+                message.contains("async logger shutdown failed"),
+                "二次 shutdown 包装文案: {message}"
+            ),
+            other => panic!("二次 trait shutdown 应为 Config 错误，实际 {other:?}"),
+        }
+    }
+
+    /// 句柄 secret_scan_dropped 透传：fail-closed 拒发经句柄读数可见（1），
+    /// 且拒发记录整条不落库。
+    #[tokio::test]
+    async fn test_handle_secret_scan_dropped_passthrough_counts_fail_closed_drops() {
+        let repository = setup_repository().await;
+        let logger = AsyncLogger::new(repository.clone(), 100, Duration::from_secs(60));
+        let handle = AsyncLoggerHandle::new(logger);
+
+        let mut log = sample_log();
+        log.messages = (0..65)
+            .map(|i| format!("sk-{i:0>20}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        handle.log(log).expect("Log write failed");
+        handle.shutdown().await.expect("Shutdown failed");
+
+        assert_eq!(
+            handle.secret_scan_dropped(),
+            1,
+            "句柄必须透传 fail-closed 拒发计数"
+        );
+        let logs = repository
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("Query failed");
+        assert!(logs.is_empty(), "拒发记录不得落库");
+    }
+
+    /// reject 告警参数求值 + flush/shutdown 委托：订阅者在位时拒发 warn 的
+    /// i18n 文案真正求值（无订阅者时宏参数不求值）；flush/shutdown 必须到达
+    /// inner sink。
+    #[test]
+    fn test_gate_sink_reject_emits_warn_and_delegates_flush_shutdown() {
+        #[derive(Default)]
+        struct DelegatingSink {
+            writes: std::sync::Mutex<u64>,
+            flushed: AtomicBool,
+            shut_down: AtomicBool,
+        }
+
+        #[async_trait::async_trait]
+        impl inklog::LogSink for DelegatingSink {
+            async fn write(&self, _record: &inklog::LogRecord) -> Result<(), InklogError> {
+                *self.writes.lock().expect("not poisoned") += 1;
+                Ok(())
+            }
+            async fn flush(&self) -> Result<(), InklogError> {
+                self.flushed.store(true, Ordering::Relaxed);
+                Ok(())
+            }
+            async fn shutdown(&self) -> Result<(), InklogError> {
+                self.shut_down.store(true, Ordering::Relaxed);
+                Ok(())
+            }
+        }
+
+        struct FormatAllLayer;
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FormatAllLayer {
+            // on_event 内 format 全部字段：message 的惰性格式化闭包（i18n
+            // 文案）只在事件被记录并格式化时求值，零输出层拿不到该行
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct FormatAll;
+                impl tracing::field::Visit for FormatAll {
+                    fn record_debug(
+                        &mut self,
+                        _field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        let _ = format!("{value:?}");
+                    }
+                }
+                let mut visitor = FormatAll;
+                event.record(&mut visitor);
+            }
+        }
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let inner = Arc::new(DelegatingSink::default());
+        let sink = GateSink::new(inner.clone(), Arc::new(outbound_masker()));
+
+        // 超门限 flood（单模式 65 命中 > 默认 64）→ 整条拒发
+        let flood = inklog::LogRecord {
+            message: (0..65)
+                .map(|i| format!("sk-{i:0>20}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            ..Default::default()
+        };
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(FormatAllLayer),
+            || {
+                futures::executor::block_on(sink.write(&flood)).expect("拒发按 Ok 处理（非故障）");
+            },
+        );
+        assert_eq!(
+            *inner.writes.lock().expect("not poisoned"),
+            0,
+            "flood 拒发不得上 inner"
+        );
+        assert_eq!(sink.dropped(), 1, "拒发计数显性累加");
+
+        futures::executor::block_on(sink.flush()).expect("flush 委托");
+        futures::executor::block_on(sink.shutdown()).expect("shutdown 委托");
+        assert!(
+            inner.flushed.load(Ordering::Relaxed),
+            "flush 必须委托到 inner"
+        );
+        assert!(
+            inner.shut_down.load(Ordering::Relaxed),
+            "shutdown 必须委托到 inner"
+        );
     }
 }

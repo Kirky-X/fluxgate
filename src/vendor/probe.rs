@@ -1070,4 +1070,227 @@ model_type = "rerank"
         assert_eq!(recovered, 1, "env 凭证成功也计恢复");
         mock.assert_async().await;
     }
+
+    /// 点亮并求值 tracing 事件（registry + 全字段格式化层）：无订阅者时
+    /// debug/info 宏跳过惰性字段求值（i18n 文案行不入覆盖）。线程本地安装
+    /// 避免与并行测试的全局订阅者竞争。
+    fn install_evaluating_subscriber() -> tracing::subscriber::DefaultGuard {
+        struct FormatAllLayer;
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FormatAllLayer {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct FormatAll;
+                impl tracing::field::Visit for FormatAll {
+                    fn record_debug(
+                        &mut self,
+                        _field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        let _ = format!("{value:?}");
+                    }
+                }
+                let mut visitor = FormatAll;
+                event.record(&mut visitor);
+            }
+        }
+
+        use tracing_subscriber::layer::SubscriberExt as _;
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(FormatAllLayer))
+    }
+
+    /// rerank 目标无视 strategy：probe_one 直接走专用探测（1 请求，2xx 计恢复）。
+    #[tokio::test]
+    async fn probe_one_rerank_target_uses_dedicated_probe() {
+        let _eval = install_evaluating_subscriber();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/rerank")
+            .match_header("authorization", "Bearer k-current")
+            .with_status(200)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut config = probe_config(&server.url(), "rerank");
+        config.models = vec![model("rerank-v3", true)];
+        let t = target(config, Some(("k-current".into(), "fp-cur".into())));
+        assert_eq!(
+            probe_one(&manager, &client, &t, ProbeStrategy::Free, None).await,
+            (1, 1),
+            "rerank 专属探测成功 → 恢复"
+        );
+        mock.assert_async().await;
+    }
+
+    /// free 探测的 2xx 恢复 / 非 2xx / 连接失败 / URL 构建失败分支文案求值。
+    #[tokio::test]
+    async fn probe_free_branches_evaluate_messages() {
+        let _eval = install_evaluating_subscriber();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+
+        // 2xx + suspect → info 恢复文案
+        let mut server = mockito::Server::new_async().await;
+        server.mock("GET", "/v1/models").with_status(200).create();
+        let t = target(
+            probe_config(&server.url(), "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert_eq!(
+            probe_one(&manager, &client, &t, ProbeStrategy::Free, None).await,
+            (1, 1)
+        );
+
+        // 非 2xx → debug 状态文案
+        let mut server = mockito::Server::new_async().await;
+        server.mock("GET", "/v1/models").with_status(401).create();
+        let t = target(
+            probe_config(&server.url(), "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert!(!probe_free(&client, &t, None).await);
+
+        // 连接失败 → debug 错误文案
+        let t = target(
+            probe_config("http://127.0.0.1:1", "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert!(!probe_free(&client, &t, None).await);
+
+        // URL 构建失败 → debug 文案
+        let t = target(probe_config("", "weird-type"), None);
+        assert!(!probe_free(&client, &t, None).await);
+    }
+
+    /// responses 风格：minimal_call 走 /responses 最小体（store=false）。
+    #[tokio::test]
+    async fn probe_minimal_call_responses_style_uses_responses_body() {
+        let _eval = install_evaluating_subscriber();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "model": "m-live",
+                "input": "ping",
+                "store": false,
+            })))
+            .with_status(200)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut config = probe_config(&server.url(), "openai");
+        config.api_style = Some("responses".into());
+        config.models = vec![model("m-live", true)];
+        let t = target(config, Some(("k".into(), "fp".into())));
+        assert_eq!(
+            probe_minimal_call(&manager, &client, &t, None, true).await,
+            1,
+            "responses 风格探测 2xx 恢复"
+        );
+        mock.assert_async().await;
+    }
+
+    /// Gemini：minimal_call 用 model+action 端点与 x-goog-api-key 鉴权。
+    #[tokio::test]
+    async fn probe_minimal_call_gemini_uses_model_action_url() {
+        let _eval = install_evaluating_subscriber();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1beta/models/gemini-pro:generateContent")
+            .match_header("x-goog-api-key", "k-g")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "generationConfig": {"maxOutputTokens": 1},
+            })))
+            .with_status(200)
+            .create();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut config = probe_config(&server.url(), "gemini");
+        config.models = vec![model("gemini-pro", true)];
+        let t = target(config, Some(("k-g".into(), "fp-g".into())));
+        assert_eq!(
+            probe_minimal_call(&manager, &client, &t, None, true).await,
+            1,
+            "Gemini 探测 2xx 恢复"
+        );
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn probe_minimal_call_url_build_failure_evaluates_message() {
+        let _eval = install_evaluating_subscriber();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let t = target(probe_config("", "weird-type"), None);
+        assert_eq!(
+            probe_minimal_call(&manager, &client, &t, None, true).await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_rerank_call_url_build_failure_evaluates_message() {
+        let _eval = install_evaluating_subscriber();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+        let mut config = probe_config("", "rerank");
+        config.models = vec![model("rerank-v3", true)];
+        let t = target(config, None);
+        assert_eq!(
+            probe_rerank_call(&manager, &client, &t, None, true).await,
+            0
+        );
+    }
+
+    /// 计费探测的非 2xx / 连接失败分支文案求值。
+    #[tokio::test]
+    async fn probe_measured_call_failure_branches_evaluate_messages() {
+        let _eval = install_evaluating_subscriber();
+        let manager = empty_manager();
+        let client = manager.outbound_client();
+
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(503)
+            .create();
+        let t = target(
+            probe_config(&server.url(), "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert_eq!(
+            probe_minimal_call(&manager, &client, &t, None, true).await,
+            0
+        );
+
+        let t = target(
+            probe_config("http://127.0.0.1:1", "openai"),
+            Some(("k".into(), "fp".into())),
+        );
+        assert_eq!(
+            probe_minimal_call(&manager, &client, &t, None, true).await,
+            0
+        );
+    }
+
+    /// 后台循环：虚拟时钟推进一个 interval，周期完成并记录 debug 后 abort。
+    #[tokio::test(start_paused = true)]
+    async fn run_probe_loop_logs_cycle_after_interval() {
+        let _eval = install_evaluating_subscriber();
+        let manager = empty_manager();
+        let config = cycle_manager("off");
+        let handle = tokio::spawn(run_probe_loop(manager, config));
+        // 默认 interval=300s；测试侧 301s 定时器保证循环先醒一次
+        tokio::time::sleep(Duration::from_secs(301)).await;
+        handle.abort();
+        assert!(
+            handle
+                .await
+                .expect_err("循环必须常驻直至 abort")
+                .is_cancelled(),
+            "abort 即停"
+        );
+    }
 }

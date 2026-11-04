@@ -3214,4 +3214,764 @@ mod tests {
             "vendor 预算窗长必须计入保留上界"
         );
     }
+
+    // ---- 覆盖补测：预扣形态分派 ----
+
+    /// 无 model 不预扣；Gemini requests[] 批量形态按 content.parts 计输入、
+    /// 按 generationConfig.maxOutputTokens 计输出预算。
+    #[test]
+    fn precharge_requires_model_and_counts_gemini_requests_shape() {
+        let body = serde_json::json!({"messages": []});
+        assert_eq!(
+            precharge_for(&body, &[], &pricing(), 4),
+            (0, 0),
+            "无 model 的体不产生预扣"
+        );
+        let requests = serde_json::json!({
+            "model": "m",
+            "requests": [{"content": {"parts": [{"text": "abcd"}]}}],
+            "generationConfig": {"maxOutputTokens": 2}
+        });
+        let (tokens, cost) = precharge_for(&requests, &[], &pricing(), 4);
+        assert_eq!(tokens, 3, "1 输入 token + 2 输出预算");
+        assert_eq!(cost, 700, "1/1000*1 + 2/1000*3 = 0.007 USD");
+    }
+
+    /// Responses 形态在目录未登记时回退 `[[pricing]]` 两档（每 1k）。
+    #[test]
+    fn responses_precharge_falls_back_to_pricing() {
+        let body = serde_json::json!({
+            "model": "m",
+            "input": "abcd",
+            "max_output_tokens": 10,
+        });
+        let (tokens, cost) = precharge_for(&body, &[], &pricing(), 4);
+        assert_eq!(tokens, 12, "input JSON 6 字符 → 2 token + 10 输出预算");
+        assert_eq!(cost, 3200, "2/1000*1 + 10/1000*3 = 0.032 USD");
+    }
+
+    /// Gemini 目录命中走每 1M 口径；内容帧目录未登记时回退每 1k 口径。
+    #[test]
+    fn gemini_precharge_switches_price_source_by_catalog_hit() {
+        let body = serde_json::json!({
+            "model": "m",
+            "contents": [{"parts": [{"text": "hello!"}]}],
+            "generationConfig": {"maxOutputTokens": 10}
+        });
+        let (tokens, cost) = precharge_for(&body, &catalog(1.0, 2.0, 0.0, 0.0), &pricing(), 4);
+        assert_eq!(tokens, 12, "6 字符 → 2 输入 token + 10 输出预算");
+        assert_eq!(cost, 3, "2/1e6*1 + 10/1e6*2 = 2.2 millicents → 向上取整 3");
+    }
+
+    /// rerank 文档数组里的非字符串/非对象条目按 0 字符计，文档数仍计价。
+    #[test]
+    fn rerank_precharge_ignores_non_text_documents() {
+        let cat = vec![ModelCatalogEntry {
+            model_id: "rerank-v3".into(),
+            rerank_price_per_1k_docs: 2.0,
+            ..Default::default()
+        }];
+        let body = serde_json::json!({
+            "model": "rerank-v3",
+            "query": "abcd",
+            "documents": [123],
+        });
+        let (tokens, cost) = precharge_for(&body, &cat, &[], 4);
+        assert_eq!(tokens, 1, "仅 query 4 字符 → 1 token");
+        assert_eq!(cost, 200, "1 文档 × 2 USD/1k 文档 = 200 millicents");
+    }
+
+    /// 目录命中时实际成本走分账同一函数（四档合计非零）。
+    #[test]
+    fn actual_cost_catalog_hit_returns_estimate() {
+        let cat = catalog(1000.0, 2000.0, 0.0, 0.0);
+        let cost = actual_cost_millicents(&cost_input(100, 50, 0, 0, &cat, &pricing(), "openai"));
+        let expected = usd_to_millicents(100.0 / 1e6 * 1000.0 + 50.0 / 1e6 * 2000.0);
+        assert_eq!(cost, expected);
+        assert!(cost > 0, "目录四档合计必须非零: {cost}");
+    }
+
+    // ---- 覆盖补测：账本空路径 / 落盘 / 恢复 ----
+
+    /// 空窗集回补零行为；租户有账但窗口 id 不存在时同样跳过（无账不建）。
+    #[test]
+    fn recompense_skips_empty_windows_and_unknown_window_id() {
+        let quota = QuotaState::new();
+        quota.recompense("k", &[], 10, 1, 0, 0);
+        assert_eq!(quota.tracked_keys(), 0, "空窗集不建账");
+
+        let windows = legacy_windows(100, 0, 3600);
+        quota.consume("k", &windows, 10, 0).expect("预扣");
+        let mut unknown = windows.clone();
+        unknown[0].id = "other".into();
+        quota.recompense("k", &unknown, 10, 0, 0, 0);
+        assert_eq!(
+            quota.snapshot("k", "default"),
+            (10, 0),
+            "未知窗口 id 不得改写既有账本"
+        );
+    }
+
+    /// 无 `[[vendor_budgets]]` 时记账零开销早退且不建预算态。
+    #[test]
+    fn record_vendor_usage_skips_when_no_budget_configured() {
+        let config = quota_enabled_config(true);
+        let quota = QuotaState::new();
+        quota.record_vendor_usage(&config, "budgeted", 100, 10);
+        assert!(
+            quota
+                .vendor_budgets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty(),
+            "无预算段不得创建 vendor 记账态"
+        );
+        assert_eq!(
+            quota.vendor_snapshot("budgeted", &vendor_window_id("budgeted")),
+            (0, 0)
+        );
+    }
+
+    /// 落盘句柄在位时 vendor 记账行按 `__vendor__:{id}` / `vendor:{id}` 入队。
+    #[test]
+    fn ledger_snapshot_includes_vendor_budget_rows() {
+        let config = vendor_budget_config();
+        let quota = QuotaState::new();
+        quota.record_vendor_usage(&config, "budgeted", 120, 4);
+        let rows = quota.ledger_snapshot();
+        assert_eq!(rows.len(), 1, "单 vendor 单窗一行");
+        assert_eq!(rows[0].api_key_hash, vendor_ledger_key("budgeted"));
+        assert_eq!(rows[0].window_id, vendor_window_id("budgeted"));
+        assert_eq!(rows[0].tokens_used, 120);
+        assert_eq!(rows[0].cost_used_millicents, 4);
+        assert!(rows[0].window_start > 0, "已起算窗必须带起点");
+    }
+
+    /// admin 读侧：未起算窗不列；已起算的 vendor 预算行 scope=vendor。
+    #[test]
+    fn ledger_entries_skip_unstarted_and_classify_vendor_scope() {
+        let quota = QuotaState::new();
+        {
+            let mut guard = quota.ledgers.lock().unwrap_or_else(|p| p.into_inner());
+            guard.entry("tenant-x".to_string()).or_default().insert(
+                "w".into(),
+                WindowState {
+                    period: Period::Daily,
+                    tz_offset_secs: 0,
+                    token_used: 5,
+                    cost_used: 5,
+                    window_start: None,
+                },
+            );
+        }
+        {
+            let mut vendors = quota
+                .vendor_budgets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            vendors.entry("v".to_string()).or_default().insert(
+                "vendor:v".into(),
+                WindowState {
+                    period: Period::Daily,
+                    tz_offset_secs: 0,
+                    token_used: 5,
+                    cost_used: 5,
+                    window_start: None,
+                },
+            );
+        }
+        assert!(quota.ledger_entries().is_empty(), "未起算窗无事实可读");
+
+        let config = vendor_budget_config();
+        quota.record_vendor_usage(&config, "budgeted", 120, 4);
+        let entries = quota.ledger_entries();
+        assert_eq!(entries.len(), 1, "只有已起算的 vendor 行可读");
+        assert_eq!(entries[0].scope, "vendor");
+        assert_eq!(entries[0].api_key_hash, vendor_ledger_key("budgeted"));
+        assert_eq!(entries[0].window_id, vendor_window_id("budgeted"));
+        assert_eq!(entries[0].tokens_used, 120);
+        assert!(
+            entries[0].reset_at > entries[0].window_start,
+            "rolling 窗重置时刻必须晚于起点"
+        );
+    }
+
+    /// 恢复跳过无法编译周期的租户窗行与 vendor 行（手构配置的运行期兜底）。
+    #[test]
+    fn restore_skips_invalid_period_and_expired_vendor_rows() {
+        let now = chrono::Utc::now().timestamp();
+        let mut invalid_tenant = quota_enabled_config(true);
+        invalid_tenant.quota.windows = vec![crate::config::QuotaWindowConfig {
+            id: "bad".into(),
+            period: "calendar".into(),
+            calendar: "hourly".into(),
+            tokens_limit: 100,
+            ..Default::default()
+        }];
+        let quota = QuotaState::new();
+        let tenant_row = crate::database::QuotaLedgerRow {
+            api_key_hash: "tenant-digest".into(),
+            window_id: "bad".into(),
+            window_start: now,
+            tokens_used: 1,
+            cost_used_millicents: 0,
+            updated_at: now,
+        };
+        assert_eq!(
+            quota.restore_from_ledger(&[tenant_row], &invalid_tenant),
+            0,
+            "周期编译失败的行必须跳过"
+        );
+        assert_eq!(quota.tracked_keys(), 0);
+
+        let budget_config = vendor_budget_config();
+        let expired = crate::database::QuotaLedgerRow {
+            api_key_hash: vendor_ledger_key("budgeted"),
+            window_id: vendor_window_id("budgeted"),
+            window_start: now - 7_200,
+            tokens_used: 5,
+            cost_used_millicents: 0,
+            updated_at: now - 7_200,
+        };
+        assert_eq!(
+            quota.restore_from_ledger(&[expired], &budget_config),
+            0,
+            "过期 vendor 预算行必须跳过"
+        );
+        assert_eq!(
+            quota.vendor_snapshot("budgeted", &vendor_window_id("budgeted")),
+            (0, 0)
+        );
+
+        let mut invalid_budget = vendor_budget_config();
+        invalid_budget.vendor_budgets[0].period = "calendar".into();
+        invalid_budget.vendor_budgets[0].calendar = "hourly".into();
+        let live = crate::database::QuotaLedgerRow {
+            api_key_hash: vendor_ledger_key("budgeted"),
+            window_id: vendor_window_id("budgeted"),
+            window_start: now,
+            tokens_used: 5,
+            cost_used_millicents: 0,
+            updated_at: now,
+        };
+        let other = QuotaState::new();
+        assert_eq!(
+            other.restore_from_ledger(&[live], &invalid_budget),
+            0,
+            "vendor 周期编译失败的行必须跳过"
+        );
+    }
+
+    // ---- 覆盖补测：窗口解析 / 保留推导 / key 预算估算 ----
+
+    /// api_key 窗显式成本限额不回填；非法周期整窗剔除；无 auth 段按无限额。
+    #[test]
+    fn resolve_windows_covers_cost_limit_invalid_period_and_missing_auth() {
+        let mut config = quota_enabled_config(true);
+        config.quota.windows = vec![crate::config::QuotaWindowConfig {
+            id: "cost".into(),
+            period: "rolling".into(),
+            rolling_secs: 3_600,
+            tokens_limit: 0,
+            cost_limit_millicents: 500,
+            ..Default::default()
+        }];
+        let resolved = resolve_windows(&config, "tenant-digest");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].cost_limit_millicents, 500, "显式成本限额保留");
+        assert_eq!(
+            resolved[0].tokens_limit, 1_000_000,
+            "token 维度仍落回 per-key 限额"
+        );
+
+        config.quota.windows = vec![crate::config::QuotaWindowConfig {
+            id: "bad".into(),
+            period: "calendar".into(),
+            calendar: "hourly".into(),
+            tokens_limit: 100,
+            ..Default::default()
+        }];
+        assert!(
+            resolve_windows(&config, "tenant-digest").is_empty(),
+            "周期编译失败的窗整窗剔除"
+        );
+
+        let mut no_auth = quota_enabled_config(true);
+        no_auth.auth = None;
+        no_auth.quota.windows = vec![crate::config::QuotaWindowConfig {
+            id: "perkey".into(),
+            period: "rolling".into(),
+            rolling_secs: 3_600,
+            ..Default::default()
+        }];
+        assert!(
+            resolve_windows(&no_auth, "tenant-digest").is_empty(),
+            "无 auth 段即无 per-key 限额，双零窗剔除"
+        );
+    }
+
+    /// 保留推导覆盖 weekly 周期上界。
+    #[test]
+    fn ledger_retention_covers_weekly_window() {
+        let mut config = quota_enabled_config(true);
+        config.quota.windows = vec![crate::config::QuotaWindowConfig {
+            id: "w".into(),
+            period: "calendar".into(),
+            calendar: "weekly".into(),
+            tokens_limit: 100,
+            ..Default::default()
+        }];
+        assert_eq!(
+            ledger_retention_secs(&config),
+            7 * DAY_SECS,
+            "weekly 保留上界为 7 天"
+        );
+    }
+
+    /// key 预算估算：目录四档 / pricing 两档与冷启动输出预留的组合。
+    #[test]
+    fn key_budget_estimate_combines_price_source_and_completion_mean() {
+        let cat = catalog(2.0, 4.0, 0.0, 0.0);
+        assert_eq!(
+            key_budget_estimate(&cat, &[], "m", 1_000_000, None, 777),
+            200_000 + 777,
+            "目录输入腿 1M token × 2 USD/1M + 冷启动输出预留"
+        );
+        assert_eq!(
+            key_budget_estimate(&cat, &[], "m", 500_000, Some(500_000), 0),
+            100_000 + 200_000,
+            "目录输入腿 + 完成均值输出腿（每 1M）"
+        );
+        assert_eq!(
+            key_budget_estimate(&[], &pricing(), "m", 10, Some(10), 0),
+            1_000 + 3_000,
+            "pricing 回退两档（每 1k）"
+        );
+        assert_eq!(
+            key_budget_estimate(&[], &pricing(), "m", 10, None, 55),
+            1_000 + 55,
+            "冷启动无均值时输出腿取预留值"
+        );
+    }
+
+    // ---- 覆盖补测：中间件入口 ----
+
+    fn anonymous_tenant() -> String {
+        api_key_digest(&axum::http::HeaderMap::new())
+    }
+
+    fn middleware_config(enabled: bool, token_quota: u64) -> crate::config::Config {
+        let mut config = quota_enabled_config(enabled);
+        let auth = config.auth.as_mut().expect("测试配置带 auth 段");
+        auth.keys[0].hash = anonymous_tenant();
+        auth.keys[0].token_quota = token_quota;
+        config
+    }
+
+    fn middleware_gate(
+        config: crate::config::Config,
+        quota: Option<Arc<QuotaState>>,
+        metrics: Option<Arc<crate::utils::metrics::GlobalMetrics>>,
+    ) -> QuotaGate {
+        QuotaGate {
+            config: Arc::new(ConfigManager::new(config)),
+            quota,
+            metrics,
+        }
+    }
+
+    fn middleware_router(gate: QuotaGate) -> axum::Router {
+        use axum::routing::post;
+        axum::Router::new()
+            .route("/v1/chat/completions", post(|| async { "ok" }))
+            .route("/v1/responses", post(|| async { "ok" }))
+            .route(
+                "/v1beta/models/gemini-2.5-pro:generateContent",
+                post(|| async { "ok" }),
+            )
+            .route(
+                "/v1beta/models/gemini-2.5-pro:countTokens",
+                post(|| async { "ok" }),
+            )
+            .layer(axum::middleware::from_fn_with_state(gate, quota_middleware))
+    }
+
+    async fn post_json_bytes(
+        router: axum::Router,
+        uri: &str,
+        body: Vec<u8>,
+    ) -> axum::response::Response {
+        use tower::ServiceExt as _;
+        router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("router response")
+    }
+
+    /// 非适用路径（countTokens）零行为直通；超限体显性 413。
+    #[tokio::test]
+    async fn middleware_passes_count_tokens_and_rejects_oversized_body() {
+        let quota = Arc::new(QuotaState::new());
+        let gate = middleware_gate(
+            middleware_config(true, 1_000_000),
+            Some(quota.clone()),
+            None,
+        );
+        let response = post_json_bytes(
+            middleware_router(gate),
+            "/v1beta/models/gemini-2.5-pro:countTokens",
+            br#"{"contents":[]}"#.to_vec(),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(quota.tracked_keys(), 0, "非适用路径不建账");
+
+        let quota = Arc::new(QuotaState::new());
+        let gate = middleware_gate(
+            middleware_config(true, 1_000_000),
+            Some(quota.clone()),
+            None,
+        );
+        let response = post_json_bytes(
+            middleware_router(gate),
+            "/v1/chat/completions",
+            vec![b' '; MAX_QUOTA_BODY_BYTES + 1],
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            "超限体必须显性 413"
+        );
+        assert_eq!(quota.tracked_keys(), 0, "读体失败不得落账");
+    }
+
+    /// 非法 JSON fail-open 透传；Gemini 路径缺 model 时由中间件注入本地副本
+    /// 参与预扣（转发体不变）。
+    #[tokio::test]
+    async fn middleware_fail_opens_invalid_json_and_injects_gemini_model() {
+        let quota = Arc::new(QuotaState::new());
+        let gate = middleware_gate(
+            middleware_config(true, 1_000_000),
+            Some(quota.clone()),
+            None,
+        );
+        let response = post_json_bytes(
+            middleware_router(gate),
+            "/v1/responses",
+            b"not-json".to_vec(),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(quota.tracked_keys(), 0, "非法体判限跳过，不落账");
+
+        let quota = Arc::new(QuotaState::new());
+        let gate = middleware_gate(
+            middleware_config(true, 1_000_000),
+            Some(quota.clone()),
+            None,
+        );
+        let response = post_json_bytes(
+            middleware_router(gate),
+            "/v1beta/models/gemini-2.5-pro:generateContent",
+            br#"{"contents":[{"parts":[{"text":"hello!"}]}],"generationConfig":{"maxOutputTokens":10}}"#.to_vec(),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert!(
+            quota.snapshot(&anonymous_tenant(), "default").0 > 0,
+            "路径注入的 model 必须参与预扣（否则预扣为零不建账）"
+        );
+    }
+
+    /// 租户配额拒绝：429 + Retry-After，且逐窗打分入指标。
+    #[tokio::test]
+    async fn middleware_refusal_records_metrics_and_retry_after() {
+        let metrics = Arc::new(crate::utils::metrics::GlobalMetrics::new());
+        let quota = Arc::new(QuotaState::new());
+        let gate = middleware_gate(
+            middleware_config(true, 1),
+            Some(quota.clone()),
+            Some(metrics.clone()),
+        );
+        let body = serde_json::to_vec(&chat_body("hello!", 10)).expect("serialize");
+        let response = post_json_bytes(middleware_router(gate), "/v1/chat/completions", body).await;
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            response.headers().get("retry-after").is_some(),
+            "429 必须带 Retry-After"
+        );
+        assert_eq!(
+            metrics.quota_window_refused(),
+            vec![("default".to_string(), 1)],
+            "受拒窗必须逐窗打分"
+        );
+        assert_eq!(
+            quota.snapshot(&anonymous_tenant(), "default"),
+            (0, 0),
+            "受拒不落预留用量"
+        );
+    }
+
+    fn key_budget_config(limit: u64, fail_open: bool) -> crate::config::Config {
+        let mut config = quota_enabled_config(false);
+        config.key_budgets.rules = vec![crate::config::KeyBudgetRule {
+            api_key_hash: anonymous_tenant(),
+            cost_limit_millicents: limit,
+            window: "daily".into(),
+            fail_open,
+        }];
+        config
+    }
+
+    /// key 预算：预算内放行并落预留；超额 429。
+    #[tokio::test]
+    async fn middleware_key_budget_admits_then_rejects_exceeded() {
+        let quota = Arc::new(QuotaState::new());
+        let gate = middleware_gate(
+            key_budget_config(1_000_000, false),
+            Some(quota.clone()),
+            None,
+        );
+        let body = serde_json::to_vec(&chat_body("hello!", 10)).expect("serialize");
+        let response = post_json_bytes(middleware_router(gate), "/v1/chat/completions", body).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let view = quota
+            .key_budgets
+            .view(
+                &ConfigManager::new(key_budget_config(1_000_000, false)).read(),
+                &anonymous_tenant(),
+            )
+            .expect("有预算规则即有视图");
+        assert!(view.cost_used > 0, "放行后必须落预留: {}", view.cost_used);
+
+        let quota = Arc::new(QuotaState::new());
+        let gate = middleware_gate(key_budget_config(1, false), Some(quota.clone()), None);
+        let body = serde_json::to_vec(&chat_body("hello!", 10)).expect("serialize");
+        let response = post_json_bytes(middleware_router(gate), "/v1/chat/completions", body).await;
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            response.headers().get("retry-after").is_some(),
+            "预算拒绝同样带 Retry-After"
+        );
+    }
+
+    /// 预算源不可用：fail_open 放行；fail_closed 拒绝。
+    #[tokio::test]
+    async fn middleware_key_budget_unavailable_follows_fail_open_flag() {
+        let mut state = QuotaState::new();
+        state.key_budgets = crate::middleware::key_budget::KeyBudgetLedger::with_capacity(0);
+        let quota = Arc::new(state);
+        let gate = middleware_gate(key_budget_config(1_000_000, true), Some(quota), None);
+        let body = serde_json::to_vec(&chat_body("hello!", 10)).expect("serialize");
+        let response = post_json_bytes(middleware_router(gate), "/v1/chat/completions", body).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "fail_open 放行"
+        );
+
+        let mut state = QuotaState::new();
+        state.key_budgets = crate::middleware::key_budget::KeyBudgetLedger::with_capacity(0);
+        let quota = Arc::new(state);
+        let gate = middleware_gate(key_budget_config(1_000_000, false), Some(quota), None);
+        let body = serde_json::to_vec(&chat_body("hello!", 10)).expect("serialize");
+        let response = post_json_bytes(middleware_router(gate), "/v1/chat/completions", body).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "fail_closed 拒绝"
+        );
+    }
+
+    // ---- 覆盖补测：结算门控与透传结算器 ----
+
+    /// 结算快路径：无租户窗且无预算段 → 零账面直通；有窗但无 usage → 保持预扣。
+    #[test]
+    fn settle_nonstream_short_circuits_without_scope_or_usage() {
+        let disabled = Arc::new(ConfigManager::new(quota_enabled_config(false)));
+        let quota = Arc::new(QuotaState::new());
+        let body = chat_body("hello!", 10);
+        let response = serde_json::json!({
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+        settle_nonstream(
+            &disabled,
+            Some(&quota),
+            "tenant-digest",
+            &body,
+            &response,
+            "openai",
+            "v",
+            None,
+        );
+        assert_eq!(quota.tracked_keys(), 0, "无适用范围零账面");
+
+        let enabled = Arc::new(ConfigManager::new(quota_enabled_config(true)));
+        let quota = Arc::new(QuotaState::new());
+        settle_nonstream(
+            &enabled,
+            Some(&quota),
+            "tenant-digest",
+            &body,
+            &serde_json::json!({}),
+            "openai",
+            "v",
+            None,
+        );
+        assert_eq!(quota.tracked_keys(), 0, "无 usage 不结算、不建账");
+    }
+
+    /// 缓存 HIT 结算：key 预算段在位先以 0 回冲；租户配额不适用时早退。
+    #[test]
+    fn settle_nonstream_cached_settles_key_budget_then_returns_without_quota() {
+        let mut config = quota_enabled_config(false);
+        config.key_budgets.rules = vec![crate::config::KeyBudgetRule {
+            api_key_hash: "tenant-digest".into(),
+            cost_limit_millicents: 10_000,
+            window: "daily".into(),
+            fail_open: false,
+        }];
+        let manager = Arc::new(ConfigManager::new(config));
+        let quota = Arc::new(QuotaState::new());
+        settle_nonstream_cached(
+            &manager,
+            Some(&quota),
+            "tenant-digest",
+            &chat_body("hello!", 10),
+        );
+        assert_eq!(quota.tracked_keys(), 0, "配额关闭时零账面");
+    }
+
+    /// 转换流上下文：租户窗为空但 vendor 预算在位仍构建（流式用量不漏记）。
+    #[test]
+    fn settlement_ctx_keeps_vendor_budget_without_tenant_windows() {
+        let mut config = vendor_budget_config();
+        config.quota.enabled = false;
+        let manager = Arc::new(ConfigManager::new(config));
+        let quota = Arc::new(QuotaState::new());
+        let ctx = SettlementCtx::for_request(
+            &manager,
+            Some(&quota),
+            "tenant-digest",
+            &chat_body("hello!", 10),
+            "openai",
+            "budgeted",
+            None,
+        )
+        .expect("vendor 预算在位必须构建上下文");
+        assert!(ctx.windows.is_empty(), "配额关闭 → 租户窗集为空");
+        assert!(ctx.record_vendor, "vendor 预算开关在位");
+        assert!(!ctx.settle_key_budget, "无 key 预算规则");
+    }
+
+    /// 透传流结算器：断流（completed=false）保持预扣；正常 EOF 按末次 usage
+    /// 回补租户窗并记账 vendor 预算。
+    #[test]
+    fn passthrough_settler_keeps_precharge_on_incomplete_and_settles_on_eof() {
+        let manager = Arc::new(ConfigManager::new(vendor_budget_config()));
+        let snapshot = manager.read();
+        let quota = Arc::new(QuotaState::new());
+        let windows = quota.resolved_windows(&snapshot, "tenant-digest");
+        assert!(!windows.is_empty(), "测试前提：租户窗可解析");
+        quota
+            .consume("tenant-digest", &windows, 100, 10)
+            .expect("入口预扣");
+
+        let mut settler = PassthroughSettler {
+            quota: quota.clone(),
+            tenant: "tenant-digest".into(),
+            model: "m".into(),
+            vendor_type: "openai".into(),
+            vendor_id: "budgeted".into(),
+            config: snapshot,
+            windows,
+            record_vendor: true,
+            pre_tokens: 100,
+            pre_cost: 10,
+            usage: Some((50, 20, 0, 0)),
+        };
+        settler.observe(ReframeObservation::End { completed: false });
+        assert_eq!(
+            quota.snapshot("tenant-digest", "default"),
+            (100, 10),
+            "断流保持预扣"
+        );
+
+        settler.observe(ReframeObservation::End { completed: true });
+        assert_eq!(
+            quota.snapshot("tenant-digest", "default"),
+            (70, 11_000),
+            "正常 EOF 按 prompt+completion 与 pricing 两档回补"
+        );
+        assert_eq!(
+            quota.vendor_snapshot("budgeted", &vendor_window_id("budgeted")),
+            (70, 11_000),
+            "vendor 预算同点记账"
+        );
+    }
+
+    /// 落盘句柄接线：Debug 只暴露计数面；vendor 记账行经通道落库。
+    #[cfg(feature = "db-sqlite")]
+    #[tokio::test]
+    async fn persister_debug_and_vendor_rows_reach_ledger() {
+        use dbnexus::{DbConfig, DbPool};
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("memory pool");
+        let repo = Arc::new(crate::database::Repository::new(pool));
+        repo.initialize().await.expect("init schema");
+        let persister = Arc::new(crate::middleware::quota_persist::QuotaLedgerPersister::new(
+            repo.clone(),
+            64,
+            None,
+        ));
+        let debug = format!("{persister:?}");
+        assert!(debug.contains("QuotaLedgerPersister"), "{debug}");
+        assert!(debug.contains("flush_failures"), "{debug}");
+
+        let config = vendor_budget_config();
+        let quota = QuotaState::new();
+        quota.set_ledger_persister(persister.clone());
+        quota.record_vendor_usage(&config, "budgeted", 120, 4);
+        assert_eq!(
+            quota.vendor_snapshot("budgeted", &vendor_window_id("budgeted")),
+            (120, 4)
+        );
+
+        for _ in 0..100 {
+            let rows = repo.read_quota_ledger(0).await.expect("read");
+            if rows
+                .iter()
+                .any(|row| row.api_key_hash == vendor_ledger_key("budgeted"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let rows = repo.read_quota_ledger(0).await.expect("read");
+        let vendor_row = rows
+            .iter()
+            .find(|row| row.api_key_hash == vendor_ledger_key("budgeted"))
+            .expect("vendor 记账行必须落库");
+        assert_eq!(vendor_row.window_id, vendor_window_id("budgeted"));
+        assert_eq!(vendor_row.tokens_used, 120);
+        persister.shutdown().await.expect("shutdown");
+    }
 }

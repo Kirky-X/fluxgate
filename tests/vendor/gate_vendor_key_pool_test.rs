@@ -610,3 +610,205 @@ async fn key_attribution_sink_records_attempted_key_fingerprint() {
     mock_second.assert_async().await;
     mock_first_401.assert_async().await;
 }
+
+/// 空内联池注入（保密柜条目清空的等价形态，`set_inline_key_pool` 公共面）：
+/// info 观测 envs 空 / size=0 / current_index 恒 0 / 指纹空；select 等价
+/// 池耗尽 → legacy 单 key 回退（api_key_env 缺失 → Config 错误携带 env 名，
+/// 与 env 池耗尽现状同语义，绝不静默）。
+#[tokio::test]
+async fn empty_inline_pool_reports_size_zero_and_keeps_legacy_fallback() {
+    const MISSING_LEGACY: &str = "FLUXWEIR_KP_MISSING_LEGACY_Q8";
+    std::env::remove_var(MISSING_LEGACY);
+
+    let v = make_vendor(
+        "kp-inline-empty",
+        "http://127.0.0.1:1/v1".into(),
+        MISSING_LEGACY,
+        &[],
+    );
+    let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+    let manager = VendorManager::new(cm);
+    manager.initialize().await.expect("init");
+
+    manager.set_inline_key_pool(
+        "kp-inline-empty",
+        fluxweir::vendor::PoolSnapshot::from_keys(Vec::<String>::new()),
+    );
+
+    let info = manager.key_pool_info("kp-inline-empty").expect("pool info");
+    assert!(info.envs.is_empty(), "内联池观测无 env 名: {:?}", info.envs);
+    assert_eq!(info.size, 0, "空内联池 size=0");
+    assert_eq!(info.current_index, 0, "size=0 时 current_index 恒 0");
+    assert!(info.fingerprints.is_empty(), "无 key 即无指纹");
+
+    match manager
+        .execute_request("kp-inline-empty", make_unified_request())
+        .await
+    {
+        Err(GateError::Config { message }) => {
+            assert!(
+                message.contains(MISSING_LEGACY),
+                "空内联池必须回退 legacy（错误携带 api_key_env 名）: {message}"
+            );
+        }
+        other => panic!("expected Config error, got {:?}", other.as_ref().err()),
+    }
+}
+
+/// 名单不变、env 值缺失（池收缩）：下一次请求按现读 env 重解析，收缩后池
+/// 继续服务（无日志断言，行为面验证 shrinkage 生效）。
+#[tokio::test]
+async fn same_name_pool_shrink_drops_missing_env_and_keeps_serving() {
+    const ENV_SHRINK_A: &str = "FLUXWEIR_KP_SHRINK_A_Q9";
+    const ENV_SHRINK_B: &str = "FLUXWEIR_KP_SHRINK_B_Q9";
+    const KEY_SHRINK_A: &str = "kp-shrink-a";
+    std::env::set_var(ENV_SHRINK_A, KEY_SHRINK_A);
+    std::env::set_var(ENV_SHRINK_B, "kp-shrink-b");
+
+    let mut server = mockito::Server::new_async().await;
+    let mock = bearer_mock(&mut server, KEY_SHRINK_A, 200, OPENAI_SUCCESS_BODY)
+        .await
+        .expect(2);
+
+    let v = make_vendor("kp-shrink", server.url(), "", &[ENV_SHRINK_A, ENV_SHRINK_B]);
+    let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+    let manager = VendorManager::new(cm);
+    manager.initialize().await.expect("init");
+    assert_eq!(
+        manager.key_pool_info("kp-shrink").expect("pool info").size,
+        2,
+        "两把 env key 全在位"
+    );
+
+    let first = manager
+        .execute_request("kp-shrink", make_unified_request())
+        .await;
+    assert!(first.is_ok(), "首请求失败: {:?}", first.err());
+
+    // 名单不变（配置未动），第二把 env 消失 → 现读结果收缩
+    std::env::remove_var(ENV_SHRINK_B);
+    let second = manager
+        .execute_request("kp-shrink", make_unified_request())
+        .await;
+    assert!(second.is_ok(), "收缩后请求失败: {:?}", second.err());
+
+    let info = manager.key_pool_info("kp-shrink").expect("pool info");
+    assert_eq!(info.size, 1, "缺失 env 的 key 从池中移除");
+    assert_eq!(
+        info.envs,
+        vec![ENV_SHRINK_A, ENV_SHRINK_B],
+        "env 名单本身未变"
+    );
+    mock.assert_async().await;
+    std::env::remove_var(ENV_SHRINK_A);
+}
+
+/// 名单不变、全部 env 缺失：池清空后回退 legacy 单 key 行为（错误携带
+/// legacy env 名，绝不静默）。
+#[tokio::test]
+async fn same_name_pool_all_missing_falls_back_to_legacy_env() {
+    const ENV_GONE_A: &str = "FLUXWEIR_KP_GONE_A_Q9";
+    const ENV_GONE_B: &str = "FLUXWEIR_KP_GONE_B_Q9";
+    const ENV_GONE_LEGACY: &str = "FLUXWEIR_KP_GONE_LEGACY_Q9";
+    std::env::set_var(ENV_GONE_A, "kp-gone-a");
+    std::env::set_var(ENV_GONE_B, "kp-gone-b");
+    std::env::remove_var(ENV_GONE_LEGACY);
+
+    let mut server = mockito::Server::new_async().await;
+    let mock = bearer_mock(&mut server, "kp-gone-a", 200, OPENAI_SUCCESS_BODY)
+        .await
+        .expect(1);
+
+    let v = make_vendor(
+        "kp-gone",
+        server.url(),
+        ENV_GONE_LEGACY,
+        &[ENV_GONE_A, ENV_GONE_B],
+    );
+    let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+    let manager = VendorManager::new(cm);
+    manager.initialize().await.expect("init");
+    let first = manager
+        .execute_request("kp-gone", make_unified_request())
+        .await;
+    assert!(first.is_ok(), "池内请求失败: {:?}", first.err());
+
+    std::env::remove_var(ENV_GONE_A);
+    std::env::remove_var(ENV_GONE_B);
+    match manager
+        .execute_request("kp-gone", make_unified_request())
+        .await
+    {
+        Err(GateError::Config { message }) => {
+            assert!(
+                message.contains(ENV_GONE_LEGACY),
+                "池空必须回退 legacy 并点名缺失 env: {message}"
+            );
+        }
+        other => panic!("expected Config error, got {:?}", other.as_ref().err()),
+    }
+    let info = manager.key_pool_info("kp-gone").expect("pool info");
+    assert_eq!(info.size, 0, "全缺 env 后池为空");
+    assert_eq!(
+        info.envs,
+        vec![ENV_GONE_A, ENV_GONE_B, ENV_GONE_LEGACY],
+        "名单含显式列表与 legacy 兜底名"
+    );
+    mock.assert_async().await;
+}
+
+/// env 名单超过池上限：前 `MAX_KEY_POOL` 名生效，其余截断（行为面 size 与
+/// 指纹数受上限约束，绝不静默扩容）。
+#[tokio::test]
+async fn pool_caps_expanded_env_names_at_max_key_pool() {
+    const ENVS: [&str; 9] = [
+        "FLUXWEIR_KP_CAP_0_Q9",
+        "FLUXWEIR_KP_CAP_1_Q9",
+        "FLUXWEIR_KP_CAP_2_Q9",
+        "FLUXWEIR_KP_CAP_3_Q9",
+        "FLUXWEIR_KP_CAP_4_Q9",
+        "FLUXWEIR_KP_CAP_5_Q9",
+        "FLUXWEIR_KP_CAP_6_Q9",
+        "FLUXWEIR_KP_CAP_7_Q9",
+        "FLUXWEIR_KP_CAP_8_Q9",
+    ];
+    for (index, env) in ENVS
+        .iter()
+        .take(fluxweir::vendor::key_pool::MAX_KEY_POOL)
+        .enumerate()
+    {
+        std::env::set_var(env, format!("kp-cap-{index}"));
+    }
+
+    let mut server = mockito::Server::new_async().await;
+    let mock = bearer_mock(&mut server, "kp-cap-0", 200, OPENAI_SUCCESS_BODY)
+        .await
+        .expect(1);
+
+    let v = make_vendor("kp-cap", server.url(), "", &ENVS);
+    let cm = Arc::new(ConfigManager::new(make_config(vec![v])));
+    let manager = VendorManager::new(cm);
+    manager.initialize().await.expect("init");
+
+    let info = manager.key_pool_info("kp-cap").expect("pool info");
+    assert_eq!(info.envs.len(), ENVS.len(), "名单全量可见");
+    assert_eq!(
+        info.size,
+        fluxweir::vendor::key_pool::MAX_KEY_POOL,
+        "生效 key 数受池上限约束"
+    );
+    assert_eq!(
+        info.fingerprints.len(),
+        fluxweir::vendor::key_pool::MAX_KEY_POOL,
+        "指纹数同步受上限约束"
+    );
+
+    let response = manager
+        .execute_request("kp-cap", make_unified_request())
+        .await;
+    assert!(response.is_ok(), "上限内请求失败: {:?}", response.err());
+    mock.assert_async().await;
+    for env in ENVS.iter().take(fluxweir::vendor::key_pool::MAX_KEY_POOL) {
+        std::env::remove_var(env);
+    }
+}

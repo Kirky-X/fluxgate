@@ -235,6 +235,7 @@ mod tests {
             "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2,\"total_tokens\":4}}\n\n",
             "data: [DONE]\n\n"
         );
+
         let mock = server
             .mock("POST", "/v1/chat/completions")
             .with_status(200)
@@ -895,5 +896,115 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert_eq!(body["error"]["status"], "UNAVAILABLE", "{body}");
+    }
+    /// batchEmbedContents 校验面：model 不一致 / 维度冲突各自 400。
+    #[tokio::test]
+    async fn batch_embed_validation_rejects_mismatch_and_conflict() {
+        let state = make_state(vec![], None).await;
+        // 子请求 model 与路径不一致
+        let (status, body) = post_json(
+            app(state.clone()),
+            "/v1beta/models/gemini-embedding:batchEmbedContents",
+            json!({"requests": [
+                {"model": "models/other-model", "content": {"parts": [{"text": "a"}]}},
+            ]}),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        // 子请求 outputDimensionality 相互冲突
+        let (status, body) = post_json(
+            app(state),
+            "/v1beta/models/gemini-embedding:batchEmbedContents",
+            json!({"requests": [
+                {"content": {"parts": [{"text": "a"}]}, "outputDimensionality": 128},
+                {"content": {"parts": [{"text": "b"}]}, "outputDimensionality": 256},
+            ]}),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    /// cover_all_paths=true：流式首字节前失败按 fallback 链换 vendor 重派。
+    #[tokio::test]
+    async fn stream_cover_all_paths_falls_back_across_vendors() {
+        let mut failing = mockito::Server::new_async().await;
+        let failing_mock = failing
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_body("boom")
+            .expect_at_least(1)
+            .create_async()
+            .await;
+        let mut healthy = mockito::Server::new_async().await;
+        let sse = r#"data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"ff"},"finish_reason":null}]}
+
+data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-4","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}
+
+data: [DONE]
+
+"#;
+        healthy
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create_async()
+            .await;
+
+        // 两个 openai vendor 提供同一 gemini 模型；路由候选按权重排序，
+        // 首个失败由 fallback 链换到健康 vendor
+        // 首候选经 x-vendor 钉死（覆盖率确定性：不依赖加权随机）
+        let v1 = vendor(
+            "fallback-a",
+            "openai",
+            &failing.url(),
+            "gpt-4",
+            "gemini-2.5-pro",
+            None,
+        );
+        let v2 = vendor(
+            "fallback-b",
+            "openai",
+            &healthy.url(),
+            "gpt-4",
+            "gemini-2.5-pro",
+            None,
+        );
+        let state = make_state(vec![v1, v2], None).await;
+        let mut config = state.config.get_config();
+        config.resilience.cover_all_paths = true;
+        state
+            .config
+            .swap_memory(config)
+            .expect("开启 cover_all_paths");
+
+        let response = app(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1beta/models/gemini-2.5-pro:streamGenerateContent")
+                    .header("content-type", "application/json")
+                    .header("x-vendor", "fallback-a")
+                    .body(axum::body::Body::from(
+                        json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "fallback 后必须成功");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("ff") || text.contains("candidates"),
+            "健康 vendor 的流必须透出: {text}"
+        );
+        failing_mock.assert_async().await;
     }
 }

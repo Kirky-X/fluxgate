@@ -354,4 +354,231 @@ mod tests {
             "drain 超时必须强制中止挂起请求"
         );
     }
+
+    /// 最小配置（[quota] 缺省编译为 id="default" 的 rolling 单窗）：
+    /// 给 QuotaState::restore_from_ledger 提供可恢复行（window_id 对齐、未过期）。
+    fn quota_config() -> crate::config::Config {
+        let toml_v = "vendors = []\n[server]\nhost = \"127.0.0.1\"\nport = 8080\n\n[database]\npath = \":memory:\"\n";
+        crate::config::parse_config_content(std::path::Path::new("memory.toml"), toml_v)
+            .expect("样例配置解析")
+    }
+
+    /// 点亮并求值 tracing 事件（registry + 全字段格式化层）：无订阅者时
+    /// warn/error 宏整体跳过；on_event 内 format 全部字段迫使 message 的
+    /// 惰性格式化闭包（i18n 文案）执行——收尾告警分支的文案行进入覆盖。
+    /// 全局安装失败（进程内他测已装）无妨，callsite 已点亮即达目的。
+    fn install_evaluating_subscriber() {
+        struct FormatAllLayer;
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FormatAllLayer {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct FormatAll;
+                impl tracing::field::Visit for FormatAll {
+                    fn record_debug(
+                        &mut self,
+                        _field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        let _ = format!("{value:?}");
+                    }
+                }
+                let mut visitor = FormatAll;
+                event.record(&mut visitor);
+            }
+        }
+
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(FormatAllLayer),
+        );
+    }
+
+    /// StopRequests 阶段错误分支：logger 已提前 shutdown（幂等面：二次调用
+    /// 返回 Err channel closed）→ 收尾钩子内 Ok(Err(e)) 走 warn 告警，
+    /// 阶段不置败、后续阶段照常执行。
+    #[tokio::test]
+    async fn teardown_warns_when_async_logger_already_shutdown() {
+        install_evaluating_subscriber();
+        let repo = memory_repository().await;
+        let logger = Arc::new(AsyncLoggerHandle::new(crate::database::AsyncLogger::new(
+            std::sync::Arc::new(repo.clone()),
+            100,
+            std::time::Duration::from_secs(60),
+        )));
+        let aggregator = Arc::new(TokenPreAggregator::new(
+            std::sync::Arc::new(repo.clone()),
+            std::time::Duration::from_secs(60),
+        ));
+        let pa_shutdown = Arc::new(AtomicBool::new(false));
+
+        logger.shutdown().await.expect("首次 shutdown 必须成功");
+
+        let coord =
+            build_teardown_coordinator(&logger, &aggregator, &pa_shutdown, None, None, None);
+        let result = coord.shutdown().await.expect("shutdown");
+        assert!(
+            result.is_ok(),
+            "logger 二次 shutdown 只告警不置败阶段: {result:?}"
+        );
+        assert!(
+            pa_shutdown.load(Ordering::Relaxed),
+            "StopRequests 告警后 DrainQueue 仍须执行（停机位置位）"
+        );
+    }
+
+    /// DrainQueue 可选组件在位分支：OTLP 钩子执行 + 配额账本最终 flush——
+    /// persister 预先关停一次，钩子内二次 shutdown 走 Err 告警分支（幂等面）；
+    /// CloseConnections 钩子返回 Err 走 warn 告警分支，阶段不置败。
+    #[tokio::test]
+    async fn teardown_runs_otlp_hook_quota_final_flush_and_inklog_hook_error() {
+        install_evaluating_subscriber();
+        let repo = memory_repository().await;
+        let logger = Arc::new(AsyncLoggerHandle::new(crate::database::AsyncLogger::new(
+            std::sync::Arc::new(repo.clone()),
+            100,
+            std::time::Duration::from_secs(60),
+        )));
+        let aggregator = Arc::new(TokenPreAggregator::new(
+            std::sync::Arc::new(repo.clone()),
+            std::time::Duration::from_secs(60),
+        ));
+        let pa_shutdown = Arc::new(AtomicBool::new(false));
+
+        let otlp_ran = Arc::new(AtomicBool::new(false));
+        let otlp_flag = otlp_ran.clone();
+        let otlp_teardown: OtlpTeardownHook = Some(Arc::new(move || {
+            otlp_flag.store(true, Ordering::Relaxed);
+        }));
+
+        let quota_state = Arc::new(QuotaState::new());
+        let config = quota_config();
+        let now = chrono::Utc::now().timestamp();
+        let restored = quota_state.restore_from_ledger(
+            &[crate::database::QuotaLedgerRow {
+                api_key_hash: "t-shutdown-tenant".to_string(),
+                window_id: "default".to_string(),
+                window_start: now - 60,
+                tokens_used: 100,
+                cost_used_millicents: 5,
+                updated_at: now,
+            }],
+            &config,
+        );
+        assert_eq!(restored, 1, "预置行必须可恢复（快照非空的前提）");
+
+        let persister = Arc::new(QuotaLedgerPersister::new(
+            std::sync::Arc::new(repo.clone()),
+            4,
+            None,
+        ));
+        persister.shutdown().await.expect("首次 persister 关停");
+
+        let inklog_ran = Arc::new(AtomicBool::new(false));
+        let inklog_flag = inklog_ran.clone();
+        let hook: InklogShutdownHook = Arc::new(move || {
+            inklog_flag.store(true, Ordering::Relaxed);
+            Err("inklog teardown failed".to_string())
+        });
+
+        let coord = build_teardown_coordinator(
+            &logger,
+            &aggregator,
+            &pa_shutdown,
+            Some(hook),
+            otlp_teardown,
+            Some((quota_state, persister)),
+        );
+        let result = coord.shutdown().await.expect("shutdown");
+        assert!(result.is_ok(), "各钩子内部告警不置败阶段: {result:?}");
+        assert!(otlp_ran.load(Ordering::Relaxed), "OTLP 收尾钩子必须执行");
+        assert!(
+            inklog_ran.load(Ordering::Relaxed),
+            "inklog 钩子返回 Err 仍须先执行"
+        );
+        assert!(pa_shutdown.load(Ordering::Relaxed));
+    }
+
+    /// DrainQueue 落库失败分支：占满唯一连接（池 max=1 且 acquire_timeout
+    /// 收紧到 200ms）后，pre-aggregator 最终 flush（缓冲非空）与配额账本
+    /// flush_now（快照非空、persister 未预关停）双双在 get_session 获取
+    /// 超时处走 Err 告警分支——落库失败只告警，阶段不置败、停机继续。
+    #[tokio::test]
+    async fn teardown_warns_when_final_flushes_time_out_on_exhausted_pool() {
+        install_evaluating_subscriber();
+        let pool = DbPool::with_config(DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                acquire_timeout: 200,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("memory pool");
+        let repo = Repository::new(pool);
+        repo.initialize().await.expect("schema");
+
+        let logger = Arc::new(AsyncLoggerHandle::new(crate::database::AsyncLogger::new(
+            std::sync::Arc::new(repo.clone()),
+            100,
+            std::time::Duration::from_secs(60),
+        )));
+        let aggregator = Arc::new(TokenPreAggregator::new(
+            std::sync::Arc::new(repo.clone()),
+            std::time::Duration::from_secs(60),
+        ));
+        // 非空缓冲：DrainQueue flush 必须真正走到落库语句才可能失败
+        aggregator
+            .record(
+                "t-vendor",
+                "t-model",
+                0.001,
+                &crate::protocol::TokenUsage::default(),
+            )
+            .await;
+
+        let quota_state = Arc::new(QuotaState::new());
+        let config = quota_config();
+        let now = chrono::Utc::now().timestamp();
+        let restored = quota_state.restore_from_ledger(
+            &[crate::database::QuotaLedgerRow {
+                api_key_hash: "t-shutdown-tenant".to_string(),
+                window_id: "default".to_string(),
+                window_start: now - 60,
+                tokens_used: 100,
+                cost_used_millicents: 5,
+                updated_at: now,
+            }],
+            &config,
+        );
+        assert_eq!(restored, 1, "预置行必须可恢复（快照非空的前提）");
+        let persister = Arc::new(QuotaLedgerPersister::new(
+            std::sync::Arc::new(repo.clone()),
+            4,
+            None,
+        ));
+
+        let pa_shutdown = Arc::new(AtomicBool::new(false));
+        // 占住唯一连接直到停机结束：后续 get_session 全部撞 acquire 超时
+        let held = repo.pool.get_session("admin").await.expect("hold session");
+
+        let coord = build_teardown_coordinator(
+            &logger,
+            &aggregator,
+            &pa_shutdown,
+            None,
+            None,
+            Some((quota_state, persister)),
+        );
+        let result = coord.shutdown().await.expect("shutdown");
+        assert!(result.is_ok(), "落库失败只告警不置败停机: {result:?}");
+        assert!(pa_shutdown.load(Ordering::Relaxed));
+        drop(held);
+    }
 }

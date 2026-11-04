@@ -4888,6 +4888,1034 @@ mod tests {
             Duration::from_secs(30)
         );
     }
+
+    // ======== 出站构建 / 重试 / 观测边界（补充覆盖） ========
+
+    /// legacy 单 key 路径：key 取自配置声明的环境变量。
+    #[test]
+    fn authed_request_reads_key_from_configured_env() {
+        const ENV: &str = "FLUXWEIR_MGR_ENV_KEY_PRESENT";
+        std::env::set_var(ENV, "sk-env-value");
+        let mut config = pool_vendor_config("FLUXWEIR_MGR_ENV_A", "FLUXWEIR_MGR_ENV_B");
+        config.api_key_env = ENV.into();
+        let request = VendorManager::build_authed_request(
+            &reqwest::Client::new(),
+            &config,
+            "http://127.0.0.1:9/v1/chat/completions",
+            true,
+        )
+        .expect("env 存在必须构建成功")
+        .build()
+        .expect("Request 可构建");
+        assert_eq!(request.headers()["authorization"], "Bearer sk-env-value");
+    }
+
+    /// 非法头名（含空格）warn 后跳过，同批合法头仍注入。
+    #[test]
+    fn extra_header_with_invalid_name_is_skipped() {
+        let config = extra_headers_config(&[("bad header", "v"), ("x-tenant-id", "acme")]);
+        let headers = built_headers(&config);
+        assert_eq!(headers["x-tenant-id"], "acme", "合法头不得被连带丢弃");
+        assert!(headers.get("bad header").is_none());
+    }
+
+    /// 非法头值（含换行）warn 后跳过，同批合法头仍注入。
+    #[test]
+    fn extra_header_with_invalid_value_is_skipped() {
+        let config = extra_headers_config(&[("x-bad-value", "a\nb"), ("x-tenant-id", "acme")]);
+        let headers = built_headers(&config);
+        assert_eq!(headers["x-tenant-id"], "acme", "合法头不得被连带丢弃");
+        assert!(headers.get("x-bad-value").is_none());
+    }
+
+    /// 熔断键 endpoint 段：空 api_base 归一到占位符，显式 base 原样。
+    #[test]
+    fn cb_endpoint_uses_placeholder_for_default_endpoint() {
+        let config = pool_vendor_config("FLUXWEIR_MGR_CB_A", "FLUXWEIR_MGR_CB_B");
+        assert_eq!(VendorManager::cb_endpoint(&config), "<default>");
+        let mut explicit = config;
+        explicit.api_base = "https://api.example.com/v1".into();
+        assert_eq!(
+            VendorManager::cb_endpoint(&explicit),
+            "https://api.example.com/v1"
+        );
+    }
+
+    /// 上游 Retry-After 超大：等待截断至 30s 上限（不得占住 worker 一小时）。
+    #[tokio::test]
+    async fn decide_retry_delay_caps_oversized_retry_after() {
+        let config = pool_vendor_config("FLUXWEIR_MGR_RA_A", "FLUXWEIR_MGR_RA_B");
+        let retry_cfg = crate::config::RetrySection::default();
+        let policy = RetryDelayPolicy::from_config(&retry_cfg);
+        let failure = AttemptFailure::Http {
+            status: 503,
+            retry_after: Some(Duration::from_secs(3_600)),
+            error: GateError::VendorUnavailable {
+                vendor: "v-pool-test".into(),
+            },
+        };
+        let decision = VendorManager::decide_retry_delay(
+            1,
+            &failure,
+            &retry_cfg,
+            &policy,
+            None,
+            tokio::time::Instant::now(),
+            &GlobalMetrics::new(),
+            &config,
+        );
+        match decision {
+            RetryDecision::RetryAfter(delay) => {
+                assert_eq!(delay, Duration::from_secs(30), "超限指示值必须封顶 30s")
+            }
+            _ => panic!("预期 RetryAfter"),
+        }
+    }
+
+    /// 无失败史：熔断探针未就绪（Open 态不得被放行）。
+    #[cfg(feature = "resilience")]
+    #[tokio::test]
+    async fn circuit_probe_ready_false_without_failure_history() {
+        let cb = Arc::new(CircuitBreaker::new(gate_circuit_config(
+            Duration::from_secs(30),
+        )));
+        assert!(!VendorManager::circuit_probe_ready(&cb).await);
+    }
+
+    /// 非 Usage 帧原样透传（调用方仅对 Usage 做跨帧合并）。
+    #[test]
+    fn merge_stream_usage_passes_through_non_usage_chunk() {
+        let usage = StreamChunk::Usage {
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            total_tokens: 3,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            finish_reason: None,
+        };
+        let delta = StreamChunk::Content {
+            index: 7,
+            delta: crate::protocol::MessageContent::Text("tail".into()),
+            finish_reason: None,
+            logprobs: None,
+        };
+        match VendorManager::merge_stream_usage(usage, delta) {
+            StreamChunk::Content {
+                index,
+                delta,
+                finish_reason,
+                logprobs,
+            } => {
+                assert_eq!(index, 7);
+                match delta {
+                    crate::protocol::MessageContent::Text(text) => assert_eq!(text, "tail"),
+                    _ => panic!("expected Text content"),
+                }
+                assert!(finish_reason.is_none());
+                assert!(logprobs.is_none());
+            }
+            other => panic!("expected Content, got {other:?}"),
+        }
+    }
+
+    /// EOF 冲刷：错误帧与 [DONE] 标记静默收流，正常残帧产出尾 chunk。
+    #[test]
+    fn flush_eof_chunk_skips_error_and_done_frames() {
+        let converter: Arc<dyn ProtocolConverter> = Arc::new(OpenAIConverter::new());
+
+        let mut parser = crate::protocol::SseFrameParser::new();
+        parser.feed(b"event: error\ndata: {\"message\":\"boom\"}");
+        assert!(
+            VendorManager::flush_eof_chunk(&mut parser, &converter).is_none(),
+            "错误帧不得产出尾 chunk"
+        );
+
+        let mut parser = crate::protocol::SseFrameParser::new();
+        parser.feed(b"data: [DONE]");
+        assert!(
+            VendorManager::flush_eof_chunk(&mut parser, &converter).is_none(),
+            "终止标记不得产出尾 chunk"
+        );
+
+        let mut parser = crate::protocol::SseFrameParser::new();
+        parser.feed(
+            b"data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"tail\"}}]}",
+        );
+        assert!(
+            VendorManager::flush_eof_chunk(&mut parser, &converter).is_some(),
+            "正常残帧必须产出尾 chunk"
+        );
+    }
+
+    /// 实例未创建：admin 观测落内联 side-table；无快照返回 None。
+    #[test]
+    fn key_pool_info_falls_back_to_inline_side_table() {
+        let config = catalog_test_config("openai", vec![]);
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        assert!(manager.key_pool_info("ghost").is_none(), "无实例无快照");
+        manager.set_inline_key_pool(
+            "ghost",
+            crate::vendor::PoolSnapshot::from_keys(["sk-inline-a", "sk-inline-b"]),
+        );
+        let info = manager.key_pool_info("ghost").expect("side-table 快照");
+        assert_eq!(info.size, 2);
+        assert_eq!(info.current_index, 0);
+        assert!(info.envs.is_empty(), "内联池无 env 名");
+        let mut expected = vec![
+            crate::vendor::key_pool::fingerprint_of("sk-inline-a"),
+            crate::vendor::key_pool::fingerprint_of("sk-inline-b"),
+        ];
+        expected.sort();
+        let mut actual = info.fingerprints.clone();
+        actual.sort();
+        assert_eq!(actual, expected, "指纹必须覆盖全部内联 key");
+    }
+
+    /// 实例创建期消费 side-table 快照（一次性生效，之后从实例读）。
+    #[tokio::test]
+    async fn initialize_consumes_registered_inline_pool() {
+        let config = catalog_test_config("openai", vec![]);
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        manager.set_inline_key_pool(
+            "v-pool-test",
+            crate::vendor::PoolSnapshot::from_keys(["sk-created"]),
+        );
+        manager.initialize().await.expect("init");
+        let info = manager.key_pool_info("v-pool-test").expect("实例已创建");
+        assert_eq!(info.size, 1, "创建期必须注入已登记的 side-table 快照");
+        assert_eq!(
+            info.fingerprints,
+            vec![crate::vendor::key_pool::fingerprint_of("sk-created")]
+        );
+    }
+
+    /// 实例存在但配置已移除：探针目标采集跳过（不产出孤儿目标）。
+    #[tokio::test]
+    async fn probe_targets_skips_instances_missing_from_config() {
+        let config = catalog_test_config("openai", vec![]);
+        let cm = Arc::new(ConfigManager::new(config.clone()));
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        cm.set_path(dir.path().join("config.toml"));
+        let manager = VendorManager::new(cm.clone());
+        manager.initialize().await.expect("init");
+
+        let mut removed = config;
+        removed.vendors.clear();
+        cm.update_config(removed).expect("热更新移除 vendor");
+        assert!(
+            manager.probe_targets(false).await.is_empty(),
+            "配置面已无该 vendor，探针不得输出孤儿目标"
+        );
+    }
+
+    /// 端点可指定的透传流入口：未知 vendor 显式失败（同默认入口治理）。
+    #[tokio::test]
+    async fn passthrough_stream_at_unknown_vendor_fails_explicitly() {
+        let config = catalog_test_config("openai", vec![]);
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        let result = manager
+            .execute_passthrough_stream_request_at(
+                "ghost",
+                serde_json::json!({"model": "gpt-4"}),
+                "/v1/responses",
+            )
+            .await;
+        assert!(result.is_err(), "未知 vendor 必须拒绝");
+    }
+
+    // ======== 分帧流 / 熔断表 / 凭证缺失边界（补充覆盖） ========
+
+    fn test_instance(config: &VendorConfig) -> Arc<VendorInstance> {
+        Arc::new(VendorInstance::new(
+            config,
+            16,
+            1000,
+            #[cfg(feature = "resilience")]
+            Duration::from_secs(30),
+            #[cfg(feature = "cost-tracking")]
+            Arc::new(crate::utils::CostTracker::new()),
+        ))
+    }
+
+    /// 中游错误帧（仅 event、无 data）：detail 回落 event 名，语义化为
+    /// VendorUnavailable 并终止流。
+    #[tokio::test]
+    async fn framed_ir_stream_maps_error_frame_without_data() {
+        use futures::StreamExt;
+        let converter: Arc<dyn ProtocolConverter> = Arc::new(OpenAIConverter::new());
+        let mut stream = Box::pin(VendorManager::framed_ir_stream(
+            futures::stream::iter(vec![Ok(Bytes::from_static(b"event: response.failed\n\n"))]),
+            "v-frame",
+            converter,
+        ));
+        match stream.next().await {
+            Some(Err(GateError::VendorUnavailable { vendor })) => {
+                assert!(vendor.contains("v-frame"), "错误必须点名 vendor: {vendor}");
+                assert!(
+                    vendor.contains("response.failed"),
+                    "detail 必须回落 event 名: {vendor}"
+                );
+            }
+            _ => panic!("预期 VendorUnavailable"),
+        }
+        assert!(stream.next().await.is_none(), "错误帧后流必须终止");
+    }
+
+    /// 字节流中断（非超时）：包装为 VendorUnavailable，底层错误进 detail。
+    #[tokio::test]
+    async fn framed_ir_stream_wraps_interrupted_byte_stream() {
+        use futures::StreamExt;
+        let converter: Arc<dyn ProtocolConverter> = Arc::new(OpenAIConverter::new());
+        let mut stream = Box::pin(VendorManager::framed_ir_stream(
+            futures::stream::iter(vec![Err(GateError::VendorUnavailable {
+                vendor: "io-boom".into(),
+            })]),
+            "v-frame",
+            converter,
+        ));
+        match stream.next().await {
+            Some(Err(GateError::VendorUnavailable { vendor })) => {
+                assert!(
+                    vendor.contains("v-frame"),
+                    "必须点名网关侧 vendor: {vendor}"
+                );
+                assert!(
+                    vendor.contains("io-boom"),
+                    "底层错误必须进 detail: {vendor}"
+                );
+            }
+            _ => panic!("预期包装后的 VendorUnavailable"),
+        }
+    }
+
+    /// EOF 残余 usage 帧：冲刷时只累积不下发，收流前作为终值帧下发一次。
+    #[tokio::test]
+    async fn framed_ir_stream_flushes_residual_usage_at_eof() {
+        use futures::StreamExt;
+        let converter: Arc<dyn ProtocolConverter> = Arc::new(OpenAIConverter::new());
+        // 无尾部空行：该帧只在 EOF 冲刷时产出
+        let mut stream = Box::pin(VendorManager::framed_ir_stream(
+            futures::stream::iter(vec![Ok(Bytes::from_static(
+                br#"data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}"#,
+            ))]),
+            "v-frame",
+            converter,
+        ));
+        match stream.next().await {
+            Some(Ok(StreamChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                ..
+            })) => {
+                assert_eq!((prompt_tokens, completion_tokens, total_tokens), (5, 7, 12));
+            }
+            _ => panic!("EOF 残余 usage 必须作为终值帧下发"),
+        }
+        assert!(stream.next().await.is_none(), "终值帧后必须收流");
+    }
+
+    /// RequestBuilder 不可克隆（流式 body）：显式 Config 错误而非 panic。
+    #[tokio::test]
+    async fn send_stream_raw_rejects_non_cloneable_builder() {
+        let mut config = pool_vendor_config("FLUXWEIR_MGR_NC_A", "FLUXWEIR_MGR_NC_B");
+        config.stream_ttft_ms = 5_000;
+        let body = reqwest::Body::wrap_stream(futures::stream::once(async {
+            Ok::<_, std::io::Error>(Bytes::from_static(b"x"))
+        }));
+        let builder = reqwest::Client::new()
+            .post("http://127.0.0.1:9/v1/chat/completions")
+            .body(body);
+        let err = VendorManager::send_stream_raw(
+            "v-pool-test",
+            &config,
+            &builder,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("流式 body 不可克隆必须显式失败");
+        assert!(
+            matches!(err, GateError::Config { .. }),
+            "不可克隆必须映射 Config 错误"
+        );
+    }
+
+    /// 无 usage / 无 total_tokens 的响应不消费配额（不误计账）。
+    #[tokio::test]
+    async fn account_response_tokens_skips_response_without_usage() {
+        let config = pool_vendor_config("FLUXWEIR_MGR_AR_A", "FLUXWEIR_MGR_AR_B");
+        let instance = test_instance(&config);
+        VendorManager::account_response_tokens(
+            &instance,
+            "v-pool-test",
+            &serde_json::json!({"id": "x"}),
+        )
+        .await;
+        VendorManager::account_response_tokens(
+            &instance,
+            "v-pool-test",
+            &serde_json::json!({"usage": {"prompt_tokens": 3}}),
+        )
+        .await;
+        let (_, used, _) = instance
+            .advanced_limiter
+            .window_snapshot()
+            .await
+            .expect("Token 窗口快照");
+        assert_eq!(used, 0, "无 total_tokens 不得扣减配额");
+
+        // 非 Token 变体（Interval）无 token 记账语义：即使带 total_tokens 也不消费
+        let mut interval_config = pool_vendor_config("FLUXWEIR_MGR_AR_C", "FLUXWEIR_MGR_AR_D");
+        interval_config.rate_limit = crate::config::RateLimitConfig::Interval {
+            hours: 1,
+            sliding: false,
+        };
+        let interval_instance = test_instance(&interval_config);
+        VendorManager::account_response_tokens(
+            &interval_instance,
+            "v-pool-test",
+            &serde_json::json!({"usage": {"total_tokens": 9}}),
+        )
+        .await;
+        let (_, used, _) = interval_instance
+            .advanced_limiter
+            .window_snapshot()
+            .await
+            .expect("Interval 窗口快照");
+        assert_eq!(used, 0, "非 Token 变体不得记账 token");
+    }
+
+    /// 中流失败冷却只对传输类错误生效；网关自身错误原样透传不冷却。
+    #[tokio::test]
+    async fn guard_mid_stream_failure_cools_only_transport_errors() {
+        use futures::StreamExt;
+        let config = pool_vendor_config("FLUXWEIR_MGR_GD_A", "FLUXWEIR_MGR_GD_B");
+        let instance = test_instance(&config);
+        let items: Vec<Result<u8, GateError>> = vec![
+            Err(GateError::Validation {
+                field: "bad".into(),
+            }),
+            Ok(7),
+        ];
+        let guarded = VendorManager::guard_mid_stream_failure(
+            instance.clone(),
+            Duration::from_millis(50),
+            futures::stream::iter(items),
+        );
+        let out: Vec<_> = guarded.collect().await;
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], Err(GateError::Validation { .. })));
+        assert!(
+            matches!(instance.state.get_status(), VendorStatus::Available),
+            "网关自身错误不得触发冷却"
+        );
+
+        let instance = test_instance(&config);
+        let items: Vec<Result<u8, GateError>> = vec![Err(GateError::Timeout {
+            vendor: "v-pool-test".into(),
+        })];
+        let guarded = VendorManager::guard_mid_stream_failure(
+            instance.clone(),
+            Duration::from_millis(50),
+            futures::stream::iter(items),
+        );
+        let _: Vec<_> = guarded.collect().await;
+        assert_eq!(
+            instance.state.get_status(),
+            VendorStatus::Throttled,
+            "传输错误必须触发冷却"
+        );
+    }
+
+    /// per-key 熔断表达容量上限：新维度退化到 vendor 级熔断器（内存 DoS 防护）。
+    #[cfg(feature = "resilience")]
+    #[test]
+    fn per_key_circuit_breaker_table_caps_and_falls_back() {
+        let config = pool_vendor_config("FLUXWEIR_MGR_CAP_A", "FLUXWEIR_MGR_CAP_B");
+        let instance = test_instance(&config);
+        for i in 0..2048 {
+            let fingerprint = format!("fp-{i}");
+            let cb = instance.circuit_breaker_for_fp(Some(&fingerprint), "m", "e");
+            assert!(
+                !Arc::ptr_eq(&cb, &instance.circuit_breaker),
+                "未达上限的维度必须独立计数"
+            );
+        }
+        let overflow = instance.circuit_breaker_for_fp(Some("fp-overflow"), "m", "e");
+        assert!(
+            Arc::ptr_eq(&overflow, &instance.circuit_breaker),
+            "超过 2048 维必须退化到 vendor 级熔断器"
+        );
+    }
+
+    /// vendor 级熔断 Open 且冷却未过：路由状态判 Unavailable。
+    #[cfg(feature = "resilience")]
+    #[tokio::test]
+    async fn get_status_unavailable_when_vendor_circuit_open() {
+        // 池内有 key（指纹可得）+ per-key 表空 → 走 vendor 级熔断器判定分支
+        const ENV: &str = "FLUXWEIR_MGR_CB_STATUS_KEY";
+        std::env::set_var(ENV, "sk-cb-status");
+        let mut config = catalog_test_config("openai", vec![]);
+        config.vendors[0].api_key_envs = vec![ENV.into()];
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        manager.initialize().await.expect("init");
+        let instance = manager
+            .instances
+            .read()
+            .unwrap()
+            .get("v-pool-test")
+            .cloned()
+            .expect("实例已创建");
+        for _ in 0..5 {
+            let _: Result<(), limiteron::circuit::CircuitCallError<GateError>> = instance
+                .circuit_breaker
+                .execute(|| async {
+                    Err::<(), GateError>(GateError::VendorUnavailable {
+                        vendor: "boom".into(),
+                    })
+                })
+                .await;
+        }
+        assert_eq!(
+            instance.circuit_breaker.get_state().await,
+            CircuitState::Open,
+            "5 次失败必须打开 vendor 级熔断"
+        );
+        assert_eq!(
+            manager.get_status("v-pool-test").await,
+            VendorStatus::Unavailable,
+            "Open 且冷却未过必须判不可用"
+        );
+    }
+
+    /// 成本记账：CNY 目录条目不落 USD 单道（warn 显性防报表少计）。
+    #[cfg(feature = "cost-tracking")]
+    #[tokio::test]
+    async fn charge_success_usage_skips_cny_catalog_entry() {
+        let config = catalog_test_config(
+            "openai",
+            vec![crate::config::ModelCatalogEntry {
+                model_id: "m-cny".into(),
+                context_window: 128_000,
+                input_price: 1.0,
+                output_price: 2.0,
+                currency: crate::config::PricingCurrency::Cny,
+                ..Default::default()
+            }],
+        );
+        let config_manager = Arc::new(ConfigManager::new(config.clone()));
+        let instance = test_instance(&config.vendors[0]);
+        let response = UnifiedResponse {
+            id: "x".into(),
+            object: String::new(),
+            created: 0,
+            model: "m-cny".into(),
+            choices: Vec::new(),
+            usage: crate::protocol::TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                ..Default::default()
+            },
+            stop_sequence: None,
+        };
+        VendorManager::charge_success_usage(
+            &instance,
+            &config_manager,
+            &config.vendors[0],
+            &response,
+        )
+        .await;
+        let (_, used, _) = instance
+            .advanced_limiter
+            .window_snapshot()
+            .await
+            .expect("Token 窗口快照");
+        assert_eq!(used, 15, "成功用量必须扣减窗口配额");
+    }
+
+    /// 流式入口：凭证环境变量缺失 → 构建鉴权头阶段显式失败。
+    #[tokio::test]
+    async fn stream_request_fails_without_api_key_env() {
+        let config = catalog_test_config("openai", vec![]);
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        manager.initialize().await.expect("init");
+        let result = manager
+            .execute_stream_request("v-pool-test", UnifiedRequest::default())
+            .await;
+        assert!(result.is_err(), "缺凭证必须拒绝");
+    }
+
+    /// 流式入口：厂商端点无法静态构建（Custom 无默认端点）→ URL 构建阶段失败。
+    #[tokio::test]
+    async fn stream_request_fails_when_vendor_has_no_static_endpoint() {
+        let mut config = catalog_test_config("openai", vec![]);
+        config.vendors[0].type_ = "custom".into();
+        config.vendors[0].api_base.clear();
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        manager.initialize().await.expect("init");
+        let result = manager
+            .execute_stream_request("v-pool-test", UnifiedRequest::default())
+            .await;
+        assert!(result.is_err(), "无静态端点必须拒绝");
+    }
+
+    /// 透传流入口：凭证环境变量缺失 → 构建鉴权头阶段显式失败。
+    #[tokio::test]
+    async fn passthrough_stream_fails_without_api_key_env() {
+        let config = catalog_test_config("openai", vec![]);
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        manager.initialize().await.expect("init");
+        let result = manager
+            .execute_passthrough_stream_request_at(
+                "v-pool-test",
+                serde_json::json!({"model": "gpt-4"}),
+                "/v1/chat/completions",
+            )
+            .await;
+        assert!(result.is_err(), "缺凭证必须拒绝");
+    }
+
+    // ======== 配额核算 / 上游非 2xx / 排队超时 / 探针放行（补充覆盖） ========
+
+    /// 用量超配额：CAS 全有全无整体拒绝（不超卖）并走 underflow 告警。
+    #[tokio::test]
+    async fn charge_success_usage_rejects_token_underflow_and_warns() {
+        let mut config = catalog_test_config("openai", vec![]);
+        config.vendors[0].rate_limit = crate::config::RateLimitConfig::Token {
+            max_tokens: 10,
+            window_hours: Some(1),
+            sliding: false,
+        };
+        let config_manager = Arc::new(ConfigManager::new(config.clone()));
+        let instance = test_instance(&config.vendors[0]);
+        let response = UnifiedResponse {
+            id: "x".into(),
+            object: String::new(),
+            created: 0,
+            model: "m-any".into(),
+            choices: Vec::new(),
+            usage: crate::protocol::TokenUsage {
+                prompt_tokens: 30,
+                completion_tokens: 20,
+                total_tokens: 50,
+                ..Default::default()
+            },
+            stop_sequence: None,
+        };
+        VendorManager::charge_success_usage(
+            &instance,
+            &config_manager,
+            &config.vendors[0],
+            &response,
+        )
+        .await;
+        let (_, used, _) = instance
+            .advanced_limiter
+            .window_snapshot()
+            .await
+            .expect("Token 窗口快照");
+        assert_eq!(used, 0, "超限用量必须整体拒绝（不得部分扣减）");
+    }
+
+    /// 计价告警路径：CNY 条目不落 USD 单道、未登记模型不计价——两者均须
+    /// 可观测且成本账本保持 0。
+    #[cfg(feature = "cost-tracking")]
+    #[tokio::test]
+    async fn charge_success_usage_warns_cny_and_unregistered_models() {
+        let config = catalog_test_config(
+            "openai",
+            vec![crate::config::ModelCatalogEntry {
+                model_id: "m-cny".into(),
+                context_window: 128_000,
+                input_price: 1.0,
+                output_price: 2.0,
+                currency: crate::config::PricingCurrency::Cny,
+                ..Default::default()
+            }],
+        );
+        let config_manager = Arc::new(ConfigManager::new(config.clone()));
+        let instance = test_instance(&config.vendors[0]);
+        for model in ["m-cny", "m-unregistered"] {
+            let response = UnifiedResponse {
+                id: "x".into(),
+                object: String::new(),
+                created: 0,
+                model: model.into(),
+                choices: Vec::new(),
+                usage: crate::protocol::TokenUsage {
+                    total_tokens: 15,
+                    ..Default::default()
+                },
+                stop_sequence: None,
+            };
+            VendorManager::charge_success_usage(
+                &instance,
+                &config_manager,
+                &config.vendors[0],
+                &response,
+            )
+            .await;
+        }
+        assert_eq!(
+            instance.cost_tracker.by_vendor_usd("v-pool-test"),
+            0.0,
+            "CNY 条目与未登记模型都不得进 USD 成本账本"
+        );
+        let (_, used, _) = instance
+            .advanced_limiter
+            .window_snapshot()
+            .await
+            .expect("Token 窗口快照");
+        assert_eq!(used, 30, "两条响应均须按 Token 配额扣减");
+    }
+
+    /// extra_headers 三类告警：保留头冲突、非法头名、非法头值——一律跳过
+    /// 且不连带丢弃同批合法头。
+    #[test]
+    fn extra_header_conflicts_and_invalid_entries_warn_and_skip() {
+        let config = extra_headers_config(&[
+            ("Authorization", "Bearer evil"),
+            ("bad header", "v"),
+            ("x-bad-value", "a\nb"),
+            ("x-tenant-id", "acme"),
+        ]);
+        let headers = built_headers(&config);
+        assert_eq!(
+            headers["authorization"], "Bearer test-key",
+            "保留头不得被 extra_headers 覆盖"
+        );
+        assert_eq!(headers["x-tenant-id"], "acme", "合法头不得被连带丢弃");
+        assert!(headers.get("bad header").is_none(), "非法头名必须跳过");
+        assert!(headers.get("x-bad-value").is_none(), "非法头值必须跳过");
+    }
+
+    /// Retry-After 超限：等待封顶 30s（恶意值不得占住 worker 一小时）。
+    #[tokio::test]
+    async fn retry_delay_truncation_caps_and_warns() {
+        let config = pool_vendor_config("FLUXWEIR_MGR_RA_W_A", "FLUXWEIR_MGR_RA_W_B");
+        let retry_cfg = crate::config::RetrySection::default();
+        let policy = RetryDelayPolicy::from_config(&retry_cfg);
+        let failure = AttemptFailure::Http {
+            status: 503,
+            retry_after: Some(Duration::from_secs(120)),
+            error: GateError::VendorUnavailable {
+                vendor: "v-pool-test".into(),
+            },
+        };
+        let decision = VendorManager::decide_retry_delay(
+            1,
+            &failure,
+            &retry_cfg,
+            &policy,
+            None,
+            tokio::time::Instant::now(),
+            &GlobalMetrics::new(),
+            &config,
+        );
+        match decision {
+            RetryDecision::RetryAfter(delay) => {
+                assert_eq!(delay, Duration::from_secs(30), "指示值必须截断至 30s 上限")
+            }
+            other => panic!("预期 RetryAfter，实际 {other:?}"),
+        }
+    }
+
+    /// 上游非 2xx 三路径（单次尝试 / 流式状态码 / 透传）都必须走类别化告警
+    /// 并收敛为显式错误（不得把错误体当作成功响应）。
+    #[tokio::test]
+    async fn upstream_non_success_warns_and_errors_on_all_three_paths() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_header("retry-after", "7")
+            .with_body(r#"{"error":{"type":"server_error","code":"boom"}}"#)
+            .expect(3)
+            .create_async()
+            .await;
+
+        let config = pool_vendor_config("FLUXWEIR_MGR_500_A", "FLUXWEIR_MGR_500_B");
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(catalog_test_config(
+            "openai",
+            vec![],
+        ))));
+        let instance = test_instance(&config);
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/chat/completions", server.url());
+
+        // 1) 单次尝试：状态码与 Retry-After 必须在消费 body 前读出
+        let failure = VendorManager::send_attempt(
+            client.post(&url),
+            &serde_json::json!({"model": "gpt-4"}),
+            &config,
+            &instance,
+            &RequestCredential::LegacyEnv,
+        )
+        .await
+        .expect_err("非 2xx 必须失败");
+        match failure {
+            AttemptFailure::Http {
+                status,
+                retry_after,
+                ..
+            } => {
+                assert_eq!(status, 500);
+                assert_eq!(
+                    retry_after,
+                    Some(Duration::from_secs(7)),
+                    "Retry-After 秒值必须解析"
+                );
+            }
+            other => panic!("预期 Http 失败，实际 {other:?}"),
+        }
+
+        // 2) 流式入口：非 2xx 不得伪装成伪 200 流
+        let response = client.post(&url).send().await.expect("请求发出");
+        let err = manager
+            .check_stream_status(
+                "v-pool-test",
+                Instant::now(),
+                response,
+                &RequestCredential::LegacyEnv,
+            )
+            .await
+            .expect_err("非 2xx 流必须拒绝");
+        assert!(
+            matches!(err, GateError::VendorUnavailable { .. }),
+            "流式非 2xx 必须收敛 VendorUnavailable: {err}"
+        );
+
+        // 3) 零拷贝透传：非 2xx 同样收敛 VendorUnavailable
+        let response = client.post(&url).send().await.expect("请求发出");
+        let err = VendorManager::handle_passthrough_non_success(
+            "v-pool-test",
+            &instance,
+            response,
+            &RequestCredential::LegacyEnv,
+        )
+        .await;
+        assert!(
+            matches!(err, GateError::VendorUnavailable { .. }),
+            "透传非 2xx 必须收敛 VendorUnavailable: {err}"
+        );
+    }
+
+    /// 中流传输错误：vendor 置 Throttled 且冷却时长告警可观测。
+    #[tokio::test]
+    async fn guard_mid_stream_failure_warns_on_cooldown() {
+        use futures::StreamExt;
+        let config = pool_vendor_config("FLUXWEIR_MGR_GD_W_A", "FLUXWEIR_MGR_GD_W_B");
+        let instance = test_instance(&config);
+        let items: Vec<Result<u8, GateError>> = vec![Err(GateError::VendorUnavailable {
+            vendor: "up-boom".into(),
+        })];
+        let guarded = VendorManager::guard_mid_stream_failure(
+            instance.clone(),
+            Duration::from_millis(25),
+            futures::stream::iter(items),
+        );
+        let out: Vec<_> = guarded.collect().await;
+        assert!(matches!(out[0], Err(GateError::VendorUnavailable { .. })));
+        assert_eq!(
+            instance.state.get_status(),
+            VendorStatus::Throttled,
+            "传输类中流错误必须触发冷却"
+        );
+    }
+
+    /// 字节流中断：告警可观测且错误包装为点名网关侧 vendor 的
+    /// VendorUnavailable（底层错误进 detail）。
+    #[tokio::test]
+    async fn framed_ir_stream_interruption_warns_and_wraps() {
+        use futures::StreamExt;
+        let converter: Arc<dyn ProtocolConverter> = Arc::new(OpenAIConverter::new());
+        let mut stream = Box::pin(VendorManager::framed_ir_stream(
+            futures::stream::iter(vec![Err(GateError::VendorUnavailable {
+                vendor: "io-boom".into(),
+            })]),
+            "v-warn",
+            converter,
+        ));
+        match stream.next().await {
+            Some(Err(GateError::VendorUnavailable { vendor })) => {
+                assert!(vendor.contains("v-warn"), "必须点名网关侧 vendor: {vendor}");
+                assert!(
+                    vendor.contains("io-boom"),
+                    "底层错误必须进 detail: {vendor}"
+                );
+            }
+            other => panic!("预期包装后的 VendorUnavailable，实际 {other:?}"),
+        }
+        assert!(stream.next().await.is_none(), "中断后流必须终止");
+    }
+
+    /// 透传 usage 超配额：CAS 拒绝记账（不超卖）并走 underflow 告警。
+    #[tokio::test]
+    async fn account_response_tokens_rejects_underflow_and_warns() {
+        let mut config = pool_vendor_config("FLUXWEIR_MGR_AR_U_A", "FLUXWEIR_MGR_AR_U_B");
+        config.rate_limit = crate::config::RateLimitConfig::Token {
+            max_tokens: 5,
+            window_hours: Some(1),
+            sliding: false,
+        };
+        let instance = test_instance(&config);
+        VendorManager::account_response_tokens(
+            &instance,
+            "v-pool-test",
+            &serde_json::json!({"usage": {"total_tokens": 9}}),
+        )
+        .await;
+        let (_, used, _) = instance
+            .advanced_limiter
+            .window_snapshot()
+            .await
+            .expect("Token 窗口快照");
+        assert_eq!(used, 0, "超限用量必须整体拒绝");
+    }
+
+    /// 熔断 Open 且冷却窗已过（0ms）：get_status 放行探针，不得永久排除。
+    #[cfg(feature = "resilience")]
+    #[tokio::test]
+    async fn get_status_available_when_open_circuit_probe_ready() {
+        const ENV: &str = "FLUXWEIR_MGR_CB_PROBE_READY_KEY";
+        std::env::set_var(ENV, "sk-cb-probe-ready");
+        let mut config = catalog_test_config("openai", vec![]);
+        config.vendors[0].api_key_envs = vec![ENV.into()];
+        config.resilience.circuit_open_timeout_ms = 0;
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        manager.initialize().await.expect("init");
+        let instance = manager
+            .instances
+            .read()
+            .unwrap()
+            .get("v-pool-test")
+            .cloned()
+            .expect("实例已创建");
+        for _ in 0..5 {
+            let _: Result<(), limiteron::circuit::CircuitCallError<GateError>> = instance
+                .circuit_breaker
+                .execute(|| async {
+                    Err::<(), GateError>(GateError::VendorUnavailable {
+                        vendor: "boom".into(),
+                    })
+                })
+                .await;
+        }
+        assert_eq!(
+            instance.circuit_breaker.get_state().await,
+            CircuitState::Open,
+            "5 次失败必须打开 vendor 级熔断"
+        );
+        assert_eq!(
+            manager.get_status("v-pool-test").await,
+            VendorStatus::Available,
+            "冷却窗已过必须放行恢复探针（不得永久 Unavailable）"
+        );
+    }
+
+    /// 排队段总预算：worker 被并发 permit 卡住时，请求在 60s 排队预算到点
+    /// 以显式 Timeout 收敛（虚拟时钟驱动，不真实等待）。
+    #[tokio::test(start_paused = true)]
+    async fn queued_request_times_out_after_queue_wait_budget() {
+        let mut config = catalog_test_config("openai", vec![]);
+        config.vendors[0].timeout_ms = 0;
+        config.vendors[0].concurrency.max_concurrent_requests = Some(1);
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(config)));
+        manager.initialize().await.expect("init");
+        let permit = manager
+            .acquire_permit("v-pool-test")
+            .await
+            .expect("唯一 permit");
+        let started = tokio::time::Instant::now();
+        let err = manager
+            .execute_request("v-pool-test", UnifiedRequest::default())
+            .await
+            .expect_err("排队超预算必须显式 Timeout");
+        assert!(
+            matches!(err, GateError::Timeout { .. }),
+            "必须收敛 Timeout: {err}"
+        );
+        assert!(
+            started.elapsed() >= QUEUE_WAIT_BUDGET,
+            "总预算不得小于排队段 {QUEUE_WAIT_BUDGET:?}: {:?}",
+            started.elapsed()
+        );
+        drop(permit);
+    }
+
+    /// 非 Token 配额变体：charge_success_usage 跳过 token 记账分支，
+    /// 不得把 Interval/TimeWindow 当 token 窗口记账。
+    #[tokio::test]
+    async fn charge_success_usage_skips_token_accounting_for_interval_limiter() {
+        let mut config = catalog_test_config("openai", vec![]);
+        config.vendors[0].rate_limit = crate::config::RateLimitConfig::Interval {
+            hours: 1,
+            sliding: false,
+        };
+        let config_manager = Arc::new(ConfigManager::new(config.clone()));
+        let instance = test_instance(&config.vendors[0]);
+        let response = UnifiedResponse {
+            id: "x".into(),
+            object: String::new(),
+            created: 0,
+            model: "m-any".into(),
+            choices: Vec::new(),
+            usage: crate::protocol::TokenUsage {
+                total_tokens: 50,
+                ..Default::default()
+            },
+            stop_sequence: None,
+        };
+        VendorManager::charge_success_usage(
+            &instance,
+            &config_manager,
+            &config.vendors[0],
+            &response,
+        )
+        .await;
+        let (_, used, _) = instance
+            .advanced_limiter
+            .window_snapshot()
+            .await
+            .expect("Interval 窗口快照");
+        assert_eq!(used, 0, "Interval 无 token 配额语义，不得记账");
+    }
+
+    /// 配额变体 None（无窗口语义）：get_window_info 返回空窗口标记，
+    /// 不得伪造配额上限或窗口结束时刻。
+    #[tokio::test]
+    async fn get_window_info_none_limiter_reports_empty_window() {
+        let config = pool_vendor_config("FLUXWEIR_MGR_WN_A", "FLUXWEIR_MGR_WN_B");
+        let mut instance = VendorInstance::new(
+            &config,
+            16,
+            1000,
+            #[cfg(feature = "resilience")]
+            Duration::from_secs(30),
+            #[cfg(feature = "cost-tracking")]
+            Arc::new(CostTracker::new()),
+        );
+        instance.advanced_limiter = AdvancedRateLimiter::None;
+        let manager = VendorManager::new(Arc::new(ConfigManager::new(catalog_test_config(
+            "openai",
+            vec![],
+        ))));
+        manager
+            .instances
+            .write()
+            .unwrap()
+            .insert("v-pool-test".into(), Arc::new(instance));
+
+        let info = manager
+            .get_window_info("v-pool-test")
+            .await
+            .expect("实例存在必须返回窗口信息");
+        assert!(info.max_tokens.is_none(), "None 变体无配额上限");
+        assert_eq!(info.used_tokens, 0, "None 变体无用量记账");
+        assert!(info.window_end.is_none(), "None 变体无窗口结束时刻");
+    }
 }
 
 #[cfg(test)]
@@ -5080,6 +6108,16 @@ mod chat_path_tests {
         assert!(
             err.to_string().contains("api_base"),
             "错误必须点名 api_base: {err}"
+        );
+    }
+
+    /// 覆盖路径归一后为空（"/"）：不得产出「base/」空洞，回落 /v1 拼接规则。
+    #[test]
+    fn blank_chat_path_falls_back_to_v1_rule() {
+        let v = vendor("http://localhost:8080", Some("/".into()));
+        assert_eq!(
+            VendorManager::build_vendor_url_at(&v, "chat/completions").unwrap(),
+            "http://localhost:8080/v1/chat/completions"
         );
     }
 }

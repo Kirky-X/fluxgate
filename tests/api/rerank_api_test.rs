@@ -702,3 +702,381 @@ mod tests {
         }
     }
 }
+
+/// 降级面回归：上游 2xx 形状非法（已计费仍入分账）、日志/分账 sink 失败
+/// 不拖垮请求、usage_insights 关闭时会话键脱敏。
+#[cfg(test)]
+mod degraded_paths {
+    use crate::common;
+    use axum::{body::Body, http::Request, routing::post, Router};
+    use fluxweir::api::rerank::rerank;
+    use fluxweir::config::{
+        Config, ConfigManager, ModelCatalogEntry, ModelConfig, RateLimitConfig,
+        UsageInsightsSection, VendorConfig,
+    };
+    use fluxweir::database::{
+        AsyncLogger, AsyncLoggerHandle, CostGroupBy, LogFilter, Repository, RequestLog,
+        TokenPreAggregator,
+    };
+    use fluxweir::error::GateError;
+    use fluxweir::protocol::{AnthropicConverter, OpenAIConverter};
+    use fluxweir::router::Router as NexusRouter;
+    use fluxweir::storage::{RequestLogSink, UsageSink};
+    use fluxweir::vendor::VendorManager;
+    use fluxweir::ApiState;
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    fn rr_vendor(api_base: String) -> VendorConfig {
+        common::ensure_test_api_key();
+        let mut vendor = common::base_vendor("rr-degraded", api_base);
+        vendor.type_ = "rerank".into();
+        vendor.models = vec![ModelConfig {
+            model_id: "rerank-v3-real".into(),
+            abstract_id: Some("rerank-v3".into()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: Some("rerank".into()),
+        }];
+        vendor.rate_limit = RateLimitConfig::Token {
+            max_tokens: 1_000_000,
+            window_hours: None,
+            sliding: false,
+        };
+        vendor.concurrency.requests_per_second = 100;
+        vendor
+    }
+
+    /// 日志前沿形态：未接线 / 注入恒失败 / 异步管道落真库。
+    enum LoggerKind {
+        Unwired,
+        Failing,
+        AsyncPipe,
+    }
+
+    /// 预聚合前沿形态：未接线 / 注入恒失败 / 真聚合器落真库。
+    enum AggregatorKind {
+        Unwired,
+        Failing,
+        Real,
+    }
+
+    /// sink 形态可注入的状态基座（返回 repository 供落库断言；真聚合器/
+    /// 异步管道均接线到同一 repository）。
+    async fn make_state(
+        vendor: VendorConfig,
+        configure: impl FnOnce(&mut Config),
+        logger_kind: LoggerKind,
+        aggregator_kind: AggregatorKind,
+    ) -> (Arc<ApiState>, Arc<Repository>) {
+        let mut config = Config {
+            model_catalog: vec![ModelCatalogEntry {
+                model_id: "rerank-v3-real".into(),
+                context_window: 128_000,
+                rerank_price_per_1k_docs: 2.0,
+                ..Default::default()
+            }],
+            ..common::test_config(vec![vendor])
+        };
+        configure(&mut config);
+        let config_manager = Arc::new(ConfigManager::new(config));
+        let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));
+        vendor_manager.initialize().await.expect("vendor init");
+
+        let pool = dbnexus::DbPool::with_config(dbnexus::DbConfig {
+            url: "sqlite::memory:".to_string(),
+            pool_config: dbnexus::PoolConfig {
+                max_connections: 1,
+                min_connections: 1,
+                ..Default::default()
+            },
+            admin_role: "admin".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let repository = Arc::new(Repository::new(pool.clone()));
+        repository.initialize().await.expect("schema");
+
+        let logger: Option<Arc<dyn RequestLogSink>> = match logger_kind {
+            LoggerKind::Unwired => None,
+            LoggerKind::Failing => Some(Arc::new(FailingLogSink)),
+            LoggerKind::AsyncPipe => Some(Arc::new(AsyncLoggerHandle::new(AsyncLogger::new(
+                repository.clone(),
+                64,
+                Duration::from_millis(200),
+            )))),
+        };
+        let pre_aggregator: Option<Arc<dyn UsageSink>> = match aggregator_kind {
+            AggregatorKind::Unwired => None,
+            AggregatorKind::Failing => Some(Arc::new(FailingUsageSink)),
+            AggregatorKind::Real => Some(Arc::new(TokenPreAggregator::new(
+                repository.clone(),
+                Duration::from_secs(3600),
+            ))),
+        };
+
+        let state = Arc::new(ApiState {
+            affinity_writer: None,
+            config: config_manager.clone(),
+            vendor_manager: vendor_manager.clone(),
+            router: Arc::new(NexusRouter::new(config_manager, vendor_manager)),
+            openai_converter: Arc::new(OpenAIConverter::new()),
+            anthropic_converter: Arc::new(AnthropicConverter::new()),
+            database: Arc::new(fluxweir::database::Database {
+                pool,
+                repository: repository.clone(),
+            }),
+            logger,
+            pre_aggregator,
+            affinity: None,
+            response_cache: None,
+            bandit: None,
+            quota: None,
+            difficulty: None,
+            responses: None,
+            #[cfg(feature = "web-search")]
+            web_search: None,
+        });
+        (state, repository)
+    }
+
+    fn app(state: Arc<ApiState>) -> Router {
+        Router::new()
+            .route("/v1/rerank", post(rerank))
+            .with_state(state)
+    }
+
+    async fn post_rerank(
+        state: Arc<ApiState>,
+        body: Value,
+        session: Option<&str>,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/v1/rerank")
+            .header("content-type", "application/json");
+        if let Some(session) = session {
+            builder = builder.header("x-session-id", session);
+        }
+        app(state)
+            .oneshot(
+                builder
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// 注入失败 sink：log / record_keyed 恒 Err（管道拒绝形态）。
+    struct FailingLogSink;
+    #[async_trait::async_trait]
+    impl RequestLogSink for FailingLogSink {
+        async fn log(&self, _log: RequestLog) -> Result<(), GateError> {
+            Err(GateError::Config {
+                message: "injected log sink failure".into(),
+            })
+        }
+    }
+
+    struct FailingUsageSink;
+    #[async_trait::async_trait]
+    impl UsageSink for FailingUsageSink {
+        async fn record_keyed(
+            &self,
+            _usage: &fluxweir::storage::KeyedUsage,
+        ) -> Result<(), GateError> {
+            Err(GateError::Config {
+                message: "injected usage sink failure".into(),
+            })
+        }
+    }
+
+    /// 上游 200 但响应形状非法（缺 results）：按协议错误映射 502，且上游
+    /// 已 2xx 视为已计费——请求级成本仍入分账（目录 2.0/千文档 × 3 文档）。
+    #[tokio::test]
+    async fn malformed_2xx_upstream_is_billed_and_maps_502() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/rerank")
+            .match_header("authorization", "Bearer test-key-for-mockito")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"unexpected":[]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (state, repository) = make_state(
+            rr_vendor(format!("{}/v1", server.url())),
+            |_| {},
+            LoggerKind::Unwired,
+            AggregatorKind::Real,
+        )
+        .await;
+
+        let response = post_rerank(
+            state.clone(),
+            json!({"model": "rerank-v3", "query": "q", "documents": ["a", "b", "c"]}),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), 502, "2xx 形状非法必须映射协议错误 502");
+
+        state
+            .pre_aggregator
+            .as_ref()
+            .expect("aggregator wired")
+            .flush()
+            .await
+            .expect("flush");
+        let rows = repository
+            .query_cost_usage(None, None, CostGroupBy::Model, None)
+            .await
+            .expect("cost rows");
+        assert_eq!(rows.len(), 1, "形状非法的 2xx 也必须入分账: {rows:?}");
+        assert_eq!(rows[0].model.as_deref(), Some("rerank-v3-real"));
+        assert!(
+            (rows[0].input_cost - 0.006).abs() < 1e-9,
+            "2.0/千文档 × 3 文档 = 0.006，实测 {}",
+            rows[0].input_cost
+        );
+        mock.assert_async().await;
+    }
+
+    /// 日志/分账 sink 拒绝均为降级面：请求照常成功（记账失败仅 warn，
+    /// 不失败请求——与 chat 记账同语义）；预聚合未接线（None）为 no-op。
+    #[tokio::test]
+    async fn degraded_logging_and_accounting_never_fail_request() {
+        // 形态 1：logger 恒 Err + 预聚合未接线
+        let mut server1 = mockito::Server::new_async().await;
+        let mock1 = server1
+            .mock("POST", "/v1/rerank")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"results":[{"index":0,"relevance_score":0.5}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let (state, _repo) = make_state(
+            rr_vendor(format!("{}/v1", server1.url())),
+            |_| {},
+            LoggerKind::Failing,
+            AggregatorKind::Unwired,
+        )
+        .await;
+        let response = post_rerank(
+            state,
+            json!({"model": "rerank-v3", "query": "q", "documents": ["a"]}),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), 200, "日志失败不得拖垮请求");
+        mock1.assert_async().await;
+
+        // 形态 2：分账 record_keyed 恒 Err
+        let mut server2 = mockito::Server::new_async().await;
+        let mock2 = server2
+            .mock("POST", "/v1/rerank")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"results":[{"index":0,"relevance_score":0.5}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let (state, _repo) = make_state(
+            rr_vendor(format!("{}/v1", server2.url())),
+            |_| {},
+            LoggerKind::Unwired,
+            AggregatorKind::Failing,
+        )
+        .await;
+        let response = post_rerank(
+            state,
+            json!({"model": "rerank-v3", "query": "q", "documents": ["a"]}),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), 200, "分账失败不得拖垮请求");
+        mock2.assert_async().await;
+    }
+
+    /// usage_insights 关闭：x-session-id 头照常可带，但落库行 session_key
+    /// 必须为 NULL（脱敏口径：insights 关 = 不采会话维度）；对照组（开启）
+    /// 同头落 Some，证明头被解析、关闭时是主动剥离。
+    #[tokio::test]
+    async fn usage_insights_disabled_strips_session_key_in_log() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/rerank")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"results":[{"index":0,"relevance_score":0.5}]}"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let body = json!({"model": "rerank-v3", "query": "q", "documents": ["a"]});
+
+        // 对照组：insights 开（默认）→ session_key 落库
+        let (state_on, repo_on) = make_state(
+            rr_vendor(format!("{}/v1", server.url())),
+            |_| {},
+            LoggerKind::AsyncPipe,
+            AggregatorKind::Unwired,
+        )
+        .await;
+        let response = post_rerank(state_on.clone(), body.clone(), Some("sess-insights")).await;
+        assert_eq!(response.status(), 200);
+        state_on
+            .logger
+            .as_ref()
+            .unwrap()
+            .shutdown()
+            .await
+            .expect("shutdown");
+        let logs = repo_on
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("logs");
+        assert_eq!(logs.len(), 1, "对照组恰一条日志");
+        assert_eq!(
+            logs[0].session_key.as_deref(),
+            Some("sess-insights"),
+            "insights 开启时会话键必须落库"
+        );
+
+        // 被测组：insights 关 → 同头剥离
+        let (state_off, repo_off) = make_state(
+            rr_vendor(format!("{}/v1", server.url())),
+            |config: &mut Config| config.usage_insights = UsageInsightsSection { enabled: false },
+            LoggerKind::AsyncPipe,
+            AggregatorKind::Unwired,
+        )
+        .await;
+        let response = post_rerank(state_off.clone(), body, Some("sess-insights")).await;
+        assert_eq!(response.status(), 200);
+        state_off
+            .logger
+            .as_ref()
+            .unwrap()
+            .shutdown()
+            .await
+            .expect("shutdown");
+        let logs = repo_off
+            .query_logs(&LogFilter::default())
+            .await
+            .expect("logs");
+        assert_eq!(logs.len(), 1, "被测组恰一条日志");
+        assert!(
+            logs[0].session_key.is_none(),
+            "usage_insights 关闭时会话键必须剥离（实测 {:?}）",
+            logs[0].session_key
+        );
+        mock.assert_async().await;
+    }
+}

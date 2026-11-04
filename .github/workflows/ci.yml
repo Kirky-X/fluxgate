@@ -63,6 +63,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -83,6 +85,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -125,6 +129,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -172,6 +178,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -209,6 +217,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -267,6 +277,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -330,6 +342,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -356,6 +370,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -380,6 +396,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -416,6 +434,8 @@ jobs:
         with:
           # 只读 token 不落盘（.git/config）
           persist-credentials: false
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}

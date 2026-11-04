@@ -1,0 +1,22 @@
+# 就位 vecboost path+version 双写依赖：CI runner 无 ../vecboost checkout，
+# 而 version 面使其进入 cargo 无条件解析集（workspace 成员 manifest 加载期即查）。
+# 从 crates.io 公开包解包到 $GITHUB_WORKSPACE/../vecboost（与 release.yml 的
+# 容器挂载点同源），sha256 钉校验防投毒。版本升级时同步更新 VB_VERSION/VB_SHA256
+# （与 Cargo.toml 的 vecboost version 声明一致——verify job 会做一致性校验）。
+name: 'Fetch vecboost from crates.io'
+description: 'Unpack pinned vecboost crate to ../vecboost for path+version dual-written dependency'
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        VB_VERSION: 0.3.0-rc.3
+        VB_SHA256: f9a537602119429b687de2f216311a83fce6afa816a1aee08d647aa77f3bf5bf
+      run: |
+        curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
+          "https://crates.io/api/v1/crates/vecboost/${VB_VERSION}/download" -o /tmp/vb.crate
+        echo "${VB_SHA256}  /tmp/vb.crate" | sha256sum -c --strict -
+        mkdir -p "$GITHUB_WORKSPACE/vbtmp"
+        tar -xzf /tmp/vb.crate -C "$GITHUB_WORKSPACE/vbtmp"
+        rm -rf "$GITHUB_WORKSPACE/../vecboost"
+        mv "$GITHUB_WORKSPACE/vbtmp/vecboost-${VB_VERSION}" "$GITHUB_WORKSPACE/../vecboost"

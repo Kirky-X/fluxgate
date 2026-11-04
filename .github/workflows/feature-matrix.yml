@@ -52,6 +52,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # vecboost 就位：path+version 双写依赖在解析期必须可定位（CI 无 sibling checkout）
+      - uses: ./.github/actions/fetch-vecboost
       # grpc 特性组合要编 proto（sdforge grpc 门面 / examples 的 tonic 客户端）
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:

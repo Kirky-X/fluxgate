@@ -101,6 +101,8 @@ pub fn to_unified_request(
         verbosity: None,
         max_completion_tokens: None,
         vendor_extensions: absorb_vendor_extensions(body, super::types::GEMINI_KNOWN_KEYS),
+        // 请求级覆盖槽仅供进程内 SDK 构造者设置，wire 入站不承接
+        cache_breakpoints: None,
     })
 }
 

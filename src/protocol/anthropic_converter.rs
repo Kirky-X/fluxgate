@@ -34,6 +34,7 @@ const ANTHROPIC_KNOWN_KEYS: &[&str] = &[
     "sampling",
     "thinking_config",
     "vendor_extensions",
+    "cache_breakpoints",
 ];
 
 pub struct AnthropicConverter;
@@ -275,6 +276,8 @@ impl ProtocolConverter for AnthropicConverter {
             max_completion_tokens: None,
             user,
             vendor_extensions,
+            // 请求级覆盖槽仅供进程内 SDK 构造者设置，wire 入站不承接
+            cache_breakpoints: None,
         })
     }
 
@@ -2467,6 +2470,22 @@ mod tests {
                 "messages": [{"role": "user", "content": "hi"}]
             }))
             .expect("to_unified")
+    }
+
+    #[test]
+    fn wire_cache_breakpoints_key_is_not_absorbed() {
+        // wire 顶层同名的覆盖槽键属已知 IR 键：入站不承接（恒 None），
+        // 也不吸收进 vendor_extensions（防出站透传劫持）
+        let req = AnthropicConverter::new()
+            .to_unified(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+                "cache_breakpoints": {"enabled": false}
+            }))
+            .expect("to_unified");
+        assert!(req.cache_breakpoints.is_none());
+        assert!(!req.vendor_extensions.contains_key("cache_breakpoints"));
     }
 
     #[test]

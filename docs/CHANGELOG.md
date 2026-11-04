@@ -8,6 +8,12 @@
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **请求级缓存断点策略覆盖**：`UnifiedRequest` 新增 `cache_breakpoints`（`Option<CacheBreakpointPolicy>`）——进程内 SDK 构造者可逐请求裁决注入开关/断点上限/锚点序，`None` 回落模型目录条目级策略（出站取值收敛为 `effective_cache_policy` 单点，非流式/流式两路径共用）。仅 anthropic 型 vendor 出站消费；openai/gemini 型与透传路径不注入；wire 侧同名键入各协议 known_keys denylist——入站恒 `None` 不承接、不进 `vendor_extensions` 透传（覆盖控制权收敛到进程内 SDK 面，不暴露给 wire 调用方）。
+
 ## [0.1.0] - 2026-11-04
 
 ### Changed（项目更名）

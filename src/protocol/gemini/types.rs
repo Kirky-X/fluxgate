@@ -26,6 +26,7 @@ pub const GEMINI_KNOWN_KEYS: &[&str] = &[
     "cached_content",
     "labels",
     "model",
+    "cache_breakpoints",
 ];
 
 /// `:action` 后缀。

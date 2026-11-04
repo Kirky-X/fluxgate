@@ -36,6 +36,7 @@ const OPENAI_KNOWN_KEYS: &[&str] = &[
     "verbosity",
     "vendor_extensions",
     "reasoning_effort",
+    "cache_breakpoints",
 ];
 
 pub struct OpenAIConverter;
@@ -176,6 +177,8 @@ impl ProtocolConverter for OpenAIConverter {
                 .map(|u| u as u32),
             // 未识别顶层字段（top_k/seed 等）吸收进扩展表，出站原样透传防丢
             vendor_extensions,
+            // 请求级覆盖槽仅供进程内 SDK 构造者设置，wire 入站不承接
+            cache_breakpoints: None,
         })
     }
 

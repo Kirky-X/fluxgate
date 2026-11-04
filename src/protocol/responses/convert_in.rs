@@ -360,6 +360,8 @@ pub fn to_unified_request(
         verbosity: None,
         max_completion_tokens: None,
         vendor_extensions: vendor_extensions.into_iter().collect(),
+        // 请求级覆盖槽仅供进程内 SDK 构造者设置，wire 入站不承接
+        cache_breakpoints: None,
     })
 }
 

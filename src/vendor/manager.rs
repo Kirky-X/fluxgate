@@ -100,6 +100,24 @@ pub fn estimate_cost_json(body: &Value, policy: &TicketPolicy) -> usize {
     ((bytes / 4) as u64 + max_tokens).clamp(policy.min, policy.max) as usize
 }
 
+/// 缓存断点策略单点取值：仅 anthropic 型 vendor 注入（openai/gemini 型
+/// 与透传路径返回 None）；请求级 `cache_breakpoints` 覆盖槽优先，
+/// `None` 回落模型目录条目级策略（未注册模型用内置默认）。
+fn effective_cache_policy(
+    protocol: VendorProtocol<'_>,
+    request: &UnifiedRequest,
+    catalog: &[crate::config::model_catalog::ModelCatalogEntry],
+) -> Option<crate::config::model_catalog::CacheBreakpointPolicy> {
+    if !matches!(protocol, VendorProtocol::Anthropic) {
+        return None;
+    }
+    Some(
+        request.cache_breakpoints.clone().unwrap_or_else(|| {
+            crate::config::model_catalog::cache_policy_for(catalog, &request.model)
+        }),
+    )
+}
+
 struct VendorInstance {
     vendor_id: String,
     state: VendorState,
@@ -1119,15 +1137,13 @@ impl VendorManager {
             Self::cb_endpoint(&config),
         );
 
-        // anthropic 转换出站的缓存断点策略（openai 型 None 不注入；透传路径不注入）
-        let cache_policy = if matches!(config.protocol(), VendorProtocol::Anthropic) {
-            Some(crate::config::model_catalog::cache_policy_for(
-                &config_manager.read().model_catalog,
-                &pending.request.model,
-            ))
-        } else {
-            None
-        };
+        // anthropic 转换出站的缓存断点策略（openai 型 None 不注入；透传路径
+        // 不注入）；请求级 cache_breakpoints 覆盖优先，None 回落目录条目级策略
+        let cache_policy = effective_cache_policy(
+            config.protocol(),
+            &pending.request,
+            &config_manager.read().model_catalog,
+        );
 
         // 拆出 request/options 局部绑定：perform 消费请求体后 pending 其余字段仍可整结构体借用
         let request = pending.request;
@@ -2737,13 +2753,13 @@ impl VendorManager {
         // per-key 熔断键的 model 段（须在 request 被 move 前捕获）
         let request_model = Self::cb_model(vendor_id, &config, &request.model).to_string();
 
-        // anthropic 转换流式出站同样注入缓存断点（透传流式不注入）
-        let cache_policy = matches!(config.protocol(), VendorProtocol::Anthropic).then(|| {
-            crate::config::model_catalog::cache_policy_for(
-                &self.config.read().model_catalog,
-                &request.model,
-            )
-        });
+        // anthropic 转换流式出站同样注入缓存断点（透传流式不注入）；
+        // 请求级 cache_breakpoints 覆盖优先，None 回落目录条目级策略
+        let cache_policy = effective_cache_policy(
+            config.protocol(),
+            &request,
+            &self.config.read().model_catalog,
+        );
         let request_body = if let Some(policy) = &cache_policy {
             self.anthropic_converter
                 .request_to_external_with_cache_policy(request, policy)?
@@ -5915,6 +5931,86 @@ mod tests {
         assert!(info.max_tokens.is_none(), "None 变体无配额上限");
         assert_eq!(info.used_tokens, 0, "None 变体无用量记账");
         assert!(info.window_end.is_none(), "None 变体无窗口结束时刻");
+    }
+}
+
+#[cfg(test)]
+mod effective_cache_policy_tests {
+    use super::effective_cache_policy;
+    use crate::config::model_catalog::{CacheBreakpointPolicy, ModelCatalogEntry};
+    use crate::config::VendorProtocol;
+    use crate::protocol::UnifiedRequest;
+
+    fn request(override_policy: Option<CacheBreakpointPolicy>) -> UnifiedRequest {
+        UnifiedRequest {
+            model: "claude-sonnet-4".into(),
+            cache_breakpoints: override_policy,
+            ..Default::default()
+        }
+    }
+
+    fn catalog(model: &str, entry_policy: Option<CacheBreakpointPolicy>) -> Vec<ModelCatalogEntry> {
+        vec![ModelCatalogEntry {
+            model_id: model.to_string(),
+            cache_breakpoints: entry_policy,
+            ..Default::default()
+        }]
+    }
+
+    fn policy(enabled: bool) -> CacheBreakpointPolicy {
+        CacheBreakpointPolicy {
+            enabled,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn openai_protocol_returns_none_even_with_override() {
+        // 覆盖槽不越过协议门：openai 型 vendor 无 cache_control 槽，恒不注入
+        let r = request(Some(policy(false)));
+        assert!(effective_cache_policy(
+            VendorProtocol::OpenAi,
+            &r,
+            &catalog("claude-sonnet-4", None)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn request_override_wins_over_catalog() {
+        // 请求级 Some 优先：目录条目开启、请求关闭 → 以请求为准
+        let r = request(Some(policy(false)));
+        let got = effective_cache_policy(
+            VendorProtocol::Anthropic,
+            &r,
+            &catalog("claude-sonnet-4", Some(policy(true))),
+        )
+        .expect("anthropic 型必有策略");
+        assert_eq!(got, policy(false));
+    }
+
+    #[test]
+    fn none_falls_back_to_catalog_entry() {
+        // 请求级 None 回落目录条目级策略
+        let r = request(None);
+        let got = effective_cache_policy(
+            VendorProtocol::Anthropic,
+            &r,
+            &catalog("claude-sonnet-4", Some(policy(false))),
+        )
+        .expect("anthropic 型必有策略");
+        assert!(!got.enabled);
+    }
+
+    #[test]
+    fn none_falls_back_to_builtin_default_for_unregistered_model() {
+        // 未注册模型 → 内置默认（开启 / 上限 4 / 三锚点全序）
+        let r = request(None);
+        let got = effective_cache_policy(VendorProtocol::Anthropic, &r, &[])
+            .expect("anthropic 型必有策略");
+        assert!(got.enabled);
+        assert_eq!(got.max_breakpoints, 4);
+        assert_eq!(got.anchors, vec!["tools", "system", "last_user"]);
     }
 }
 

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
+use crate::config::model_catalog::CacheBreakpointPolicy;
 use crate::error::GateError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -84,6 +85,13 @@ pub struct UnifiedRequest {
     /// 独立双槽并存，出站各按目标协议槽位回写）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
+    /// 请求级缓存断点策略覆盖（wire 无表示，仅进程内 SDK 构造者可设）：
+    /// `Some` = anthropic 型 vendor 出站注入按本策略裁决（含关闭与锚点
+    /// 自定）；`None` = 回落模型目录条目级 `cache_breakpoints` 单点裁决。
+    /// openai/gemini 型与透传路径不消费；wire 侧同名键已入 known_keys
+    /// denylist，不由扩展表透传
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_breakpoints: Option<CacheBreakpointPolicy>,
 }
 
 /// LLM 采样参数（对齐 core `SamplingParams`）。全部可选：`None` 表示
@@ -735,6 +743,39 @@ pub(crate) fn merge_vendor_extensions(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cache_breakpoints_serde_roundtrip_and_legacy_compat() {
+        // 携带覆盖策略的 JSON 往返：字段名、开关与锚序原样保真
+        let req = UnifiedRequest {
+            model: "claude-sonnet-4".into(),
+            cache_breakpoints: Some(CacheBreakpointPolicy {
+                enabled: false,
+                max_breakpoints: 2,
+                anchors: vec!["system".into(), "last_user".into()],
+            }),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(wire["cache_breakpoints"]["enabled"], json!(false));
+        assert_eq!(wire["cache_breakpoints"]["max_breakpoints"], json!(2));
+        assert_eq!(
+            wire["cache_breakpoints"]["anchors"],
+            json!(["system", "last_user"])
+        );
+        let back: UnifiedRequest = serde_json::from_value(wire).expect("deserialize");
+        assert_eq!(back.cache_breakpoints, req.cache_breakpoints);
+
+        // 旧形状 wire 无本字段 → default None（向后兼容）
+        let legacy: UnifiedRequest =
+            serde_json::from_value(json!({"model": "m", "messages": []})).expect("legacy");
+        assert!(legacy.cache_breakpoints.is_none());
+        // None 序列化跳过：不污染 wire 形状
+        assert!(serde_json::to_value(&legacy)
+            .expect("skip none")
+            .get("cache_breakpoints")
+            .is_none());
+    }
 
     #[test]
     fn vendor_extensions_absorb_and_merge_helpers() {

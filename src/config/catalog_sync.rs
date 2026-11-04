@@ -21,6 +21,9 @@ pub struct CatalogEntryDraft {
     pub output_price: f64,
     pub cache_read_price: f64,
     pub cache_creation_price: f64,
+    /// 1h TTL 写档价：catalog 外部源（models.dev）无此档 → 恒 0.0（结算侧
+    /// 拆分缺失时整体按基础写价，见 billing 1h 档语义）
+    pub cache_creation_1h_price: f64,
     /// 价格来源：`Source` = 四档全部来自源；`Fallback` = 至少一档源缺失、
     /// 以 catalog 缺省 0 价回退（diff 响应据此标注 `price_source`）
     pub price_source: PriceSource,
@@ -702,6 +705,7 @@ mod tests {
                 output_price: 15.0,
                 cache_read_price: 0.3,
                 cache_creation_price: 3.75,
+                cache_creation_1h_price: 0.0,
                 price_source: PriceSource::Source,
                 supports_tools: true,
                 supports_thinking: true,
@@ -716,6 +720,7 @@ mod tests {
                 output_price: 1.98,
                 cache_read_price: 0.022,
                 cache_creation_price: 0.0,
+                cache_creation_1h_price: 0.0,
                 price_source: PriceSource::Fallback,
                 supports_tools: true,
                 supports_thinking: true,
@@ -730,6 +735,7 @@ mod tests {
                 output_price: 7.0,
                 cache_read_price: 0.0,
                 cache_creation_price: 0.0,
+                cache_creation_1h_price: 0.0,
                 price_source: PriceSource::Source,
                 supports_tools: false,
                 supports_thinking: false,
@@ -762,6 +768,7 @@ mod tests {
                 output_price: 1.0,
                 cache_read_price: 0.0,
                 cache_creation_price: 0.0,
+                cache_creation_1h_price: 0.0,
                 price_source: PriceSource::Source,
                 supports_tools: false,
                 supports_thinking: false,
@@ -775,6 +782,7 @@ mod tests {
                 output_price: 2.0,
                 cache_read_price: 0.0,
                 cache_creation_price: 0.0,
+                cache_creation_1h_price: 0.0,
                 price_source: PriceSource::Source,
                 supports_tools: false,
                 supports_thinking: false,
@@ -799,6 +807,7 @@ mod tests {
             output_price: 10.0,
             cache_read_price: 1.25,
             cache_creation_price: 0.0,
+            cache_creation_1h_price: 0.0,
             price_source: PriceSource::Fallback,
             supports_tools: true,
             supports_thinking: false,

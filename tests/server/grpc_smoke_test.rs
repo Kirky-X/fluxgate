@@ -57,6 +57,7 @@ fn test_config() -> Config {
             api_keys: vec![SMOKE_KEY_HASH.to_string()],
             keys: vec![],
             header: Default::default(),
+            oidc_rules: None,
         }),
         grpc: Some(GrpcConfig {
             enabled: true,

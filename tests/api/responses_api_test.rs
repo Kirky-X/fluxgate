@@ -882,4 +882,314 @@ mod tests {
         .await;
         assert_eq!(response.status(), 400);
     }
+
+    /// 后台槽位计数的纯单元语义：限额占用、释放、abort 取消。
+    #[tokio::test]
+    async fn background_jobs_slot_semantics() {
+        use fluxweir::api::responses::ResponsesBackgroundJobs;
+        let jobs = ResponsesBackgroundJobs::default();
+        assert!(jobs.try_begin(2), "首个槽位必须可占用");
+        assert!(jobs.try_begin(2), "第二个槽位必须可占用");
+        assert!(!jobs.try_begin(2), "超限必须拒绝");
+        jobs.end();
+        assert_eq!(jobs.active_count(), 1, "释放后计数递减");
+        assert!(jobs.try_begin(2), "释放后的槽位可复用");
+
+        // register + cancel：登记句柄可被 abort，未登记 id 的 cancel 是 no-op
+        let handle =
+            tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_secs(60)).await });
+        jobs.register("job_1", handle.abort_handle());
+        jobs.cancel("job_1");
+        let joined = handle
+            .await
+            .expect_err("cancel 后任务必须以 cancelled 收场");
+        assert!(joined.is_cancelled(), "abort 语义: {joined:?}");
+        jobs.cancel("job_absent"); // no-op，不 panic
+        jobs.remove("job_1"); // 已被 cancel 移除，再 remove 亦 no-op
+    }
+
+    /// [responses].enabled=false 时端点整体 404。
+    #[tokio::test]
+    async fn responses_disabled_returns_404() {
+        let state = make_state(Vec::new()).await;
+        let mut config = state.config.get_config();
+        config.responses.enabled = false;
+        // 测试态 ConfigManager 无磁盘路径（update_config 拒绝持久化），
+        // 走热载桥接的纯内存切换
+        state.config.swap_memory(config).expect("关闭 responses 段");
+        let response = post_responses(state, json!({"model": "gpt-4", "input": "x"})).await;
+        assert_eq!(response.status(), 404, "disabled 必须整端点 404");
+    }
+
+    /// native-only 请求（内置工具）与 background 组合必须显式拒绝。
+    #[tokio::test]
+    async fn native_background_combo_is_400() {
+        let state = make_state(Vec::new()).await;
+        let response = post_responses(
+            state,
+            json!({
+                "model": "gpt-4",
+                "input": "x",
+                "max_output_tokens": 16,
+                "background": true,
+                "tools": [{"type": "web_search"}]
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 400, "native-only 不支持后台模式");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("not supported in background"),
+            "错误信息必须说明限制:\n{text}"
+        );
+    }
+
+    /// 原生流透传：上游 SSE 字节原样透出，response.completed 的完整响应
+    /// 被 observe 回调捕获并异步持久化（GET 回读验证）。
+    #[tokio::test]
+    async fn native_stream_passthrough_persists_completed() {
+        let mut server = mockito::Server::new_async().await;
+        let completed = r#"{"type":"response.completed","response":{"id":"resp_nat_s","object":"response","created_at":1,"status":"completed","model":"native-m","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"streamed","annotations":[]}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}"#;
+        let sse_body = format!(
+            "event: response.created\ndata: {}\n\nevent: response.completed\ndata: {}\n\n",
+            r#"{"type":"response.created","response":{"id":"resp_nat_s","object":"response","status":"in_progress"}}"#,
+            completed
+        );
+        server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_body)
+            .expect(1)
+            .create();
+        let mut native = responses_vendor("rr", format!("{}/v1", server.url()));
+        native.models = vec![ModelConfig {
+            model_id: "native-m".into(),
+            abstract_id: Some("native-m".into()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        }];
+        let state = make_state(vec![native]).await;
+
+        let response = post_responses(
+            state.clone(),
+            json!({
+                "model": "native-m",
+                "input": "x",
+                "max_output_tokens": 16,
+                "stream": true,
+                "store": true,
+                "tools": [{"type": "web_search"}]
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("event: response.completed"),
+            "原生流字节必须原样透传:\n{text}"
+        );
+        assert!(
+            text.contains("\"id\":\"resp_nat_s\""),
+            "completed 帧的响应体必须透传:\n{text}"
+        );
+
+        // 持久化在 spawn 的后台任务中完成——有界轮询 GET 回读
+        let mut fetched = None;
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let r = app(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/v1/responses/resp_nat_s")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if r.status() == 200 {
+                fetched = Some(response_json(r).await);
+                break;
+            }
+        }
+        let body = fetched.expect("completed 响应必须在流结束后可回读");
+        assert_eq!(body["id"], "resp_nat_s");
+        assert_eq!(body["status"], "completed");
+    }
+
+    /// 原生路径上游失败：vendor 层不可用语义映射 503 且不吞错误。
+    #[tokio::test]
+    async fn native_upstream_failure_maps_to_503() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/responses")
+            .with_status(500)
+            .with_body("boom")
+            .expect(1)
+            .create();
+        let state = make_state(vec![responses_vendor("rr", format!("{}/v1", server.url()))]).await;
+        let response = post_responses(
+            state,
+            json!({
+                "model": "gpt-4",
+                "input": "x",
+                "max_output_tokens": 16,
+                "tools": [{"type": "web_search"}]
+            }),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            503,
+            "上游 500 映射为 503（vendor 层不可用语义）"
+        );
+    }
+
+    /// x-model 点名无原生能力的模型：路由前 gate 直接 502（Protocol 语义，不发上游）。
+    #[tokio::test]
+    async fn native_hint_preferred_model_gate_is_502() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("POST", "/v1/responses").expect(0).create();
+        let mut native = responses_vendor("rr", format!("{}/v1", server.url()));
+        native.models = vec![ModelConfig {
+            model_id: "native-m".into(),
+            abstract_id: Some("native-m".into()),
+            weight: 1.0,
+            enabled: true,
+            dimensions: None,
+            compat_group: None,
+            model_type: None,
+        }];
+        let state = make_state(vec![
+            chat_vendor("chat-only", format!("{}/v1", server.url())),
+            native,
+        ])
+        .await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("x-model", "gpt-4")
+                    .body(Body::from(
+                        json!({
+                            "model": "native-m",
+                            "input": "x",
+                            "max_output_tokens": 16,
+                            "tools": [{"type": "web_search"}]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            502,
+            "x-model 指向无 responses 能力的模型必须在 gate 拒绝（Protocol 语义 502，不发上游）"
+        );
+        mock.assert();
+    }
+
+    /// native + previous_response_id：回放历史合并进改写后的 input 打上游，
+    /// 且首响经非流式 store 路径持久化。
+    #[tokio::test]
+    async fn native_previous_response_id_rewrites_input() {
+        use mockito::Matcher;
+        let mut server = mockito::Server::new_async().await;
+        // 第二轮回放请求：body 必含首轮的 assistant 文本
+        let replay = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::Regex("past_text".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"resp_prev_2","object":"response","created_at":1,"status":"completed",
+                    "model":"gpt-4",
+                    "output":[{"type":"message","id":"msg_2","status":"completed","role":"assistant",
+                        "content":[{"type":"output_text","text":"second","annotations":[]}]}],
+                    "usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}"#,
+            )
+            .expect(1)
+            .create();
+        // 第一轮兜底 mock（无 past_text）
+        server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"resp_prev_1","object":"response","created_at":1,"status":"completed",
+                    "model":"gpt-4",
+                    "output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant",
+                        "content":[{"type":"output_text","text":"past_text","annotations":[]}]}],
+                    "usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}"#,
+            )
+            .expect(1)
+            .create();
+        let state = make_state(vec![responses_vendor("rr", format!("{}/v1", server.url()))]).await;
+
+        // 第一轮：native 非流式 + store，产出可回放历史
+        let first = post_responses(
+            state.clone(),
+            json!({
+                "model": "gpt-4",
+                "input": "first",
+                "max_output_tokens": 16,
+                "store": true,
+                "tools": [{"type": "web_search"}]
+            }),
+        )
+        .await;
+        assert_eq!(first.status(), 200);
+        assert_eq!(response_json(first).await["id"], "resp_prev_1");
+
+        // 等待非流式 store 路径的后台持久化落地
+        let mut ready = false;
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let probe = app(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/v1/responses/resp_prev_1")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if probe.status() == 200 {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "首轮响应必须持久化可回读");
+
+        // 第二轮：previous_response_id 回放 → 上游 body 含历史 assistant 文本
+        let second = post_responses(
+            state,
+            json!({
+                "model": "gpt-4",
+                "input": "next",
+                "max_output_tokens": 16,
+                "previous_response_id": "resp_prev_1",
+                "tools": [{"type": "web_search"}]
+            }),
+        )
+        .await;
+        assert_eq!(second.status(), 200);
+        replay.assert();
+    }
 }

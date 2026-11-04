@@ -484,3 +484,527 @@ fn response_usage_details_logprobs_stop_sequence_roundtrip() {
     assert_eq!(external["stop_sequence"], "END");
     assert_eq!(external["stop_reason"], "stop_sequence");
 }
+
+/// Anthropic `sampling` 段补缺省槽：top_k 直出；temperature/top_p 仅在 flat
+/// 槽未设时补（flat 优先不覆写）。
+#[test]
+fn sampling_section_backfills_unset_flat_slots() {
+    // wire 无 `sampling` 段解析：IR 槽由 core 对齐层喂入，此处手构注入
+    let mut unified = anthropic()
+        .to_unified(base_anthropic_request())
+        .expect("to unified");
+    unified.sampling = Some(fluxweir::protocol::SamplingParams {
+        temperature: Some(0.3),
+        top_k: Some(40),
+        top_p: Some(0.8),
+        frequency_penalty: None,
+        presence_penalty: None,
+    });
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    assert_eq!(external["top_k"], 40, "top_k 直出");
+    assert!(
+        (external["temperature"].as_f64().unwrap() - 0.3).abs() < 1e-6,
+        "flat 缺省时 sampling.temperature 补位: {}",
+        external["temperature"]
+    );
+    assert!(
+        (external["top_p"].as_f64().unwrap() - 0.8).abs() < 1e-6,
+        "flat 缺省时 sampling.top_p 补位: {}",
+        external["top_p"]
+    );
+
+    // flat 优先：显式 temperature 不被 sampling 覆写
+    let mut unified = anthropic()
+        .to_unified(base_anthropic_request())
+        .expect("to unified");
+    unified.temperature = Some(0.9);
+    unified.sampling = Some(fluxweir::protocol::SamplingParams {
+        temperature: Some(0.3),
+        ..Default::default()
+    });
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    assert!(
+        (external["temperature"].as_f64().unwrap() - 0.9).abs() < 1e-6,
+        "flat temperature 必须优先: {}",
+        external["temperature"]
+    );
+}
+
+/// 工具结果与带文本的 tool_calls 出站为 Anthropic 块形态：tool_result 块
+/// / 纯文本块（无 tool_call 语义时）。
+#[test]
+fn tool_result_and_tool_calls_text_outbound_blocks() {
+    // OpenAI 入站：assistant tool_calls + tool 结果消息
+    let mut request = base_openai_request();
+    request["messages"] = json!([
+        {"role": "user", "content": "run it"},
+        {"role": "assistant", "content": "calling",
+         "tool_calls": [{"id": "call_1", "type": "function",
+                         "function": {"name": "get_weather", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "22C sunny"},
+    ]);
+    let unified = openai().to_unified(request).expect("to unified");
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    let dumped = external["messages"].to_string();
+    assert!(
+        dumped.contains("tool_result"),
+        "工具结果必须映射 tool_result 块: {dumped}"
+    );
+    assert!(dumped.contains("22C sunny"), "工具结果内容存活: {dumped}");
+    assert!(
+        dumped.contains("get_weather"),
+        "assistant tool_calls 语义存活: {dumped}"
+    );
+}
+
+/// Anthropic 入站 thinking 块（带 signature）→ IR → 同协议出站：
+/// thinking 原生块 + signature 原样回写（D3）。
+#[test]
+fn assistant_thinking_block_roundtrip_keeps_signature() {
+    let mut request = base_anthropic_request();
+    request["messages"] = json!([
+        {"role": "user", "content": "think"},
+        {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "internal chain", "signature": "sig_abc"},
+        ]},
+    ]);
+    let unified = anthropic().to_unified(request).expect("to unified");
+    let external = anthropic()
+        .request_to_external(unified)
+        .expect("to external");
+    let dumped = external["messages"].to_string();
+    assert!(
+        dumped.contains(r#""thinking":"internal chain""#),
+        "thinking 块出站: {dumped}"
+    );
+    assert!(
+        dumped.contains("sig_abc"),
+        "signature 必须原样回写: {dumped}"
+    );
+}
+
+/// Anthropic `output_config.format`：json_schema 带 schema 入 IR；缺 schema
+/// 显性丢弃（response_format 为空）。
+#[test]
+fn anthropic_output_config_json_schema_mapping() {
+    let mut request = base_anthropic_request();
+    request["output_config"] = json!({
+        "format": {"type": "json_schema", "schema": {"type": "object"}}
+    });
+    let unified = anthropic().to_unified(request).expect("to unified");
+    let rf = unified
+        .response_format
+        .as_ref()
+        .expect("json_schema 必须入 IR");
+    assert_eq!(rf["type"], "json_schema");
+    assert_eq!(rf["json_schema"]["name"], "response");
+    assert_eq!(rf["json_schema"]["schema"]["type"], "object");
+
+    // 缺 schema → 显性丢弃
+    let mut request = base_anthropic_request();
+    request["output_config"] = json!({"format": {"type": "json_schema"}});
+    let unified = anthropic().to_unified(request).expect("to unified");
+    assert!(
+        unified.response_format.is_none(),
+        "缺 schema 必须丢弃且不报错"
+    );
+}
+
+/// Responses 出站请求全分支：System 逐条合并进 instructions、
+/// Tool 双形态、ToolCalls、TextWithToolCalls、普通消息。
+#[test]
+fn responses_converter_request_branches() {
+    use fluxweir::protocol::{
+        Message, MessageContent, ResponsesConverter, Role, ToolCall, ToolCallFunction, ToolResult,
+        UnifiedRequest,
+    };
+    let converter = ResponsesConverter::new();
+    let request = UnifiedRequest {
+        model: "m".into(),
+        system_prompt: Some("base".into()),
+        messages: vec![
+            Message {
+                role: Role::System,
+                content: MessageContent::Text("extra".into()),
+            },
+            Message {
+                role: Role::System,
+                content: MessageContent::Text("extra".into()),
+            },
+            Message {
+                role: Role::Tool,
+                content: MessageContent::ToolResult(ToolResult {
+                    tool_call_id: "call_9".into(),
+                    function_name: "fn".into(),
+                    content: "42".into(),
+                    is_error: false,
+                }),
+            },
+            Message {
+                role: Role::Tool,
+                content: MessageContent::Text("loose".into()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::ToolCalls(vec![ToolCall {
+                    id: "call_1".into(),
+                    call_type: "function".into(),
+                    function: ToolCallFunction {
+                        name: "get_weather".into(),
+                        arguments: "{}".into(),
+                    },
+                }]),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::TextWithToolCalls {
+                    text: "calling".into(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_2".into(),
+                        call_type: "function".into(),
+                        function: ToolCallFunction {
+                            name: "lookup".into(),
+                            arguments: "[]".into(),
+                        },
+                    }],
+                    reasoning: None,
+                },
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("done".into()),
+            },
+        ],
+        ..Default::default()
+    };
+    let external = converter.request_to_external(request).expect("to external");
+    // System 逐条合并（去重仅当 instructions 整串与该条恰好相等）
+    assert_eq!(external["instructions"], "base\nextra\nextra");
+    let input = external["input"].as_array().expect("input 数组");
+    let dumped = serde_json::to_string(&input).unwrap();
+    assert!(
+        dumped.contains(r#""type":"function_call_output""#),
+        "ToolResult 形态: {dumped}"
+    );
+    assert!(dumped.contains("call_9"), "call_id 保留: {dumped}");
+    assert!(dumped.contains("42"), "结果内容: {dumped}");
+    // loose Tool 文本 → call_id 空串的 function_call_output
+    assert!(
+        input
+            .iter()
+            .any(|i| i["type"] == "function_call_output" && i["call_id"] == ""),
+        "非 ToolResult 的 Tool 消息兜底: {dumped}"
+    );
+    assert!(dumped.contains("get_weather"), "ToolCalls item: {dumped}");
+    assert!(
+        dumped.contains("lookup"),
+        "TextWithToolCalls item: {dumped}"
+    );
+    assert!(
+        input
+            .iter()
+            .any(|i| i["role"] == "assistant" && i["content"] == "calling"),
+        "TextWithToolCalls 文本先行: {dumped}"
+    );
+    assert!(
+        dumped.contains("hi") && dumped.contains("done"),
+        "普通消息: {dumped}"
+    );
+}
+
+/// Responses 入站校验边界：metadata 超长 / background+stream / file/audio /
+/// item_reference 缺 id / 无 role 无 type。
+#[test]
+fn responses_convert_in_validation_edges() {
+    use fluxweir::protocol::ResponsesConverter;
+    let converter = ResponsesConverter::new();
+
+    let mut body = json!({
+        "model": "m",
+        "input": "hi",
+        "max_output_tokens": 16,
+        "metadata": {"k": "v"},
+    });
+    body["metadata"] = serde_json::Map::from_iter([("k".into(), json!("x".repeat(7000)))]).into();
+    let err = converter
+        .to_unified(body.clone())
+        .expect_err("value 超长必须拒绝");
+    assert!(err.to_string().contains("metadata"), "{err}");
+    body["metadata"] = serde_json::Map::from_iter([("k".repeat(7000), json!("v"))]).into();
+    assert!(
+        converter.to_unified(body.clone()).is_err(),
+        "key 超长必须拒绝"
+    );
+
+    let err = converter
+        .to_unified(json!({
+            "model": "m", "input": "hi", "max_output_tokens": 16,
+            "background": true, "stream": true,
+        }))
+        .expect_err("background+stream 拒绝");
+    assert!(err.to_string().contains("background"), "{err}");
+
+    for bad_type in ["input_file", "input_audio"] {
+        let err = converter
+            .to_unified(json!({
+                "model": "m", "max_output_tokens": 16,
+                "input": [{"type": bad_type}],
+            }))
+            .expect_err("file/audio 必须拒绝");
+        assert!(err.to_string().contains("native"), "{err}");
+    }
+
+    assert!(
+        converter
+            .to_unified(json!({
+                "model": "m", "max_output_tokens": 16,
+                "input": [{"type": "item_reference"}],
+            }))
+            .is_err(),
+        "item_reference 缺 id 必须拒绝"
+    );
+    assert!(
+        converter
+            .to_unified(json!({
+                "model": "m", "max_output_tokens": 16,
+                "input": [{"foo": 1}],
+            }))
+            .is_err(),
+        "无 role 无已知 type 必须拒绝"
+    );
+}
+
+/// Responses 单 chunk 事件形态（trait 完整性实现）：Content/ToolCall/Usage。
+#[test]
+fn responses_converter_stream_chunk_shapes() {
+    use fluxweir::protocol::{MessageContent, ResponsesConverter, StreamChunk};
+    let converter = ResponsesConverter::new();
+
+    let event = converter
+        .stream_chunk_to_external(StreamChunk::Content {
+            index: 0,
+            delta: MessageContent::Text("he".into()),
+            finish_reason: None,
+            logprobs: None,
+        })
+        .expect("content event");
+    assert_eq!(event["type"], "response.output_text.delta");
+    assert_eq!(event["delta"], "he");
+
+    let event = converter
+        .stream_chunk_to_external(StreamChunk::ToolCall {
+            index: 0,
+            id: "fc_1".into(),
+            name: Some("fn".into()),
+            arguments: Some(r#"{"a":1}"#.into()),
+        })
+        .expect("toolcall event");
+    assert_eq!(event["type"], "response.function_call_arguments.delta");
+    assert_eq!(event["item_id"], "fc_1");
+    assert_eq!(event["delta"], r#"{"a":1}"#);
+
+    let event = converter
+        .stream_chunk_to_external(StreamChunk::Usage {
+            prompt_tokens: 3,
+            completion_tokens: 1,
+            total_tokens: 4,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
+            finish_reason: None,
+        })
+        .expect("usage event");
+    assert_eq!(event["type"], "response.completed");
+    assert_eq!(event["response"]["usage"]["total_tokens"], 4);
+}
+
+/// Gemini 出站请求：system/user/model 角色、ToolCalls→functionCall parts、
+/// 空 contents 显性拒绝。
+#[test]
+fn gemini_request_converts_roles_tools_and_system() {
+    use fluxweir::protocol::gemini::convert_out::request_to_gemini;
+    use fluxweir::protocol::{
+        Message, MessageContent, Role, ToolCall, ToolCallFunction, ToolResult, UnifiedRequest,
+    };
+    let request = UnifiedRequest {
+        model: "gemini-2.5-pro".into(),
+        system_prompt: Some("be brief".into()),
+        messages: vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::ToolCalls(vec![ToolCall {
+                    id: "c1".into(),
+                    call_type: "function".into(),
+                    function: ToolCallFunction {
+                        name: "fn".into(),
+                        arguments: "{}".into(),
+                    },
+                }]),
+            },
+            Message {
+                role: Role::Tool,
+                content: MessageContent::ToolResult(ToolResult {
+                    tool_call_id: "c1".into(),
+                    function_name: "fn".into(),
+                    content: "42".into(),
+                    is_error: false,
+                }),
+            },
+        ],
+        ..Default::default()
+    };
+    let body = request_to_gemini(&request).expect("to gemini");
+    assert_eq!(
+        body["systemInstruction"]["parts"][0]["text"], "be brief",
+        "system 指令"
+    );
+    let dumped = body["contents"].to_string();
+    assert!(dumped.contains(r#""role":"user""#), "user 角色: {dumped}");
+    assert!(
+        dumped.contains(r#""role":"model""#),
+        "assistant→model: {dumped}"
+    );
+    assert!(
+        dumped.contains("functionCall"),
+        "tool_calls→functionCall: {dumped}"
+    );
+    assert!(
+        dumped.contains("functionResponse"),
+        "tool_result→functionResponse: {dumped}"
+    );
+
+    // 空消息集：contents 为空必须显性拒绝
+    let empty = UnifiedRequest {
+        model: "m".into(),
+        messages: vec![],
+        ..Default::default()
+    };
+    assert!(request_to_gemini(&empty).is_err(), "空 contents 拒绝");
+}
+
+/// Gemini 响应解析与回写：正常 candidates、promptFeedback 阻断路径、
+/// usage/cache 字段。
+#[test]
+fn gemini_response_shapes_and_block_feedback() {
+    use fluxweir::protocol::gemini::convert_out::{parse_gemini_response, response_to_gemini};
+
+    let unified = parse_gemini_response(
+        &json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "hello"}]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2, "totalTokenCount": 5,
+                              "cachedContentTokenCount": 1},
+            "modelVersion": "gemini-2.5-pro"
+        }),
+        "fallback-m",
+    )
+    .expect("parse");
+    assert_eq!(unified.usage.prompt_tokens, 3);
+    assert_eq!(unified.usage.cache_read_tokens, 1);
+    let external = response_to_gemini(&unified);
+    assert_eq!(external["usageMetadata"]["cachedContentTokenCount"], 1);
+    assert_eq!(external["candidates"][0]["finishReason"], "STOP");
+
+    // promptFeedback 阻断（无 candidates）：不报错，映射为空消息 + 过滤终止
+    let blocked = parse_gemini_response(
+        &json!({
+            "promptFeedback": {"blockReason": "SAFETY"},
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 0, "totalTokenCount": 1}
+        }),
+        "m",
+    )
+    .expect("阻断也必须可解析");
+    assert!(
+        blocked
+            .choices
+            .iter()
+            .all(|c| c.finish_reason.as_deref() != Some("stop")),
+        "阻断终止原因非 stop: {:?}",
+        blocked
+            .choices
+            .first()
+            .and_then(|c| c.finish_reason.clone())
+    );
+
+    // 畸形响应（无 candidates 无 feedback）显性拒绝
+    assert!(
+        parse_gemini_response(&json!({}), "m").is_err(),
+        "空响应拒绝"
+    );
+}
+
+/// Gemini 流帧解析与编码：text/part 变体入 IR、Usage 结算、编码器出
+/// Gemini SSE 事件（无 data: [DONE]）。
+#[test]
+fn gemini_stream_frame_parse_and_encode() {
+    use fluxweir::protocol::gemini::stream::parse_stream_frame;
+    use fluxweir::protocol::GeminiStreamEncoder;
+    use fluxweir::protocol::{MessageContent, StreamChunk};
+
+    let chunk = parse_stream_frame(
+        r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"he"}]}}]}"#,
+    )
+    .expect("text 帧必须可解析");
+    match chunk {
+        StreamChunk::Content { delta, .. } => {
+            assert!(
+                matches!(&delta, MessageContent::Text(t) if t == "he"),
+                "{delta:?}"
+            );
+        }
+        other => panic!("text 帧必须是 Content: {other:?}"),
+    }
+
+    let usage = parse_stream_frame(
+        r#"{"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4},
+            "candidates":[{"finishReason":"STOP"}]}"#,
+    )
+    .expect("usage 帧必须可解析");
+    assert!(
+        matches!(
+            usage,
+            StreamChunk::Usage {
+                total_tokens: 4,
+                ..
+            }
+        ),
+        "{usage:?}"
+    );
+
+    assert!(
+        parse_stream_frame("not json").is_none(),
+        "畸形帧返回 None 不 panic"
+    );
+
+    let mut encoder = GeminiStreamEncoder::new();
+    let events = encoder.encode(StreamChunk::Content {
+        index: 0,
+        delta: MessageContent::Text("yo".into()),
+        finish_reason: None,
+        logprobs: None,
+    });
+    assert!(!events.is_empty(), "content 编码产出事件");
+    let dumped = serde_json::to_string(&events).unwrap();
+    assert!(dumped.contains("yo"), "{dumped}");
+    let tail = encoder.finish();
+    assert!(
+        !tail.iter().any(|e| e.to_string().contains("[DONE]")),
+        "Gemini 流不发 [DONE]"
+    );
+}

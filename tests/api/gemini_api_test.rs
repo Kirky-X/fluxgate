@@ -828,4 +828,72 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         mock.assert_async().await;
     }
+    /// IR 路径非流式上游失败：必须映射 5xx 且走 log_failure（错误体带
+    /// Gemini 风格 status 码）。
+    #[tokio::test]
+    async fn generate_content_upstream_failure_is_5xx() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(500)
+            .with_body("boom")
+            .expect(1)
+            .create_async()
+            .await;
+        let state = make_state(
+            vec![vendor(
+                "openai",
+                "openai",
+                &server.url(),
+                "gpt-4",
+                "gemini-2.5-pro",
+                None,
+            )],
+            None,
+        )
+        .await;
+        let (status, body) = post_json(
+            app(state),
+            "/v1beta/models/gemini-2.5-pro:generateContent",
+            json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body["error"]["status"], "INTERNAL", "{body}");
+    }
+
+    /// IR 路径流式上游失败：同样映射 5xx（流建立失败即整体失败响应）。
+    #[tokio::test]
+    async fn stream_generate_content_upstream_failure_is_5xx() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(503)
+            .with_body("unavailable")
+            .expect(1)
+            .create_async()
+            .await;
+        let state = make_state(
+            vec![vendor(
+                "openai",
+                "openai",
+                &server.url(),
+                "gpt-4",
+                "gemini-2.5-pro",
+                None,
+            )],
+            None,
+        )
+        .await;
+        let (status, body) = post_json(
+            app(state),
+            "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+            json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"]["status"], "UNAVAILABLE", "{body}");
+    }
 }

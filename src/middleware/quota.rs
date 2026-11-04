@@ -3058,4 +3058,160 @@ mod tests {
             "越过水位后淘汰恢复且恰好清掉过期键"
         );
     }
+    /// 零预扣（tokens 与 cost 双零）直接放行且不建账——已知语义边界
+    /// （`consume` 文档注释同款断言钉）。
+    #[test]
+    fn consume_zero_precharge_short_circuits() {
+        let quota = QuotaState::new();
+        let windows = calendar_windows(5_000, 2_000);
+        quota.consume("k", &windows, 0, 0).expect("零预扣必须放行");
+        assert_eq!(quota.tracked_keys(), 0, "零预扣不得建账");
+        // 空窗集同样放行
+        quota.consume("k", &[], 100, 0).expect("空窗集放行");
+    }
+
+    /// 账本往返：snapshot 行 → 新 QuotaState restore → 占用等价；
+    /// 负值行 / __vendor__ 行 / 未知 window_id 行全部跳过不恢复。
+    #[test]
+    fn ledger_snapshot_restore_roundtrip_and_skips() {
+        let mut config = quota_enabled_config(true);
+        config.quota.windows = vec![crate::config::QuotaWindowConfig {
+            id: "d".into(),
+            period: "calendar".into(),
+            calendar: "daily".into(),
+            tokens_limit: 5_000,
+            ..Default::default()
+        }];
+        let windows = resolve_windows(&config, "tenant-1");
+        assert!(!windows.is_empty(), "测试前提：配置窗可解析");
+
+        let src = QuotaState::new();
+        src.consume("tenant-1", &windows, 1_200, 40).expect("预扣");
+
+        let rows = src.ledger_snapshot();
+        assert_eq!(rows.len(), 1, "单窗单键一行");
+        assert_eq!(rows[0].api_key_hash, "tenant-1");
+
+        // 三类跳过行：负值 / vendor 行 / 未知窗 id——恢复计数不得增加
+        let mut tainted = rows.clone();
+        tainted.push(crate::database::QuotaLedgerRow {
+            api_key_hash: "tenant-1".into(),
+            window_id: "d".into(),
+            window_start: 0,
+            tokens_used: -5,
+            cost_used_millicents: 0,
+            updated_at: 0,
+        });
+        tainted.push(crate::database::QuotaLedgerRow {
+            api_key_hash: vendor_ledger_key("budgeted"),
+            window_id: "d".into(),
+            window_start: 0,
+            tokens_used: 77,
+            cost_used_millicents: 0,
+            updated_at: 0,
+        });
+        tainted.push(crate::database::QuotaLedgerRow {
+            api_key_hash: "tenant-1".into(),
+            window_id: "nonexistent".into(),
+            window_start: 0,
+            tokens_used: 88,
+            cost_used_millicents: 0,
+            updated_at: 0,
+        });
+
+        let dst = QuotaState::new();
+        let restored = dst.restore_from_ledger(&tainted, &config);
+        assert_eq!(restored, 1, "仅合法租户窗行被恢复");
+        assert_eq!(dst.snapshot("tenant-1", "d"), (1_200, 40), "恢复后占用等价");
+    }
+
+    /// ledger_entries 的 scope 分类：tenant 键标 tenant，全局键标 global。
+    #[test]
+    fn ledger_entries_classify_scope() {
+        let mut config = quota_enabled_config(true);
+        config.quota.windows = vec![
+            crate::config::QuotaWindowConfig {
+                id: "daily".into(),
+                period: "calendar".into(),
+                calendar: "daily".into(),
+                tokens_limit: 5_000,
+                ..Default::default()
+            },
+            crate::config::QuotaWindowConfig {
+                id: "fleet".into(),
+                period: "rolling".into(),
+                rolling_secs: 3_600,
+                tokens_limit: 5_000,
+                scope: "global".into(),
+                ..Default::default()
+            },
+        ];
+        let windows = resolve_windows(&config, "tenant-1");
+        let quota = QuotaState::new();
+        assert!(quota.ledger_entries().is_empty(), "空账不列条目");
+        quota.consume("tenant-1", &windows, 100, 0).expect("预扣");
+        let entries = quota.ledger_entries();
+        assert_eq!(entries.len(), 2, "租户窗 + 全局窗各一条");
+        let scopes: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.scope.as_str()).collect();
+        assert!(
+            scopes.contains("tenant") && scopes.contains("global"),
+            "scope 分类: {scopes:?}"
+        );
+    }
+
+    /// vendor 预算 calendar 窗视图：reset/period/elapsed 按日历边界组装
+    /// （rolling 无状态分支的对照面）。
+    #[test]
+    fn vendor_budget_view_calendar_window_assembles_reset_fields() {
+        let mut config = quota_enabled_config(true);
+        config.vendor_budgets = vec![crate::config::VendorBudgetConfig {
+            vendor_id: "budgeted".into(),
+            tokens_limit: 10_000,
+            cost_limit_millicents: 0,
+            period: "calendar".into(),
+            calendar: "daily".into(),
+            tz_offset_secs: 0,
+            ..Default::default()
+        }];
+        let config = Arc::new(ConfigManager::new(config));
+        let quota = QuotaState::new();
+        let snapshot = config.read();
+        quota.record_vendor_usage(&snapshot, "budgeted", 4_000, 10);
+
+        let view = quota
+            .vendor_budget_view(&snapshot, "budgeted")
+            .expect("有预算 vendor 必有视图");
+        assert_eq!(view.tokens_used, 4_000);
+        assert!(!view.depleted(), "用量未达限额");
+        assert!(
+            view.period_secs >= 86_400,
+            "日窗周期上界: {}",
+            view.period_secs
+        );
+        assert!(view.reset_secs <= view.period_secs, "reset 不得超过窗长");
+        assert!(
+            view.elapsed_secs <= view.period_secs,
+            "elapsed 不得超过窗长"
+        );
+        assert!(!view.not_started, "已起算窗");
+    }
+
+    /// ledger 保留时长把 vendor 预算窗也纳入最长窗扫描（防短保留误删预算行）。
+    #[test]
+    fn ledger_retention_includes_vendor_budget_windows() {
+        let mut config = quota_enabled_config(false);
+        config.vendor_budgets = vec![crate::config::VendorBudgetConfig {
+            vendor_id: "budgeted".into(),
+            tokens_limit: 1,
+            period: "rolling".into(),
+            rolling_secs: 30 * 86_400,
+            ..Default::default()
+        }];
+        assert_eq!(
+            ledger_retention_secs(&config),
+            30 * DAY_SECS,
+            "vendor 预算窗长必须计入保留上界"
+        );
+    }
 }

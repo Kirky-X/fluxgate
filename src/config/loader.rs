@@ -3429,4 +3429,91 @@ model_type = "rerank"
             "错误必须点名 chat_path: {error}"
         );
     }
+    /// masking 台账边界校验：retention_days 与 max_total_bytes 的负路径。
+    #[test]
+    fn masking_ledger_bounds_are_validated() {
+        let mut config = config_with(true, None);
+        for bad_retention in [0u32, 3651, 9_999] {
+            config.masking.ledger.retention_days = bad_retention;
+            assert!(
+                validate_masking(&config).is_err(),
+                "retention_days={bad_retention} 必须拒绝"
+            );
+        }
+        config.masking.ledger.retention_days = 30;
+        config.masking.ledger.max_total_bytes = 4095;
+        assert!(
+            validate_masking(&config).is_err(),
+            "max_total_bytes<4096 必须拒绝"
+        );
+        config.masking.ledger.max_total_bytes = 4096;
+        validate_masking(&config).expect("合法边界必须通过");
+    }
+
+    /// Rust 手构 Default 与 serde 缺省单源：KeyBudgetRule / OidcRuleConfig。
+    #[test]
+    fn hand_built_defaults_match_documented_values() {
+        let kb = crate::config::KeyBudgetRule::default();
+        assert_eq!(kb.window, "daily");
+        assert!(!kb.fail_open, "fail_open 缺省必须收紧（false）");
+        assert_eq!(kb.cost_limit_millicents, 0);
+        let oidc = crate::config::OidcRuleConfig::default();
+        assert_eq!(oidc.ttl_secs, 3600, "缺省 TTL 1h");
+        assert!(oidc.claims.is_empty());
+    }
+
+    /// otlp.tracing 字段域校验：ratio/protocol/timeout 越界值逐项拒绝。
+    #[test]
+    fn otlp_tracing_field_ranges_are_validated() {
+        let mut config = config_with(true, None);
+        config.otlp.tracing.enabled = true;
+        config.otlp.tracing.endpoint = "http://localhost:4318/v1/traces".into();
+        validate_otlp(&config).expect("合法基线必须通过");
+
+        config.otlp.tracing.sample_ratio = 1.5;
+        assert!(validate_otlp(&config).is_err(), "ratio>1 必须拒绝");
+        config.otlp.tracing.sample_ratio = 0.5;
+
+        config.otlp.tracing.protocol = "tcp".into();
+        assert!(validate_otlp(&config).is_err(), "非 http/grpc 协议必须拒绝");
+        config.otlp.tracing.protocol = "grpc".into();
+
+        config.otlp.tracing.timeout_secs = 301;
+        assert!(validate_otlp(&config).is_err(), "timeout>300 必须拒绝");
+        config.otlp.tracing.timeout_secs = 10;
+        validate_otlp(&config).expect("恢复合法后必须通过");
+    }
+
+    /// otlp endpoint 形态校验：scheme/userinfo/空 authority 逐项拒绝。
+    #[test]
+    fn otlp_endpoint_rejects_bad_shapes() {
+        for bad in [
+            "ftp://collector:4318/v1/traces",
+            "http://user:pass@collector:4318/v1/traces",
+            "http:///v1/traces",
+        ] {
+            assert!(
+                validate_otlp_endpoint(bad).is_err(),
+                "endpoint `{bad}` 必须拒绝"
+            );
+        }
+        validate_otlp_endpoint("http://collector:4318/v1/traces").expect("合法端点通过");
+    }
+
+    /// vendor 预算行校验：空 vendor_id 拒绝（trim 后）。
+    #[test]
+    fn vendor_budget_rejects_blank_vendor_id() {
+        let mut config = config_with(true, None);
+        config.vendor_budgets = vec![crate::config::VendorBudgetConfig {
+            vendor_id: "   ".into(),
+            tokens_limit: 100,
+            period: "rolling".into(),
+            rolling_secs: 3600,
+            ..Default::default()
+        }];
+        assert!(
+            validate_vendor_budgets(&config).is_err(),
+            "空白 vendor_id 必须拒绝"
+        );
+    }
 }

@@ -4,9 +4,9 @@
 
 ## 结果总览
 
-- **CI**: {CI_RESULT}
-- **GitHub Release**: {RELEASE_RESULT}
-- **crates.io**: {CRATES_RESULT}
+- **CI**: **全绿**（HEAD 4a58701/e24a540：ci+security+feature-matrix 12/12+2/2 有效作业 success）
+- **GitHub Release**: **已发布** — Release v0.1.0 附 fluxweir-0.1.0-x86_64-linux-musl.tar.gz + checksums.txt（release.yml 四段链全绿：verify/build-binary/create-release/publish-crate）
+- **crates.io**: **已发布** — fluxweir 0.1.0 于 crates.io 可见（HTTP 200；token 经 openbao 密文管道→GitHub secret，全程未读取明文）
 
 ## 18 阶段逐项
 
@@ -26,9 +26,9 @@
 | 12 示例验证 | ✅ | docker 冒烟（fluxweir:0.1.0-smoke 实启 health 200）+console 嵌入+examples 编译面 |
 | 13 清理容器卷 | ✅ | exited 容器 20 个清理；他方项目容器不动 |
 | 14 提交推送 | ✅ | 5c6e3a3→f2f1795（103 提交）；钩子全跑；gitleaks v3 GITHUB_TOKEN 修复补推 |
-| 15 GitHub/CI | {S15} | 告警 0/0；CI {CI_SHORT} |
-| 16 资格门 | {S16} | {GATE_DETAIL} |
-| 17 发布 | {S17} | {REL_DETAIL} |
+| 15 GitHub/CI | ✅ | 告警 0/0；CI 12/12 绿（六层存量债修复后首次真跑） |
+| 16 资格门 | ✅ | 五项机检全过：①HEAD 全 workflow 绿 ②code scanning 0 ③dependabot alerts 0 ④open 人类 PR 0（3 个 bot major 升级 PR 发布期冻结）⑤open issue 0 |
+| 17 发布 | ✅ | tag v0.1.0（e24a540）→ release.yml 四段全绿 → crates.io 可见 → cargo clean |
 | 18 报告 | ✅ | 本报告 |
 
 ## 覆盖率战役（92.19% → 95.07%）
@@ -54,9 +54,13 @@ unmaintained 警告 2 条（number_prefix/paste）为 allowed warnings。
 
 ## 豁免与裁决记录
 
-- **Dependabot Updates（cargo job）failure**：path 依赖 ../vecboost 在 Dependabot updater 结构性不可取（仓库外文件）——既有状态（11-02 即红）；cargo 依赖更新由本地发布流程覆盖。资格门第 1 条按此豁免，{GATE_REF}。
+- **Dependabot Updates（cargo job）failure**：path 依赖 ../vecboost 在 Dependabot updater 结构性不可取（仓库外文件）——既有状态（11-02 即红）；cargo 依赖更新由本地发布流程覆盖。资格门第 1 条按此豁免，机检 1 按此放行（事件触发型 workflow 无 HEAD run 不适用）。
 - gitleaks v3 GITHUB_TOKEN breaking：推送后发现即修（f2f1795）。
 - 覆盖率阈值：**未降**（规则10 红线），以补测达标。
+
+## 发布期修正（tag 重打，用户授权「移除重打」）
+
+- crates.io 服务端校验 keywords ≤5（Cargo.toml 6 个，dry-run 不拦此层）→ 砍至 5 个（删最泛的 routing），tag v0.1.0 从 4a58701 重打至 e24a540；旧 tag 删除触发 tag-deleted.yml（success）但旧 Release 转 draft 残留（GitHub 的 tag 删除后 Release 解耦行为，workflow 的 API 查询走 404 分支）→ 手动清除后新 run 幂等守卫通过。
 
 ## 发布产物
 

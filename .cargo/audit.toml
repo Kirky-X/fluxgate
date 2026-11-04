@@ -1,0 +1,14 @@
+# cargo audit 豁免清单（CI Security job 与本机同口径）。
+# 逐条理由：
+# - RUSTSEC-2023-0071（rsa 0.9.10 Marvin Attack）：上游无修复版
+#   （"No fixed upgrade is available"）；引入链为 jsonwebtoken(option
+#   rust_crypto)→rsa，本仓仅用于 OIDC token 公钥验签，无私钥解密操作，
+#   时序侧信道不构成密钥恢复面。跟踪上游发布修复版后移除。
+# - RUSTSEC-2026-0387（crypto-bigint 0.5.5 常时操作时序变化）：修复版
+#   >=0.7.6，但被 rsa 0.9.10 锁死 0.5 线（Cargo.lock 传递依赖），随上一条
+#   rsa 的修复一并解除。
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071",
+    "RUSTSEC-2026-0387",
+]

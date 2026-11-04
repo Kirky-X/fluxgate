@@ -1,6 +1,7 @@
 # Tag 删除时清理对应的 GitHub Release（对齐 confers 基线）。
-# Fluxweir 以源码形态发布（Release 只带 tag 的自动生成源码包，不附二进制、
-# 不发 crates.io），故无 yank 提示环节：删除 tag 时只需删除 Release。
+# Fluxweir 发布形态：Release 附源码压缩包 + musl 二进制与 checksums
+# （release.yml 构建上传），并条件发布 crates.io（CARGO_REGISTRY_TOKEN 存在时）。
+# 删除 tag 时只需删除 Release；crates.io 侧已发布版本不可删除，必要时走 yank。
 
 name: Tag Deleted
 

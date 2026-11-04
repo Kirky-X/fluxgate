@@ -260,7 +260,7 @@ flowchart LR
 | **3. 开发** | 新分支开发，保持 commit 原子性；新能力记得 feature 门控与测试 |
 | **4. 本地验证** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` 全绿（非默认后端另跑 `cargo check -p fluxweir --no-default-features --features "full,db-postgres"`） |
 | **5. PR** | 描述变更动机与影响面，关联 Issue；等待 CI 全绿与评审 |
-| **6. 发布** | Kirky.X 推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`：自动创建 GitHub Release（版本含 `-` 即标记预发布），**Release 只带 GitHub 自动生成的源码压缩包、不附二进制**；tag 已推送但流水线失败时，可在 Actions 手动触发同一 workflow 并填版本号（x.y.z，不带 v）重发（要求该 tag 已存在）；二进制部署走 docker 镜像（`docker build -f docker/Dockerfile .`）或本机构建 `cargo build --locked --release`；删除 tag 时 `tag-deleted.yml` 自动清理对应 Release |
+| **6. 发布** | Kirky.X 推送 `v*.*.*` tag 触发 `.github/workflows/release.yml`：`verify` 校验 tag↔Cargo.toml 版本一致 → 构建 x86_64-linux-musl 静态二进制与 checksums.txt（alpine 容器与 `docker/Dockerfile` build 阶段同源）→ 创建 GitHub Release（附自动生成的源码压缩包、二进制、checksums；版本含 `-` 即标记预发布）→ 条件发布 crates.io（`CARGO_REGISTRY_TOKEN` secret 存在时执行，缺失跳过不报错）；tag 已推送但流水线失败时，可在 Actions 手动触发同一 workflow 并填版本号（x.y.z，不带 v）重发（要求该 tag 已存在）；二进制部署也可走 docker 镜像（`docker build -f docker/Dockerfile .`）或本机构建 `cargo build --locked --release`；删除 tag 时 `tag-deleted.yml` 自动清理对应 Release（crates.io 侧版本不可删，必要时走 yank） |
 
 安全相关修复请勿通过公开 PR 披露细节，走 [Security Advisories](https://github.com/Kirky-X/fluxweir/security/policy)（见 [安全文档](./SECURITY.md#-漏洞报告流程)）。
 

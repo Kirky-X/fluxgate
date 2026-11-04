@@ -18,7 +18,7 @@ license = "MIT"
 description = "智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度 | Intelligent multi-provider LLM routing gateway"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
 repository = "https://github.com/Kirky-X/fluxweir"
-keywords = ["llm", "gateway", "proxy", "openai", "anthropic", "routing"]
+keywords = ["llm", "gateway", "proxy", "anthropic", "openai"]
 categories = ["network-programming", "web-programming::http-server", "api-bindings"]
 
 [lib]

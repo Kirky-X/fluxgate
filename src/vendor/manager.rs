@@ -3484,7 +3484,7 @@ impl VendorManager {
 
         #[cfg(feature = "otlp")]
         let otlp_status = response.status();
-        let passthrough_outcome: Result<Value, GateError> = (|| async {
+        let passthrough_outcome: Result<Value, GateError> = async {
             if !response.status().is_success() {
                 return Err(Self::handle_passthrough_non_success(
                     vendor_id, &instance, response, credential,
@@ -3508,7 +3508,7 @@ impl VendorManager {
                 None => response_json,
             };
             Ok(response_json)
-        })()
+        }
         .await;
         #[cfg(feature = "otlp")]
         {

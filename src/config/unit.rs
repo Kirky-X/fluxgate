@@ -12,7 +12,7 @@
 //!   （`src/config/model_catalog.rs`）。
 //!
 //! 数值等价性：`1 currency / 1M tokens ≡ 1 micro-currency / token`
-//!（10⁻⁶），故两口径的**数值**恒等——[`source_price_to_catalog_price`]
+//!（10⁻⁶），故两口径的**数值**恒等——`source_price_to_catalog_price`
 //! 是该恒等映射的唯一裁决点，测试钉死「3.0 USD/1M ≡ 3.0 μ$/token」；
 //! 任一口径未来单独漂移（如 catalog 改 per-token 微单位）时此处先行变红。
 

@@ -791,7 +791,7 @@ impl QuotaState {
     /// 启动恢复（design 决策 3）：仅恢复仍处活动期的窗（window_start + 周期
     /// ≥ now），过期行跳过；周期语义按当前配置解释（账本不存周期事实）。
     /// 返回恢复窗数。租户 / `__global__` / `__vendor__:{id}` 三类作用域行同路。
-    /// 租户账本灌回套 [`QUOTA_MAX_TRACKED_KEYS`] 上限：超限键跳过并显性 warn
+    /// 租户账本灌回套 `QUOTA_MAX_TRACKED_KEYS` 上限：超限键跳过并显性 warn
     ///（读侧 SQL 下界已滤过期行，此处防高基数残留撑爆内存——被跳过键的窗
     /// 后续请求自然重建，fail-open 方向与 flush 误差一致）。
     pub fn restore_from_ledger(
@@ -1355,7 +1355,7 @@ fn quota_applies_config(
 }
 
 /// key 预算估成本（R-budget-001 入口单点）：输入腿 = 请求体字节 / cpt ×
-/// 输入单价（档源与租户配额同一 [`resolve_price_source`]，不允许第二套
+/// 输入单价（档源与租户配额同一 `resolve_price_source`，不允许第二套
 /// 价目表）；输出腿 = 完成 token 滑动均值 × 输出单价，冷启动（无均值）
 /// 取 `cold_start_output_millicents`（调用方传规则窗限额一半——保守方向：
 /// 首请求预留不超半窗输出）。

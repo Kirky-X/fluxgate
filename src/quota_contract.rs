@@ -63,7 +63,7 @@ impl VendorBudgetView {
             || (self.cost_limit > 0 && self.cost_used >= self.cost_limit)
     }
 
-    /// smart 归一化重置时刻 ∈ [0,1]：reset_secs / period_secs（0 = 即将
+    /// smart 归一化重置时刻 ∈ \[0,1\]：reset_secs / period_secs（0 = 即将
     /// 重置 → 加成最大；1 = 无压力）。窗未起算（rolling 无状态）→ 1.0。
     pub fn normalized_reset(&self) -> f64 {
         if self.not_started {
@@ -93,7 +93,7 @@ impl VendorBudgetView {
         ratio
     }
 
-    /// 剩余额度比例 ∈ [0,1]（已判维度取最小——最紧维度代表余量；
+    /// 剩余额度比例 ∈ \[0,1\]（已判维度取最小——最紧维度代表余量；
     /// 双限额均 0 = 无已判维度 → None，降档/平局打破不判该候选）。
     /// 语义纯函数（同 normalized_reset/pace_ratio：路由打分不做隐藏 IO）。
     pub fn remaining_fraction(&self) -> Option<f64> {

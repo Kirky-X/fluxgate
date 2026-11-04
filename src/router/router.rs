@@ -2497,7 +2497,7 @@ pub struct WeightBreakdown {
 /// smart 因子的每候选打分输入（重置最快加成；quota-aware-routing T007）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QuotaFactorScore {
-    /// reset_secs / period_secs ∈ [0,1]（0 = 即将重置 → 加成最大）
+    /// reset_secs / period_secs ∈ \[0,1\]（0 = 即将重置 → 加成最大）
     pub normalized_reset: f64,
 }
 
@@ -2565,7 +2565,7 @@ fn degrade_for(
 /// 配额因子打分上下文（纯函数）：smart → 每候选重置归一化分（未起算窗不
 /// 加成）+ 平局打破（reset_at 更早者在 ε 平局组内获满加成）；pace → 每候选
 /// 消耗率带乘性因子；双模式统一叠加两级降档乘数。off → 全空（零评分）。
-/// views 与候选集同序对齐（[`Router::apply_quota_filter`] 产物直入，免二次
+/// views 与候选集同序对齐（`Router::apply_quota_filter` 产物直入，免二次
 /// 查询）。pub 供确定性测试（R-budget-002 平局打破/降档验证入口）。
 pub fn quota_factor_scores(
     mode: crate::config::QuotaFactorMode,

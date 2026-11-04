@@ -244,7 +244,7 @@ impl AffinityWriter {
     /// 亲和是优化非承诺：落盘投递失败不影响已生效的内存粘性。
     ///
     /// 写入语义按模式分流：
-    /// - `legacy`：与派发成功点的 [`crate::api::bind_session_affinity`] 同语义
+    /// - `legacy`：与派发成功点的 `crate::api::bind_session_affinity` 同语义
     ///   （租户隔离开启时首绑定收敛 `bind_if_absent`，否则无条件 `bind`），
     ///   不绕过并发首绑定的收敛结果；
     /// - `auto`/`turn`：`bind_for` 无条件覆盖（每次结算是一份新的粘持判定）。

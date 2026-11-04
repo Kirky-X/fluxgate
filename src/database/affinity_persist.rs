@@ -85,7 +85,7 @@ impl AffinityPersister {
     }
 
     /// 确定性落盘点（测试与运维）：把给定批次直接 UPSERT 落库，不经通道。
-    /// 与后台循环共用 [`flush_buffer`] 的失败处理口径（整批丢弃 + 计数 +
+    /// 与后台循环共用 `flush_buffer` 的失败处理口径（整批丢弃 + 计数 +
     /// warn，不重试）。
     pub async fn flush_now(&self, sticks: &[AffinityStick]) -> Result<(), GateError> {
         if sticks.is_empty() {

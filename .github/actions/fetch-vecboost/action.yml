@@ -16,7 +16,10 @@ runs:
         curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
           "https://crates.io/api/v1/crates/vecboost/${VB_VERSION}/download" -o /tmp/vb.crate
         echo "${VB_SHA256}  /tmp/vb.crate" | sha256sum -c --strict -
-        mkdir -p "$GITHUB_WORKSPACE/vbtmp"
-        tar -xzf /tmp/vb.crate -C "$GITHUB_WORKSPACE/vbtmp"
-        rm -rf "$GITHUB_WORKSPACE/../vecboost"
-        mv "$GITHUB_WORKSPACE/vbtmp/vecboost-${VB_VERSION}" "$GITHUB_WORKSPACE/../vecboost"
+        # 全程相对路径：windows runner 的 $GITHUB_WORKSPACE 是反斜杠形式
+        # （D:\a\repo\repo），绝对路径拼接会让 Git Bash 的 mkdir/tar 解析成
+        # 畸形目录；cwd 即 workspace，`..` 落点与 Linux 一致
+        mkdir -p ../vbtmp
+        tar -xzf /tmp/vb.crate -C ../vbtmp
+        rm -rf ../vecboost
+        mv "../vbtmp/vecboost-${VB_VERSION}" ../vecboost

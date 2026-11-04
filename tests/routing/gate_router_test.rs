@@ -5718,8 +5718,10 @@ mod quota_factor {
         let early = weights.iter().find(|(id, _)| id == "early").unwrap().1;
         let late = weights.iter().find(|(id, _)| id == "late").unwrap().1;
         assert!(early > late, "平局打破后 reset 更早者权重更高: {weights:?}");
+        // 容差 1e-3：seed 用 Utc::now() 相对偏移，打分时 now 已漂移毫秒-秒级
+        //（CI 慢 runner 放大），1e-6 在漂移下偶发假红；语义锚 = 差值 ≈ 1/12
         assert!(
-            ((early - late) - 1.0 / 12.0).abs() < 1e-6,
+            ((early - late) - 1.0 / 12.0).abs() < 1e-3,
             "平局打破差 = 满加成 − (1-normalized) = 1/12：early={early} late={late}"
         );
 
@@ -5735,8 +5737,9 @@ mod quota_factor {
         let weights = weights_from(&config_off, state_off).await;
         let early = weights.iter().find(|(id, _)| id == "early").unwrap().1;
         let late = weights.iter().find(|(id, _)| id == "late").unwrap().1;
+        // 同上：秒级时钟漂移容忍（同窗内 normalized 漂移 <1e-3）
         assert!(
-            (early - late).abs() < 1e-6,
+            (early - late).abs() < 1e-3,
             "ε=0 平局打破关闭，score 平局即权重平局: {weights:?}"
         );
     }

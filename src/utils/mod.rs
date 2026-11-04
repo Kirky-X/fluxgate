@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Kirky.X🌠
 // SPDX-License-Identifier: MIT
 
-// metrics 观测核：消费者全在 vendor-management 传递范围内，常开基座零引用，
-// 随 vendor-management 门控（精简/无 vendor 组合不编译）。
-#[cfg(feature = "vendor-management")]
+// metrics 观测核：原子计数器零重依赖（std+serde），恒开——quota 中间件
+// 无特征门控引用 GlobalMetrics（首跑 feature-matrix 暴露的 E0433：单特征
+// 组合缺 vendor-management 时 cannot find metrics），不能再随
+// vendor-management 门控。
 pub mod metrics;
 pub mod retry;
 /// 崩溃安全状态文件读取（magpie-absorb-r1：主坏隔离+`.bak` 回退）。

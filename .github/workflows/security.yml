@@ -40,6 +40,8 @@ jobs:
       - name: gitleaks 密钥扫描
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
+          # v3 起强制要求（PR 扫描鉴权），缺失即 job 红且跳过扫描
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
       # 不引入 cargo-vet：`cargo vet verify` 以仓库根存在 supply-chain/（vet.toml /
       # imports.lock）为前提，本仓没有该目录，保留只会必红。依赖来源审计由

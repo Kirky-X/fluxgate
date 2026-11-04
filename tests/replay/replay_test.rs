@@ -47,6 +47,7 @@ fn log(
         prompt_tokens: Some(prompt),
         completion_tokens: Some(completion),
         total_tokens: Some(prompt + completion),
+        upstream_key_fingerprint: None,
         duration_ms: Some(1),
         cost_usd: Some(cost),
         session_key: session.map(str::to_string),

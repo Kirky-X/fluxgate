@@ -1,13 +1,16 @@
 #===============================================================================
-# Fluxweir 发布流水线（对齐 confers 基线：推 v* tag 触发）
+# Fluxweir 发布流水线（推 v* tag 触发；workflow_dispatch 供恢复/重发）
 #
-# 产物：Release 只带 GitHub 自动生成的源码压缩包（zip / tar.gz），不附二进制
-# 产物、不发 crates.io。二进制部署走两条路：docker 镜像（docker/Dockerfile
-# 独立构建，纯 registry 依赖）或本机构建 `cargo build --locked --release`。
+# 产物：GitHub Release 附源码压缩包（自动生成）+ x86_64-linux-musl 静态
+# 二进制 + checksums.txt；CARGO_REGISTRY_TOKEN secret 存在时另发 crates.io。
+# docker 镜像构建（docker/Dockerfile）与本机 `cargo build --locked --release`
+# 仍为等价部署路径（镜像构建用本地 ../vecboost，与发布二进制的 registry
+# 面可能存在未发布的本地差异）。
 #
-# 触发面：tag 推送为主；workflow_dispatch 供恢复/重发（如 tag 已推送但流水线
-# 失败）——手动触发必须显式给 version，且该 tag 必须已存在（resolve 步骤做
-# 存在性校验），避免 Releases API 按默认分支 HEAD 新建 tag 造出幻影发布。
+# 触发面：tag 推送为主；手动重发必须显式给 version 且 tag 已存在（verify
+# 做存在性校验）。所有 job（含手动重发路径）一律 checkout tag 指向的
+# commit 构建与校验——源码包/二进制/crates.io 包三者同源，防「分支 HEAD
+# 构建 + tag 源码包」的幻影发布变体。
 #===============================================================================
 name: Release
 
@@ -23,7 +26,9 @@ on:
         type: string
 
 permissions:
-  contents: write
+  # 最小权限默认；唯 create-release 需要 contents: write（job 级显式提升）。
+  # 构建作业在容器内执行第三方依赖的 build.rs，不得持有写凭据。
+  contents: read
 
 concurrency:
   # 固定组：tag 推送（refs/tags/…）与手动重发（refs/heads/…）是不同 ref，
@@ -33,107 +38,22 @@ concurrency:
 
 jobs:
   #-----------------------------------------------------------------------------
-  # 两段式前置校验：tag ↔ Cargo.toml 版本一致性。失配在首个 job 失败，
-  # 不进入构建/发布（对齐 confers/pangu 基线的 verify-first 设计）。
+  # 两段式前置校验（全链唯一版本真源）：semver 校验、换行清洗、tag 存在性、
+  # tag commit 的 manifest 版本一致性、vecboost registry 版本推导。
+  # version / vb_version 经 outputs 下发，下游零重复解析。
   #-----------------------------------------------------------------------------
   verify:
     name: Verify tag ↔ manifest version
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      version: ${{ steps.pre.outputs.version }}
+      vb_version: ${{ steps.manifest.outputs.vb_version }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Check manifest version matches tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="${INPUT_VERSION}"
-          fi
-          MANIFEST="$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
-          if [[ "$VERSION" != "$MANIFEST" ]]; then
-            echo "::error::tag v${VERSION} 与 Cargo.toml version=${MANIFEST} 不一致——以 tag 为准 bump manifest 后重打 tag"
-            exit 1
-          fi
-          echo "verify ok: v${VERSION} == ${MANIFEST}"
-
-  #-----------------------------------------------------------------------------
-  # musl 静态二进制：与 docker/Dockerfile build 阶段同源（同镜像/apk 清单/
-  # default 口径 --locked 构建）。路径用 docker run 而非 job 级 container——
-  # node20 actions 在 alpine 容器内不可跑。vecboost 从 crates.io 下载解包到
-  # ../vecboost：根 manifest 的 optional path+version 双写依赖在 --locked
-  # 校验期要读其 manifest，且发布声明依赖的就是 registry rc.3——构建面与
-  # publish 面同源。无需任何 secret（crates.io 公开下载）。
-  #-----------------------------------------------------------------------------
-  build-binary:
-    name: Build musl binary (x86_64)
-    needs: [verify]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      VB_VERSION: 0.3.0-rc.3
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Fetch vecboost from crates.io
-        run: |
-          curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
-            "https://crates.io/api/v1/crates/vecboost/${VB_VERSION}/download" -o /tmp/vb.crate
-          mkdir -p ../vbtmp && tar -xzf /tmp/vb.crate -C ../vbtmp
-          mv "../vbtmp/vecboost-${VB_VERSION}" ../vecboost
-      - name: Build in alpine container
-        # 镜像/apk 清单与 docker/Dockerfile build 阶段同步维护（dependabot 只解析 Dockerfile）
-        run: |
-          docker run --rm \
-            -v "$PWD":/app -w /app \
-            -v "$GITHUB_WORKSPACE/..":/build-root \
-            docker.io/library/rust:1.99-alpine3.24 \
-            sh -c "apk add --no-cache clang lld musl-dev pkgconfig sqlite-dev && cargo build --locked --release --bin fluxweir"
-      - name: Package with checksums
-        # 手动重发（workflow_dispatch）时 GITHUB_REF_NAME 是分支名，版本取输入值；
-        # 与上方 verify/create-release 的 resolve 同一判定
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then VERSION="${INPUT_VERSION}"; fi
-          cp target/release/fluxweir "fluxweir-${VERSION}-x86_64-linux-musl"
-          tar -czf "fluxweir-${VERSION}-x86_64-linux-musl.tar.gz" "fluxweir-${VERSION}-x86_64-linux-musl"
-          sha256sum "fluxweir-${VERSION}-x86_64-linux-musl.tar.gz" > checksums.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: musl-binary
-          path: |
-            fluxweir-*-x86_64-linux-musl.tar.gz
-            checksums.txt
-          retention-days: 3
-
-  #-----------------------------------------------------------------------------
-  # 创建 GitHub Release（自动生成变更说明；rc/beta/alpha 后缀标记预发布）
-  #-----------------------------------------------------------------------------
-  create-release:
-    needs: [verify, build-binary]
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # 本 job 只用 gh api 与 action-gh-release（release 侧走自己的 token
-          # 输入），无需把 contents: write 的 git 凭据落盘到 .git/config
-          persist-credentials: false
-      # 版本号解析：tag 触发取 tag 名（去 v 前缀），手动触发取输入值。
-      # 两条路都过 semver 校验，且必须命中已存在的 tag——Releases API 在 tag
-      # 不存在时按默认分支 HEAD 新建 tag，版本号笔误会造出「源码包 = 分支内容、
-      # tag 指向错提交」的幻影发布，故先做存在性校验再建 Release。
-      # 输入与版本值均经 env 传递，不内插进 run。
-      - name: Resolve version
-        id: resolve
+      # 版本解析与校验先于 checkout：非法输入/不存在的 tag 在烧任何构建
+      # 资源前失败。输入值经 env 传递，不内插进 run。
+      - name: Resolve and validate version
+        id: pre
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ inputs.version }}
@@ -152,40 +72,130 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" >/dev/null \
             || { echo "::error::tag v${VERSION} 不存在——先推送 tag 再重发"; exit 1; }
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      # 校验读 tag 指向 commit 的 manifest（手动重发时默认分支 HEAD 可能已
+      # 前进），与发布产物真正的构建源一致。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/v${{ steps.pre.outputs.version }}
+          persist-credentials: false
+      - name: Check manifest matches tag; derive vecboost version
+        id: manifest
+        run: |
+          VERSION="${{ steps.pre.outputs.version }}"
+          MANIFEST="$(grep -m1 '^version = "' Cargo.toml | sed 's/^version = "\([^"]*\)".*/\1/')"
+          if [[ -z "$MANIFEST" || "$VERSION" != "$MANIFEST" ]]; then
+            echo "::error::tag v${VERSION} 与 tag commit 的 Cargo.toml version=${MANIFEST:-<未解析>} 不一致——以 tag 为准 bump manifest 后重打 tag"
+            exit 1
+          fi
+          # vecboost 的 path+version 双写依赖：发布面（registry 包）版本以
+          # tag commit 的 Cargo.toml 声明为单一真源，下游 job 不再各自硬编码
+          VB_VERSION="$(grep -m1 '^vecboost = {' Cargo.toml | sed 's/.*version = "\([^"]*\)".*/\1/')"
+          if [[ -z "$VB_VERSION" ]]; then
+            echo "::error::未能从 Cargo.toml 解析 vecboost version 声明"
+            exit 1
+          fi
+          echo "vb_version=${VB_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "verify ok: v${VERSION} == manifest ${MANIFEST}; vecboost ${VB_VERSION}"
+
+  #-----------------------------------------------------------------------------
+  # musl 静态二进制：与 docker/Dockerfile build 阶段同源（同镜像/apk 清单/
+  # default 口径 --locked 构建 + lld 链接）。用 docker run 而非 job 级
+  # container——node actions 在 alpine 容器内不可跑。vecboost 从 crates.io
+  # 下载（sha256 钉校验，Cargo.lock 对 path 依赖无 checksum 锚点，这是发布
+  # 面唯一的完整性锚）后挂到容器内 /vecboost——cargo 相对 /app/Cargo.toml
+  # 解析 `path = "../vecboost"` 的落点（挂别处则 --locked 解析期即失败）。
+  #-----------------------------------------------------------------------------
+  build-binary:
+    name: Build musl binary (x86_64)
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VB_VERSION: ${{ needs.verify.outputs.vb_version }}
+      # vecboost 0.3.0-rc.3 .crate 包的 sha256（升级 VB_VERSION 时同步更新）
+      VB_SHA256: f9a537602119429b687de2f216311a83fce6afa816a1aee08d647aa77f3bf5bf
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/v${{ needs.verify.outputs.version }}
+          persist-credentials: false
+      - name: Fetch vecboost from crates.io (pinned sha256)
+        run: |
+          curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
+            "https://crates.io/api/v1/crates/vecboost/${VB_VERSION}/download" -o /tmp/vb.crate
+          echo "${VB_SHA256}  /tmp/vb.crate" | sha256sum -c --strict -
+          mkdir -p ../vbtmp && tar -xzf /tmp/vb.crate -C ../vbtmp
+          mv "../vbtmp/vecboost-${VB_VERSION}" ../vecboost
+      - name: Build in alpine container
+        # 镜像/apk 清单与 docker/Dockerfile build 阶段同步维护（dependabot 只解析 Dockerfile）
+        run: |
+          docker run --rm \
+            -v "$PWD":/app -w /app \
+            -v "$GITHUB_WORKSPACE/../vecboost":/vecboost \
+            docker.io/library/rust:1.99-alpine3.24 \
+            sh -c "apk add --no-cache clang lld musl-dev pkgconfig sqlite-dev && RUSTFLAGS='-C link-arg=-fuse-ld=lld' cargo build --locked --release --bin fluxweir"
+      - name: Package with checksums
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cp target/release/fluxweir "fluxweir-${VERSION}-x86_64-linux-musl"
+          tar -czf "fluxweir-${VERSION}-x86_64-linux-musl.tar.gz" "fluxweir-${VERSION}-x86_64-linux-musl"
+          sha256sum "fluxweir-${VERSION}-x86_64-linux-musl.tar.gz" > checksums.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: musl-binary
+          path: |
+            fluxweir-*-x86_64-linux-musl.tar.gz
+            checksums.txt
+          retention-days: 3
+
+  #-----------------------------------------------------------------------------
+  # 创建 GitHub Release（自动生成变更说明；rc/beta/alpha 后缀标记预发布）。
+  # 版本校验全部在 verify 完成，本 job 只消费 outputs；无源码检出需求
+  # （gh api / action-gh-release 均不依赖仓库文件）。
+  #-----------------------------------------------------------------------------
+  create-release:
+    needs: [verify, build-binary]
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
       - name: Download musl binary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: musl-binary
           path: dist
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           # 显式给 tag_name：手动触发时 GITHUB_REF 是分支，不显式指定会落在错误 ref
-          tag_name: v${{ steps.resolve.outputs.version }}
+          tag_name: v${{ needs.verify.outputs.version }}
           generate_release_notes: true
           draft: false
           # 预发布判定跟 semver 语义走：版本含 '-' 即预发布（rc/beta/alpha 等）
-          prerelease: ${{ contains(steps.resolve.outputs.version, '-') }}
+          prerelease: ${{ contains(needs.verify.outputs.version, '-') }}
           files: |
             dist/fluxweir-*-x86_64-linux-musl.tar.gz
             dist/checksums.txt
 
-      - name: Verify release uniqueness (idempotency guard)
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq "[.[] | select(.tag_name == \"${TAG}\")] | length")
-          echo "release objects for ${TAG}: ${COUNT}"
-          if [ "${COUNT}" != "1" ]; then
-            echo "::error::expected exactly 1 release for ${TAG}, found ${COUNT}; release state is not idempotent"
-            exit 1
-          fi
+      - name: Verify release exists (idempotency guard)
+        # O(1) 端点：同 tag 在 GitHub 语义上至多一个 release，200 即存在；
+        # 不做全量翻页数数（release 增长后徒增请求与限流暴露）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.verify.outputs.version }}
+        run: |
+          STATUS=$(gh api -i "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" | head -1 | tr -d '\r')
+          echo "release for ${TAG}: ${STATUS}"
+          [[ "$STATUS" == *"200"* ]] || { echo "::error::release for ${TAG} 未按预期存在"; exit 1; }
 
   #-----------------------------------------------------------------------------
   # 条件发布 crates.io：仅当 CARGO_REGISTRY_TOKEN secret 存在时执行（缺 secret
   # 跳过不报错）。token 经 env 传递（cargo 原生读取 CARGO_REGISTRY_TOKEN），
-  # 不落盘不回显。vecboost 就位同 build-binary：--locked 校验期需读其 manifest。
+  # 不落盘不回显。已发布版本（手动重发场景）幂等跳过。vecboost 就位与校验
+  # 同 build-binary。
   #-----------------------------------------------------------------------------
   publish-crate:
     name: Publish fluxweir to crates.io
@@ -195,21 +205,33 @@ jobs:
     env:
       HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      VB_VERSION: 0.3.0-rc.3
+      VERSION: ${{ needs.verify.outputs.version }}
+      VB_VERSION: ${{ needs.verify.outputs.vb_version }}
+      VB_SHA256: f9a537602119429b687de2f216311a83fce6afa816a1aee08d647aa77f3bf5bf
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: refs/tags/v${{ needs.verify.outputs.version }}
           persist-credentials: false
-      - name: Fetch vecboost from crates.io
+      - name: Fetch vecboost from crates.io (pinned sha256)
         run: |
           curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
             "https://crates.io/api/v1/crates/vecboost/${VB_VERSION}/download" -o /tmp/vb.crate
+          echo "${VB_SHA256}  /tmp/vb.crate" | sha256sum -c --strict -
           mkdir -p ../vbtmp && tar -xzf /tmp/vb.crate -C ../vbtmp
           mv "../vbtmp/vecboost-${VB_VERSION}" ../vecboost
-      - name: Publish
+      - name: Publish (idempotent)
         run: |
           if [[ "$HAS_TOKEN" != "true" ]]; then
             echo "CARGO_REGISTRY_TOKEN 未配置——跳过 crates.io 发布"
             exit 0
           fi
-          cargo publish -p fluxweir --locked
+          # 已发布版本幂等跳过：手动重发不因 already exists 标红链尾
+          HTTP=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A "fluxweir-release" "https://crates.io/api/v1/crates/fluxweir/${VERSION}")
+          if [[ "$HTTP" == "200" ]]; then
+            echo "fluxweir ${VERSION} 已在 crates.io——跳过发布"
+            exit 0
+          fi
+          [[ "$HTTP" == "404" ]] || { echo "::error::crates.io 查询异常: HTTP ${HTTP}"; exit 1; }
+          cargo publish -p fluxweir --locked --registry crates-io

@@ -45,6 +45,7 @@ Docker。安全面：API Key 仅存摘要常量比较、netguard SSRF 防护、
 - **GitHub Release 附 x86_64-linux-musl 静态二进制与 checksums.txt**：`release.yml` 重构为四段链——`verify`（semver 校验/换行清洗/tag 存在性/tag commit 的 manifest 版本一致性/vecboost registry 版本推导，全部 job 一律 checkout tag 指向 commit 构建，源码包/二进制/crates.io 包三者同源）→ `build-binary`（alpine 容器与 `docker/Dockerfile` build 阶段同源构建 + lld 链接 + vecboost 从 crates.io 下载并 sha256 钉校验）→ `create-release`（附产物 + O(1) 幂等守卫）→ `publish-crate`（`CARGO_REGISTRY_TOKEN` secret 存在时发布 crates.io，已发布版本幂等跳过）。权限最小化（workflow 级 `contents: read`，唯 release job 提写）。
 - **crates.io 发布就绪**：`Cargo.toml` 补 `license = "MIT"`；vecboost 改 `path+version` 双写（本地解析仍走 `../vecboost` 保留演进策略，publish 校验走 registry 0.3.0-rc.3 同版包）。
 - CI 基建 action 四项升级（rust-cache 2.9.3 / install-action 2.87.32 / zizmor-action 0.8.0 / gitleaks-action v3.0.0，SHA 钉）。
+- **CI/CD 首次真跑全绿**：Security job 长期 fail-fast 掩盖下游作业（Check/Format/Test/Coverage/Clippy/Documentation/Build 此前从未执行）。首跑连爆六层存量债并全部修复——①CI 无 sibling checkout 时 vecboost path+version 双写进解析集 → composite action（sha256 钉）就位；②rustdoc 断链 7 处 + MSRV 1.97 立即闭包 lint；③catalog-sync 特征面一个月无人编译的 `CatalogEntryDraft` 缺字段；④gitleaks v3 强制 `GITHUB_TOKEN`；⑤windows runner 路径兼容 + tie_break 慢 runner 时钟容差；⑥cost-replay 特征面 `replay.rs` 缺 V9 列 + `utils::metrics` 改恒开（单特征组合 E0433）。macOS build 腿移 nightly（私有仓 runner 池系统性取消，开发机 arm64 覆盖）；发布期内 upload/download-artifact major 升级 PR 冻结。
 - `cargo audit` 豁免配置（`.cargo/audit.toml`）：rsa 链两条 RUSTSEC 逐条理由注释（2023-0071 上游无修复版、仅公钥验签面无解密路径；2026-0387 修复版被 rsa 0.9.10 锁死 0.5 线）。
 
 核心能力：多厂商统一接入与协议互转（OpenAI/Anthropic/

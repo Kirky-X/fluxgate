@@ -14,6 +14,7 @@ autoexamples = false
 autotests = false
 # benches/ 同理关闭自动发现、走下方 [[bench]] 显式注册（共享 fixture benches/common 不参与发现，新增基准必须登记）。
 autobenches = false
+license = "MIT"
 description = "智能 LLM 路由代理系统 - 多厂商统一管理、格式转换、智能调度 | Intelligent multi-provider LLM routing gateway"
 authors = ["Kirky-X <Kirky-X@outlook.com>"]
 repository = "https://github.com/Kirky-X/fluxweir"
@@ -160,7 +161,7 @@ limiteron = { version = "0.3.0-rc.10", default-features = false, features = ["to
 oxcache = { version = "0.5.0-rc.12", default-features = false, features = ["minimal", "macros", "kit", "memory"], optional = true }
 
 # 难度分类器 path dep：跟随本地 checkout，关默认特性避开服务端栈
-vecboost = { path = "../vecboost", default-features = false, optional = true }
+vecboost = { path = "../vecboost", version = "0.3.0-rc.3", default-features = false, optional = true }
 
 # DI（async + shutdown 面）
 # masking：inklog rc.12 起 SecretScanGate/DataMasker 下沉 trait-kit，

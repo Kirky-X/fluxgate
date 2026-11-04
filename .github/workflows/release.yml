@@ -33,9 +33,91 @@ concurrency:
 
 jobs:
   #-----------------------------------------------------------------------------
+  # 两段式前置校验：tag ↔ Cargo.toml 版本一致性。失配在首个 job 失败，
+  # 不进入构建/发布（对齐 confers/pangu 基线的 verify-first 设计）。
+  #-----------------------------------------------------------------------------
+  verify:
+    name: Verify tag ↔ manifest version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check manifest version matches tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${INPUT_VERSION}"
+          fi
+          MANIFEST="$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+          if [[ "$VERSION" != "$MANIFEST" ]]; then
+            echo "::error::tag v${VERSION} 与 Cargo.toml version=${MANIFEST} 不一致——以 tag 为准 bump manifest 后重打 tag"
+            exit 1
+          fi
+          echo "verify ok: v${VERSION} == ${MANIFEST}"
+
+  #-----------------------------------------------------------------------------
+  # musl 静态二进制：与 docker/Dockerfile build 阶段同源（同镜像/apk 清单/
+  # default 口径 --locked 构建）。路径用 docker run 而非 job 级 container——
+  # node20 actions 在 alpine 容器内不可跑。vecboost 从 crates.io 下载解包到
+  # ../vecboost：根 manifest 的 optional path+version 双写依赖在 --locked
+  # 校验期要读其 manifest，且发布声明依赖的就是 registry rc.3——构建面与
+  # publish 面同源。无需任何 secret（crates.io 公开下载）。
+  #-----------------------------------------------------------------------------
+  build-binary:
+    name: Build musl binary (x86_64)
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VB_VERSION: 0.3.0-rc.3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Fetch vecboost from crates.io
+        run: |
+          curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
+            "https://crates.io/api/v1/crates/vecboost/${VB_VERSION}/download" -o /tmp/vb.crate
+          mkdir -p ../vbtmp && tar -xzf /tmp/vb.crate -C ../vbtmp
+          mv "../vbtmp/vecboost-${VB_VERSION}" ../vecboost
+      - name: Build in alpine container
+        # 镜像/apk 清单与 docker/Dockerfile build 阶段同步维护（dependabot 只解析 Dockerfile）
+        run: |
+          docker run --rm \
+            -v "$PWD":/app -w /app \
+            -v "$GITHUB_WORKSPACE/..":/build-root \
+            docker.io/library/rust:1.99-alpine3.24 \
+            sh -c "apk add --no-cache clang lld musl-dev pkgconfig sqlite-dev && cargo build --locked --release --bin fluxweir"
+      - name: Package with checksums
+        # 手动重发（workflow_dispatch）时 GITHUB_REF_NAME 是分支名，版本取输入值；
+        # 与上方 verify/create-release 的 resolve 同一判定
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then VERSION="${INPUT_VERSION}"; fi
+          cp target/release/fluxweir "fluxweir-${VERSION}-x86_64-linux-musl"
+          tar -czf "fluxweir-${VERSION}-x86_64-linux-musl.tar.gz" "fluxweir-${VERSION}-x86_64-linux-musl"
+          sha256sum "fluxweir-${VERSION}-x86_64-linux-musl.tar.gz" > checksums.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: musl-binary
+          path: |
+            fluxweir-*-x86_64-linux-musl.tar.gz
+            checksums.txt
+          retention-days: 3
+
+  #-----------------------------------------------------------------------------
   # 创建 GitHub Release（自动生成变更说明；rc/beta/alpha 后缀标记预发布）
   #-----------------------------------------------------------------------------
   create-release:
+    needs: [verify, build-binary]
     name: Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -70,6 +152,11 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" >/dev/null \
             || { echo "::error::tag v${VERSION} 不存在——先推送 tag 再重发"; exit 1; }
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Download musl binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: musl-binary
+          path: dist
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
@@ -79,6 +166,9 @@ jobs:
           draft: false
           # 预发布判定跟 semver 语义走：版本含 '-' 即预发布（rc/beta/alpha 等）
           prerelease: ${{ contains(steps.resolve.outputs.version, '-') }}
+          files: |
+            dist/fluxweir-*-x86_64-linux-musl.tar.gz
+            dist/checksums.txt
 
       - name: Verify release uniqueness (idempotency guard)
         run: |
@@ -91,3 +181,35 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  #-----------------------------------------------------------------------------
+  # 条件发布 crates.io：仅当 CARGO_REGISTRY_TOKEN secret 存在时执行（缺 secret
+  # 跳过不报错）。token 经 env 传递（cargo 原生读取 CARGO_REGISTRY_TOKEN），
+  # 不落盘不回显。vecboost 就位同 build-binary：--locked 校验期需读其 manifest。
+  #-----------------------------------------------------------------------------
+  publish-crate:
+    name: Publish fluxweir to crates.io
+    needs: [verify, build-binary, create-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      VB_VERSION: 0.3.0-rc.3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Fetch vecboost from crates.io
+        run: |
+          curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
+            "https://crates.io/api/v1/crates/vecboost/${VB_VERSION}/download" -o /tmp/vb.crate
+          mkdir -p ../vbtmp && tar -xzf /tmp/vb.crate -C ../vbtmp
+          mv "../vbtmp/vecboost-${VB_VERSION}" ../vecboost
+      - name: Publish
+        run: |
+          if [[ "$HAS_TOKEN" != "true" ]]; then
+            echo "CARGO_REGISTRY_TOKEN 未配置——跳过 crates.io 发布"
+            exit 0
+          fi
+          cargo publish -p fluxweir --locked

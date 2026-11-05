@@ -39,6 +39,39 @@ pub async fn build_app(
     Ok((app, handle))
 }
 
+/// 外部池注入装配（嵌入式宿主单池共享）：以宿主持有的 [`dbnexus::DbPool`]
+/// 克隆构建 Database（schema 幂等初始化在注入池上执行），其余装配链与
+/// [`build_app`] 完全一致。数据库 URL 取 config 解析结果，仅承载内存库
+/// 判定与配置投影——连接不经过它（单池共享），宿主负责把自身数据库 URL
+/// 写入 config 的 `[database] url`（日志脱敏与内存库判定仍正确）。
+///
+/// # Panics
+///
+/// 同 [`build_app`]：经 `init_global_state`，同进程二次调用 panic。
+pub async fn build_app_with_pool(
+    config_manager: Arc<ConfigManager>,
+    pool: dbnexus::DbPool,
+) -> Result<(Router, ServerHandle), FluxweirError> {
+    let database = Arc::new(crate::database::Database::with_pool(pool).await?);
+    let (db_config, db_url) = {
+        let config = config_manager.read();
+        let db_config = config.database.clone();
+        let db_url = crate::database::resolve_database_url(&db_config)?;
+        (db_config, db_url)
+    };
+    let assembly =
+        bootstrap::assemble_with_database(config_manager.clone(), database, db_config, db_url)
+            .await?;
+    let app = assemble_router(&config_manager, &assembly).await?;
+    // gRPC 装配（grpc feature）：禁用/缺段为 None；登记入句柄，由调用方 take 后启动
+    #[cfg(feature = "grpc")]
+    let grpc = crate::server::grpc::build(&config_manager, &assembly)?;
+    let handle = ServerHandle::from_assembly(assembly);
+    #[cfg(feature = "grpc")]
+    handle.set_grpc_server(grpc);
+    Ok((app, handle))
+}
+
 /// 完整运行时：bootstrap 装配 + serve + 优雅停机 flush 收尾。
 ///
 /// # Panics

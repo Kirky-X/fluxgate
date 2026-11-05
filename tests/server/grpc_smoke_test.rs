@@ -53,6 +53,7 @@ fn test_config() -> Config {
             port: 18421,
         },
         auth: Some(AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![SMOKE_KEY_HASH.to_string()],
             keys: vec![],

@@ -118,10 +118,6 @@ pub(crate) async fn assemble(
     use crate::database::redact_db_url;
     use crate::database::resolve_database_url;
     use crate::database::Database;
-    use crate::protocol::AnthropicConverter;
-    use crate::protocol::OpenAIConverter;
-    use crate::router::Router as RouterStruct;
-    use crate::vendor::VendorManager;
 
     println!("{}", t("main-starting"));
 
@@ -140,6 +136,26 @@ pub(crate) async fn assemble(
         )
     );
     let database = Arc::new(Database::new(&db_url, db_config.pool_size).await?);
+    tracing::info!("{}", t("main-database-initialized"));
+
+    assemble_with_database(config_manager, database, db_config, db_url).await
+}
+
+/// 装配链续段：Database 已就绪（standalone 自建或外部注入单池共享），
+/// 从 vendor manager 起完成 vendor → 日志管道 → DI kit → 路由栈 → ApiState。
+/// `db_url` 仅承载内存库判定与配置投影——连接已由传入 Database 持有，
+/// 单池共享形态下不用于建连。
+pub(crate) async fn assemble_with_database(
+    config_manager: Arc<ConfigManager>,
+    database: std::sync::Arc<crate::database::Database>,
+    db_config: crate::config::DatabaseConfig,
+    db_url: String,
+) -> Result<Assembly, FluxweirError> {
+    use crate::protocol::AnthropicConverter;
+    use crate::protocol::OpenAIConverter;
+    use crate::router::Router as RouterStruct;
+    use crate::vendor::VendorManager;
+
     tracing::info!("{}", t("main-database-initialized"));
 
     let vendor_manager = Arc::new(VendorManager::new(config_manager.clone()));

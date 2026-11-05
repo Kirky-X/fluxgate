@@ -650,6 +650,7 @@ concurrency = { requests_per_second = 1 }
                     c.auth = Some(crate::config::AuthSection {
                         enabled: false,
                         api_keys: vec![],
+                        trusted_proxy: false,
                         header: Default::default(),
                         keys: vec![],
                         oidc_rules: None,

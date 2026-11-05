@@ -65,6 +65,7 @@ fn test_config() -> Config {
     vendor.api_key_env = "OPENAI_API_KEY".into();
     Config {
         auth: Some(AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![SMOKE_KEY_HASH.to_string()],
             keys: vec![],
@@ -312,6 +313,7 @@ async fn test_admin_metrics_with_valid_key_is_200() {
 #[tokio::test]
 async fn test_auth_state_from_config_hashes() {
     let section = AuthSection {
+        trusted_proxy: false,
         enabled: true,
         api_keys: vec![SMOKE_KEY_HASH.to_string()],
         keys: vec![],
@@ -351,6 +353,7 @@ async fn test_auth_key_revocation_takes_effect_immediately() {
     // 2. 热更新 [auth]：吊销旧 key、启用轮换 key（不改其他段）
     let mut next = config.get_config();
     next.auth = Some(AuthSection {
+        trusted_proxy: false,
         enabled: true,
         api_keys: vec![ROTATED_KEY_HASH.to_string()],
         keys: vec![],

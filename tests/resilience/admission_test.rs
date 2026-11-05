@@ -375,6 +375,7 @@ fn tier_for_request_resolves_auth_keys_table() {
     };
     let config = Config {
         auth: Some(AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![hash.clone()],
             header: Default::default(),
@@ -467,6 +468,7 @@ mod full_chain {
                 port: 8080,
             },
             auth: Some(AuthSection {
+                trusted_proxy: false,
                 enabled: true,
                 api_keys: vec![ded.clone(), spot.clone()],
                 header: Default::default(),

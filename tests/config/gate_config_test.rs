@@ -31,6 +31,7 @@ mod hot_reload {
                 port: 8080,
             },
             auth: Some(AuthSection {
+                trusted_proxy: false,
                 enabled: true,
                 api_keys: vec!["a".repeat(64)],
                 keys: vec![],
@@ -1563,6 +1564,7 @@ mod oidc_rules_config {
     fn config(rules: Vec<OidcRuleConfig>) -> fluxweir::config::Config {
         let mut config = common::test_config(vec![]);
         config.auth = Some(fluxweir::config::AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![KEY_HASH.into()],
             header: Default::default(),
@@ -1638,6 +1640,7 @@ mod oidc_rules_config {
         // 缺段整体关闭
         let mut none = common::test_config(vec![]);
         none.auth = Some(fluxweir::config::AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![],
             header: Default::default(),

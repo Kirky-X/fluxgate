@@ -42,6 +42,24 @@ impl Database {
         Ok(Self { pool, repository })
     }
 
+    /// 外部池注入构造（嵌入式宿主单池共享；[`Database::new`] 仍为 standalone
+    /// 形态的构造路径）：跳过 URL 文件系统语义，schema 初始化与迁移在注入池
+    /// 上幂等执行（V1 全 `IF NOT EXISTS` + 版本历史短路 + 存量库基线回填）。
+    /// 池生命周期归宿主：本结构只持克隆，[`Database::close`] 维持 no-op，
+    /// 宿主侧 Arc 决定池寿命；连接参数（admin_role/retry_policy/池界）随
+    /// 宿主建池配置自带，[`db_config`] 不参与。
+    pub async fn with_pool(pool: DbPool) -> Result<Self, FluxweirError> {
+        crate::database::repository::init_schema(&pool)
+            .await
+            .map_err(|e| FluxweirError::Database {
+                message: t_args("database-init-schema", &[("error", e.to_string())]),
+            })?;
+
+        let repository = std::sync::Arc::new(Repository::new(pool.clone()));
+
+        Ok(Self { pool, repository })
+    }
+
     pub fn repository(&self) -> &Repository {
         &self.repository
     }
@@ -408,5 +426,35 @@ mod db_config_tests {
         assert_eq!(config.pool_config.max_connections, 3);
         assert_eq!(config.pool_config.min_connections, 1);
         assert_eq!(config.admin_role, "admin");
+    }
+}
+
+// 外部池注入（嵌入式宿主单池共享）：schema 幂等初始化回归。仅 db-sqlite
+// 构建可跑（内存库零外部依赖）；server-side 形态的注入由宿主侧集成测试覆盖。
+#[cfg(all(test, feature = "db-sqlite"))]
+mod with_pool_tests {
+    use super::db_config;
+    use super::Database;
+    use dbnexus::DbPool;
+
+    /// 同池二次装配：init_schema 幂等（IF NOT EXISTS + 版本历史短路），
+    /// 不得报表已存在；min=max=1 保证内存库单连接上 schema 可见。
+    #[tokio::test]
+    async fn with_pool_initializes_schema_idempotently() {
+        let pool = DbPool::with_config(db_config("sqlite::memory:", 1))
+            .await
+            .expect("in-memory pool");
+        let first = Database::with_pool(pool.clone()).await;
+        assert!(
+            first.is_ok(),
+            "first with_pool must succeed: {:?}",
+            first.err()
+        );
+        let second = Database::with_pool(pool).await;
+        assert!(
+            second.is_ok(),
+            "with_pool must be idempotent: {:?}",
+            second.err()
+        );
     }
 }

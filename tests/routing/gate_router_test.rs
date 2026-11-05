@@ -5904,6 +5904,7 @@ mod quota_factor {
 
         let mut config = common::test_config(vec![]);
         config.auth = Some(AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![],
             header: Default::default(),

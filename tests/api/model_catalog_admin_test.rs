@@ -774,6 +774,7 @@ mod cost_endpoint {
         });
         if auth {
             config.auth = Some(AuthSection {
+                trusted_proxy: false,
                 enabled: true,
                 api_keys: vec![GOOD_KEY_DIGEST.to_string()],
                 header: Default::default(),

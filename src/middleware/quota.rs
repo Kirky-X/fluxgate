@@ -2662,6 +2662,7 @@ mod tests {
             auth: Some(crate::config::AuthSection {
                 enabled: true,
                 api_keys: vec![],
+                trusted_proxy: false,
                 header: Default::default(),
                 keys: vec![crate::config::AuthKeyEntry {
                     hash: "tenant-digest".into(),

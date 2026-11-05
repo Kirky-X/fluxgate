@@ -452,6 +452,7 @@ mod tests {
             auth: Some(AuthSection {
                 enabled: true,
                 api_keys: vec![],
+                trusted_proxy: false,
                 header: Default::default(),
                 keys: vec![],
                 oidc_rules: None,

@@ -6587,6 +6587,7 @@ mod data_plane_endpoints {
     fn authed_config(vendors: Vec<VendorConfig>) -> Config {
         let mut config = base_config(vendors);
         config.auth = Some(AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![GOOD_KEY_DIGEST.to_string()],
             header: Default::default(),
@@ -7325,6 +7326,7 @@ mod route_explain {
         let mut config = common::test_config(config_vendors);
         if wire.auth {
             config.auth = Some(AuthSection {
+                trusted_proxy: false,
                 enabled: true,
                 api_keys: vec![GOOD_KEY_DIGEST.to_string()],
                 header: Default::default(),

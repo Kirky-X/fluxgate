@@ -539,6 +539,7 @@ async fn auth_runs_before_rate_limit_layers() {
     use fluxweir::config::AuthSection;
     let mut config = make_config(vec![rate_rule("global-cap", None, 1)]);
     config.auth = Some(AuthSection {
+        trusted_proxy: false,
         enabled: true,
         // sha256("test-good-key")
         api_keys: vec![

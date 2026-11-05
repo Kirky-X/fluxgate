@@ -34,6 +34,7 @@ fn test_config() -> Config {
             port: 18422,
         },
         auth: Some(AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![CONSOLE_KEY_HASH.to_string()],
             keys: vec![],

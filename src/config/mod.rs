@@ -451,6 +451,10 @@ pub struct AuthSection {
     pub enabled: bool,
     #[serde(default)]
     pub api_keys: Vec<String>,
+    /// 可信代理：嵌入宿主经 request extensions 注入 TrustedIdentity 后跳过
+    /// 自身 key 校验（D10；缺省 false = 行为逐字节一致，热读）
+    #[serde(default)]
+    pub trusted_proxy: bool,
     #[serde(default)]
     pub header: AuthHeaderSection,
     /// key 档位表（可选；缺省全 elastic、准入不启用）

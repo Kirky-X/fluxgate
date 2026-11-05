@@ -53,6 +53,8 @@ pub struct ApiAuthState {
     tiers: Arc<std::collections::HashMap<String, AuthTier>>,
     /// 是否启用认证
     enabled: bool,
+    /// 可信代理开关（[auth].trusted_proxy 热读；缺省 false）
+    trusted_proxy: bool,
 }
 
 impl ApiAuthState {
@@ -62,6 +64,7 @@ impl ApiAuthState {
             valid_keys: Arc::new(std::collections::HashSet::new()),
             tiers: Arc::new(std::collections::HashMap::new()),
             enabled,
+            trusted_proxy: false,
         }
     }
 
@@ -86,6 +89,7 @@ impl ApiAuthState {
             tiers.insert(entry.hash.clone(), entry.tier);
         }
         state.tiers = Arc::new(tiers);
+        state.trusted_proxy = section.trusted_proxy;
         state
     }
 
@@ -214,6 +218,18 @@ async fn api_auth_middleware_with_oidc(
         return Ok(next.run(request).await);
     }
 
+    // 可信代理身份直传（D10）：开关热读缺省 false——关闭时该分支整体不
+    // 生效，行为与今日逐字节一致；开启且有 TrustedIdentity extension →
+    // is_admin=false 拒绝 /admin/*，否则放行（数据面与管理面按位收窄）。
+    if auth_state.trusted_proxy {
+        if let Some(identity) = request.extensions().get::<TrustedIdentity>() {
+            if !identity.is_admin && path.starts_with("/admin") {
+                return Ok(forbidden_admin_response());
+            }
+            return Ok(next.run(request).await);
+        }
+    }
+
     let api_key = match extract_api_key(request.headers()) {
         Some(key) => key,
         None => {
@@ -311,6 +327,37 @@ fn percent_decode(value: &str) -> String {
 }
 
 /// 认证失败：Gemini 路径返回其原生错误体，其它路径保持历史形状。
+/// 可信代理注入的进程内身份（嵌入宿主形态，D10）。
+///
+/// 宿主完成团队/API-Key 校验后经 request extensions 注入；extension 由
+/// 服务端中间件写入（无网络边界，客户端不可伪造）。`is_admin=false` 时
+/// /admin/* 一律 403（宿主侧还应以 scope 门控收窄，纵深防御）。
+/// HTTP 直连网关端口的部署形态不得使用本通道——须升级为 HMAC 签名
+/// 内部头变体。
+#[derive(Debug, Clone)]
+pub struct TrustedIdentity {
+    /// 宿主侧团队标识（审计与日志透传；网关租户键仍按客户端真实 key 摘要）
+    pub team_id: String,
+    /// 是否可访问 /admin/*（宿主侧 admin scope 的映射）
+    pub is_admin: bool,
+}
+
+/// /admin/* 拒绝响应（is_admin=false 的 TrustedIdentity 命中管理面）
+fn forbidden_admin_response() -> Response {
+    use axum::response::IntoResponse;
+    (
+        axum::http::StatusCode::FORBIDDEN,
+        axum::Json(json!({
+            "error": {
+                "code": 403,
+                "message": t("middleware-admin-forbidden"),
+                "status": "PERMISSION_DENIED",
+            }
+        })),
+    )
+        .into_response()
+}
+
 fn unauthorized_response(path: &str, message: String) -> Response {
     let body = if path.starts_with("/v1beta/") {
         json!({
@@ -400,6 +447,128 @@ mod tests {
         assert!(constant_time_eq(KNOWN_HASH, KNOWN_HASH));
     }
 
+    // ---------- TrustedIdentity（可信代理，D10） ----------
+
+    use tower::ServiceExt;
+
+    fn trusted_router(state: Arc<ApiAuthState>) -> axum::Router {
+        axum::Router::new()
+            .route("/v1/extract", axum::routing::get(|| async { "ok" }))
+            .route("/admin/vendors", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(
+                move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+                    let state = state.clone();
+                    async move {
+                        api_auth_middleware(req, next, state)
+                            .await
+                            .unwrap_or_else(|status| {
+                                use axum::response::IntoResponse;
+                                axum::http::StatusCode::from_u16(status.as_u16())
+                                    .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                                    .into_response()
+                            })
+                    }
+                },
+            ))
+    }
+
+    fn trusted_state(trusted_proxy: bool) -> Arc<ApiAuthState> {
+        let mut state = ApiAuthState::new(true);
+        state.add_api_key(KNOWN_KEY.to_string());
+        state.trusted_proxy = trusted_proxy;
+        Arc::new(state)
+    }
+
+    fn request_with_identity(
+        path: &str,
+        identity: Option<TrustedIdentity>,
+    ) -> axum::http::Request<axum::body::Body> {
+        let builder = axum::http::Request::builder().uri(path);
+        let mut request = builder.body(axum::body::Body::empty()).expect("request");
+        if let Some(identity) = identity {
+            request.extensions_mut().insert(identity);
+        }
+        request
+    }
+
+    /// 有 TrustedIdentity + trusted_proxy=true → 数据面放行（跳过 key 校验）
+    #[tokio::test]
+    async fn trusted_identity_allows_data_plane() {
+        let app = trusted_router(trusted_state(true));
+        let response = app
+            .oneshot(request_with_identity(
+                "/v1/extract",
+                Some(TrustedIdentity {
+                    team_id: "team-a".into(),
+                    is_admin: false,
+                }),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), 200);
+    }
+
+    /// is_admin=false 命中 /admin/* → 403；is_admin=true → 200
+    #[tokio::test]
+    async fn trusted_identity_admin_requires_admin_flag() {
+        let app = trusted_router(trusted_state(true));
+        let denied = app
+            .clone()
+            .oneshot(request_with_identity(
+                "/admin/vendors",
+                Some(TrustedIdentity {
+                    team_id: "team-a".into(),
+                    is_admin: false,
+                }),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(denied.status(), 403);
+
+        let allowed = app
+            .oneshot(request_with_identity(
+                "/admin/vendors",
+                Some(TrustedIdentity {
+                    team_id: "root".into(),
+                    is_admin: true,
+                }),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(allowed.status(), 200);
+    }
+
+    /// trusted_proxy=false（缺省）：有 extension 也走既有 key 校验——
+    /// 无 key 头 401（行为与今日逐字节一致）
+    #[tokio::test]
+    async fn trusted_proxy_disabled_falls_back_to_key_auth() {
+        let app = trusted_router(trusted_state(false));
+        let response = app
+            .oneshot(request_with_identity(
+                "/v1/extract",
+                Some(TrustedIdentity {
+                    team_id: "team-a".into(),
+                    is_admin: true,
+                }),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), 401);
+    }
+
+    /// trusted_proxy=false + 有效 key 头 → 既有路径放行（回退路径未破坏）
+    #[tokio::test]
+    async fn trusted_proxy_disabled_valid_key_still_passes() {
+        let app = trusted_router(trusted_state(false));
+        let mut request = request_with_identity("/v1/extract", None);
+        request.headers_mut().insert(
+            "authorization",
+            axum::http::HeaderValue::from_str(&format!("Bearer {KNOWN_KEY}")).expect("header"),
+        );
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), 200);
+    }
+
     #[test]
     fn test_from_section_maps_enabled_and_keys() {
         let section = AuthSection {
@@ -408,6 +577,7 @@ mod tests {
             keys: vec![],
             header: Default::default(),
             oidc_rules: None,
+            trusted_proxy: false,
         };
         let state = ApiAuthState::from_section(&section);
         assert!(state.enabled);
@@ -419,6 +589,7 @@ mod tests {
             keys: vec![],
             header: Default::default(),
             oidc_rules: None,
+            trusted_proxy: false,
         };
         let state = ApiAuthState::from_section(&disabled);
         assert!(!state.enabled);

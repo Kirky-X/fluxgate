@@ -289,6 +289,7 @@ async fn admin_metrics_exposes_quota_counters() {
     let good_key_digest =
         "d6593c4edd6a8a85fb2a6e0105d1fc204936be82bad151cebdf99f096c198303".to_string();
     config.auth = Some(fluxweir::config::AuthSection {
+        trusted_proxy: false,
         enabled: true,
         api_keys: vec![good_key_digest.clone()],
         header: Default::default(),

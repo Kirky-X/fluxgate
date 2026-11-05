@@ -12,4 +12,4 @@ pub mod oidc;
 pub mod quota;
 pub mod quota_period;
 pub mod quota_persist;
-pub use auth::{auth_middleware, ApiAuthState};
+pub use auth::{auth_middleware, ApiAuthState, TrustedIdentity};

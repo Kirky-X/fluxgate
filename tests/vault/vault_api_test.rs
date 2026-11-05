@@ -73,6 +73,7 @@ async fn setup(
     let mut config = config;
     if auth_enabled {
         config.auth = Some(fluxweir::config::AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![AUTH_KEY_HASH.to_string()],
             header: Default::default(),

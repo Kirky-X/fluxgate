@@ -2438,6 +2438,7 @@ mod tests {
         let auth_on = AuthSection {
             enabled: true,
             api_keys: vec![],
+            trusted_proxy: false,
             header: Default::default(),
             keys: vec![crate::config::AuthKeyEntry {
                 hash: "a".repeat(64),
@@ -3027,6 +3028,7 @@ high = \"reasoning\"
         crate::config::AuthSection {
             enabled: true,
             api_keys,
+            trusted_proxy: false,
             header: Default::default(),
             keys: hashes
                 .into_iter()

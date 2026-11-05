@@ -301,6 +301,7 @@ mod tests {
         AuthSection {
             enabled: true,
             api_keys: vec![MOTHER_HASH.to_string()],
+            trusted_proxy: false,
             header: Default::default(),
             keys: vec![],
             oidc_rules: Some(OidcRulesSection { rules }),

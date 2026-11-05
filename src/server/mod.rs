@@ -8,7 +8,7 @@
 //! 进程级约束：`init_global_state` 为 OnceCell 一次性写入，同进程二次调用即 panic。
 
 pub use handle::ServerHandle;
-pub use http::{build_app, run};
+pub use http::{build_app, build_app_with_pool, run};
 
 mod affinity_restore;
 mod bootstrap;

@@ -123,6 +123,7 @@ mod tests {
     fn authed_app(state: Arc<ApiState>, key: &str) -> Router {
         let mut config = (*state.config.read()).clone();
         config.auth = Some(AuthSection {
+            trusted_proxy: false,
             enabled: true,
             api_keys: vec![digest(key)],
             keys: vec![],

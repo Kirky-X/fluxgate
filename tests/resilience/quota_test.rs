@@ -154,6 +154,7 @@ fn quota_config_full(
 ) -> Config {
     let mut config = common::test_config(vendors);
     config.auth = Some(AuthSection {
+        trusted_proxy: false,
         enabled: true,
         api_keys: vec![GOOD_KEY_DIGEST.to_string()],
         header: Default::default(),
@@ -1640,6 +1641,7 @@ async fn make_state_with_budget_ledger(config: Config, ledger: KeyBudgetLedger) 
 fn key_budget_config(vendors: Vec<VendorConfig>, fail_open: bool, limit_millicents: u64) -> Config {
     let mut config = common::test_config(vendors);
     config.auth = Some(AuthSection {
+        trusted_proxy: false,
         enabled: true,
         api_keys: vec![GOOD_KEY_DIGEST.to_string()],
         header: Default::default(),
@@ -1767,6 +1769,7 @@ async fn key_budget_absent_section_passes_through() {
 
     let mut config = common::test_config(vec![openai_vendor("q-a", server.url())]);
     config.auth = Some(AuthSection {
+        trusted_proxy: false,
         enabled: true,
         api_keys: vec![GOOD_KEY_DIGEST.to_string()],
         header: Default::default(),

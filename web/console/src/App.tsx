@@ -11,6 +11,7 @@ import {
 } from "react-router-dom";
 import { BrowserRouter } from "react-router-dom";
 import { logout, AuthGate } from "./state";
+import { t } from "./i18n";
 import DashboardPage from "./pages/Dashboard";
 import VendorsPage from "./pages/Vendors";
 import LogsPage from "./pages/Logs";
@@ -19,11 +20,11 @@ import ModelsPage from "./pages/Models";
 import LoginPage from "./pages/Login";
 
 const NAV_ITEMS = [
-  { to: "/", label: "仪表盘", end: true },
-  { to: "/vendors", label: "Vendors" },
-  { to: "/logs", label: "请求日志" },
-  { to: "/route-explain", label: "路由解释" },
-  { to: "/models", label: "模型目录" },
+  { to: "/", label: t("app.nav.dashboard"), end: true },
+  { to: "/vendors", label: t("app.nav.vendors") },
+  { to: "/logs", label: t("app.nav.logs") },
+  { to: "/route-explain", label: t("app.nav.route") },
+  { to: "/models", label: t("app.nav.models") },
 ];
 
 function Shell() {
@@ -35,7 +36,7 @@ function Shell() {
       item.end
         ? location.pathname === item.to
         : location.pathname.startsWith(item.to),
-    )?.label ?? "仪表盘";
+    )?.label ?? t("app.nav.dashboard");
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
       {/* 窄屏（<768px）导航折为顶部横排（可横向滚动），≥md 恢复左侧 200px 固定列 */}
@@ -72,7 +73,7 @@ function Shell() {
                 className="h-2 w-2 rounded-full bg-success-solid"
                 aria-hidden="true"
               />
-              已连接
+              {t("app.connected")}
             </span>
             <button
               className="text-sm text-text-secondary hover:text-text-primary"
@@ -81,7 +82,7 @@ function Shell() {
                 navigate("/login");
               }}
             >
-              登出
+              {t("app.logout")}
             </button>
           </div>
         </header>

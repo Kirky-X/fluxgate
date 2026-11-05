@@ -424,8 +424,9 @@ mod sdk_client_coverage {
             .unwrap_err();
         match err {
             FluxweirSdkError::Config { message } => {
+                // 文案本地化：断言双语语义词（en "invalid" / zh "非法"）
                 assert!(
-                    message.contains("invalid base_url"),
+                    message.contains("invalid") || message.contains("非法"),
                     "非法 URL 须指明: {message}"
                 );
             }

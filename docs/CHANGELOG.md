@@ -13,6 +13,11 @@
 ### Added
 
 - **请求级缓存断点策略覆盖**：`UnifiedRequest` 新增 `cache_breakpoints`（`Option<CacheBreakpointPolicy>`）——进程内 SDK 构造者可逐请求裁决注入开关/断点上限/锚点序，`None` 回落模型目录条目级策略（出站取值收敛为 `effective_cache_policy` 单点，非流式/流式两路径共用）。仅 anthropic 型 vendor 出站消费；openai/gemini 型与透传路径不注入；wire 侧同名键入各协议 known_keys denylist——入站恒 `None` 不承接、不进 `vendor_extensions` 透传（覆盖控制权收敛到进程内 SDK 面，不暴露给 wire 调用方）。
+- **国际化全量收口**：后端用户可见消息（Responses/Rerank 协议校验、web-search、热更新结构门、gRPC 认证、订阅 OAuth admin 面、工具 schema 校验、路由解释 detail）、OpenAPI 全部 39 条端点描述（`i18n_key` 机制全覆盖，35 组新增 en/zh 注册）、SDK 进程内库面 13 键（`FluxweirSdkError` message 随进程 locale）、warn 级运维日志 5 条。控制台前端引入双语文案层 `web/console/src/i18n.ts`（zh 基线/en 对齐、`navigator.language` 检测、`{name}` 插值），64 处硬编码文案全量键化（含导航 "Vendors" 孤例）与时间列 locale 联动；JSON 字段名/协议键保持英文（不翻译约定入 `i18n` 模块文档）。
+
+### Changed
+
+- **BREAKING：熔断拒绝结构化**（`GateError` 变体集扩充）：CB Open 拒绝由 `VendorUnavailable{vendor: "{id} (circuit open)"}` 字符串标记改为专用变体 `VendorCircuitOpen{vendor: <纯 id>}`——fallback 触发器（`CircuitOpen`/`RateLimited`/`Http5xx`）与 `is_circuit_open_error` 改按变体判别，消除 locale 依赖的字符串回环；`GateErrorClassifier` 对该变体不计 CB 失败（防 half-open 探测期拒绝再抬计数、熔断永难恢复）。穷举 match `GateError` 的外部代码需补臂（嵌入方 agentstem-gate 已同步适配）。
 
 ## [0.1.0] - 2026-11-04
 

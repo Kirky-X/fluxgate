@@ -78,3 +78,10 @@ main-otlp-teardown-failed = OTLP metrics bridge teardown failed: { $error }
 main-affinity-restored = session affinity restored: { $count } sticks (limit { $limit })
 main-affinity-restore-failed = session affinity restore failed: { $error }
 main-affinity-restore-empty = no unexpired session affinity sticks to restore
+
+# 运维日志面（warn 级；debug 级协议调试锚保持英文以保证 grep 诊断稳定）
+log-anthropic-beta-invalid = invalid anthropic-beta header value dropped
+log-session-key-truncated = session key header exceeds { $max } bytes; truncated to { $take }
+log-stream-usage-skip-no-runtime = stream usage settlement skipped: no tokio runtime
+log-linucb-diag-fallback = linucb arm matrix singular/non-finite; diagonal approximation engaged
+log-sla-v-no-pricing = [routing].sla_v>0 but no candidate has a [[pricing]] entry; cost term neutralized to 0 (pure virtual-queue mode)

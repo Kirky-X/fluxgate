@@ -78,3 +78,10 @@ main-otlp-teardown-failed = OTLP 指标桥停机收尾失败: { $error }
 main-affinity-restored = 会话亲和已恢复：{ $count } 条粘性（上限 { $limit }）
 main-affinity-restore-failed = 会话亲和恢复失败：{ $error }
 main-affinity-restore-empty = 无未过期的会话粘性可恢复
+
+# 运维日志面（warn 级；debug 级协议调试锚保持英文以保证 grep 诊断稳定）
+log-anthropic-beta-invalid = anthropic-beta 头取值非法，已丢弃
+log-session-key-truncated = 会话键头超过 { $max } 字节，已截断到 { $take }
+log-stream-usage-skip-no-runtime = 流式用量结算跳过：无 tokio 运行时
+log-linucb-diag-fallback = LinUCB 臂矩阵奇异/非有限，已切换对角近似
+log-sla-v-no-pricing = [routing].sla_v>0 但没有候选带 [[pricing]] 条目；成本项归零（纯虚拟队列模式）

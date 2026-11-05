@@ -20,13 +20,13 @@ use crate::error::GateError;
 /// 熔断 `execute` 结果 → GateError（`execute` 返回
 /// `CircuitCallError<GateError>`，区分「熔断拒绝未执行」与「调用透传失败」）。
 ///
-/// - `Open` → `VendorUnavailable{vendor: "{id} (circuit open)"}`
-///   （`is_circuit_open_error` 据此同步 `VendorState`）
+/// - `Open` → `VendorCircuitOpen{vendor: id}`（结构化变体，`vendor` 只放
+///   纯 id；`is_circuit_open_error` 按变体判别，无字符串标记）
 /// - `Inner(e)` → 原样透传（无损）
 pub fn from_circuit_call(err: CircuitCallError<GateError>, vendor_id: &str) -> GateError {
     match err {
-        CircuitCallError::Open => GateError::VendorUnavailable {
-            vendor: format!("{} (circuit open)", vendor_id),
+        CircuitCallError::Open => GateError::VendorCircuitOpen {
+            vendor: vendor_id.to_string(),
         },
         CircuitCallError::Inner(e) => e,
     }
@@ -37,8 +37,7 @@ pub fn from_circuit_call(err: CircuitCallError<GateError>, vendor_id: &str) -> G
 /// 供 worker 完成分支把 CB Open 同步回写 `VendorState`（路由过滤
 /// `== Available` 借此感知熔断，无需 async `get_state` 扩散到 router）。
 pub fn is_circuit_open_error(err: &GateError) -> bool {
-    matches!(err, GateError::VendorUnavailable { vendor }
-        if vendor.contains("circuit open"))
+    matches!(err, GateError::VendorCircuitOpen { .. })
 }
 
 /// key 错误分类（密钥池三态）：永久错误 → 黑名单（不参与轮换、
@@ -94,6 +93,9 @@ pub struct GateErrorClassifier;
 impl FailureClassifier<GateError> for GateErrorClassifier {
     fn is_counted_as_failure(&self, error: &GateError) -> bool {
         match error {
+            // 熔断 Open 拒绝是 CB 自身状态（非上游故障信号）：不计失败——
+            // 计入会让 half-open 探测期每次拒绝再抬失败计数，熔断永难恢复
+            GateError::VendorCircuitOpen { .. } => false,
             GateError::VendorUnavailable { .. } | GateError::Timeout { .. } => true,
             GateError::RateLimited { .. }
             | GateError::Validation { .. }

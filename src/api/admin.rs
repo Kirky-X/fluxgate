@@ -893,8 +893,30 @@ pub mod subscription_admin {
             SubscriptionError::UnknownAccount(id) => FluxweirError::Gate(GateError::Validation {
                 field: t_args("subscription-account-unknown", &[("account", id)]),
             }),
-            other => FluxweirError::Gate(GateError::VendorUnavailable {
-                vendor: format!("subscription: {other}"),
+            // 逐变体键化：Display 规范串仅作 detail，用户面文案走 FTL
+            SubscriptionError::Oauth { status } => {
+                FluxweirError::Gate(GateError::VendorUnavailable {
+                    vendor: t_args(
+                        "admin-subscription-oauth",
+                        &[("status", status.to_string())],
+                    ),
+                })
+            }
+            SubscriptionError::InvalidTokenResponse(field) => {
+                FluxweirError::Gate(GateError::VendorUnavailable {
+                    vendor: t_args(
+                        "admin-subscription-token-invalid",
+                        &[("field", field.to_string())],
+                    ),
+                })
+            }
+            SubscriptionError::Transport(detail) => {
+                FluxweirError::Gate(GateError::VendorUnavailable {
+                    vendor: t_args("admin-subscription-transport", &[("detail", detail)]),
+                })
+            }
+            SubscriptionError::Degraded => FluxweirError::Gate(GateError::VendorUnavailable {
+                vendor: t("admin-subscription-degraded"),
             }),
         }
     }

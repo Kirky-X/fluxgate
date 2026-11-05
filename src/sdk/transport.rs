@@ -29,7 +29,7 @@ pub(crate) async fn send_with_retry(
         let builder = request
             .try_clone()
             .ok_or_else(|| FluxweirSdkError::Config {
-                message: "request builder is not cloneable (streaming request body?)".to_string(),
+                message: crate::i18n::t("sdk-transport-not-cloneable"),
             })?;
         match builder.send().await {
             Ok(response) if response.status().is_success() => return Ok(response),

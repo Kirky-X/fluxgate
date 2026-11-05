@@ -433,7 +433,7 @@ async fn read_capped(resp: reqwest::Response, max: usize) -> Result<String, Fetc
         }
     }
     String::from_utf8(body).map_err(|_| FetchError::Transport {
-        message: "response body is not valid UTF-8".to_string(),
+        message: crate::i18n::t("util-fetch-body-not-utf8"),
     })
 }
 

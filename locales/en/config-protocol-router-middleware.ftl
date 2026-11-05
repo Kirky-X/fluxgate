@@ -183,3 +183,50 @@ config-otlp-tracing-timeout-secs-out-of-range = Invalid OTLP tracing export time
 masking-rule-build-failed = masking detector rebuild failed on a custom rule; rebuilt without custom rules (detections continue on builtin patterns and words)
 
 config-affinity-session-headers-blank = [routing.affinity] session_headers contains a blank header name (an empty name is meaningless and swallows a probe slot)
+
+# Responses 请求校验（错误经 error-validation 模板的 { $field } 槽位插值）
+protocol-responses-body-parse = body: { $error }
+protocol-responses-output-tokens-range = max_output_tokens: { $value } out of range 1..={ $max }
+protocol-responses-metadata-entries = metadata: { $count } entries exceeds limit { $max }
+protocol-responses-metadata-key = metadata key { $key } exceeds { $max } chars
+protocol-responses-metadata-value = metadata value for key { $key } exceeds { $max } chars
+protocol-responses-background-stream = stream: background mode does not support streaming
+protocol-responses-input-items = input: { $count } items exceeds limit { $max }
+protocol-responses-input-shape = input: must be a string or an array of items
+protocol-responses-input-file-native = input[{ $index }].type: file/audio input requires a native Responses vendor
+protocol-responses-input-unrecognized = input[{ $index }]: unrecognized item (missing role and known type)
+protocol-responses-native-required = request requires a native Responses vendor ({ $reason })
+protocol-responses-output-orphan = input: function_call_output call_id { $id } has no preceding function_call
+protocol-responses-output-duplicate = input: duplicate function_call_output for call_id { $id }
+protocol-responses-item-reference = input: item_reference { $id } must be resolved before conversion
+protocol-responses-block-unsupported = input content block type { $type } is not supported on chat vendors
+protocol-responses-tool-native = tools[{ $index }]: non-function tool requires a native Responses vendor
+
+# 热更新结构门（admin 配置更新拒绝消息）
+config-hot-reload-vendors = vendors topology changed (restart required)
+config-hot-reload-server = server section changed (restart required)
+config-hot-reload-database = database section changed (restart required)
+config-hot-reload-grpc = grpc section changed (restart required)
+config-hot-reload-cors = cors section changed (restart required)
+config-hot-reload-rate-limit = rate_limit rules changed (restart required)
+config-hot-reload-docs = docs switch changed (router rebuild required)
+config-hot-reload-global-model = global_model changed (no hot-read point; restart required)
+
+# Rerank 请求/响应校验
+protocol-rerank-stream-unsupported = stream (not supported)
+protocol-rerank-query-too-long = query (max { $max } chars)
+protocol-rerank-documents-too-many = documents (max { $max } items)
+protocol-rerank-doc-too-long = documents[{ $index }] (max { $max } chars)
+protocol-rerank-upstream-missing-results = rerank upstream response missing results
+protocol-rerank-upstream-index-invalid = rerank upstream result index
+protocol-rerank-upstream-index-range = rerank upstream result index out of range or duplicated
+protocol-rerank-upstream-score = rerank upstream relevance_score
+
+# 工具 schema 校验与 Responses 出站解析
+protocol-tools-param-serialize = tools[{ $index }].parameters: schema serialization failed: { $error }
+protocol-tools-param-size = tools[{ $index }].parameters: serialized size { $size } bytes exceeds limit { $max }
+protocol-tools-param-depth = tools[{ $index }].parameters: nesting depth { $depth } exceeds limit { $max }
+protocol-responses-parse-response = responses response: { $error }
+
+# 路由解释
+router-excluded-disabled = vendor enabled={ $vendor } model enabled={ $model }

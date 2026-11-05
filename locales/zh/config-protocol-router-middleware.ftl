@@ -183,3 +183,50 @@ config-otlp-tracing-timeout-secs-out-of-range = 无效的 OTLP 追踪导出超�
 masking-rule-build-failed = 掩码检测器因自定义正则构建失败，已按空正则重建（内置形态与词表检测继续生效）
 
 config-affinity-session-headers-blank = [routing.affinity] session_headers 含空白头名（空串头名无意义且吞掉探测位）
+
+# Responses 请求校验（错误经 error-validation 模板的 { $field } 槽位插值）
+protocol-responses-body-parse = 请求体: { $error }
+protocol-responses-output-tokens-range = max_output_tokens: { $value } 超出范围 1..={ $max }
+protocol-responses-metadata-entries = metadata: { $count } 项超过上限 { $max }
+protocol-responses-metadata-key = metadata 键 { $key } 超过 { $max } 字符
+protocol-responses-metadata-value = metadata 键 { $key } 的值超过 { $max } 字符
+protocol-responses-background-stream = stream: 后台模式不支持流式
+protocol-responses-input-items = input: { $count } 项超过上限 { $max }
+protocol-responses-input-shape = input: 必须是字符串或 item 数组
+protocol-responses-input-file-native = input[{ $index }].type: 文件/音频输入需要原生 Responses 厂商
+protocol-responses-input-unrecognized = input[{ $index }]: 无法识别的 item（缺少 role 且无已知 type）
+protocol-responses-native-required = 请求需要原生 Responses 厂商（{ $reason }）
+protocol-responses-output-orphan = input: function_call_output call_id { $id } 没有前置 function_call
+protocol-responses-output-duplicate = input: call_id { $id } 的 function_call_output 重复
+protocol-responses-item-reference = input: item_reference { $id } 必须在转换前解析
+protocol-responses-block-unsupported = chat 厂商不支持 input 内容块类型 { $type }
+protocol-responses-tool-native = tools[{ $index }]: 非 function 工具需要原生 Responses 厂商
+
+# 热更新结构门（admin 配置更新拒绝消息）
+config-hot-reload-vendors = vendors 拓扑变更（需重启）
+config-hot-reload-server = server 段变更（需重启）
+config-hot-reload-database = database 段变更（需重启）
+config-hot-reload-grpc = grpc 段变更（需重启）
+config-hot-reload-cors = cors 段变更（需重启）
+config-hot-reload-rate-limit = rate_limit 规则变更（需重启）
+config-hot-reload-docs = docs 开关变更（需 router 重建）
+config-hot-reload-global-model = global_model 变更（无热读点，需重启）
+
+# Rerank 请求/响应校验
+protocol-rerank-stream-unsupported = stream（不支持）
+protocol-rerank-query-too-long = query（上限 { $max } 字符）
+protocol-rerank-documents-too-many = documents（上限 { $max } 条）
+protocol-rerank-doc-too-long = documents[{ $index }]（上限 { $max } 字符）
+protocol-rerank-upstream-missing-results = rerank 上游响应缺少 results
+protocol-rerank-upstream-index-invalid = rerank 上游结果 index 非法
+protocol-rerank-upstream-index-range = rerank 上游结果 index 越界或重复
+protocol-rerank-upstream-score = rerank 上游 relevance_score 非法
+
+# 工具 schema 校验与 Responses 出站解析
+protocol-tools-param-serialize = tools[{ $index }].parameters: schema 序列化失败: { $error }
+protocol-tools-param-size = tools[{ $index }].parameters: 序列化后 { $size } 字节超过上限 { $max }
+protocol-tools-param-depth = tools[{ $index }].parameters: 嵌套深度 { $depth } 超过上限 { $max }
+protocol-responses-parse-response = responses 响应: { $error }
+
+# 路由解释
+router-excluded-disabled = vendor 启用={ $vendor } model 启用={ $model }

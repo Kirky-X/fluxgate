@@ -29,6 +29,12 @@ pub enum GateError {
     #[error("Vendor unavailable: {vendor}")]
     VendorUnavailable { vendor: String },
 
+    /// 熔断器 Open 拒绝（`from_circuit_call` 对 `CircuitCallError::Open` 的
+    /// 还原形态）：`vendor` 为纯厂商 id——结构化判别不靠字符串标记，
+    /// fallback 触发器与 `is_circuit_open_error` 按变体匹配。
+    #[error("Vendor circuit open: {vendor}")]
+    VendorCircuitOpen { vendor: String },
+
     #[error("Request timeout: {vendor}")]
     Timeout { vendor: String },
 
@@ -62,6 +68,7 @@ impl GateError {
         match self {
             GateError::Validation { .. } => 400,
             GateError::VendorUnavailable { .. } => 503,
+            GateError::VendorCircuitOpen { .. } => 503,
             GateError::Timeout { .. } => 504,
             GateError::RateLimited { .. } => 429,
             GateError::Config { .. } => 500,
@@ -86,6 +93,9 @@ impl GateError {
             }
             GateError::VendorUnavailable { vendor } => {
                 t_args("error-vendor-unavailable", &[("vendor", vendor.clone())])
+            }
+            GateError::VendorCircuitOpen { vendor } => {
+                t_args("error-vendor-circuit-open", &[("vendor", vendor.clone())])
             }
             GateError::Timeout { vendor } => t_args("error-timeout", &[("vendor", vendor.clone())]),
             GateError::RateLimited { vendor } => {
@@ -115,6 +125,7 @@ impl GateError {
             GateError::Io { .. } => "io_error",
             GateError::Protocol { .. } => "protocol_error",
             GateError::VendorUnavailable { .. } => "vendor_unavailable",
+            GateError::VendorCircuitOpen { .. } => "vendor_circuit_open",
             GateError::Timeout { .. } => "timeout",
             GateError::RateLimited { .. } => "rate_limited",
             GateError::Validation { .. } => "validation_error",

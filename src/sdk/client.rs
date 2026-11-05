@@ -289,13 +289,13 @@ impl FluxweirClientBuilder {
 
     pub fn build(self) -> Result<FluxweirClient, FluxweirSdkError> {
         let url_str = self.base_url.ok_or_else(|| FluxweirSdkError::Config {
-            message: "base_url is required".into(),
+            message: crate::i18n::t("sdk-base-url-required"),
         })?;
         let base_url = Url::parse(&url_str).map_err(|e| FluxweirSdkError::Config {
-            message: format!("invalid base_url: {e}"),
+            message: crate::i18n::t_args("sdk-url-invalid", &[("error", e.to_string())]),
         })?;
         let api_key = self.api_key.ok_or_else(|| FluxweirSdkError::Config {
-            message: "api_key is required".into(),
+            message: crate::i18n::t("sdk-api-key-required"),
         })?;
 
         let mut builder = reqwest::Client::builder();

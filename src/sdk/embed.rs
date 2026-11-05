@@ -154,7 +154,7 @@ impl FluxweirClient {
             .base_url
             .join("v1/embeddings")
             .map_err(|e| FluxweirSdkError::Config {
-                message: format!("invalid URL: {e}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", e.to_string())]),
             })?;
 
         let request = self

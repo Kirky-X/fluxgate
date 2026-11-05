@@ -14,6 +14,7 @@ import {
   TableRow,
 } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
+import { t } from "../i18n";
 
 function MetricCard({ title, value }: { title: string; value: string }) {
   return (
@@ -62,31 +63,34 @@ export default function DashboardPage() {
           aria-label={health?.status ?? "unknown"}
         />
         <span className="text-sm text-text-muted">
-          {health ? `v${health.version}` : "未连接"}
+          {health ? `v${health.version}` : t("dash.healthUnknown")}
         </span>
         <Button size="sm" variant="outline" onClick={() => void refresh()}>
-          刷新
+          {t("dash.refresh")}
         </Button>
       </div>
       {error && <p className="text-small text-danger-text">{error}</p>}
       <div className="grid grid-cols-4 gap-3">
-        <MetricCard title="总请求" value={metrics ? String(metrics.total_requests) : "—"} />
         <MetricCard
-          title="成功"
+          title={t("dash.totalRequests")}
+          value={metrics ? String(metrics.total_requests) : "—"}
+        />
+        <MetricCard
+          title={t("dash.success")}
           value={metrics ? String(metrics.successful_requests) : "—"}
         />
-        <MetricCard title="错误率" value={errorRate} />
+        <MetricCard title={t("dash.errorRate")} value={errorRate} />
         <MetricCard
-          title="平均延迟"
+          title={t("dash.avgLatency")}
           value={metrics ? `${metrics.avg_duration_ms.toFixed(0)} ms` : "—"}
         />
       </div>
       {highError && (
-        <Badge variant="destructive">错误率超过 5%</Badge>
+        <Badge variant="destructive">{t("dash.errorAlert")}</Badge>
       )}
       <Card>
         <CardHeader>
-          <CardTitle>厂商指标</CardTitle>
+          <CardTitle>{t("dash.vendorMetrics")}</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
@@ -96,8 +100,8 @@ export default function DashboardPage() {
                 <TableHead>requests</TableHead>
                 <TableHead>successes</TableHead>
                 <TableHead>failures</TableHead>
-                <TableHead>EWMA 延迟</TableHead>
-                <TableHead>最近错误</TableHead>
+                <TableHead>{t("dash.ewma")}</TableHead>
+                <TableHead>{t("dash.recentErrors")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -114,7 +118,7 @@ export default function DashboardPage() {
               {metrics?.vendors.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center text-text-muted">
-                    暂无数据
+                    {t("dash.empty")}
                   </TableCell>
                 </TableRow>
               )}

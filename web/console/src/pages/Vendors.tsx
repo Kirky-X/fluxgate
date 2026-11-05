@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
+import { t } from "../i18n";
 
 function statusVariant(status: string): "success" | "warning" | "destructive" | "outline" {
   switch (status) {
@@ -59,7 +60,7 @@ export default function VendorsPage() {
   }, [refresh]);
 
   const doReset = async (id: string) => {
-    if (!window.confirm(`确认重置厂商 ${id} 的密钥池黑名单与冷却状态？`)) return;
+    if (!window.confirm(t("vendors.confirmReset", { id }))) return;
     try {
       await resetVendor(id);
       await refresh();
@@ -89,7 +90,7 @@ export default function VendorsPage() {
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <Button size="sm" variant="outline" onClick={() => void refresh()}>
-          刷新
+          {t("vendors.refresh")}
         </Button>
         {error && <p className="text-small text-danger-text">{error}</p>}
       </div>
@@ -97,13 +98,13 @@ export default function VendorsPage() {
         <TableHeader>
           <TableRow>
             <TableHead>ID</TableHead>
-            <TableHead>类型</TableHead>
-            <TableHead>状态</TableHead>
-            <TableHead>队列</TableHead>
-            <TableHead>key 池</TableHead>
-            <TableHead>优先级</TableHead>
+            <TableHead>{t("vendors.type")}</TableHead>
+            <TableHead>{t("vendors.status")}</TableHead>
+            <TableHead>{t("vendors.queue")}</TableHead>
+            <TableHead>{t("vendors.keyPool")}</TableHead>
+            <TableHead>{t("vendors.priority")}</TableHead>
             <TableHead>API Base</TableHead>
-            <TableHead>操作</TableHead>
+            <TableHead>{t("vendors.actions")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -115,7 +116,7 @@ export default function VendorsPage() {
                 <TableCell>{c.type_}</TableCell>
                 <TableCell>
                   <Badge variant={statusVariant(st?.status ?? "")}>
-                    {st?.status ?? "未知"}
+                    {st?.status ?? t("vendors.unknown")}
                   </Badge>
                 </TableCell>
                 <TableCell>{st?.queue_length ?? "—"}</TableCell>
@@ -124,10 +125,10 @@ export default function VendorsPage() {
                 <TableCell className="font-mono text-xs">{c.api_base || "—"}</TableCell>
                 <TableCell className="space-x-2">
                   <Button size="sm" variant="outline" onClick={() => setEditing({ ...c })}>
-                    编辑
+                    {t("vendors.edit")}
                   </Button>
                   <Button size="sm" variant="destructive" onClick={() => void doReset(c.id)}>
-                    重置
+                    {t("vendors.reset")}
                   </Button>
                 </TableCell>
               </TableRow>
@@ -136,7 +137,7 @@ export default function VendorsPage() {
           {configs.length === 0 && (
             <TableRow>
               <TableCell colSpan={8} className="text-center text-text-muted">
-                暂无厂商
+                {t("vendors.empty")}
               </TableCell>
             </TableRow>
           )}
@@ -146,7 +147,7 @@ export default function VendorsPage() {
       <Dialog
         open={editing !== null}
         onOpenChange={(open) => !open && setEditing(null)}
-        title={`编辑厂商 ${editing?.id ?? ""}`}
+        title={t("vendors.editTitle", { id: editing?.id ?? "" })}
       >
         {editing && (
           <form onSubmit={(e) => void doSave(e)} className="space-y-3">
@@ -158,7 +159,7 @@ export default function VendorsPage() {
               />
             </label>
             <label className="block space-y-1">
-              <span className="text-sm text-text-muted">优先级</span>
+              <span className="text-sm text-text-muted">{t("vendors.priority")}</span>
               <Input
                 type="number"
                 value={String(editing.priority)}
@@ -166,7 +167,7 @@ export default function VendorsPage() {
               />
             </label>
             <label className="block space-y-1">
-              <span className="text-sm text-text-muted">超时 (ms)</span>
+              <span className="text-sm text-text-muted">{t("vendors.timeout")}</span>
               <Input
                 type="number"
                 value={String(editing.timeout_ms)}
@@ -179,13 +180,13 @@ export default function VendorsPage() {
                 checked={editing.enabled}
                 onChange={(e) => patchEditing({ enabled: e.target.checked })}
               />
-              <span className="text-sm">启用</span>
+              <span className="text-sm">{t("vendors.enable")}</span>
             </label>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="ghost" onClick={() => setEditing(null)}>
-                取消
+                {t("vendors.cancel")}
               </Button>
-              <Button type="submit">保存（PUT 整替）</Button>
+              <Button type="submit">{t("vendors.save")}</Button>
             </div>
           </form>
         )}

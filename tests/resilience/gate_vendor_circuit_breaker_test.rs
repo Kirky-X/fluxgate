@@ -202,14 +202,10 @@ async fn open_circuit_rejects_requests_fast_without_http() {
 
     let err = result.expect_err("open circuit should reject");
     match &err {
-        GateError::VendorUnavailable { vendor } => {
-            assert!(
-                vendor.contains("circuit open"),
-                "error should mention 'circuit open', got: {}",
-                vendor
-            );
+        GateError::VendorCircuitOpen { vendor } => {
+            assert_eq!(vendor, "vendor_a", "vendor 字段应为纯 id");
         }
-        other => panic!("expected VendorUnavailable, got {:?}", other),
+        other => panic!("expected VendorCircuitOpen, got {:?}", other),
     }
     // CB 短路在毫秒级；走 HTTP 至少毫秒级 mockito 往返
     assert!(

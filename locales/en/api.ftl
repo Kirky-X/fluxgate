@@ -159,3 +159,30 @@ catalog-sync-source-skipped = Catalog source entries skipped (missing pricing or
 main-catalog-sync-started = Periodic catalog sync task started (interval: { $interval_secs }s)
 main-catalog-sync-synced = Catalog sync completed: { $added } entries added
 main-catalog-sync-failed = Catalog sync failed (fail-open, catalog unchanged): { $error }
+
+# Responses 端点校验与历史解析（错误经 error-validation 模板的 { $field } 槽位插值）
+api-responses-background-native-only = background: native-only requests are not supported in background mode
+api-responses-background-disabled = background: disabled by [responses].background_enabled
+api-responses-background-store-required = background requires store=true
+api-responses-background-store-missing = background: state store is not wired
+api-responses-input-required = input: must not be empty
+api-responses-cancel-background-only = id: only background responses can be cancelled
+api-responses-history-mutually-exclusive = previous_response_id/conversation: mutually exclusive
+api-responses-history-cycle = previous_response_id: cycle detected at { $id }
+api-responses-history-depth = previous_response_id: chain depth exceeds 100
+api-gemini-model-not-found = Gemini model not found: { $model }
+
+# web-search 端点（SearchError 消息经 search-all-providers-failed 的 { $summary } 聚合返回）
+search-upstream-bad-status = bad upstream status
+search-key-pool-empty = empty key pool
+search-key-unusable = no usable keys
+search-key-env-missing = env { $name } not set
+search-vault-unwired = vault not wired
+search-vault-disabled = vault feature disabled
+
+# 订阅 OAuth 用户面（Display 规范串仅作 detail，外层语义本地化）
+admin-subscription-oauth = Subscription OAuth endpoint error (status { $status })
+admin-subscription-token-invalid = Subscription token response invalid (missing field { $field })
+admin-subscription-transport = Subscription transport error: { $detail }
+admin-subscription-degraded = Subscription account is in degraded cooldown; retry later
+subscription-vault-unwired = vault store not wired

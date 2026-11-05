@@ -477,9 +477,9 @@ impl AccountPool {
                 })?,
             None => {
                 self.on_refresh_failure(account_id);
-                return Err(SubscriptionError::Transport(
-                    "vault store not wired".to_string(),
-                ));
+                return Err(SubscriptionError::Transport(crate::i18n::t(
+                    "subscription-vault-unwired",
+                )));
             }
         };
         let tokens = match self

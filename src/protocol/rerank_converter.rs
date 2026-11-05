@@ -7,6 +7,7 @@
 //! 400 返回或静默截断导致客户端 index 对不齐。
 
 use crate::error::GateError;
+use crate::i18n::{t, t_args};
 use serde_json::{json, Value};
 
 /// 单请求 documents 条数上限
@@ -27,16 +28,16 @@ pub struct RerankRequest {
     pub instruction: Option<String>,
 }
 
-fn validation(field: &str) -> GateError {
+fn validation(field: impl Into<String>) -> GateError {
     GateError::Validation {
-        field: field.to_string(),
+        field: field.into(),
     }
 }
 
 /// 解析并校验入站请求体（Cohere 兼容形状）。
 pub fn parse_rerank_request(body: &Value) -> Result<RerankRequest, GateError> {
     if body.get("stream").is_some() {
-        return Err(validation("stream (not supported)"));
+        return Err(validation(t("protocol-rerank-stream-unsupported")));
     }
 
     let model = body
@@ -51,7 +52,10 @@ pub fn parse_rerank_request(body: &Value) -> Result<RerankRequest, GateError> {
         .and_then(Value::as_str)
         .ok_or_else(|| validation("query"))?;
     if query.chars().count() > MAX_RERANK_QUERY_CHARS {
-        return Err(validation("query (max 4096 chars)"));
+        return Err(validation(t_args(
+            "protocol-rerank-query-too-long",
+            &[("max", MAX_RERANK_QUERY_CHARS.to_string())],
+        )));
     }
 
     let docs = body
@@ -62,7 +66,10 @@ pub fn parse_rerank_request(body: &Value) -> Result<RerankRequest, GateError> {
         return Err(validation("documents"));
     }
     if docs.len() > MAX_RERANK_DOCUMENTS {
-        return Err(validation("documents (max 1000 items)"));
+        return Err(validation(t_args(
+            "protocol-rerank-documents-too-many",
+            &[("max", MAX_RERANK_DOCUMENTS.to_string())],
+        )));
     }
 
     let mut documents = Vec::with_capacity(docs.len());
@@ -72,11 +79,17 @@ pub fn parse_rerank_request(body: &Value) -> Result<RerankRequest, GateError> {
             Value::Object(map) => map
                 .get("text")
                 .and_then(Value::as_str)
-                .ok_or_else(|| validation(&format!("documents[{index}]")))?,
-            _ => return Err(validation(&format!("documents[{index}]"))),
+                .ok_or_else(|| validation(format!("documents[{index}]")))?,
+            _ => return Err(validation(format!("documents[{index}]"))),
         };
         if text.chars().count() > MAX_RERANK_DOC_CHARS {
-            return Err(validation(&format!("documents[{index}] (max 8192 chars)")));
+            return Err(validation(t_args(
+                "protocol-rerank-doc-too-long",
+                &[
+                    ("index", index.to_string()),
+                    ("max", MAX_RERANK_DOC_CHARS.to_string()),
+                ],
+            )));
         }
         documents.push(text.to_string());
     }
@@ -123,9 +136,9 @@ pub struct RerankResultItem {
     pub document: Option<String>,
 }
 
-fn protocol_error(source: &str) -> GateError {
+fn protocol_error(source: String) -> GateError {
     GateError::Protocol {
-        source: source.to_string(),
+        source,
         inner: None,
     }
 }
@@ -154,7 +167,7 @@ pub fn parse_rerank_response(
     let results = body
         .get("results")
         .and_then(Value::as_array)
-        .ok_or_else(|| protocol_error("rerank upstream response missing results"))?;
+        .ok_or_else(|| protocol_error(t("protocol-rerank-upstream-missing-results")))?;
 
     let mut seen = std::collections::HashSet::with_capacity(results.len());
     let mut items = Vec::with_capacity(results.len());
@@ -163,17 +176,15 @@ pub fn parse_rerank_response(
             .get("index")
             .and_then(Value::as_u64)
             .and_then(|n| usize::try_from(n).ok())
-            .ok_or_else(|| protocol_error("rerank upstream result index"))?;
+            .ok_or_else(|| protocol_error(t("protocol-rerank-upstream-index-invalid")))?;
         if index >= request.documents.len() || !seen.insert(index) {
-            return Err(protocol_error(
-                "rerank upstream result index out of range or duplicated",
-            ));
+            return Err(protocol_error(t("protocol-rerank-upstream-index-range")));
         }
         let relevance_score = item
             .get("relevance_score")
             .and_then(Value::as_f64)
             .filter(|score| score.is_finite())
-            .ok_or_else(|| protocol_error("rerank upstream relevance_score"))?;
+            .ok_or_else(|| protocol_error(t("protocol-rerank-upstream-score")))?;
         let document = item.get("document").map(|doc| match doc {
             Value::String(text) => text.clone(),
             Value::Object(map) => map
@@ -309,8 +320,10 @@ mod tests {
             .collect();
         let body = json!({"model": "m", "query": "q", "documents": docs});
         let err = parse_rerank_request(&body).expect_err("超 1000 条必须拒绝");
+        // 文案本地化：断言上限数值（两种语言文案均携带），不锁英文词
         assert!(
-            matches!(err, GateError::Validation { ref field } if field.contains("max 1000")),
+            matches!(err, GateError::Validation { ref field }
+                if field.contains(&MAX_RERANK_DOCUMENTS.to_string())),
             "错误必须携带上限: {err:?}"
         );
     }

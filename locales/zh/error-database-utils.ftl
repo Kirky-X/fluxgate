@@ -95,3 +95,22 @@ replay-cli-load-failed = 加载 request_logs 回放数据失败：{ $error }
 replay-window-too-large = 回放窗口有 { $rows } 行，超过 --max-rows 上限 { $limit }；请收窄 --from/--to 或提高 --max-rows
 replay-row-decode-failed = 解码 request_logs 列 { $column } 失败：{ $error }
 vault-state-unrecoverable = 保密柜文件与备份均不可用：{ $reason } —— 拒绝以空柜启动（数据保全优先），请从 .bad-* 隔离文件或外部备份排查恢复
+
+util-fetch-body-not-utf8 = 响应正文不是合法 UTF-8
+
+error-vendor-circuit-open = 厂商「{ $vendor }」不可用：熔断器已打开
+
+# SDK 进程内库面（FluxweirSdkError 的 message；面向集成方，文案随进程 locale）
+sdk-url-invalid = URL 非法: { $error }
+sdk-base-url-required = base_url 必填
+sdk-api-key-required = api_key 必填
+sdk-missing-choices = 响应缺少 choices 数组
+sdk-empty-choices = 响应 choices 数组为空
+sdk-invalid-tool-call = tool_call 非法: { $error }
+sdk-transport-not-cloneable = 请求 builder 不可克隆（流式请求体？）
+sdk-admin-action-failed = 管理操作失败: { $detail }
+sdk-json-parse = JSON 解析错误: { $error }
+sdk-sse-decode = SSE 解码错误: { $error }
+sdk-input-tokens-model-required = input_tokens 需要非空 `model`
+sdk-input-tokens-input-required = input_tokens 需要非空 `input`
+sdk-extension-key-conflict = 厂商扩展键 `{ $key }` 与类型化请求字段冲突

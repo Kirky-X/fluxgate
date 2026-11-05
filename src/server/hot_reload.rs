@@ -16,7 +16,7 @@ use confers::watcher::{
 };
 
 use crate::config::{Config, ConfigManager};
-use crate::i18n::t_args;
+use crate::i18n::{t, t_args};
 
 /// 去抖（毫秒）：原子 rename 穿透一次事件，多次保存合并为一次重载。
 const HOT_RELOAD_DEBOUNCE_MS: u64 = 500;
@@ -31,28 +31,28 @@ impl PreCommitCheck<Config> for StructuralGate {
     async fn check(&self, candidate: &Config) -> Result<(), String> {
         let current = self.manager.read();
         if current.vendors != candidate.vendors {
-            return Err("vendors topology changed (restart required)".to_string());
+            return Err(t("config-hot-reload-vendors"));
         }
         if current.server != candidate.server {
-            return Err("server section changed (restart required)".to_string());
+            return Err(t("config-hot-reload-server"));
         }
         if current.database != candidate.database {
-            return Err("database section changed (restart required)".to_string());
+            return Err(t("config-hot-reload-database"));
         }
         if current.grpc != candidate.grpc {
-            return Err("grpc section changed (restart required)".to_string());
+            return Err(t("config-hot-reload-grpc"));
         }
         if current.cors != candidate.cors {
-            return Err("cors section changed (restart required)".to_string());
+            return Err(t("config-hot-reload-cors"));
         }
         if current.rate_limit != candidate.rate_limit {
-            return Err("rate_limit rules changed (restart required)".to_string());
+            return Err(t("config-hot-reload-rate-limit"));
         }
         if current.docs != candidate.docs {
-            return Err("docs switch changed (router rebuild required)".to_string());
+            return Err(t("config-hot-reload-docs"));
         }
         if current.global_model != candidate.global_model {
-            return Err("global_model changed (no hot-read point; restart required)".to_string());
+            return Err(t("config-hot-reload-global-model"));
         }
         Ok(())
     }

@@ -10,6 +10,7 @@ use crate::api::request_cost_usd;
 use crate::api::RoutingHints;
 use crate::database::RequestLog;
 use crate::error::{FluxweirError, GateError};
+use crate::i18n::t;
 use crate::protocol::responses::{
     now_secs, parse_request, queued_response, to_responses_response, to_unified_request,
     ParsedResponsesRequest, ResponsesResponse, ResponsesStreamEncoder,
@@ -188,8 +189,7 @@ pub async fn create_response(
     if parsed.native_only.is_some() {
         if parsed.request.background {
             return Err(FluxweirError::from(GateError::Validation {
-                field: "background: native-only requests are not supported in background mode"
-                    .to_string(),
+                field: t("api-responses-background-native-only"),
             }));
         }
         return native_response(
@@ -755,17 +755,17 @@ async fn background_response(
 ) -> Result<Response, FluxweirError> {
     if !responses_config.background_enabled {
         return Err(FluxweirError::from(GateError::Validation {
-            field: "background: disabled by [responses].background_enabled".to_string(),
+            field: t("api-responses-background-disabled"),
         }));
     }
     if !effective_store {
         return Err(FluxweirError::from(GateError::Validation {
-            field: "background requires store=true".to_string(),
+            field: t("api-responses-background-store-required"),
         }));
     }
     let Some(runtime) = state.responses.as_ref() else {
         return Err(FluxweirError::from(GateError::Validation {
-            field: "background: state store is not wired".to_string(),
+            field: t("api-responses-background-store-missing"),
         }));
     };
     if !runtime.jobs.try_begin(responses_config.max_background_jobs) {
@@ -1077,7 +1077,7 @@ pub async fn input_tokens(
     };
     if empty {
         return Err(FluxweirError::from(GateError::Validation {
-            field: "input: must not be empty".to_string(),
+            field: t("api-responses-input-required"),
         }));
     }
     let chars_per_token = state.config.read().quota.est_chars_per_token.max(1);
@@ -1201,7 +1201,7 @@ pub async fn cancel_response(
     };
     if !row.background {
         return Err(FluxweirError::from(GateError::Validation {
-            field: "id: only background responses can be cancelled".to_string(),
+            field: t("api-responses-cancel-background-only"),
         }));
     }
     // abort 任务后回写 cancelled（abort 后任务体不再回写，避免竞态覆盖）
@@ -1237,9 +1237,9 @@ async fn resolve_history(
     let previous = parsed.request.previous_response_id.as_deref();
     let conversation = parsed.request.conversation.as_deref();
     if previous.is_some() && conversation.is_some() {
-        return Err(HistoryError::Invalid(
-            "previous_response_id/conversation: mutually exclusive".to_string(),
-        ));
+        return Err(HistoryError::Invalid(t(
+            "api-responses-history-mutually-exclusive",
+        )));
     }
     if previous.is_some() || conversation.is_some() {
         let Some(runtime) = state.responses.as_ref() else {
@@ -1255,14 +1255,13 @@ async fn resolve_history(
             let mut levels: Vec<Vec<Value>> = Vec::new();
             while let Some(id) = cursor {
                 if !seen.insert(id.clone()) {
-                    return Err(HistoryError::Invalid(format!(
-                        "previous_response_id: cycle detected at {id:?}"
+                    return Err(HistoryError::Invalid(crate::i18n::t_args(
+                        "api-responses-history-cycle",
+                        &[("id", id.clone())],
                     )));
                 }
                 if seen.len() > 100 {
-                    return Err(HistoryError::Invalid(
-                        "previous_response_id: chain depth exceeds 100".to_string(),
-                    ));
+                    return Err(HistoryError::Invalid(t("api-responses-history-depth")));
                 }
                 let row = runtime
                     .store

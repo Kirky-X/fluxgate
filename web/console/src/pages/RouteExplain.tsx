@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
+import { t } from "../i18n";
 
 function decisionVariant(c: { decision: string; reason_code: string }): "success" | "warning" | "destructive" | "outline" {
   if (c.decision === "eligible") return "success";
@@ -48,11 +49,11 @@ export default function RouteExplainPage() {
     <div className="space-y-4">
       <form onSubmit={(e) => { e.preventDefault(); void submit(); }} className="flex items-end gap-2">
         <label className="block space-y-1">
-          <span className="text-xs text-text-muted">model（必填）</span>
+          <span className="text-xs text-text-muted">{t("route.modelLabel")}</span>
           <Input className="w-56" value={model} onChange={(e) => setModel(e.target.value)} />
         </label>
         <label className="block space-y-1">
-          <span className="text-xs text-text-muted">session_id（可选）</span>
+          <span className="text-xs text-text-muted">{t("route.sessionLabel")}</span>
           <Input
             className="w-56"
             value={sessionId}
@@ -60,7 +61,7 @@ export default function RouteExplainPage() {
           />
         </label>
         <Button type="submit" disabled={busy}>
-          解释
+          {t("route.submit")}
         </Button>
       </form>
       {error && <p className="text-small text-danger-text">{error}</p>}
@@ -100,7 +101,7 @@ export default function RouteExplainPage() {
             </TableBody>
           </Table>
           <div>
-            <h3 className="mb-2 text-sm text-text-muted">完整 JSON（含 affinity 决策块）</h3>
+            <h3 className="mb-2 text-sm text-text-muted">{t("route.result")}</h3>
             <pre className="max-h-[420px] overflow-auto rounded-md bg-bg-inset p-3 font-mono text-xs text-text-secondary">
               {JSON.stringify(result, null, 2)}
             </pre>

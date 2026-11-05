@@ -8,6 +8,7 @@ import { login } from "../state";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import { t } from "../i18n";
 
 export default function LoginPage() {
   const [key, setKey] = useState("");
@@ -19,7 +20,7 @@ export default function LoginPage() {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!key.trim()) {
-      setError("请输入 API Key");
+      setError(t("login.empty"));
       return;
     }
     setError(null);
@@ -32,8 +33,10 @@ export default function LoginPage() {
       setApiKey(null);
       setError(
         err instanceof ApiError && err.status === 401
-          ? "key 无效或权限不足"
-          : `连接失败：${err instanceof Error ? err.message : String(err)}`,
+          ? t("login.invalid")
+          : t("login.connectFailed", {
+              error: err instanceof Error ? err.message : String(err),
+            }),
       );
     }
   };
@@ -42,24 +45,22 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center">
       <Card className="w-96">
         <CardHeader>
-          <CardTitle className="text-lg text-text-primary">Fluxweir 控制台</CardTitle>
+          <CardTitle className="text-lg text-text-primary">{t("login.title")}</CardTitle>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="space-y-3">
             <Input
               type="password"
-              placeholder="API Key"
+              placeholder={t("login.placeholder")}
               value={key}
               onChange={(e) => setKey(e.target.value)}
               autoComplete="new-password"
             />
             {error && <p className="text-small text-danger-text">{error}</p>}
             <Button type="submit" className="w-full">
-              连接
+              {t("login.connect")}
             </Button>
-            <p className="text-xs text-text-muted">
-              Key 仅存于本页内存，刷新后需重新输入
-            </p>
+            <p className="text-xs text-text-muted">{t("login.hint")}</p>
           </form>
         </CardContent>
       </Card>

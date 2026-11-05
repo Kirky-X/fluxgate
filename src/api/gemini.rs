@@ -798,7 +798,7 @@ fn gemini_not_found(model: &str) -> Response {
         Json(json!({
             "error": {
                 "code": 404,
-                "message": format!("Gemini model not found: {model}"),
+                "message": t_args("api-gemini-model-not-found", &[("model", model.to_string())]),
                 "status": "NOT_FOUND",
             }
         })),

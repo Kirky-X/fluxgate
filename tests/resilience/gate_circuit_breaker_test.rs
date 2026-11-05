@@ -395,15 +395,18 @@ async fn business_errors_pass_through_breaker_losslessly() {
 
 #[test]
 fn from_circuit_call_open_maps_to_circuit_open_form() {
-    // CB Open / half-open 准入超限的拒绝 → "…(circuit open)"
+    // CB Open / half-open 准入超限的拒绝 → 结构化 VendorCircuitOpen（vendor 只放纯 id）
     let err = from_circuit_call(CircuitCallError::Open, "vendor_a");
     match &err {
-        GateError::VendorUnavailable { vendor } => {
-            assert_eq!(vendor, "vendor_a (circuit open)");
+        GateError::VendorCircuitOpen { vendor } => {
+            assert_eq!(vendor, "vendor_a");
         }
-        other => panic!("expected VendorUnavailable, got {:?}", other),
+        other => panic!("expected VendorCircuitOpen, got {:?}", other),
     }
     assert!(is_circuit_open_error(&err));
+    assert!(!is_circuit_open_error(&GateError::VendorUnavailable {
+        vendor: "vendor_a (circuit open)".into()
+    }));
     assert!(!is_circuit_open_error(&GateError::Timeout {
         vendor: "vendor_a".into()
     }));

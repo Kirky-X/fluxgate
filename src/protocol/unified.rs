@@ -358,21 +358,34 @@ pub(crate) fn validate_tool_schemas(tools: &[Tool]) -> Result<(), GateError> {
         let parameters = &tool.function.parameters;
         let size = serde_json::to_vec(parameters)
             .map_err(|e| GateError::Validation {
-                field: format!("tools[{index}].parameters: schema serialization failed: {e}"),
+                field: crate::i18n::t_args(
+                    "protocol-tools-param-serialize",
+                    &[("index", index.to_string()), ("error", e.to_string())],
+                ),
             })?
             .len();
         if size > MAX_TOOL_SCHEMA_BYTES {
             return Err(GateError::Validation {
-                field: format!(
-                    "tools[{index}].parameters: serialized size {size} bytes exceeds limit {MAX_TOOL_SCHEMA_BYTES}"
+                field: crate::i18n::t_args(
+                    "protocol-tools-param-size",
+                    &[
+                        ("index", index.to_string()),
+                        ("size", size.to_string()),
+                        ("max", MAX_TOOL_SCHEMA_BYTES.to_string()),
+                    ],
                 ),
             });
         }
         let depth = json_depth(parameters);
         if depth > MAX_TOOL_SCHEMA_DEPTH {
             return Err(GateError::Validation {
-                field: format!(
-                    "tools[{index}].parameters: nesting depth {depth} exceeds limit {MAX_TOOL_SCHEMA_DEPTH}"
+                field: crate::i18n::t_args(
+                    "protocol-tools-param-depth",
+                    &[
+                        ("index", index.to_string()),
+                        ("depth", depth.to_string()),
+                        ("max", MAX_TOOL_SCHEMA_DEPTH.to_string()),
+                    ],
                 ),
             });
         }
@@ -1651,7 +1664,11 @@ mod tests {
         let GateError::Validation { field } = &err else {
             panic!("expected Validation, got {err:?}")
         };
-        assert!(field.contains("depth"), "超深拒绝须显性化深度语义: {field}");
+        // 文案本地化：断言深度实测值与上限值（两种语言文案均携带），不锁英文词
+        assert!(
+            field.contains(&(MAX_TOOL_SCHEMA_DEPTH + 1).to_string()),
+            "显性化深度实测值: {field}"
+        );
         assert!(
             field.contains(&MAX_TOOL_SCHEMA_DEPTH.to_string()),
             "显性化上限值: {field}"

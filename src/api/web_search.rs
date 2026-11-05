@@ -378,7 +378,7 @@ pub async fn fetch(
         Ok(page) if (300..400).contains(&page.status) => {
             let mut response = (
                 StatusCode::from_u16(page.status).map_err(|_| GateError::Routing {
-                    message: "bad upstream status".to_string(),
+                    message: t("search-upstream-bad-status"),
                 })?,
                 Json(json!({
                     "status": page.status,
@@ -853,7 +853,7 @@ impl KeyPool {
             let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             if guard.keys.is_empty() {
                 return Err(SearchError::KeyUnavailable {
-                    message: "empty key pool".to_string(),
+                    message: t("search-key-pool-empty"),
                 });
             }
             (
@@ -893,7 +893,7 @@ impl KeyPool {
             }
         }
         Err(first_err.unwrap_or(SearchError::KeyUnavailable {
-            message: "no usable keys".to_string(),
+            message: t("search-key-unusable"),
         }))
     }
 
@@ -919,7 +919,7 @@ async fn resolve_key(
 ) -> Result<String, SearchError> {
     match source {
         KeySource::Env(name) => std::env::var(name).map_err(|_| SearchError::KeyUnavailable {
-            message: format!("env {name} not set"),
+            message: t_args("search-key-env-missing", &[("name", name.clone())]),
         }),
         KeySource::VaultRef(id) => {
             #[cfg(feature = "vault")]
@@ -936,14 +936,14 @@ async fn resolve_key(
                     Ok(secret.expose_secret().to_string())
                 }
                 None => Err(SearchError::KeyUnavailable {
-                    message: "vault not wired".to_string(),
+                    message: t("search-vault-unwired"),
                 }),
             }
             #[cfg(not(feature = "vault"))]
             {
                 let _ = (id, vault);
                 Err(SearchError::KeyUnavailable {
-                    message: "vault feature disabled".to_string(),
+                    message: t("search-vault-disabled"),
                 })
             }
         }

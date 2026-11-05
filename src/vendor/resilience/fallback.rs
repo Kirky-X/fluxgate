@@ -53,20 +53,17 @@ impl FallbackChain {
             FallbackTrigger::Timeout => matches!(error, GateError::Timeout { .. }),
             FallbackTrigger::RateLimited => match error {
                 GateError::RateLimited { .. } => true,
-                GateError::VendorUnavailable { vendor } => {
-                    !is_circuit_open(vendor) && extract_status_code(vendor) == 429
-                }
+                // VendorCircuitOpen 不属限流（由 CircuitOpen 触发器处理）
+                GateError::VendorUnavailable { vendor } => extract_status_code(vendor) == 429,
                 _ => false,
             },
-            FallbackTrigger::CircuitOpen => match error {
-                GateError::VendorUnavailable { vendor } => is_circuit_open(vendor),
-                _ => false,
-            },
+            FallbackTrigger::CircuitOpen => {
+                matches!(error, GateError::VendorCircuitOpen { .. })
+            }
             FallbackTrigger::Http5xx => match error {
+                // VendorCircuitOpen 不属 5xx（由 CircuitOpen 触发器处理）
                 GateError::VendorUnavailable { vendor } => {
-                    // 排除 circuit open 错误（由 CircuitOpen 触发器处理）
-                    !is_circuit_open(vendor)
-                        && matches!(extract_status_code(vendor), 500 | 502 | 503)
+                    matches!(extract_status_code(vendor), 500 | 502 | 503)
                 }
                 _ => false,
             },
@@ -141,11 +138,6 @@ impl AttemptTrail {
     pub fn exposed(&self) -> bool {
         self.exposed
     }
-}
-
-/// 检查 vendor 字符串是否包含 "circuit open" 标记
-fn is_circuit_open(vendor: &str) -> bool {
-    vendor.contains("circuit open")
 }
 
 #[cfg(test)]

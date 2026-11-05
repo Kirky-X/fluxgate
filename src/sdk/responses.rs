@@ -336,12 +336,15 @@ impl ResponsesStream {
                             Some(Ok(parsed))
                         }
                         Err(error) => Some(Err(FluxweirSdkError::Stream {
-                            message: format!("JSON parse error: {error}"),
+                            message: crate::i18n::t_args(
+                                "sdk-json-parse",
+                                &[("error", error.to_string())],
+                            ),
                         })),
                     }
                 }
                 Err(error) => Some(Err(FluxweirSdkError::Stream {
-                    message: format!("SSE decode error: {error}"),
+                    message: crate::i18n::t_args("sdk-sse-decode", &[("error", error.to_string())]),
                 })),
             }
         });
@@ -377,7 +380,7 @@ impl FluxweirClient {
             .base_url
             .join("v1/responses")
             .map_err(|error| FluxweirSdkError::Config {
-                message: format!("invalid URL: {error}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", error.to_string())]),
             })?;
         let request = self
             .http
@@ -408,7 +411,7 @@ impl FluxweirClient {
             .base_url
             .join("v1/responses")
             .map_err(|error| FluxweirSdkError::Config {
-                message: format!("invalid URL: {error}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", error.to_string())]),
             })?;
         let request = self
             .http
@@ -429,7 +432,7 @@ impl FluxweirClient {
             .base_url
             .join(&format!("v1/responses/{id}"))
             .map_err(|error| FluxweirSdkError::Config {
-                message: format!("invalid URL: {error}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", error.to_string())]),
             })?;
         let request = self
             .http
@@ -447,7 +450,7 @@ impl FluxweirClient {
             .base_url
             .join(&format!("v1/responses/{id}"))
             .map_err(|error| FluxweirSdkError::Config {
-                message: format!("invalid URL: {error}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", error.to_string())]),
             })?;
         let request = self
             .http
@@ -466,7 +469,7 @@ impl FluxweirClient {
             .base_url
             .join(&format!("v1/responses/{id}/cancel"))
             .map_err(|error| FluxweirSdkError::Config {
-                message: format!("invalid URL: {error}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", error.to_string())]),
             })?;
         let request = self
             .http
@@ -486,7 +489,7 @@ impl FluxweirClient {
     ) -> Result<ResponsesInputTokensResponse, FluxweirSdkError> {
         if req.model.trim().is_empty() {
             return Err(FluxweirSdkError::Protocol {
-                message: "input_tokens requires non-empty `model`".to_string(),
+                message: crate::i18n::t("sdk-input-tokens-model-required"),
             });
         }
         let input_empty = match &req.input {
@@ -497,7 +500,7 @@ impl FluxweirClient {
         };
         if input_empty {
             return Err(FluxweirSdkError::Protocol {
-                message: "input_tokens requires non-empty `input`".to_string(),
+                message: crate::i18n::t("sdk-input-tokens-input-required"),
             });
         }
 
@@ -505,7 +508,7 @@ impl FluxweirClient {
             .base_url
             .join("v1/responses/input_tokens")
             .map_err(|error| FluxweirSdkError::Config {
-                message: format!("invalid URL: {error}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", error.to_string())]),
             })?;
         let payload = json!({"model": req.model, "input": req.input});
         let request = self

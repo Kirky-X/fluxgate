@@ -159,3 +159,30 @@ catalog-sync-source-skipped = 目录源条目已跳过（缺定价或上下文�
 main-catalog-sync-started = 目录同步周期任务已启动（间隔 { $interval_secs } 秒）
 main-catalog-sync-synced = 目录同步完成：新增 { $added } 条
 main-catalog-sync-failed = 目录同步失败（fail-open，目录保持原样）：{ $error }
+
+# Responses 端点校验与历史解析（错误经 error-validation 模板的 { $field } 槽位插值）
+api-responses-background-native-only = background: 原生能力请求不支持后台模式
+api-responses-background-disabled = background: 已被 [responses].background_enabled 禁用
+api-responses-background-store-required = background 需要 store=true
+api-responses-background-store-missing = background: 状态存储未接线
+api-responses-input-required = input: 不能为空
+api-responses-cancel-background-only = id: 只有后台响应可以取消
+api-responses-history-mutually-exclusive = previous_response_id/conversation: 互斥
+api-responses-history-cycle = previous_response_id: 在 { $id } 处检测到循环
+api-responses-history-depth = previous_response_id: 链深超过 100
+api-gemini-model-not-found = 未找到 Gemini 模型: { $model }
+
+# web-search 端点（SearchError 消息经 search-all-providers-failed 的 { $summary } 聚合返回）
+search-upstream-bad-status = 上游状态码非法
+search-key-pool-empty = key 池为空
+search-key-unusable = 无可用 key
+search-key-env-missing = 环境变量 { $name } 未设置
+search-vault-unwired = vault 未接线
+search-vault-disabled = vault 特性未启用
+
+# 订阅 OAuth 用户面（Display 规范串仅作 detail，外层语义本地化）
+admin-subscription-oauth = 订阅 OAuth 端点错误（状态码 { $status }）
+admin-subscription-token-invalid = 订阅 token 响应非法（缺少字段 { $field }）
+admin-subscription-transport = 订阅传输错误：{ $detail }
+admin-subscription-degraded = 订阅账号处于降级冷却期，请稍后重试
+subscription-vault-unwired = vault 存储未接线

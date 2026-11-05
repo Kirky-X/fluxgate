@@ -13,6 +13,7 @@
 //! `GateError::Validation`（400）并点名字段与下标。
 
 use crate::error::GateError;
+use crate::i18n::{t, t_args};
 use crate::protocol::responses::types::{
     InputMessage, ParsedInputItem, ResponsesRequest, TextConfig, MAX_RESPONSES_INPUT_ITEMS,
     MAX_RESPONSES_METADATA_ENTRIES, MAX_RESPONSES_METADATA_KEY_CHARS,
@@ -57,7 +58,10 @@ pub fn parse_request(body: &Value) -> Result<ParsedResponsesRequest, GateError> 
         if error.to_string().contains("model") {
             validation("model")
         } else {
-            validation(format!("body: {error}"))
+            validation(t_args(
+                "protocol-responses-body-parse",
+                &[("error", error.to_string())],
+            ))
         }
     })?;
 
@@ -66,42 +70,59 @@ pub fn parse_request(body: &Value) -> Result<ParsedResponsesRequest, GateError> 
     }
     if let Some(max_output_tokens) = request.max_output_tokens {
         if !(1..=MAX_RESPONSES_OUTPUT_TOKENS).contains(&max_output_tokens) {
-            return Err(validation(format!(
-                "max_output_tokens: {max_output_tokens} out of range 1..={MAX_RESPONSES_OUTPUT_TOKENS}"
+            return Err(validation(t_args(
+                "protocol-responses-output-tokens-range",
+                &[
+                    ("value", max_output_tokens.to_string()),
+                    ("max", MAX_RESPONSES_OUTPUT_TOKENS.to_string()),
+                ],
             )));
         }
     }
     if let Some(metadata) = request.metadata.as_ref() {
         if metadata.len() > MAX_RESPONSES_METADATA_ENTRIES {
-            return Err(validation(format!(
-                "metadata: {} entries exceeds limit {MAX_RESPONSES_METADATA_ENTRIES}",
-                metadata.len()
+            return Err(validation(t_args(
+                "protocol-responses-metadata-entries",
+                &[
+                    ("count", metadata.len().to_string()),
+                    ("max", MAX_RESPONSES_METADATA_ENTRIES.to_string()),
+                ],
             )));
         }
         for (key, value) in metadata {
             if key.chars().count() > MAX_RESPONSES_METADATA_KEY_CHARS {
-                return Err(validation(format!(
-                    "metadata key {key:?} exceeds {MAX_RESPONSES_METADATA_KEY_CHARS} chars"
+                return Err(validation(t_args(
+                    "protocol-responses-metadata-key",
+                    &[
+                        // Debug 形保留引号与转义：用户 JSON 的键原样回显前先净化
+                        ("key", format!("{key:?}")),
+                        ("max", MAX_RESPONSES_METADATA_KEY_CHARS.to_string()),
+                    ],
                 )));
             }
             if value.chars().count() > MAX_RESPONSES_METADATA_VALUE_CHARS {
-                return Err(validation(format!(
-                    "metadata value for key {key:?} exceeds {MAX_RESPONSES_METADATA_VALUE_CHARS} chars"
+                return Err(validation(t_args(
+                    "protocol-responses-metadata-value",
+                    &[
+                        ("key", format!("{key:?}")),
+                        ("max", MAX_RESPONSES_METADATA_VALUE_CHARS.to_string()),
+                    ],
                 )));
             }
         }
     }
     if request.background && request.stream {
-        return Err(validation(
-            "stream: background mode does not support streaming",
-        ));
+        return Err(validation(t("protocol-responses-background-stream")));
     }
 
     let current_items = normalize_input(&request.input)?;
     if current_items.len() > MAX_RESPONSES_INPUT_ITEMS {
-        return Err(validation(format!(
-            "input: {} items exceeds limit {MAX_RESPONSES_INPUT_ITEMS}",
-            current_items.len()
+        return Err(validation(t_args(
+            "protocol-responses-input-items",
+            &[
+                ("count", current_items.len().to_string()),
+                ("max", MAX_RESPONSES_INPUT_ITEMS.to_string()),
+            ],
         )));
     }
     // 逐 item 形状校验（不产出 IR，只保证可解析；历史回放后会再校验一次）
@@ -124,7 +145,7 @@ fn normalize_input(input: &Value) -> Result<Vec<Value>, GateError> {
         })]),
         Value::Array(items) => Ok(items.clone()),
         Value::Null => Err(validation("input")),
-        _ => Err(validation("input: must be a string or an array of items")),
+        _ => Err(validation(t("protocol-responses-input-shape"))),
     }
 }
 
@@ -222,15 +243,17 @@ pub fn parse_items(items: &[Value]) -> Result<Vec<ParsedInputItem>, GateError> {
                 parsed.push(ParsedInputItem::ItemReference(id.to_string()));
             }
             Some("input_file") | Some("input_audio") => {
-                return Err(validation(format!(
-                    "input[{index}].type: file/audio input requires a native Responses vendor"
+                return Err(validation(t_args(
+                    "protocol-responses-input-file-native",
+                    &[("index", index.to_string())],
                 )))
             }
             _ => {
                 // message item：显式 type=message，或省略 type 仅带 role
                 let role = item.get("role").and_then(Value::as_str).ok_or_else(|| {
-                    validation(format!(
-                        "input[{index}]: unrecognized item (missing role and known type)"
+                    validation(t_args(
+                        "protocol-responses-input-unrecognized",
+                        &[("index", index.to_string())],
                     ))
                 })?;
                 parsed.push(ParsedInputItem::Message(InputMessage {
@@ -252,14 +275,18 @@ pub fn to_unified_request(
     merged_items: &[Value],
 ) -> Result<UnifiedRequest, GateError> {
     if let Some(reason) = parsed.native_only.as_deref() {
-        return Err(validation(format!(
-            "request requires a native Responses vendor ({reason})"
+        return Err(validation(t_args(
+            "protocol-responses-native-required",
+            &[("reason", reason.to_string())],
         )));
     }
     if merged_items.len() > MAX_RESPONSES_INPUT_ITEMS {
-        return Err(validation(format!(
-            "input: {} items exceeds limit {MAX_RESPONSES_INPUT_ITEMS}",
-            merged_items.len()
+        return Err(validation(t_args(
+            "protocol-responses-input-items",
+            &[
+                ("count", merged_items.len().to_string()),
+                ("max", MAX_RESPONSES_INPUT_ITEMS.to_string()),
+            ],
         )));
     }
     let parsed_items = parse_items(merged_items)?;
@@ -409,15 +436,15 @@ fn items_to_messages(items: &[ParsedInputItem]) -> Result<Vec<Message>, GateErro
             ParsedInputItem::FunctionCallOutput(output) => {
                 flush_calls(&mut messages, &mut pending_calls);
                 if !seen_calls.contains(&output.call_id) {
-                    return Err(validation(format!(
-                        "input: function_call_output call_id {:?} has no preceding function_call",
-                        output.call_id
+                    return Err(validation(t_args(
+                        "protocol-responses-output-orphan",
+                        &[("id", format!("{:?}", output.call_id))],
                     )));
                 }
                 if !seen_outputs.insert(output.call_id.clone()) {
-                    return Err(validation(format!(
-                        "input: duplicate function_call_output for call_id {:?}",
-                        output.call_id
+                    return Err(validation(t_args(
+                        "protocol-responses-output-duplicate",
+                        &[("id", format!("{:?}", output.call_id))],
                     )));
                 }
                 messages.push(Message {
@@ -434,8 +461,9 @@ fn items_to_messages(items: &[ParsedInputItem]) -> Result<Vec<Message>, GateErro
                 // chat 上游无 reasoning 明细：IR 路径丢弃（原生直通才保留）
             }
             ParsedInputItem::ItemReference(id) => {
-                return Err(validation(format!(
-                    "input: item_reference {id:?} must be resolved before conversion"
+                return Err(validation(t_args(
+                    "protocol-responses-item-reference",
+                    &[("id", format!("{id:?}"))],
                 )));
             }
             ParsedInputItem::Unknown(_) => {}
@@ -475,8 +503,9 @@ fn content_to_ir(content: &Value) -> Result<MessageContent, GateError> {
                         });
                     }
                     Some(other) => {
-                        return Err(validation(format!(
-                            "input content block type {other:?} is not supported on chat vendors"
+                        return Err(validation(t_args(
+                            "protocol-responses-block-unsupported",
+                            &[("type", other.to_string())],
                         )))
                     }
                     None => {}
@@ -543,8 +572,9 @@ fn parse_tools(tools: Option<&Vec<Value>>) -> Result<Vec<Tool>, GateError> {
     let mut parsed = Vec::with_capacity(tools.len());
     for (index, tool) in tools.iter().enumerate() {
         if tool.get("type").and_then(Value::as_str) != Some("function") {
-            return Err(validation(format!(
-                "tools[{index}]: non-function tool requires a native Responses vendor"
+            return Err(validation(t_args(
+                "protocol-responses-tool-native",
+                &[("index", index.to_string())],
             )));
         }
         // Responses flat 形态；兼容 chat nested 形态

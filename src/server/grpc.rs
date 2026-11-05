@@ -15,7 +15,7 @@ use std::time::Duration;
 use crate::config::{ConfigManager, GrpcConfig};
 use crate::error::FluxweirError;
 use crate::error::GateError;
-use crate::i18n::t_args;
+use crate::i18n::{t, t_args};
 use crate::middleware::auth::ApiAuthState;
 use crate::server::bootstrap;
 
@@ -140,7 +140,7 @@ impl sdforge::security::grpc_auth::GrpcAuthVerifier for FluxweirGrpcAuthVerifier
                     .map(str::to_string)
             })
             .filter(|k| !k.is_empty())
-            .ok_or_else(|| "missing api key".to_string())?;
+            .ok_or_else(|| t("middleware-missing-api-key"))?;
         let auth_state = {
             let section = self.config_manager.read().auth.clone();
             match section {
@@ -149,7 +149,7 @@ impl sdforge::security::grpc_auth::GrpcAuthVerifier for FluxweirGrpcAuthVerifier
             }
         };
         if !auth_state.validate_key(&key) {
-            return Err("invalid api key".to_string());
+            return Err(t("middleware-invalid-api-key"));
         }
         Ok(sdforge::security::AuthContext::new(
             None,

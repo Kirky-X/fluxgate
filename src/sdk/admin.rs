@@ -261,7 +261,7 @@ impl FluxweirClient {
             .base_url
             .join("admin/models")
             .map_err(|e| FluxweirSdkError::Config {
-                message: format!("invalid URL: {e}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", e.to_string())]),
             })?;
 
         let request = self
@@ -321,7 +321,7 @@ impl FluxweirClient {
             .base_url
             .join("admin/vendors")
             .map_err(|e| FluxweirSdkError::Config {
-                message: format!("invalid URL: {e}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", e.to_string())]),
             })?;
 
         let request = self
@@ -392,7 +392,7 @@ impl FluxweirClient {
             .base_url
             .join("api/v1/health")
             .map_err(|e| FluxweirSdkError::Config {
-                message: format!("invalid URL: {e}"),
+                message: crate::i18n::t_args("sdk-url-invalid", &[("error", e.to_string())]),
             })?;
 
         let request = self
@@ -485,7 +485,10 @@ impl FluxweirClient {
         let body: AdminActionResponse = resp.json().await?;
         if !body.success {
             return Err(FluxweirSdkError::Protocol {
-                message: format!("admin action failed: {}", body.message),
+                message: crate::i18n::t_args(
+                    "sdk-admin-action-failed",
+                    &[("detail", body.message)],
+                ),
             });
         }
         Ok(())

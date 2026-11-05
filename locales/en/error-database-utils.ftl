@@ -95,3 +95,22 @@ replay-cli-load-failed = failed to load request_logs for replay: { $error }
 replay-window-too-large = replay window has { $rows } row(s), exceeding the --max-rows limit of { $limit }; narrow --from/--to or raise --max-rows
 replay-row-decode-failed = failed to decode request_logs column { $column }: { $error }
 vault-state-unrecoverable = Vault file and backup are both unusable: { $reason } — refusing to start with an empty vault (data safety first); inspect the quarantined .bad-* file or restore from an external backup
+
+util-fetch-body-not-utf8 = response body is not valid UTF-8
+
+error-vendor-circuit-open = Vendor "{ $vendor }" is unavailable: circuit breaker is open
+
+# SDK 进程内库面（FluxweirSdkError 的 message；面向集成方，文案随进程 locale）
+sdk-url-invalid = invalid URL: { $error }
+sdk-base-url-required = base_url is required
+sdk-api-key-required = api_key is required
+sdk-missing-choices = missing choices array
+sdk-empty-choices = empty choices array
+sdk-invalid-tool-call = invalid tool_call: { $error }
+sdk-transport-not-cloneable = request builder is not cloneable (streaming request body?)
+sdk-admin-action-failed = admin action failed: { $detail }
+sdk-json-parse = JSON parse error: { $error }
+sdk-sse-decode = SSE decode error: { $error }
+sdk-input-tokens-model-required = input_tokens requires non-empty `model`
+sdk-input-tokens-input-required = input_tokens requires non-empty `input`
+sdk-extension-key-conflict = vendor extension key `{ $key }` conflicts with a typed request field

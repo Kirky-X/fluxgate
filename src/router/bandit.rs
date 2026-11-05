@@ -293,7 +293,8 @@ impl BanditState {
                     tracing::warn!(
                         model,
                         vendor,
-                        "linucb arm matrix singular/non-finite; diagonal approximation engaged"
+                        "{}",
+                        crate::i18n::t("log-linucb-diag-fallback")
                     );
                 }
                 let inv = linucb_diag_inverse(&guard.a, LINUCB_DIM);

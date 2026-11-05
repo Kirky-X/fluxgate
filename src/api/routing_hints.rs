@@ -131,7 +131,8 @@ fn validate_anthropic_beta(value: &str) -> Option<String> {
     if !valid {
         tracing::warn!(
             header = "anthropic-beta",
-            "invalid anthropic-beta header value dropped"
+            "{}",
+            crate::i18n::t("log-anthropic-beta-invalid")
         );
         return None;
     }
@@ -150,7 +151,16 @@ fn truncate_session_key(raw: &str) -> String {
     while take > 0 && !raw.is_char_boundary(take) {
         take -= 1;
     }
-    tracing::warn!("session key header exceeds {SESSION_KEY_MAX_BYTES} bytes; truncated to {take}");
+    tracing::warn!(
+        "{}",
+        crate::i18n::t_args(
+            "log-session-key-truncated",
+            &[
+                ("max", SESSION_KEY_MAX_BYTES.to_string()),
+                ("take", take.to_string()),
+            ],
+        )
+    );
     raw[..take].to_string()
 }
 

@@ -12,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
+import { t } from "../i18n";
 
 export default function ModelsPage() {
   const [entries, setEntries] = useState<ModelCatalogEntry[]>([]);
@@ -34,7 +35,7 @@ export default function ModelsPage() {
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <Button size="sm" variant="outline" onClick={() => void refresh()}>
-          刷新
+          {t("models.refresh")}
         </Button>
         {error && <p className="text-small text-danger-text">{error}</p>}
       </div>
@@ -42,13 +43,13 @@ export default function ModelsPage() {
         <TableHeader>
           <TableRow>
             <TableHead>model_id</TableHead>
-            <TableHead>上下文窗口</TableHead>
-            <TableHead>输入价</TableHead>
-            <TableHead>输出价</TableHead>
-            <TableHead>币种</TableHead>
-            <TableHead>最大输出</TableHead>
-            <TableHead>工具</TableHead>
-            <TableHead>思考</TableHead>
+            <TableHead>{t("models.context")}</TableHead>
+            <TableHead>{t("models.inputPrice")}</TableHead>
+            <TableHead>{t("models.outputPrice")}</TableHead>
+            <TableHead>{t("models.currency")}</TableHead>
+            <TableHead>{t("models.maxOutput")}</TableHead>
+            <TableHead>{t("models.tools")}</TableHead>
+            <TableHead>{t("models.thinking")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -71,7 +72,7 @@ export default function ModelsPage() {
           {entries.length === 0 && (
             <TableRow>
               <TableCell colSpan={8} className="text-center text-text-muted">
-                目录为空
+                {t("models.empty")}
               </TableCell>
             </TableRow>
           )}

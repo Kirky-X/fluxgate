@@ -521,9 +521,7 @@ impl ChatRequest {
         let key = key.into();
         if RESERVED_KEYS.contains(&key.as_str()) {
             return Err(FluxweirSdkError::Protocol {
-                message: format!(
-                    "vendor extension key `{key}` conflicts with a typed request field"
-                ),
+                message: crate::i18n::t_args("sdk-extension-key-conflict", &[("key", key)]),
             });
         }
         self.vendor_extensions.insert(key, value);
@@ -572,7 +570,7 @@ impl ChatResponse {
 
         let choices_wire = v.get("choices").and_then(|c| c.as_array()).ok_or_else(|| {
             FluxweirSdkError::Protocol {
-                message: "missing choices array".into(),
+                message: crate::i18n::t("sdk-missing-choices"),
             }
         })?;
 
@@ -593,7 +591,10 @@ impl ChatResponse {
                         .map(|tc| {
                             serde_json::from_value::<ChatToolCall>(tc.clone()).map_err(|e| {
                                 FluxweirSdkError::Protocol {
-                                    message: format!("invalid tool_call: {e}"),
+                                    message: crate::i18n::t_args(
+                                        "sdk-invalid-tool-call",
+                                        &[("error", e.to_string())],
+                                    ),
                                 }
                             })
                         })
@@ -618,7 +619,7 @@ impl ChatResponse {
             .first()
             .cloned()
             .ok_or_else(|| FluxweirSdkError::Protocol {
-                message: "empty choices array".into(),
+                message: crate::i18n::t("sdk-empty-choices"),
             })?;
 
         let usage_json = v.get("usage");

@@ -125,13 +125,13 @@ fn test_circuit_open_trigger_matches_only_circuit_open_errors() {
         FallbackTrigger::CircuitOpen,
     );
 
-    // CB Open 错误（vendor 字符串含 "circuit open"）
-    let cb_open = GateError::VendorUnavailable {
-        vendor: "primary (circuit open)".into(),
+    // CB Open 错误（结构化 VendorCircuitOpen 变体）
+    let cb_open = GateError::VendorCircuitOpen {
+        vendor: "primary".into(),
     };
     assert!(
         chain.should_trigger(&cb_open),
-        "CircuitOpen 应匹配 'circuit open' 错误"
+        "CircuitOpen 应匹配 VendorCircuitOpen 错误"
     );
     let next = chain
         .next_after_failure("primary", &cb_open)
@@ -871,10 +871,8 @@ mod cover_all_paths {
             .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         let message = body["error"]["message"].as_str().unwrap_or_default();
-        assert!(
-            message.contains("circuit open"),
-            "错误消息须含 circuit open: {message}"
-        );
+        // 文案本地化：断言 vendor id（两种语言文案均携带），不锁英文词
+        assert!(message.contains("fb-a"), "错误消息须携带厂商 id: {message}");
 
         mock_a.assert_async().await; // 第 6 次请求零 HTTP（CB 无调用拒绝）
         mock_b.assert_async().await;

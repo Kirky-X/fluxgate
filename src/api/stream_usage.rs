@@ -309,7 +309,8 @@ impl StreamUsageRecorder {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             tracing::warn!(
                 request_id = %inner.request_id,
-                "stream usage settlement skipped: no tokio runtime"
+                "{}",
+                crate::i18n::t("log-stream-usage-skip-no-runtime")
             );
             return;
         };

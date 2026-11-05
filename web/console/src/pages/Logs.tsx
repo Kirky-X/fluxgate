@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
+import { localeTag, t } from "../i18n";
 
 function statusVariant(code: number): "success" | "warning" | "destructive" | "outline" {
   if (code >= 200 && code < 300) return "success";
@@ -23,7 +24,7 @@ function statusVariant(code: number): "success" | "warning" | "destructive" | "o
 }
 
 function fmtTime(unix: number): string {
-  return new Date(unix * 1000).toLocaleString("zh-CN", { hour12: false });
+  return new Date(unix * 1000).toLocaleString(localeTag(), { hour12: false });
 }
 
 export default function LogsPage() {
@@ -91,11 +92,11 @@ export default function LogsPage() {
           />
         </label>
         <Button size="default" onClick={() => void query()}>
-          查询
+          {t("logs.query")}
         </Button>
         {oldest !== undefined && (
           <Button size="default" variant="outline" onClick={() => void query(oldest)}>
-            更早一批
+            {t("logs.older")}
           </Button>
         )}
         {error && <p className="text-small text-danger-text">{error}</p>}
@@ -103,14 +104,14 @@ export default function LogsPage() {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>时间</TableHead>
+            <TableHead>{t("logs.time")}</TableHead>
             <TableHead>request_id</TableHead>
-            <TableHead>模型（抽象/实际）</TableHead>
+            <TableHead>{t("logs.model")}</TableHead>
             <TableHead>vendor</TableHead>
-            <TableHead>状态</TableHead>
+            <TableHead>{t("logs.status")}</TableHead>
             <TableHead>tokens</TableHead>
-            <TableHead>耗时</TableHead>
-            <TableHead>成本</TableHead>
+            <TableHead>{t("logs.duration")}</TableHead>
+            <TableHead>{t("logs.cost")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -139,7 +140,7 @@ export default function LogsPage() {
                 <TableRow>
                   <TableCell colSpan={8} className="bg-bg-inset">
                     <pre className="max-h-64 overflow-auto font-mono text-xs text-text-secondary">
-                      {log.error_message ?? log.messages ?? "（无详情）"}
+                      {log.error_message ?? log.messages ?? t("logs.noDetail")}
                     </pre>
                   </TableCell>
                 </TableRow>
@@ -149,7 +150,7 @@ export default function LogsPage() {
           {logs.length === 0 && (
             <TableRow>
               <TableCell colSpan={8} className="text-center text-text-muted">
-                暂无日志
+                {t("logs.empty")}
               </TableCell>
             </TableRow>
           )}

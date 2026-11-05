@@ -794,9 +794,12 @@ impl Router {
                     vendor.id.clone(),
                     model_entry.model_id.clone(),
                     REASON_DISABLED,
-                    format!(
-                        "vendor enabled={} model enabled={}",
-                        vendor.enabled, model_entry.enabled
+                    t_args(
+                        "router-excluded-disabled",
+                        &[
+                            ("vendor", vendor.enabled.to_string()),
+                            ("model", model_entry.enabled.to_string()),
+                        ],
                     ),
                 ))));
                 continue;
@@ -2238,8 +2241,8 @@ impl Router {
             if !self.sla_no_pricing_warned.swap(true, Ordering::Relaxed) {
                 tracing::warn!(
                     candidates = candidates.len(),
-                    "[routing].sla_v>0 but no candidate has a [[pricing]] entry; \
-                     cost term neutralized to 0 (pure virtual-queue mode)"
+                    "{}",
+                    t("log-sla-v-no-pricing")
                 );
             }
             0.0

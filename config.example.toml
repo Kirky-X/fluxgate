@@ -93,6 +93,12 @@ api_keys = [
     # "example-key-hash-1234567890abcdef..."
 ]
 
+# 可信代理身份桥（可选，缺省 false）：仅嵌入式宿主形态使用——宿主完成团队/
+# API-Key 校验后经进程内 request extensions 注入身份（服务端中间件写入，无
+# 网络边界，客户端不可伪造）。直连网关端口的部署不得依赖本通道，须升级为
+# HMAC 签名内部头变体。
+trusted_proxy = false
+
 # API key 档位表（可选）：拥塞准入（[admission]）的优先级基准。hash 与
 # api_keys 同形态（SHA256 hex）；tier ∈ dedicated/guaranteed/elastic/spot
 #（基准权重 1000/100/1/0.1，未知档位串使加载失败）。未在此声明的 key（含

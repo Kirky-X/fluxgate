@@ -818,7 +818,14 @@ mod auth {
             .await
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["error"]["message"], "Missing API key");
+        assert_eq!(body["error"]["type"], "authentication_error");
+        assert!(
+            !body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "文案非空（i18n）"
+        );
     }
 
     #[tokio::test]
@@ -843,7 +850,14 @@ mod auth {
             .await
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["error"]["message"], "Invalid API key");
+        assert_eq!(body["error"]["type"], "authentication_error");
+        assert!(
+            !body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "文案非空（i18n）"
+        );
     }
 
     #[tokio::test]
@@ -1234,11 +1248,10 @@ mod admin {
             "cors 变更必须显式提示需重启: {:?}",
             required
         );
-        // message 里也有可读提示
+        // message 是可读提示，文案随 locale 漂移，断言非空即可（机器契约由 restart_required 数组承载）
         assert!(
-            value["message"].as_str().unwrap().contains("restart"),
-            "message 应含 restart 提示: {:?}",
-            value["message"]
+            !value["message"].as_str().unwrap_or_default().is_empty(),
+            "message 非空（i18n）"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

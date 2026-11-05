@@ -112,6 +112,7 @@ router-rerank-no-capable-vendor = No rerank-capable vendor for model "{ $model }
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = Missing API key
 middleware-invalid-api-key = Invalid API key
+middleware-admin-forbidden = Admin API access forbidden (trusted identity lacks admin scope)
 
 # ---- router/difficulty (config validation) ----
 config-difficulty-weights-all-zero = [routing.difficulty] w_clf and w_rule must not both be 0

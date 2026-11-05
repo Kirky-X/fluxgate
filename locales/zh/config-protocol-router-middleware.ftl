@@ -112,6 +112,7 @@ router-rerank-no-capable-vendor = 模型 "{ $model }" 无可用的 rerank 候选
 # ---- middleware/auth.rs ----
 middleware-missing-api-key = 缺少 API Key
 middleware-invalid-api-key = API Key 无效
+middleware-admin-forbidden = 管理面访问被拒绝（可信身份无 admin 权限）
 
 # ---- router/difficulty (config validation) ----
 config-difficulty-weights-all-zero = [routing.difficulty] w_clf 与 w_rule 不可同时为 0

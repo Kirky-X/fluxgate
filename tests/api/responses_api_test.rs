@@ -942,7 +942,8 @@ mod tests {
             .unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(
-            text.contains("not supported in background"),
+            // 错误文案随 locale 漂移，断言字段 token（双语模板均含 background 前缀）
+            text.contains("background"),
             "错误信息必须说明限制:\n{text}"
         );
     }
